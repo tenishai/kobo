@@ -1,0 +1,340 @@
+{
+  "$defs": {
+    "ApprovalsSpec": {
+      "additionalProperties": true,
+      "properties": {
+        "ceiling": {
+          "$ref": "#/$defs/CeilingSpec"
+        },
+        "gates": {
+          "items": {
+            "$ref": "#/$defs/GateSpec"
+          },
+          "title": "Gates",
+          "type": "array"
+        },
+        "escalation": {
+          "$ref": "#/$defs/EscalationSpec"
+        }
+      },
+      "title": "ApprovalsSpec",
+      "type": "object"
+    },
+    "BudgetSpec": {
+      "additionalProperties": true,
+      "properties": {
+        "per_task_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Per Task Tokens"
+        }
+      },
+      "title": "BudgetSpec",
+      "type": "object"
+    },
+    "CeilingSpec": {
+      "additionalProperties": true,
+      "properties": {
+        "write": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Write"
+        },
+        "hosts": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hosts"
+        }
+      },
+      "title": "CeilingSpec",
+      "type": "object"
+    },
+    "EscalationSpec": {
+      "additionalProperties": true,
+      "properties": {
+        "route": {
+          "default": "cli",
+          "title": "Route",
+          "type": "string"
+        }
+      },
+      "title": "EscalationSpec",
+      "type": "object"
+    },
+    "GateSpec": {
+      "additionalProperties": true,
+      "properties": {
+        "match": {
+          "title": "Match",
+          "type": "string"
+        },
+        "require": {
+          "default": "plan_approval",
+          "title": "Require",
+          "type": "string"
+        }
+      },
+      "required": [
+        "match"
+      ],
+      "title": "GateSpec",
+      "type": "object"
+    },
+    "LimenalSpec": {
+      "additionalProperties": true,
+      "properties": {
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "token_env": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token Env"
+        }
+      },
+      "title": "LimenalSpec",
+      "type": "object"
+    },
+    "MemorySpec": {
+      "additionalProperties": true,
+      "properties": {
+        "personal": {
+          "default": "none",
+          "enum": [
+            "none",
+            "techne"
+          ],
+          "title": "Personal",
+          "type": "string"
+        },
+        "home": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Home"
+        },
+        "team": {
+          "default": "none",
+          "enum": [
+            "none",
+            "outbox"
+          ],
+          "title": "Team",
+          "type": "string"
+        }
+      },
+      "title": "MemorySpec",
+      "type": "object"
+    },
+    "ModelSpec": {
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "max_tokens": {
+          "default": 8192,
+          "title": "Max Tokens",
+          "type": "integer"
+        },
+        "api_base": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Base"
+        },
+        "api_key_env": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key Env"
+        },
+        "budget": {
+          "$ref": "#/$defs/BudgetSpec"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "ModelSpec",
+      "type": "object"
+    },
+    "ToolsSpec": {
+      "additionalProperties": true,
+      "properties": {
+        "provider": {
+          "default": "none",
+          "enum": [
+            "none",
+            "mcp",
+            "limenal"
+          ],
+          "title": "Provider",
+          "type": "string"
+        },
+        "servers": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Servers",
+          "type": "array"
+        },
+        "limenal": {
+          "$ref": "#/$defs/LimenalSpec"
+        },
+        "builtin": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Builtin",
+          "type": "object"
+        },
+        "allow": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allow",
+          "type": "array"
+        },
+        "max_steps": {
+          "default": 10,
+          "title": "Max Steps",
+          "type": "integer"
+        }
+      },
+      "title": "ToolsSpec",
+      "type": "object"
+    },
+    "TransportSpec": {
+      "additionalProperties": true,
+      "description": "kind plus transport-specific fields (channel, port, ...) kept as extras.",
+      "properties": {
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "TransportSpec",
+      "type": "object"
+    }
+  },
+  "additionalProperties": true,
+  "description": "Wiring for a daedalus agent bundle \u2014 a directory that IS an agent (agent.yaml + persona.md + agent-card.json). Unknown fields load with a warning, never silently.",
+  "properties": {
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "card": {
+      "default": "agent-card.json",
+      "title": "Card",
+      "type": "string"
+    },
+    "persona": {
+      "default": "persona.md",
+      "title": "Persona",
+      "type": "string"
+    },
+    "model": {
+      "$ref": "#/$defs/ModelSpec"
+    },
+    "transports": {
+      "items": {
+        "$ref": "#/$defs/TransportSpec"
+      },
+      "title": "Transports",
+      "type": "array"
+    },
+    "tools": {
+      "$ref": "#/$defs/ToolsSpec"
+    },
+    "memory": {
+      "$ref": "#/$defs/MemorySpec"
+    },
+    "checkpoints": {
+      "default": "none",
+      "enum": [
+        "none",
+        "sqlite"
+      ],
+      "title": "Checkpoints",
+      "type": "string"
+    },
+    "approvals": {
+      "$ref": "#/$defs/ApprovalsSpec"
+    }
+  },
+  "required": [
+    "name",
+    "model"
+  ],
+  "title": "daedalus agent bundle (agent.yaml)",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tenishai/daedalus/blob/main/docs/bundle.schema.json",
+  "version": "0.4.0.dev0"
+}
