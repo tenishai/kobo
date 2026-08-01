@@ -507,7 +507,7 @@ Work in `~/Documents/GitHub/gojira`. First step of Task 4 creates the branch.
 - Modify: `gojira/opinions/sizing.yaml:39-40`
 - Test: `tests/test_opinions.py`, `tests/test_generator.py`
 
-Background: `gojira/generator/__init__.py:471-474` — `_has_service(cls)` is true only when the class has a `readiness` probe of type `http`. The daedalus a2a transport serves `GET /healthz` on port 8080, which equals gojira's `APP_PORT` (`generator/__init__.py:27`), and the deployment template's probes target the named container port `http`. Adding an HTTP readiness probe therefore yields a generated `service.yaml` (port 80 → targetPort `http`) with no template changes.
+Background: `gojira/generator/__init__.py:471-474` — `_has_service(cls)` is true only when the class has a `readiness` probe of type `http`. The daedalus a2a transport serves `GET /healthz` (its defaults are host 127.0.0.1, port 9200 — bundles deployed in-cluster MUST declare `host: 0.0.0.0, port: 8080` so the probe and Service can reach it; 8080 equals gojira's `APP_PORT`, `generator/__init__.py:27`). The deployment template's probes target the named container port `http`. Adding an HTTP readiness probe therefore yields a generated `service.yaml` (port 80 → targetPort `http`) with no template changes.
 
 - [ ] **Step 1: Create the branch**
 
@@ -949,7 +949,9 @@ model:
   max_tokens: 1024
   budget: { per_task_tokens: 50000 }
 transports:
-  - { kind: a2a, port: 8080 }
+  # host is required: the a2a transport defaults to 127.0.0.1 (and port 9200),
+  # which kubelet probes and the Service cannot reach inside a pod.
+  - { kind: a2a, host: 0.0.0.0, port: 8080 }
 tools: { provider: none, allow: [] }
 memory: { personal: techne, home: /techne }
 checkpoints: sqlite
