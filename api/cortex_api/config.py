@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class ModelChoice(BaseModel):
@@ -35,19 +35,42 @@ class Config(BaseModel):
     workdir: Path = Path.home() / ".cortex"
     db_url: str = "sqlite:///cortex.db"
 
+    @field_validator("workdir", mode="before")
+    @classmethod
+    def expand_workdir(cls, v):
+        if v is not None:
+            return Path(v).expanduser()
+        return v
+
+    @field_validator("skills_repo_path", mode="before")
+    @classmethod
+    def expand_skills_repo_path(cls, v):
+        if v is not None:
+            return Path(v).expanduser()
+        return v
+
+    @field_validator("personas_dir", mode="before")
+    @classmethod
+    def expand_personas_dir(cls, v):
+        if v is not None:
+            return Path(v).expanduser()
+        return v
+
     @classmethod
     def load(cls, path: Path | None = None) -> Config:
         """Load config from YAML, falling back to pure defaults.
 
         Resolution order for `path` when not given explicitly:
-        1. `CORTEX_CONFIG` environment variable
-        2. `config.local.yaml` beside the current working directory
+        1. `CORTEX_CONFIG` environment variable (must exist)
+        2. `config.local.yaml` beside the current working directory (silent if absent)
         3. Pure defaults (no file touched) if neither exists.
         """
         if path is None:
             env_path = os.environ.get("CORTEX_CONFIG")
             if env_path:
                 path = Path(env_path)
+                if not path.exists():
+                    raise FileNotFoundError(f"CORTEX_CONFIG points to missing file: {path}")
             else:
                 candidate = Path.cwd() / "config.local.yaml"
                 if candidate.exists():
