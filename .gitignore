@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Node (cortex-ui)
+node_modules/
+dist/
+
+# Local state / ledgers
+*.db
+*.sqlite
+*.sqlite3
+/.superpowers/
+
+# Env-specific runbook values
+*.local.md
+*.local.yaml
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
