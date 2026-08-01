@@ -25,3 +25,8 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+
+# cortex-api
+api/config.local.yaml
+api/*.db
+api/venv/

@@ -1,0 +1,20 @@
+# Copy to config.local.yaml (gitignored) and fill in real values, or point
+# CORTEX_CONFIG at a file with this shape. Any field omitted falls back to
+# the default baked into cortex_api.config.Config.
+
+github_org: example-org
+runtime_image: registry.example/agents/daedalus-runtime:latest
+gojira_url: http://127.0.0.1:8080
+gojira_token: null
+gojira_cluster: example-cluster
+gcp_project: example-project
+vertex_project: example-model-project
+vertex_location: us-east5
+model_group: models@example.com
+models:
+  - id: vertex_ai/claude-sonnet-4-5
+    label: Claude Sonnet 4.5
+skills_repo_path: null
+personas_dir: null
+workdir: ~/.cortex
+db_url: sqlite:///cortex.db
