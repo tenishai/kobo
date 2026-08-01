@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, sessionmaker
 
+from cortex_api.catalog import NAME_RE, list_personas, list_skills
 from cortex_api.config import Config
 from cortex_api.db import init_db, make_engine, make_session_factory
+from cortex_api.models import Agent
 
 
 def get_session(request: Request) -> Iterator[Session]:
@@ -52,6 +54,35 @@ def create_app(
             "models": [{"id": m.id, "label": m.label} for m in cfg.models],
             "default": cfg.models[0].id,
         }
+
+    @app.get("/api/catalog/personas")
+    def catalog_personas() -> dict:
+        cfg: Config = app.state.config
+        personas = list_personas(cfg.personas_dir)
+        return {"personas": [{"id": p.id, "description": p.description} for p in personas]}
+
+    @app.get("/api/catalog/skills")
+    def catalog_skills() -> dict:
+        cfg: Config = app.state.config
+        skills = list_skills(cfg.skills_repo_path)
+        return {
+            "skills": [
+                {"id": s.id, "description": s.description, "sha": s.sha} for s in skills
+            ]
+        }
+
+    @app.get("/api/availability")
+    def availability(
+        name: str, session: Session = Depends(get_session)  # noqa: B008
+    ) -> dict:
+        if not NAME_RE.match(name):
+            return {"available": False, "reason": "invalid name"}
+
+        existing = session.query(Agent).filter_by(name=name).first()
+        if existing is not None:
+            return {"available": False, "reason": "name taken"}
+
+        return {"available": True, "reason": None}
 
     return app
 
