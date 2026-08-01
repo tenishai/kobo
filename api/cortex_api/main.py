@@ -75,7 +75,7 @@ def create_app(
     def availability(
         name: str, session: Session = Depends(get_session)  # noqa: B008
     ) -> dict:
-        if not NAME_RE.match(name):
+        if not NAME_RE.fullmatch(name):
             return {"available": False, "reason": "invalid name"}
 
         existing = session.query(Agent).filter_by(name=name).first()

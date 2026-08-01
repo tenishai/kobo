@@ -30,3 +30,6 @@ dist/
 api/config.local.yaml
 api/*.db
 api/venv/
+
+# Local harness config (never commit)
+.claude/

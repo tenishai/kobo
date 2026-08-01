@@ -77,6 +77,20 @@ def test_list_personas_missing_dir_returns_empty(tmp_path):
     assert list_personas(missing) == []
 
 
+def test_list_personas_skips_zero_byte_file(tmp_path, caplog):
+    persona_file = tmp_path / "empty.md"
+    persona_file.write_text("")
+    valid_file = tmp_path / "valid.md"
+    valid_file.write_text("<!-- description: Valid one. -->\nYou are {name}.\n")
+
+    with caplog.at_level("WARNING"):
+        personas = list_personas(tmp_path)
+
+    assert len(personas) == 1
+    assert personas[0].id == "valid"
+    assert any("empty" in message for message in caplog.messages)
+
+
 # --- skills ------------------------------------------------------------------
 
 
@@ -132,6 +146,38 @@ def test_list_skills_skips_malformed_entries(tmp_path, caplog):
     assert any("broken" in message for message in caplog.messages)
 
 
+@pytest.mark.parametrize(
+    "skill_name,frontmatter_content,description",
+    [
+        ("unclosed-fence", "---\nname: unclosed\ndescription: Incomplete\n", "unclosed fence"),
+        (
+            "invalid-yaml",
+            "---\nname: invalid\n: : :\n---\nBody text\n",
+            "invalid YAML",
+        ),
+        ("non-dict", "---\n- item1\n- item2\n---\nBody text\n", "non-dict YAML"),
+        ("missing-name", "---\ndescription: Missing name\n---\nBody text\n", "missing name"),
+    ],
+)
+def test_list_skills_skips_malformed_entries_parametrized(tmp_path, caplog, skill_name, frontmatter_content, description):
+    repo = tmp_path / "skills-repo"
+    good_dir = repo / "skills" / "good"
+    good_dir.mkdir(parents=True)
+    (good_dir / "SKILL.md").write_text(
+        "---\nname: good\ndescription: Good skill.\n---\nBody.\n"
+    )
+    bad_dir = repo / "skills" / skill_name
+    bad_dir.mkdir(parents=True)
+    (bad_dir / "SKILL.md").write_text(frontmatter_content)
+    _init_git_repo(repo)
+
+    with caplog.at_level("WARNING"):
+        skills = list_skills(repo)
+
+    assert [s.id for s in skills] == ["good"], f"Failed for {description}"
+    assert any(skill_name in message for message in caplog.messages)
+
+
 # --- NAME_RE -----------------------------------------------------------------
 
 
@@ -152,7 +198,7 @@ def test_list_skills_skips_malformed_entries(tmp_path, caplog):
     ],
 )
 def test_name_re(name, expected):
-    assert bool(NAME_RE.match(name)) == expected
+    assert bool(NAME_RE.fullmatch(name)) == expected
 
 
 # --- availability route -------------------------------------------------------
@@ -188,6 +234,13 @@ def test_availability_name_taken(client, session_factory):
 
     assert response.status_code == 200
     assert response.json() == {"available": False, "reason": "name taken"}
+
+
+def test_availability_invalid_name_with_trailing_newline(client):
+    response = client.get("/api/availability", params={"name": "ab\n"})
+
+    assert response.status_code == 200
+    assert response.json() == {"available": False, "reason": "invalid name"}
 
 
 # --- catalog routes ------------------------------------------------------------
