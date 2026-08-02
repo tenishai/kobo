@@ -1,0 +1,119 @@
+import { describe, expect, it } from "vitest";
+import {
+  TERMINAL,
+  anyAgentActive,
+  detailRefetchInterval,
+  isTerminal,
+  listRefetchInterval,
+  stepTone,
+} from "./status";
+
+describe("TERMINAL / isTerminal", () => {
+  it("TERMINAL is exactly ready and failed", () => {
+    expect(TERMINAL).toEqual(["ready", "failed"]);
+  });
+
+  it("treats ready and failed as terminal", () => {
+    expect(isTerminal("ready")).toBe(true);
+    expect(isTerminal("failed")).toBe(true);
+  });
+
+  it("treats pending and provisioning as non-terminal", () => {
+    expect(isTerminal("pending")).toBe(false);
+    expect(isTerminal("provisioning")).toBe(false);
+  });
+});
+
+describe("anyAgentActive", () => {
+  it("is false for an empty list", () => {
+    expect(anyAgentActive([])).toBe(false);
+  });
+
+  it("is false when every agent is terminal", () => {
+    expect(anyAgentActive([{ status: "ready" }, { status: "failed" }])).toBe(
+      false,
+    );
+  });
+
+  it("is true when any agent is non-terminal", () => {
+    expect(
+      anyAgentActive([{ status: "ready" }, { status: "provisioning" }]),
+    ).toBe(true);
+  });
+});
+
+describe("listRefetchInterval", () => {
+  it("is false for undefined (no data fetched yet)", () => {
+    expect(listRefetchInterval(undefined)).toBe(false);
+  });
+
+  it("is false for an empty list", () => {
+    expect(listRefetchInterval([])).toBe(false);
+  });
+
+  it("is 3500 when one agent is provisioning", () => {
+    expect(
+      listRefetchInterval([{ status: "ready" }, { status: "provisioning" }]),
+    ).toBe(3500);
+  });
+
+  it("is 3500 when an agent is pending", () => {
+    expect(listRefetchInterval([{ status: "pending" }])).toBe(3500);
+  });
+
+  it("is false once every agent is ready", () => {
+    expect(
+      listRefetchInterval([{ status: "ready" }, { status: "ready" }]),
+    ).toBe(false);
+  });
+
+  it("is false for a mix of only terminal statuses (ready + failed)", () => {
+    expect(
+      listRefetchInterval([{ status: "ready" }, { status: "failed" }]),
+    ).toBe(false);
+  });
+});
+
+describe("detailRefetchInterval", () => {
+  it("is false for undefined (no data fetched yet)", () => {
+    expect(detailRefetchInterval(undefined)).toBe(false);
+  });
+
+  it("is 3500 while the agent is pending", () => {
+    expect(detailRefetchInterval({ status: "pending" })).toBe(3500);
+  });
+
+  it("is 3500 while the agent is provisioning", () => {
+    expect(detailRefetchInterval({ status: "provisioning" })).toBe(3500);
+  });
+
+  it("is false once the agent is ready", () => {
+    expect(detailRefetchInterval({ status: "ready" })).toBe(false);
+  });
+
+  it("is false once the agent has failed", () => {
+    expect(detailRefetchInterval({ status: "failed" })).toBe(false);
+  });
+});
+
+describe("stepTone", () => {
+  it("maps done -> ok", () => {
+    expect(stepTone("done")).toBe("ok");
+  });
+
+  it("maps skipped -> ok (renders like done: not an error, not still working)", () => {
+    expect(stepTone("skipped")).toBe("ok");
+  });
+
+  it("maps failed -> fail", () => {
+    expect(stepTone("failed")).toBe("fail");
+  });
+
+  it("maps running -> active", () => {
+    expect(stepTone("running")).toBe("active");
+  });
+
+  it("maps pending -> active (queued work still reads as in-progress)", () => {
+    expect(stepTone("pending")).toBe("active");
+  });
+});
