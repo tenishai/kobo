@@ -167,7 +167,7 @@ class OnboardStep:
 
         max_polls = POLL_TIMEOUT_S // POLL_INTERVAL_S
         status_payload: dict = {}
-        for _ in range(max_polls):
+        for poll_count in range(max_polls):
             status_payload = gojira.app_status(app_id)
             status = status_payload.get("status")
 
@@ -185,7 +185,9 @@ class OnboardStep:
                     f"gojira provisioning failed for app {app_id}: failed steps: {names}"
                 )
 
-            _sleep(POLL_INTERVAL_S)
+            # Only sleep if another poll will follow
+            if poll_count < max_polls - 1:
+                _sleep(POLL_INTERVAL_S)
 
         raise RuntimeError(
             f"timed out waiting for gojira app {app_id} to become active after "

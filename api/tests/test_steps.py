@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from cortex_api.clients import Clients
+from cortex_api.composer import BundleSpec
 from cortex_api.config import Config
 from cortex_api.models import Agent
 from cortex_api.provisioner import Ctx
@@ -37,7 +38,13 @@ def _no_real_sleep(monkeypatch):
     """Every OnboardStep test runs a poll loop; never let it sleep for real."""
     import cortex_api.steps as steps_module
 
-    monkeypatch.setattr(steps_module, "_sleep", lambda seconds: None)
+    sleep_calls = []
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    fake_sleep.calls = sleep_calls
+    monkeypatch.setattr(steps_module, "_sleep", fake_sleep)
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -155,6 +162,18 @@ def test_repo_step_unknown_skill_id_raises_clear_message(session_factory, config
     assert github.created_from_dir == []
 
 
+def test_repo_step_unknown_persona_id_raises_clear_message(session_factory, config):
+    session, agent = _make_agent(session_factory, persona="ghost-persona")
+    github = FakeGitHub()
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    with pytest.raises(RuntimeError, match="ghost-persona"):
+        RepoStep().run(ctx)
+
+    # got as far as the repo_exists check, but never created anything
+    assert github.created_from_dir == []
+
+
 def test_repo_step_existing_repo_not_recorded_raises(session_factory, config):
     expected_repo = f"{config.github_org}/agent-{AGENT_NAME}"
     session, agent = _make_agent(session_factory, repo_full_name=None)
@@ -182,22 +201,60 @@ def test_repo_step_resume_when_row_already_matches_skips_creation(session_factor
     assert not (ctx.workdir / "repo").exists()
 
 
-def test_repo_step_rmtrees_stale_compose_dir_before_recomposing(session_factory, config):
+def test_repo_step_rmtrees_stale_compose_dir_before_recomposing(session_factory, tmp_path):
     """Retry-safety: a prior partial attempt may have left a compose dir with a
     skills subtree behind; compose() raises FileExistsError on top of that, so
     RepoStep must clear it first."""
-    session, agent = _make_agent(session_factory)
+    skills_repo = _make_skills_repo(tmp_path, skill_id="echo")
+    config = Config(workdir=tmp_path / "work", skills_repo_path=skills_repo)
+    session, agent = _make_agent(session_factory, skills=[{"name": "echo", "sha": "abc123"}])
     github = FakeGitHub()
     ctx = _make_ctx(session, agent, config, _clients(github=github))
 
-    stale_dir = ctx.workdir / "repo" / "bundle" / "skills" / "leftover"
+    # Pre-seed a stale skills subtree that compose() would refuse to overwrite
+    stale_dir = ctx.workdir / "repo" / "bundle" / "skills" / "echo"
     stale_dir.mkdir(parents=True)
-    (stale_dir / "SKILL.md").write_text("stale\n")
+    (stale_dir / "stale_file.txt").write_text("leftover from failed attempt\n")
 
-    RepoStep().run(ctx)  # must not raise FileExistsError
+    # RepoStep should succeed despite the stale tree (rmtree clears it first)
+    RepoStep().run(ctx)
 
-    assert not (ctx.workdir / "repo" / "bundle" / "skills" / "leftover").exists()
+    # Verify the stale file is gone and the fresh compose succeeded
+    assert not (ctx.workdir / "repo" / "bundle" / "skills" / "echo" / "stale_file.txt").exists()
+    assert (ctx.workdir / "repo" / "bundle" / "skills" / "echo" / "SKILL.md").is_file()
     assert (ctx.workdir / "repo" / "bundle" / "agent.yaml").is_file()
+
+
+def test_repo_step_compose_raises_without_rmtree_on_stale_skills(tmp_path):
+    """Sanity guard: verify that compose() would raise FileExistsError if we
+    didn't rmtree the stale skills subtree first."""
+    from cortex_api.composer import compose
+
+    skills_repo = _make_skills_repo(tmp_path, skill_id="echo")
+    config = Config(workdir=tmp_path / "work", skills_repo_path=skills_repo)
+
+    # Get the skill info for the spec
+    from cortex_api.catalog import list_skills
+    skills = list_skills(skills_repo)
+
+    spec = BundleSpec(
+        name="test-agent",
+        persona_body="You are {name}.",
+        model_id="vertex_ai/claude-sonnet-4-5",
+        skills=skills,
+        runtime_image="image:latest",
+        vertex_project="proj",
+        vertex_location="us-central1",
+    )
+
+    compose_dir = config.workdir / "repo"
+
+    # First compose succeeds
+    compose(spec, compose_dir)
+
+    # Second compose to the same location should raise FileExistsError (without rmtree)
+    with pytest.raises(FileExistsError):
+        compose(spec, compose_dir)
 
 
 # --- OnboardStep ----------------------------------------------------------------
@@ -314,6 +371,30 @@ def test_onboard_step_times_out_after_max_polls(session_factory, config):
 
     expected_polls = POLL_TIMEOUT_S // POLL_INTERVAL_S
     assert gojira.calls.count("app_status:1") == expected_polls
+
+
+def test_onboard_step_sleep_called_with_correct_interval(session_factory, config, monkeypatch):
+    import cortex_api.steps as steps_module
+
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo)
+    gojira = FakeGojira(activate_after=3)
+    ctx = _make_ctx(session, agent, config, _clients(gojira=gojira))
+
+    # Capture sleep calls
+    sleep_calls = []
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr(steps_module, "_sleep", fake_sleep)
+
+    OnboardStep().run(ctx)
+
+    # Verify _sleep was called with POLL_INTERVAL_S between polls (but not after the final success)
+    assert all(call == POLL_INTERVAL_S for call in sleep_calls)
+    # activate_after=3 means 3 polls until success, so 2 sleeps (between polls 1-2 and 2-3)
+    assert len(sleep_calls) == 2
 
 
 # --- AccessStep -----------------------------------------------------------------
