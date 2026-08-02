@@ -32,13 +32,20 @@ from __future__ import annotations
 
 import shutil
 import time
+from typing import TYPE_CHECKING
 
 import yaml
 
 from cortex_api.catalog import list_personas, list_skills
 from cortex_api.clients import GojiraConflict, gsa_email
 from cortex_api.composer import BundleSpec, compose, validate_agent_yaml
-from cortex_api.provisioner import Ctx
+
+# Type-only: `cortex_api.provisioner` imports this module (for `PIPELINE`), so a
+# runtime import here would be circular. `from __future__ import annotations`
+# (above) already makes every annotation in this file a lazy string, so `Ctx`
+# is only ever needed by type checkers, never at import time.
+if TYPE_CHECKING:
+    from cortex_api.provisioner import Ctx
 
 # Gojira onboarding poll cadence: every 5s, up to 300s total (the brief's numbers,
 # as module constants so both the step and its tests share one source of truth).
@@ -454,3 +461,23 @@ class DeployStep:
         if not kubectl.rollout_ok(namespace=agent.name, deploy=agent.name):
             raise RuntimeError(f"rollout failed for {agent.name}/{agent.name}")
         return f"rollout ok for {agent.name}"
+
+
+# --- HelloStep --------------------------------------------------------------------
+
+
+class HelloStep:
+    """First contact: says hello to the freshly-deployed agent over its a2a
+    endpoint (via `ctx.clients.agent.hello`) and records its reply on the
+    agent row so the UI can show it — the "one-click" pipeline's last step."""
+
+    name = "hello"
+    label = "First contact"
+
+    def run(self, ctx: Ctx) -> str:
+        agent = ctx.agent
+        reply = ctx.clients.agent.hello(
+            namespace=agent.name, service=agent.name, text="hello! how did you get here?"
+        )
+        agent.first_reply = reply
+        return f"agent replied: {reply!r}"

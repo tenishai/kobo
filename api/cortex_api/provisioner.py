@@ -14,8 +14,10 @@ DONE or SKIPPED. That resume story only covers failures raised from inside a
 step's own `run()`; engine-level failures (workdir setup, a session commit, a
 missing agent row) don't get a step boundary to land on, so they're caught at
 the pipeline level instead and the agent is marked FAILED directly.
-Steps themselves arrive in Tasks 6-8 — this module only ships the engine,
-exercised in `tests/test_engine.py` against toy steps.
+Steps themselves arrived in Tasks 6-8 (`cortex_api.steps`); the engine itself
+is exercised in `tests/test_engine.py` against toy steps, while `PIPELINE`
+(the real, assembled step order) and `STEP_LABELS` below are exercised
+end-to-end through the fake platform clients in `tests/test_api_agents.py`.
 """
 
 from __future__ import annotations
@@ -32,6 +34,15 @@ from sqlalchemy.orm import Session, sessionmaker
 from cortex_api.clients import Clients
 from cortex_api.config import Config
 from cortex_api.models import Agent, AgentStatus, AgentStep, StepStatus
+from cortex_api.steps import (
+    AccessStep,
+    BuildStep,
+    DeployStep,
+    HelloStep,
+    OnboardStep,
+    RepoStep,
+    WireStep,
+)
 
 log = logging.getLogger(__name__)
 
@@ -212,3 +223,25 @@ def reset_failed_steps(session: Session, agent_id: int) -> None:
         step_row.started_at = None
         step_row.finished_at = None
     session.commit()
+
+
+# The assembled, one-click pipeline: compose+push a repo, onboard it onto
+# gojira, grant model access, wire the app-authored manifests, wait for the
+# image build and rollout, then say hello. Order is load-bearing — each step
+# depends on state a prior one recorded on the agent (repo_full_name,
+# gojira_app_id, ...).
+PIPELINE: list[Step] = [
+    RepoStep(),
+    OnboardStep(),
+    AccessStep(),
+    WireStep(),
+    BuildStep(),
+    DeployStep(),
+    HelloStep(),
+]
+
+# The UI's checklist vocabulary: step name -> human-readable label, sourced
+# from each step's own `.label` (not the `Step` Protocol, which only requires
+# `name`/`run` — every concrete step above happens to carry one) so this dict
+# can't drift from what each step actually declares of itself.
+STEP_LABELS: dict[str, str] = {step.name: step.label for step in PIPELINE}
