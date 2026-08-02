@@ -88,8 +88,9 @@ seeder converges memory on the next boot without touching what the agent has lea
 
 ## Status
 
-Cortex is in **pre-alpha / P0 foundations**: the daedalus runtime image and gojira's programmatic
-onboarding are being built on sibling feature branches. See the
+Cortex is in **pre-alpha**. The foundations (runtime image, programmatic onboarding) and the
+cortex-api backend are working end to end — one `POST /api/agents` produces a running,
+memory-seeded, PVC-backed agent. The web UI is next. See the
 [design](docs/superpowers/specs/2026-08-01-cortex-agent-assembly-poc-design.md) for architecture
 and decisions, and the [P0 plan](docs/superpowers/plans/2026-08-01-p0-foundations.md) for the
 current work.

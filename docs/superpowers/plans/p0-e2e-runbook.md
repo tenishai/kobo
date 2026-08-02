@@ -59,3 +59,24 @@ configuration and live outside this repo.
   API when IAP auth is enabled and no token configured).
 - daedalus: none beyond the branch content (P1 TODO markers in-code: SIGKILL
   seed-convergence before PVC-backed memory; fsGroup when PVCs land).
+
+## P1a results (2026-08-02)
+
+**PASSED.** `POST /api/agents {"name":"clio","persona":"helpful-generalist"}` against
+cortex-api produced a READY agent (7/7 steps) whose first reply cites its seeded
+assembly-chain knowledge over a Vertex model call. PVC persistence verified: the
+agent's memory volume survived pod deletion and the boot seeder converged
+(`seeded=0 removed=0 unchanged=1`) instead of re-seeding.
+
+One live incident, matching the final review's watchlist exactly: two CI runs
+(the wire commit and the regeneration PR merge) applied within ~1s of each other
+and the stale tree's `kubectl apply` landed last, leaving the live Deployment
+without the model env — first contact failed 403 against the wrong project.
+Remedy: re-ran the correct revision's CI, then one `POST /api/agents/clio/retry`
+re-executed only the failed First-contact step (the ledger's resume semantics
+working live). **P1b backlog (high):** serialize the generated CI per repo
+(concurrency group) or have DeployStep verify the live spec matches the wired
+contract before passing.
+
+Still unverified live: the group-add already-a-member stderr wording (the retry
+resumed after the access step; exercise a full re-run someday).
