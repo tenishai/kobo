@@ -2,11 +2,11 @@
   // The app shell: one QueryClient for the whole tree, the header
   // (wordmark + Create button), the hash-route switch, and the toast
   // stack. Everything that actually fetches lives further down (Dashboard,
-  // and — from Task 6 — the agent detail page); this file just wires the
-  // plumbing around them.
+  // AgentDetail); this file just wires the plumbing around them.
   import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
   import CreateModal from "./components/CreateModal.svelte";
   import Toasts from "./components/Toasts.svelte";
+  import AgentDetail from "./pages/AgentDetail.svelte";
   import Dashboard from "./pages/Dashboard.svelte";
   import { catalogsQuery } from "./lib/queries";
   import { route } from "./lib/router.svelte";
@@ -57,8 +57,12 @@
       {#if route.page === "dashboard"}
         <Dashboard />
       {:else}
-        <!-- Task 6 replaces this with the real agent detail page. -->
-        <p class="muted">Detail page for "{route.name}" is on its way.</p>
+        <!-- Keyed by name: a direct hash edit from one agent's detail page
+             to another's (no trip back through the dashboard in between)
+             remounts AgentDetail instead of reusing a stale query. -->
+        {#key route.name}
+          <AgentDetail />
+        {/key}
       {/if}
     </main>
   </div>
@@ -117,9 +121,5 @@
 
   .shell__main {
     flex: 1;
-  }
-
-  .muted {
-    color: var(--muted);
   }
 </style>
