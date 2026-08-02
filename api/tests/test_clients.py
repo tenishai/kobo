@@ -124,25 +124,53 @@ def test_commit_push_commits_and_pushes_when_dirty(tmp_path):
     assert "update" in runner.calls[2]
 
 
-def test_latest_run_argv_and_parsing():
-    body = json.dumps([{"databaseId": 42, "status": "completed", "conclusion": "success"}])
+def test_head_sha_argv_and_parsing():
+    # No trailing newline here: the real CommandRunner already strips stdout
+    # before GhCLI ever sees it (RecordingRunner intentionally doesn't, to
+    # keep this test focused on argv + the pass-through parse).
+    runner = RecordingRunner(results=[(0, "abc123def456", "")])
+    client = GhCLI(runner=runner)
+    result = client.head_sha("acme/agent-clio")
+    assert runner.calls == [
+        ["gh", "api", "repos/acme/agent-clio/commits", "--jq", ".[0].sha"]
+    ]
+    assert result == "abc123def456"
+
+
+def test_runs_for_commit_argv_and_parsing():
+    body = json.dumps(
+        [
+            {"databaseId": 42, "status": "completed", "conclusion": "success"},
+            {"databaseId": 41, "status": "completed", "conclusion": "failure"},
+        ]
+    )
     runner = RecordingRunner(results=[(0, body, "")])
     client = GhCLI(runner=runner)
-    result = client.latest_run("acme/agent-clio")
+    result = client.runs_for_commit("acme/agent-clio", "deadbeef")
     assert runner.calls == [
         [
-            "gh", "run", "list", "--repo", "acme/agent-clio", "--limit", "1",
+            "gh", "run", "list", "--repo", "acme/agent-clio", "--commit", "deadbeef",
             "--json", "databaseId,status,conclusion",
         ]
     ]
-    assert result == {"id": 42, "status": "completed", "conclusion": "success"}
+    assert result == [
+        {"id": 42, "status": "completed", "conclusion": "success"},
+        {"id": 41, "status": "completed", "conclusion": "failure"},
+    ]
 
 
-def test_latest_run_empty_list():
+def test_runs_for_commit_empty_list():
     runner = RecordingRunner(results=[(0, "[]", "")])
     client = GhCLI(runner=runner)
-    result = client.latest_run("acme/agent-clio")
-    assert result == {"id": None, "status": "not_found", "conclusion": None}
+    result = client.runs_for_commit("acme/agent-clio", "deadbeef")
+    assert result == []
+
+
+def test_rerun_argv():
+    runner = RecordingRunner()
+    client = GhCLI(runner=runner)
+    client.rerun("acme/agent-clio", 99)
+    assert runner.calls == [["gh", "run", "rerun", "99", "--repo", "acme/agent-clio"]]
 
 
 # --- Cloud (GcloudClient) -----------------------------------------------------
@@ -557,8 +585,10 @@ def test_fake_github_satisfies_protocol(tmp_path):
     assert fake.repo_exists("acme/agent-clio") is True
     fake.clone("acme/agent-clio", tmp_path / "clone")
     assert fake.commit_push(tmp_path, "msg") is True
-    run = fake.latest_run("acme/agent-clio")
-    assert {"id", "status", "conclusion"} <= set(run)
+    sha = fake.head_sha("acme/agent-clio")
+    runs = fake.runs_for_commit("acme/agent-clio", sha)
+    assert runs and {"id", "status", "conclusion"} <= set(runs[0])
+    fake.rerun("acme/agent-clio", runs[0]["id"])
 
 
 def test_fake_gojira_satisfies_protocol():
@@ -603,16 +633,43 @@ def test_fake_gojira_conflict_on_create():
         fake.create_app(name="clio", repo_full_name="acme/agent-clio", cluster="dev", namespace="clio")
 
 
-def test_fake_github_latest_run_sequence_can_end_in_failure():
+def test_fake_github_runs_for_commit_sequence_can_end_in_failure():
     fake = FakeGitHub(
-        run_sequence=[
-            {"id": 1, "status": "in_progress", "conclusion": None},
-            {"id": 1, "status": "completed", "conclusion": "failure"},
-        ]
+        head_sha="deadbeef",
+        runs_by_sha={
+            "deadbeef": [
+                [{"id": 1, "status": "in_progress", "conclusion": None}],
+                [{"id": 1, "status": "completed", "conclusion": "failure"}],
+            ]
+        },
     )
-    assert fake.latest_run("acme/agent-clio")["status"] == "in_progress"
-    assert fake.latest_run("acme/agent-clio")["conclusion"] == "failure"
-    assert fake.latest_run("acme/agent-clio")["conclusion"] == "failure"  # holds at last
+    assert fake.runs_for_commit("acme/agent-clio", "deadbeef")[0]["status"] == "in_progress"
+    assert fake.runs_for_commit("acme/agent-clio", "deadbeef")[0]["conclusion"] == "failure"
+    # holds at last
+    assert fake.runs_for_commit("acme/agent-clio", "deadbeef")[0]["conclusion"] == "failure"
+
+
+def test_fake_github_runs_for_commit_empty_for_unregistered_sha():
+    """A sha the fake wasn't configured for (e.g. an older commit no test
+    cares about) comes back empty rather than raising — the same
+    "registration lag" shape as a sha whose CI hasn't registered yet."""
+    fake = FakeGitHub(head_sha="deadbeef")
+    assert fake.runs_for_commit("acme/agent-clio", "some-other-sha") == []
+
+
+def test_fake_github_rerun_swaps_failed_run_to_configurable_followup():
+    fake = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={
+            "deadbeef": [[{"id": 7, "status": "completed", "conclusion": "failure"}]]
+        },
+        rerun_result={"status": "completed", "conclusion": "success"},
+    )
+    fake.runs_for_commit("acme/agent-clio", "deadbeef")  # learns run 7 -> sha deadbeef
+    fake.rerun("acme/agent-clio", 7)
+    assert fake.rerun_calls == [("acme/agent-clio", 7)]
+    followup = fake.runs_for_commit("acme/agent-clio", "deadbeef")
+    assert followup == [{"id": 7, "status": "completed", "conclusion": "success"}]
 
 
 def test_fake_cloud_satisfies_protocol():

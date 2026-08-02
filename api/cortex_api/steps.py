@@ -30,6 +30,7 @@ failed), and BuildStep/DeployStep would then run against an unverified app.
 
 from __future__ import annotations
 
+import logging
 import shutil
 import time
 from typing import TYPE_CHECKING
@@ -39,6 +40,8 @@ import yaml
 from cortex_api.catalog import list_personas, list_skills
 from cortex_api.clients import GojiraConflict, gsa_email
 from cortex_api.composer import BundleSpec, compose, validate_agent_yaml
+
+log = logging.getLogger(__name__)
 
 # Type-only: `cortex_api.provisioner` imports this module (for `PIPELINE`), so a
 # runtime import here would be circular. `from __future__ import annotations`
@@ -412,8 +415,29 @@ class WireStep:
 
 
 class BuildStep:
-    """Polls the pushed repo's CI run until it completes; raises unless it
-    succeeded."""
+    """Polls the pushed repo's CI run for the *expected* commit until it
+    completes, self-healing one first-run auth-propagation failure along the
+    way; raises unless it eventually succeeds.
+
+    Replaces an earlier version that watched `github.latest_run` (the most
+    recent run anywhere in the repo) and could latch onto a stale run: a
+    regeneration PR's own CI completing right after this step's real push
+    could be mistaken for this push's result. Fixed by resolving the pushed
+    commit's sha once, up front, and polling `runs_for_commit` against that
+    exact sha for the rest of this invocation — a run for any other commit
+    can never be mistaken for this one, structurally, no matter what else
+    is running in the repo concurrently.
+
+    The other field-observed defect this fixes: cortex's first two live
+    builds both failed on WIF auth propagation (the freshly-created repo's
+    OIDC trust wasn't yet visible to the very first workflow run), and the
+    product's Retry button just re-polled that same failed run forever —
+    an operator had to `gh run rerun` by hand to unstick it. Now a
+    completed failure triggers exactly one automatic rerun per BuildStep
+    invocation (so Retry is self-sufficient); a second failure against the
+    same commit in the same invocation is treated as a real failure and
+    raises.
+    """
 
     name = "build"
     label = "Image build"
@@ -422,26 +446,59 @@ class BuildStep:
         agent = ctx.agent
         github = ctx.clients.github
 
-        max_polls = BUILD_POLL_TIMEOUT_S // BUILD_POLL_INTERVAL_S
-        run_payload: dict = {}
-        for poll_count in range(max_polls):
-            run_payload = github.latest_run(agent.repo_full_name)
+        # Resolved once, at entry — never re-resolved mid-poll, so a
+        # regeneration PR (or any other push) landing on the repo partway
+        # through this step's polling can't shift which commit is being
+        # watched.
+        sha = github.head_sha(agent.repo_full_name)
+        rerun_attempted = False
 
-            if run_payload.get("status") == "completed":
-                run_id = run_payload.get("id")
-                conclusion = run_payload.get("conclusion")
-                if conclusion == "success":
-                    return f"build run {run_id} succeeded"
-                raise RuntimeError(
-                    f"build run {run_id} completed with conclusion {conclusion!r}"
-                )
+        max_polls = BUILD_POLL_TIMEOUT_S // BUILD_POLL_INTERVAL_S
+        runs: list[dict] = []
+        for poll_count in range(max_polls):
+            runs = github.runs_for_commit(agent.repo_full_name, sha)
+
+            # Empty means CI hasn't registered a run against this commit
+            # yet (registration lag right after the push) — keep polling,
+            # this is not a failure.
+            if runs:
+                # Newest-first; a commit normally has exactly one CI run,
+                # but if more than one somehow exists (e.g. a manual
+                # workflow_dispatch alongside the push-triggered run) the
+                # most recent is the relevant one.
+                run = runs[0]
+                if run.get("status") == "completed":
+                    run_id = run.get("id")
+                    conclusion = run.get("conclusion")
+                    if conclusion == "success":
+                        healed = " (after automatic rerun)" if rerun_attempted else ""
+                        return (
+                            f"build run {run_id} succeeded for commit {sha}{healed}"
+                        )
+                    if not rerun_attempted:
+                        rerun_attempted = True
+                        log.info(
+                            "build run %s for commit %s completed with conclusion "
+                            "%r; auto-rerunning once",
+                            run_id, sha, conclusion,
+                        )
+                        github.rerun(agent.repo_full_name, run_id)
+                        # Keep polling the same sha/run — gh reruns reuse
+                        # the run's id rather than minting a new one.
+                    else:
+                        raise RuntimeError(
+                            f"build run {run_id} completed with conclusion "
+                            f"{conclusion!r} for commit {sha} (after an "
+                            "automatic rerun already failed once this "
+                            "invocation)"
+                        )
 
             if poll_count < max_polls - 1:
                 _sleep(BUILD_POLL_INTERVAL_S)
 
         raise RuntimeError(
             f"timed out waiting for build run to complete after "
-            f"{BUILD_POLL_TIMEOUT_S}s (last status: {run_payload.get('status')!r})"
+            f"{BUILD_POLL_TIMEOUT_S}s for commit {sha} (last runs: {runs!r})"
         )
 
 

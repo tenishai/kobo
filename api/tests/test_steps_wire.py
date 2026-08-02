@@ -327,36 +327,128 @@ def test_build_step_happy_path_returns_success_detail_with_run_id(session_factor
     repo = _repo_full_name(config)
     session, agent = _make_agent(session_factory, repo_full_name=repo)
     github = FakeGitHub(
-        run_sequence=[
-            {"id": 42, "status": "in_progress", "conclusion": None},
-            {"id": 42, "status": "completed", "conclusion": "success"},
-        ]
+        head_sha="deadbeef",
+        runs_by_sha={
+            "deadbeef": [
+                [{"id": 42, "status": "in_progress", "conclusion": None}],
+                [{"id": 42, "status": "completed", "conclusion": "success"}],
+            ]
+        },
     )
     ctx = _make_ctx(session, agent, config, _clients(github=github))
 
     detail = BuildStep().run(ctx)
 
     assert "42" in detail
-    assert github.calls.count(f"latest_run:{repo}") == 2
+    assert "deadbeef" in detail
+    assert "rerun" not in detail.lower()
+    assert github.calls.count(f"runs_for_commit:{repo}:deadbeef") == 2
+    # Resolved exactly once at entry, not re-resolved on every poll.
+    assert github.calls.count(f"head_sha:{repo}") == 1
 
 
-def test_build_step_failure_conclusion_raises_with_run_id_in_message(session_factory, config):
+def test_build_step_resolves_sha_once_and_polls_that_exact_sha(session_factory, config):
+    """Structural stale-run immunity: BuildStep only ever asks
+    `runs_for_commit` about the sha it resolved at entry — a completed,
+    successful run sitting under some *other* commit (e.g. a regeneration
+    PR's own CI, or a prior push) is never even queried, let alone mistaken
+    for this push's result."""
     repo = _repo_full_name(config)
     session, agent = _make_agent(session_factory, repo_full_name=repo)
     github = FakeGitHub(
-        run_sequence=[{"id": 99, "status": "completed", "conclusion": "failure"}]
+        head_sha="new-sha",
+        runs_by_sha={
+            "stale-sha": [[{"id": 1, "status": "completed", "conclusion": "success"}]],
+            "new-sha": [
+                [],  # registration lag: nothing for the new commit yet
+                [{"id": 7, "status": "completed", "conclusion": "success"}],
+            ],
+        },
     )
     ctx = _make_ctx(session, agent, config, _clients(github=github))
 
-    with pytest.raises(RuntimeError, match="99"):
+    detail = BuildStep().run(ctx)
+
+    assert "7" in detail
+    # The stale-sha run is never even queried, let alone reported.
+    assert github.calls.count(f"runs_for_commit:{repo}:stale-sha") == 0
+    assert github.calls.count(f"runs_for_commit:{repo}:new-sha") == 2
+
+
+def test_build_step_empty_runs_keeps_polling_registration_lag(session_factory, config):
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo)
+    github = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={
+            "deadbeef": [
+                [],
+                [],
+                [{"id": 5, "status": "completed", "conclusion": "success"}],
+            ]
+        },
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    detail = BuildStep().run(ctx)
+
+    assert "5" in detail
+    assert github.calls.count(f"runs_for_commit:{repo}:deadbeef") == 3
+
+
+def test_build_step_failure_triggers_one_automatic_rerun_and_self_heals(session_factory, config):
+    """The field-observed WIF-propagation defect: a completed failure on the
+    first CI run against this commit is retried automatically, once, and a
+    subsequent success is reported as a self-heal rather than raising —
+    Retry no longer needs an operator to `gh run rerun` by hand."""
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo)
+    github = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={
+            "deadbeef": [[{"id": 42, "status": "completed", "conclusion": "failure"}]]
+        },
+        rerun_result={"status": "completed", "conclusion": "success"},
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    detail = BuildStep().run(ctx)
+
+    assert "42" in detail
+    assert "rerun" in detail.lower()
+    assert github.rerun_calls == [(repo, 42)]
+
+
+def test_build_step_second_failure_after_rerun_raises_with_run_id(session_factory, config):
+    """A second completed failure against the same commit, after the one
+    automatic rerun, is a real failure — surfaced by raising rather than
+    rerunning indefinitely."""
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo)
+    github = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={
+            "deadbeef": [[{"id": 42, "status": "completed", "conclusion": "failure"}]]
+        },
+        rerun_result={"status": "completed", "conclusion": "failure"},
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    with pytest.raises(RuntimeError, match="42"):
         BuildStep().run(ctx)
+
+    # Exactly one rerun attempted this invocation — not one per poll.
+    assert github.rerun_calls == [(repo, 42)]
 
 
 def test_build_step_times_out_after_max_polls(session_factory, config):
     repo = _repo_full_name(config)
     session, agent = _make_agent(session_factory, repo_full_name=repo)
     github = FakeGitHub(
-        run_sequence=[{"id": 1, "status": "in_progress", "conclusion": None}]
+        head_sha="deadbeef",
+        runs_by_sha={
+            "deadbeef": [[{"id": 1, "status": "in_progress", "conclusion": None}]]
+        },
     )
     ctx = _make_ctx(session, agent, config, _clients(github=github))
 
@@ -364,7 +456,7 @@ def test_build_step_times_out_after_max_polls(session_factory, config):
         BuildStep().run(ctx)
 
     expected_polls = BUILD_POLL_TIMEOUT_S // BUILD_POLL_INTERVAL_S
-    assert github.calls.count(f"latest_run:{repo}") == expected_polls
+    assert github.calls.count(f"runs_for_commit:{repo}:deadbeef") == expected_polls
 
 
 def test_build_step_sleeps_at_the_configured_interval(session_factory, config, monkeypatch):
@@ -373,11 +465,14 @@ def test_build_step_sleeps_at_the_configured_interval(session_factory, config, m
     repo = _repo_full_name(config)
     session, agent = _make_agent(session_factory, repo_full_name=repo)
     github = FakeGitHub(
-        run_sequence=[
-            {"id": 1, "status": "in_progress", "conclusion": None},
-            {"id": 1, "status": "in_progress", "conclusion": None},
-            {"id": 1, "status": "completed", "conclusion": "success"},
-        ]
+        head_sha="deadbeef",
+        runs_by_sha={
+            "deadbeef": [
+                [{"id": 1, "status": "in_progress", "conclusion": None}],
+                [{"id": 1, "status": "in_progress", "conclusion": None}],
+                [{"id": 1, "status": "completed", "conclusion": "success"}],
+            ]
+        },
     )
     ctx = _make_ctx(session, agent, config, _clients(github=github))
 

@@ -97,8 +97,35 @@ class GitHubClient(Protocol):
         """Stage, commit, and push everything under workdir. False if nothing changed."""
         ...
 
-    def latest_run(self, repo: str) -> dict:
-        """The most recent workflow run: {"id": int, "status": str, "conclusion": str | None}."""
+    def head_sha(self, repo: str) -> str:
+        """The current head commit sha of `repo`'s default branch.
+
+        Deliberately `gh api repos/<repo>/commits --jq '.[0].sha'` rather than
+        `gh api repos/<repo>/commits/<branch>`: the latter needs the default
+        branch's *name* first (another round trip, or a hardcoded guess like
+        "main"); GitHub's commits-list endpoint already defaults to the repo's
+        default branch when no ref is given, so its first entry's sha is the
+        exact same value for one shell-out instead of two.
+        """
+        ...
+
+    def runs_for_commit(self, repo: str, sha: str) -> list[dict]:
+        """Workflow runs triggered by commit `sha`, newest first — each a
+        {"id": int, "status": str, "conclusion": str | None} dict.
+
+        Keyed by commit rather than "latest across the whole repo" (the old
+        `latest_run`'s mistake): a run for some other commit — a regeneration
+        PR's own CI, say — can never masquerade as this commit's result.
+        Empty means nothing has registered against this sha *yet*, which
+        callers must treat as "keep polling", not "not found".
+        """
+        ...
+
+    def rerun(self, repo: str, run_id: int) -> None:
+        """Re-run workflow run `run_id` (gh reuses the same id, it doesn't
+        mint a new one) — lets a step self-heal a first-run auth-propagation
+        failure instead of an operator having to `gh run rerun` by hand.
+        """
         ...
 
 
@@ -157,22 +184,30 @@ class GhCLI:
         self._runner.run([self._git, "-C", str(workdir), "push"])
         return True
 
-    def latest_run(self, repo: str) -> dict:
+    def head_sha(self, repo: str) -> str:
+        return self._runner.run(
+            [self._gh, "api", f"repos/{repo}/commits", "--jq", ".[0].sha"]
+        )
+
+    def runs_for_commit(self, repo: str, sha: str) -> list[dict]:
         out = self._runner.run(
             [
-                self._gh, "run", "list", "--repo", repo, "--limit", "1",
+                self._gh, "run", "list", "--repo", repo, "--commit", sha,
                 "--json", "databaseId,status,conclusion",
             ]
         )
         runs = json.loads(out) if out else []
-        if not runs:
-            return {"id": None, "status": "not_found", "conclusion": None}
-        run = runs[0]
-        return {
-            "id": run["databaseId"],
-            "status": run["status"],
-            "conclusion": run.get("conclusion"),
-        }
+        return [
+            {
+                "id": run["databaseId"],
+                "status": run["status"],
+                "conclusion": run.get("conclusion"),
+            }
+            for run in runs
+        ]
+
+    def rerun(self, repo: str, run_id: int) -> None:
+        self._runner.run([self._gh, "run", "rerun", str(run_id), "--repo", repo])
 
 
 # --- Gojira ---------------------------------------------------------------------

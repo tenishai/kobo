@@ -146,36 +146,64 @@ def _app_name_from_repo(repo: str) -> str:
 
 
 class FakeGitHub:
-    """Records repo creation/clones/pushes; latest_run replays a configurable
-    sequence of CI-run dicts, holding at the last entry once exhausted (so a
-    sequence can be made to end in success or in failure). `clone` materializes
-    a realistic generated-scaffolding tree at `dest` (see the module-level
-    templates above); `commit_push` replays a configurable sequence of bool
-    results the same way `latest_run` replays its dict sequence, so a test can
-    make a second call return False (nothing to commit) without any real git
-    diffing.
+    """Records repo creation/clones/pushes. `clone` materializes a realistic
+    generated-scaffolding tree at `dest` (see the module-level templates
+    above); `commit_push` replays a configurable sequence of bool results, so
+    a test can make a second call return False (nothing to commit) without
+    any real git diffing.
+
+    CI-run behavior is keyed by commit sha, mirroring the real
+    `runs_for_commit(repo, sha)` (never a repo-wide "latest"): `runs_by_sha`
+    maps a sha to a *sequence of polls*, each poll itself the list of run
+    dicts `runs_for_commit` would return that time (an empty list models CI
+    registration lag — no run yet for that commit). Each sha's sequence holds
+    at its last entry once exhausted, same replay convention as
+    `commit_push_results`. `head_sha` always answers with the fixed
+    `head_sha` the fake was constructed with — BuildStep is expected to
+    resolve it exactly once per invocation and poll that same value
+    throughout.
+
+    `rerun(repo, run_id)` mirrors gh's real behavior of reusing the run's id
+    rather than minting a new one: it records the call in `rerun_calls` and
+    replaces whichever sha that run_id was last seen under with a fresh
+    one-poll sequence built from `rerun_result` (default a completed
+    success) — so a test can make the *next* poll after a rerun come back
+    healed, or configure `rerun_result` to fail again to exercise the
+    double-failure path.
     """
 
     def __init__(
         self,
         *,
         existing_repos: set[str] | None = None,
-        run_sequence: list[dict] | None = None,
         commit_push_results: list[bool] | None = None,
+        head_sha: str = "deadbeef",
+        runs_by_sha: dict[str, list[list[dict]]] | None = None,
+        rerun_result: dict | None = None,
     ):
         self.repos: set[str] = set(existing_repos) if existing_repos else set()
         self.created_from_dir: list[tuple[str, Path]] = []
         self.cloned: list[tuple[str, Path]] = []
         self.pushes: list[tuple[Path, str]] = []
         self.calls: list[str] = []
-        self._run_sequence = (
-            list(run_sequence)
-            if run_sequence
-            else [{"id": 1, "status": "completed", "conclusion": "success"}]
-        )
-        self._run_index = 0
         self._commit_push_results = list(commit_push_results) if commit_push_results else [True]
         self._commit_push_index = 0
+
+        self._head_sha = head_sha
+        self._runs_by_sha: dict[str, list[list[dict]]] = {
+            sha: [list(poll) for poll in sequence]
+            for sha, sequence in (runs_by_sha or {}).items()
+        }
+        if not self._runs_by_sha:
+            # Default: the fake's own head_sha already has one CI run that's
+            # completed successfully — the plain happy path.
+            self._runs_by_sha[head_sha] = [
+                [{"id": 1, "status": "completed", "conclusion": "success"}]
+            ]
+        self._run_index_by_sha: dict[str, int] = {}
+        self._run_id_to_sha: dict[int, str] = {}
+        self._rerun_result = rerun_result or {"status": "completed", "conclusion": "success"}
+        self.rerun_calls: list[tuple[str, int]] = []
 
     def repo_exists(self, repo: str) -> bool:
         self.calls.append(f"repo_exists:{repo}")
@@ -210,12 +238,28 @@ class FakeGitHub:
             self._commit_push_index += 1
         return result
 
-    def latest_run(self, repo: str) -> dict:
-        self.calls.append(f"latest_run:{repo}")
-        run = self._run_sequence[min(self._run_index, len(self._run_sequence) - 1)]
-        if self._run_index < len(self._run_sequence) - 1:
-            self._run_index += 1
-        return dict(run)
+    def head_sha(self, repo: str) -> str:
+        self.calls.append(f"head_sha:{repo}")
+        return self._head_sha
+
+    def runs_for_commit(self, repo: str, sha: str) -> list[dict]:
+        self.calls.append(f"runs_for_commit:{repo}:{sha}")
+        sequence = self._runs_by_sha.get(sha, [[]])
+        index = self._run_index_by_sha.get(sha, 0)
+        poll_result = sequence[min(index, len(sequence) - 1)]
+        if index < len(sequence) - 1:
+            self._run_index_by_sha[sha] = index + 1
+        for run in poll_result:
+            self._run_id_to_sha[run["id"]] = sha
+        return [dict(run) for run in poll_result]
+
+    def rerun(self, repo: str, run_id: int) -> None:
+        self.calls.append(f"rerun:{repo}:{run_id}")
+        self.rerun_calls.append((repo, run_id))
+        sha = self._run_id_to_sha.get(run_id)
+        if sha is not None:
+            self._runs_by_sha[sha] = [[{"id": run_id, **self._rerun_result}]]
+            self._run_index_by_sha[sha] = 0
 
 
 class FakeGojira:
