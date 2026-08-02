@@ -6,6 +6,9 @@ plus structural checks that the fakes satisfy the Protocols.
 from __future__ import annotations
 
 import json
+import subprocess
+import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -413,6 +416,61 @@ class _FakePopen:
         self.waited = True
 
 
+class _BlockingReader:
+    """stdout stand-in whose readline() blocks forever on an Event the test
+    never sets — simulates a real OS pipe hanging because kubectl never
+    prints (or stops printing) the forwarding line.
+    """
+
+    def __init__(self, event: threading.Event):
+        self._event = event
+
+    def readline(self) -> str:
+        self._event.wait()  # never set by the test -> blocks indefinitely
+        return ""  # pragma: no cover - unreachable in this test
+
+
+class _FakeBlockingPopen:
+    """Stands in for subprocess.Popen when the port-forward never reports a
+    port: stdout hangs, and wait() always times out so hello()'s cleanup
+    falls through to kill(). Every cleanup call is recorded.
+    """
+
+    def __init__(self, event: threading.Event):
+        self.stdout = _BlockingReader(event)
+        self.terminated = False
+        self.killed = False
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        raise subprocess.TimeoutExpired(cmd="kubectl", timeout=timeout)
+
+    def kill(self):
+        self.killed = True
+
+
+def test_agent_hello_times_out_and_cleans_up_when_port_forward_hangs(monkeypatch):
+    event = threading.Event()  # never set -> fake stdout.readline() never returns
+    fake_proc = _FakeBlockingPopen(event)
+    monkeypatch.setattr(
+        "cortex_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
+    )
+
+    client = KubectlAgentClient(port_forward_timeout_s=0.5)
+
+    start = time.monotonic()
+    with pytest.raises(ClientError):
+        client.hello("clio", "clio", "hello?")
+    elapsed = time.monotonic() - start
+
+    # bounded by the configured timeout (plus a little slop), not a hang
+    assert elapsed < 5.0
+    assert fake_proc.terminated is True
+    assert fake_proc.killed is True
+
+
 def test_agent_hello_terminates_port_forward_on_success(monkeypatch):
     fake_proc = _FakePopen(["Forwarding from 127.0.0.1:54321 -> 80\n"])
     monkeypatch.setattr(
@@ -490,6 +548,18 @@ def test_fake_gojira_can_end_in_failed():
     fake = FakeGojira(activate_after=1, end_status="failed")
     app_id = fake.create_app(name="clio", repo_full_name="acme/agent-clio", cluster="dev", namespace="clio")
     assert fake.app_status(app_id)["status"] == "failed"
+
+
+def test_fake_gojira_surfaces_failed_steps_on_failure():
+    steps = [
+        {"name": "create-namespace", "status": "failed", "error": "quota exceeded"},
+        {"name": "bind-workload-identity", "status": "skipped", "error": None},
+    ]
+    fake = FakeGojira(activate_after=1, end_status="failed", failed_steps=steps)
+    app_id = fake.create_app(name="clio", repo_full_name="acme/agent-clio", cluster="dev", namespace="clio")
+    status = fake.app_status(app_id)
+    assert status["status"] == "failed"
+    assert status["steps"] == steps
 
 
 def test_fake_gojira_conflict_on_create():

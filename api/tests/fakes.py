@@ -78,10 +78,12 @@ class FakeGojira:
         activate_after: int = 1,
         end_status: str = "active",
         conflict_repos: set[str] | None = None,
+        failed_steps: list[dict] | None = None,
     ):
         self._activate_after = activate_after
         self._end_status = end_status
         self._conflict_repos = set(conflict_repos) if conflict_repos else set()
+        self._failed_steps = list(failed_steps) if failed_steps else []
         self._apps: dict[int, dict] = {}
         self._next_id = 1
         self.reprovision_calls: list[int] = []
@@ -113,6 +115,8 @@ class FakeGojira:
         app["polls"] += 1
         if app["status"] == "pending" and app["polls"] >= self._activate_after:
             app["status"] = self._end_status
+        if app["status"] == "failed":
+            app["steps"] = list(self._failed_steps)
         return dict(app)
 
     def reprovision(self, app_id: int) -> None:

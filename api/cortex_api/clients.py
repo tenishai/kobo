@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import re
 import subprocess
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -332,18 +334,46 @@ def _wait_for_forwarded_port(reader, timeout_s: float = 10.0) -> int:
     subprocess's stdout) until kubectl's "Forwarding from 127.0.0.1:PORT" line
     appears; return the parsed port.
 
+    `reader.readline()` blocks indefinitely on a real OS pipe (kubectl may
+    simply never print the line), so it can't be called directly from the
+    thread that owns the deadline: a deadline check only between calls does
+    nothing to interrupt a call already in progress. Instead, a daemon thread
+    drives `readline()` in a loop and pushes each line onto a `queue.Queue`;
+    this function only ever blocks on `queue.Queue.get(timeout=...)`, computed
+    against a monotonic deadline, so a hung `readline()` can never prevent
+    this function (or a caller's `finally`-cleanup) from returning once the
+    deadline passes. The reader thread is left running (it's a daemon, so it
+    won't block interpreter exit); on a real subprocess, terminating/killing
+    the process in the caller's `finally` closes the pipe and lets it exit.
+
     Factored out from `hello()` so this parsing logic is unit-testable against
     a fake reader, with no real subprocess involved.
     """
+    lines: queue.Queue[str] = queue.Queue()
+
+    def _pump() -> None:
+        while True:
+            line = reader.readline()
+            lines.put(line)
+            if not line:
+                return
+
+    threading.Thread(target=_pump, daemon=True).start()
+
     deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        line = reader.readline()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ClientError("timed out waiting for port-forward")
+        try:
+            line = lines.get(timeout=remaining)
+        except queue.Empty:
+            raise ClientError("timed out waiting for port-forward") from None
         if not line:
             continue
         match = _FORWARDING_RE.search(line)
         if match:
             return int(match.group(1))
-    raise ClientError("kubectl port-forward: timed out waiting for the forwarded port")
 
 
 def _build_hello_envelope(text: str) -> dict:
