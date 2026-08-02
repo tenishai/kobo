@@ -2,19 +2,46 @@
 # CORTEX_CONFIG at a file with this shape. Any field omitted falls back to
 # the default baked into cortex_api.config.Config.
 
+# GitHub organization containing agent implementations
 github_org: example-org
+
+# OCI image URI for the daedalus runtime executor
 runtime_image: registry.example/agents/daedalus-runtime:latest
+
+# Base URL of the Gojira agent orchestrator service
 gojira_url: http://127.0.0.1:8080
+
+# API token for Gojira authentication (null for local dev without auth)
 gojira_token: null
+
+# Kubernetes cluster name where Gojira is deployed
 gojira_cluster: example-cluster
+
+# GCP project ID for infrastructure and resources
 gcp_project: example-project
+
+# GCP project ID for Vertex AI models
 vertex_project: example-model-project
+
+# Google Cloud region for Vertex AI endpoints
 vertex_location: us-east5
+
+# Email group managing LLM model access and routing
 model_group: models@example.com
+
+# Available LLM models with display labels for UI selection
 models:
   - id: vertex_ai/claude-sonnet-4-5
     label: Claude Sonnet 4.5
+
+# Local or remote path to skills repository (null uses package defaults)
 skills_repo_path: null
+
+# Directory containing agent persona definitions (null uses package templates)
 personas_dir: null
+
+# Local directory for persistent runtime state and cache
 workdir: ~/.cortex
+
+# Database connection URL (supports sqlite, postgresql, etc)
 db_url: sqlite:///cortex.db

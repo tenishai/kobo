@@ -94,6 +94,10 @@ onboarding are being built on sibling feature branches. See the
 and decisions, and the [P0 plan](docs/superpowers/plans/2026-08-01-p0-foundations.md) for the
 current work.
 
+### Running the API (dev)
+
+To run the Cortex API locally: `make -C api install` to set up the environment. Copy `api/config.example.yaml` to `api/config.local.yaml` and fill in your values (or use examples for testing). Then run `make -C api run` — the API serves on `:8100`.
+
 ## Documentation
 
 - [Roadmap](ROADMAP.md) — the phased plan (Foundations → Assembly room → Talk, learn & connect) at a glance
