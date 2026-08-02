@@ -80,3 +80,20 @@ contract before passing.
 
 Still unverified live: the group-add already-a-member stderr wording (the retry
 resumed after the access step; exercise a full re-run someday).
+
+## P1b results (2026-08-02)
+
+**PASSED.** The assembly room UI is live: the Playwright smoke covered the
+dashboard, clio's detail page (7-step checklist + First words), the create
+modal's validation states (taken / invalid / available), and the unknown-agent
+error path. The exit criterion was met for real: an agent (`muse`) was created
+entirely from the browser — one modal, four fields, Create — and walked the
+checklist to READY, answering first contact from its seeded memory.
+
+One live catch, now twice-observed (clio run #1, muse run #1): a brand-new
+repo's first CI run can fail WIF auth with `PERMISSION_DENIED` on
+`iam.serviceAccounts.getAccessToken` because the per-repo IAM binding hasn't
+propagated yet. Remedy both times: re-run the CI once, then the product's
+Retry resumes from the failed step. **Backlog (high):** tolerate first-build
+propagation — BuildStep should be able to dispatch a fresh run (not just
+re-poll), and/or the generated CI should retry its auth step.
