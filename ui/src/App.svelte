@@ -5,6 +5,7 @@
   // and — from Task 6 — the agent detail page); this file just wires the
   // plumbing around them.
   import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
+  import CreateModal from "./components/CreateModal.svelte";
   import Toasts from "./components/Toasts.svelte";
   import Dashboard from "./pages/Dashboard.svelte";
   import { catalogsQuery } from "./lib/queries";
@@ -21,15 +22,17 @@
     void queryClient.prefetchQuery(catalogsQuery());
   }
 
-  // CreateModal itself lands in Task 5. `createOpen` is the placeholder
-  // state it will consume (`open={createOpen}`, closing sets it back to
-  // false); for now `onOpenCreate` just flips it, with nothing yet
-  // listening — the button, and its hover/focus prefetch above, are what
-  // needs to exist today.
+  // `createOpen` is fully controlled here: the header button sets it true,
+  // CreateModal's own onclose (Escape, backdrop click, Cancel, or a
+  // successful submit) sets it back to false.
   let createOpen = $state(false);
 
   function onOpenCreate(): void {
     createOpen = true;
+  }
+
+  function onCloseCreate(): void {
+    createOpen = false;
   }
 </script>
 
@@ -59,6 +62,8 @@
       {/if}
     </main>
   </div>
+
+  <CreateModal open={createOpen} onclose={onCloseCreate} />
 </QueryClientProvider>
 
 <Toasts />
