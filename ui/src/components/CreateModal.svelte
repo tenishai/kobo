@@ -52,6 +52,11 @@
   const nameError = $derived(name.length > 0 ? validateName(name) : null);
   const nameLocallyValid = $derived(name.length > 0 && nameError === null);
 
+  // Clean up quotes from error messages (e.g., 'x' → x)
+  const cleanSubmitError = $derived(
+    submitError ? submitError.replace(/^['"]|['"]$/g, "") : null,
+  );
+
   type Availability =
     | { status: "idle" }
     | { status: "checking" }
@@ -172,21 +177,37 @@
         placeholder="e.g. weekly-digest"
         autocomplete="off"
         spellcheck="false"
+        aria-describedby="create-name-status"
+        aria-invalid={nameError !== null ||
+          availability.status === "unavailable"}
       />
       <p class="create-form__help">
         Lowercase letters, numbers, and hyphens. 2-30 characters.
       </p>
-      {#if nameError}
-        <p class="create-form__status create-form__status--error">{nameError}</p>
-      {:else if availability.status === "checking"}
-        <p class="create-form__status">Checking…</p>
-      {:else if availability.status === "available"}
-        <p class="create-form__status create-form__status--ok">✓ Available</p>
-      {:else if availability.status === "unavailable"}
-        <p class="create-form__status create-form__status--error">
-          {availability.reason}
-        </p>
-      {/if}
+      <div
+        id="create-name-status"
+        role={nameError || availability.status === "unavailable"
+          ? "alert"
+          : availability.status === "checking" || availability.status === "available"
+            ? "status"
+            : undefined}
+        aria-live={availability.status === "checking" ||
+        availability.status === "available"
+          ? "polite"
+          : undefined}
+      >
+        {#if nameError}
+          <p class="create-form__status create-form__status--error">{nameError}</p>
+        {:else if availability.status === "checking"}
+          <p class="create-form__status">Checking…</p>
+        {:else if availability.status === "available"}
+          <p class="create-form__status create-form__status--ok">✓ Available</p>
+        {:else if availability.status === "unavailable"}
+          <p class="create-form__status create-form__status--error">
+            {availability.reason}
+          </p>
+        {/if}
+      </div>
     </div>
 
     {#if $catalogs.isPending}
@@ -260,9 +281,9 @@
       </div>
     {/if}
 
-    {#if submitError}
+    {#if cleanSubmitError}
       <p class="create-form__status create-form__status--error" role="alert">
-        {submitError}
+        {cleanSubmitError}
       </p>
     {/if}
 
