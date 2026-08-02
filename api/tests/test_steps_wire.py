@@ -505,3 +505,52 @@ def test_deploy_step_raises_on_rollout_failure(session_factory, config):
 
     with pytest.raises(RuntimeError):
         DeployStep().run(ctx)
+
+
+def test_deploy_step_notes_live_spec_verified_in_detail(session_factory, config):
+    session, agent = _make_agent(session_factory)
+    kubectl = FakeKubectl(rollout_result=True)
+    ctx = _make_ctx(session, agent, config, _clients(kubectl=kubectl))
+
+    detail = DeployStep().run(ctx)
+
+    assert "live spec verified" in detail
+
+
+def test_deploy_step_raises_with_remediation_hint_when_live_env_missing(session_factory, config):
+    session, agent = _make_agent(session_factory)
+    # Live Deployment is missing the wired model env entirely (e.g. a
+    # raced regeneration-PR apply landed the pre-wire tree last).
+    kubectl = FakeKubectl(
+        rollout_result=True,
+        env_names={(AGENT_NAME, AGENT_NAME): []},
+    )
+    ctx = _make_ctx(session, agent, config, _clients(kubectl=kubectl))
+
+    with pytest.raises(RuntimeError) as exc_info:
+        DeployStep().run(ctx)
+
+    message = str(exc_info.value)
+    assert "VERTEXAI_PROJECT" in message
+    assert "VERTEXAI_LOCATION" in message
+    assert "concurrent CI apply" in message
+    assert "retry after the latest run completes" in message
+
+
+def test_deploy_step_raises_naming_got_and_expected_on_wrong_service_account(
+    session_factory, config
+):
+    session, agent = _make_agent(session_factory)
+    kubectl = FakeKubectl(
+        rollout_result=True,
+        service_accounts={(AGENT_NAME, AGENT_NAME): "default"},
+    )
+    ctx = _make_ctx(session, agent, config, _clients(kubectl=kubectl))
+
+    with pytest.raises(RuntimeError) as exc_info:
+        DeployStep().run(ctx)
+
+    message = str(exc_info.value)
+    assert "default" in message
+    assert f"agent-{AGENT_NAME}" in message
+    assert "concurrent CI apply" in message

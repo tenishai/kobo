@@ -373,12 +373,40 @@ class FakeAgent:
 
 
 class FakeKubectl:
-    """rollout_ok() returns a configurable, constant result and records calls."""
+    """rollout_ok() returns a configurable, constant result and records calls
+    (only rollout_ok's — deploy_env_names/deploy_service_account are DeployStep's
+    live-spec verification reads, not the rollout wait itself, so they're kept
+    off `.calls` to leave existing rollout_ok-only assertions unaffected).
 
-    def __init__(self, *, rollout_result: bool = True):
+    `env_names`/`service_accounts` are `{(namespace, deploy): value}` maps for
+    deploy_env_names/deploy_service_account, keyed exactly like the real
+    kubectl calls DeployStep makes. Both default, for any (namespace, deploy)
+    not given an explicit entry, to the wired-happy-path shape — the wired
+    model env present and a service account of `agent-<deploy>` — so tests
+    that only care about rollout_ok (the pre-existing ones) get a DeployStep
+    that verifies clean without configuring anything new.
+    """
+
+    def __init__(
+        self,
+        *,
+        rollout_result: bool = True,
+        env_names: dict[tuple[str, str], list[str]] | None = None,
+        service_accounts: dict[tuple[str, str], str] | None = None,
+    ):
         self._rollout_result = rollout_result
+        self._env_names = dict(env_names) if env_names else {}
+        self._service_accounts = dict(service_accounts) if service_accounts else {}
         self.calls: list[tuple[str, str]] = []
 
     def rollout_ok(self, namespace: str, deploy: str, timeout_s: int = 180) -> bool:
         self.calls.append((namespace, deploy))
         return self._rollout_result
+
+    def deploy_env_names(self, namespace: str, deploy: str) -> list[str]:
+        return self._env_names.get(
+            (namespace, deploy), ["VERTEXAI_PROJECT", "VERTEXAI_LOCATION"]
+        )
+
+    def deploy_service_account(self, namespace: str, deploy: str) -> str:
+        return self._service_accounts.get((namespace, deploy), f"agent-{deploy}")

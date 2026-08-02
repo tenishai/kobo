@@ -506,6 +506,25 @@ class KubectlAgentClient:
 class KubectlClient(Protocol):
     def rollout_ok(self, namespace: str, deploy: str, timeout_s: int = 180) -> bool: ...
 
+    def deploy_env_names(self, namespace: str, deploy: str) -> list[str]:
+        """Container 0's env var names on the *live* Deployment, in spec order
+        (empty list when it has none).
+
+        Defense-in-depth for the stale-apply race (see DeployStep,
+        `cortex_api/steps.py`): `rollout_ok` only proves *some* generation of
+        the Deployment rolled out cleanly, not that it's the generation
+        carrying WireStep's contract — a racing `kubectl apply` from a
+        concurrent CI run can land an older, unwired tree last and still
+        report a clean rollout. This reads the actual live spec so DeployStep
+        can check it directly instead of trusting rollout_ok alone.
+        """
+        ...
+
+    def deploy_service_account(self, namespace: str, deploy: str) -> str:
+        """The live Deployment's pod template `serviceAccountName` (empty
+        string when unset). Same stale-apply defense as `deploy_env_names`."""
+        ...
+
 
 class KubectlCLI:
     """kubectl-backed KubectlClient."""
@@ -525,6 +544,27 @@ class KubectlCLI:
             return True
         except ClientError:
             return False
+
+    def deploy_env_names(self, namespace: str, deploy: str) -> list[str]:
+        out = self._runner.run(
+            [
+                self._kubectl, "-n", namespace, "get", "deploy", deploy,
+                "-o", "jsonpath={.spec.template.spec.containers[0].env[*].name}",
+            ]
+        )
+        # kubectl's jsonpath template separates repeated matches with a
+        # single space; CommandRunner.run() has already .strip()'d the
+        # output, so a plain split() both tokenizes on that separator and
+        # turns "" (no env vars) into [] rather than [""].
+        return out.split()
+
+    def deploy_service_account(self, namespace: str, deploy: str) -> str:
+        return self._runner.run(
+            [
+                self._kubectl, "-n", namespace, "get", "deploy", deploy,
+                "-o", "jsonpath={.spec.template.spec.serviceAccountName}",
+            ]
+        )
 
 
 # --- Wiring -----------------------------------------------------------------------

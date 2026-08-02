@@ -275,6 +275,42 @@ def test_rollout_ok_false_on_failure():
     assert client.rollout_ok("clio", "clio") is False
 
 
+def test_deploy_env_names_argv_and_split():
+    runner = RecordingRunner(results=[(0, "VERTEXAI_PROJECT VERTEXAI_LOCATION", "")])
+    client = KubectlCLI(runner=runner)
+    assert client.deploy_env_names("clio", "clio") == ["VERTEXAI_PROJECT", "VERTEXAI_LOCATION"]
+    assert runner.calls == [
+        [
+            "kubectl", "-n", "clio", "get", "deploy", "clio",
+            "-o", "jsonpath={.spec.template.spec.containers[0].env[*].name}",
+        ]
+    ]
+
+
+def test_deploy_env_names_empty_list_when_no_env():
+    runner = RecordingRunner(results=[(0, "", "")])
+    client = KubectlCLI(runner=runner)
+    assert client.deploy_env_names("clio", "clio") == []
+
+
+def test_deploy_service_account_argv_and_value():
+    runner = RecordingRunner(results=[(0, "agent-clio", "")])
+    client = KubectlCLI(runner=runner)
+    assert client.deploy_service_account("clio", "clio") == "agent-clio"
+    assert runner.calls == [
+        [
+            "kubectl", "-n", "clio", "get", "deploy", "clio",
+            "-o", "jsonpath={.spec.template.spec.serviceAccountName}",
+        ]
+    ]
+
+
+def test_deploy_service_account_empty_string_when_unset():
+    runner = RecordingRunner(results=[(0, "", "")])
+    client = KubectlCLI(runner=runner)
+    assert client.deploy_service_account("clio", "clio") == ""
+
+
 # --- Gojira (HttpxGojiraClient) ------------------------------------------------
 
 
@@ -693,6 +729,25 @@ def test_fake_kubectl_satisfies_protocol():
     assert isinstance(fake, KubectlClient)
     assert fake.rollout_ok("clio", "clio") is True
     assert fake.calls == [("clio", "clio")]
+
+
+def test_fake_kubectl_live_spec_defaults_match_happy_path():
+    fake = FakeKubectl()
+    assert fake.deploy_env_names("clio", "clio") == ["VERTEXAI_PROJECT", "VERTEXAI_LOCATION"]
+    assert fake.deploy_service_account("clio", "clio") == "agent-clio"
+
+
+def test_fake_kubectl_live_spec_configurable_per_namespace_deploy():
+    fake = FakeKubectl(
+        env_names={("clio", "clio"): ["OTHER_VAR"]},
+        service_accounts={("clio", "clio"): "default"},
+    )
+    assert fake.deploy_env_names("clio", "clio") == ["OTHER_VAR"]
+    assert fake.deploy_service_account("clio", "clio") == "default"
+    # An unconfigured (namespace, deploy) pair still falls back to the
+    # happy-path defaults.
+    assert fake.deploy_env_names("other", "other") == ["VERTEXAI_PROJECT", "VERTEXAI_LOCATION"]
+    assert fake.deploy_service_account("other", "other") == "agent-other"
 
 
 # --- Clients.real() wiring -----------------------------------------------------

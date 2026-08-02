@@ -506,7 +506,22 @@ class BuildStep:
 
 
 class DeployStep:
-    """Waits for the generated Deployment's rollout to finish."""
+    """Waits for the generated Deployment's rollout to finish, then verifies
+    the *live* spec actually carries WireStep's contract before declaring
+    victory.
+
+    Defense-in-depth for a field incident: a regeneration-PR's `kubectl
+    apply` raced WireStep's own apply and landed last, leaving the live
+    Deployment on an older, unwired tree — no model env, no KSA. `rollout_ok`
+    alone couldn't catch this: the older tree rolled out perfectly cleanly,
+    it just wasn't the generation the wire step intended. DeployStep passed,
+    and the gap only surfaced two steps later as a confusing HelloStep
+    failure. Task 1 (this plan) serializes the generated CI so the race
+    itself shouldn't recur, but this check catches the *symptom* — a live
+    spec missing the wired contract — structurally, regardless of root
+    cause, right where the wiring is knowable and the remediation (retry
+    once the latest run has landed) is obvious.
+    """
 
     name = "deploy"
     label = "Deploy"
@@ -517,7 +532,30 @@ class DeployStep:
 
         if not kubectl.rollout_ok(namespace=agent.name, deploy=agent.name):
             raise RuntimeError(f"rollout failed for {agent.name}/{agent.name}")
-        return f"rollout ok for {agent.name}"
+
+        env_names = kubectl.deploy_env_names(agent.name, agent.name)
+        missing = [
+            var for var in ("VERTEXAI_PROJECT", "VERTEXAI_LOCATION") if var not in env_names
+        ]
+        if missing:
+            raise RuntimeError(
+                f"live spec for {agent.name}/{agent.name} is missing wired model "
+                f"env {missing!r} (live env names: {env_names!r}) — a concurrent "
+                "CI apply may have raced the wire step's own apply and landed an "
+                "older tree; retry after the latest run completes"
+            )
+
+        expected_sa = f"agent-{agent.name}"
+        actual_sa = kubectl.deploy_service_account(agent.name, agent.name)
+        if actual_sa != expected_sa:
+            raise RuntimeError(
+                f"live spec for {agent.name}/{agent.name} has service account "
+                f"{actual_sa!r}, expected {expected_sa!r} — a concurrent CI apply "
+                "may have raced the wire step's own apply and landed an older "
+                "tree; retry after the latest run completes"
+            )
+
+        return f"rollout ok for {agent.name}; live spec verified"
 
 
 # --- HelloStep --------------------------------------------------------------------
