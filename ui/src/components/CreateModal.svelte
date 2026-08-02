@@ -54,7 +54,7 @@
 
   // Clean up quotes from error messages (e.g., 'x' → x)
   const cleanSubmitError = $derived(
-    submitError ? submitError.replace(/^['"]|['"]$/g, "") : null,
+    submitError ? submitError.replace(/['"]/g, "") : null,
   );
 
   type Availability =
