@@ -209,6 +209,58 @@ def test_steps_dropped_from_a_later_run_are_left_untouched(session_factory, conf
     assert rows["step-a"].status == StepStatus.DONE
 
 
+def test_engine_level_failure_before_any_step_marks_agent_failed(session_factory, config):
+    """A failure outside a step's run() (here: workdir creation) must still
+    land the agent in FAILED - not leave it wedged in PROVISIONING with no
+    FAILED step for `reset_failed_steps`/a retry route to act on.
+    """
+    # config.workdir points at a plain file, so `workdir.mkdir(...)` inside
+    # the engine raises NotADirectoryError before any step ever gets to run.
+    blocking_file = config.workdir
+    blocking_file.parent.mkdir(parents=True, exist_ok=True)
+    blocking_file.write_text("not a directory")
+
+    agent_id = _make_agent(session_factory, "agent-engine-fail")
+    calls: list[str] = []
+    steps = [RecordingStep(name="step-a", calls=calls)]
+
+    thread = run_pipeline(
+        session_factory, agent_id, config=config, clients=NO_CLIENTS, steps=steps
+    )
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+
+    # The failure happened before the step loop, so no step ever ran.
+    assert calls == []
+
+    agent, rows = _load(session_factory, agent_id)
+    assert agent.status == AgentStatus.FAILED
+    assert agent.error  # non-empty
+    # No step ever got as far as RUNNING (rows may be absent or PENDING).
+    assert all(row.status != StepStatus.RUNNING for row in rows.values())
+
+
+def test_unknown_agent_id_completes_without_raising(session_factory, config):
+    """An agent_id that doesn't exist must not crash the daemon thread with an
+    AttributeError; it should just log and return, leaving no trace.
+    """
+    calls: list[str] = []
+    steps = [RecordingStep(name="step-a", calls=calls)]
+    unknown_agent_id = 999_999
+
+    thread = run_pipeline(
+        session_factory, unknown_agent_id, config=config, clients=NO_CLIENTS, steps=steps
+    )
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+
+    assert calls == []
+
+    session = session_factory()
+    assert session.query(Agent).count() == 0
+    session.close()
+
+
 def test_reset_failed_steps_only_resets_failed_rows(session_factory, config):
     agent_id = _make_agent(session_factory, "agent-reset-scope")
     calls: list[str] = []

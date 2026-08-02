@@ -8,8 +8,12 @@ immediately, leaving the caller to poll the ledger (`AgentStep` rows) for
 progress rather than block on completion.
 
 Every step's outcome is persisted before moving to the next one, so a crash or
-restart can resume: `reset_failed_steps` flips FAILED rows back to PENDING,
-and the next `run_pipeline` call skips anything already DONE or SKIPPED.
+restart can resume at that per-step boundary: `reset_failed_steps` flips FAILED
+rows back to PENDING, and the next `run_pipeline` call skips anything already
+DONE or SKIPPED. That resume story only covers failures raised from inside a
+step's own `run()`; engine-level failures (workdir setup, a session commit, a
+missing agent row) don't get a step boundary to land on, so they're caught at
+the pipeline level instead and the agent is marked FAILED directly.
 Steps themselves arrive in Tasks 6-8 — this module only ships the engine,
 exercised in `tests/test_engine.py` against toy steps.
 """
@@ -50,6 +54,8 @@ class Ctx:
 
 
 def _get_or_create_step(session: Session, agent_id: int, name: str) -> AgentStep:
+    # `.one_or_none()` is safe because AgentStep enforces a UniqueConstraint on
+    # (agent_id, name): this filter can never match more than one row.
     step_row = (
         session.query(AgentStep).filter_by(agent_id=agent_id, name=name).one_or_none()
     )
@@ -71,53 +77,92 @@ def _run_pipeline_body(
     session = session_factory()
     try:
         agent = session.get(Agent, agent_id)
-        agent.status = AgentStatus.PROVISIONING
-        session.commit()
+        if agent is None:
+            # Nothing to provision and nothing to mark FAILED - log and bail
+            # rather than let this masquerade as an AttributeError below.
+            log.warning("run_pipeline: agent %s not found, nothing to provision", agent_id)
+            return
 
-        workdir = config.workdir / agent.name
-        workdir.mkdir(parents=True, exist_ok=True)
-        ctx = Ctx(
-            agent=agent, session=session, config=config, clients=clients, workdir=workdir
-        )
-
-        failed_step_name: str | None = None
-        for step in steps:
-            step_row = _get_or_create_step(session, agent_id, step.name)
-
-            if step_row.status in (StepStatus.DONE, StepStatus.SKIPPED):
-                continue
-
-            if failed_step_name is not None:
-                step_row.status = StepStatus.FAILED
-                step_row.error = f"aborted: {failed_step_name}"
-                session.commit()
-                continue
-
-            step_row.status = StepStatus.RUNNING
-            step_row.started_at = datetime.now(UTC)
+        try:
+            agent.status = AgentStatus.PROVISIONING
             session.commit()
 
-            try:
-                step.run(ctx)
-            except Exception as exc:  # noqa: BLE001 - a step's failure, not a bug here
-                log.warning("step %r failed for agent %s: %s", step.name, agent_id, exc)
-                step_row.status = StepStatus.FAILED
-                step_row.error = str(exc)
+            workdir = config.workdir / agent.name
+            workdir.mkdir(parents=True, exist_ok=True)
+            ctx = Ctx(
+                agent=agent, session=session, config=config, clients=clients, workdir=workdir
+            )
+
+            failed_step_name: str | None = None
+            for step in steps:
+                step_row = _get_or_create_step(session, agent_id, step.name)
+
+                if step_row.status in (StepStatus.DONE, StepStatus.SKIPPED):
+                    continue
+
+                if failed_step_name is not None:
+                    step_row.status = StepStatus.FAILED
+                    step_row.error = f"aborted: {failed_step_name}"
+                    session.commit()
+                    continue
+
+                step_row.status = StepStatus.RUNNING
+                step_row.started_at = datetime.now(UTC)
+                session.commit()
+
+                try:
+                    step.run(ctx)
+                except Exception as exc:  # noqa: BLE001 - a step's failure, not a bug here
+                    log.warning(
+                        "step %r failed for agent %s: %s", step.name, agent_id, exc
+                    )
+                    step_row.status = StepStatus.FAILED
+                    step_row.error = str(exc)
+                    step_row.finished_at = datetime.now(UTC)
+                    agent.error = str(exc)
+                    agent.status = AgentStatus.FAILED
+                    session.commit()
+                    failed_step_name = step.name
+                    continue
+
+                step_row.status = StepStatus.DONE
                 step_row.finished_at = datetime.now(UTC)
-                agent.error = str(exc)
-                agent.status = AgentStatus.FAILED
                 session.commit()
-                failed_step_name = step.name
-                continue
 
-            step_row.status = StepStatus.DONE
-            step_row.finished_at = datetime.now(UTC)
-            session.commit()
+            if failed_step_name is None:
+                agent.status = AgentStatus.READY
+                agent.error = None
+                session.commit()
+        except Exception as exc:
+            # Engine-level failure: anything outside a step's own run() (workdir
+            # mkdir, a commit, ...). Steps have a FAILED row to resume from; this
+            # doesn't, so catch it here and land the agent in FAILED directly
+            # instead of leaving it wedged in PROVISIONING forever.
+            log.exception("run_pipeline: engine-level failure for agent %s", agent_id)
 
-        if failed_step_name is None:
-            agent.status = AgentStatus.READY
-            agent.error = None
-            session.commit()
+            # The session that hit the error may itself be poisoned (e.g. a
+            # failed commit leaves it unusable until rolled back), so clean it
+            # up best-effort and record the failure through a fresh one.
+            try:
+                session.rollback()
+            except Exception:  # best-effort cleanup only
+                log.warning("run_pipeline: rollback of broken session failed", exc_info=True)
+
+            recovery_session = session_factory()
+            try:
+                recovered_agent = recovery_session.get(Agent, agent_id)
+                if recovered_agent is None:
+                    log.warning(
+                        "run_pipeline: agent %s not found while recording engine "
+                        "failure",
+                        agent_id,
+                    )
+                    return
+                recovered_agent.status = AgentStatus.FAILED
+                recovered_agent.error = str(exc)
+                recovery_session.commit()
+            finally:
+                recovery_session.close()
     finally:
         session.close()
 
@@ -135,6 +180,10 @@ def run_pipeline(
     The thread opens its own session from `session_factory` (never the caller's),
     so it's safe to call this from a request handler and let the request return
     before provisioning finishes.
+
+    Not safe to call twice concurrently for the same agent_id (racing writers
+    to the same AgentStep rows); callers must serialize that themselves - the
+    API route does this later by gating on agent status.
     """
     thread = threading.Thread(
         target=_run_pipeline_body,
