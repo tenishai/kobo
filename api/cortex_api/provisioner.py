@@ -49,6 +49,7 @@ log = logging.getLogger(__name__)
 
 class Step(Protocol):
     name: str
+    label: str
 
     def run(self, ctx: Ctx) -> str:
         """Perform the step; return a human-readable detail, or raise to fail."""
@@ -241,7 +242,7 @@ PIPELINE: list[Step] = [
 ]
 
 # The UI's checklist vocabulary: step name -> human-readable label, sourced
-# from each step's own `.label` (not the `Step` Protocol, which only requires
-# `name`/`run` — every concrete step above happens to carry one) so this dict
-# can't drift from what each step actually declares of itself.
+# from each step's own `.label` (part of the `Step` Protocol above, alongside
+# `name`/`run`) so this dict can't drift from what each step actually
+# declares of itself.
 STEP_LABELS: dict[str, str] = {step.name: step.label for step in PIPELINE}

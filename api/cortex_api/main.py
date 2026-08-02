@@ -9,6 +9,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from cortex_api.catalog import NAME_RE, list_personas, list_skills
@@ -150,7 +151,18 @@ def create_app(
             status=AgentStatus.PENDING,
         )
         session.add(agent)
-        session.commit()
+        try:
+            session.commit()
+        except IntegrityError:
+            # The pre-check above is read-then-act, not a lock: a second
+            # request for the same name can pass it and lose the race here
+            # instead, discovering the collision only when the unique
+            # constraint fires on commit. Map that to the same 409 the
+            # pre-check returns rather than letting the raw IntegrityError
+            # surface as a 500 — same idiom as retry_agent's FAILED gate,
+            # just enforced by the DB instead of a status column.
+            session.rollback()
+            return JSONResponse({"error": f"name taken: {payload.name!r}"}, status_code=409)
 
         # Capture the just-inserted status into a local BEFORE starting the
         # pipeline thread and use only that in the response below. The
@@ -231,6 +243,21 @@ def create_app(
             )
 
         reset_failed_steps(session, agent.id)
+
+        # Flip to PROVISIONING (and clear the prior error) synchronously,
+        # before starting the pipeline thread — mirrors create_agent's own
+        # status-before-thread discipline. The FAILED gate above is
+        # read-then-act: without this, two retries racing right after each
+        # other both read FAILED and both pass, each firing its own pipeline
+        # thread against the same AgentStep rows. Committing PROVISIONING
+        # here closes that window — a second retry request now reads
+        # PROVISIONING and 409s instead of double-launching. The engine
+        # (`_run_pipeline_body`) also sets PROVISIONING itself; redundant but
+        # idempotent, so this doesn't change its behavior.
+        agent.status = AgentStatus.PROVISIONING
+        agent.error = None
+        session.commit()
+
         agent_id = agent.id
         cfg: Config = app.state.config
 

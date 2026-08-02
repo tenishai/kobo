@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cortex_api.clients import GojiraConflict
+from cortex_api.clients import ClientError, GojiraConflict
 
 # --- Generated-scaffolding fixture for FakeGitHub.clone ------------------------
 #
@@ -308,14 +308,23 @@ class FakeCloud:
 
 
 class FakeAgent:
-    """hello() returns a canned reply and records every call it received."""
+    """hello() returns a canned reply and records every call it received.
 
-    def __init__(self, *, reply: str = "hello yourself"):
+    `hello_error`, when set, makes `hello()` raise `ClientError(hello_error)`
+    instead of replying — HelloStep is the pipeline's last step, so this is
+    the seam for exercising a failure there (agent lands FAILED with
+    `first_reply` still None) without needing a real a2a backend.
+    """
+
+    def __init__(self, *, reply: str = "hello yourself", hello_error: str | None = None):
         self._reply = reply
+        self._hello_error = hello_error
         self.calls: list[tuple[str, str, str]] = []
 
     def hello(self, namespace: str, service: str, text: str) -> str:
         self.calls.append((namespace, service, text))
+        if self._hello_error is not None:
+            raise ClientError(self._hello_error)
         return self._reply
 
 
