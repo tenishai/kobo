@@ -203,7 +203,9 @@ class HttpxGojiraClient:
     ):
         self._base_url = base_url.rstrip("/")
         self._token = token
-        self._client = client or httpx.Client()
+        # gojira's onboarding calls were fast in P0 (no model roundtrip
+        # involved); this default just gives headroom over httpx's bare 5s.
+        self._client = client or httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0))
 
     def _headers(self) -> dict[str, str]:
         if self._token:
@@ -407,8 +409,16 @@ def _post_hello(client: httpx.Client, port: int, text: str) -> str:
 
     Factored out from `hello()` so the request/response shape is unit-testable
     against an httpx.MockTransport-backed client, with no real network involved.
+
+    httpx transport errors (timeouts, connection failures, ...) aren't
+    ClientError, so left alone they'd surface as raw httpx exceptions to
+    callers that only expect ClientError. Wrap them here, preserving the
+    original exception as the cause.
     """
-    resp = client.post(f"http://127.0.0.1:{port}/a2a/tasks", json=_build_hello_envelope(text))
+    try:
+        resp = client.post(f"http://127.0.0.1:{port}/a2a/tasks", json=_build_hello_envelope(text))
+    except httpx.HTTPError as exc:
+        raise ClientError(f"a2a hello request failed: {exc!r}") from exc
     if resp.status_code != 200:
         raise ClientError(f"a2a hello failed ({resp.status_code}): {resp.text}")
     return resp.json()["status"]["message"]["parts"][0]["text"]
@@ -430,7 +440,11 @@ class KubectlAgentClient:
     ):
         self._kubectl = kubectl
         self._timeout_s = port_forward_timeout_s
-        self._http_client = http_client or httpx.Client()
+        # The hello POST waits on a full model roundtrip (routinely >5s
+        # live), well past httpx's bare 5s default — give it generous
+        # headroom rather than let a slow-but-healthy reply read as a
+        # timeout/failure.
+        self._http_client = http_client or httpx.Client(timeout=httpx.Timeout(120.0, connect=10.0))
 
     def hello(self, namespace: str, service: str, text: str) -> str:
         proc = subprocess.Popen(

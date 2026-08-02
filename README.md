@@ -96,7 +96,7 @@ current work.
 
 ### Running the API (dev)
 
-To run the Cortex API locally: `make -C api install` to set up the environment. Copy `api/config.example.yaml` to `api/config.local.yaml` and fill in your values (or use examples for testing). Then run `make -C api run` — the API serves on `:8100`.
+To run the Cortex API locally: `make -C api install` to set up the environment. Copy `api/config.example.yaml` to `api/config.local.yaml` and fill in your values (or use examples for testing). Then run `make -C api run` — the API serves on `:8100`. The dev API is unauthenticated and CORS-open, so bind it to localhost only and never expose it beyond your machine.
 
 ## Documentation
 

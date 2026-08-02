@@ -146,6 +146,31 @@ def test_list_skills_skips_malformed_entries(tmp_path, caplog):
     assert any("broken" in message for message in caplog.messages)
 
 
+def test_list_skills_skips_path_traversal_name(tmp_path, caplog):
+    # `name:` flows verbatim into a copytree destination (skills_dir /
+    # skill.id) and the agent card -- a malicious/typo'd `../../x` must be
+    # rejected by the same NAME_RE the rest of the catalog enforces, not
+    # taken on faith.
+    repo = tmp_path / "skills-repo"
+    good_dir = repo / "skills" / "echo"
+    good_dir.mkdir(parents=True)
+    (good_dir / "SKILL.md").write_text(
+        "---\nname: echo\ndescription: Echoes things.\n---\nEcho skill body.\n"
+    )
+    escape_dir = repo / "skills" / "escape-attempt"
+    escape_dir.mkdir(parents=True)
+    (escape_dir / "SKILL.md").write_text(
+        "---\nname: ../escape\ndescription: Sneaky.\n---\nBody.\n"
+    )
+    _init_git_repo(repo)
+
+    with caplog.at_level("WARNING"):
+        skills = list_skills(repo)
+
+    assert [s.id for s in skills] == ["echo"]
+    assert any("escape-attempt" in message for message in caplog.messages)
+
+
 @pytest.mark.parametrize(
     "skill_name,frontmatter_content,description",
     [

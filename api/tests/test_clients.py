@@ -338,6 +338,16 @@ def test_gojira_reprovision_raises_on_unexpected_status():
         client.reprovision(7)
 
 
+def test_gojira_client_default_http_client_has_generous_timeout():
+    # No client injected -> HttpxGojiraClient must build its own with real
+    # headroom over httpx's bare 5s default (gojira calls were fast in P0;
+    # this is just insurance), not a bare httpx.Client().
+    client = HttpxGojiraClient("http://gojira.local")
+    timeout = client._client.timeout
+    assert timeout.connect == 10.0
+    assert timeout.read == 30.0
+
+
 # --- Agent (a2a hello over kubectl port-forward) ------------------------------
 
 
@@ -397,6 +407,31 @@ def test_post_hello_raises_on_non_200():
     client = httpx.Client(transport=httpx.MockTransport(handler))
     with pytest.raises(ClientError):
         _post_hello(client, 54321, "hello?")
+
+
+def test_post_hello_wraps_read_timeout_as_client_error():
+    # httpx.ReadTimeout isn't a ClientError; left unwrapped it would surface
+    # as a raw httpx exception to hello()'s caller (and every identical retry
+    # would hit the same cap). _post_hello must translate it, preserving the
+    # original exception as the cause.
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("The read operation timed out", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(ClientError) as exc_info:
+        _post_hello(client, 54321, "hello?")
+
+    assert isinstance(exc_info.value.__cause__, httpx.ReadTimeout)
+
+
+def test_kubectl_agent_client_default_http_client_has_generous_timeout():
+    # No http_client injected -> KubectlAgentClient must build its own with a
+    # timeout generous enough for a full model roundtrip (routinely >5s
+    # live), not httpx's bare 5s default.
+    client = KubectlAgentClient()
+    timeout = client._http_client.timeout
+    assert timeout.connect == 10.0
+    assert timeout.read == 120.0
 
 
 class _FakePopen:

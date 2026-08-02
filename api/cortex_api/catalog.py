@@ -95,6 +95,12 @@ def _parse_skill_frontmatter(text: str) -> tuple[str, str] | None:
     name = frontmatter.get("name")
     if not name or not isinstance(name, str):
         return None
+    # `name` flows straight into a copytree destination (skills_dir /
+    # skill.id) and the agent card — reject anything that isn't a bare,
+    # well-formed skill id (same NAME_RE the agent-name route enforces)
+    # before it can escape the skills directory or otherwise misbehave.
+    if not NAME_RE.fullmatch(name):
+        return None
 
     description = frontmatter.get("description")
     if not description:
