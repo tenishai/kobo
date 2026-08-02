@@ -262,6 +262,18 @@ class CloudClient(Protocol):
         ...
 
 
+def gsa_email(agent_name: str, project: str) -> str:
+    """The GSA email convention for an agent's GCP service account:
+    `agent-{agent_name}@{project}.iam.gserviceaccount.com`.
+
+    Single source of truth for a format string that used to be duplicated
+    between `GcloudClient.ensure_gsa` (below) and `WireStep`
+    (`cortex_api/steps.py`, which needs the same email for the KSA's
+    Workload Identity annotation).
+    """
+    return f"agent-{agent_name}@{project}.iam.gserviceaccount.com"
+
+
 class GcloudClient:
     """gcloud-backed CloudClient, scoped to one GCP project."""
 
@@ -271,7 +283,11 @@ class GcloudClient:
         self._gcloud = gcloud
 
     def ensure_gsa(self, name: str) -> str:
-        email = f"{name}@{self._project}.iam.gserviceaccount.com"
+        # `name` is always the caller's full "agent-<agent name>" SA id (the
+        # only caller, AccessStep, constructs it that way) — strip the
+        # prefix back off so the email itself comes from the one shared
+        # gsa_email() convention instead of a second inline f-string here.
+        email = gsa_email(name.removeprefix("agent-"), self._project)
         try:
             self._runner.run(
                 [

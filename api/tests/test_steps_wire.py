@@ -194,7 +194,10 @@ def test_wire_step_reprovisions_and_waits_active_when_push_changed_something(ses
 
 def test_wire_step_second_run_with_no_changes_skips_reprovision(session_factory, config):
     """Self-review's central question: a second WireStep run whose commit_push
-    reports nothing changed must NOT call reprovision again."""
+    reports nothing changed must NOT call reprovision again — but it must
+    still poll gojira's status to confirm the app is active before returning,
+    since a prior run may have crashed after reprovision() but before its own
+    _wait_active completed."""
     repo = _repo_full_name(config)
     session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=1)
     github = FakeGitHub(commit_push_results=[True, False])
@@ -204,11 +207,34 @@ def test_wire_step_second_run_with_no_changes_skips_reprovision(session_factory,
 
     WireStep().run(ctx)  # first run: pushes real changes
     assert gojira.reprovision_calls == [1]
+    status_polls_after_first_run = gojira.calls.count("app_status:1")
 
     detail = WireStep().run(ctx)  # second run: nothing changed
 
     assert gojira.reprovision_calls == [1]  # unchanged — no second reprovision
+    assert gojira.calls.count("app_status:1") > status_polls_after_first_run
     assert "no" in detail.lower()
+
+
+def test_wire_step_no_change_run_raises_when_app_actually_failed(session_factory, config):
+    """Crash-window regression for Fix 1: if a prior run's reprovision() never
+    reached active (e.g. the process crashed before its own _wait_active
+    completed) and gojira actually landed on failed, a resumed WireStep run
+    that finds nothing left to push must still surface that failure — not
+    silently mark the step done."""
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=1)
+    github = FakeGitHub(commit_push_results=[False])
+    gojira = FakeGojira(
+        activate_after=1,
+        end_status="failed",
+        failed_steps=[{"name": "apply", "status": "failed", "error": "boom"}],
+    )
+    gojira.create_app(name=AGENT_NAME, repo_full_name=repo, cluster=config.gojira_cluster, namespace=AGENT_NAME)
+    ctx = _make_ctx(session, agent, config, _clients(github=github, gojira=gojira))
+
+    with pytest.raises(RuntimeError, match="apply"):
+        WireStep().run(ctx)
 
 
 def test_wire_step_raises_when_gojira_never_reaches_active(session_factory, config):
@@ -266,6 +292,32 @@ def test_register_resources_is_idempotent_when_entries_already_present(tmp_path)
     assert data["resources"] == ["deployment.yaml", "service.yaml", "serviceaccount.yaml", "pvc.yaml"]
     assert data["resources"].count("serviceaccount.yaml") == 1
     assert data["resources"].count("pvc.yaml") == 1
+
+
+def test_register_resources_preserves_apiversion_and_kind(tmp_path):
+    """_register_resources parses and re-dumps the *whole* kustomization file,
+    not just its resources list — apiVersion/kind must round-trip untouched
+    alongside the newly-appended entries."""
+    from cortex_api.steps import _register_resources
+
+    kustomization_path = tmp_path / "kustomization.yaml"
+    kustomization_path.write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "kustomize.config.k8s.io/v1beta1",
+                "kind": "Kustomization",
+                "resources": ["deployment.yaml"],
+            },
+            sort_keys=False,
+        )
+    )
+
+    _register_resources(kustomization_path, ["serviceaccount.yaml"])
+
+    data = yaml.safe_load(kustomization_path.read_text())
+    assert data["apiVersion"] == "kustomize.config.k8s.io/v1beta1"
+    assert data["kind"] == "Kustomization"
+    assert data["resources"] == ["deployment.yaml", "serviceaccount.yaml"]
 
 
 # --- BuildStep --------------------------------------------------------------------

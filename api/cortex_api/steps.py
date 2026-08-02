@@ -19,6 +19,13 @@ isn't also registered there is silently never applied (the P0 run lost a
 rollout to a missing ServiceAccount this way). Writing a manifest and
 registering it in kustomization.yaml is therefore one atomic responsibility
 here, never split across two steps or made optional.
+
+WireStep's other invariant: it never completes without confirming gojira is
+`active`, on every path — including the no-change resume path, where a prior
+attempt may have crashed after calling `reprovision()` but before its own
+`_wait_active` finished. Skipping that confirmation there would let a
+retry mark the step DONE while gojira is still mid-provision (or has actually
+failed), and BuildStep/DeployStep would then run against an unverified app.
 """
 
 from __future__ import annotations
@@ -29,7 +36,7 @@ import time
 import yaml
 
 from cortex_api.catalog import list_personas, list_skills
-from cortex_api.clients import GojiraConflict
+from cortex_api.clients import GojiraConflict, gsa_email
 from cortex_api.composer import BundleSpec, compose, validate_agent_yaml
 from cortex_api.provisioner import Ctx
 
@@ -337,6 +344,12 @@ class WireStep:
     writing a manifest and registering it are one responsibility, never split
     — every test for this step checks kustomization.yaml's *resources* list,
     not just that the manifest files exist on disk.
+
+    Invariant: this step never returns without confirming gojira reached
+    `active` — including the no-change resume path (see `run`'s comment
+    there), so a crash between a prior run's `reprovision()` and its
+    `_wait_active` can never leave the step marked DONE against an
+    unconfirmed app.
     """
 
     name = "wire"
@@ -355,9 +368,9 @@ class WireStep:
         github.clone(agent.repo_full_name, clone_dir)
 
         k8s_base = clone_dir / "k8s" / "base"
-        gsa_email = f"agent-{agent.name}@{config.gcp_project}.iam.gserviceaccount.com"
+        sa_email = gsa_email(agent.name, config.gcp_project)
         (k8s_base / "serviceaccount.yaml").write_text(
-            SERVICEACCOUNT_YAML_TEMPLATE.format(name=agent.name, gsa_email=gsa_email)
+            SERVICEACCOUNT_YAML_TEMPLATE.format(name=agent.name, gsa_email=sa_email)
         )
         (k8s_base / "pvc.yaml").write_text(PVC_YAML_TEMPLATE.format(name=agent.name))
 
@@ -373,8 +386,16 @@ class WireStep:
             # Idempotent resume: an earlier attempt already pushed this exact
             # wiring (or nothing about the agent's contract has changed since
             # the last successful wire) — nothing for gojira to regenerate,
-            # so don't reprovision or poll for a change that isn't coming.
-            return "no wiring changes to push"
+            # so don't reprovision for a change that isn't coming. But this
+            # step must STILL confirm gojira is active before returning: a
+            # prior attempt may have crashed after calling reprovision() but
+            # before its own _wait_active completed, in which case gojira
+            # could still be mid-provision (or have actually failed) even
+            # though there's nothing left to push. Polling is cheap when
+            # already active (the first poll returns immediately) and this
+            # is the only way to close that crash window.
+            _wait_active(ctx, agent.gojira_app_id)
+            return "no wiring changes; app active"
 
         gojira.reprovision(agent.gojira_app_id)
         return _wait_active(ctx, agent.gojira_app_id)
