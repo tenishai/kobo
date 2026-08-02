@@ -11,6 +11,7 @@
 
 import { queryOptions, type QueryClient } from "@tanstack/svelte-query";
 import {
+  ApiError,
   type AgentDetail,
   type AgentSummary,
   type Catalogs,
@@ -23,6 +24,24 @@ import {
 import { detailRefetchInterval, listRefetchInterval } from "./status";
 
 const CATALOGS_STALE_MS = 5 * 60 * 1000;
+
+/**
+ * The single retry policy for every query in the app (wired into the
+ * QueryClient's `defaultOptions.queries.retry` in App.svelte, where the
+ * client is constructed, so all queries inherit it).
+ *
+ * 4xx responses are the server telling us the request itself is bad (not
+ * found, conflict, validation, ...) — retrying won't change that, so burning
+ * TanStack's default 3 retries against them just makes an already-final
+ * result (e.g. a 404) take ~7s of backoff to render. Everything else
+ * (5xx, network errors) is retried up to 3 times, same as the library
+ * default.
+ */
+export function shouldRetry(failureCount: number, error: unknown): boolean {
+  const isClientError =
+    error instanceof ApiError && error.status >= 400 && error.status < 500;
+  return !isClientError && failureCount < 3;
+}
 
 /** The agent list. Polls at the adaptive cadence while any agent is active. */
 export function agentsQuery() {

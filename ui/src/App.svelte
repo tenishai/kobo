@@ -8,10 +8,19 @@
   import Toasts from "./components/Toasts.svelte";
   import AgentDetail from "./pages/AgentDetail.svelte";
   import Dashboard from "./pages/Dashboard.svelte";
-  import { catalogsQuery } from "./lib/queries";
+  import { catalogsQuery, shouldRetry } from "./lib/queries";
   import { route } from "./lib/router.svelte";
 
-  const queryClient = new QueryClient();
+  // `shouldRetry` (queries.ts) skips retries for 4xx responses so a 404
+  // doesn't burn TanStack's default 3 retries (~7s of backoff) before
+  // rendering — this is the one seam all queries in the tree inherit from.
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: shouldRetry,
+      },
+    },
+  });
 
   // The "warm modal" trick: catalogs (personas/skills/models) are only
   // needed once the Create modal opens, so they're not fetched on page

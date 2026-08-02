@@ -47,6 +47,14 @@ describe("parseHash", () => {
   it("falls back to the dashboard for an unrelated path", () => {
     expect(parseHash("#/settings")).toEqual({ page: "dashboard" });
   });
+
+  it("falls back to the raw segment when it is malformed percent-encoding on its own", () => {
+    expect(parseHash("#/agents/%")).toEqual({ page: "agent", name: "%" });
+  });
+
+  it("falls back to the raw segment when percent-decoding fails mid-string", () => {
+    expect(parseHash("#/agents/100%")).toEqual({ page: "agent", name: "100%" });
+  });
 });
 
 describe("formatHash", () => {

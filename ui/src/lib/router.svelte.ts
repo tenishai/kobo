@@ -18,14 +18,28 @@ const DASHBOARD: Route = { page: "dashboard" };
  * string, `#`, `#/`, `#/agents`, `#/agents/` (empty name segment), and any
  * unrelated path. Deliberately just "is there a second, nonempty path
  * segment after agents" rather than a regex mirroring the server's own
- * route matching.
+ * route matching. The name segment is percent-decoded on a best-effort
+ * basis: `decodeURIComponent` throws `URIError` on malformed
+ * percent-encoding (e.g. a lone trailing `%`, as in `#/agents/100%`), and
+ * since `route` below is initialized at module import time, an uncaught
+ * throw here would blank the whole app on page load and (post-load) kill
+ * the `hashchange` listener for the rest of the session. So a decode
+ * failure falls back to the raw, still-encoded segment instead of
+ * propagating.
  */
 export function parseHash(hash: string): Route {
   const path = hash.startsWith("#") ? hash.slice(1) : hash;
   const segments = path.split("/").filter((segment) => segment.length > 0);
 
   if (segments[0] === "agents" && segments.length > 1 && segments[1].length > 0) {
-    return { page: "agent", name: decodeURIComponent(segments[1]) };
+    const raw = segments[1];
+    let name: string;
+    try {
+      name = decodeURIComponent(raw);
+    } catch {
+      name = raw;
+    }
+    return name.length > 0 ? { page: "agent", name } : DASHBOARD;
   }
   return DASHBOARD;
 }
