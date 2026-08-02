@@ -81,3 +81,29 @@ export function stepTone(status: string): "ok" | "fail" | "active" {
       return "active";
   }
 }
+
+/**
+ * Visual tone for an agent's overall status (distinct from stepTone: an
+ * agent's own vocabulary — pending/provisioning/ready/failed — isn't the
+ * same as a step's):
+ *  - "ready"  -> ok
+ *  - "failed" -> fail
+ *  - "pending" | "provisioning" -> warn — still working, and (unlike a
+ *    step's plain "active") rendered with the amber pulse so an in-progress
+ *    agent card draws the eye on the dashboard.
+ *  - anything else (a status this code doesn't recognize) -> warn, the
+ *    safest default: it doesn't falsely claim success or failure.
+ */
+export function agentTone(status: string): "ok" | "fail" | "warn" {
+  switch (status) {
+    case "ready":
+      return "ok";
+    case "failed":
+      return "fail";
+    case "pending":
+    case "provisioning":
+      return "warn";
+    default:
+      return "warn";
+  }
+}

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   TERMINAL,
+  agentTone,
   anyAgentActive,
   detailRefetchInterval,
   isTerminal,
@@ -115,5 +116,27 @@ describe("stepTone", () => {
 
   it("maps pending -> active (queued work still reads as in-progress)", () => {
     expect(stepTone("pending")).toBe("active");
+  });
+});
+
+describe("agentTone", () => {
+  it("maps ready -> ok", () => {
+    expect(agentTone("ready")).toBe("ok");
+  });
+
+  it("maps failed -> fail", () => {
+    expect(agentTone("failed")).toBe("fail");
+  });
+
+  it("maps pending -> warn (amber pulse)", () => {
+    expect(agentTone("pending")).toBe("warn");
+  });
+
+  it("maps provisioning -> warn (amber pulse)", () => {
+    expect(agentTone("provisioning")).toBe("warn");
+  });
+
+  it("defaults an unrecognized status to warn, not a false ok/fail claim", () => {
+    expect(agentTone("something-new")).toBe("warn");
   });
 });
