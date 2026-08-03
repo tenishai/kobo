@@ -16,23 +16,27 @@ future client (e.g. an org like the employer's) would experience.
 
 ## The org model
 
-One org per pnyx deployment (multi-org is a non-goal). Org-level configuration —
+One org per pnyx deployment (multi-org is a non-goal). The `pnyx-config` repo
+configures the ROOM and nothing else — team-authored content (skills today; enforced
+tools in their own upcoming phase) never lives there. Org-level configuration —
 GitHub org name, skills repo name, catalog bucket name, model catalog, cluster,
-runtime image, model-access group — lives in the client org's **`agent-config`
+runtime image, model-access group — lives in the client org's **`pnyx-config`
 repo**: config-as-repo, versioned — org changes are commits to it (the pattern
 knowledge editing proved), authored directly or via the bootstrap tool. The room's gitignored local
 config shrinks to machine-local concerns: file paths, token locations, `db_url`,
 and the org-config repo coordinates (the one pointer that can't
 live inside what it points to).
 
-Boot: read local config → clone/fetch `agent-config` → merge (org values win for org
+Boot: read local config → clone/fetch `pnyx-config` → merge (org values win for org
 concerns; a missing org repo leaves the room in the "unwired" state with honest
 empty states pointing at the bootstrap).
 
 ## The catalog bucket
 
-One GCS bucket per client (in the client's GCP project), holding both catalogs under
-prefixes, with object versioning enabled:
+One GCS bucket per client (in the client's GCP project), holding the catalogs under
+prefixes, with object versioning enabled. The layout, publish workflow, index shape,
+and search are prefix-generic by design: the upcoming tools phase adds a `tools/`
+prefix without reworking any of this phase's machinery.
 
 ```
 gs://<org>-pnyx-catalog/
@@ -101,7 +105,7 @@ reuse) and referenced by the new agent's bundle like any catalog persona.
 
 Wiring an org is a once-per-client operator task, so it is a tool, not a UI. pnyx
 ships an idempotent, re-runnable bootstrap CLI (`python -m pnyx_api.bootstrap`,
-wrapped by a make target) that: creates `agent-config` from the tenishai template
+wrapped by a make target) that: creates `pnyx-config` from the tenishai template
 (when missing), creates the catalog bucket with object versioning, opens the PR that
 installs the publish workflow into the org's skills repo, seeds the default personas,
 and triggers the first index ingest. Each step reports done/skipped/failed plainly;
@@ -128,7 +132,7 @@ integration gate.
 ## Milestone (exit criterion)
 
 With the bootstrap tool alone, wire tenishai as pnyx's first client: one command
-creates `agent-config` and the catalog bucket, opens the publish-workflow PR against
+creates `pnyx-config` and the catalog bucket, opens the publish-workflow PR against
 `tenishai/skills` (merge it), the existing skills publish and appear in search, and
 the default personas seed. `GET /api/org/status` reports every check green. Then
 create a brand-new agent using a form-built persona and a bucket-searched,
