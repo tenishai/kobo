@@ -56,12 +56,19 @@ export class ApiError extends Error {
  * Quoted tokens in the message have their surrounding quote marks stripped
  * for display — a backend message quoting a name as `'foo-bar'` (or
  * `"foo-bar"`) reads as `foo-bar`. This is token-scoped (a matched pair of
- * quotes, not every quote character), so an apostrophe inside a contraction
- * like "isn't" is left alone — there's no second quote to pair it with.
+ * quotes, not every quote character): the single-quote pass only opens a
+ * token at an apostrophe that isn't preceded by a letter, so a contraction
+ * like "isn't" can't be mistaken for the start of a token — without that
+ * guard, a message containing both a contraction and a quoted token (e.g.
+ * `"that name isn't available: 'foo'"`) would pair the contraction's
+ * apostrophe with the token's opening quote, mangling the contraction and
+ * leaving a stray quote behind.
  */
 export function errorMessage(error: unknown, fallback: string): string {
   const message = error instanceof Error ? error.message : fallback;
-  return message.replace(/'([^']*)'/g, "$1").replace(/"([^"]*)"/g, "$1");
+  return message
+    .replace(/(?<![A-Za-z])'([^']*)'/g, "$1")
+    .replace(/"([^"]*)"/g, "$1");
 }
 
 /** Extract a `.error` string from a parsed JSON body, if it has one. */

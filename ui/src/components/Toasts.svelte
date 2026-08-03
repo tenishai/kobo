@@ -2,48 +2,69 @@
   // Renders the live toast queue (toast.svelte.ts) bottom-right. Owns no
   // state of its own — push/dismiss/auto-dismiss all live in the store;
   // this is purely the stack's visual shell plus the manual dismiss button.
-  import { dismiss, toasts } from "../lib/toast.svelte";
+  import { dismiss, toasts, type Toast } from "../lib/toast.svelte";
 </script>
 
 <!--
-  The wrapper itself is the live region — always mounted (from before any
-  toast ever exists), carrying `aria-live` so assistive tech registers it up
-  front. A screen reader reliably announces *content changing inside an
-  already-registered live region*, but is inconsistent about announcing a
-  brand-new node that arrives with its own role already attached (which is
-  what the old per-toast `role="status"` did — nothing existed to announce
-  from until the first toast, and that first toast's own arrival was the
-  thing that needed announcing).
+  Two always-mounted live regions, one per severity, instead of one shared
+  container: nesting a per-toast `role="alert"` inside a persistent
+  `aria-live="polite"` wrapper (the previous approach) is a documented ARIA
+  anti-pattern — a newly-inserted node that sits inside two live regions at
+  once can get announced twice, once per region. Splitting by kind means
+  each toast lives inside exactly one live region for its whole life, so it
+  is announced exactly once:
 
-  Error toasts additionally carry `role="alert"` themselves: unlike
-  `status`, `alert` is specified for exactly this on-demand/interrupting
-  case, so a dynamically-inserted alert node doesn't need to pre-exist to be
-  announced — it layers assertive severity on top of the container's polite
-  default rather than needing a persistent container of its own.
+  - success toasts render inside a `role="status"` (`aria-live="polite"`)
+    region, mounted before any toast ever exists so a screen reader has
+    already registered it and reliably picks up content changing inside it.
+  - error toasts render inside a `role="alert"` region — assertive by
+    implication of the role itself, no explicit `aria-live` needed —
+    likewise always mounted rather than attached per-toast.
+
+  Toast items themselves carry no `role`/`aria-live` of their own: the
+  region they land in already supplies it, and giving both the region and
+  the item their own would just recreate the double-announcement problem
+  this split exists to fix. Both regions sit in the same fixed-position
+  wrapper so the two severities still read as one visually stacked list; an
+  empty region collapses (`.toasts__region:empty`) so it doesn't leave a
+  gap when only one kind of toast is present.
 -->
-<div class="toasts" aria-live="polite" aria-atomic="false">
-  {#each toasts as item (item.id)}
-    <div
-      class="toast toast--{item.kind}"
-      role={item.kind === "error" ? "alert" : undefined}
-    >
-      <div class="toast__body">
-        <p class="toast__title">{item.title}</p>
-        {#if item.body}
-          <p class="toast__detail">{item.body}</p>
-        {/if}
-      </div>
-      <button
-        type="button"
-        class="toast__dismiss"
-        aria-label="Dismiss notification"
-        onclick={() => dismiss(item.id)}
-      >
-        &times;
-      </button>
-    </div>
-  {/each}
+<div class="toasts">
+  <div
+    class="toasts__region"
+    role="status"
+    aria-live="polite"
+    aria-atomic="false"
+  >
+    {#each toasts.filter((item) => item.kind === "success") as item (item.id)}
+      {@render toastItem(item)}
+    {/each}
+  </div>
+  <div class="toasts__region" role="alert" aria-atomic="false">
+    {#each toasts.filter((item) => item.kind === "error") as item (item.id)}
+      {@render toastItem(item)}
+    {/each}
+  </div>
 </div>
+
+{#snippet toastItem(item: Toast)}
+  <div class="toast toast--{item.kind}">
+    <div class="toast__body">
+      <p class="toast__title">{item.title}</p>
+      {#if item.body}
+        <p class="toast__detail">{item.body}</p>
+      {/if}
+    </div>
+    <button
+      type="button"
+      class="toast__dismiss"
+      aria-label="Dismiss notification"
+      onclick={() => dismiss(item.id)}
+    >
+      &times;
+    </button>
+  </div>
+{/snippet}
 
 <style>
   .toasts {
@@ -55,6 +76,16 @@
     gap: var(--space-xs);
     width: min(22rem, calc(100vw - 2 * var(--space-lg)));
     z-index: 200;
+  }
+
+  .toasts__region {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+
+  .toasts__region:empty {
+    display: none;
   }
 
   .toast {

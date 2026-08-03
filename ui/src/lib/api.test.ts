@@ -126,6 +126,15 @@ describe("errorMessage", () => {
     );
   });
 
+  it("keeps a contraction intact while unwrapping a quoted token in the same message", () => {
+    expect(
+      errorMessage(
+        new Error("that name isn't available: 'foo'"),
+        "fallback",
+      ),
+    ).toBe("that name isn't available: foo");
+  });
+
   it("falls back to the given message when the error isn't an Error", () => {
     expect(errorMessage("boom", "Couldn't load agents.")).toBe(
       "Couldn't load agents.",
