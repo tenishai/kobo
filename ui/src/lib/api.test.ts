@@ -450,10 +450,10 @@ describe("slack client", () => {
     ).rejects.toThrow("use a public channel for now (its ID starts with C)");
   });
 
-  it("connectSlack surfaces a 422's {error} message (bad token prefix)", async () => {
+  it("connectSlack surfaces a 422's {error} message (bad bot token)", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       jsonResponse(
-        { error: "bot_token must start with xoxb-" },
+        { error: "that doesn't look like a Slack bot token" },
         { status: 422, statusText: "Unprocessable Entity" },
       ),
     );
@@ -464,7 +464,24 @@ describe("slack client", () => {
         bot_token: "wrong-prefix",
         app_token: "xapp-secret",
       }),
-    ).rejects.toThrow("bot_token must start with xoxb-");
+    ).rejects.toThrow("that doesn't look like a Slack bot token");
+  });
+
+  it("connectSlack surfaces a 422's {error} message (bad app token)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "that doesn't look like a Slack app-level token" },
+        { status: 422, statusText: "Unprocessable Entity" },
+      ),
+    );
+
+    await expect(
+      connectSlack("clio", {
+        channel: "C123456",
+        bot_token: "xoxb-secret",
+        app_token: "wrong-prefix",
+      }),
+    ).rejects.toThrow("that doesn't look like a Slack app-level token");
   });
 
   it("connectSlack surfaces the plain 502 {error} message (setup failed)", async () => {
