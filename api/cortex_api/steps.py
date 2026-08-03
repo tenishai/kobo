@@ -64,6 +64,14 @@ POLL_TIMEOUT_S = 300
 BUILD_POLL_INTERVAL_S = 10
 BUILD_POLL_TIMEOUT_S = 600
 
+# Cap on how many times `head_sha` can advance (change between polls) during a
+# single BuildStep invocation. The pipeline pushes at most twice per provision
+# (WireStep's push + the platform's auto-merged setup PR landing), so at most
+# one advance is ever expected — a second advance indicates an unexpected
+# sequence of concurrent pushes and is treated as a bounded failure (raises
+# naming the observed shas) rather than looping indefinitely.
+BUILD_MAX_HEAD_ADVANCES = 2
+
 # After BuildStep fires its one self-heal rerun, gh's API can briefly still
 # echo the PRE-rerun completed/non-success payload (the same read-after-write
 # lag BuildStep already accounts for on `head_sha`) — this many polls of
@@ -459,8 +467,7 @@ class BuildStep:
     one, structurally, no matter what else is running in the repo
     concurrently.
 
-    Two more field-observed defects, both from the same live incident, are
-    fixed here together:
+    Three more field-observed defects, all addressed here, are fixed together:
 
     1. `head_sha` is re-resolved on *every* poll, not once at entry. gojira's
        setup PR auto-merges onto this repo mid-provision, and cortex's own
@@ -498,6 +505,12 @@ class BuildStep:
        Without the grace window that stale echo would be misread as a
        genuine second failure and raise immediately, before the rerun ever
        had a chance to actually run.
+
+    4. A cap on head advances (`BUILD_MAX_HEAD_ADVANCES`) prevents unbounded
+       looping if the head oscillates between multiple shas mid-poll (a sign
+       of unexpected concurrent pushes beyond the pipeline's pushes-at-most-
+       twice invariant). On exceeding the cap, BuildStep raises rather than
+       continuing to loop and potentially healing indefinitely.
     """
 
     name = "build"
@@ -523,6 +536,13 @@ class BuildStep:
         # through to the final success detail regardless of which poll it
         # happened on, since it's a fact about this invocation as a whole.
         advance_note: str | None = None
+        # Count the number of times the head advances (changes between polls);
+        # when this exceeds BUILD_MAX_HEAD_ADVANCES, raise a bounded error
+        # rather than looping indefinitely (see point 4 in the class docstring
+        # and BUILD_MAX_HEAD_ADVANCES). Track observed shas to include them
+        # in the error message.
+        head_advances = 0
+        observed_shas: list[str] = []
         # The run id the one rerun was fired against, and how many more
         # polls of that run get benefit-of-the-doubt on a stale
         # completed/non-success echo (see BUILD_RERUN_STALE_GRACE_POLLS and
@@ -547,6 +567,19 @@ class BuildStep:
         while polls_remaining > 0:
             new_sha = github.head_sha(agent.repo_full_name)
             if sha is not None and new_sha != sha:
+                head_advances += 1
+                if head_advances > BUILD_MAX_HEAD_ADVANCES:
+                    if sha not in observed_shas:
+                        observed_shas.append(sha)
+                    if new_sha not in observed_shas:
+                        observed_shas.append(new_sha)
+                    raise RuntimeError(
+                        f"head advanced more than {BUILD_MAX_HEAD_ADVANCES} times — "
+                        f"repository is receiving unexpected pushes (observed shas: "
+                        f"{observed_shas!r})"
+                    )
+                if new_sha not in observed_shas:
+                    observed_shas.append(new_sha)
                 log.info(
                     "BuildStep head for %s advanced from %s to %s mid-poll; "
                     "switching to watch the new commit",

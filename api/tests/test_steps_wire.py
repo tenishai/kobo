@@ -22,6 +22,7 @@ from cortex_api.clients import Clients
 from cortex_api.models import Agent
 from cortex_api.provisioner import Ctx
 from cortex_api.steps import (
+    BUILD_MAX_HEAD_ADVANCES,
     BUILD_POLL_INTERVAL_S,
     BUILD_POLL_TIMEOUT_S,
     TECHNE_FS_GROUP,
@@ -351,12 +352,13 @@ def test_build_step_happy_path_returns_success_detail_with_run_id(session_factor
     assert github.calls.count(f"head_sha:{repo}") == 2
 
 
-def test_build_step_resolves_sha_once_and_polls_that_exact_sha(session_factory, config):
-    """Structural stale-run immunity: BuildStep only ever asks
-    `runs_for_commit` about the sha it resolved at entry — a completed,
-    successful run sitting under some *other* commit (e.g. a regeneration
-    PR's own CI, or a prior push) is never even queried, let alone mistaken
-    for this push's result."""
+def test_build_step_re_resolves_head_each_poll_to_follow_advancing_commit(session_factory, config):
+    """BuildStep re-resolves the head sha on every poll (not just once at
+    entry) so it can follow a commit that advances mid-step. With a constant
+    head, this re-resolution means BuildStep polls exactly that sha
+    repeatedly — the same stale-run immunity as before (a completed,
+    successful run under some *other* commit is never queried), just via a
+    mechanism that also handles an advancing head correctly."""
     repo = _repo_full_name(config)
     session, agent = _make_agent(session_factory, repo_full_name=repo)
     github = FakeGitHub(
@@ -564,6 +566,39 @@ def test_build_step_does_not_settle_for_a_stale_sha_success_once_head_has_advanc
     # across an advancing head.
     assert github.calls.count(f"runs_for_commit:{repo}:sha1-wire") == 1
     assert github.rerun_calls == [(repo, 2)]
+
+
+def test_build_step_raises_on_oscillating_head_exceeding_max_advances(session_factory, config):
+    """Fix 4: an oscillating head (flapping between multiple shas) that exceeds
+    BUILD_MAX_HEAD_ADVANCES is a sign of unexpected concurrent pushes and
+    must raise a bounded error rather than looping indefinitely healing each
+    new sha in turn. The pipeline's pushes-at-most-twice invariant means a
+    sequence like sha1→sha2→sha1→sha2 is never expected and indicates a
+    structural problem — the error names the observed shas."""
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo)
+    # Construct a sequence that flaps between two shas more than
+    # BUILD_MAX_HEAD_ADVANCES times: sha1→sha2→sha1→sha2→sha1→sha2
+    # (with runs returning empty for each to force more polls).
+    flap_sequence = []
+    for _ in range(3):  # 3 flips = 6 head_sha calls covering both shas
+        flap_sequence.extend(["sha1", "sha2"])
+    github = FakeGitHub(
+        head_sha_sequence=flap_sequence,
+        runs_by_sha={
+            "sha1": [[], [], []],
+            "sha2": [[], [], []],
+        },
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    with pytest.raises(RuntimeError) as exc_info:
+        BuildStep().run(ctx)
+
+    message = str(exc_info.value)
+    assert "more than" in message
+    assert str(BUILD_MAX_HEAD_ADVANCES) in message
+    assert "sha1" in message and "sha2" in message
 
 
 def test_build_step_second_failure_after_rerun_raises_with_run_id(session_factory, config):
