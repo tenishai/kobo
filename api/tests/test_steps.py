@@ -219,6 +219,26 @@ def test_stage_skills_no_drift_leaves_row_untouched(session_factory, config, fak
     assert agent.skills == [dict(WORD_GAMES_SKILL)]
 
 
+def test_stage_skills_malicious_key_escaping_staging_dir_raises(
+    session_factory, config, fake_storage, tmp_path
+):
+    """A bucket object key is an arbitrary string, not a filesystem path —
+    the same tar-slip concern the old git-archive extraction guarded
+    against, just at download time. A crafted key that string-prefixes as
+    `shared/word-games/` but path-escapes via `..` must not be allowed to
+    write outside the skill's own staging directory."""
+    evil_key = "shared/word-games/../../../../escape.txt"
+    fake_storage.write_bytes("skills-bucket", evil_key, b"pwned\n")
+    _session, agent = _make_agent(session_factory, skills=[dict(WORD_GAMES_SKILL)])
+    staging = tmp_path / "staging"
+
+    with pytest.raises(RuntimeError, match="word-games"):
+        _stage_skills(fake_storage, config, agent, staging)
+
+    assert not (tmp_path / "escape.txt").exists()
+    assert not (staging / "escape.txt").exists()
+
+
 # --- RepoStep -----------------------------------------------------------------
 
 

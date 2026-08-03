@@ -182,6 +182,7 @@ def _stage_skills(
 
         skill_dir = staging / skill_id
         skill_dir.mkdir(parents=True, exist_ok=True)
+        resolved_skill_dir = skill_dir.resolve()
         for key in keys:
             relative = key[len(prefix) :]
             if not relative:
@@ -189,6 +190,19 @@ def _stage_skills(
                 # if the publisher writes one — nothing to download.
                 continue
             target = skill_dir / relative
+            # Containment: a bucket key is an arbitrary string, not a
+            # filesystem path — the same tar-slip concern the old git-archive
+            # extraction guarded against (see pnyx_api.composer's
+            # _materialize_skill), just at download time instead of copy
+            # time. A malicious/malformed key like
+            # "<team>/<id>/../../../etc/evil" must not be allowed to write
+            # outside this skill's own staging directory.
+            if not target.resolve().is_relative_to(resolved_skill_dir):
+                raise RuntimeError(
+                    f"skill {skill_id!r} (team {team!r}) bucket key {key!r} "
+                    f"would download outside its staging directory; refusing "
+                    "to write it"
+                )
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(storage.read_bytes(config.skills_bucket, key))
 
