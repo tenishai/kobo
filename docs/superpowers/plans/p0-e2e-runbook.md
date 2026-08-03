@@ -261,3 +261,26 @@ transport + secrets into the repo, and the P2b delivery machinery tracked the re
 Suites at close: API 403, UI 142, runtime kit 16. Seeder on the new base converged
 (`seeded=0 removed=0 unchanged=1`). Setup-card screenshots in
 `.superpowers/sdd/smoke/p2c-slack-state*.png`; the thread screenshot is Kyle's.
+
+## P2d results — avatars live (2026-08-03)
+
+Commits under test: `6d64dea`/`abab2e5` (ImageClient) → `3a7781a` (avatar module +
+routes + display cache) → `edfcde4` (UI faces). Endpoint per discovery:
+`gemini-2.5-flash-image` via `:generateContent` (us-central1) — worked first try, no
+enablement needed (the Imagen family is entitlement-blocked here and being retired;
+Google's own migration path points at this model).
+
+**Browser milestone (Playwright): PASSED — all assertions.**
+
+- "Give clio a face" → real generation → 802,564-byte PNG served from the display
+  cache, header img cache-busted with the delivery sha
+  (`?v=1629a92…`); dashboard card shows the face.
+- "New face" → "Painting…" pending state observed → NEW sha (`?v=ba7bb6d…`), different
+  bytes (760,435) — overwrite + cache-bust proven.
+- Repo record: `bundle/avatar.png` in the agent repo is 760,435 bytes — byte-identical
+  to the served cache. The repo stays the record; the DB column is a display copy.
+- Chat sanity after both rebuild-deliveries queued: *"still here"*.
+
+Screenshots in `.superpowers/sdd/smoke/p2d-*.png`. The avatar prompt is the
+deterministic template in `avatars.py` (name + persona description, flat minimal
+square portrait, no text in image).
