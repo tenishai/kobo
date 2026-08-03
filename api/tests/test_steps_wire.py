@@ -343,8 +343,12 @@ def test_build_step_happy_path_returns_success_detail_with_run_id(session_factor
     assert "deadbeef" in detail
     assert "rerun" not in detail.lower()
     assert github.calls.count(f"runs_for_commit:{repo}:deadbeef") == 2
-    # Resolved exactly once at entry, not re-resolved on every poll.
-    assert github.calls.count(f"head_sha:{repo}") == 1
+    # Adapted for Fix 2: head_sha is now re-resolved on every poll (to
+    # follow an advancing head), not resolved once at entry — so it's
+    # called once per iteration (2, matching the 2 runs_for_commit calls
+    # above), not once total. This fixed-head fake returns the same value
+    # every time, so the extra reads don't change the outcome here.
+    assert github.calls.count(f"head_sha:{repo}") == 2
 
 
 def test_build_step_resolves_sha_once_and_polls_that_exact_sha(session_factory, config):
@@ -415,8 +419,115 @@ def test_build_step_failure_triggers_one_automatic_rerun_and_self_heals(session_
     detail = BuildStep().run(ctx)
 
     assert "42" in detail
-    assert "rerun" in detail.lower()
+    # Adapted for Fix 1: the success detail now names which conclusion the
+    # rerun healed ("healed a failure run") instead of the old generic
+    # "(after automatic rerun)" phrasing — the phrasing change is the point
+    # of the fix (see the cancelled-run test below for the case that
+    # motivated it), so this no longer contains the substring "rerun".
+    assert "healed a failure run" in detail.lower()
     assert github.rerun_calls == [(repo, 42)]
+
+
+def test_build_step_heals_a_cancelled_run_not_just_a_failed_one(session_factory, config):
+    """Fix 1: BuildStep's heal-on-completed-non-success behavior isn't
+    special-cased to "failure" — a live incident saw GitHub's concurrency
+    pending-queue rule CANCEL the newer of two pending runs in a group
+    outright (rather than queueing it), and that must self-heal exactly the
+    same way a completed failure does. The success detail names the
+    conclusion it healed."""
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo)
+    github = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={
+            "deadbeef": [[{"id": 42, "status": "completed", "conclusion": "cancelled"}]]
+        },
+        rerun_result={"status": "completed", "conclusion": "success"},
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    detail = BuildStep().run(ctx)
+
+    assert "42" in detail
+    assert "healed a cancelled run" in detail.lower()
+    assert github.rerun_calls == [(repo, 42)]
+
+
+def test_build_step_follows_an_advancing_head_and_notes_it(session_factory, config):
+    """Fix 2: head_sha is re-resolved on every poll rather than once at
+    entry, so a head that advances mid-step (the platform's auto-merged
+    setup PR landing) is followed rather than left pinned to a stale read.
+    `head_sha_sequence` models two polls still seeing the pre-merge commit
+    before the third sees the merge commit as the new head."""
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo)
+    github = FakeGitHub(
+        head_sha_sequence=["sha1", "sha1", "sha2"],
+        runs_by_sha={
+            "sha1": [[], []],
+            "sha2": [[{"id": 9, "status": "completed", "conclusion": "success"}]],
+        },
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    detail = BuildStep().run(ctx)
+
+    assert "9" in detail
+    assert "sha2" in detail
+    assert "head advanced" in detail.lower()
+    assert github.calls.count(f"runs_for_commit:{repo}:sha1") == 2
+    assert github.calls.count(f"runs_for_commit:{repo}:sha2") == 1
+
+
+def test_build_step_does_not_settle_for_a_stale_sha_success_once_head_has_advanced(
+    session_factory, config
+):
+    """Regression test for the live incident described at module level: the
+    platform's auto-merged setup PR landed while BuildStep was mid-poll, and
+    a single stale head_sha read matched the WIRE commit's already-completed
+    success while the *real* head had moved on to the merge commit — whose
+    own CI run had been CANCELLED by GitHub's concurrency pending-queue
+    rule. Shipped a stale tree that DeployStep's verification then correctly
+    rejected two steps later.
+
+    Sequenced so the pre-fix code (a single head_sha resolve at entry) would
+    poll only sha1-wire and see its success on that commit's *second* poll —
+    i.e. it would have passed on the stale success. The fixed code must
+    instead notice, on its own second poll, that head has already advanced
+    to sha2-merge, switch to watching it from then on (never re-querying
+    sha1-wire again, so it never even sees that stale success), and heal
+    sha2-merge's cancelled run.
+    """
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo)
+    github = FakeGitHub(
+        head_sha_sequence=["sha1-wire", "sha2-merge", "sha2-merge"],
+        runs_by_sha={
+            "sha1-wire": [
+                [{"id": 1, "status": "in_progress", "conclusion": None}],
+                [{"id": 1, "status": "completed", "conclusion": "success"}],
+            ],
+            "sha2-merge": [
+                [{"id": 2, "status": "completed", "conclusion": "cancelled"}],
+            ],
+        },
+        rerun_result={"status": "completed", "conclusion": "success"},
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    detail = BuildStep().run(ctx)
+
+    assert "2" in detail
+    assert "sha2-merge" in detail
+    assert "healed a cancelled run" in detail.lower()
+    assert "head advanced" in detail.lower()
+    # sha1-wire is only ever polled once (the in-progress poll) — its own
+    # eventual success (poll 2, never reached) is never queried once the
+    # head has moved on, structurally the same "never mistaken for this
+    # commit" guarantee BuildStep already had per-invocation, now extended
+    # across an advancing head.
+    assert github.calls.count(f"runs_for_commit:{repo}:sha1-wire") == 1
+    assert github.rerun_calls == [(repo, 2)]
 
 
 def test_build_step_second_failure_after_rerun_raises_with_run_id(session_factory, config):
@@ -533,7 +644,9 @@ def test_build_step_rerun_resets_poll_budget_so_a_late_failure_does_not_starve_t
     detail = BuildStep().run(ctx)
 
     assert "1" in detail
-    assert "rerun" in detail.lower()
+    # Adapted for Fix 1 (see the note on the failure-heals test above): the
+    # success detail names the healed conclusion instead of saying "rerun".
+    assert "healed a failure run" in detail.lower()
     assert github.rerun_calls == [(repo, 1)]
 
 

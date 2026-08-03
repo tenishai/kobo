@@ -434,28 +434,49 @@ class WireStep:
 
 
 class BuildStep:
-    """Polls the pushed repo's CI run for the *expected* commit until it
-    completes, self-healing one first-run auth-propagation failure along the
-    way; raises unless it eventually succeeds.
+    """Polls the pushed repo's CI run for the repo's *current* head commit
+    until it completes, self-healing one first-run failure per watched
+    commit along the way; raises unless it eventually succeeds.
 
     Replaces an earlier version that watched `github.latest_run` (the most
     recent run anywhere in the repo) and could latch onto a stale run: a
     regeneration PR's own CI completing right after this step's real push
-    could be mistaken for this push's result. Fixed by resolving the pushed
-    commit's sha once, up front, and polling `runs_for_commit` against that
-    exact sha for the rest of this invocation — a run for any other commit
-    can never be mistaken for this one, structurally, no matter what else
-    is running in the repo concurrently.
+    could be mistaken for this push's result. Fixed by polling
+    `runs_for_commit` against a specific sha rather than "latest across the
+    whole repo" — a run for any other commit can never be mistaken for this
+    one, structurally, no matter what else is running in the repo
+    concurrently.
 
-    The other field-observed defect this fixes: cortex's first two live
-    builds both failed on WIF auth propagation (the freshly-created repo's
-    OIDC trust wasn't yet visible to the very first workflow run), and the
-    product's Retry button just re-polled that same failed run forever —
-    an operator had to `gh run rerun` by hand to unstick it. Now a
-    completed failure triggers exactly one automatic rerun per BuildStep
-    invocation (so Retry is self-sufficient); a second failure against the
-    same commit in the same invocation is treated as a real failure and
-    raises.
+    Two more field-observed defects, both from the same live incident, are
+    fixed here together:
+
+    1. `head_sha` is re-resolved on *every* poll, not once at entry. gojira's
+       setup PR auto-merges onto this repo mid-provision, and cortex's own
+       WireStep push races that merge landing — a single read-after-write
+       can catch the head mid-transition and pin the rest of this
+       invocation to a commit that's already been superseded. Nothing else
+       pushes to these repos, so a resolved head that changes between polls
+       means exactly one thing: the setup-PR merge just landed. When that
+       happens, BuildStep switches to watching the new sha from that poll
+       onward (noted in the detail string) rather than staying pinned to
+       the stale one — the one-rerun heal budget below applies per watched
+       sha, so an advance gets its own fresh budget (bounded: this
+       pipeline pushes at most twice per provision, so at most one advance
+       is ever expected).
+
+    2. A completed run's *conclusion* is treated as heal-able whenever it
+       isn't "success" — not only on an auth-propagation failure (cortex's
+       first two live builds both failed on WIF auth propagation, the
+       original motivation for the rerun), but also e.g. "cancelled": a live
+       incident saw GitHub's concurrency pending-queue rule cancel the newer
+       of two pending runs in a group outright rather than queueing it. The
+       product's Retry button used to just re-poll that same stuck run
+       forever, requiring an operator to `gh run rerun` by hand — now any
+       completed non-success conclusion triggers exactly one automatic
+       rerun per watched sha (so Retry is self-sufficient), and the eventual
+       success detail names which conclusion it healed. A second non-success
+       against the same watched sha in the same invocation is treated as a
+       real failure and raises, naming the run id and conclusion.
     """
 
     name = "build"
@@ -465,12 +486,22 @@ class BuildStep:
         agent = ctx.agent
         github = ctx.clients.github
 
-        # Resolved once, at entry — never re-resolved mid-poll, so a
-        # regeneration PR (or any other push) landing on the repo partway
-        # through this step's polling can't shift which commit is being
-        # watched.
-        sha = github.head_sha(agent.repo_full_name)
+        # Watched sha: re-resolved at the top of every iteration below
+        # (never cached across polls) — `sha` starts as None purely so the
+        # very first resolve is recognized as "establishing a baseline"
+        # rather than "the head just advanced".
+        sha: str | None = None
         rerun_attempted = False
+        # The conclusion the one-per-watched-sha rerun healed, if any — named
+        # in the eventual success detail rather than the old generic
+        # "(after automatic rerun)" phrasing, since the fix that made any
+        # non-success conclusion heal-able (not just "failure") makes naming
+        # which one actually happened worth surfacing.
+        healed_conclusion: str | None = None
+        # Set once if/when the watched head advances mid-poll; carried
+        # through to the final success detail regardless of which poll it
+        # happened on, since it's a fact about this invocation as a whole.
+        advance_note: str | None = None
 
         max_polls = BUILD_POLL_TIMEOUT_S // BUILD_POLL_INTERVAL_S
         # A countdown rather than `for poll_count in range(max_polls)` so the
@@ -478,12 +509,28 @@ class BuildStep:
         # (say, poll 55 of 60) would otherwise leave the healed rerun only
         # the few polls left in the *original* budget to complete in,
         # starving it of the time a fresh build actually needs. Bounded:
-        # this reset can fire at most once per invocation (gated by
-        # `rerun_attempted`, same as the rerun itself), so the worst case is
-        # two full budgets — 2x BUILD_POLL_TIMEOUT_S — never unbounded.
+        # this reset can fire at most once per watched sha (gated by
+        # `rerun_attempted`), so the worst case is two full budgets per sha
+        # — never unbounded. Note this countdown is NOT reset merely because
+        # the watched sha advances — only an actual rerun resets it — so the
+        # overall timeout still bounds the invocation even across an advance.
         polls_remaining = max_polls
         runs: list[dict] = []
         while polls_remaining > 0:
+            new_sha = github.head_sha(agent.repo_full_name)
+            if sha is not None and new_sha != sha:
+                log.info(
+                    "BuildStep head for %s advanced from %s to %s mid-poll; "
+                    "switching to watch the new commit",
+                    agent.repo_full_name, sha, new_sha,
+                )
+                advance_note = f"head advanced to {new_sha[:8]}"
+                # A new commit gets its own one-rerun heal budget — the old
+                # sha's rerun (if any) has no bearing on this one.
+                rerun_attempted = False
+                healed_conclusion = None
+            sha = new_sha
+
             runs = github.runs_for_commit(agent.repo_full_name, sha)
             polls_remaining -= 1
 
@@ -500,12 +547,18 @@ class BuildStep:
                     run_id = run.get("id")
                     conclusion = run.get("conclusion")
                     if conclusion == "success":
-                        healed = " (after automatic rerun)" if rerun_attempted else ""
+                        notes = []
+                        if healed_conclusion is not None:
+                            notes.append(f"healed a {healed_conclusion} run")
+                        if advance_note is not None:
+                            notes.append(advance_note)
+                        suffix = f" ({'; '.join(notes)})" if notes else ""
                         return (
-                            f"build run {run_id} succeeded for commit {sha}{healed}"
+                            f"build run {run_id} succeeded for commit {sha}{suffix}"
                         )
                     if not rerun_attempted:
                         rerun_attempted = True
+                        healed_conclusion = conclusion
                         log.info(
                             "build run %s for commit %s completed with conclusion "
                             "%r; auto-rerunning once",

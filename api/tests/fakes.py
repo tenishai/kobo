@@ -158,10 +158,16 @@ class FakeGitHub:
     dicts `runs_for_commit` would return that time (an empty list models CI
     registration lag — no run yet for that commit). Each sha's sequence holds
     at its last entry once exhausted, same replay convention as
-    `commit_push_results`. `head_sha` always answers with the fixed
-    `head_sha` the fake was constructed with — BuildStep is expected to
-    resolve it exactly once per invocation and poll that same value
-    throughout.
+    `commit_push_results`. `head_sha` answers with the fixed `head_sha` the
+    fake was constructed with, unless `head_sha_sequence` is given, in which
+    case each call returns the next entry (holding at the last one once
+    exhausted — same replay convention as everything else here). BuildStep
+    now resolves head_sha fresh on every poll (Fix 2: following an
+    advancing head rather than pinning a stale read), so
+    `head_sha_sequence` is how a test simulates the platform's setup-PR
+    merge landing mid-poll — e.g. `["sha1", "sha1", "sha2"]` models two
+    polls still seeing the pre-merge commit before the third sees the
+    merge commit as head.
 
     `rerun(repo, run_id)` mirrors gh's real behavior of reusing the run's id
     rather than minting a new one: it records the call in `rerun_calls` and
@@ -178,6 +184,7 @@ class FakeGitHub:
         existing_repos: set[str] | None = None,
         commit_push_results: list[bool] | None = None,
         head_sha: str = "deadbeef",
+        head_sha_sequence: list[str] | None = None,
         runs_by_sha: dict[str, list[list[dict]]] | None = None,
         rerun_result: dict | None = None,
     ):
@@ -190,6 +197,8 @@ class FakeGitHub:
         self._commit_push_index = 0
 
         self._head_sha = head_sha
+        self._head_sha_sequence = list(head_sha_sequence) if head_sha_sequence else None
+        self._head_sha_index = 0
         self._runs_by_sha: dict[str, list[list[dict]]] = {
             sha: [list(poll) for poll in sequence]
             for sha, sequence in (runs_by_sha or {}).items()
@@ -240,6 +249,11 @@ class FakeGitHub:
 
     def head_sha(self, repo: str) -> str:
         self.calls.append(f"head_sha:{repo}")
+        if self._head_sha_sequence is not None:
+            index = min(self._head_sha_index, len(self._head_sha_sequence) - 1)
+            if self._head_sha_index < len(self._head_sha_sequence) - 1:
+                self._head_sha_index += 1
+            return self._head_sha_sequence[index]
         return self._head_sha
 
     def runs_for_commit(self, repo: str, sha: str) -> list[dict]:
