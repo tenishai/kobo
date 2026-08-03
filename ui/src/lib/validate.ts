@@ -1,7 +1,7 @@
-// Client-side mirror of the API's name rule (cortex_api's `NAME_RE`:
+// Client-side mirror of the API's name rule (pnyx_api's `NAME_RE`:
 // `^[a-z][a-z0-9-]{1,23}$` plus `MAX_NAME_LENGTH = 24`, so 2-24 chars,
 // lowercase letter/digit/hyphen, must start with a letter, must not end
-// with a hyphen — cortex_api.catalog.validate_name enforces the exact same
+// with a hyphen — pnyx_api.catalog.validate_name enforces the exact same
 // four checks, in the exact same order). The server is still authoritative
 // (`checkAvailability`'s round trip is the source of truth) — this only
 // exists so the Create modal can reject an obviously-bad name on every

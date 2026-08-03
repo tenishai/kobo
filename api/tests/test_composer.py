@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from cortex_api.catalog import SkillInfo
-from cortex_api.composer import BundleSpec, ComposeError, compose, validate_agent_yaml
+from pnyx_api.catalog import SkillInfo
+from pnyx_api.composer import BundleSpec, ComposeError, compose, validate_agent_yaml
 
 _RUNTIME_IMAGE = "registry.example/agents/daedalus-runtime:latest"
 
@@ -131,7 +131,7 @@ def test_compose_agent_card_lists_picked_skills(tmp_path):
     card = json.loads((dest / "bundle" / "agent-card.json").read_text())
     assert card == {
         "name": "sam",
-        "description": "Assembled by cortex.",
+        "description": "Assembled by pnyx.",
         "version": "0.1.0",
         "capabilities": [],
         "skills": [{"id": "echo"}],
@@ -166,7 +166,7 @@ def test_compose_knowledge_gotchas_content(tmp_path):
 
     assert (dest / "bundle" / "knowledge" / "gotchas.md").read_text() == (
         "## Deployment chain\n"
-        "You were assembled in the cortex assembly room and deployed through the\n"
+        "You were assembled in the pnyx assembly room and deployed through the\n"
         "platform chain: repo, onboarding, build, deploy, first contact. If someone\n"
         "asks how you got here, tell them that.\n"
     )
@@ -218,7 +218,7 @@ def test_compose_copies_multiple_skills_by_id(tmp_path):
 # `_make_skill` above (plain directory, no `.git`) exercises the fallback path
 # and is left untouched by all of this — the tests below build a *real*
 # git-backed skills repo so the sha-aware `git archive` path in
-# `_materialize_skill` (cortex_api.composer) actually activates.
+# `_materialize_skill` (pnyx_api.composer) actually activates.
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -330,7 +330,7 @@ def test_compose_pinned_skill_ships_old_content_after_head_advances(tmp_path):
     Advance the skills repo's HEAD with changed content after recording a
     sha, then compose with that OLD sha — the bundle must carry the OLD
     bytes, proving materialization reads the pinned commit, not the working
-    tree gojira/cortex-api would otherwise see."""
+    tree gojira/pnyx-api would otherwise see."""
     skills_repo, old_skill = _make_git_skill(tmp_path, body="OLD echo skill body.\n")
 
     (skills_repo / "skills" / "echo" / "SKILL.md").write_text(

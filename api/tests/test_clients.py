@@ -1,4 +1,4 @@
-"""Tests for cortex_api.clients: real-client argv/request construction (via a
+"""Tests for pnyx_api.clients: real-client argv/request construction (via a
 RecordingRunner and httpx.MockTransport — no real subprocesses or network),
 plus structural checks that the fakes satisfy the Protocols.
 """
@@ -20,7 +20,7 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from cortex_api.clients import (
+from pnyx_api.clients import (
     AgentClient,
     ChatMessage,
     ClientError,
@@ -47,7 +47,7 @@ from cortex_api.clients import (
     _wait_for_forwarded_port,
     _write_slack_tokens,
 )
-from cortex_api.config import Config
+from pnyx_api.config import Config
 from tests.fakes import (
     FakeAgent,
     FakeCloud,
@@ -131,8 +131,8 @@ def test_run_bytes_passes_stdin_bytes_through():
 def test_run_wraps_missing_binary_as_client_error():
     runner = CommandRunner()
     with pytest.raises(ClientError) as exc_info:
-        runner.run(["cortex-test-nonexistent-binary-xyz"])
-    assert "cortex-test-nonexistent-binary-xyz" in str(exc_info.value)
+        runner.run(["pnyx-test-nonexistent-binary-xyz"])
+    assert "pnyx-test-nonexistent-binary-xyz" in str(exc_info.value)
     assert "not found on PATH" in str(exc_info.value)
     assert isinstance(exc_info.value.__cause__, FileNotFoundError)
 
@@ -140,8 +140,8 @@ def test_run_wraps_missing_binary_as_client_error():
 def test_run_bytes_wraps_missing_binary_as_client_error():
     runner = CommandRunner()
     with pytest.raises(ClientError) as exc_info:
-        runner.run_bytes(["cortex-test-nonexistent-binary-xyz"])
-    assert "cortex-test-nonexistent-binary-xyz" in str(exc_info.value)
+        runner.run_bytes(["pnyx-test-nonexistent-binary-xyz"])
+    assert "pnyx-test-nonexistent-binary-xyz" in str(exc_info.value)
     assert "not found on PATH" in str(exc_info.value)
     assert isinstance(exc_info.value.__cause__, FileNotFoundError)
 
@@ -157,7 +157,7 @@ def test_run_bytes_wraps_missing_binary_as_client_error():
 
 def test_run_redact_args_true_hides_argv_from_debug_log(caplog):
     runner = CommandRunner()
-    with caplog.at_level(logging.DEBUG, logger="cortex_api.clients"):
+    with caplog.at_level(logging.DEBUG, logger="pnyx_api.clients"):
         runner.run(["echo", "--from-literal=X=secretvalue"], redact_args=True)
     assert "secretvalue" not in caplog.text
 
@@ -166,7 +166,7 @@ def test_run_redact_args_false_by_default_still_logs_full_argv(caplog):
     # Baseline: redact_args defaults to False, so every other (non-secret-
     # bearing) caller's existing debug-log behavior is unchanged by this fix.
     runner = CommandRunner()
-    with caplog.at_level(logging.DEBUG, logger="cortex_api.clients"):
+    with caplog.at_level(logging.DEBUG, logger="pnyx_api.clients"):
         runner.run(["echo", "harmless-marker-value"])
     assert "harmless-marker-value" in caplog.text
 
@@ -783,7 +783,7 @@ def test_send_task_wraps_popen_oserror_as_client_error(monkeypatch):
     def raise_oserror(*args, **kwargs):
         raise OSError("no such file or directory: kubectl")
 
-    monkeypatch.setattr("cortex_api.clients.subprocess.Popen", raise_oserror)
+    monkeypatch.setattr("pnyx_api.clients.subprocess.Popen", raise_oserror)
 
     client = KubectlAgentClient()
     with pytest.raises(ClientError) as exc_info:
@@ -797,7 +797,7 @@ def test_agent_hello_times_out_and_cleans_up_when_port_forward_hangs(monkeypatch
     event = threading.Event()  # never set -> fake stdout.readline() never returns
     fake_proc = _FakeBlockingPopen(event)
     monkeypatch.setattr(
-        "cortex_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
+        "pnyx_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
     )
 
     client = KubectlAgentClient(port_forward_timeout_s=0.5)
@@ -820,7 +820,7 @@ def test_agent_hello_times_out_and_cleans_up_when_port_forward_hangs(monkeypatch
 def test_agent_hello_terminates_port_forward_on_success(monkeypatch):
     fake_proc = _FakePopen(["Forwarding from 127.0.0.1:54321 -> 80\n"])
     monkeypatch.setattr(
-        "cortex_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
+        "pnyx_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
     )
     captured = {}
 
@@ -849,7 +849,7 @@ def test_agent_hello_terminates_port_forward_on_success(monkeypatch):
 def test_agent_hello_terminates_port_forward_even_on_post_failure(monkeypatch):
     fake_proc = _FakePopen(["Forwarding from 127.0.0.1:54321 -> 80\n"])
     monkeypatch.setattr(
-        "cortex_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
+        "pnyx_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -868,7 +868,7 @@ def test_agent_hello_terminates_port_forward_even_on_post_failure(monkeypatch):
 def test_agent_converse_sends_multi_turn_history_and_terminates_port_forward(monkeypatch):
     fake_proc = _FakePopen(["Forwarding from 127.0.0.1:54321 -> 80\n"])
     monkeypatch.setattr(
-        "cortex_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
+        "pnyx_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
     )
     captured = {}
 
@@ -904,7 +904,7 @@ def test_agent_converse_terminates_port_forward_even_on_post_failure(monkeypatch
     # re-exercised through converse() over the shared _send_task machinery.
     fake_proc = _FakePopen(["Forwarding from 127.0.0.1:54321 -> 80\n"])
     monkeypatch.setattr(
-        "cortex_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
+        "pnyx_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1087,7 +1087,7 @@ def test_write_slack_tokens_tmp_file_never_wider_than_0600_before_copymode(tmp_p
         captured["tmp_mode_before_copymode"] = os.stat(dst).st_mode & 0o777
         return real_copymode(src, dst)
 
-    monkeypatch.setattr("cortex_api.clients.shutil.copymode", spy_copymode)
+    monkeypatch.setattr("pnyx_api.clients.shutil.copymode", spy_copymode)
 
     _write_slack_tokens(tokens_path, "new-config", "new-refresh")
 
@@ -1396,7 +1396,7 @@ def test_vertex_image_client_default_http_client_has_generous_timeout():
 
 def test_vertex_image_client_default_token_provider_is_gcloud_print_access_token():
     # No existing google-auth idiom exists anywhere in this codebase (grepped
-    # cortex_api and the wider repo) — the default shells `gcloud auth
+    # pnyx_api and the wider repo) — the default shells `gcloud auth
     # print-access-token` through CommandRunner, mirroring every other real
     # client in this module (GhCLI, GcloudClient, KubectlCLI all shell out
     # rather than use a google-auth library).

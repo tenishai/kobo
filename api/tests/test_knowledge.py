@@ -1,6 +1,6 @@
-"""Tests for cortex_api.knowledge: read/save/delete an agent bundle's
+"""Tests for pnyx_api.knowledge: read/save/delete an agent bundle's
 `bundle/knowledge/*.md` seed-memory files, and the stateless delivery check
-(cortex_api.knowledge.delivery_state), all against the FakeGitHub/FakeKubectl
+(pnyx_api.knowledge.delivery_state), all against the FakeGitHub/FakeKubectl
 fakes — no real git/kubectl involved.
 """
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from cortex_api.knowledge import (
+from pnyx_api.knowledge import (
     KNOWLEDGE_MAX_BYTES,
     KnowledgeError,
     KnowledgeFile,
@@ -81,7 +81,7 @@ def test_save_knowledge_file_writes_content_commits_and_returns_local_head():
     result = save_knowledge_file(github, "acme/agent-clio", "gotchas.md", "new content")
 
     assert github.captured_knowledge == {"gotchas.md": "new content"}
-    assert github.pushes[-1][1] == "cortex: update knowledge/gotchas.md"
+    assert github.pushes[-1][1] == "pnyx: update knowledge/gotchas.md"
     assert result == FAKE_LOCAL_HEAD_DEFAULT
     assert github.local_head_calls == [github.pushes[-1][0]]
 
@@ -152,7 +152,7 @@ def test_delete_knowledge_file_removes_and_commits():
     result = delete_knowledge_file(github, "acme/agent-clio", "gotchas.md")
 
     assert github.captured_knowledge == {"keep.md": "stay"}
-    assert github.pushes[-1][1] == "cortex: remove knowledge/gotchas.md"
+    assert github.pushes[-1][1] == "pnyx: remove knowledge/gotchas.md"
     assert result == FAKE_LOCAL_HEAD_DEFAULT
 
 
@@ -260,7 +260,7 @@ def test_delivery_state_delivered_when_success_and_image_matches():
 
 
 def test_delivery_state_newest_run_is_index_zero():
-    # Mirrors BuildStep's convention (cortex_api.steps.BuildStep): runs are
+    # Mirrors BuildStep's convention (pnyx_api.steps.BuildStep): runs are
     # newest-first, so a stale earlier failing entry at index 1 must not
     # override a successful run at index 0.
     sha = "ed17ed17ed17ed17ed17ed17ed17ed17ed17ed17"

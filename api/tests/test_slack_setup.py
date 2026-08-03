@@ -1,4 +1,4 @@
-"""Tests for cortex_api.slack_setup: manifest rendering, the KubectlCLI
+"""Tests for pnyx_api.slack_setup: manifest rendering, the KubectlCLI
 secret-delivery argv, and wire_slack's fake-level repo/reprovision wiring.
 
 No real subprocess/network/git anywhere: KubectlCLI's two-stage
@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from cortex_api.clients import ClientError, KubectlCLI
-from cortex_api.slack_setup import (
+from pnyx_api.clients import ClientError, KubectlCLI
+from pnyx_api.slack_setup import (
     _update_dockerfile_runtime_image,
     render_manifest,
     wait_active,
@@ -46,7 +46,7 @@ RUNTIME_IMAGE = "registry.example/agents/daedalus-runtime:new"
 def _no_real_sleep(monkeypatch):
     """wait_active (direct, and via wire_slack) runs a poll loop — never let
     it sleep for real, same discipline as test_steps_wire.py's own fixture."""
-    import cortex_api.slack_setup as slack_setup_module
+    import pnyx_api.slack_setup as slack_setup_module
 
     monkeypatch.setattr(slack_setup_module, "_sleep", lambda seconds: None)
 
@@ -269,7 +269,7 @@ def test_wait_active_raises_client_error_on_timeout():
 # is given (default None => no bundle/ tree at all, so bare FakeGitHub()
 # stays inert for every pre-existing non-wire_slack test). Every wire_slack
 # test needs the file on disk to edit, so _CapturingGitHub below defaults
-# the knob to a real bundle's starting shape (matching cortex_api.composer's
+# the knob to a real bundle's starting shape (matching pnyx_api.composer's
 # rendering) unless a test passes its own transports list explicitly.
 _DEFAULT_AGENT_YAML_TRANSPORTS = [{"kind": "a2a", "host": "0.0.0.0", "port": 8080}]
 
@@ -381,7 +381,7 @@ def test_wire_slack_commit_message_exact():
     github = _CapturingGitHub()
     _wire(github=github)
 
-    assert github.pushes[-1][1] == "cortex: connect slack"
+    assert github.pushes[-1][1] == "pnyx: connect slack"
 
 
 def test_wire_slack_returns_local_head():
@@ -503,7 +503,7 @@ def test_update_dockerfile_runtime_image_raises_client_error_when_no_from_line(t
 
 
 def test_update_dockerfile_runtime_image_raises_client_error_when_dockerfile_missing(tmp_path):
-    # Same idiom as cortex_api.clients._read_slack_tokens: a missing file
+    # Same idiom as pnyx_api.clients._read_slack_tokens: a missing file
     # raises ClientError naming only the path, not a raw FileNotFoundError/
     # OSError escaping to a caller that only expects ClientError.
     missing = tmp_path / "Dockerfile"

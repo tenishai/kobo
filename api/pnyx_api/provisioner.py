@@ -3,7 +3,7 @@
 Mirrors gojira's `start_provision` shape: `run_pipeline` fires a daemon thread
 that walks an ordered list of `Step`s against a fresh session of its own
 (opened from `session_factory`, per the file-SQLite `check_same_thread=False`
-threading pattern in `cortex_api.db`/`tests/conftest.py`) and returns
+threading pattern in `pnyx_api.db`/`tests/conftest.py`) and returns
 immediately, leaving the caller to poll the ledger (`AgentStep` rows) for
 progress rather than block on completion.
 
@@ -14,7 +14,7 @@ DONE or SKIPPED. That resume story only covers failures raised from inside a
 step's own `run()`; engine-level failures (workdir setup, a session commit, a
 missing agent row) don't get a step boundary to land on, so they're caught at
 the pipeline level instead and the agent is marked FAILED directly.
-Steps themselves arrived in Tasks 6-8 (`cortex_api.steps`); the engine itself
+Steps themselves arrived in Tasks 6-8 (`pnyx_api.steps`); the engine itself
 is exercised in `tests/test_engine.py` against toy steps, while `PIPELINE`
 (the real, assembled step order) and `STEP_LABELS` below are exercised
 end-to-end through the fake platform clients in `tests/test_api_agents.py`.
@@ -31,10 +31,10 @@ from typing import Protocol
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from cortex_api.clients import Clients
-from cortex_api.config import Config
-from cortex_api.models import Agent, AgentStatus, AgentStep, StepStatus
-from cortex_api.steps import (
+from pnyx_api.clients import Clients
+from pnyx_api.config import Config
+from pnyx_api.models import Agent, AgentStatus, AgentStep, StepStatus
+from pnyx_api.steps import (
     AccessStep,
     BuildStep,
     DeployStep,

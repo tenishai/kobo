@@ -13,9 +13,9 @@ test:
 	venv/bin/python -m pytest -q
 
 lint:
-	venv/bin/ruff check cortex_api tests
+	venv/bin/ruff check pnyx_api tests
 
 check: lint test
 
 run:
-	venv/bin/uvicorn --factory cortex_api.main:build_default_app --port 8100
+	venv/bin/uvicorn --factory pnyx_api.main:build_default_app --port 8100

@@ -1,4 +1,4 @@
-"""Tests for cortex_api.avatars: the deterministic avatar prompt template
+"""Tests for pnyx_api.avatars: the deterministic avatar prompt template
 and the clone/write/commit push of a generated PNG to `bundle/avatar.png`,
 against the FakeGitHub fake — no real git/Vertex AI involved.
 """
@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cortex_api.avatars import avatar_prompt, set_avatar
+from pnyx_api.avatars import avatar_prompt, set_avatar
 from tests.fakes import FAKE_LOCAL_HEAD_DEFAULT, FakeGitHub
 
 NAME = "clio"
@@ -72,7 +72,7 @@ def test_set_avatar_writes_exact_bytes_commits_and_returns_local_head():
     result = set_avatar(github, repo="acme/agent-clio", png=png_bytes)
 
     assert github.captured_avatar_bytes == png_bytes
-    assert github.pushes[-1][1] == "cortex: set avatar"
+    assert github.pushes[-1][1] == "pnyx: set avatar"
     assert result == FAKE_LOCAL_HEAD_DEFAULT
     assert github.local_head_calls == [github.pushes[-1][0]]
 

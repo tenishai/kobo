@@ -1,7 +1,7 @@
 """Bundle composer: writes a daedalus agent bundle tree to disk and validates
 `agent.yaml` against a vendored copy of daedalus's `docs/bundle.schema.json`.
 
-The schema lives at `cortex_api/vendor/bundle.schema.json`, copied verbatim
+The schema lives at `pnyx_api/vendor/bundle.schema.json`, copied verbatim
 from the daedalus repo — never hand-edited.
 """
 
@@ -18,8 +18,8 @@ from pathlib import Path
 import jsonschema
 import yaml
 
-from cortex_api.catalog import SkillInfo
-from cortex_api.clients import ClientError, CommandRunner
+from pnyx_api.catalog import SkillInfo
+from pnyx_api.clients import ClientError, CommandRunner
 
 _VENDOR_SCHEMA_PATH = Path(__file__).parent / "vendor" / "bundle.schema.json"
 
@@ -30,7 +30,7 @@ _AGENT_MODEL_DEFAULT_RE = re.compile(r"\$\{AGENT_MODEL:-([^}]*)\}")
 
 _GOTCHAS_MD = (
     "## Deployment chain\n"
-    "You were assembled in the cortex assembly room and deployed through the\n"
+    "You were assembled in the pnyx assembly room and deployed through the\n"
     "platform chain: repo, onboarding, build, deploy, first contact. If someone\n"
     "asks how you got here, tell them that.\n"
 )
@@ -139,7 +139,7 @@ def _render_agent_yaml(spec: BundleSpec) -> str:
 def _agent_card(spec: BundleSpec) -> dict:
     return {
         "name": spec.name,
-        "description": "Assembled by cortex.",
+        "description": "Assembled by pnyx.",
         "version": "0.1.0",
         "capabilities": [],
         "skills": [{"id": skill.id} for skill in spec.skills],

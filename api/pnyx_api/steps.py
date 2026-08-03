@@ -1,6 +1,6 @@
 """Provisioning steps: repo, onboard, access, wire, build, deploy.
 
-Each class satisfies `cortex_api.provisioner.Step` (a `name` attribute plus
+Each class satisfies `pnyx_api.provisioner.Step` (a `name` attribute plus
 `run(ctx) -> str`) and is meant to run inside `run_pipeline`'s per-step
 try/except boundary: raising from `run()` fails just that step (and aborts
 everything after it), returning hands the pipeline a human-readable detail
@@ -10,7 +10,7 @@ Resume story for both external-creation steps (repo, onboard) mirrors the
 same shape: re-check the outside world's state rather than trusting only
 what's in the DB row, and only treat a pre-existing thing as *this* agent's
 prior work when the row already recorded it — otherwise raise, since a
-same-named repo/app that cortex didn't create is not safe to adopt silently.
+same-named repo/app that pnyx didn't create is not safe to adopt silently.
 
 WireStep encodes the single highest-stakes finding from this project's live
 P0 E2E: gojira's generator *preserves* existing `k8s/base/kustomization.yaml`
@@ -38,20 +38,20 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from cortex_api.catalog import list_personas, list_skills
-from cortex_api.clients import GojiraConflict, gsa_email
-from cortex_api.composer import BundleSpec, compose, validate_agent_yaml
-from cortex_api.config import Config
-from cortex_api.models import Agent
+from pnyx_api.catalog import list_personas, list_skills
+from pnyx_api.clients import GojiraConflict, gsa_email
+from pnyx_api.composer import BundleSpec, compose, validate_agent_yaml
+from pnyx_api.config import Config
+from pnyx_api.models import Agent
 
 log = logging.getLogger(__name__)
 
-# Type-only: `cortex_api.provisioner` imports this module (for `PIPELINE`), so a
+# Type-only: `pnyx_api.provisioner` imports this module (for `PIPELINE`), so a
 # runtime import here would be circular. `from __future__ import annotations`
 # (above) already makes every annotation in this file a lazy string, so `Ctx`
 # is only ever needed by type checkers, never at import time.
 if TYPE_CHECKING:
-    from cortex_api.provisioner import Ctx
+    from pnyx_api.provisioner import Ctx
 
 # Gojira onboarding poll cadence: every 5s, up to 300s total (the brief's numbers,
 # as module constants so both the step and its tests share one source of truth).
@@ -116,11 +116,11 @@ def _resolve_skills(config: Config, agent: Agent) -> list:
     Pinning (Task 6): the catalog lookup is by id only — its SkillInfo always
     carries the skills repo's *current* HEAD sha (`list_skills`'s scan). The
     row's own recorded `sha` (set once, at first successful resolution — see
-    `cortex_api.main`'s create-agent route) is authoritative over that and is
+    `pnyx_api.main`'s create-agent route) is authoritative over that and is
     substituted in here on every resolution, first-time or retry alike: a
     retry after the skills repo's HEAD has since moved must still compose the
     content from the sha this agent actually picked, not whatever HEAD is now.
-    `compose()` (cortex_api.composer) is what actually enforces this pin, by
+    `compose()` (pnyx_api.composer) is what actually enforces this pin, by
     materializing each skill via `git archive` at the sha it's handed here
     rather than copying the working tree.
     """
@@ -258,7 +258,7 @@ class OnboardStep:
         except GojiraConflict as exc:
             if agent.gojira_app_id is None:
                 # A conflict with nothing recorded means gojira already has
-                # an app connected for this repo that cortex never created
+                # an app connected for this repo that pnyx never created
                 # (or never got far enough to record) — there's no id to
                 # resume polling on, so this can't self-heal.
                 raise RuntimeError(
@@ -300,7 +300,7 @@ class AccessStep:
 
 # --- WireStep: app-authored manifests, the P0 kustomization-registration gotcha ----
 
-# App-authored (i.e. cortex-authored, not gojira-generated) k8s manifests.
+# App-authored (i.e. pnyx-authored, not gojira-generated) k8s manifests.
 # Both carry the "App-authored (preserved by the generator)" header for the
 # same reason the real agent-hello repo's serviceaccount.yaml does: it's the
 # human-readable signal, on top of the kustomization registration itself,
@@ -430,7 +430,7 @@ class WireStep:
 
         _update_gojira_yaml(clone_dir / "gojira.yaml", agent, config)
 
-        changed = github.commit_push(clone_dir, "cortex: wire service account, PVC, model env")
+        changed = github.commit_push(clone_dir, "pnyx: wire service account, PVC, model env")
         if not changed:
             # Idempotent resume: an earlier attempt already pushed this exact
             # wiring (or nothing about the agent's contract has changed since
@@ -470,7 +470,7 @@ class BuildStep:
     Three more field-observed defects, all addressed here, are fixed together:
 
     1. `head_sha` is re-resolved on *every* poll, not once at entry. gojira's
-       setup PR auto-merges onto this repo mid-provision, and cortex's own
+       setup PR auto-merges onto this repo mid-provision, and pnyx's own
        WireStep push races that merge landing — a single read-after-write
        can catch the head mid-transition and pin the rest of this
        invocation to a commit that's already been superseded. Nothing else
@@ -484,7 +484,7 @@ class BuildStep:
        is ever expected).
 
     2. A completed run's *conclusion* is treated as heal-able whenever it
-       isn't "success" — not only on an auth-propagation failure (cortex's
+       isn't "success" — not only on an auth-propagation failure (pnyx's
        first two live builds both failed on WIF auth propagation, the
        original motivation for the rerun), but also e.g. "cancelled": a live
        incident saw GitHub's concurrency pending-queue rule cancel the newer

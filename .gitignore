@@ -7,7 +7,7 @@ venv/
 .pytest_cache/
 .ruff_cache/
 
-# Node (cortex-ui)
+# Node (pnyx-ui)
 node_modules/
 dist/
 
@@ -26,7 +26,7 @@ dist/
 .idea/
 .vscode/
 
-# cortex-api
+# pnyx-api
 api/config.local.yaml
 api/*.db
 api/venv/

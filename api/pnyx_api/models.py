@@ -1,4 +1,4 @@
-"""SQLAlchemy models for cortex-api's agent ledger."""
+"""SQLAlchemy models for pnyx-api's agent ledger."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ class Agent(Base):
     # Slack connect (P2c): both nullable, set only once an operator walks the
     # agent through Finish-Slack-setup — non-secret state only (the app id,
     # the channel it's wired to). The pasted bot/app tokens themselves are
-    # never persisted anywhere; see cortex_api.slack_setup.wire_slack.
+    # never persisted anywhere; see pnyx_api.slack_setup.wire_slack.
     slack_app_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     slack_channel: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Avatar (P2d): a base64-encoded copy of bundle/avatar.png (the repo is

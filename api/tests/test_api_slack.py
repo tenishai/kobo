@@ -4,7 +4,7 @@
 run. Same harness shape as test_api_knowledge.py: fakes only
 (`tests/fakes.py`), no real git/kubectl/Slack network involved anywhere.
 
-`cortex_api.slack_setup`'s own module-level behavior (manifest exactness,
+`pnyx_api.slack_setup`'s own module-level behavior (manifest exactness,
 `wire_slack`'s repo edits, the full reprovision/no-reprovision matrix) is
 already pinned by test_slack_setup.py — these tests only need to prove the
 routes wire that module in correctly: guards in the right order, the
@@ -22,10 +22,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from cortex_api.clients import ClientError, Clients
-from cortex_api.config import Config
-from cortex_api.main import create_app
-from cortex_api.models import Agent, AgentStatus, Base
+from pnyx_api.clients import ClientError, Clients
+from pnyx_api.config import Config
+from pnyx_api.main import create_app
+from pnyx_api.models import Agent, AgentStatus, Base
 from tests.fakes import (
     FAKE_DOCKERFILE_OLD_IMAGE,
     FAKE_LOCAL_HEAD_DEFAULT,
@@ -87,7 +87,7 @@ class _RaisingGitHub(FakeGitHub):
 def _no_real_sleep(monkeypatch):
     """wire_slack's wait_active polls gojira in a loop; never let it sleep
     for real (same discipline as test_slack_setup.py's own fixture)."""
-    import cortex_api.slack_setup as slack_setup_module
+    import pnyx_api.slack_setup as slack_setup_module
 
     monkeypatch.setattr(slack_setup_module, "_sleep", lambda seconds: None)
 
@@ -95,7 +95,7 @@ def _no_real_sleep(monkeypatch):
 @pytest.fixture
 def session_factory(tmp_path):
     engine = create_engine(
-        f"sqlite:///{tmp_path}/cortex.db", connect_args={"check_same_thread": False}
+        f"sqlite:///{tmp_path}/pnyx.db", connect_args={"check_same_thread": False}
     )
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)
@@ -311,7 +311,7 @@ def test_connect_slack_wires_secret_transport_and_secrets_from_returns_sha(
     assert {"kind": "slack", "channel": CHANNEL} in agent_yaml["transports"]
     gojira_yaml = yaml.safe_load(github.captured_gojira_yaml)
     assert gojira_yaml["secrets_from"] == [f"{AGENT_NAME}-slack"]
-    assert github.pushes[-1][1] == "cortex: connect slack"
+    assert github.pushes[-1][1] == "pnyx: connect slack"
 
     # a changed push (the default) triggers a reprovision
     assert gojira.reprovision_calls == [app_id]
@@ -419,7 +419,7 @@ def test_connect_slack_missing_channel_returns_422_without_echoing_tokens(
     # handler registered, a channel-less body that still carries bot/app
     # tokens hit FastAPI's *default* 422 handler, whose `detail[].input`
     # echoes the ENTIRE submitted body verbatim — pasted Slack tokens and
-    # all. The app-wide handler (cortex_api.main.create_app) must intercept
+    # all. The app-wide handler (pnyx_api.main.create_app) must intercept
     # this before FastAPI's default ever renders it, returning the house
     # `{"error": ...}` shape with neither sentinel anywhere in the body.
     client = _make_client(session_factory, config)

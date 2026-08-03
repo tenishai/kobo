@@ -1,4 +1,4 @@
-"""Tests for cortex_api.steps: RepoStep, OnboardStep, AccessStep.
+"""Tests for pnyx_api.steps: RepoStep, OnboardStep, AccessStep.
 
 Each step is exercised directly — construct a `Ctx`, call `step.run(ctx)` — against
 the platform-client fakes in tests/fakes.py, the same style test_engine.py uses for
@@ -14,12 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from cortex_api.clients import Clients
-from cortex_api.composer import BundleSpec
-from cortex_api.config import Config
-from cortex_api.models import Agent
-from cortex_api.provisioner import Ctx
-from cortex_api.steps import (
+from pnyx_api.clients import Clients
+from pnyx_api.composer import BundleSpec
+from pnyx_api.config import Config
+from pnyx_api.models import Agent
+from pnyx_api.provisioner import Ctx
+from pnyx_api.steps import (
     POLL_INTERVAL_S,
     POLL_TIMEOUT_S,
     AccessStep,
@@ -36,7 +36,7 @@ MODEL_ID = "vertex_ai/claude-sonnet-4-5"
 @pytest.fixture(autouse=True)
 def _no_real_sleep(monkeypatch):
     """Every OnboardStep test runs a poll loop; never let it sleep for real."""
-    import cortex_api.steps as steps_module
+    import pnyx_api.steps as steps_module
 
     sleep_calls = []
 
@@ -148,7 +148,7 @@ def test_repo_step_resolves_skills_by_id_into_bundle(session_factory, tmp_path):
     skills_repo = _make_skills_repo(tmp_path)
     # A real recorded sha (the fixture repo's actual HEAD) — this repo is a
     # real git repo, so RepoStep's skill materialization is now the
-    # sha-pinned git-archive path (see cortex_api.composer), which needs a
+    # sha-pinned git-archive path (see pnyx_api.composer), which needs a
     # sha that's actually reachable.
     sha = _head_sha(skills_repo)
     config = Config(workdir=tmp_path / "work", skills_repo_path=skills_repo)
@@ -280,13 +280,13 @@ def test_repo_step_rmtrees_stale_compose_dir_before_recomposing(session_factory,
 def test_repo_step_compose_raises_without_rmtree_on_stale_skills(tmp_path):
     """Sanity guard: verify that compose() would raise FileExistsError if we
     didn't rmtree the stale skills subtree first."""
-    from cortex_api.composer import compose
+    from pnyx_api.composer import compose
 
     skills_repo = _make_skills_repo(tmp_path, skill_id="echo")
     config = Config(workdir=tmp_path / "work", skills_repo_path=skills_repo)
 
     # Get the skill info for the spec
-    from cortex_api.catalog import list_skills
+    from pnyx_api.catalog import list_skills
     skills = list_skills(skills_repo)
 
     spec = BundleSpec(
@@ -426,7 +426,7 @@ def test_onboard_step_times_out_after_max_polls(session_factory, config):
 
 
 def test_onboard_step_sleep_called_with_correct_interval(session_factory, config, monkeypatch):
-    import cortex_api.steps as steps_module
+    import pnyx_api.steps as steps_module
 
     repo = _repo_full_name(config)
     session, agent = _make_agent(session_factory, repo_full_name=repo)

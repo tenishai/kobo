@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from cortex_api.catalog import (
+from pnyx_api.catalog import (
     NAME_RE,
     RESERVED_NAMES,
     PersonaInfo,
@@ -12,7 +12,7 @@ from cortex_api.catalog import (
     list_skills,
     validate_name,
 )
-from cortex_api.models import Agent
+from pnyx_api.models import Agent
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -358,8 +358,8 @@ def test_catalog_skills_route_empty_when_no_skills_repo(client):
 def test_catalog_skills_route_with_fixture_repo(tmp_path, session_factory):
     from fastapi.testclient import TestClient
 
-    from cortex_api.config import Config
-    from cortex_api.main import create_app
+    from pnyx_api.config import Config
+    from pnyx_api.main import create_app
 
     repo = tmp_path / "skills-repo"
     skill_dir = repo / "skills" / "echo"

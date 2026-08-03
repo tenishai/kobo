@@ -1,6 +1,6 @@
 # Copy to config.local.yaml (gitignored) and fill in real values, or point
-# CORTEX_CONFIG at a file with this shape. Any field omitted falls back to
-# the default baked into cortex_api.config.Config.
+# PNYX_CONFIG at a file with this shape. Any field omitted falls back to
+# the default baked into pnyx_api.config.Config.
 
 # GitHub organization containing agent implementations
 github_org: example-org
@@ -20,7 +20,7 @@ gojira_token: null
 # not set here) must be the FULL Artifact Registry path
 # (<location>-docker.pkg.dev/<project>/<repo>), never the short repo name —
 # a short name produced a confusing empty-arg gcloud failure at image-push
-# time. Not cortex's config to hold, but worth the reminder here since this
+# time. Not pnyx's config to hold, but worth the reminder here since this
 # cluster name is what ties an agent's onboarding to that registration.
 gojira_cluster: example-cluster
 
@@ -55,10 +55,10 @@ skills_repo_path: null
 personas_dir: null
 
 # Local directory for persistent runtime state and cache
-workdir: ~/.cortex
+workdir: ~/.pnyx
 
 # Database connection URL (supports sqlite, postgresql, etc)
-db_url: sqlite:///cortex.db
+db_url: sqlite:///pnyx.db
 
 # Path to a gitignored YAML file holding the Slack app-config token pair
 # (slack_app_config_token / slack_app_config_refresh_token) used to create

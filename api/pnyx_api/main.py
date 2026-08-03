@@ -1,4 +1,4 @@
-"""FastAPI app factory for cortex-api."""
+"""FastAPI app factory for pnyx-api."""
 
 from __future__ import annotations
 
@@ -16,27 +16,27 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from cortex_api.avatars import avatar_prompt, set_avatar
-from cortex_api.catalog import list_personas, list_skills, validate_name
-from cortex_api.clients import ClientError
-from cortex_api.config import Config
-from cortex_api.db import init_db, make_engine, make_session_factory
-from cortex_api.knowledge import (
+from pnyx_api.avatars import avatar_prompt, set_avatar
+from pnyx_api.catalog import list_personas, list_skills, validate_name
+from pnyx_api.clients import ClientError
+from pnyx_api.config import Config
+from pnyx_api.db import init_db, make_engine, make_session_factory
+from pnyx_api.knowledge import (
     KnowledgeError,
     delete_knowledge_file,
     delivery_state,
     read_knowledge,
     save_knowledge_file,
 )
-from cortex_api.models import Agent, AgentStatus
-from cortex_api.provisioner import (
+from pnyx_api.models import Agent, AgentStatus
+from pnyx_api.provisioner import (
     PIPELINE,
     STEP_LABELS,
     reset_failed_steps,
     run_pipeline,
     sweep_interrupted,
 )
-from cortex_api.slack_setup import render_manifest, wire_slack
+from pnyx_api.slack_setup import render_manifest, wire_slack
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ log = logging.getLogger(__name__)
 # them) don't pay for it. `build_default_app` below does the real import,
 # right where `Clients.real(...)` is actually constructed.
 if TYPE_CHECKING:
-    from cortex_api.clients import Clients
+    from pnyx_api.clients import Clients
 
 
 class CreateAgentRequest(BaseModel):
@@ -83,7 +83,7 @@ class SlackConnectRequest(BaseModel):
 
 # The delivery-status route's sha path param must look like a real git
 # commit sha (as returned by save_knowledge_file/delete_knowledge_file, both
-# `github.local_head`) before it ever reaches cortex_api.knowledge's
+# `github.local_head`) before it ever reaches pnyx_api.knowledge's
 # delivery_state, which takes any str with no shape check of its own — this
 # is purely an HTTP-layer guard against a malformed path segment. Matches
 # git's own short-to-full hex sha range.
@@ -265,7 +265,7 @@ def create_app(
     config: Config,
     clients: Clients | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="cortex-api")
+    app = FastAPI(title="pnyx-api")
     app.state.config = config
     app.state.clients = clients
     app.state.session_factory = session_factory
@@ -526,7 +526,7 @@ def create_app(
                 {"error": "last message must have role 'user'"}, status_code=422
             )
 
-        # Same namespace/service derivation as HelloStep (cortex_api.steps)
+        # Same namespace/service derivation as HelloStep (pnyx_api.steps)
         # for this same agent's a2a endpoint — both are just the agent's name.
         clients = app.state.clients
         try:
@@ -662,7 +662,7 @@ def create_app(
             # KnowledgeError with only their message text to go on. The two
             # messages have disjoint, stable prefixes ("invalid knowledge
             # filename: " vs "knowledge file not found: "; see
-            # cortex_api.knowledge._validate_filename/delete_knowledge_file),
+            # pnyx_api.knowledge._validate_filename/delete_knowledge_file),
             # so matching on that prefix is the cleanest option available
             # without touching knowledge.py. It can't misfire: a bad filename
             # raises from _validate_filename before delete_knowledge_file
@@ -731,7 +731,7 @@ def create_app(
 
         cfg: Config = app.state.config
         # persona_first_line source: the persona catalog's own one-line
-        # `description` field (cortex_api.catalog.PersonaInfo.description —
+        # `description` field (pnyx_api.catalog.PersonaInfo.description —
         # the same text the /api/catalog/personas route already returns),
         # looked up by the id recorded on `agent.persona` — NOT the id
         # itself and NOT the persona's full templated body. Falls back to
@@ -757,7 +757,7 @@ def create_app(
 
         # Logged before persisting: if the commit below itself fails, this
         # line is the only record left of an app Slack now knows about that
-        # cortex's own DB doesn't yet — an orphan-recovery breadcrumb for an
+        # pnyx's own DB doesn't yet — an orphan-recovery breadcrumb for an
         # operator to match against Slack's app list. App ids aren't secret
         # (they're already returned in this route's own 200 response below).
         log.info("slack app created: %s", slack_app_id)
@@ -920,11 +920,11 @@ def create_app(
 
 def build_default_app() -> FastAPI:
     """Wire the real config, database, and platform clients."""
-    # Local import: `cortex_api.clients` pulls in httpx/subprocess-backed
+    # Local import: `pnyx_api.clients` pulls in httpx/subprocess-backed
     # implementations that most tests (which only need `create_app` and a
     # fake/None clients object) never touch — keeping this import inside the
-    # function keeps importing `cortex_api.main` itself cheap for them.
-    from cortex_api.clients import Clients
+    # function keeps importing `pnyx_api.main` itself cheap for them.
+    from pnyx_api.clients import Clients
 
     config = Config.load(None)
     config.workdir.mkdir(parents=True, exist_ok=True)

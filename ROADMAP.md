@@ -1,4 +1,4 @@
-# Cortex Roadmap
+# Pnyx Roadmap
 
 The phased plan at a glance. Details live in the
 [design document](docs/superpowers/specs/2026-08-01-cortex-agent-assembly-poc-design.md).
@@ -17,10 +17,10 @@ manual step after one API call.
 
 Create → working agent, entirely from the UI.
 
-- cortex-api: composer (schema-validated bundles, skill materialization, diff-before-write),
+- pnyx-api: composer (schema-validated bundles, skill materialization, diff-before-write),
   provisioner (persisted step pipeline incl. model access via group membership), GitHub/gojira
   integrations
-- cortex-ui: dashboard, single-modal create (name · persona · skills · model), plain-English
+- pnyx-ui: dashboard, single-modal create (name · persona · skills · model), plain-English
   progress checklist with adaptive polling, detail page with per-component panels
 - Per-agent techne stores on PVCs
 

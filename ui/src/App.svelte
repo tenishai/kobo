@@ -49,7 +49,7 @@
   <div class="shell">
     <header class="shell__header">
       <h1 class="shell__wordmark">
-        cortex <span class="shell__tagline">— assembly room</span>
+        pnyx <span class="shell__tagline">— assembly room</span>
       </h1>
       <button
         type="button"

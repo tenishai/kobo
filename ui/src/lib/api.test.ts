@@ -549,7 +549,7 @@ describe("avatar client", () => {
   it("generateAvatar surfaces the plain 502 {error} message (generation failed)", async () => {
     // The server's ImageClient.generate uses one fixed message for every
     // failure mode (safety-blocked, non-200, malformed reply) — see
-    // api/cortex_api/clients.py's `_IMAGE_GENERATION_FAILED` — pinned here
+    // api/pnyx_api/clients.py's `_IMAGE_GENERATION_FAILED` — pinned here
     // verbatim rather than a fabricated string.
     vi.mocked(fetch).mockResolvedValueOnce(
       jsonResponse(

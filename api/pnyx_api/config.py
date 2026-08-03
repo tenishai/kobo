@@ -1,4 +1,4 @@
-"""Cortex API configuration.
+"""Pnyx API configuration.
 
 Loads settings from a YAML file (or pure defaults) into a pydantic model.
 """
@@ -40,8 +40,8 @@ class Config(BaseModel):
     )
     skills_repo_path: Path | None = None
     personas_dir: Path | None = None  # None -> package templates/personas
-    workdir: Path = Path.home() / ".cortex"
-    db_url: str = "sqlite:///cortex.db"
+    workdir: Path = Path.home() / ".pnyx"
+    db_url: str = "sqlite:///pnyx.db"
     # Path to the gitignored Slack config-token pair (P2c); None means Slack
     # connect is unconfigured — Clients.real() gates on this to leave slack=None.
     slack_tokens_path: Path | None = None
@@ -67,16 +67,16 @@ class Config(BaseModel):
         """Load config from YAML, falling back to pure defaults.
 
         Resolution order for `path` when not given explicitly:
-        1. `CORTEX_CONFIG` environment variable (must exist)
+        1. `PNYX_CONFIG` environment variable (must exist)
         2. `config.local.yaml` beside the current working directory (silent if absent)
         3. Pure defaults (no file touched) if neither exists.
         """
         if path is None:
-            env_path = os.environ.get("CORTEX_CONFIG")
+            env_path = os.environ.get("PNYX_CONFIG")
             if env_path:
                 path = Path(env_path)
                 if not path.exists():
-                    raise FileNotFoundError(f"CORTEX_CONFIG points to missing file: {path}")
+                    raise FileNotFoundError(f"PNYX_CONFIG points to missing file: {path}")
             else:
                 candidate = Path.cwd() / "config.local.yaml"
                 if candidate.exists():

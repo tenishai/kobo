@@ -1,9 +1,9 @@
-// Typed client over the cortex-api HTTP surface. Every function funnels its
+// Typed client over the pnyx-api HTTP surface. Every function funnels its
 // Response through `parse()`, which turns a non-2xx status into an ApiError
 // (message taken from a JSON `{"error": "..."}` body when present, otherwise
 // a readable fallback built from the status line) and turns a body that
 // isn't valid JSON at all (an HTML proxy-error page, a plain-text 500 from
-// some upstream that isn't cortex-api) into an ApiError too, instead of
+// some upstream that isn't pnyx-api) into an ApiError too, instead of
 // letting a raw SyntaxError leak out of `JSON.parse`.
 
 export type AgentSummary = {
