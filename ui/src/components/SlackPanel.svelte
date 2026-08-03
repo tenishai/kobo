@@ -150,7 +150,7 @@
         onError: (err: unknown) => {
           botToken = "";
           appToken = "";
-          connectError = `${errorMessage(err, "Couldn't finish setting up Slack. Try again.")} Paste the tokens again.`;
+          connectError = `${errorMessage(err, "Couldn't finish setting up Slack. Try again.")} — paste the tokens again.`;
         },
       },
     );
@@ -201,8 +201,8 @@
       <li class="slack-panel__step">
         <p class="slack-panel__step-title">Turn on its connection</p>
         <p class="slack-panel__step-help">
-          In Basic Information → App-Level Tokens, create a token that can connect
-          (connections), copy the one that starts with xapp-.
+          In Basic Information → App-Level Tokens, create a token that can connect,
+          then copy the one that starts with xapp-.
         </p>
       </li>
       <li class="slack-panel__step">
