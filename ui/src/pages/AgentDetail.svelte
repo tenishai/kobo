@@ -12,6 +12,7 @@
   import FirstReply from "../components/FirstReply.svelte";
   import MemoryPanel from "../components/MemoryPanel.svelte";
   import Skeleton from "../components/Skeleton.svelte";
+  import SlackPanel from "../components/SlackPanel.svelte";
   import StatusBadge from "../components/StatusBadge.svelte";
   import StepChecklist from "../components/StepChecklist.svelte";
   import { errorMessage } from "../lib/api";
@@ -119,6 +120,7 @@
     {#if data.status === "ready"}
       <ChatPanel agentName={data.name} />
       <MemoryPanel agentName={data.name} />
+      <SlackPanel agentName={data.name} slack={data.slack} />
     {/if}
   {/if}
 </div>
