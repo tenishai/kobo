@@ -14,7 +14,7 @@
   // point of view — the agent has no memory of past turns except what's
   // resent to it here.
   import { createMutation } from "@tanstack/svelte-query";
-  import { errorMessage, type ChatMessage } from "../lib/api";
+  import { ApiError, errorMessage, type ChatMessage } from "../lib/api";
   import { chatMutation } from "../lib/queries";
 
   let { agentName }: { agentName: string } = $props();
@@ -24,9 +24,20 @@
   // conversation runs long.
   const MAX_MESSAGES = 50;
 
+  // Mirrors the server's per-message cap (CHAT_MESSAGE_TEXT_MAX_LEN in
+  // cortex_api/main.py) so an over-length send is refused here instead of
+  // round-tripping to a guaranteed 422. JS string length counts UTF-16 code
+  // units, not the server's Python code points, so this is strictly
+  // conservative — never lets through more than the server would accept.
+  const MAX_MESSAGE_LEN = 4000;
+
   let transcript = $state<ChatMessage[]>([]);
   let input = $state("");
   let error = $state<string | null>(null);
+  // Whether the current `error` is worth a "Try again" button. A 422 means
+  // the payload itself was rejected — resending the same text can never
+  // succeed, unlike a transient 502 — so that path turns this off.
+  let retryable = $state(true);
   let trimmed = $state(false);
   let inputEl: HTMLTextAreaElement | undefined = $state();
 
@@ -66,6 +77,21 @@
         focusInput();
       },
       onError: (err: unknown) => {
+        if (err instanceof ApiError && err.status === 422) {
+          // The payload itself was rejected (e.g. a message over the length
+          // cap) — resending it unchanged would 422 forever. Hand the
+          // poisoned bubble back to the user instead of wedging the
+          // transcript: pull it out of the log and restore its text to the
+          // input so it can be edited and resent.
+          const last = messages[messages.length - 1];
+          if (last.role === "user") {
+            transcript = messages.slice(0, -1);
+            input = last.text;
+          }
+          retryable = false;
+        } else {
+          retryable = true;
+        }
         error = errorMessage(err, "Couldn't reach the agent. Try again.");
       },
     });
@@ -126,14 +152,16 @@
   {#if error}
     <div class="chat-panel__error" role="alert">
       <p class="chat-panel__error-text">{error}</p>
-      <button
-        type="button"
-        class="chat-panel__retry"
-        disabled={$mutation.isPending}
-        onclick={handleRetry}
-      >
-        Try again
-      </button>
+      {#if retryable}
+        <button
+          type="button"
+          class="chat-panel__retry"
+          disabled={$mutation.isPending}
+          onclick={handleRetry}
+        >
+          Try again
+        </button>
+      {/if}
     </div>
   {/if}
 
@@ -147,6 +175,7 @@
       onkeydown={handleKeydown}
       placeholder="Say something…"
       rows="2"
+      maxlength={MAX_MESSAGE_LEN}
     ></textarea>
     <button
       type="button"
