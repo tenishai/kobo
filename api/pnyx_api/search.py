@@ -1,13 +1,16 @@
-"""FTS5 catalog search (Phase A Task 3): both catalog buckets' `index.json`
-objects, ingested into one SQLite FTS5 table and queried by kind ("skill" or
-"persona"), with an optional team filter.
+"""FTS5 catalog search (Phase A Task 3): every configured catalog's
+`index.json` object, ingested into one SQLite FTS5 table and queried by kind
+("skill", "persona", and any further kind a caller's `catalogs` mapping
+names), with an optional team filter.
 
-Ingestion is deliberately atomic and idempotent: `ingest_indexes` reads and
-fully validates both buckets' indexes *before* touching the table at all, so
-a malformed index in one bucket can never leave the table half-rebuilt, and
-`ensure_fts` (called by every entry point here, ingestion or query) means a
-fresh database with no FTS table yet behaves exactly like an empty one rather
-than raising — a never-ingested search is just `[]`, not an error.
+Ingestion is deliberately atomic, idempotent, and kind-generic:
+`ingest_indexes` reads and fully validates every catalog in its `catalogs`
+mapping *before* touching the table at all, so a malformed index in one
+bucket can never leave the table half-rebuilt, and adding a new catalog kind
+is just one more mapping entry — nothing here needs reworking. `ensure_fts`
+(called by every entry point here, ingestion or query) means a fresh
+database with no FTS table yet behaves exactly like an empty one rather than
+raising — a never-ingested search is just `[]`, not an error.
 
 The MATCH string `search()` builds from a caller's `q` is never string-
 interpolated: every token is quoted and its embedded quotes doubled per
@@ -21,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from sqlalchemy import text
@@ -123,23 +127,30 @@ def _load_catalog_entries(
 def ingest_indexes(
     engine: Engine,
     storage: StorageClient,
+    catalogs: Mapping[str, str],
     *,
-    skills_bucket: str,
-    personas_bucket: str,
     prefix: str = "",
-) -> dict:
-    """Rebuild `catalog_fts` from both buckets' current `index.json`.
+) -> dict[str, int]:
+    """Rebuild `catalog_fts` from every catalog in `catalogs` (kind -> bucket
+    name, e.g. `{"skill": "skills-bucket", "persona": "personas-bucket"}`).
 
-    Both catalogs are read and fully validated first; only once both have
+    Generic over the number and names of kinds: adding a third catalog (the
+    upcoming "tool" kind) is one more mapping entry from the caller, nothing
+    here needs reworking. Every catalog is read and fully validated first
+    (per-kind post-processing — skills carry `sha`, personas carry
+    `builtin` — already lives in `_load_catalog_entries`); only once all have
     succeeded does the table get touched, and then as one atomic
     DELETE-then-INSERT transaction — a malformed index in one bucket never
     leaves the table half-rebuilt, and a successful rebuild never mixes rows
-    from a stale ingest with a partial new one.
+    from a stale ingest with a partial new one. Returns entry counts keyed by
+    kind, e.g. `{"skill": 2, "persona": 1}`.
     """
     ensure_fts(engine)
 
-    skill_entries = _load_catalog_entries(storage, skills_bucket, prefix, "skill")
-    persona_entries = _load_catalog_entries(storage, personas_bucket, prefix, "persona")
+    entries_by_kind = {
+        kind: _load_catalog_entries(storage, bucket, prefix, kind)
+        for kind, bucket in catalogs.items()
+    }
 
     rows = [
         {
@@ -152,7 +163,7 @@ def ingest_indexes(
             "sha": e["sha"],
             "builtin": e["builtin"],
         }
-        for kind, entries in (("skill", skill_entries), ("persona", persona_entries))
+        for kind, entries in entries_by_kind.items()
         for e in entries
     ]
 
@@ -161,7 +172,7 @@ def ingest_indexes(
         if rows:
             conn.execute(text(_INSERT_SQL), rows)
 
-    return {"skills": len(skill_entries), "personas": len(persona_entries)}
+    return {kind: len(entries) for kind, entries in entries_by_kind.items()}
 
 
 def _row_to_entry(row) -> CatalogEntry:

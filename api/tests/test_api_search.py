@@ -166,6 +166,9 @@ def test_refresh_route_returns_counts(client):
     response = client.post("/api/catalogs/refresh")
 
     assert response.status_code == 200
+    # HTTP response shape stays the plural skills/personas keys even though
+    # ingest_indexes itself now returns kind-keyed counts internally (Task 3
+    # fix round 1 extensibility refactor) — the route translates.
     assert response.json() == {"skills": 1, "personas": 1}
 
 

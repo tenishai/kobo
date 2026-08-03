@@ -123,15 +123,31 @@ def _model_label(cfg: Config, model_id: str) -> str:
     return model_id
 
 
+def configured_catalogs(config: Config) -> dict[str, str]:
+    """kind -> bucket name for every catalog that actually has one
+    configured (Task 3 extensibility refactor): `{"skill":
+    config.skills_bucket, "persona": config.personas_bucket}` with
+    empty-string values removed. This is the single place that lists the
+    known catalog kinds — adding a third (the upcoming "tool" kind) is one
+    more entry here; `ingest_indexes` (pnyx_api.search) iterates whatever
+    mapping it's given, so nothing else needs to change. An empty dict means
+    nothing is configured at all.
+    """
+    catalogs = {"skill": config.skills_bucket, "persona": config.personas_bucket}
+    return {kind: bucket for kind, bucket in catalogs.items() if bucket}
+
+
 def _catalogs_configured(clients: Clients | None, config: Config) -> bool:
     """Whether the FTS catalog has anything to refresh from: storage wired
-    AND at least one bucket named. Shared by the TTL hook and the explicit
-    refresh route's 503 check (Task 3 brief: "storage is None or both bucket
-    names empty") so the two can never disagree about what "unwired" means.
+    AND at least one catalog bucket named — the latter is just the
+    truthiness of `configured_catalogs(config)`. Shared by the TTL hook and
+    the explicit refresh route's 503 check (Task 3 brief: "storage is None
+    or both bucket names empty") so the two can never disagree about what
+    "unwired" means.
     """
     if clients is None or clients.storage is None:
         return False
-    return bool(config.skills_bucket or config.personas_bucket)
+    return bool(configured_catalogs(config))
 
 
 def _maybe_refresh_catalogs(app: FastAPI, engine) -> None:
@@ -166,12 +182,7 @@ def _maybe_refresh_catalogs(app: FastAPI, engine) -> None:
         if state.catalog_loaded_at is not None and now - state.catalog_loaded_at < CATALOG_TTL_S:
             return
         try:
-            ingest_indexes(
-                engine,
-                state.clients.storage,
-                skills_bucket=state.config.skills_bucket,
-                personas_bucket=state.config.personas_bucket,
-            )
+            ingest_indexes(engine, state.clients.storage, configured_catalogs(state.config))
         except ClientError as exc:
             log.warning("catalog TTL refresh failed, serving the stale table: %s", exc)
             return
@@ -450,18 +461,19 @@ def create_app(
         engine = session.get_bind()
         try:
             with app.state.catalog_lock:
-                counts = ingest_indexes(
-                    engine,
-                    clients.storage,
-                    skills_bucket=cfg.skills_bucket,
-                    personas_bucket=cfg.personas_bucket,
-                )
+                counts = ingest_indexes(engine, clients.storage, configured_catalogs(cfg))
                 app.state.catalog_loaded_at = time.monotonic()
         except ClientError as exc:
             log.warning("catalog refresh failed: %s", exc)
             return JSONResponse({"error": str(exc)}, status_code=502)
 
-        return JSONResponse(counts)
+        # HTTP response shape stays the plural skills/personas keys
+        # regardless of `ingest_indexes`'s kind-keyed return — translated
+        # here so a future catalog kind (counts.get("tool", 0), say) doesn't
+        # have to change this route's contract at all.
+        return JSONResponse(
+            {"skills": counts.get("skill", 0), "personas": counts.get("persona", 0)}
+        )
 
     @app.get("/api/availability")
     def availability(

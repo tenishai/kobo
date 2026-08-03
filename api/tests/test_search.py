@@ -74,10 +74,11 @@ def storage():
     )
 
 
+CATALOGS = {"skill": "skills-bucket", "persona": "personas-bucket"}
+
+
 def _ingest(engine, storage):
-    return ingest_indexes(
-        engine, storage, skills_bucket="skills-bucket", personas_bucket="personas-bucket"
-    )
+    return ingest_indexes(engine, storage, CATALOGS)
 
 
 def test_ensure_fts_is_idempotent(engine):
@@ -97,7 +98,7 @@ def test_teams_on_never_ingested_db_returns_empty(engine):
 
 def test_ingest_indexes_returns_counts(engine, storage):
     counts = _ingest(engine, storage)
-    assert counts == {"skills": 2, "personas": 1}
+    assert counts == {"skill": 2, "persona": 1}
 
 
 def test_ingest_records_exactly_one_read_per_bucket(engine, storage):
@@ -176,9 +177,7 @@ def test_search_ranked_prefix_match_orders_by_relevance(engine):
             "personas-bucket": {},
         }
     )
-    ingest_indexes(
-        engine, engine_storage, skills_bucket="skills-bucket", personas_bucket="personas-bucket"
-    )
+    ingest_indexes(engine, engine_storage, CATALOGS)
     results = search(engine, "skill", "widget")
     # widget-pro mentions "widget" far more densely across id/name/
     # description/tags than alpha (a single mention, in description only) —
@@ -226,23 +225,21 @@ def test_teams_distinct_and_sorted(engine, storage):
 
 
 def test_unset_bucket_contributes_zero(engine, storage):
-    counts = ingest_indexes(engine, storage, skills_bucket="", personas_bucket="personas-bucket")
-    assert counts == {"skills": 0, "personas": 1}
+    counts = ingest_indexes(engine, storage, {"skill": "", "persona": "personas-bucket"})
+    assert counts == {"skill": 0, "persona": 1}
     assert "read_bytes:skills-bucket:index.json" not in storage.calls
 
 
 def test_missing_index_contributes_zero(engine):
     storage = FakeStorage(buckets={"skills-bucket": {}, "personas-bucket": {}})
-    counts = ingest_indexes(
-        engine, storage, skills_bucket="skills-bucket", personas_bucket="personas-bucket"
-    )
-    assert counts == {"skills": 0, "personas": 0}
+    counts = ingest_indexes(engine, storage, CATALOGS)
+    assert counts == {"skill": 0, "persona": 0}
 
 
 def test_malformed_json_raises_client_error_naming_bucket(engine):
     storage = FakeStorage(buckets={"skills-bucket": {"index.json": (b"not json", {})}})
     with pytest.raises(ClientError, match="skills-bucket"):
-        ingest_indexes(engine, storage, skills_bucket="skills-bucket", personas_bucket="")
+        ingest_indexes(engine, storage, {"skill": "skills-bucket", "persona": ""})
 
 
 def test_malformed_entry_raises_client_error_naming_bucket(engine):
@@ -250,7 +247,7 @@ def test_malformed_entry_raises_client_error_naming_bucket(engine):
         buckets={"skills-bucket": {"index.json": (_index_bytes([{"id": "x"}]), {})}}
     )
     with pytest.raises(ClientError, match="skills-bucket"):
-        ingest_indexes(engine, storage, skills_bucket="skills-bucket", personas_bucket="")
+        ingest_indexes(engine, storage, {"skill": "skills-bucket", "persona": ""})
 
 
 def test_malformed_index_leaves_table_unchanged(engine, storage):
@@ -265,9 +262,41 @@ def test_malformed_index_leaves_table_unchanged(engine, storage):
         }
     )
     with pytest.raises(ClientError):
-        ingest_indexes(
-            engine, bad_storage, skills_bucket="skills-bucket", personas_bucket="personas-bucket"
-        )
+        ingest_indexes(engine, bad_storage, CATALOGS)
     # the previous good ingest's rows are still there — the failed rebuild
     # never reached the DELETE/INSERT transaction at all.
     assert [e.id for e in search(engine, "skill", "")] == ["code-review", "commit-helper"]
+
+
+def test_ingest_with_third_kind_is_searchable_with_no_code_changes(engine, storage):
+    # Extensibility proof (Task 3 fix round 1 finding): `ingest_indexes`
+    # takes a plain kind->bucket mapping, so a brand-new "tool" kind (the
+    # upcoming third catalog) ingests and is searchable via the exact same
+    # `search()` used for "skill"/"persona" — no change to either function.
+    storage.write_bytes(
+        "tools-bucket",
+        "index.json",
+        _index_bytes(
+            [
+                {
+                    "id": "http-fetch",
+                    "name": "HTTP fetch",
+                    "description": "Fetches a URL over HTTP",
+                    "team": "shared",
+                    "tags": ["network"],
+                    "sha": "tool123",
+                    "builtin": False,
+                }
+            ]
+        ),
+    )
+
+    counts = ingest_indexes(
+        engine,
+        storage,
+        {**CATALOGS, "tool": "tools-bucket"},
+    )
+
+    assert counts == {"skill": 2, "persona": 1, "tool": 1}
+    results = search(engine, "tool", "fetch")
+    assert [e.id for e in results] == ["http-fetch"]
