@@ -1,4 +1,4 @@
-# Phase A — Org Catalogs, Persona Builder & Admin Section (design)
+# Phase A — Org Catalogs, Persona Builder & Client Bootstrap (design)
 
 Decisions in this spec were made with Kyle on 2026-08-03, following the P2 close and the
 pnyx rename. Phase B (hosting the room under a client's DNS with SSO) is deliberately out
@@ -7,7 +7,7 @@ whose UX this room already benchmarks against.
 
 ## What this phase makes true
 
-A pnyx admin can wire a client organization into the room from an admin section — catalog
+An operator can wire a client organization into pnyx with one bootstrap command — catalog
 sources, cluster, runtime — and a member of that org can then assemble an agent from
 **their org's own catalogs**: team-authored skills served from a bucket with instant
 search, and personas that are either shipped defaults or built on the spot from a short
@@ -19,15 +19,15 @@ future client (e.g. an org like the employer's) would experience.
 One org per pnyx deployment (multi-org is a non-goal). Org-level configuration —
 GitHub org name, skills repo name, catalog bucket name, model catalog, cluster,
 runtime image, model-access group — lives in the client org's **`agent-config`
-repo**: config-as-repo, versioned, and the admin section is its editor (admin edits
-are commits, the pattern knowledge editing proved). The room's gitignored local
+repo**: config-as-repo, versioned — org changes are commits to it (the pattern
+knowledge editing proved), authored directly or via the bootstrap tool. The room's gitignored local
 config shrinks to machine-local concerns: file paths, token locations, `db_url`,
-`admin_enabled`, and the org-config repo coordinates (the one pointer that can't
+and the org-config repo coordinates (the one pointer that can't
 live inside what it points to).
 
 Boot: read local config → clone/fetch `agent-config` → merge (org values win for org
-concerns; a missing org repo leaves the room in "unwired" state where only the admin
-section is useful).
+concerns; a missing org repo leaves the room in the "unwired" state with honest
+empty states pointing at the bootstrap).
 
 ## The catalog bucket
 
@@ -54,7 +54,7 @@ the bundle records the source sha from object metadata, and materialization read
 bucket, not a clone.
 
 **Personas — defaults + built, bucket-native.** No personas repo exists. The room ships
-pregenerated default personas (seeded into `personas/` when the admin wires the org),
+pregenerated default personas (seeded into `personas/` by the bootstrap),
 and new personas are created by the **persona builder** (below), written by the room
 straight to `personas/<id>/persona.md` with creator/team metadata. Rollback is GCS
 object versioning. Every persona in the bucket is available org-wide.
@@ -64,8 +64,8 @@ object versioning. Every persona in the bucket is available org-wide.
 The room's API ingests both `index.json` objects into an **SQLite FTS5** table (the API
 already runs SQLite) and serves `/api/skills/search` and `/api/personas/search`:
 ranked, as-you-type full-text over names, descriptions, teams, and tags, with a team
-filter parameter. The index refreshes on a short TTL plus an admin "refresh catalogs"
-action. This is deliberately not Elasticsearch: at catalog scale (dozens to hundreds of
+filter parameter. The index refreshes on a short TTL plus a refresh endpoint the
+bootstrap invokes after publishing. This is deliberately not Elasticsearch: at catalog scale (dozens to hundreds of
 entries) FTS5 gives equivalent lookup quality with zero new infrastructure. The UI
 depends only on the search endpoints, so a standing search service (Elastic, or GCP's
 managed search) can replace the internals later without the UI changing — that is the
@@ -97,45 +97,48 @@ reuse) and referenced by the new agent's bundle like any catalog persona.
 - **Skills step**: search box backed by `/api/skills/search`, team filter, team badges
   on results. Selection behavior and sha-pinning unchanged.
 
-## The admin section
+## The bootstrap tool and org status
 
-A config-flag-gated `/admin` route (`admin_enabled` in local config; real identity
-arrives with Phase B, where it is unavoidable). It shows the org connection as a
-checklist with actions:
+Wiring an org is a once-per-client operator task, so it is a tool, not a UI. pnyx
+ships an idempotent, re-runnable bootstrap CLI (`python -m pnyx_api.bootstrap`,
+wrapped by a make target) that: creates `agent-config` from the tenishai template
+(when missing), creates the catalog bucket with object versioning, opens the PR that
+installs the publish workflow into the org's skills repo, seeds the default personas,
+and triggers the first index ingest. Each step reports done/skipped/failed plainly;
+re-running converges. The same module layer could later be wrapped by a self-service
+admin page once Phase B brings real identity — deliberately not built now.
 
-1. Org set (name from `agent-config`; or the create-from-template button when the repo
-   is missing).
-2. Skills repo reachable (+ "install publish workflow" action that opens a PR adding
-   the template workflow to the skills repo).
-3. Catalog bucket exists (+ "create bucket" action; enables versioning).
-4. Defaults seeded (personas published; runs idempotently).
-5. Cluster registered / runtime image pinned / model group set (edits committing to
-   `agent-config`).
-6. "Refresh catalogs" (re-ingest the indexes).
-
-The admin section is the one surface where operator vocabulary is permitted; the rest
-of the room keeps the no-infra-words rule.
+The room keeps the recurring half: **visibility**. `GET /api/org/status` reports each
+wiring check (config repo reachable, bucket reachable, skills index present + age,
+personas seeded, cluster registered), and the UI shows honest plain-language empty
+states when catalogs are absent ("catalogs aren't set up yet") instead of a broken
+picker. No admin route, no admin flag; the status endpoint is read-only. Operator
+vocabulary is permitted in the bootstrap CLI's output only; the room keeps the
+no-infra-words rule everywhere.
 
 ## Testing
 
 House pattern: TDD throughout; fakes for GCS (a `StorageClient` Protocol beside the
 existing client Protocols), the publish workflow's validator covered in the template
 repo, FTS5 search unit-tested against seeded indexes, persona template rendering pinned
-byte-for-byte, admin actions exercised route-level with fakes. Live milestone below is
-the integration gate.
+byte-for-byte, bootstrap steps exercised module-level with fakes (idempotence pinned:
+second run all-skipped), org-status endpoint route-level. Live milestone below is the
+integration gate.
 
 ## Milestone (exit criterion)
 
-Through the admin section alone, wire tenishai as pnyx's first client: create
-`agent-config` from template, create the catalog bucket, install the publish workflow
-into `tenishai/skills` (merge its PR), watch the existing skills publish and appear in
-search, and see default personas seeded. Then create a brand-new agent using a
-form-built persona and a bucket-searched, team-filtered skill — it reaches READY with
-first words. That is a client onboarding, end to end, minus DNS.
+With the bootstrap tool alone, wire tenishai as pnyx's first client: one command
+creates `agent-config` and the catalog bucket, opens the publish-workflow PR against
+`tenishai/skills` (merge it), the existing skills publish and appear in search, and
+the default personas seed. `GET /api/org/status` reports every check green. Then
+create a brand-new agent using a form-built persona and a bucket-searched,
+team-filtered skill — it reaches READY with first words. That is a client onboarding,
+end to end, minus DNS.
 
 ## Non-goals (this phase)
 
-Multi-org deployments; Elasticsearch/managed search; personas in git; editing shipped
-default personas; Phase B (gojira-deploys-pnyx under a client domain, SSO/identity,
-the ingress recipe from the reference deployment); migrating the four existing agents'
-bundles.
+Multi-org deployments; an in-UI admin section (the bootstrap module is designed so a
+Phase B self-service page could wrap it, if ever wanted); Elasticsearch/managed
+search; personas in git; editing shipped default personas; Phase B
+(gojira-deploys-pnyx under a client domain, SSO/identity via IAP, the ingress recipe
+from the reference deployment); migrating the four existing agents' bundles.
