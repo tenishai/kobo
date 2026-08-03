@@ -139,12 +139,21 @@ class CatalogEntry:
 def ensure_fts(engine) -> None
     # CREATE VIRTUAL TABLE IF NOT EXISTS catalog_fts USING fts5(
     #   id, name, description, team, tags, kind UNINDEXED, sha UNINDEXED, builtin UNINDEXED)
-def ingest_indexes(engine, storage: StorageClient, *, skills_bucket: str,
-                   personas_bucket: str, prefix: str = "") -> dict
+def ingest_indexes(engine, storage: StorageClient, catalogs: Mapping[str, str],
+                   *, prefix: str = "") -> dict[str, int]
+    # catalogs maps kind -> bucket name, e.g. {"skill": ..., "persona": ...} — the third
+    # catalog is one more entry, zero rework (REVISED per Task 3 review: the earlier
+    # two-kwarg signature failed the spec's extensibility constraint).
     # read <prefix>index.json from each named bucket (empty bucket name or StorageNotFound ->
     # that catalog contributes 0 entries, noted); malformed JSON/entry -> ClientError with the
     # bucket named. Rebuild atomically: BEGIN; DELETE FROM catalog_fts; INSERT rows; COMMIT.
-    # returns {"skills": n, "personas": n}
+    # returns counts keyed by kind, e.g. {"skill": n, "persona": n}
+# main.py gains one helper: configured_catalogs(config) -> dict[str, str] —
+# {"skill": config.skills_bucket, "persona": config.personas_bucket} minus empty names;
+# the TTL hook, refresh route, and later consumers (bootstrap step 6, persona create)
+# all build their mapping through it. HTTP response shapes are UNCHANGED
+# (POST /api/catalogs/refresh still returns {"skills": n, "personas": n} — the route
+# translates kind counts to the plural keys).
 def search(engine, kind: str, q: str, team: str | None = None, limit: int = 50) -> list[CatalogEntry]
     # q empty/whitespace -> all of kind (team-filtered), ORDER BY name
     # else MATCH built from q tokens, each escaped ("" doubling) and prefix-starred:
