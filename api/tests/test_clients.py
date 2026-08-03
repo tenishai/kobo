@@ -563,6 +563,34 @@ def test_post_task_raises_on_non_200():
         _post_task(client, 54321, [{"role": "user", "text": "hello?"}])
 
 
+def test_post_task_raises_client_error_on_non_json_body():
+    # 200 with a body that isn't JSON at all (json.JSONDecodeError, a
+    # ValueError) must be wrapped, not left to escape as a raw ValueError.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="not json")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(ClientError) as exc_info:
+        _post_task(client, 54321, [{"role": "user", "text": "hello?"}])
+
+    assert "malformed a2a reply" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+def test_post_task_raises_client_error_on_json_missing_reply_path():
+    # Valid JSON that doesn't carry the expected status/message/parts/text
+    # path raises KeyError; must be wrapped the same as the non-JSON case.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": {}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(ClientError) as exc_info:
+        _post_task(client, 54321, [{"role": "user", "text": "hello?"}])
+
+    assert "malformed a2a reply" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, KeyError)
+
+
 def test_post_task_wraps_read_timeout_as_client_error():
     # httpx.ReadTimeout isn't a ClientError; left unwrapped it would surface
     # as a raw httpx exception to the caller (hello or converse), and every
@@ -646,6 +674,24 @@ class _FakeBlockingPopen:
 
     def kill(self):
         self.killed = True
+
+
+def test_send_task_wraps_popen_oserror_as_client_error(monkeypatch):
+    # subprocess.Popen itself can fail before any process exists (e.g.
+    # `kubectl` missing from PATH) — that's OSError, not ClientError; must be
+    # wrapped rather than left to escape to callers that only expect
+    # ClientError.
+    def raise_oserror(*args, **kwargs):
+        raise OSError("no such file or directory: kubectl")
+
+    monkeypatch.setattr("cortex_api.clients.subprocess.Popen", raise_oserror)
+
+    client = KubectlAgentClient()
+    with pytest.raises(ClientError) as exc_info:
+        client.hello("clio", "clio", "hello?")
+
+    assert "failed to start port-forward" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, OSError)
 
 
 def test_agent_hello_times_out_and_cleans_up_when_port_forward_hangs(monkeypatch):

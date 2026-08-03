@@ -496,6 +496,11 @@ def _post_task(client: httpx.Client, port: int, messages: list[ChatMessage]) -> 
     ClientError, so left alone they'd surface as raw httpx exceptions to
     callers that only expect ClientError. Wrap them here, preserving the
     original exception as the cause.
+
+    A 200 response doesn't guarantee a well-formed reply: a non-JSON body
+    raises json.JSONDecodeError (a ValueError), and JSON missing the expected
+    path raises KeyError/IndexError/TypeError — none of those are ClientError
+    either, so they're wrapped the same way.
     """
     try:
         resp = client.post(f"http://127.0.0.1:{port}/a2a/tasks", json=_build_task_envelope(messages))
@@ -503,7 +508,12 @@ def _post_task(client: httpx.Client, port: int, messages: list[ChatMessage]) -> 
         raise ClientError(f"a2a request failed: {exc!r}") from exc
     if resp.status_code != 200:
         raise ClientError(f"a2a request failed ({resp.status_code}): {resp.text}")
-    return resp.json()["status"]["message"]["parts"][0]["text"]
+    try:
+        return resp.json()["status"]["message"]["parts"][0]["text"]
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        raise ClientError(
+            f"malformed a2a reply: {exc!r} (body: {resp.text[:200]!r})"
+        ) from exc
 
 
 class KubectlAgentClient:
@@ -535,12 +545,19 @@ class KubectlAgentClient:
         return self._send_task(namespace, service, messages)
 
     def _send_task(self, namespace: str, service: str, messages: list[ChatMessage]) -> str:
-        proc = subprocess.Popen(
-            [self._kubectl, "-n", namespace, "port-forward", f"svc/{service}", ":80"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        # Popen itself can fail before any subprocess exists (e.g. `kubectl`
+        # missing from PATH) — that's OSError, not ClientError, so it's
+        # wrapped here rather than left to escape to callers that only
+        # expect ClientError.
+        try:
+            proc = subprocess.Popen(
+                [self._kubectl, "-n", namespace, "port-forward", f"svc/{service}", ":80"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        except OSError as exc:
+            raise ClientError(f"failed to start port-forward: {exc}") from exc
         try:
             port = _wait_for_forwarded_port(proc.stdout, self._timeout_s)
             return _post_task(self._http_client, port, messages)
