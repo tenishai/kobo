@@ -1791,6 +1791,84 @@ def test_storage_client_default_token_provider_is_gcloud_print_access_token():
     assert client._token_provider is _gcloud_print_access_token
 
 
+# --- Storage error branches (coverage gap) ------------------------------------
+
+
+def test_storage_object_metadata_non_200_raises_client_error_without_leaking_body():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="a very sensitive internal error trace")
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    with pytest.raises(ClientError) as exc_info:
+        client.object_metadata("my-bucket", "some.json")
+    assert not isinstance(exc_info.value, StorageNotFound)
+    assert "a very sensitive internal error trace" not in str(exc_info.value)
+
+
+def test_storage_list_keys_non_200_raises_client_error_without_leaking_body():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="backend failure details")
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    with pytest.raises(ClientError) as exc_info:
+        client.list_keys("my-bucket", "prefix/")
+    assert not isinstance(exc_info.value, StorageNotFound)
+    assert "backend failure details" not in str(exc_info.value)
+
+
+def test_storage_ensure_versioning_404_raises_storage_not_found():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="bucket not found")
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    with pytest.raises(StorageNotFound):
+        client.ensure_versioning("missing-bucket")
+
+
+def test_storage_ensure_versioning_describe_non_200_non_404_raises_client_error_without_leaking_body():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="internal server error on describe")
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    with pytest.raises(ClientError) as exc_info:
+        client.ensure_versioning("my-bucket")
+    assert not isinstance(exc_info.value, StorageNotFound)
+    assert "internal server error on describe" not in str(exc_info.value)
+
+
+def test_storage_ensure_versioning_patch_failure_raises_client_error_without_leaking_body():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"versioning": {"enabled": False}})
+        # PATCH fails
+        return httpx.Response(500, text="patch operation failed")
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    with pytest.raises(ClientError) as exc_info:
+        client.ensure_versioning("my-bucket")
+    assert "patch operation failed" not in str(exc_info.value)
+
+
 # --- Fakes satisfy the Protocols ----------------------------------------------
 
 
