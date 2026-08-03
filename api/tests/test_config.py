@@ -162,6 +162,63 @@ def test_avatar_model_and_location_overridable(tmp_path):
     assert config.avatar_location == "us-east4"
 
 
+def test_org_config_field_defaults():
+    config = Config()
+    assert config.org_repo is None
+    assert config.api_base_url == "http://127.0.0.1:8100"
+    assert config.skills_repo is None
+    assert config.skills_bucket == ""
+    assert config.personas_bucket == ""
+    assert config.skills_publish_wif_provider == ""
+    assert config.skills_publish_service_account == ""
+    assert config.skills_publish_external is False
+
+
+def test_org_config_fields_overridable(tmp_path):
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        "org_repo: acme-corp/pnyx-config\n"
+        "api_base_url: https://pnyx.acme.example\n"
+        "skills_repo: acme-corp/pnyx-skills\n"
+        "skills_bucket: acme-skills-bucket\n"
+        "personas_bucket: acme-personas-bucket\n"
+        "skills_publish_wif_provider: projects/123/locations/global/workloadIdentityPools/x\n"
+        "skills_publish_service_account: publisher@acme.iam.gserviceaccount.com\n"
+        "skills_publish_external: true\n"
+    )
+
+    config = Config.load(yaml_path)
+
+    assert config.org_repo == "acme-corp/pnyx-config"
+    assert config.api_base_url == "https://pnyx.acme.example"
+    assert config.skills_repo == "acme-corp/pnyx-skills"
+    assert config.skills_bucket == "acme-skills-bucket"
+    assert config.personas_bucket == "acme-personas-bucket"
+    assert config.skills_publish_wif_provider == (
+        "projects/123/locations/global/workloadIdentityPools/x"
+    )
+    assert config.skills_publish_service_account == "publisher@acme.iam.gserviceaccount.com"
+    assert config.skills_publish_external is True
+
+
+def test_config_example_yaml_documents_org_config_keys():
+    example_path = Path(__file__).resolve().parent.parent / "config.example.yaml"
+    data = yaml.safe_load(example_path.read_text())
+
+    assert data["org_repo"] is None
+    assert data["api_base_url"] == "http://127.0.0.1:8100"
+    assert data["skills_repo"] is None
+    assert data["skills_bucket"] == ""
+    assert data["personas_bucket"] == ""
+    assert data["skills_publish_wif_provider"] == ""
+    assert data["skills_publish_service_account"] == ""
+    assert data["skills_publish_external"] is False
+
+    config = Config(**data)
+    assert config.org_repo is None
+    assert config.api_base_url == "http://127.0.0.1:8100"
+
+
 def test_config_example_yaml_documents_avatar_keys():
     # config.example.yaml is the operator-facing template; both new keys must
     # be explicitly present (not merely absent-and-defaulted) and must parse

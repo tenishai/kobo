@@ -29,6 +29,7 @@ from pnyx_api.knowledge import (
     save_knowledge_file,
 )
 from pnyx_api.models import Agent, AgentStatus
+from pnyx_api.org import OrgState, load_org_config
 from pnyx_api.provisioner import (
     PIPELINE,
     STEP_LABELS,
@@ -264,11 +265,20 @@ def create_app(
     *,
     config: Config,
     clients: Clients | None = None,
+    org: OrgState | None = None,
 ) -> FastAPI:
     app = FastAPI(title="pnyx-api")
     app.state.config = config
     app.state.clients = clients
     app.state.session_factory = session_factory
+    # `org` defaults to None in the signature (not a shared OrgState(...)
+    # instance) so every create_app() call gets its own object here rather
+    # than every caller that omits `org` pointing at one mutable instance in
+    # common — see the module's Task 2 wiring in build_default_app for how a
+    # real boot constructs and passes one. Every pre-existing create_app call
+    # (the whole test suite) keeps working unchanged, reading this same
+    # "not configured" state Tasks 3/8 render honestly off of.
+    app.state.org = org if org is not None else OrgState(False, None, "no org configured")
 
     app.add_middleware(
         CORSMiddleware,
@@ -919,14 +929,23 @@ def create_app(
 
 
 def build_default_app() -> FastAPI:
-    """Wire the real config, database, and platform clients."""
+    """Wire the real config, org config, database, and platform clients."""
     # Local import: `pnyx_api.clients` pulls in httpx/subprocess-backed
     # implementations that most tests (which only need `create_app` and a
     # fake/None clients object) never touch — keeping this import inside the
     # function keeps importing `pnyx_api.main` itself cheap for them.
-    from pnyx_api.clients import Clients
+    from pnyx_api.clients import Clients, CommandRunner, GhCLI
 
-    config = Config.load(None)
+    local_config = Config.load(None)
+    # One GhCLI, built once, just for the org-config clone below — Clients.
+    # real() (below) builds its own separate GhCLI for everything else. Boot
+    # never crashes on an org problem: load_org_config catches every clone/
+    # parse/validation failure itself and falls back to `local_config`
+    # unchanged, paired with an unwired OrgState an unwired room can render
+    # honestly (Tasks 3/8 consume `app.state.org`).
+    github = GhCLI(runner=CommandRunner())
+    config, org = load_org_config(local_config, github)
+
     config.workdir.mkdir(parents=True, exist_ok=True)
     engine = make_engine(config.db_url)
     init_db(engine)
@@ -942,5 +961,7 @@ def build_default_app() -> FastAPI:
     # once here rather than per-request: the accepted pattern for this app's
     # lifetime (a longer-lived httpx client pool is the deferred concern, not
     # a correctness issue for the single-process deployment this targets).
+    # Built from the MERGED config, same as the engine above — everything
+    # downstream of boot sees org values as if they'd always been local.
     clients = Clients.real(config)
-    return create_app(session_factory, config=config, clients=clients)
+    return create_app(session_factory, config=config, clients=clients, org=org)

@@ -19,6 +19,11 @@ class ModelChoice(BaseModel):
 
 class Config(BaseModel):
     github_org: str = "example-org"
+    # Full name (owner/repo) of the client's org config repo — cloned at
+    # boot and merged over this file's own values (pnyx_api.org.load_org_
+    # config). None means no org config repo is configured; pnyx runs on
+    # this file's values alone.
+    org_repo: str | None = None
     runtime_image: str = "registry.example/agents/daedalus-runtime:latest"
     gojira_url: str = "http://127.0.0.1:8080"
     gojira_token: str | None = None
@@ -40,6 +45,27 @@ class Config(BaseModel):
     )
     skills_repo_path: Path | None = None
     personas_dir: Path | None = None  # None -> package templates/personas
+    # Bucket-catalog era replacements for skills_repo_path/personas_dir above
+    # (Task 4/5 own the consumers that will read these — this task only adds
+    # the fields so org.yaml can already set them). skills_repo is the full
+    # name (owner/repo) of the org's skills repo; skills_bucket/personas_
+    # bucket are the GCS buckets backing the catalogs; empty string means
+    # unconfigured for all three.
+    skills_repo: str | None = None
+    skills_bucket: str = ""
+    personas_bucket: str = ""
+    # WIF provider + service account identity the org's own skills-publish
+    # pipeline (if any) runs as. skills_publish_external True means that
+    # pipeline is external to pnyx — pnyx must never install or modify
+    # anything in the skills repo itself.
+    skills_publish_wif_provider: str = ""
+    skills_publish_service_account: str = ""
+    skills_publish_external: bool = False
+    # This pnyx instance's own reachable base URL (bootstrap CLI / org
+    # status consumers, Task 3+) — not org.yaml-settable (ORG_KEYS excludes
+    # it), same as workdir/db_url below: it describes *this* machine, not
+    # anything the org can hand out.
+    api_base_url: str = "http://127.0.0.1:8100"
     workdir: Path = Path.home() / ".pnyx"
     db_url: str = "sqlite:///pnyx.db"
     # Path to the gitignored Slack config-token pair (P2c); None means Slack

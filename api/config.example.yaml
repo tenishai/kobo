@@ -5,6 +5,12 @@
 # GitHub organization containing agent implementations
 github_org: example-org
 
+# Full name (owner/repo) of the client's org config repo (pnyx-config).
+# Cloned at boot and its org.yaml merged over this file's own values (see
+# pnyx_api.org.load_org_config) — null means no org config repo is
+# configured, and pnyx runs on this file's values alone.
+org_repo: null
+
 # OCI image URI for the daedalus runtime executor
 runtime_image: registry.example/agents/daedalus-runtime:latest
 
@@ -53,6 +59,26 @@ skills_repo_path: null
 
 # Directory containing agent persona definitions (null uses package templates)
 personas_dir: null
+
+# Bucket-catalog era replacements for skills_repo_path/personas_dir above
+# (Tasks 4/5 own the consumers). Full name (owner/repo) of the org's skills
+# repo, and the GCS buckets backing the skills/personas catalogs — empty
+# string means unconfigured for all three.
+skills_repo: null
+skills_bucket: ""
+personas_bucket: ""
+
+# Workload Identity Federation provider + service account the org's own
+# skills-publish pipeline (if any) runs as. skills_publish_external true
+# means that pipeline is external to pnyx — pnyx must never install or
+# modify anything in the skills repo itself.
+skills_publish_wif_provider: ""
+skills_publish_service_account: ""
+skills_publish_external: false
+
+# Base URL this pnyx API instance is reachable at (bootstrap CLI / org
+# status, Task 3+) — describes this machine, not anything org-supplied.
+api_base_url: http://127.0.0.1:8100
 
 # Local directory for persistent runtime state and cache
 workdir: ~/.pnyx

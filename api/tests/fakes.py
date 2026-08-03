@@ -255,6 +255,18 @@ class FakeGitHub:
     knobs above, since every real agent repo has had a Dockerfile since it
     was first composed; the runtime-bump fixture `wire_slack`'s
     `_update_dockerfile_runtime_image` edit rewrites the FROM line of.
+
+    `org_yaml` (Task 2), when given, makes `clone` also write a top-level
+    `org.yaml` with exactly that text — the fixture `pnyx_api.org.
+    load_org_config`'s tests use to control what a cloned pnyx-config repo's
+    org.yaml contains. Defaults to `None`, in which case `clone` writes no
+    `org.yaml` at all (matching every other repo, none of which have ever
+    had one). `clone_error`, when set, makes `clone` raise
+    `ClientError(clone_error)` instead of writing anything — the seam for
+    exercising a caller's clone-failure handling (e.g. `load_org_config`'s
+    unwired-on-`ClientError` path) without a real git/gh subprocess. The
+    call is still recorded in `.calls`/`.cloned` first, same as every other
+    call here, before the error is raised.
     """
 
     def __init__(
@@ -272,6 +284,8 @@ class FakeGitHub:
         agent_yaml_transports: list[dict] | None = None,
         gojira_secrets_from: list[str] | None = None,
         dockerfile_image: str = FAKE_DOCKERFILE_OLD_IMAGE,
+        org_yaml: str | None = None,
+        clone_error: str | None = None,
     ):
         self.repos: set[str] = set(existing_repos) if existing_repos else set()
         self.created_from_dir: list[tuple[str, Path]] = []
@@ -289,6 +303,8 @@ class FakeGitHub:
             list(gojira_secrets_from) if gojira_secrets_from is not None else None
         )
         self._dockerfile_image = dockerfile_image
+        self._org_yaml = org_yaml
+        self._clone_error = clone_error
         self.local_head_calls: list[Path] = []
 
         self._head_sha = head_sha
@@ -322,6 +338,8 @@ class FakeGitHub:
     def clone(self, repo: str, dest: Path) -> None:
         self.calls.append(f"clone:{repo}")
         self.cloned.append((repo, dest))
+        if self._clone_error is not None:
+            raise ClientError(self._clone_error)
 
         name = _app_name_from_repo(repo)
         base = dest / "k8s" / "base"
@@ -341,6 +359,9 @@ class FakeGitHub:
         (base / "kustomization.yaml").write_text(KUSTOMIZATION_YAML_TEMPLATE.format(name=name))
 
         (dest / "Dockerfile").write_text(DOCKERFILE_TEMPLATE.format(image=self._dockerfile_image))
+
+        if self._org_yaml is not None:
+            (dest / "org.yaml").write_text(self._org_yaml)
 
         bundle_dir = dest / "bundle"
         if self._agent_yaml_transports is not None:
