@@ -124,3 +124,51 @@ closed; remaining — pre-existing agent repos lack the concurrency block until
 their workflows regenerate; sweep assumes a single API process; platform ruff
 baseline burn-down before its PR; duplicate-skill-id validation; the ledgered
 UX seams.
+
+## P2a results — chat pane live (2026-08-03)
+
+Commits under test: `753c5b0` (converse) → `1fa0804` (chat endpoint + model labels) →
+`2bfa064` (UI client) → `8d1f2da` (ChatPanel). Stack: cortex-api restarted at `8d1f2da`
+(startup sweep found nothing — all rows terminal), UI dev server picked the new
+component up via HMR, agents clio/muse/echo READY in the live cluster.
+
+**Wire smoke (curl, before the browser run):**
+`POST /api/agents/echo/chat` with one user message ("Reply with exactly the word: ping")
+→ `{"reply": "ping"}` through the real port-forward → a2a → Vertex chain.
+
+**Browser milestone (Playwright, headless chromium): PASSED — all assertions.**
+
+echo, turn 1 — "what do you remember about how you got here?":
+
+> I remember being assembled in the cortex assembly room and then deployed through a
+> specific sequence called the platform chain. The steps were: 1. **repo** (presumably
+> version control/source) 2. **onboarding** (initialization/setup) 3. **build**
+> (compilation/construction) 4. **deploy** (putting me into production) 5. **first
+> contact** (meeting you now!) That's how I got here to talk with you today.
+
+echo, turn 2 — "say that again in five words":
+
+> Assembled, built, deployed, met you.
+
+Judgment call recorded: turn 2 is a five-word restatement of turn 1's content with no
+re-prompting — the full-history envelope demonstrably carried (the server holds no
+session state; the browser owned the transcript).
+
+clio, one exchange — "in one sentence, what is your purpose?":
+
+> I'm here to be a helpful, concise, and warm assistant who can answer your questions
+> and support you with information, while being honest when I don't know something.
+
+Also verified live: `model_label` ("Claude Sonnet 4.5") on the list API, the detail
+header (raw id on hover), and the composition card; ChatPanel renders only on READY
+agents; optimistic user bubbles + pending pulse behaved as specced. Screenshots in
+`.superpowers/sdd/smoke/p2a-*.png` (gitignored).
+
+**409 path:** no non-READY agent existed at run time (clio/muse/echo all READY), and the
+panel is hidden by construction on non-ready agents — skipped live per the plan; the
+endpoint's 409 is unit-covered.
+
+**Notes:** one milestone-script fix (SPA hash navigation doesn't reload, so the clio
+assertion needed an explicit wait — script-side, not a product defect). Cosmetic seam
+for later: agent replies render as plain text, so model markdown (`**repo**`) shows its
+asterisks in bubbles.

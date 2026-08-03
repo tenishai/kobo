@@ -90,7 +90,8 @@ seeder converges memory on the next boot without touching what the agent has lea
 
 Cortex is in **pre-alpha**. The foundations (runtime image, programmatic onboarding) and the
 cortex-api backend are working end to end — one `POST /api/agents` produces a running,
-memory-seeded, PVC-backed agent. The assembly room UI is live in dev (`make -C ui dev`). See the
+memory-seeded, PVC-backed agent. The assembly room UI is live in dev (`make -C ui dev`), and you
+can chat with deployed agents from the room. See the
 [design](docs/superpowers/specs/2026-08-01-cortex-agent-assembly-poc-design.md) for architecture
 and decisions, and the [P0 plan](docs/superpowers/plans/2026-08-01-p0-foundations.md) for the
 current work.
