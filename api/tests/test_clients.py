@@ -209,6 +209,17 @@ def test_rerun_argv():
     assert runner.calls == [["gh", "run", "rerun", "99", "--repo", "acme/agent-clio"]]
 
 
+def test_local_head_argv_and_parsing():
+    # No trailing newline here — same rationale as test_head_sha_argv_and_parsing:
+    # RecordingRunner intentionally skips CommandRunner's real strip so this
+    # test stays focused on argv + the pass-through parse.
+    runner = RecordingRunner(results=[(0, "ed17ed17ed17ed17ed17ed17ed17ed17ed17ed17", "")])
+    client = GhCLI(runner=runner)
+    result = client.local_head(Path("/tmp/agent-clio"))
+    assert runner.calls == [["git", "-C", "/tmp/agent-clio", "rev-parse", "HEAD"]]
+    assert result == "ed17ed17ed17ed17ed17ed17ed17ed17ed17ed17"
+
+
 # --- Cloud (GcloudClient) -----------------------------------------------------
 
 
@@ -383,6 +394,23 @@ def test_deploy_service_account_empty_string_when_unset():
     runner = RecordingRunner(results=[(0, "", "")])
     client = KubectlCLI(runner=runner)
     assert client.deploy_service_account("clio", "clio") == ""
+
+
+def test_deploy_image_argv_and_value():
+    runner = RecordingRunner(
+        results=[(0, "us-docker.pkg.dev/example/gojira-app:ed17ed17ed17", "")]
+    )
+    client = KubectlCLI(runner=runner)
+    assert (
+        client.deploy_image("clio", "clio")
+        == "us-docker.pkg.dev/example/gojira-app:ed17ed17ed17"
+    )
+    assert runner.calls == [
+        [
+            "kubectl", "-n", "clio", "get", "deploy", "clio",
+            "-o", "jsonpath={.spec.template.spec.containers[0].image}",
+        ]
+    ]
 
 
 # --- Gojira (HttpxGojiraClient) ------------------------------------------------
@@ -836,6 +864,8 @@ def test_fake_github_satisfies_protocol(tmp_path):
     runs = fake.runs_for_commit("acme/agent-clio", sha)
     assert runs and {"id", "status", "conclusion"} <= set(runs[0])
     fake.rerun("acme/agent-clio", runs[0]["id"])
+    head = fake.local_head(tmp_path)
+    assert head and fake.local_head_calls == [tmp_path]
 
 
 def test_fake_gojira_satisfies_protocol():
@@ -904,6 +934,40 @@ def test_fake_github_runs_for_commit_empty_for_unregistered_sha():
     assert fake.runs_for_commit("acme/agent-clio", "some-other-sha") == []
 
 
+def test_fake_github_clone_default_writes_no_knowledge_files(tmp_path):
+    # knowledge_files defaults to None — clone must leave the generated
+    # scaffolding as the only thing on disk, so every pre-existing test that
+    # constructs a bare FakeGitHub() is unaffected by this knob's addition.
+    fake = FakeGitHub()
+    dest = tmp_path / "clone"
+    fake.clone("acme/agent-clio", dest)
+    assert not (dest / "bundle").exists()
+
+
+def test_fake_github_clone_materializes_knowledge_files(tmp_path):
+    fake = FakeGitHub(knowledge_files={"b.md": "second", "a.md": "first"})
+    dest = tmp_path / "clone"
+    fake.clone("acme/agent-clio", dest)
+    knowledge_dir = dest / "bundle" / "knowledge"
+    assert (knowledge_dir / "a.md").read_text() == "first"
+    assert (knowledge_dir / "b.md").read_text() == "second"
+    # generated scaffolding is still present alongside it
+    assert (dest / "gojira.yaml").exists()
+
+
+def test_fake_github_local_head_default_and_recording(tmp_path):
+    fake = FakeGitHub()
+    result = fake.local_head(tmp_path)
+    assert result == "ed17ed17ed17ed17ed17ed17ed17ed17ed17ed17"
+    assert len(result) == 40
+    assert fake.local_head_calls == [tmp_path]
+
+
+def test_fake_github_local_head_result_override(tmp_path):
+    fake = FakeGitHub(local_head_result="cafef00dcafef00dcafef00dcafef00dcafef00")
+    assert fake.local_head(tmp_path) == "cafef00dcafef00dcafef00dcafef00dcafef00"
+
+
 def test_fake_github_rerun_swaps_failed_run_to_configurable_followup():
     fake = FakeGitHub(
         head_sha="deadbeef",
@@ -965,6 +1029,7 @@ def test_fake_kubectl_satisfies_protocol():
     assert isinstance(fake, KubectlClient)
     assert fake.rollout_ok("clio", "clio") is True
     assert fake.calls == [("clio", "clio")]
+    assert fake.deploy_image("clio", "clio")
 
 
 def test_fake_kubectl_live_spec_defaults_match_happy_path():
@@ -984,6 +1049,22 @@ def test_fake_kubectl_live_spec_configurable_per_namespace_deploy():
     # happy-path defaults.
     assert fake.deploy_env_names("other", "other") == ["VERTEXAI_PROJECT", "VERTEXAI_LOCATION"]
     assert fake.deploy_service_account("other", "other") == "agent-other"
+
+
+def test_fake_kubectl_deploy_image_default_matches_fake_github_local_head_default():
+    # The default deploy_image tag is deliberately the first 12 chars of
+    # FakeGitHub's default local_head_result, so a happy-path test wiring
+    # bare FakeGitHub()/FakeKubectl() together reads "delivered" without
+    # configuring anything.
+    fake = FakeKubectl()
+    image = fake.deploy_image("clio", "clio")
+    assert image.rsplit(":", 1)[-1] == "ed17ed17ed17"
+
+
+def test_fake_kubectl_deploy_image_configurable_per_namespace_deploy():
+    fake = FakeKubectl(images={("clio", "clio"): "gojira-app:abcabcabcabc"})
+    assert fake.deploy_image("clio", "clio") == "gojira-app:abcabcabcabc"
+    assert fake.deploy_image("other", "other").rsplit(":", 1)[-1] == "ed17ed17ed17"
 
 
 # --- Clients.real() wiring -----------------------------------------------------

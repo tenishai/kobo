@@ -118,6 +118,18 @@ class GitHubClient(Protocol):
         """Stage, commit, and push everything under workdir. False if nothing changed."""
         ...
 
+    def local_head(self, workdir: Path) -> str:
+        """The just-pushed local clone's head commit sha (`git rev-parse HEAD`
+        against `workdir`), not a fresh API read.
+
+        Deliberately local rather than `head_sha(repo)`: right after
+        `commit_push`, GitHub's API can lag a moment before it reflects the
+        push (the same read-after-write lag `runs_for_commit` callers already
+        have to tolerate) — the local clone's HEAD is the pushed sha with no
+        such lag, since it's the commit this process itself just made.
+        """
+        ...
+
     def head_sha(self, repo: str) -> str:
         """The current head commit sha of `repo`'s default branch.
 
@@ -204,6 +216,9 @@ class GhCLI:
         )
         self._runner.run([self._git, "-C", str(workdir), "push"])
         return True
+
+    def local_head(self, workdir: Path) -> str:
+        return self._runner.run([self._git, "-C", str(workdir), "rev-parse", "HEAD"])
 
     def head_sha(self, repo: str) -> str:
         return self._runner.run(
@@ -603,6 +618,19 @@ class KubectlClient(Protocol):
         string when unset). Same stale-apply defense as `deploy_env_names`."""
         ...
 
+    def deploy_image(self, namespace: str, deploy: str) -> str:
+        """Container 0's image reference on the *live* Deployment (e.g.
+        `.../gojira-app:abc123def456`).
+
+        Used by the knowledge module's delivery check (`cortex_api.knowledge`)
+        to tell whether a saved edit has actually rolled out yet: generated
+        CI tags the image it builds with the first 12 chars of the commit
+        sha it built from, so comparing this tag against a known commit's
+        `sha[:12]` is a stateless way to answer "is that commit live" without
+        any of cortex's own state to keep in sync.
+        """
+        ...
+
 
 class KubectlCLI:
     """kubectl-backed KubectlClient."""
@@ -641,6 +669,14 @@ class KubectlCLI:
             [
                 self._kubectl, "-n", namespace, "get", "deploy", deploy,
                 "-o", "jsonpath={.spec.template.spec.serviceAccountName}",
+            ]
+        )
+
+    def deploy_image(self, namespace: str, deploy: str) -> str:
+        return self._runner.run(
+            [
+                self._kubectl, "-n", namespace, "get", "deploy", deploy,
+                "-o", "jsonpath={.spec.template.spec.containers[0].image}",
             ]
         )
 
