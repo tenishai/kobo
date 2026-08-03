@@ -10,6 +10,7 @@
   import ChatPanel from "../components/ChatPanel.svelte";
   import ErrorState from "../components/ErrorState.svelte";
   import FirstReply from "../components/FirstReply.svelte";
+  import MemoryPanel from "../components/MemoryPanel.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import StatusBadge from "../components/StatusBadge.svelte";
   import StepChecklist from "../components/StepChecklist.svelte";
@@ -117,6 +118,7 @@
 
     {#if data.status === "ready"}
       <ChatPanel agentName={data.name} />
+      <MemoryPanel agentName={data.name} />
     {/if}
   {/if}
 </div>
