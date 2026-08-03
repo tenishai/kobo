@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
@@ -21,7 +22,10 @@ from cortex_api.provisioner import (
     STEP_LABELS,
     reset_failed_steps,
     run_pipeline,
+    sweep_interrupted,
 )
+
+log = logging.getLogger(__name__)
 
 # Type-only: keeps the real (httpx-backed) `Clients` import out of this
 # module's own import graph, so tests that only need `create_app` (most of
@@ -175,13 +179,39 @@ def create_app(
         status = agent.status
         agent_id = agent.id
 
-        run_pipeline(
-            request.app.state.session_factory,
-            agent_id,
-            config=cfg,
-            clients=app.state.clients,
-            steps=PIPELINE,
-        )
+        try:
+            run_pipeline(
+                request.app.state.session_factory,
+                agent_id,
+                config=cfg,
+                clients=app.state.clients,
+                steps=PIPELINE,
+            )
+        except Exception as exc:
+            # Broad by design (ruff's BLE001 already exempts this: the
+            # exception is logged with exc_info via log.exception below) - the
+            # pipeline thread never got started (or never got the chance
+            # to run), so nothing will ever move this agent out of PENDING —
+            # land it in FAILED directly rather than leaving it wedged
+            # identically to the restart-mid-provision case `sweep_interrupted`
+            # covers (this is that same wedge, just triggered by a
+            # `Thread.start()`/launch failure instead of a process restart).
+            log.exception(
+                "create_agent: failed to start provisioning for agent %s", agent_id
+            )
+            try:
+                session.rollback()
+            except Exception:  # best-effort cleanup only
+                log.warning(
+                    "create_agent: rollback before recording launch failure failed",
+                    exc_info=True,
+                )
+            agent.status = AgentStatus.FAILED
+            agent.error = f"failed to start provisioning: {exc}"
+            session.commit()
+            return JSONResponse(
+                {"error": f"failed to start provisioning: {exc}"}, status_code=503
+            )
 
         return JSONResponse({"name": payload.name, "status": status}, status_code=201)
 
@@ -261,13 +291,38 @@ def create_app(
         agent_id = agent.id
         cfg: Config = app.state.config
 
-        run_pipeline(
-            request.app.state.session_factory,
-            agent_id,
-            config=cfg,
-            clients=app.state.clients,
-            steps=PIPELINE,
-        )
+        try:
+            run_pipeline(
+                request.app.state.session_factory,
+                agent_id,
+                config=cfg,
+                clients=app.state.clients,
+                steps=PIPELINE,
+            )
+        except Exception as exc:
+            # Broad by design, same as create_agent's guard above (ruff's
+            # BLE001 already exempts this: logged with exc_info via
+            # log.exception below). Same wedge as create_agent's launch
+            # guard: the thread never
+            # started, so nothing will ever move this agent out of
+            # PROVISIONING on its own — fail it back so it stays retryable
+            # rather than getting stuck past the FAILED-only retry gate above.
+            log.exception(
+                "retry_agent: failed to start provisioning for agent %s", agent_id
+            )
+            try:
+                session.rollback()
+            except Exception:  # best-effort cleanup only
+                log.warning(
+                    "retry_agent: rollback before recording launch failure failed",
+                    exc_info=True,
+                )
+            agent.status = AgentStatus.FAILED
+            agent.error = f"failed to start provisioning: {exc}"
+            session.commit()
+            return JSONResponse(
+                {"error": f"failed to start provisioning: {exc}"}, status_code=503
+            )
 
         # Same status-before-thread discipline as create_agent: report the
         # state this call put the agent into (about to re-provision), never
@@ -290,6 +345,13 @@ def build_default_app() -> FastAPI:
     engine = make_engine(config.db_url)
     init_db(engine)
     session_factory = make_session_factory(engine)
+    # Startup sweep, before any request is served: an agent left in
+    # PENDING/PROVISIONING by a prior process's death (killed mid-provision,
+    # a bad deploy, ...) has no thread left to ever finish it. Only wired
+    # here, never in create_app, so the many tests that build their own
+    # isolated fixture (agents seeded directly, no restart involved) aren't
+    # affected by it.
+    sweep_interrupted(session_factory)
     # One real Clients (and the httpx.Client(s) it owns) per process, built
     # once here rather than per-request: the accepted pattern for this app's
     # lifetime (a longer-lived httpx client pool is the deferred concern, not

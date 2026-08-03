@@ -8,8 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from cortex_api.clients import Clients
-from cortex_api.models import Agent, AgentStatus, StepStatus
-from cortex_api.provisioner import reset_failed_steps, run_pipeline
+from cortex_api.models import Agent, AgentStatus, AgentStep, StepStatus
+from cortex_api.provisioner import reset_failed_steps, run_pipeline, sweep_interrupted
 
 # No real backend is touched by the toy steps below, so every client slot is None.
 NO_CLIENTS = Clients(github=None, gojira=None, cloud=None, agent=None, kubectl=None)
@@ -283,4 +283,101 @@ def test_reset_failed_steps_only_resets_failed_rows(session_factory, config):
     assert rows["step-b"].error is None
     assert rows["step-b"].started_at is None
     assert rows["step-b"].finished_at is None
+    session.close()
+
+
+# --- sweep_interrupted -------------------------------------------------------------
+
+
+def _seed_agent(session_factory, name: str, status: AgentStatus) -> int:
+    session = session_factory()
+    agent = Agent(
+        name=name,
+        persona="helpful-generalist",
+        model_id="vertex_ai/claude-sonnet-4-5",
+        status=status,
+    )
+    session.add(agent)
+    session.commit()
+    agent_id = agent.id
+    session.close()
+    return agent_id
+
+
+def _seed_step(session_factory, agent_id: int, name: str, status: StepStatus) -> None:
+    session = session_factory()
+    session.add(AgentStep(agent_id=agent_id, name=name, status=status))
+    session.commit()
+    session.close()
+
+
+def test_sweep_interrupted_flips_pending_and_provisioning_agents_and_running_steps(
+    session_factory, config
+):
+    """A mixed-status fixture: PENDING/PROVISIONING agents (the ones a prior
+    process death would leave wedged) alongside READY/FAILED agents that must
+    be left alone, plus RUNNING/DONE steps under the wedged agents to prove
+    the sweep only touches RUNNING rows, not DONE ones.
+    """
+    pending_id = _seed_agent(session_factory, "agent-pending", AgentStatus.PENDING)
+    provisioning_id = _seed_agent(
+        session_factory, "agent-provisioning", AgentStatus.PROVISIONING
+    )
+    ready_id = _seed_agent(session_factory, "agent-ready", AgentStatus.READY)
+    failed_id = _seed_agent(session_factory, "agent-failed", AgentStatus.FAILED)
+
+    _seed_step(session_factory, provisioning_id, "repo", StepStatus.DONE)
+    _seed_step(session_factory, provisioning_id, "onboard", StepStatus.RUNNING)
+    _seed_step(session_factory, pending_id, "repo", StepStatus.RUNNING)
+    _seed_step(session_factory, ready_id, "repo", StepStatus.DONE)
+
+    swept = sweep_interrupted(session_factory)
+
+    assert swept == 2
+
+    session = session_factory()
+    pending = session.get(Agent, pending_id)
+    provisioning = session.get(Agent, provisioning_id)
+    ready = session.get(Agent, ready_id)
+    failed = session.get(Agent, failed_id)
+
+    assert pending.status == AgentStatus.FAILED
+    assert pending.error == "interrupted by an API restart — retry when ready"
+    assert provisioning.status == AgentStatus.FAILED
+    assert provisioning.error == "interrupted by an API restart — retry when ready"
+    # READY/FAILED agents are untouched: not among the wedged statuses.
+    assert ready.status == AgentStatus.READY
+    assert failed.status == AgentStatus.FAILED
+    assert failed.error is None
+
+    provisioning_steps = {s.name: s for s in provisioning.steps}
+    pending_steps = {s.name: s for s in pending.steps}
+    ready_steps = {s.name: s for s in ready.steps}
+
+    assert provisioning_steps["repo"].status == StepStatus.DONE  # untouched
+    assert provisioning_steps["onboard"].status == StepStatus.FAILED
+    assert provisioning_steps["onboard"].error == "interrupted"
+    assert pending_steps["repo"].status == StepStatus.FAILED
+    assert pending_steps["repo"].error == "interrupted"
+    assert ready_steps["repo"].status == StepStatus.DONE  # untouched
+
+    session.close()
+
+
+def test_sweep_interrupted_is_a_noop_on_a_clean_table(session_factory, config):
+    """No PENDING/PROVISIONING agents at all (every prior provision either
+    finished or already failed on its own) - returns 0 and leaves every row
+    exactly as it was.
+    """
+    ready_id = _seed_agent(session_factory, "agent-clean-ready", AgentStatus.READY)
+    _seed_step(session_factory, ready_id, "repo", StepStatus.DONE)
+
+    swept = sweep_interrupted(session_factory)
+
+    assert swept == 0
+
+    session = session_factory()
+    ready = session.get(Agent, ready_id)
+    assert ready.status == AgentStatus.READY
+    assert {s.name: s.status for s in ready.steps} == {"repo": StepStatus.DONE}
     session.close()

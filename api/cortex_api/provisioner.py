@@ -207,6 +207,55 @@ def run_pipeline(
     return thread
 
 
+def sweep_interrupted(session_factory: sessionmaker[Session]) -> int:
+    """Fail every agent left wedged in PENDING/PROVISIONING by a process restart.
+
+    `_run_pipeline_body` is the only thing that ever moves an agent OUT of
+    PENDING/PROVISIONING, and it only runs inside the daemon thread
+    `run_pipeline` fires. If the API process dies (or is redeployed) while
+    that thread is mid-flight, the thread is simply gone — nothing ever
+    revisits the agent's row again. `retry_agent`'s gate only accepts FAILED,
+    so an agent stuck in PENDING/PROVISIONING is wedged forever short of a
+    manual DB edit. Call this once at process startup, before serving any
+    requests (`build_default_app` — never `create_app`, so test fixtures'
+    isolated agents are unaffected), to land every such agent in FAILED
+    instead, where the existing retry path already knows how to pick it back
+    up. Any AgentStep row a dead thread left RUNNING is swept the same way,
+    so `reset_failed_steps` sees it too.
+
+    Returns the number of agents swept; logs a summary line when nonzero.
+    """
+    session = session_factory()
+    try:
+        wedged = (
+            session.query(Agent)
+            .filter(Agent.status.in_([AgentStatus.PENDING, AgentStatus.PROVISIONING]))
+            .all()
+        )
+        for agent in wedged:
+            agent.status = AgentStatus.FAILED
+            agent.error = "interrupted by an API restart — retry when ready"
+            running_steps = (
+                session.query(AgentStep)
+                .filter_by(agent_id=agent.id, status=StepStatus.RUNNING)
+                .all()
+            )
+            for step_row in running_steps:
+                step_row.status = StepStatus.FAILED
+                step_row.error = "interrupted"
+
+        if wedged:
+            session.commit()
+            log.warning(
+                "sweep_interrupted: flipped %d agent(s) wedged by a prior restart "
+                "to FAILED",
+                len(wedged),
+            )
+        return len(wedged)
+    finally:
+        session.close()
+
+
 def reset_failed_steps(session: Session, agent_id: int) -> None:
     """Flip every FAILED step of `agent_id` back to PENDING: the retry primitive.
 

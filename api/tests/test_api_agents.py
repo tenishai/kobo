@@ -508,3 +508,102 @@ def test_retry_agent_race_second_call_409s_and_pipeline_fires_once(
     assert second.status_code == 409
     assert "error" in second.json()
     assert len(recorded_agent_ids) == 1
+
+
+# --- Launch guard (run_pipeline/Thread.start() failing post-commit) ---------------
+
+
+def test_create_agent_launch_failure_returns_503_and_agent_lands_failed(
+    session_factory, config, clients, monkeypatch
+):
+    """A `run_pipeline` launch failure (e.g. `Thread.start()` itself raising)
+    happens after the agent row is already committed as PENDING; without a
+    guard the agent would be wedged there identically to the restart-mid-
+    provision case `sweep_interrupted` covers. Force that failure directly
+    (no real thread-exhaustion scenario needed) and assert the route reports
+    a caller-actionable 503 instead of a raw 500, and the agent lands FAILED
+    (i.e. retryable) rather than stuck in PENDING.
+    """
+    import cortex_api.main as main_module
+
+    def _raising_run_pipeline(session_factory, agent_id, *, config, clients, steps):
+        raise RuntimeError("no more threads")
+
+    monkeypatch.setattr(main_module, "run_pipeline", _raising_run_pipeline)
+
+    race_client = TestClient(create_app(session_factory, config=config, clients=clients))
+
+    response = race_client.post(
+        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA}
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "failed to start provisioning: no more threads"}
+
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    assert agent.status == AgentStatus.FAILED
+    assert agent.error == "failed to start provisioning: no more threads"
+    session.close()
+
+
+def test_retry_agent_launch_failure_returns_503_and_a_later_retry_still_succeeds(
+    session_factory, config, clients, monkeypatch
+):
+    """Same launch-failure guard as create_agent's, but on the retry route: a
+    `run_pipeline` failure there must still leave the agent FAILED (not
+    wedged in PROVISIONING past the FAILED-only retry gate), so a follow-up
+    retry against a working pipeline can succeed. Reuses the recording-no-op
+    pattern from the race test above for that follow-up.
+    """
+    import cortex_api.main as main_module
+
+    seed_session = session_factory()
+    seed_session.add(
+        Agent(
+            name=AGENT_NAME,
+            persona=PERSONA,
+            model_id=config.models[0].id,
+            status=AgentStatus.FAILED,
+            error="boom",
+        )
+    )
+    seed_session.commit()
+    seed_session.close()
+
+    def _raising_run_pipeline(session_factory, agent_id, *, config, clients, steps):
+        raise RuntimeError("no more threads")
+
+    monkeypatch.setattr(main_module, "run_pipeline", _raising_run_pipeline)
+
+    race_client = TestClient(create_app(session_factory, config=config, clients=clients))
+
+    first = race_client.post(f"/api/agents/{AGENT_NAME}/retry")
+
+    assert first.status_code == 503
+    assert first.json() == {"error": "failed to start provisioning: no more threads"}
+
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    assert agent.status == AgentStatus.FAILED
+    assert agent.error == "failed to start provisioning: no more threads"
+    session.close()
+
+    recorded_agent_ids: list[int] = []
+
+    def _recording_run_pipeline(session_factory, agent_id, *, config, clients, steps):
+        recorded_agent_ids.append(agent_id)
+
+    monkeypatch.setattr(main_module, "run_pipeline", _recording_run_pipeline)
+
+    second = race_client.post(f"/api/agents/{AGENT_NAME}/retry")
+
+    assert second.status_code == 202
+    assert second.json()["status"] == "provisioning"
+    assert len(recorded_agent_ids) == 1
+
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    assert agent.status == AgentStatus.PROVISIONING
+    assert agent.error is None
+    session.close()
