@@ -73,7 +73,7 @@ class HttpxStorageClient:
 **Files:** `api/pnyx_api/org.py` (new), `api/pnyx_api/config.py` (key changes), `api/pnyx_api/main.py` (`build_default_app` wiring + `app.state.org`), `api/config.example.yaml`, `api/tests/test_org.py` (new), `api/tests/test_config.py`.
 
 **Config changes** (`Config` keeps its full runtime surface — downstream code unchanged):
-- ADD: `org_repo: str | None = None` (full name, e.g. `tenishai/pnyx-config`), `api_base_url: str = "http://127.0.0.1:8100"`, `skills_repo: str | None = None`, `skills_bucket: str = ""`, `personas_bucket: str = ""`, `skills_publish_wif_provider: str = ""`, `skills_publish_service_account: str = ""`.
+- ADD: `org_repo: str | None = None` (full name, e.g. `tenishai/pnyx-config`), `api_base_url: str = "http://127.0.0.1:8100"`, `skills_repo: str | None = None`, `skills_bucket: str = ""`, `personas_bucket: str = ""`, `skills_publish_wif_provider: str = ""`, `skills_publish_service_account: str = ""`, `skills_publish_external: bool = False` (True = the org runs its own publish pipeline into the skills bucket; pnyx must never install or modify anything in that repo).
 - REMOVE: `skills_repo_path`, `personas_dir` (bucket catalogs replace both; delete from `config.example.yaml` and fix every in-repo consumer/test — Tasks 4/5 own the catalog/steps consumers, this task only removes the keys' definitions last after grep confirms remaining uses live in files those tasks touch; if ordering bites, keep the fields deprecated-unused here and delete in Task 5 — disclose which).
 
 **Interfaces:**
@@ -84,6 +84,7 @@ ORG_KEYS = frozenset({
     "gojira_cluster", "runtime_image", "gcp_project", "vertex_project",
     "vertex_location", "model_group", "avatar_model", "avatar_location",
     "models", "skills_publish_wif_provider", "skills_publish_service_account",
+    "skills_publish_external",
 })
 
 @dataclass
@@ -340,7 +341,7 @@ def main(argv: list[str] | None = None) -> int      # loads local config + org m
 1. `org-config repo` — `github.repo_exists(f"{config.github_org}/pnyx-config")` → skipped; else render `org.yaml.tmpl` from the CURRENT merged config values (github_org, skills_repo defaulting to `f"{github_org}-skills"` when unset, buckets defaulting to `f"{github_org}-skills"` / `f"{github_org}-personas"`, cluster/runtime/vertex/model keys verbatim) + README into a tmpdir, `github.create_repo_from_dir` → done. Detail reminds: point `org_repo` at it in local config.
 2. `skills bucket` — name from merged config (default as above); `storage.ensure_bucket` → created=done/exists→`ensure_versioning` changed?done:"skipped".
 3. `personas bucket` — same.
-4. `skills repo + publish workflow` — repo = `config.skills_repo or f"{github_org}-skills"`; if `github.repo_exists` false → scaffold tmpdir (README + `.github/workflows/publish-skills.yml` + `.github/scripts/publish_skills.py`, yml tokens replaced from config `skills_publish_*` + bucket) → `create_repo_from_dir` → done. Else clone; workflow file already present → skipped; else write both files + `open_pr(workdir, repo=..., branch="pnyx-skills-publish", title="pnyx: publish skills to the catalog bucket", body=<what it does + merge instruction>)` → done(detail=PR URL).
+4. `skills repo + publish workflow` — `config.skills_publish_external` → skipped("publish pipeline managed by the org") without touching GitHub at all (a real client already runs its own publisher into its bucket; pnyx adopts, never overwrites). Else: repo = `config.skills_repo or f"{github_org}-skills"`; if `github.repo_exists` false → scaffold tmpdir (README + `.github/workflows/publish-skills.yml` + `.github/scripts/publish_skills.py`, yml tokens replaced from config `skills_publish_*` + bucket) → `create_repo_from_dir` → done. Else clone; workflow file already present → skipped; else write both files + `open_pr(workdir, repo=..., branch="pnyx-skills-publish", title="pnyx: publish skills to the catalog bucket", body=<what it does + merge instruction>)` → done(detail=PR URL).
 5. `default personas` — `personas.seed_default_personas(...)` → seeded>0 ? done : skipped (detail carries counts).
 6. `catalog ingest` — POST `{config.api_base_url}/api/catalogs/refresh` via httpx (timeout 5s); connect error → fall back to direct `search.ingest_indexes` against `make_engine(config.db_url)`; → done with counts (always done — re-running converges, the idempotence test asserts steps 1-5 skipped on run 2, step 6 done both times).
 - `Makefile`: `bootstrap:\n\tvenv/bin/python -m pnyx_api.bootstrap`.
