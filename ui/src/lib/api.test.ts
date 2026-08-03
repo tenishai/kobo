@@ -9,6 +9,7 @@ import {
   errorMessage,
   fetchCatalogs,
   fetchDeliveryState,
+  generateAvatar,
   listAgents,
   listKnowledge,
   saveKnowledgeFile,
@@ -77,6 +78,7 @@ describe("api.ts", () => {
         model: "gpt-5",
         model_label: "GPT-5",
         created_at: "2026-01-01T00:00:00Z",
+        has_avatar: false,
       },
     ];
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ agents }));
@@ -499,6 +501,66 @@ describe("slack client", () => {
         app_token: "xapp-secret",
       }),
     ).rejects.toThrow("couldn't set up Slack — try again");
+  });
+});
+
+describe("avatar client", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("generateAvatar POSTs /api/agents/{name}/avatar and returns {sha}", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ sha: "abc123" }));
+
+    await expect(generateAvatar("clio")).resolves.toEqual({ sha: "abc123" });
+
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/avatar", {
+      method: "POST",
+    });
+  });
+
+  it("generateAvatar encodes the agent name in the URL", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ sha: "abc123" }));
+
+    await generateAvatar("a b");
+
+    expect(fetch).toHaveBeenCalledWith("/api/agents/a%20b/avatar", {
+      method: "POST",
+    });
+  });
+
+  it("generateAvatar surfaces a 409's {error} message (agent not ready)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "agent is not ready for an avatar yet" },
+        { status: 409, statusText: "Conflict" },
+      ),
+    );
+
+    await expect(generateAvatar("clio")).rejects.toThrow(
+      "agent is not ready for an avatar yet",
+    );
+  });
+
+  it("generateAvatar surfaces the plain 502 {error} message (generation failed)", async () => {
+    // The server's ImageClient.generate uses one fixed message for every
+    // failure mode (safety-blocked, non-200, malformed reply) — see
+    // api/cortex_api/clients.py's `_IMAGE_GENERATION_FAILED` — pinned here
+    // verbatim rather than a fabricated string.
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "the picture didn't come through — try again" },
+        { status: 502, statusText: "Bad Gateway" },
+      ),
+    );
+
+    await expect(generateAvatar("clio")).rejects.toThrow(
+      "the picture didn't come through — try again",
+    );
   });
 });
 

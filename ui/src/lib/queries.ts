@@ -26,6 +26,7 @@ import {
   deleteKnowledgeFile,
   fetchCatalogs,
   fetchDeliveryState,
+  generateAvatar,
   getAgent,
   listAgents,
   listKnowledge,
@@ -234,6 +235,26 @@ export function connectSlackMutation(queryClient: QueryClient, name: string) {
     }) => connectSlack(name, body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name] });
+    },
+  };
+}
+
+/**
+ * Generates (or regenerates) the agent's picture; on success, invalidates
+ * the agent list query. Unlike `createSlackAppMutation`/`connectSlackMutation`
+ * above (which invalidate only the detail key, since the list carries no
+ * slack state), `has_avatar` is shown on BOTH the list (AgentCard) and the
+ * detail (AgentDetail header) — so both need to pick up the flip from
+ * false to true. TanStack's `invalidateQueries` match is a *prefix* match
+ * (see `retryAgentMutation` above), so invalidating `["agents"]` alone
+ * already covers `["agents", name]` too; a second call for the detail key
+ * would be a redundant no-op, same reasoning as `retryAgentMutation`.
+ */
+export function generateAvatarMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: () => generateAvatar(name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
     },
   };
 }

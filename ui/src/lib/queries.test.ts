@@ -7,6 +7,7 @@ import {
   deleteKnowledgeMutation,
   deliveryQuery,
   deliveryRefetchInterval,
+  generateAvatarMutation,
   retryAgentMutation,
   saveKnowledgeMutation,
   shouldRetry,
@@ -200,6 +201,47 @@ describe("connectSlackMutation", () => {
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["agents", "clio"],
     });
+  });
+});
+
+describe("generateAvatarMutation", () => {
+  it("mutationFn delegates to generateAvatar(name)", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ sha: "abc123" }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = generateAvatarMutation(queryClient, "clio");
+
+    await expect(mutation.mutationFn()).resolves.toEqual({ sha: "abc123" });
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/avatar", {
+      method: "POST",
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the broad agent-list key on success — has_avatar shows on both the list and the detail", () => {
+    // Unlike createSlackAppMutation/connectSlackMutation (detail-only,
+    // since the list carries no slack state), has_avatar is rendered on
+    // AgentCard (list) AND AgentDetail's header (detail) — so this must
+    // invalidate the ["agents"] prefix, which (per TanStack's prefix-match
+    // invalidation, same as retryAgentMutation above) already covers
+    // ["agents", name] too. Pinning exactly one call, with the broad key.
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = generateAvatarMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents"] });
   });
 });
 

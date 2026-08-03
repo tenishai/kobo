@@ -16,7 +16,16 @@
 
 <a class="agent-card" href={formatHash({ page: "agent", name: agent.name })}>
   <div class="agent-card__top">
-    <span class="agent-card__name" title={agent.name}>{agent.name}</span>
+    <span class="agent-card__identity">
+      {#if agent.has_avatar}
+        <img
+          class="agent-card__avatar"
+          src={`/api/agents/${encodeURIComponent(agent.name)}/avatar`}
+          alt=""
+        />
+      {/if}
+      <span class="agent-card__name" title={agent.name}>{agent.name}</span>
+    </span>
     <StatusBadge status={agent.status} />
   </div>
   <div class="agent-card__meta">
@@ -60,6 +69,22 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-sm);
+  }
+
+  .agent-card__identity {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: var(--space-xs);
+    overflow: hidden;
+  }
+
+  .agent-card__avatar {
+    width: 1.75rem;
+    height: 1.75rem;
+    flex-shrink: 0;
+    border-radius: 50%;
+    object-fit: cover;
   }
 
   .agent-card__name {

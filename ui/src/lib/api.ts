@@ -12,6 +12,7 @@ export type AgentSummary = {
   model: string;
   model_label: string;
   created_at: string;
+  has_avatar: boolean;
 };
 
 export type StepView = {
@@ -277,5 +278,20 @@ export async function connectSlack(
       body: JSON.stringify(body),
     },
   );
+  return parse<{ sha: string }>(res);
+}
+
+/**
+ * Generates (or regenerates) an agent's picture: the server derives a
+ * prompt from the agent's persona, generates a square image, commits it to
+ * the agent's repo, and caches it on the agent row. Returns the commit sha
+ * so the caller can cache-bust the `<img src>` that reads the picture back
+ * (see `GET /api/agents/{name}/avatar`, a plain URL — no client fn needed
+ * for that side, an `<img>` tag fetches it directly).
+ */
+export async function generateAvatar(name: string): Promise<{ sha: string }> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/avatar`, {
+    method: "POST",
+  });
   return parse<{ sha: string }>(res);
 }
