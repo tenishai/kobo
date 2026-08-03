@@ -1292,6 +1292,41 @@ def test_vertex_image_client_no_image_part_raises_client_error_without_leaking_p
     assert prompt not in str(exc_info.value)
 
 
+def test_vertex_image_client_invalid_base64_raises_client_error_without_leaking_prompt():
+    # Well-formed JSON, inlineData present, but the data field isn't valid
+    # base64 — binascii.Error is a ValueError subclass, so the extraction's
+    # except clause must wrap it like every other malformed-reply shape.
+    prompt = "a very specific secret prompt about a dragon riding a unicycle"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"inlineData": {"mimeType": "image/png", "data": "not-valid-base64!!"}}
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = VertexImageClient(
+        "acme-project", "us-central1", "gemini-2.5-flash-image",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError) as exc_info:
+        client.generate(prompt)
+
+    assert str(exc_info.value) == "the picture didn't come through — try again"
+    assert prompt not in str(exc_info.value)
+
+
 def test_vertex_image_client_non_200_raises_client_error_without_leaking_prompt():
     prompt = "a very specific secret prompt about a dragon riding a unicycle"
 
