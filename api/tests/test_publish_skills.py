@@ -587,7 +587,12 @@ def test_workflow_yaml_is_well_formed_with_expected_triggers_and_permissions():
 
     assert set(doc["on"]) == {"pull_request", "push"}
     assert doc["on"]["push"]["branches"] == ["main"]
-    assert doc["permissions"] == {"contents": "read", "id-token": "write"}
+    # Workflow-level permissions: only contents for PR checks
+    assert doc["permissions"] == {"contents": "read"}
+    # publish job has additional id-token permission
+    assert doc["jobs"]["publish"]["permissions"] == {"contents": "read", "id-token": "write"}
+    # check job has only contents permission
+    assert doc["jobs"]["check"]["permissions"] == {"contents": "read"}
 
 
 def test_workflow_jobs_run_check_on_pr_and_publish_on_push():
@@ -600,12 +605,35 @@ def test_workflow_jobs_run_check_on_pr_and_publish_on_push():
     assert "publish_skills.py" in all_runs
     assert "--check" in all_runs
 
+    # Both jobs share: checkout and setup-python
     for job in jobs.values():
         uses = [step["uses"] for step in job["steps"] if "uses" in step]
         assert any(u.startswith("actions/checkout@") for u in uses)
-        assert any(u.startswith("google-github-actions/auth@") for u in uses)
         assert any(u.startswith("actions/setup-python@") for u in uses)
 
-        auth_step = next(step for step in job["steps"] if step.get("uses", "").startswith("google-github-actions/auth@"))
-        assert auth_step["with"]["workload_identity_provider"] == "__PNYX_WIF_PROVIDER__"
-        assert auth_step["with"]["service_account"] == "__PNYX_SERVICE_ACCOUNT__"
+    # check job (PR): no cloud auth, no google-cloud-storage
+    check_job = jobs["check"]
+    check_uses = [step["uses"] for step in check_job["steps"] if "uses" in step]
+    assert not any(u.startswith("google-github-actions/auth@") for u in check_uses)
+    check_pip = next(
+        (step["run"] for step in check_job["steps"] if step.get("run", "").startswith("pip install")),
+        None,
+    )
+    assert check_pip is not None
+    assert "google-cloud-storage" not in check_pip
+    assert "pyyaml" in check_pip
+
+    # publish job (push): has cloud auth and google-cloud-storage
+    publish_job = jobs["publish"]
+    publish_uses = [step["uses"] for step in publish_job["steps"] if "uses" in step]
+    assert any(u.startswith("google-github-actions/auth@") for u in publish_uses)
+    auth_step = next(step for step in publish_job["steps"] if step.get("uses", "").startswith("google-github-actions/auth@"))
+    assert auth_step["with"]["workload_identity_provider"] == "__PNYX_WIF_PROVIDER__"
+    assert auth_step["with"]["service_account"] == "__PNYX_SERVICE_ACCOUNT__"
+    publish_pip = next(
+        (step["run"] for step in publish_job["steps"] if step.get("run", "").startswith("pip install")),
+        None,
+    )
+    assert publish_pip is not None
+    assert "google-cloud-storage" in publish_pip
+    assert "pyyaml" in publish_pip
