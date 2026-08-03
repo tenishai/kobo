@@ -607,3 +607,78 @@ def test_retry_agent_launch_failure_returns_503_and_a_later_retry_still_succeeds
     assert agent.status == AgentStatus.PROVISIONING
     assert agent.error is None
     session.close()
+
+
+class _PoisonedAfterRollbackSession:
+    """Proxies a real Session, but once `.rollback()` is called, every
+    further use of the session (crucially `.commit()`) raises too.
+
+    Models a genuinely dead connection: a real one routinely fails BOTH the
+    rollback attempt AND any statement run afterward on that same session,
+    not just the rollback in isolation. Used to force the exact scenario
+    `_fail_launch` exists for — the launch guard's own session going bad
+    right when it tries to record the failure — without needing a real
+    dropped connection.
+    """
+
+    def __init__(self, real):
+        self._real = real
+        self._poisoned = False
+
+    def rollback(self):
+        self._poisoned = True
+        raise RuntimeError("connection already closed")
+
+    def commit(self):
+        if self._poisoned:
+            raise RuntimeError("connection already closed")
+        return self._real.commit()
+
+    def __getattr__(self, item):
+        return getattr(self._real, item)
+
+
+def test_create_agent_launch_failure_with_poisoned_session_still_returns_503_and_agent_lands_failed(
+    session_factory, config, clients, monkeypatch
+):
+    """Same launch failure as the guard test above, but with the request's
+    own session poisoned too (its `.rollback()` raises, and — modeling a
+    truly dead connection — so does any further `.commit()` on that same
+    session). Recording FAILED on that same poisoned session would raise
+    unhandled, turning what should be a 503 into a raw 500 AND leaving the
+    agent wedged in PENDING: exactly the failure mode `_fail_launch`'s
+    fresh-session recovery (mirroring `_run_pipeline_body`'s
+    `recovery_session = session_factory()`) exists to prevent. Assert the
+    response is still the caller-actionable 503 JSON, and the agent still
+    lands FAILED — via the fresh session, since the original is unusable.
+    """
+    import cortex_api.main as main_module
+
+    def _raising_run_pipeline(session_factory, agent_id, *, config, clients, steps):
+        raise RuntimeError("no more threads")
+
+    monkeypatch.setattr(main_module, "run_pipeline", _raising_run_pipeline)
+
+    def _override_get_session():
+        real = session_factory()
+        try:
+            yield _PoisonedAfterRollbackSession(real)
+        finally:
+            real.close()
+
+    app = create_app(session_factory, config=config, clients=clients)
+    app.dependency_overrides[get_session] = _override_get_session
+    race_client = TestClient(app)
+
+    response = race_client.post(
+        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA}
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "failed to start provisioning: no more threads"}
+
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    assert agent.status == AgentStatus.FAILED
+    assert agent.error == "failed to start provisioning: no more threads"
+    session.close()

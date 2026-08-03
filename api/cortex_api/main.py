@@ -42,6 +42,67 @@ class CreateAgentRequest(BaseModel):
     model: str | None = None
 
 
+def _fail_launch(
+    session_factory: sessionmaker[Session],
+    session: Session,
+    agent_id: int,
+    exc: Exception,
+) -> JSONResponse:
+    """Record a `run_pipeline` launch failure (e.g. `Thread.start()` itself
+    raising) as FAILED and return the 503 `JSONResponse` both launch guards
+    (`create_agent`, `retry_agent`) report for it.
+
+    `session` (the request's own, from `Depends(get_session)`) may itself be
+    poisoned by whatever raised `exc` — a dead connection mid-commit, say —
+    so a FAILED write on that same session can raise too, turning what should
+    be a caller-actionable 503 into an unhandled 500 on top of an agent still
+    wedged in its pre-failure status: exactly what this guard exists to
+    prevent. Mirrors `provisioner._run_pipeline_body`'s engine-level recovery
+    (`recovery_session = session_factory()`) for the same reason: best-effort
+    rollback+close the possibly-poisoned `session`, then do the actual FAILED
+    write through a brand-new session opened fresh from `session_factory`.
+    Even if that fresh-session write itself fails, log it and still return
+    the 503 below — this function's return value must never depend on the
+    write landing.
+    """
+    error_message = f"failed to start provisioning: {exc}"
+
+    try:
+        session.rollback()
+    except Exception:  # best-effort cleanup only
+        log.warning(
+            "_fail_launch: rollback of possibly-poisoned session failed",
+            exc_info=True,
+        )
+    finally:
+        session.close()
+
+    recovery_session = session_factory()
+    try:
+        agent = recovery_session.get(Agent, agent_id)
+        if agent is None:
+            log.warning(
+                "_fail_launch: agent %s not found while recording launch failure",
+                agent_id,
+            )
+        else:
+            agent.status = AgentStatus.FAILED
+            agent.error = error_message
+            recovery_session.commit()
+    except Exception:
+        # Even the fresh session's write failed — still return the 503
+        # below rather than let this become a raw 500 on top of the launch
+        # failure it was trying to record.
+        log.exception(
+            "_fail_launch: failed to record FAILED for agent %s after launch failure",
+            agent_id,
+        )
+    finally:
+        recovery_session.close()
+
+    return JSONResponse({"error": error_message}, status_code=503)
+
+
 def get_session(request: Request) -> Iterator[Session]:
     """Dependency yielding a SQLAlchemy session bound to the app's session factory."""
     session_factory: sessionmaker[Session] = request.app.state.session_factory
@@ -188,30 +249,22 @@ def create_app(
                 steps=PIPELINE,
             )
         except Exception as exc:
-            # Broad by design (ruff's BLE001 already exempts this: the
-            # exception is logged with exc_info via log.exception below) - the
-            # pipeline thread never got started (or never got the chance
-            # to run), so nothing will ever move this agent out of PENDING —
-            # land it in FAILED directly rather than leaving it wedged
-            # identically to the restart-mid-provision case `sweep_interrupted`
-            # covers (this is that same wedge, just triggered by a
-            # `Thread.start()`/launch failure instead of a process restart).
+            # Broad by design: a request boundary, not a specific expected
+            # failure mode (this repo's ruff config enables no BLE /
+            # flake8-blind-except rules — there's no lint exemption being
+            # invoked here) - the pipeline thread never got started (or never
+            # got the chance to run), so nothing will ever move this agent
+            # out of PENDING — land it in FAILED directly rather than leaving
+            # it wedged identically to the restart-mid-provision case
+            # `sweep_interrupted` covers (this is that same wedge, just
+            # triggered by a `Thread.start()`/launch failure instead of a
+            # process restart). `_fail_launch` does the actual recovery (see
+            # its docstring for why it needs a fresh session rather than this
+            # one) and always returns the 503 below, never a raw 500.
             log.exception(
                 "create_agent: failed to start provisioning for agent %s", agent_id
             )
-            try:
-                session.rollback()
-            except Exception:  # best-effort cleanup only
-                log.warning(
-                    "create_agent: rollback before recording launch failure failed",
-                    exc_info=True,
-                )
-            agent.status = AgentStatus.FAILED
-            agent.error = f"failed to start provisioning: {exc}"
-            session.commit()
-            return JSONResponse(
-                {"error": f"failed to start provisioning: {exc}"}, status_code=503
-            )
+            return _fail_launch(request.app.state.session_factory, session, agent_id, exc)
 
         return JSONResponse({"name": payload.name, "status": status}, status_code=201)
 
@@ -300,29 +353,20 @@ def create_app(
                 steps=PIPELINE,
             )
         except Exception as exc:
-            # Broad by design, same as create_agent's guard above (ruff's
-            # BLE001 already exempts this: logged with exc_info via
-            # log.exception below). Same wedge as create_agent's launch
-            # guard: the thread never
-            # started, so nothing will ever move this agent out of
-            # PROVISIONING on its own — fail it back so it stays retryable
-            # rather than getting stuck past the FAILED-only retry gate above.
+            # Broad by design, same as create_agent's guard above (this
+            # repo's ruff config enables no BLE / flake8-blind-except rules —
+            # there's no lint exemption being invoked here). Same wedge as
+            # create_agent's launch guard: the thread never started, so
+            # nothing will ever move this agent out of PROVISIONING on its
+            # own — fail it back so it stays retryable rather than getting
+            # stuck past the FAILED-only retry gate above. `_fail_launch`
+            # does the actual recovery (see its docstring for why it needs a
+            # fresh session rather than this one) and always returns the 503
+            # below, never a raw 500.
             log.exception(
                 "retry_agent: failed to start provisioning for agent %s", agent_id
             )
-            try:
-                session.rollback()
-            except Exception:  # best-effort cleanup only
-                log.warning(
-                    "retry_agent: rollback before recording launch failure failed",
-                    exc_info=True,
-                )
-            agent.status = AgentStatus.FAILED
-            agent.error = f"failed to start provisioning: {exc}"
-            session.commit()
-            return JSONResponse(
-                {"error": f"failed to start provisioning: {exc}"}, status_code=503
-            )
+            return _fail_launch(request.app.state.session_factory, session, agent_id, exc)
 
         # Same status-before-thread discipline as create_agent: report the
         # state this call put the agent into (about to re-provision), never
