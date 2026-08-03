@@ -100,6 +100,32 @@ def test_run_bytes_passes_stdin_bytes_through():
     assert result == b"\x00hello\xff"
 
 
+# --- CommandRunner missing-binary wrapping (final-review Finding 1) ---------------
+#
+# subprocess.run raises FileNotFoundError (not ClientError) when the binary
+# itself is off PATH (gh, kubectl, the GKE auth plugin kubectl exec's) — that
+# would otherwise escape run()/run_bytes() before any rc check and blow past
+# every route's `except ClientError` net as a raw 500.
+
+
+def test_run_wraps_missing_binary_as_client_error():
+    runner = CommandRunner()
+    with pytest.raises(ClientError) as exc_info:
+        runner.run(["cortex-test-nonexistent-binary-xyz"])
+    assert "cortex-test-nonexistent-binary-xyz" in str(exc_info.value)
+    assert "not found on PATH" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, FileNotFoundError)
+
+
+def test_run_bytes_wraps_missing_binary_as_client_error():
+    runner = CommandRunner()
+    with pytest.raises(ClientError) as exc_info:
+        runner.run_bytes(["cortex-test-nonexistent-binary-xyz"])
+    assert "cortex-test-nonexistent-binary-xyz" in str(exc_info.value)
+    assert "not found on PATH" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, FileNotFoundError)
+
+
 # --- GitHub (GhCLI) ----------------------------------------------------------
 
 

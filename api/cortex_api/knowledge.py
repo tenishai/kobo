@@ -142,7 +142,9 @@ def delivery_state(
       - newest completed run's conclusion != "success": "failed", with a
         detail pointing at the one remedy available here (no automatic
         rerun, unlike BuildStep — a save already means an operator is
-        present) — save again to retry.
+        present): an identical re-save no-ops in commit_push and reports the
+        same failed sha again, so the detail steers toward actually changing
+        the content, not just saving again.
       - success: compare kubectl.deploy_image(namespace, deploy)'s tag (the
         part after the last ":") against sha[:12] — generated CI tags the
         image it builds with exactly that prefix, and applies the manifests
@@ -161,7 +163,7 @@ def delivery_state(
     if newest.get("conclusion") != "success":
         return {
             "state": "failed",
-            "detail": "the update run did not complete — save again to retry",
+            "detail": "the update didn't go through — change something and save to try again",
         }
 
     image = kubectl.deploy_image(namespace, deploy)

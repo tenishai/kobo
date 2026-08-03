@@ -65,7 +65,10 @@ class CommandRunner:
 
     def run(self, args: list[str], stdin: str | None = None) -> str:
         log.debug("exec: %s", " ".join(args))
-        proc = subprocess.run(args, input=stdin, capture_output=True, text=True, check=False)
+        try:
+            proc = subprocess.run(args, input=stdin, capture_output=True, text=True, check=False)
+        except FileNotFoundError as exc:
+            raise ClientError(f"{args[0]}: not found on PATH") from exc
         stdout = proc.stdout.strip()
         stderr = proc.stderr.strip()
         if proc.returncode != 0:
@@ -86,7 +89,10 @@ class CommandRunner:
         error message.
         """
         log.debug("exec (bytes): %s", " ".join(args))
-        proc = subprocess.run(args, input=stdin, capture_output=True, text=False, check=False)
+        try:
+            proc = subprocess.run(args, input=stdin, capture_output=True, text=False, check=False)
+        except FileNotFoundError as exc:
+            raise ClientError(f"{args[0]}: not found on PATH") from exc
         if proc.returncode != 0:
             stderr = proc.stderr.decode(errors="replace").strip()
             stdout = proc.stdout.decode(errors="replace").strip()

@@ -221,7 +221,7 @@ def test_delivery_state_failed_when_run_completed_non_success():
     )
     assert state == {
         "state": "failed",
-        "detail": "the update run did not complete — save again to retry",
+        "detail": "the update didn't go through — change something and save to try again",
     }
 
 

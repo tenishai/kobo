@@ -529,7 +529,10 @@ def create_app(
         try:
             files = read_knowledge(app.state.clients.github, agent.repo_full_name)
         except ClientError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=502)
+            log.warning("knowledge route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+            )
 
         return JSONResponse(
             {"files": [{"name": f.name, "content": f.content} for f in files]}
@@ -553,7 +556,10 @@ def create_app(
         except KnowledgeError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
         except ClientError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=502)
+            log.warning("knowledge route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+            )
 
         return JSONResponse({"sha": sha})
 
@@ -587,7 +593,10 @@ def create_app(
                 )
             return JSONResponse({"error": message}, status_code=422)
         except ClientError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=502)
+            log.warning("knowledge route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+            )
 
         return JSONResponse({"sha": sha})
 
@@ -613,7 +622,10 @@ def create_app(
                 sha=sha,
             )
         except ClientError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=502)
+            log.warning("knowledge route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't check on the delivery — try again"}, status_code=502
+            )
 
         return JSONResponse(state)
 
