@@ -701,3 +701,65 @@ def test_create_agent_launch_failure_with_poisoned_session_still_returns_503_and
     assert agent.status == AgentStatus.FAILED
     assert agent.error == "failed to start provisioning: no more threads"
     session.close()
+
+
+class _PoisonedCloseSession:
+    """Proxies a real Session, but `.close()` always raises — models a
+    connection that's dead enough to fail even on release back to the pool,
+    while rollback/commit on it still work fine. Used to exercise
+    `_fail_launch`'s guard around its own `session.close()` (P1c review
+    fold-in): without that guard, a raising close() would propagate out of
+    `_fail_launch` before it ever reached the fresh-session FAILED write,
+    turning the caller-actionable 503 into a raw 500.
+    """
+
+    def __init__(self, real):
+        self._real = real
+
+    def close(self):
+        raise RuntimeError("connection already closed")
+
+    def __getattr__(self, item):
+        return getattr(self._real, item)
+
+
+def test_create_agent_launch_failure_with_session_close_raising_still_returns_503_and_agent_lands_failed(
+    session_factory, config, clients, monkeypatch
+):
+    """Same launch failure as the guard tests above, but this time it's the
+    request's own session's `.close()` (not its `.rollback()`) that raises.
+    `_fail_launch`'s `finally: session.close()` on that session must be
+    guarded the same best-effort way as its rollback beside it — the
+    response must still be the caller-actionable 503, and the agent must
+    still land FAILED via the fresh recovery session.
+    """
+    import cortex_api.main as main_module
+
+    def _raising_run_pipeline(session_factory, agent_id, *, config, clients, steps):
+        raise RuntimeError("no more threads")
+
+    monkeypatch.setattr(main_module, "run_pipeline", _raising_run_pipeline)
+
+    def _override_get_session():
+        real = session_factory()
+        try:
+            yield _PoisonedCloseSession(real)
+        finally:
+            real.close()
+
+    app = create_app(session_factory, config=config, clients=clients)
+    app.dependency_overrides[get_session] = _override_get_session
+    race_client = TestClient(app)
+
+    response = race_client.post(
+        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA}
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "failed to start provisioning: no more threads"}
+
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    assert agent.status == AgentStatus.FAILED
+    assert agent.error == "failed to start provisioning: no more threads"
+    session.close()

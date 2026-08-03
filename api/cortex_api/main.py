@@ -75,7 +75,19 @@ def _fail_launch(
             exc_info=True,
         )
     finally:
-        session.close()
+        # Guarded the same way as the rollback above: a sufficiently
+        # poisoned session (a genuinely dead connection) can raise on
+        # close() too, and an unguarded raise here would propagate out of
+        # this function before ever reaching the fresh-session FAILED write
+        # below — turning the caller-actionable 503 this function exists to
+        # guarantee into a raw 500 instead.
+        try:
+            session.close()
+        except Exception:  # best-effort cleanup only
+            log.warning(
+                "_fail_launch: close of possibly-poisoned session failed",
+                exc_info=True,
+            )
 
     recovery_session = session_factory()
     try:

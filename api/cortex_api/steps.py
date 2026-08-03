@@ -64,6 +64,18 @@ POLL_TIMEOUT_S = 300
 BUILD_POLL_INTERVAL_S = 10
 BUILD_POLL_TIMEOUT_S = 600
 
+# After BuildStep fires its one self-heal rerun, gh's API can briefly still
+# echo the PRE-rerun completed/non-success payload (the same read-after-write
+# lag BuildStep already accounts for on `head_sha`) — this many polls of
+# grace are given to that specific run id before a completed-non-success
+# verdict is trusted as a genuine second failure. A fixed poll count rather
+# than "wait for an observed non-completed status" deliberately: it doesn't
+# depend on ever seeing an intermediate queued/in_progress read (which a
+# fast-cycling rerun, or a test fake, may never produce), and it's still
+# bounded — worst case adds this many polls before either a real result
+# lands or the second-failure raise fires.
+BUILD_RERUN_STALE_GRACE_POLLS = 3
+
 # Module-level sleep seam: tests monkeypatch this to a no-op so a 300s/5s (or
 # 600s/10s) poll loop — or a deliberately-triggered timeout, which walks the
 # whole loop — never actually blocks. Referenced as a bare name inside each
@@ -477,6 +489,15 @@ class BuildStep:
        success detail names which conclusion it healed. A second non-success
        against the same watched sha in the same invocation is treated as a
        real failure and raises, naming the run id and conclusion.
+
+    3. That second-failure check is itself given a short post-rerun grace
+       (`BUILD_RERUN_STALE_GRACE_POLLS` polls) against gh's read-after-write
+       lag: the poll right after `rerun()` fires can still come back with
+       the *same* completed/non-success payload the rerun was meant to fix,
+       simply because GitHub's API hasn't caught up with its own rerun yet.
+       Without the grace window that stale echo would be misread as a
+       genuine second failure and raise immediately, before the rerun ever
+       had a chance to actually run.
     """
 
     name = "build"
@@ -502,6 +523,13 @@ class BuildStep:
         # through to the final success detail regardless of which poll it
         # happened on, since it's a fact about this invocation as a whole.
         advance_note: str | None = None
+        # The run id the one rerun was fired against, and how many more
+        # polls of that run get benefit-of-the-doubt on a stale
+        # completed/non-success echo (see BUILD_RERUN_STALE_GRACE_POLLS and
+        # point 3 in the class docstring). 0 means "no grace in effect" —
+        # either no rerun has fired yet, or its grace window has lapsed.
+        reran_run_id: int | None = None
+        stale_grace_polls_remaining = 0
 
         max_polls = BUILD_POLL_TIMEOUT_S // BUILD_POLL_INTERVAL_S
         # A countdown rather than `for poll_count in range(max_polls)` so the
@@ -526,13 +554,25 @@ class BuildStep:
                 )
                 advance_note = f"head advanced to {new_sha[:8]}"
                 # A new commit gets its own one-rerun heal budget — the old
-                # sha's rerun (if any) has no bearing on this one.
+                # sha's rerun (if any, including any grace still in effect
+                # for it) has no bearing on this one.
                 rerun_attempted = False
                 healed_conclusion = None
+                reran_run_id = None
+                stale_grace_polls_remaining = 0
             sha = new_sha
 
             runs = github.runs_for_commit(agent.repo_full_name, sha)
             polls_remaining -= 1
+
+            # This poll gets the benefit of the doubt on a stale
+            # completed/non-success echo if a grace window is still open —
+            # consumed here (not only when it's actually used) so the
+            # window is a bounded number of *polls* since the rerun, not a
+            # bounded number of *stale sightings*.
+            in_stale_grace = stale_grace_polls_remaining > 0
+            if stale_grace_polls_remaining > 0:
+                stale_grace_polls_remaining -= 1
 
             # Empty means CI hasn't registered a run against this commit
             # yet (registration lag right after the push) — keep polling,
@@ -556,9 +596,21 @@ class BuildStep:
                         return (
                             f"build run {run_id} succeeded for commit {sha}{suffix}"
                         )
-                    if not rerun_attempted:
+                    if in_stale_grace and run_id == reran_run_id:
+                        # Almost certainly gh's read-after-write lag echoing
+                        # the pre-rerun payload back at us, not a genuine
+                        # second failure — ignore and keep polling. See
+                        # BUILD_RERUN_STALE_GRACE_POLLS / docstring point 3.
+                        log.info(
+                            "build run %s for commit %s still reports stale "
+                            "pre-rerun conclusion %r after rerun; ignoring "
+                            "(%d grace poll(s) left)",
+                            run_id, sha, conclusion, stale_grace_polls_remaining,
+                        )
+                    elif not rerun_attempted:
                         rerun_attempted = True
                         healed_conclusion = conclusion
+                        reran_run_id = run_id
                         log.info(
                             "build run %s for commit %s completed with conclusion "
                             "%r; auto-rerunning once",
@@ -569,6 +621,7 @@ class BuildStep:
                         # the run's id rather than minting a new one. Reset
                         # the budget: see the countdown comment above.
                         polls_remaining = max_polls
+                        stale_grace_polls_remaining = BUILD_RERUN_STALE_GRACE_POLLS
                     else:
                         raise RuntimeError(
                             f"build run {run_id} completed with conclusion "

@@ -15,17 +15,17 @@ describe("validateName", () => {
     expect(validateName("ab")).toBeNull();
   });
 
-  it("accepts the maximum length (30 chars)", () => {
-    expect(validateName("a".repeat(30))).toBeNull();
+  it("accepts the maximum length (24 chars, matching the server's MAX_NAME_LENGTH)", () => {
+    expect(validateName("a".repeat(24))).toBeNull();
   });
 
   it("rejects a name shorter than 2 characters", () => {
-    expect(validateName("a")).toBe("Use 2-30 characters.");
-    expect(validateName("")).toBe("Use 2-30 characters.");
+    expect(validateName("a")).toBe("Use 2-24 characters.");
+    expect(validateName("")).toBe("Use 2-24 characters.");
   });
 
-  it("rejects a name longer than 30 characters", () => {
-    expect(validateName("a".repeat(31))).toBe("Use 2-30 characters.");
+  it("rejects a name longer than 24 characters", () => {
+    expect(validateName("a".repeat(25))).toBe("Use 2-24 characters.");
   });
 
   it("rejects uppercase letters", () => {
@@ -51,7 +51,7 @@ describe("validateName", () => {
     expect(validateName("-agent")).toBe("Must start with a letter.");
   });
 
-  it("rejects a trailing hyphen (server allows it; the UI deliberately doesn't)", () => {
+  it("rejects a trailing hyphen (matches the server's own rule)", () => {
     expect(validateName("agent-")).toBe("Can't end with a hyphen.");
   });
 });

@@ -172,10 +172,16 @@ class FakeGitHub:
     `rerun(repo, run_id)` mirrors gh's real behavior of reusing the run's id
     rather than minting a new one: it records the call in `rerun_calls` and
     replaces whichever sha that run_id was last seen under with a fresh
-    one-poll sequence built from `rerun_result` (default a completed
-    success) — so a test can make the *next* poll after a rerun come back
-    healed, or configure `rerun_result` to fail again to exercise the
-    double-failure path.
+    poll sequence, so a test can control what BuildStep sees on the polls
+    right after the rerun fires. By default that's a single held-forever
+    poll built from `rerun_result` (default a completed success) — enough
+    for the plain heal case, or configure `rerun_result` to fail again to
+    exercise the double-failure path. `rerun_followup`, when given, models a
+    multi-poll sequence instead (one dict per poll, each merged with the run
+    id, holding at the last entry once exhausted) — this is how a test
+    simulates gh's read-after-write lag still echoing the stale pre-rerun
+    payload for a poll or two before the real post-rerun result (e.g.
+    queued, then completed) shows up.
     """
 
     def __init__(
@@ -187,6 +193,7 @@ class FakeGitHub:
         head_sha_sequence: list[str] | None = None,
         runs_by_sha: dict[str, list[list[dict]]] | None = None,
         rerun_result: dict | None = None,
+        rerun_followup: list[dict] | None = None,
     ):
         self.repos: set[str] = set(existing_repos) if existing_repos else set()
         self.created_from_dir: list[tuple[str, Path]] = []
@@ -212,6 +219,7 @@ class FakeGitHub:
         self._run_index_by_sha: dict[str, int] = {}
         self._run_id_to_sha: dict[int, str] = {}
         self._rerun_result = rerun_result or {"status": "completed", "conclusion": "success"}
+        self._rerun_followup = list(rerun_followup) if rerun_followup else None
         self.rerun_calls: list[tuple[str, int]] = []
 
     def repo_exists(self, repo: str) -> bool:
@@ -272,7 +280,12 @@ class FakeGitHub:
         self.rerun_calls.append((repo, run_id))
         sha = self._run_id_to_sha.get(run_id)
         if sha is not None:
-            self._runs_by_sha[sha] = [[{"id": run_id, **self._rerun_result}]]
+            if self._rerun_followup is not None:
+                self._runs_by_sha[sha] = [
+                    [{"id": run_id, **poll}] for poll in self._rerun_followup
+                ]
+            else:
+                self._runs_by_sha[sha] = [[{"id": run_id, **self._rerun_result}]]
             self._run_index_by_sha[sha] = 0
 
 

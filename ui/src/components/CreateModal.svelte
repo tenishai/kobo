@@ -182,7 +182,7 @@
           availability.status === "unavailable"}
       />
       <p class="create-form__help">
-        Lowercase letters, numbers, and hyphens. 2-30 characters.
+        Lowercase letters, numbers, and hyphens. 2-24 characters.
       </p>
       <div
         id="create-name-status"

@@ -453,6 +453,42 @@ def test_build_step_heals_a_cancelled_run_not_just_a_failed_one(session_factory,
     assert github.rerun_calls == [(repo, 42)]
 
 
+def test_build_step_ignores_a_stale_post_rerun_read_within_the_grace_window(
+    session_factory, config
+):
+    """P1c review fold-in: gh's own read-after-write lag can echo the
+    PRE-rerun completed/non-success payload back on the very next poll after
+    `rerun()` fires. Pre-fix, BuildStep's `rerun_attempted` flag was already
+    set by then, so that stale echo would be misread as a genuine second
+    failure and raise immediately — before the rerun ever had a chance to
+    actually run. `rerun_followup` models the real sequence: one more poll
+    of the stale cancelled payload, then queued (gh has registered the
+    rerun), then the healed success."""
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo)
+    github = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={
+            "deadbeef": [[{"id": 42, "status": "completed", "conclusion": "cancelled"}]]
+        },
+        rerun_followup=[
+            {"status": "completed", "conclusion": "cancelled"},  # stale echo
+            {"status": "queued", "conclusion": None},
+            {"status": "completed", "conclusion": "success"},
+        ],
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    detail = BuildStep().run(ctx)
+
+    assert "42" in detail
+    assert "healed a cancelled run" in detail.lower()
+    # Only the one rerun this whole invocation, despite the stale payload
+    # reappearing right after it — that repeat is grace, not a second
+    # failure needing (or getting) another rerun.
+    assert github.rerun_calls == [(repo, 42)]
+
+
 def test_build_step_follows_an_advancing_head_and_notes_it(session_factory, config):
     """Fix 2: head_sha is re-resolved on every poll rather than once at
     entry, so a head that advances mid-step (the platform's auto-merged
@@ -533,7 +569,15 @@ def test_build_step_does_not_settle_for_a_stale_sha_success_once_head_has_advanc
 def test_build_step_second_failure_after_rerun_raises_with_run_id(session_factory, config):
     """A second completed failure against the same commit, after the one
     automatic rerun, is a real failure — surfaced by raising rather than
-    rerunning indefinitely."""
+    rerunning indefinitely.
+
+    Adapted for the post-rerun stale-read grace fold-in: this fake's
+    held-forever completed/failure payload now also has to burn through
+    `BUILD_RERUN_STALE_GRACE_POLLS` grace polls (each still returning that
+    same payload) before it's trusted as genuine and raises — it still
+    does, just a few polls later, well within the reset budget. The
+    assertions (raises naming "42", exactly one rerun call) are unchanged.
+    """
     repo = _repo_full_name(config)
     session, agent = _make_agent(session_factory, repo_full_name=repo)
     github = FakeGitHub(
