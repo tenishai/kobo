@@ -1,4 +1,8 @@
 import json
+import subprocess
+import tarfile
+from dataclasses import replace
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -207,6 +211,157 @@ def test_compose_copies_multiple_skills_by_id(tmp_path):
 
     assert (dest / "bundle" / "skills" / "echo" / "SKILL.md").is_file()
     assert (dest / "bundle" / "skills" / "other" / "SKILL.md").is_file()
+
+
+# --- sha-pinned skill materialization (Task 6) --------------------------------
+#
+# `_make_skill` above (plain directory, no `.git`) exercises the fallback path
+# and is left untouched by all of this — the tests below build a *real*
+# git-backed skills repo so the sha-aware `git archive` path in
+# `_materialize_skill` (cortex_api.composer) actually activates.
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.email=test@example.com", "-c", "user.name=Test", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+
+def _head_sha(repo: Path) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _make_git_skill(tmp_path: Path, skill_id: str = "echo", body: str = "Echo skill body.\n"):
+    """Build a real git-backed skills repo with one skill committed; return
+    (skills_repo_path, SkillInfo pointing at HEAD's sha)."""
+    skills_repo = tmp_path / "skills-repo"
+    skill_dir = skills_repo / "skills" / skill_id
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {skill_id}\ndescription: Echoes things.\n---\n{body}"
+    )
+    (skill_dir / "reference.py").write_text("def helper():\n    return 1\n")
+    _git(skills_repo, "init", "-q")
+    _git(skills_repo, "add", "-A")
+    _git(skills_repo, "commit", "-q", "-m", "init")
+    skill = SkillInfo(
+        id=skill_id,
+        description="Echoes things.",
+        path=skill_dir / "SKILL.md",
+        sha=_head_sha(skills_repo),
+    )
+    return skills_repo, skill
+
+
+def _build_tar_bytes(entries: dict[str, bytes]) -> bytes:
+    buf = BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name, content in entries.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(content)
+            tar.addfile(info, BytesIO(content))
+    return buf.getvalue()
+
+
+class _RecordingBytesRunner:
+    """CommandRunner test double: records exact argv for run_bytes() calls
+    and hands back a canned in-memory tar rather than shelling out for
+    real — isolates the argv-shape assertion below from actual git archive
+    behavior (which the golden-content test further down covers for real)."""
+
+    def __init__(self, tar_bytes: bytes):
+        self._tar_bytes = tar_bytes
+        self.calls: list[list[str]] = []
+
+    def run_bytes(self, args: list[str], stdin: bytes | None = None) -> bytes:
+        self.calls.append(list(args))
+        return self._tar_bytes
+
+    def run(self, args, stdin=None):  # pragma: no cover - not expected to be hit
+        raise AssertionError("run() should not be called for skill materialization")
+
+
+def test_compose_pinned_skill_archive_argv_exact(tmp_path):
+    skills_repo, skill = _make_git_skill(tmp_path)
+    tar_bytes = _build_tar_bytes({f"skills/{skill.id}/SKILL.md": b"pinned content\n"})
+    runner = _RecordingBytesRunner(tar_bytes)
+    dest = tmp_path / "out"
+
+    compose(_make_spec(skills=[skill]), dest, runner=runner)
+
+    assert runner.calls == [
+        [
+            "git", "-C", str(skills_repo), "archive", "--format=tar",
+            skill.sha, "--", f"skills/{skill.id}",
+        ]
+    ]
+    assert (dest / "bundle" / "skills" / "echo" / "SKILL.md").read_text() == "pinned content\n"
+
+
+def test_compose_pinned_skill_strips_prefix_for_nested_files(tmp_path):
+    _skills_repo, skill = _make_git_skill(tmp_path)
+    tar_bytes = _build_tar_bytes(
+        {
+            f"skills/{skill.id}/SKILL.md": b"pinned SKILL.md\n",
+            f"skills/{skill.id}/scripts/helper.py": b"def helper():\n    return 1\n",
+        }
+    )
+    runner = _RecordingBytesRunner(tar_bytes)
+    dest = tmp_path / "out"
+
+    compose(_make_spec(skills=[skill]), dest, runner=runner)
+
+    skill_dir = dest / "bundle" / "skills" / "echo"
+    assert (skill_dir / "SKILL.md").read_text() == "pinned SKILL.md\n"
+    assert (skill_dir / "scripts" / "helper.py").read_text() == "def helper():\n    return 1\n"
+
+
+def test_compose_pinned_skill_ships_old_content_after_head_advances(tmp_path):
+    """Golden-content test, no mocking: real git repo, real CommandRunner.
+    Advance the skills repo's HEAD with changed content after recording a
+    sha, then compose with that OLD sha — the bundle must carry the OLD
+    bytes, proving materialization reads the pinned commit, not the working
+    tree gojira/cortex-api would otherwise see."""
+    skills_repo, old_skill = _make_git_skill(tmp_path, body="OLD echo skill body.\n")
+
+    (skills_repo / "skills" / "echo" / "SKILL.md").write_text(
+        "---\nname: echo\ndescription: Echoes things.\n---\nNEW echo skill body.\n"
+    )
+    _git(skills_repo, "add", "-A")
+    _git(skills_repo, "commit", "-q", "-m", "advance head")
+    assert _head_sha(skills_repo) != old_skill.sha
+
+    dest = tmp_path / "out"
+    compose(_make_spec(skills=[old_skill]), dest)  # real CommandRunner, no mocking
+
+    shipped = (dest / "bundle" / "skills" / "echo" / "SKILL.md").read_text()
+    assert "OLD echo skill body" in shipped
+    assert "NEW echo skill body" not in shipped
+    # the reference.py alongside SKILL.md at that same old commit also landed
+    assert (dest / "bundle" / "skills" / "echo" / "reference.py").is_file()
+
+
+def test_compose_unreachable_sha_raises_compose_error_naming_sha_and_id(tmp_path):
+    _skills_repo, skill = _make_git_skill(tmp_path)
+    bogus_sha = "0" * 40
+    bogus = replace(skill, sha=bogus_sha)
+    dest = tmp_path / "out"
+
+    with pytest.raises(ComposeError) as exc_info:
+        compose(_make_spec(skills=[bogus]), dest)
+
+    message = str(exc_info.value)
+    assert bogus_sha in message
+    assert skill.id in message
 
 
 # --- validate_agent_yaml -----------------------------------------------------------

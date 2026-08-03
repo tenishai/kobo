@@ -10,13 +10,16 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import tarfile
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 
 import jsonschema
 import yaml
 
 from cortex_api.catalog import SkillInfo
+from cortex_api.clients import ClientError, CommandRunner
 
 _VENDOR_SCHEMA_PATH = Path(__file__).parent / "vendor" / "bundle.schema.json"
 
@@ -151,7 +154,65 @@ def _dockerfile(spec: BundleSpec) -> str:
     )
 
 
-def compose(spec: BundleSpec, dest: Path) -> None:
+def _materialize_skill(skill: SkillInfo, dest: Path, runner: CommandRunner) -> None:
+    """Write one skill's tree into the not-yet-existing `dest` directory.
+
+    Pinning (Task 6): when `skill.sha` is set and the skill's source repo is
+    a real git repo (has a `.git` entry — `skill.path` is always
+    `<skills_repo>/skills/<id>/SKILL.md`, so its second-level parent is the
+    repo root), the content is read at that *exact* sha via `git archive`
+    piped through `tarfile` in memory — never from whatever the working tree
+    currently holds. This is what actually enforces "pinned at assembly":
+    a retry (or any later recomposition) that resolves the same recorded sha
+    ships identical bytes regardless of where the skills repo's HEAD has
+    since moved. `git archive`'s output is captured as raw bytes (`run_bytes`
+    — `run()`'s text-mode decode/strip would corrupt a tar archive) and
+    extracted without ever shelling out to `tar` or using a shell pipe.
+
+    Skills with no recorded sha, or backed by a plain directory rather than a
+    git repo (as in most unit tests' fixtures), fall back to the original
+    copytree-from-working-tree behavior — unpinned, but that's the only
+    sensible thing to do when there's no commit to pin to.
+
+    Raises ComposeError, naming both the sha and the skill id, if the sha is
+    unreachable in the skills repo (e.g. it was recorded, then the repo was
+    rewritten/GC'd out from under it).
+    """
+    skills_repo = skill.path.parents[2]
+    if not (skill.sha and (skills_repo / ".git").exists()):
+        # Copy the whole skill directory (SKILL.md plus any references/scripts/
+        # assets alongside it) rather than symlinking — the sync-plugins
+        # copy-don't-symlink pattern, so a composed bundle is self-contained.
+        shutil.copytree(skill.path.parent, dest)
+        return
+
+    prefix = f"skills/{skill.id}/"
+    try:
+        archive_bytes = runner.run_bytes(
+            [
+                "git", "-C", str(skills_repo), "archive", "--format=tar",
+                skill.sha, "--", f"skills/{skill.id}",
+            ]
+        )
+    except ClientError as exc:
+        raise ComposeError(
+            f"skill {skill.id!r} recorded sha {skill.sha!r} is unreachable in "
+            f"skills repo {skills_repo}: {exc}"
+        ) from exc
+
+    dest.mkdir(parents=True)
+    with tarfile.open(fileobj=BytesIO(archive_bytes)) as tar:
+        for member in tar.getmembers():
+            if not member.isfile() or not member.name.startswith(prefix):
+                continue
+            relative = member.name[len(prefix):]
+            target = dest / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            extracted = tar.extractfile(member)
+            target.write_bytes(extracted.read())
+
+
+def compose(spec: BundleSpec, dest: Path, runner: CommandRunner | None = None) -> None:
     """Write a daedalus agent bundle tree to `dest`.
 
     Produces:
@@ -160,7 +221,12 @@ def compose(spec: BundleSpec, dest: Path) -> None:
         dest/bundle/agent-card.json
         dest/bundle/persona.md
         dest/bundle/knowledge/gotchas.md
-        dest/bundle/skills/<id>/**   (one copied tree per spec.skills entry)
+        dest/bundle/skills/<id>/**   (one materialized tree per spec.skills
+                                      entry — see `_materialize_skill`)
+
+    `runner` is the CommandRunner used for any sha-pinned skill's `git
+    archive` call; defaults to a fresh real one (only ever exercised for
+    skills that actually need it — see `_materialize_skill`).
     """
     bundle_dir = dest / "bundle"
     bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -176,11 +242,9 @@ def compose(spec: BundleSpec, dest: Path) -> None:
     if spec.skills:
         skills_dir = bundle_dir / "skills"
         skills_dir.mkdir(parents=True, exist_ok=True)
+        runner = runner or CommandRunner()
         for skill in spec.skills:
-            # Copy the whole skill directory (SKILL.md plus any references/scripts/
-            # assets alongside it) rather than symlinking — the sync-plugins
-            # copy-don't-symlink pattern, so a composed bundle is self-contained.
-            shutil.copytree(skill.path.parent, skills_dir / skill.id)
+            _materialize_skill(skill, skills_dir / skill.id, runner)
 
     (dest / "Dockerfile").write_text(_dockerfile(spec))
 

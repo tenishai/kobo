@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -19,6 +20,7 @@ from cortex_api.clients import (
     ClientError,
     Clients,
     CloudClient,
+    CommandRunner,
     GcloudClient,
     GhCLI,
     GitHubClient,
@@ -62,6 +64,39 @@ class RecordingRunner:
                 stderr=err,
             )
         return out
+
+
+# --- CommandRunner.run_bytes (Task 6: sha-pinned skill archives need raw bytes) ----
+
+
+def test_run_bytes_returns_raw_stdout_bytes():
+    runner = CommandRunner()
+    payload = bytes([0, 1, 2, 255, 10, 13])  # includes bytes text-mode decoding would mangle
+    result = runner.run_bytes(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(bytes([0,1,2,255,10,13]))"]
+    )
+    assert result == payload
+    assert isinstance(result, bytes)
+
+
+def test_run_bytes_raises_client_error_on_nonzero_exit_with_decoded_stderr():
+    runner = CommandRunner()
+    with pytest.raises(ClientError) as exc_info:
+        runner.run_bytes(
+            [sys.executable, "-c", "import sys; sys.stderr.write('boom'); sys.exit(3)"]
+        )
+    assert exc_info.value.returncode == 3
+    assert "boom" in str(exc_info.value)
+    assert "boom" in exc_info.value.stderr
+
+
+def test_run_bytes_passes_stdin_bytes_through():
+    runner = CommandRunner()
+    result = runner.run_bytes(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"],
+        stdin=b"\x00hello\xff",
+    )
+    assert result == b"\x00hello\xff"
 
 
 # --- GitHub (GhCLI) ----------------------------------------------------------
@@ -225,6 +260,21 @@ def test_ensure_gsa_reraises_non_not_found_describe_failure():
     with pytest.raises(ClientError):
         client.ensure_gsa("agent-clio")
     assert len(runner.calls) == 1  # never got to (or attempted) create
+
+
+def test_ensure_gsa_parity_non_agent_prefixed_name():
+    # Parity check: GcloudClient and FakeCloud must return identical emails for
+    # the same non-agent-prefixed name (describe-succeeds path). This guards
+    # against reintroducing prefix-stripping behavior that would break the
+    # new prefix-agnostic approach.
+    runner = RecordingRunner(results=[(0, "clio@example-project.iam.gserviceaccount.com", "")])
+    gcloud_client = GcloudClient("example-project", runner=runner)
+    gcloud_email = gcloud_client.ensure_gsa("clio")
+
+    fake_client = FakeCloud(project="example-project")
+    fake_email = fake_client.ensure_gsa("clio")
+
+    assert gcloud_email == fake_email == "clio@example-project.iam.gserviceaccount.com"
 
 
 def test_bind_workload_identity_argv():

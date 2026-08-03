@@ -77,6 +77,27 @@ class CommandRunner:
             )
         return stdout
 
+    def run_bytes(self, args: list[str], stdin: bytes | None = None) -> bytes:
+        """Like `run()`, but for commands whose stdout is binary (e.g. `git
+        archive`, cortex_api.composer's skill-pinning materialization) —
+        `run()`'s `text=True` decode-and-strip would corrupt a tar archive's
+        bytes, so this skips both and hands back stdout untouched. Still
+        raises ClientError on rc != 0, decoding stderr/stdout only for the
+        error message.
+        """
+        log.debug("exec (bytes): %s", " ".join(args))
+        proc = subprocess.run(args, input=stdin, capture_output=True, text=False, check=False)
+        if proc.returncode != 0:
+            stderr = proc.stderr.decode(errors="replace").strip()
+            stdout = proc.stdout.decode(errors="replace").strip()
+            raise ClientError(
+                f"{' '.join(args)} failed (rc={proc.returncode}): {stderr or stdout}",
+                returncode=proc.returncode,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        return proc.stdout
+
 
 # --- GitHub -------------------------------------------------------------------
 

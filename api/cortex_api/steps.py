@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import shutil
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import yaml
@@ -91,6 +92,17 @@ def _resolve_skills(config: Config, agent: Agent) -> list:
     upstream since the agent picked it) is a hard failure, not a silent drop:
     the composed bundle would otherwise ship without a skill the operator
     believes it has.
+
+    Pinning (Task 6): the catalog lookup is by id only — its SkillInfo always
+    carries the skills repo's *current* HEAD sha (`list_skills`'s scan). The
+    row's own recorded `sha` (set once, at first successful resolution — see
+    `cortex_api.main`'s create-agent route) is authoritative over that and is
+    substituted in here on every resolution, first-time or retry alike: a
+    retry after the skills repo's HEAD has since moved must still compose the
+    content from the sha this agent actually picked, not whatever HEAD is now.
+    `compose()` (cortex_api.composer) is what actually enforces this pin, by
+    materializing each skill via `git archive` at the sha it's handed here
+    rather than copying the working tree.
     """
     catalog = {skill.id: skill for skill in list_skills(config.skills_repo_path)}
     resolved = []
@@ -102,6 +114,9 @@ def _resolve_skills(config: Config, agent: Agent) -> list:
                 f"skill {skill_id!r} recorded on agent {agent.name!r} is no longer "
                 "in the skill catalog"
             )
+        recorded_sha = entry.get("sha")
+        if recorded_sha:
+            skill_info = replace(skill_info, sha=recorded_sha)
         resolved.append(skill_info)
     return resolved
 

@@ -69,6 +69,16 @@ def _make_skills_repo(tmp_path: Path, skill_id: str = "echo") -> Path:
     return repo
 
 
+def _head_sha(repo: Path) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
 def _make_agent(
     session_factory,
     *,
@@ -136,9 +146,14 @@ def test_repo_step_substitutes_persona_name_placeholder(session_factory, config)
 
 def test_repo_step_resolves_skills_by_id_into_bundle(session_factory, tmp_path):
     skills_repo = _make_skills_repo(tmp_path)
+    # A real recorded sha (the fixture repo's actual HEAD) — this repo is a
+    # real git repo, so RepoStep's skill materialization is now the
+    # sha-pinned git-archive path (see cortex_api.composer), which needs a
+    # sha that's actually reachable.
+    sha = _head_sha(skills_repo)
     config = Config(workdir=tmp_path / "work", skills_repo_path=skills_repo)
     session, agent = _make_agent(
-        session_factory, skills=[{"name": "echo", "sha": "whatever"}]
+        session_factory, skills=[{"name": "echo", "sha": sha}]
     )
     github = FakeGitHub()
     ctx = _make_ctx(session, agent, config, _clients(github=github))
@@ -146,6 +161,42 @@ def test_repo_step_resolves_skills_by_id_into_bundle(session_factory, tmp_path):
     RepoStep().run(ctx)
 
     assert (ctx.workdir / "repo" / "bundle" / "skills" / "echo" / "SKILL.md").is_file()
+
+
+def test_repo_step_pins_skill_to_recorded_sha_even_after_head_advances(session_factory, tmp_path):
+    """The Task 6 regression this whole change exists for: a retry (or any
+    later recomposition) that resolves the agent row's recorded skill sha
+    must ship the content from THAT sha — not whatever the skills repo's
+    HEAD has since moved to. Before this fix, RepoStep re-resolved skills
+    against the skills repo's current working tree on every run, silently
+    shipping newer content once HEAD moved.
+    """
+    skills_repo = _make_skills_repo(tmp_path)
+    old_sha = _head_sha(skills_repo)
+
+    # Advance HEAD with changed skill content, as if someone pushed an update
+    # to the skills repo after this agent picked "echo".
+    (skills_repo / "skills" / "echo" / "SKILL.md").write_text(
+        "---\nname: echo\ndescription: Echoes things.\n---\nNEW echo skill body.\n"
+    )
+    _git(skills_repo, "add", "-A")
+    _git(skills_repo, "commit", "-q", "-m", "update echo")
+    assert _head_sha(skills_repo) != old_sha
+
+    config = Config(workdir=tmp_path / "work", skills_repo_path=skills_repo)
+    session, agent = _make_agent(
+        session_factory, skills=[{"name": "echo", "sha": old_sha}]
+    )
+    github = FakeGitHub()
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    RepoStep().run(ctx)
+
+    shipped = (
+        ctx.workdir / "repo" / "bundle" / "skills" / "echo" / "SKILL.md"
+    ).read_text()
+    assert "Echo skill body" in shipped
+    assert "NEW echo skill body" not in shipped
 
 
 def test_repo_step_unknown_skill_id_raises_clear_message(session_factory, config):
@@ -206,8 +257,9 @@ def test_repo_step_rmtrees_stale_compose_dir_before_recomposing(session_factory,
     skills subtree behind; compose() raises FileExistsError on top of that, so
     RepoStep must clear it first."""
     skills_repo = _make_skills_repo(tmp_path, skill_id="echo")
+    sha = _head_sha(skills_repo)
     config = Config(workdir=tmp_path / "work", skills_repo_path=skills_repo)
-    session, agent = _make_agent(session_factory, skills=[{"name": "echo", "sha": "abc123"}])
+    session, agent = _make_agent(session_factory, skills=[{"name": "echo", "sha": sha}])
     github = FakeGitHub()
     ctx = _make_ctx(session, agent, config, _clients(github=github))
 
