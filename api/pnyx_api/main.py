@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import logging
 import re
+import threading
+import time
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
@@ -37,6 +39,9 @@ from pnyx_api.provisioner import (
     run_pipeline,
     sweep_interrupted,
 )
+from pnyx_api.search import CATALOG_TTL_S, ingest_indexes
+from pnyx_api.search import search as catalog_search
+from pnyx_api.search import teams as catalog_teams_query
 from pnyx_api.slack_setup import render_manifest, wire_slack
 
 log = logging.getLogger(__name__)
@@ -116,6 +121,61 @@ def _model_label(cfg: Config, model_id: str) -> str:
         if model.id == model_id:
             return model.label
     return model_id
+
+
+def _catalogs_configured(clients: Clients | None, config: Config) -> bool:
+    """Whether the FTS catalog has anything to refresh from: storage wired
+    AND at least one bucket named. Shared by the TTL hook and the explicit
+    refresh route's 503 check (Task 3 brief: "storage is None or both bucket
+    names empty") so the two can never disagree about what "unwired" means.
+    """
+    if clients is None or clients.storage is None:
+        return False
+    return bool(config.skills_bucket or config.personas_bucket)
+
+
+def _maybe_refresh_catalogs(app: FastAPI, engine) -> None:
+    """TTL-gated catalog refresh (Task 3 controller decision #1), shared by
+    both search endpoints and the teams endpoint: re-ingests the bucket
+    indexes into `catalog_fts` when the table is stale (or has never been
+    loaded) and storage is configured.
+
+    A refresh failure here (a bucket blip, a transient storage error) is
+    logged and swallowed — these routes must never 500 over it, they just
+    keep serving whatever's already in the table (empty, on a cold app).
+    Contrast with the explicit `POST /api/catalogs/refresh` route below,
+    which surfaces the same failure as a 502 — that route exists precisely
+    for an operator who wants to know a refresh failed.
+
+    `app.state.catalog_lock` double-checks freshness after acquiring the
+    lock: two requests landing at once both fail the outer TTL check, but
+    only one performs the ingest — the other, once it gets the lock, finds
+    the first request's refresh already covers it and returns without
+    ingesting a second time.
+    """
+    state = app.state
+    if not _catalogs_configured(state.clients, state.config):
+        return
+
+    now = time.monotonic()
+    if state.catalog_loaded_at is not None and now - state.catalog_loaded_at < CATALOG_TTL_S:
+        return
+
+    with state.catalog_lock:
+        now = time.monotonic()
+        if state.catalog_loaded_at is not None and now - state.catalog_loaded_at < CATALOG_TTL_S:
+            return
+        try:
+            ingest_indexes(
+                engine,
+                state.clients.storage,
+                skills_bucket=state.config.skills_bucket,
+                personas_bucket=state.config.personas_bucket,
+            )
+        except ClientError as exc:
+            log.warning("catalog TTL refresh failed, serving the stale table: %s", exc)
+            return
+        state.catalog_loaded_at = time.monotonic()
 
 
 def _fail_launch(
@@ -279,6 +339,10 @@ def create_app(
     # (the whole test suite) keeps working unchanged, reading this same
     # "not configured" state Tasks 3/8 render honestly off of.
     app.state.org = org if org is not None else OrgState(False, None, "no org configured")
+    # Catalog FTS TTL/refresh state (Task 3 controller decision #1): read and
+    # written only by `_maybe_refresh_catalogs` and the refresh route below.
+    app.state.catalog_loaded_at = None
+    app.state.catalog_lock = threading.Lock()
 
     app.add_middleware(
         CORSMiddleware,
@@ -325,6 +389,79 @@ def create_app(
                 {"id": s.id, "description": s.description, "sha": s.sha} for s in skills
             ]
         }
+
+    # --- Catalog search (Task 3): FTS5 over the bucket-published indexes ---
+
+    @app.get("/api/skills/search")
+    def search_skills(
+        q: str = "", team: str | None = None, session: Session = Depends(get_session)  # noqa: B008
+    ) -> dict:
+        engine = session.get_bind()
+        _maybe_refresh_catalogs(app, engine)
+        return {
+            "results": [
+                {
+                    "id": e.id,
+                    "name": e.name,
+                    "description": e.description,
+                    "team": e.team,
+                    "tags": e.tags,
+                    "sha": e.sha,
+                }
+                for e in catalog_search(engine, "skill", q, team=team)
+            ]
+        }
+
+    @app.get("/api/personas/search")
+    def search_personas(
+        q: str = "", team: str | None = None, session: Session = Depends(get_session)  # noqa: B008
+    ) -> dict:
+        engine = session.get_bind()
+        _maybe_refresh_catalogs(app, engine)
+        return {
+            "results": [
+                {
+                    "id": e.id,
+                    "name": e.name,
+                    "description": e.description,
+                    "team": e.team,
+                    "tags": e.tags,
+                    "builtin": e.builtin,
+                }
+                for e in catalog_search(engine, "persona", q, team=team)
+            ]
+        }
+
+    @app.get("/api/catalog/teams")
+    def get_catalog_teams(session: Session = Depends(get_session)) -> dict:  # noqa: B008
+        engine = session.get_bind()
+        _maybe_refresh_catalogs(app, engine)
+        return {"teams": catalog_teams_query(engine)}
+
+    @app.post("/api/catalogs/refresh")
+    def refresh_catalogs(session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        clients = app.state.clients
+        cfg: Config = app.state.config
+        if not _catalogs_configured(clients, cfg):
+            return JSONResponse(
+                {"error": "catalogs aren't set up yet"}, status_code=503
+            )
+
+        engine = session.get_bind()
+        try:
+            with app.state.catalog_lock:
+                counts = ingest_indexes(
+                    engine,
+                    clients.storage,
+                    skills_bucket=cfg.skills_bucket,
+                    personas_bucket=cfg.personas_bucket,
+                )
+                app.state.catalog_loaded_at = time.monotonic()
+        except ClientError as exc:
+            log.warning("catalog refresh failed: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=502)
+
+        return JSONResponse(counts)
 
     @app.get("/api/availability")
     def availability(
