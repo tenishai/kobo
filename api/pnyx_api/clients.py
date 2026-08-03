@@ -34,6 +34,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypedDict, runtime_checkable
+from urllib.parse import quote
 
 import httpx
 
@@ -70,6 +71,10 @@ class SlackApiError(ClientError):
     caught by the same 502 mapping every other ClientError gets, without
     routes needing a Slack-specific except clause.
     """
+
+
+class StorageNotFound(ClientError):
+    """404 from object storage — callers branch on 'absent' vs 'broken'."""
 
 
 class CommandRunner:
@@ -1068,6 +1073,236 @@ class VertexImageClient:
         raise ClientError(_IMAGE_GENERATION_FAILED)
 
 
+# --- Storage (GCS JSON API: bucket-backed persistence for catalogs/personas) ------
+
+
+@runtime_checkable
+class StorageClient(Protocol):
+    def read_bytes(self, bucket: str, key: str) -> bytes:
+        """GET the object's raw bytes. 404 -> StorageNotFound; other non-200 -> ClientError."""
+        ...
+
+    def object_metadata(self, bucket: str, key: str) -> dict:
+        """Full object resource JSON; custom metadata under result.get('metadata', {}),
+        server fields like 'updated' at top level. 404 -> StorageNotFound."""
+        ...
+
+    def write_bytes(
+        self,
+        bucket: str,
+        key: str,
+        data: bytes,
+        *,
+        metadata: dict[str, str] | None = None,
+        content_type: str = "application/octet-stream",
+    ) -> None:
+        """Multipart-upload `data` to `bucket`/`key`, with optional custom metadata."""
+        ...
+
+    def list_keys(self, bucket: str, prefix: str) -> list[str]:
+        """Object names under `prefix`, following pagination. [] when the
+        bucket has no matching objects; bucket missing (404) -> StorageNotFound."""
+        ...
+
+    def ensure_bucket(self, bucket: str) -> str:
+        """"exists" if `bucket` is already there; otherwise creates it (with
+        versioning enabled) and returns "created"."""
+        ...
+
+    def ensure_versioning(self, bucket: str) -> bool:
+        """Enable versioning on `bucket` if it isn't already — True if this
+        call changed it, False if it was already on."""
+        ...
+
+
+_STORAGE_API_BASE = "https://storage.googleapis.com/storage/v1"
+_STORAGE_UPLOAD_BASE = "https://storage.googleapis.com/upload/storage/v1"
+
+
+class HttpxStorageClient:
+    """GCS JSON API client, scoped to one GCP project.
+
+    No google-cloud-storage SDK dependency — same shell-token-then-httpx
+    idiom as VertexImageClient (no existing google-auth idiom exists
+    anywhere in this codebase; see `_gcloud_print_access_token`), reused
+    here as the default `token_provider` rather than reinventing it.
+
+    Every failure mode raises a message built only from the method name and
+    the HTTP status code — never the response body (which can carry a
+    bucket's own error detail, or occasionally an operator's project info)
+    and never the bearer token. The full response body is logged
+    server-side (truncated) for operators debugging repeated failures, same
+    convention as VertexImageClient.generate.
+    """
+
+    def __init__(
+        self,
+        project: str,
+        http_client: httpx.Client | None = None,
+        token_provider: Callable[[], str] | None = None,
+    ):
+        self._project = project
+        # A quick JSON-API CRUD call, not a model roundtrip — real headroom
+        # over httpx's bare 5s default, but nowhere near the generous
+        # timeouts VertexImageClient/KubectlAgentClient need.
+        self._http_client = http_client or httpx.Client(timeout=httpx.Timeout(20.0, connect=10.0))
+        self._token_provider = token_provider or _gcloud_print_access_token
+
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._token_provider()}"}
+
+    def _object_url(self, bucket: str, key: str) -> str:
+        return f"{_STORAGE_API_BASE}/b/{bucket}/o/{quote(key, safe='')}"
+
+    def read_bytes(self, bucket: str, key: str) -> bytes:
+        resp = self._http_client.get(
+            self._object_url(bucket, key), params={"alt": "media"}, headers=self._headers()
+        )
+        if resp.status_code == 404:
+            raise StorageNotFound(f"object not found: {bucket}/{key}")
+        if resp.status_code != 200:
+            log.warning(
+                "read_bytes(%s, %s) failed (%s): %s",
+                bucket, key, resp.status_code, resp.text[:200],
+            )
+            raise ClientError(f"read_bytes({bucket!r}, {key!r}) failed ({resp.status_code})")
+        return resp.content
+
+    def object_metadata(self, bucket: str, key: str) -> dict:
+        resp = self._http_client.get(self._object_url(bucket, key), headers=self._headers())
+        if resp.status_code == 404:
+            raise StorageNotFound(f"object not found: {bucket}/{key}")
+        if resp.status_code != 200:
+            log.warning(
+                "object_metadata(%s, %s) failed (%s): %s",
+                bucket, key, resp.status_code, resp.text[:200],
+            )
+            raise ClientError(f"object_metadata({bucket!r}, {key!r}) failed ({resp.status_code})")
+        return resp.json()
+
+    def write_bytes(
+        self,
+        bucket: str,
+        key: str,
+        data: bytes,
+        *,
+        metadata: dict[str, str] | None = None,
+        content_type: str = "application/octet-stream",
+    ) -> None:
+        object_resource: dict = {"name": key, "contentType": content_type}
+        if metadata:
+            object_resource["metadata"] = metadata
+
+        # GCS's multipart upload wants a raw multipart/related body (JSON
+        # object-resource part, then the media bytes part) — httpx has no
+        # built-in for this shape (its `files=` helper builds multipart/
+        # form-data, a different content type), so it's assembled by hand.
+        boundary = f"pnyx-{uuid.uuid4().hex}"
+        body = (
+            f"--{boundary}\r\n"
+            "Content-Type: application/json; charset=UTF-8\r\n\r\n"
+        ).encode()
+        body += json.dumps(object_resource).encode()
+        body += f"\r\n--{boundary}\r\nContent-Type: {content_type}\r\n\r\n".encode()
+        body += data
+        body += f"\r\n--{boundary}--\r\n".encode()
+
+        resp = self._http_client.post(
+            f"{_STORAGE_UPLOAD_BASE}/b/{bucket}/o",
+            params={"uploadType": "multipart"},
+            content=body,
+            headers={
+                **self._headers(),
+                "Content-Type": f"multipart/related; boundary={boundary}",
+            },
+        )
+        if resp.status_code not in (200, 201):
+            log.warning(
+                "write_bytes(%s, %s) failed (%s): %s",
+                bucket, key, resp.status_code, resp.text[:200],
+            )
+            raise ClientError(f"write_bytes({bucket!r}, {key!r}) failed ({resp.status_code})")
+
+    def list_keys(self, bucket: str, prefix: str) -> list[str]:
+        url = f"{_STORAGE_API_BASE}/b/{bucket}/o"
+        keys: list[str] = []
+        page_token: str | None = None
+        while True:
+            params = {"prefix": prefix, "fields": "items(name),nextPageToken"}
+            if page_token:
+                params["pageToken"] = page_token
+            resp = self._http_client.get(url, params=params, headers=self._headers())
+            if resp.status_code == 404:
+                raise StorageNotFound(f"bucket not found: {bucket}")
+            if resp.status_code != 200:
+                log.warning(
+                    "list_keys(%s, %s) failed (%s): %s",
+                    bucket, prefix, resp.status_code, resp.text[:200],
+                )
+                raise ClientError(f"list_keys({bucket!r}, {prefix!r}) failed ({resp.status_code})")
+            body = resp.json()
+            keys.extend(item["name"] for item in body.get("items", []))
+            page_token = body.get("nextPageToken")
+            if not page_token:
+                return keys
+
+    def ensure_bucket(self, bucket: str) -> str:
+        url = f"{_STORAGE_API_BASE}/b/{bucket}"
+        resp = self._http_client.get(url, headers=self._headers())
+        if resp.status_code == 200:
+            return "exists"
+        if resp.status_code != 404:
+            log.warning(
+                "ensure_bucket(%s) describe failed (%s): %s",
+                bucket, resp.status_code, resp.text[:200],
+            )
+            raise ClientError(f"ensure_bucket({bucket!r}) failed ({resp.status_code})")
+
+        create_resp = self._http_client.post(
+            f"{_STORAGE_API_BASE}/b",
+            params={"project": self._project},
+            json={"name": bucket, "versioning": {"enabled": True}},
+            headers=self._headers(),
+        )
+        if create_resp.status_code not in (200, 201):
+            log.warning(
+                "ensure_bucket(%s) create failed (%s): %s",
+                bucket, create_resp.status_code, create_resp.text[:200],
+            )
+            raise ClientError(
+                f"ensure_bucket({bucket!r}) create failed ({create_resp.status_code})"
+            )
+        return "created"
+
+    def ensure_versioning(self, bucket: str) -> bool:
+        url = f"{_STORAGE_API_BASE}/b/{bucket}"
+        resp = self._http_client.get(url, params={"fields": "versioning"}, headers=self._headers())
+        if resp.status_code == 404:
+            raise StorageNotFound(f"bucket not found: {bucket}")
+        if resp.status_code != 200:
+            log.warning(
+                "ensure_versioning(%s) describe failed (%s): %s",
+                bucket, resp.status_code, resp.text[:200],
+            )
+            raise ClientError(f"ensure_versioning({bucket!r}) failed ({resp.status_code})")
+
+        if resp.json().get("versioning", {}).get("enabled"):
+            return False
+
+        patch_resp = self._http_client.patch(
+            url, json={"versioning": {"enabled": True}}, headers=self._headers()
+        )
+        if patch_resp.status_code != 200:
+            log.warning(
+                "ensure_versioning(%s) patch failed (%s): %s",
+                bucket, patch_resp.status_code, patch_resp.text[:200],
+            )
+            raise ClientError(
+                f"ensure_versioning({bucket!r}) patch failed ({patch_resp.status_code})"
+            )
+        return True
+
+
 # --- Wiring -----------------------------------------------------------------------
 
 
@@ -1090,6 +1325,12 @@ class Clients:
     # `Clients(...)` construction elsewhere in the test suite (predating the
     # avatar feature) keeps working without needing to pass this field.
     image: ImageClient | None = None
+    # Same move as image: gcp_project already exists in Config for other
+    # clients, so storage is always constructible — Clients.real() below
+    # never gates it behind an "is this configured" check. Defaults to None
+    # purely so pre-existing direct `Clients(...)` constructions in the test
+    # suite keep working without passing this field.
+    storage: StorageClient | None = None
 
     @classmethod
     def real(cls, config: Config) -> Clients:
@@ -1104,6 +1345,7 @@ class Clients:
             image=VertexImageClient(
                 config.vertex_project, config.avatar_location, config.avatar_model
             ),
+            storage=HttpxStorageClient(config.gcp_project),
             slack=HttpxSlackClient(config.slack_tokens_path)
             if config.slack_tokens_path
             else None,

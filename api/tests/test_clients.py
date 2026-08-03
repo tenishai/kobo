@@ -34,12 +34,15 @@ from pnyx_api.clients import (
     GojiraConflict,
     HttpxGojiraClient,
     HttpxSlackClient,
+    HttpxStorageClient,
     ImageClient,
     KubectlAgentClient,
     KubectlCLI,
     KubectlClient,
     SlackApiError,
     SlackClient,
+    StorageClient,
+    StorageNotFound,
     VertexImageClient,
     _build_task_envelope,
     _gcloud_print_access_token,
@@ -56,6 +59,7 @@ from tests.fakes import (
     FakeImage,
     FakeKubectl,
     FakeSlack,
+    FakeStorage,
 )
 
 
@@ -1438,6 +1442,355 @@ def test_gcloud_print_access_token_argv_and_pass_through():
     assert token == "ya29.fake-access-token"
 
 
+# --- Storage (HttpxStorageClient / GCS JSON API) --------------------------------
+
+_STORAGE_API_BASE = "https://storage.googleapis.com/storage/v1"
+_STORAGE_UPLOAD_BASE = "https://storage.googleapis.com/upload/storage/v1"
+
+
+def test_storage_read_bytes_request_shape_and_key_quoting():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, content=b"hello world")
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    result = client.read_bytes("my-bucket", "personas/clio.json")
+
+    assert result == b"hello world"
+    assert captured["method"] == "GET"
+    assert captured["url"] == f"{_STORAGE_API_BASE}/b/my-bucket/o/personas%2Fclio.json?alt=media"
+    assert captured["auth"] == "Bearer fake-access-token"
+
+
+def test_storage_read_bytes_404_raises_storage_not_found():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": {"message": "not found"}})
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    with pytest.raises(StorageNotFound):
+        client.read_bytes("my-bucket", "missing.json")
+
+
+def test_storage_read_bytes_non_200_raises_client_error_without_leaking_body():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="a very sensitive internal error trace")
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    with pytest.raises(ClientError) as exc_info:
+        client.read_bytes("my-bucket", "some.json")
+    assert not isinstance(exc_info.value, StorageNotFound)
+    assert "a very sensitive internal error trace" not in str(exc_info.value)
+
+
+def test_storage_object_metadata_request_shape_no_alt_media():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json={
+                "name": "personas/clio.json",
+                "updated": "2026-08-01T12:00:00Z",
+                "metadata": {"author": "kai"},
+            },
+        )
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    result = client.object_metadata("my-bucket", "personas/clio.json")
+
+    assert captured["url"] == f"{_STORAGE_API_BASE}/b/my-bucket/o/personas%2Fclio.json"
+    assert result["metadata"] == {"author": "kai"}
+    assert result["updated"] == "2026-08-01T12:00:00Z"
+
+
+def test_storage_object_metadata_404_raises_storage_not_found():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="not found")
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    with pytest.raises(StorageNotFound):
+        client.object_metadata("my-bucket", "missing.json")
+
+
+def test_storage_write_bytes_multipart_body_carries_metadata_json_and_media():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["content_type"] = request.headers.get("content-type")
+        captured["auth"] = request.headers.get("authorization")
+        captured["body"] = request.content
+        return httpx.Response(200, json={"name": "personas/clio.json"})
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    client.write_bytes(
+        "my-bucket",
+        "personas/clio.json",
+        b"\x00binary-payload\xff",
+        metadata={"author": "kai"},
+        content_type="application/json",
+    )
+
+    assert captured["url"] == f"{_STORAGE_UPLOAD_BASE}/b/my-bucket/o?uploadType=multipart"
+    assert captured["auth"] == "Bearer fake-access-token"
+    assert captured["content_type"].startswith("multipart/related; boundary=")
+    boundary = captured["content_type"].split("boundary=")[1]
+    body = captured["body"]
+    assert f"--{boundary}".encode() in body
+    assert b'"name": "personas/clio.json"' in body
+    assert b'"contentType": "application/json"' in body
+    assert b'"metadata": {"author": "kai"}' in body
+    assert b"\x00binary-payload\xff" in body
+    assert body.rstrip().endswith(f"--{boundary}--".encode())
+
+
+def test_storage_write_bytes_no_metadata_omits_metadata_key():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = request.content
+        return httpx.Response(200, json={"name": "x"})
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    client.write_bytes("my-bucket", "x", b"data")
+
+    assert b'"metadata"' not in captured["body"]
+    assert b'"contentType": "application/octet-stream"' in captured["body"]
+
+
+def test_storage_write_bytes_non_200_raises_client_error_without_leaking_body():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, text="bad request detail")
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    with pytest.raises(ClientError) as exc_info:
+        client.write_bytes("my-bucket", "x", b"data")
+    assert "bad request detail" not in str(exc_info.value)
+
+
+def test_storage_list_keys_request_shape_and_follows_pagination():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        if "pageToken" not in request.url.params:
+            return httpx.Response(
+                200, json={"items": [{"name": "a"}, {"name": "b"}], "nextPageToken": "tok2"}
+            )
+        assert request.url.params["pageToken"] == "tok2"
+        return httpx.Response(200, json={"items": [{"name": "c"}]})
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    result = client.list_keys("my-bucket", "personas/")
+
+    assert result == ["a", "b", "c"]
+    assert len(calls) == 2
+    assert str(calls[0]).startswith(f"{_STORAGE_API_BASE}/b/my-bucket/o?")
+    assert calls[0].params["prefix"] == "personas/"
+    assert calls[0].params["fields"] == "items(name),nextPageToken"
+
+
+def test_storage_list_keys_empty_bucket_returns_empty_list():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    assert client.list_keys("my-bucket", "personas/") == []
+
+
+def test_storage_list_keys_missing_bucket_raises_storage_not_found():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="no such bucket")
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    with pytest.raises(StorageNotFound):
+        client.list_keys("missing-bucket", "")
+
+
+def test_storage_ensure_bucket_returns_exists_without_creating():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        return httpx.Response(200, json={"name": "my-bucket"})
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    assert client.ensure_bucket("my-bucket") == "exists"
+    assert calls == ["GET"]
+
+
+def test_storage_ensure_bucket_creates_with_versioning_when_missing():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(404, text="not found")
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"name": "my-bucket"})
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    assert client.ensure_bucket("my-bucket") == "created"
+    assert captured["url"] == f"{_STORAGE_API_BASE}/b?project=acme-project"
+    assert captured["body"] == {"name": "my-bucket", "versioning": {"enabled": True}}
+
+
+def test_storage_ensure_bucket_non_404_describe_failure_raises_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    with pytest.raises(ClientError):
+        client.ensure_bucket("my-bucket")
+
+
+def test_storage_ensure_bucket_create_failure_raises_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(404, text="not found")
+        return httpx.Response(500, text="create failed")
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    with pytest.raises(ClientError):
+        client.ensure_bucket("my-bucket")
+
+
+def test_storage_ensure_versioning_already_enabled_no_patch():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        return httpx.Response(200, json={"versioning": {"enabled": True}})
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    assert client.ensure_versioning("my-bucket") is False
+    assert calls == ["GET"]
+
+
+def test_storage_ensure_versioning_disabled_patches_and_returns_true():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"versioning": {"enabled": False}})
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"versioning": {"enabled": True}})
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    assert client.ensure_versioning("my-bucket") is True
+    assert captured["method"] == "PATCH"
+    assert captured["url"] == f"{_STORAGE_API_BASE}/b/my-bucket"
+    assert captured["body"] == {"versioning": {"enabled": True}}
+
+
+def test_storage_ensure_versioning_missing_versioning_key_treated_as_disabled():
+    # A bucket with no "versioning" key at all (never configured) must be
+    # treated the same as explicitly disabled, not skipped as if already on.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={})
+        return httpx.Response(200, json={"versioning": {"enabled": True}})
+
+    client = HttpxStorageClient(
+        "acme-project",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    assert client.ensure_versioning("my-bucket") is True
+
+
+def test_storage_client_default_http_client_has_generous_timeout():
+    # No client injected -> HttpxStorageClient must build its own with real
+    # headroom over httpx's bare 5s default, same convention as every other
+    # real client in this module.
+    client = HttpxStorageClient("acme-project")
+    timeout = client._http_client.timeout
+    assert timeout.connect == 10.0
+    assert timeout.read == 20.0
+
+
+def test_storage_client_default_token_provider_is_gcloud_print_access_token():
+    # Same seam as VertexImageClient: no existing google-auth idiom anywhere
+    # in this codebase, so the default shells `gcloud auth print-access-token`.
+    client = HttpxStorageClient("acme-project")
+    assert client._token_provider is _gcloud_print_access_token
+
+
 # --- Fakes satisfy the Protocols ----------------------------------------------
 
 
@@ -1711,6 +2064,119 @@ def test_fake_image_generate_error_knob_raises_client_error():
         fake.generate("a prompt")
 
 
+def test_fake_storage_satisfies_protocol():
+    fake = FakeStorage()
+    assert isinstance(fake, StorageClient)
+    assert fake.ensure_bucket("b") == "created"
+    assert fake.ensure_bucket("b") == "exists"
+    fake.write_bytes("b", "k", b"data", metadata={"a": "1"})
+    assert fake.read_bytes("b", "k") == b"data"
+    meta = fake.object_metadata("b", "k")
+    assert meta["metadata"] == {"a": "1"}
+    assert "updated" in meta
+    assert fake.list_keys("b", "") == ["k"]
+
+
+def test_fake_storage_seeded_via_constructor():
+    fake = FakeStorage(buckets={"b": {"k": (b"seed", {"x": "y"})}})
+    assert fake.read_bytes("b", "k") == b"seed"
+    assert fake.object_metadata("b", "k") == {
+        "metadata": {"x": "y"},
+        "updated": "2026-08-03T00:00:00Z",
+    }
+
+
+def test_fake_storage_read_bytes_absent_key_raises_storage_not_found():
+    fake = FakeStorage(buckets={"b": {}})
+    with pytest.raises(StorageNotFound):
+        fake.read_bytes("b", "missing")
+
+
+def test_fake_storage_read_bytes_absent_bucket_raises_storage_not_found():
+    fake = FakeStorage()
+    with pytest.raises(StorageNotFound):
+        fake.read_bytes("missing-bucket", "k")
+
+
+def test_fake_storage_object_metadata_absent_key_raises_storage_not_found():
+    fake = FakeStorage(buckets={"b": {}})
+    with pytest.raises(StorageNotFound):
+        fake.object_metadata("b", "missing")
+
+
+def test_fake_storage_list_keys_missing_bucket_raises_storage_not_found():
+    fake = FakeStorage()
+    with pytest.raises(StorageNotFound):
+        fake.list_keys("missing-bucket", "")
+
+
+def test_fake_storage_list_keys_filters_by_prefix():
+    fake = FakeStorage(
+        buckets={"b": {"a/1": (b"x", {}), "a/2": (b"y", {}), "c/1": (b"z", {})}}
+    )
+    assert fake.list_keys("b", "a/") == ["a/1", "a/2"]
+
+
+def test_fake_storage_ensure_bucket_already_enables_versioning():
+    # Mirrors the real ensure_bucket contract (creation always turns
+    # versioning on) -> ensure_versioning right after a creation reports
+    # "already enabled", not "changed".
+    fake = FakeStorage()
+    fake.ensure_bucket("b")
+    assert fake.ensure_versioning("b") is False
+
+
+def test_fake_storage_ensure_versioning_true_for_pre_seeded_bucket():
+    # A bucket seeded via the constructor kwarg models a pre-existing bucket
+    # whose versioning state predates pnyx -> the first ensure_versioning
+    # call reports "changed", exercising the exact case ensure_versioning
+    # exists for.
+    fake = FakeStorage(buckets={"b": {}})
+    assert fake.ensure_versioning("b") is True
+    assert fake.ensure_versioning("b") is False
+
+
+def test_fake_storage_records_calls():
+    fake = FakeStorage(buckets={"b": {"k": (b"x", {})}})
+    fake.read_bytes("b", "k")
+    fake.object_metadata("b", "k")
+    fake.write_bytes("b", "k2", b"y")
+    fake.list_keys("b", "")
+    fake.ensure_bucket("b")
+    fake.ensure_versioning("b")
+    assert fake.calls == [
+        "read_bytes:b:k",
+        "object_metadata:b:k",
+        "write_bytes:b:k2",
+        "list_keys:b:",
+        "ensure_bucket:b",
+        "ensure_versioning:b",
+    ]
+
+
+def test_fake_storage_error_knobs_raise_client_error():
+    fake = FakeStorage(
+        read_error="boom-read",
+        metadata_error="boom-metadata",
+        write_error="boom-write",
+        list_error="boom-list",
+        ensure_bucket_error="boom-bucket",
+        ensure_versioning_error="boom-versioning",
+    )
+    with pytest.raises(ClientError, match="boom-read"):
+        fake.read_bytes("b", "k")
+    with pytest.raises(ClientError, match="boom-metadata"):
+        fake.object_metadata("b", "k")
+    with pytest.raises(ClientError, match="boom-write"):
+        fake.write_bytes("b", "k", b"x")
+    with pytest.raises(ClientError, match="boom-list"):
+        fake.list_keys("b", "")
+    with pytest.raises(ClientError, match="boom-bucket"):
+        fake.ensure_bucket("b")
+    with pytest.raises(ClientError, match="boom-versioning"):
+        fake.ensure_versioning("b")
+
+
 # --- Clients.real() wiring -----------------------------------------------------
 
 
@@ -1764,3 +2230,13 @@ def test_clients_real_wires_slack_when_tokens_path_set(tmp_path):
     )
     clients = Clients.real(config)
     assert isinstance(clients.slack, HttpxSlackClient)
+
+
+def test_clients_real_wires_storage_client_unconditionally():
+    # Like image, storage is always constructible (gcp_project already
+    # exists in Config for other clients) -> Clients.real() never gates it
+    # behind an "is this configured" check the way it does slack.
+    config = Config(gojira_url="http://gojira.local", gcp_project="example-project")
+    clients = Clients.real(config)
+    assert isinstance(clients.storage, HttpxStorageClient)
+    assert clients.storage._project == "example-project"

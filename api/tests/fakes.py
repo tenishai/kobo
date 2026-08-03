@@ -16,7 +16,13 @@ from pathlib import Path
 
 import yaml
 
-from pnyx_api.clients import ChatMessage, ClientError, GojiraConflict, SlackApiError
+from pnyx_api.clients import (
+    ChatMessage,
+    ClientError,
+    GojiraConflict,
+    SlackApiError,
+    StorageNotFound,
+)
 
 # --- Generated-scaffolding fixture for FakeGitHub.clone ------------------------
 #
@@ -662,3 +668,112 @@ class FakeImage:
         if self._generate_error is not None:
             raise ClientError(self._generate_error)
         return self._image_bytes
+
+
+class FakeStorage:
+    """In-memory StorageClient double: `buckets` maps bucket name -> {key:
+    (bytes, metadata dict)}, seeded via the constructor kwarg (a bucket
+    present in the map — even with no keys — counts as existing; one absent
+    from the map entirely does not).
+
+    A separate `_versioned` set tracks which buckets have versioning
+    enabled: `ensure_bucket` marks a freshly-created bucket versioned
+    immediately (mirroring the real HttpxStorageClient.ensure_bucket, which
+    always creates with `versioning.enabled: true`), while a bucket seeded
+    directly via the `buckets` kwarg starts out NOT versioned — modeling a
+    pre-existing bucket whose versioning state predates pnyx, exactly the
+    case `ensure_versioning` exists to close.
+
+    Every call is recorded into `.calls` as `"method:bucket:key_or_prefix"`.
+    Per-method error knobs (`read_error`, `metadata_error`, `write_error`,
+    `list_error`, `ensure_bucket_error`, `ensure_versioning_error`), when
+    set, make the matching method raise `ClientError(that message)` instead
+    of doing anything — the seam for exercising a caller's failure handling
+    without a real GCS backend. `read_bytes`/`object_metadata`/`list_keys`
+    raise `StorageNotFound` (not the generic error knob) for a key or bucket
+    that isn't there, mirroring the real client's 404 mapping.
+    """
+
+    def __init__(
+        self,
+        *,
+        buckets: dict[str, dict[str, tuple[bytes, dict]]] | None = None,
+        read_error: str | None = None,
+        metadata_error: str | None = None,
+        write_error: str | None = None,
+        list_error: str | None = None,
+        ensure_bucket_error: str | None = None,
+        ensure_versioning_error: str | None = None,
+    ):
+        self._buckets: dict[str, dict[str, tuple[bytes, dict]]] = (
+            {name: dict(objects) for name, objects in buckets.items()} if buckets else {}
+        )
+        self._versioned: set[str] = set()
+        self._read_error = read_error
+        self._metadata_error = metadata_error
+        self._write_error = write_error
+        self._list_error = list_error
+        self._ensure_bucket_error = ensure_bucket_error
+        self._ensure_versioning_error = ensure_versioning_error
+        self.calls: list[str] = []
+
+    def read_bytes(self, bucket: str, key: str) -> bytes:
+        self.calls.append(f"read_bytes:{bucket}:{key}")
+        if self._read_error is not None:
+            raise ClientError(self._read_error)
+        objects = self._buckets.get(bucket)
+        if objects is None or key not in objects:
+            raise StorageNotFound(f"object not found: {bucket}/{key}")
+        return objects[key][0]
+
+    def object_metadata(self, bucket: str, key: str) -> dict:
+        self.calls.append(f"object_metadata:{bucket}:{key}")
+        if self._metadata_error is not None:
+            raise ClientError(self._metadata_error)
+        objects = self._buckets.get(bucket)
+        if objects is None or key not in objects:
+            raise StorageNotFound(f"object not found: {bucket}/{key}")
+        _, stored_meta = objects[key]
+        return {"metadata": dict(stored_meta), "updated": "2026-08-03T00:00:00Z"}
+
+    def write_bytes(
+        self,
+        bucket: str,
+        key: str,
+        data: bytes,
+        *,
+        metadata: dict[str, str] | None = None,
+        content_type: str = "application/octet-stream",
+    ) -> None:
+        self.calls.append(f"write_bytes:{bucket}:{key}")
+        if self._write_error is not None:
+            raise ClientError(self._write_error)
+        self._buckets.setdefault(bucket, {})[key] = (data, dict(metadata) if metadata else {})
+
+    def list_keys(self, bucket: str, prefix: str) -> list[str]:
+        self.calls.append(f"list_keys:{bucket}:{prefix}")
+        if self._list_error is not None:
+            raise ClientError(self._list_error)
+        objects = self._buckets.get(bucket)
+        if objects is None:
+            raise StorageNotFound(f"bucket not found: {bucket}")
+        return sorted(key for key in objects if key.startswith(prefix))
+
+    def ensure_bucket(self, bucket: str) -> str:
+        self.calls.append(f"ensure_bucket:{bucket}")
+        if self._ensure_bucket_error is not None:
+            raise ClientError(self._ensure_bucket_error)
+        if bucket in self._buckets:
+            return "exists"
+        self._buckets[bucket] = {}
+        self._versioned.add(bucket)
+        return "created"
+
+    def ensure_versioning(self, bucket: str) -> bool:
+        self.calls.append(f"ensure_versioning:{bucket}")
+        if self._ensure_versioning_error is not None:
+            raise ClientError(self._ensure_versioning_error)
+        if bucket in self._versioned:
+            return False
+        self._versioned.add(bucket)
+        return True
