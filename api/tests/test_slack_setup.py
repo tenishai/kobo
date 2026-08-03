@@ -53,6 +53,7 @@ def test_render_manifest_scopes_byte_equal_to_constraint():
     assert manifest["oauth_config"]["scopes"]["bot"] == [
         "app_mentions:read",
         "channels:history",
+        "groups:history",
         "chat:write",
         "reactions:read",
         "reactions:write",
@@ -62,7 +63,9 @@ def test_render_manifest_scopes_byte_equal_to_constraint():
 def test_render_manifest_settings_and_events_exact():
     manifest = render_manifest("echo", "A friendly test agent.")
     assert manifest["settings"] == {
-        "event_subscriptions": {"bot_events": ["app_mention", "message.channels"]},
+        "event_subscriptions": {
+            "bot_events": ["app_mention", "message.channels", "message.groups"]
+        },
         "interactivity": {"is_enabled": False},
         "org_deploy_enabled": False,
         "socket_mode_enabled": True,

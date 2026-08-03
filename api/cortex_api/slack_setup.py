@@ -48,12 +48,13 @@ _BACKGROUND_COLOR = "#3d2f5b"
 _BOT_SCOPES = [
     "app_mentions:read",
     "channels:history",
+    "groups:history",
     "chat:write",
     "reactions:read",
     "reactions:write",
 ]
 
-_BOT_EVENTS = ["app_mention", "message.channels"]
+_BOT_EVENTS = ["app_mention", "message.channels", "message.groups"]
 
 
 def render_manifest(agent_name: str, persona_first_line: str) -> dict:

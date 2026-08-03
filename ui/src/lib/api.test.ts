@@ -436,7 +436,7 @@ describe("slack client", () => {
   it("connectSlack surfaces a 422's {error} message (bad channel)", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       jsonResponse(
-        { error: "use a public channel for now (its ID starts with C)" },
+        { error: "that doesn't look like a channel ID (it starts with C)" },
         { status: 422, statusText: "Unprocessable Entity" },
       ),
     );
@@ -447,7 +447,7 @@ describe("slack client", () => {
         bot_token: "xoxb-secret",
         app_token: "xapp-secret",
       }),
-    ).rejects.toThrow("use a public channel for now (its ID starts with C)");
+    ).rejects.toThrow("that doesn't look like a channel ID (it starts with C)");
   });
 
   it("connectSlack surfaces a 422's {error} message (bad bot token)", async () => {

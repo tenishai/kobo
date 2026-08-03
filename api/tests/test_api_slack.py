@@ -194,6 +194,7 @@ def test_create_slack_app_renders_manifest_creates_app_persists_id(session_facto
     assert manifest["oauth_config"]["scopes"]["bot"] == [
         "app_mentions:read",
         "channels:history",
+        "groups:history",
         "chat:write",
         "reactions:read",
         "reactions:write",
@@ -385,14 +386,17 @@ def test_connect_slack_bad_channel_format_returns_422(session_factory, config):
     )
 
     assert response.status_code == 422
-    assert response.json() == {"error": "use a public channel for now (its ID starts with C)"}
+    assert response.json() == {
+        "error": "that doesn't look like a channel ID (it starts with C)"
+    }
 
 
 def test_connect_slack_private_channel_id_returns_422(session_factory, config):
-    # A private-channel id ("G...") is well-formed but unservable: the
-    # rendered manifest's scopes (channels:history, message.channels) only
-    # work for public channels. Same plain message as any other malformed
-    # channel id — see the code comment by SLACK_CHANNEL_RE.
+    # A legacy private-channel id ("G...") is well-formed but no longer valid:
+    # Slack has migrated private channels to C-prefixed ids, which the
+    # rendered manifest's scopes/events now cover alongside public channels
+    # (groups:history/message.groups). Same plain message as any other
+    # malformed channel id — see the code comment by SLACK_CHANNEL_RE.
     client = _make_client(session_factory, config)
     _seed_agent(session_factory, config, slack_app_id="A0EXISTING")
 
@@ -402,7 +406,9 @@ def test_connect_slack_private_channel_id_returns_422(session_factory, config):
     )
 
     assert response.status_code == 422
-    assert response.json() == {"error": "use a public channel for now (its ID starts with C)"}
+    assert response.json() == {
+        "error": "that doesn't look like a channel ID (it starts with C)"
+    }
 
 
 def test_connect_slack_bad_bot_token_returns_422_and_never_echoes_it(session_factory, config):

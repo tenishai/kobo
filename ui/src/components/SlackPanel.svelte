@@ -224,8 +224,7 @@
               bind:value={channelInput}
             />
             <p class="slack-panel__step-help">
-              Open the channel's details in Slack and copy its ID — use a public channel
-              for now.
+              Open the channel's details in Slack and copy its ID.
             </p>
           </div>
           <div class="slack-panel__field">

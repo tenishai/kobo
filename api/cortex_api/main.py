@@ -86,14 +86,14 @@ class SlackConnectRequest(BaseModel):
 # git's own short-to-full hex sha range.
 KNOWLEDGE_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
-# Slack channel id shape (Global Constraints, P2c plan): public ("C...")
-# channel ids only, format-only — never a semantic check that the channel
-# actually exists (that's Slack's job when the agent tries to post to it).
-# Private ("G...") channel ids are deliberately rejected here: the rendered
-# manifest's scopes/events (channels:history, message.channels) only work
-# for public channels, so a private channel would be accepted but silently
-# unservable. Future work: support private channels via the groups:*
-# scopes/events variant, and widen this back to "^[CG]...".
+# Slack channel id shape (Global Constraints, P2c plan): format-only — never
+# a semantic check that the channel actually exists (that's Slack's job when
+# the agent tries to post to it). The rendered manifest's scopes/events
+# (channels:history + groups:history, message.channels + message.groups)
+# cover both public and private channels, since modern private channels are
+# C-prefixed just like public ones. Legacy G-prefixed channel ids are not
+# supported: Slack has migrated private channels to C ids, so there's no
+# live channel this regex would need to admit.
 SLACK_CHANNEL_RE = re.compile(r"^C[A-Z0-9]{6,}$")
 
 
@@ -737,7 +737,7 @@ def create_app(
         # error body, here or anywhere below.
         if not SLACK_CHANNEL_RE.match(payload.channel):
             return JSONResponse(
-                {"error": "use a public channel for now (its ID starts with C)"},
+                {"error": "that doesn't look like a channel ID (it starts with C)"},
                 status_code=422,
             )
         if not payload.bot_token.startswith("xoxb-"):
