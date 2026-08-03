@@ -5,6 +5,7 @@ asserting mocks.
 """
 
 from pnyx_api.config import Config, ModelChoice
+from pnyx_api.main import create_app
 from pnyx_api.org import ORG_KEYS, OrgState, load_org_config
 from tests.fakes import FakeGitHub
 
@@ -214,6 +215,36 @@ def test_skills_publish_external_bool_round_trips():
         "projects/123/locations/global/workloadIdentityPools/x"
     )
     assert merged.skills_publish_service_account == "publisher@acme.iam.gserviceaccount.com"
+
+
+# --- create_app's `org` keyword (stored at app.state.org) ---------------------
+
+
+def test_create_app_defaults_org_state_when_omitted(session_factory):
+    app = create_app(session_factory, config=Config())
+
+    assert app.state.org == OrgState(False, None, "no org configured")
+
+
+def test_create_app_stores_the_given_org_state(session_factory):
+    given = OrgState(True, ORG_REPO)
+
+    app = create_app(session_factory, config=Config(), org=given)
+
+    assert app.state.org is given
+
+
+def test_create_app_default_org_state_is_not_shared_across_apps(session_factory):
+    """The `org` keyword defaults to None in the signature, with the actual
+    OrgState built fresh inside the function body — never a single mutable
+    OrgState(...) instance living in the signature itself and handed out to
+    every caller that omits `org`. Two apps built without passing `org` must
+    each get their own instance."""
+    app1 = create_app(session_factory, config=Config())
+    app2 = create_app(session_factory, config=Config())
+
+    assert app1.state.org == app2.state.org
+    assert app1.state.org is not app2.state.org
 
 
 def test_org_keys_is_exactly_the_brief_set():
