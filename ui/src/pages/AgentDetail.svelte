@@ -7,6 +7,7 @@
   // this component only renders whatever state that query is in, same
   // loading/error/populated split Dashboard already uses.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
+  import ChatPanel from "../components/ChatPanel.svelte";
   import ErrorState from "../components/ErrorState.svelte";
   import FirstReply from "../components/FirstReply.svelte";
   import Skeleton from "../components/Skeleton.svelte";
@@ -59,7 +60,7 @@
         <StatusBadge status={data.status} />
       </div>
       <div class="agent-detail__meta">
-        <span class="agent-detail__model" title={data.model}>{data.model}</span>
+        <span class="agent-detail__model" title={data.model}>{data.model_label}</span>
         {#if data.repo_full_name}
           <span class="agent-detail__sep" aria-hidden="true">·</span>
           <a
@@ -88,7 +89,7 @@
       {/if}
       <span class="composition__item">
         <span class="composition__label">Model</span>
-        <span class="composition__value">{data.model}</span>
+        <span class="composition__value">{data.model_label}</span>
       </span>
     </div>
 
@@ -112,6 +113,10 @@
 
     {#if data.first_reply}
       <FirstReply reply={data.first_reply} />
+    {/if}
+
+    {#if data.status === "ready"}
+      <ChatPanel agentName={data.name} />
     {/if}
   {/if}
 </div>

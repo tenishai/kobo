@@ -20,7 +20,7 @@
     <StatusBadge status={agent.status} />
   </div>
   <div class="agent-card__meta">
-    <span class="agent-card__model" title={agent.model}>{agent.model}</span>
+    <span class="agent-card__model" title={agent.model}>{agent.model_label}</span>
     <span class="agent-card__sep" aria-hidden="true">·</span>
     <span class="agent-card__time">{relativeTime(agent.created_at)}</span>
   </div>
