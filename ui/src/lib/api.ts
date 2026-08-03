@@ -10,6 +10,7 @@ export type AgentSummary = {
   name: string;
   status: string;
   model: string;
+  model_label: string;
   created_at: string;
 };
 
@@ -35,6 +36,8 @@ export type Catalogs = {
   models: { id: string; label: string }[];
   defaultModel: string;
 };
+
+export type ChatMessage = { role: "user" | "agent"; text: string };
 
 export class ApiError extends Error {
   status: number;
@@ -173,6 +176,18 @@ export async function fetchCatalogs(): Promise<Catalogs> {
     models: models.models,
     defaultModel: models.default,
   };
+}
+
+export async function chatWithAgent(
+  name: string,
+  messages: ChatMessage[],
+): Promise<{ reply: string }> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages }),
+  });
+  return parse<{ reply: string }>(res);
 }
 
 export async function checkAvailability(

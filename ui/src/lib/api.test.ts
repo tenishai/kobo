@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, createAgent, errorMessage, fetchCatalogs, listAgents } from "./api";
+import {
+  ApiError,
+  chatWithAgent,
+  createAgent,
+  errorMessage,
+  fetchCatalogs,
+  listAgents,
+} from "./api";
 
 function jsonResponse(
   body: unknown,
@@ -58,7 +65,13 @@ describe("api.ts", () => {
 
   it("listAgents unwraps {agents: [...]} into a plain array", async () => {
     const agents = [
-      { name: "alpha", status: "ready", model: "gpt-5", created_at: "2026-01-01T00:00:00Z" },
+      {
+        name: "alpha",
+        status: "ready",
+        model: "gpt-5",
+        model_label: "GPT-5",
+        created_at: "2026-01-01T00:00:00Z",
+      },
     ];
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ agents }));
 
@@ -104,6 +117,47 @@ describe("api.ts", () => {
     await expect(
       createAgent({ name: "foo", persona: "helper", skills: [], model: null }),
     ).rejects.toThrow("name taken: 'foo'");
+  });
+
+  it("chatWithAgent posts {messages} to /api/agents/{name}/chat and returns {reply}", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ reply: "hi there" }));
+
+    const messages = [{ role: "user" as const, text: "hello" }];
+    await expect(chatWithAgent("clio", messages)).resolves.toEqual({
+      reply: "hi there",
+    });
+
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages }),
+    });
+  });
+
+  it("chatWithAgent surfaces a 409's {error} message (agent not ready to chat)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "agent is not ready to chat" },
+        { status: 409, statusText: "Conflict" },
+      ),
+    );
+
+    await expect(
+      chatWithAgent("clio", [{ role: "user", text: "hello" }]),
+    ).rejects.toThrow("agent is not ready to chat");
+  });
+
+  it("chatWithAgent surfaces a 502's {error} message (agent unreachable)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "agent unreachable: connection reset" },
+        { status: 502, statusText: "Bad Gateway" },
+      ),
+    );
+
+    await expect(
+      chatWithAgent("clio", [{ role: "user", text: "hello" }]),
+    ).rejects.toThrow("agent unreachable: connection reset");
   });
 });
 

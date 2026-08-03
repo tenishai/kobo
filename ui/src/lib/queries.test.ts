@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "./api";
-import { retryAgentMutation, shouldRetry } from "./queries";
+import { chatMutation, retryAgentMutation, shouldRetry } from "./queries";
 import type { QueryClient } from "@tanstack/svelte-query";
 
 describe("shouldRetry", () => {
@@ -22,6 +22,37 @@ describe("shouldRetry", () => {
     expect(shouldRetry(1, error)).toBe(true);
     expect(shouldRetry(2, error)).toBe(true);
     expect(shouldRetry(3, error)).toBe(false);
+  });
+});
+
+describe("chatMutation", () => {
+  it("mutationFn delegates to chatWithAgent(name, messages)", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ reply: "hi" }),
+    } as Response);
+
+    const mutation = chatMutation("clio");
+    const messages = [{ role: "user" as const, text: "hello" }];
+
+    await expect(mutation.mutationFn(messages)).resolves.toEqual({
+      reply: "hi",
+    });
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages }),
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("has no onSuccess/cache invalidation — chat doesn't change agent state", () => {
+    const mutation = chatMutation("clio");
+    expect((mutation as { onSuccess?: unknown }).onSuccess).toBeUndefined();
   });
 });
 

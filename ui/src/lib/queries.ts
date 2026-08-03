@@ -15,6 +15,8 @@ import {
   type AgentDetail,
   type AgentSummary,
   type Catalogs,
+  type ChatMessage,
+  chatWithAgent,
   createAgent,
   fetchCatalogs,
   getAgent,
@@ -96,6 +98,18 @@ export function retryAgentMutation(queryClient: QueryClient, name: string) {
   };
 }
 
+/**
+ * Sends one chat turn to an agent. Unlike the mutations above, this has no
+ * `onSuccess`/cache invalidation: a chat exchange doesn't change any agent
+ * state the rest of the app reads (status, steps, ...), so there's nothing
+ * in the query cache for it to invalidate — hence no `queryClient` param.
+ */
+export function chatMutation(name: string) {
+  return {
+    mutationFn: (messages: ChatMessage[]) => chatWithAgent(name, messages),
+  };
+}
+
 // Re-exported so consumers of the query factories don't need a separate
 // import from api.ts just to type their component-level state.
-export type { AgentDetail, AgentSummary, Catalogs };
+export type { AgentDetail, AgentSummary, Catalogs, ChatMessage };
