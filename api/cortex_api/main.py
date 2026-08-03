@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from cortex_api.catalog import NAME_RE, list_personas, list_skills
+from cortex_api.catalog import list_personas, list_skills, validate_name
 from cortex_api.config import Config
 from cortex_api.db import init_db, make_engine, make_session_factory
 from cortex_api.models import Agent, AgentStatus
@@ -164,8 +164,9 @@ def create_app(
     def availability(
         name: str, session: Session = Depends(get_session)  # noqa: B008
     ) -> dict:
-        if not NAME_RE.fullmatch(name):
-            return {"available": False, "reason": "invalid name"}
+        reason = validate_name(name)
+        if reason is not None:
+            return {"available": False, "reason": reason}
 
         existing = session.query(Agent).filter_by(name=name).first()
         if existing is not None:
@@ -179,8 +180,11 @@ def create_app(
     ) -> JSONResponse:
         cfg: Config = app.state.config
 
-        if not NAME_RE.fullmatch(payload.name):
-            return JSONResponse({"error": f"invalid name: {payload.name!r}"}, status_code=422)
+        name_reason = validate_name(payload.name)
+        if name_reason is not None:
+            return JSONResponse(
+                {"error": f"invalid name ({name_reason}): {payload.name!r}"}, status_code=422
+            )
 
         personas = {p.id: p for p in list_personas(cfg.personas_dir)}
         if payload.persona not in personas:

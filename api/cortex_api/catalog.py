@@ -17,7 +17,40 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,29}$")
+NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,23}$")
+
+MAX_NAME_LENGTH = 24
+
+# Names the platform (or cortex itself) already gives special meaning —
+# never available for an agent, regardless of how they'd otherwise pass
+# NAME_RE. `gojira`/`cortex` guard against an agent shadowing the platform
+# services themselves; the `kube-*` pair guards against colliding with
+# reserved Kubernetes namespaces (each agent's namespace is its own name).
+RESERVED_NAMES = frozenset({"default", "kube-system", "kube-public", "gojira", "cortex"})
+
+
+def validate_name(name: str) -> str | None:
+    """Validate a candidate agent name; return None if valid, or a short
+    human-readable reason if not — shared by the availability check and
+    create validation (`cortex_api.main`) so both report identical reasons.
+
+    Order matters: length is checked before NAME_RE itself so an over-long
+    name gets the specific "too long" reason instead of the generic
+    "invalid name" NAME_RE would otherwise report (NAME_RE's own max is what
+    enforces this length, but failing it doesn't say *why*). Trailing-hyphen
+    and reserved-name checks come after NAME_RE since both describe names
+    that are otherwise well-formed.
+    """
+    if len(name) > MAX_NAME_LENGTH:
+        return f"too long (max {MAX_NAME_LENGTH})"
+    if not NAME_RE.fullmatch(name):
+        return "invalid name"
+    if name.endswith("-"):
+        return "must not end with a hyphen"
+    if name in RESERVED_NAMES:
+        return "reserved name"
+    return None
+
 
 _PACKAGE_PERSONAS_DIR = Path(__file__).parent / "templates" / "personas"
 

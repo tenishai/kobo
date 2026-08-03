@@ -15,6 +15,13 @@ gojira_url: http://127.0.0.1:8080
 gojira_token: null
 
 # Kubernetes cluster name where Gojira is deployed
+#
+# P0 finding: the platform's cluster registration (its own `ar_repo` field,
+# not set here) must be the FULL Artifact Registry path
+# (<location>-docker.pkg.dev/<project>/<repo>), never the short repo name —
+# a short name produced a confusing empty-arg gcloud failure at image-push
+# time. Not cortex's config to hold, but worth the reminder here since this
+# cluster name is what ties an agent's onboarding to that registration.
 gojira_cluster: example-cluster
 
 # GCP project ID for infrastructure and resources

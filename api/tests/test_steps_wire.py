@@ -484,6 +484,59 @@ def test_build_step_sleeps_at_the_configured_interval(session_factory, config, m
     assert sleep_calls == [BUILD_POLL_INTERVAL_S, BUILD_POLL_INTERVAL_S]
 
 
+def test_build_step_rerun_resets_poll_budget_so_a_late_failure_does_not_starve_the_heal(
+    session_factory, config
+):
+    """The self-heal rerun must get its own poll budget: a first build that
+    fails late — with only a handful of polls left in the *original* budget
+    — must not starve the healed rerun of the polls it actually needs.
+    Constructed so the healed run needs strictly more polls than would be
+    left without the reset; this only passes if BuildStep resets the budget
+    once when the rerun fires (bounded: it can only happen once per
+    invocation, so worst case is 2x BUILD_POLL_TIMEOUT_S, never unbounded).
+    """
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo)
+
+    max_polls = BUILD_POLL_TIMEOUT_S // BUILD_POLL_INTERVAL_S
+    fail_at_poll = max_polls - 3  # only 3 polls left in the original budget
+    extra_polls_needed = 10  # the healed run needs MORE than those 3 polls
+    assert extra_polls_needed > (max_polls - fail_at_poll)  # the point of this test
+
+    first_build_polls = [
+        [{"id": 1, "status": "in_progress", "conclusion": None}]
+        for _ in range(fail_at_poll - 1)
+    ] + [[{"id": 1, "status": "completed", "conclusion": "failure"}]]
+
+    github = FakeGitHub(head_sha="deadbeef", runs_by_sha={"deadbeef": first_build_polls})
+
+    # FakeGitHub.rerun() (tests/fakes.py) always swaps straight to a
+    # single-entry "final result" sequence — it can't natively express a
+    # healed run that takes several more polls to land. Wrap it so the
+    # healed run needs `extra_polls_needed` polls of its own before
+    # succeeding, exactly the shape that would time out without the reset.
+    real_rerun = github.rerun
+
+    def _rerun_with_slow_healed_build(repo_name, run_id):
+        real_rerun(repo_name, run_id)
+        healed_polls = [
+            [{"id": run_id, "status": "in_progress", "conclusion": None}]
+            for _ in range(extra_polls_needed - 1)
+        ] + [[{"id": run_id, "status": "completed", "conclusion": "success"}]]
+        github._runs_by_sha["deadbeef"] = healed_polls
+        github._run_index_by_sha["deadbeef"] = 0
+
+    github.rerun = _rerun_with_slow_healed_build
+
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    detail = BuildStep().run(ctx)
+
+    assert "1" in detail
+    assert "rerun" in detail.lower()
+    assert github.rerun_calls == [(repo, 1)]
+
+
 # --- DeployStep -------------------------------------------------------------------
 
 
@@ -515,6 +568,29 @@ def test_deploy_step_notes_live_spec_verified_in_detail(session_factory, config)
     detail = DeployStep().run(ctx)
 
     assert "live spec verified" in detail
+
+
+def test_deploy_step_raises_naming_only_the_missing_var_on_partial_env_miss(
+    session_factory, config
+):
+    """One of the two wired vars is present, the other absent — the error
+    must name exactly the missing one, not both."""
+    session, agent = _make_agent(session_factory)
+    kubectl = FakeKubectl(
+        rollout_result=True,
+        env_names={(AGENT_NAME, AGENT_NAME): ["VERTEXAI_PROJECT"]},
+    )
+    ctx = _make_ctx(session, agent, config, _clients(kubectl=kubectl))
+
+    with pytest.raises(RuntimeError) as exc_info:
+        DeployStep().run(ctx)
+
+    message = str(exc_info.value)
+    # The `missing` list's repr names only VERTEXAI_LOCATION.
+    assert "env ['VERTEXAI_LOCATION']" in message
+    # VERTEXAI_PROJECT still appears as part of the live-env-names diagnostic
+    # (it IS present live) — just never inside the "missing" list itself.
+    assert "VERTEXAI_PROJECT" in message
 
 
 def test_deploy_step_raises_with_remediation_hint_when_live_env_missing(session_factory, config):

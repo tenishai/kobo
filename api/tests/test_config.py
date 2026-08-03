@@ -1,9 +1,21 @@
+import re
 from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
 
 from cortex_api.config import Config
 
 
-def test_load_none_returns_defaults_without_touching_disk():
+def test_load_none_returns_defaults_without_touching_disk(tmp_path, monkeypatch):
+    # A real config.local.yaml can legitimately exist in a developer's cwd
+    # (it's gitignored precisely so it can hold real deploy values) — chdir
+    # to an empty tmp dir so this test's "no file, pure defaults" claim holds
+    # regardless of what's sitting in whatever directory the suite happens
+    # to run from.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CORTEX_CONFIG", raising=False)
+
     config = Config.load(None)
 
     assert config.github_org == "example-org"
@@ -25,7 +37,7 @@ def test_load_tmp_yaml_overrides_github_org_and_coerces_workdir(tmp_path):
     assert isinstance(config.workdir, Path)
 
 
-def test_workdir_expands_tilde(tmp_path, monkeypatch):
+def test_workdir_expands_tilde(tmp_path):
     yaml_path = tmp_path / "config.yaml"
     yaml_path.write_text("workdir: ~/.cortex\n")
 
@@ -34,7 +46,7 @@ def test_workdir_expands_tilde(tmp_path, monkeypatch):
     assert config.workdir == Path.home() / ".cortex"
 
 
-def test_skills_repo_path_expands_tilde(tmp_path, monkeypatch):
+def test_skills_repo_path_expands_tilde(tmp_path):
     yaml_path = tmp_path / "config.yaml"
     yaml_path.write_text("skills_repo_path: ~/.cortex/skills\n")
 
@@ -43,7 +55,7 @@ def test_skills_repo_path_expands_tilde(tmp_path, monkeypatch):
     assert config.skills_repo_path == Path.home() / ".cortex/skills"
 
 
-def test_personas_dir_expands_tilde(tmp_path, monkeypatch):
+def test_personas_dir_expands_tilde(tmp_path):
     yaml_path = tmp_path / "config.yaml"
     yaml_path.write_text("personas_dir: ~/personas\n")
 
@@ -56,11 +68,8 @@ def test_cortex_config_env_var_missing_raises_error(tmp_path, monkeypatch):
     missing_path = tmp_path / "does-not-exist.yaml"
     monkeypatch.setenv("CORTEX_CONFIG", str(missing_path))
 
-    try:
+    with pytest.raises(FileNotFoundError, match=re.escape(str(missing_path))):
         Config.load()
-        assert False, "Should have raised FileNotFoundError"
-    except FileNotFoundError as e:
-        assert str(missing_path) in str(e)
 
 
 def test_config_local_yaml_missing_falls_back_to_defaults(tmp_path, monkeypatch):
@@ -71,3 +80,45 @@ def test_config_local_yaml_missing_falls_back_to_defaults(tmp_path, monkeypatch)
 
     assert config.github_org == "example-org"
     assert config.workdir == Path.home() / ".cortex"
+
+
+# --- models: min_length=1 ------------------------------------------------------
+
+
+def test_models_empty_list_raises_validation_error():
+    with pytest.raises(ValidationError):
+        Config(models=[])
+
+
+def test_models_default_is_nonempty():
+    assert len(Config().models) >= 1
+
+
+# --- Config.load: non-dict YAML -------------------------------------------------
+
+
+def test_load_non_dict_yaml_raises_value_error_naming_the_file(tmp_path):
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text("- item1\n- item2\n")
+
+    with pytest.raises(ValueError, match=re.escape(str(yaml_path))):
+        Config.load(yaml_path)
+
+
+def test_load_scalar_yaml_raises_value_error(tmp_path):
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text("just a string\n")
+
+    with pytest.raises(ValueError, match=re.escape(str(yaml_path))):
+        Config.load(yaml_path)
+
+
+def test_load_empty_yaml_file_falls_back_to_defaults(tmp_path):
+    """An empty (or all-comments) file parses to `None`, not a non-dict — that
+    still means "no overrides", same as a missing file, not an error."""
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text("# just a comment\n")
+
+    config = Config.load(yaml_path)
+
+    assert config.github_org == "example-org"

@@ -81,15 +81,17 @@ export function createAgentMutation(queryClient: QueryClient) {
 }
 
 /**
- * Retries a failed agent's provisioning; on success, invalidates both the
- * list (its status changed) and its own detail query (steps reset/resume).
+ * Retries a failed agent's provisioning; on success, invalidates the agent
+ * list. TanStack's default `invalidateQueries` match is a *prefix* match
+ * (see `matchQuery`/`partialMatchKey` in @tanstack/query-core), so
+ * invalidating `["agents"]` already covers `["agents", name]` too — a
+ * separate call for the detail key would just be a redundant no-op.
  */
 export function retryAgentMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: () => retryAgent(name),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents"] });
-      queryClient.invalidateQueries({ queryKey: ["agents", name] });
     },
   };
 }

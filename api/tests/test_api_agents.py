@@ -277,6 +277,25 @@ def test_create_agent_invalid_name_never_reaches_the_pipeline(client, fake_githu
     assert fake_github.calls == []
 
 
+@pytest.mark.parametrize(
+    "name,expected_reason",
+    [
+        ("a" * 25, "too long (max 24)"),
+        ("agent-", "must not end with a hyphen"),
+        ("cortex", "reserved name"),
+    ],
+)
+def test_create_agent_name_rule_violations_return_422_with_distinct_reason(
+    client, name, expected_reason
+):
+    """Same distinct reasons as the availability route (`validate_name`),
+    surfaced in create's 422 error message rather than a bare "invalid name"."""
+    response = client.post("/api/agents", json={"name": name, "persona": PERSONA})
+
+    assert response.status_code == 422
+    assert expected_reason in response.json()["error"]
+
+
 # --- GET /api/agents ---------------------------------------------------------------
 
 

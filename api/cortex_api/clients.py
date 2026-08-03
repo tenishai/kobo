@@ -299,16 +299,17 @@ class CloudClient(Protocol):
         ...
 
 
-def gsa_email(agent_name: str, project: str) -> str:
-    """The GSA email convention for an agent's GCP service account:
-    `agent-{agent_name}@{project}.iam.gserviceaccount.com`.
+def gsa_email(name: str, project: str) -> str:
+    """The GSA email convention for a GCP service account: `{name}@{project}.iam.gserviceaccount.com`.
 
-    Single source of truth for a format string that used to be duplicated
-    between `GcloudClient.ensure_gsa` (below) and `WireStep`
-    (`cortex_api/steps.py`, which needs the same email for the KSA's
-    Workload Identity annotation).
+    Prefix-agnostic: this is only the email-format helper, not the naming
+    policy — callers that need an agent's GSA build the full `agent-<name>`
+    id themselves before calling this (both `GcloudClient.ensure_gsa` below
+    and `WireStep`, `cortex_api/steps.py`, which needs the same email for the
+    KSA's Workload Identity annotation), so the real client and `FakeCloud`
+    (`tests/fakes.py`) now behave identically for any name it's given.
     """
-    return f"agent-{agent_name}@{project}.iam.gserviceaccount.com"
+    return f"{name}@{project}.iam.gserviceaccount.com"
 
 
 class GcloudClient:
@@ -321,10 +322,10 @@ class GcloudClient:
 
     def ensure_gsa(self, name: str) -> str:
         # `name` is always the caller's full "agent-<agent name>" SA id (the
-        # only caller, AccessStep, constructs it that way) — strip the
-        # prefix back off so the email itself comes from the one shared
-        # gsa_email() convention instead of a second inline f-string here.
-        email = gsa_email(name.removeprefix("agent-"), self._project)
+        # only caller, AccessStep, constructs it that way); gsa_email() is
+        # prefix-agnostic, so it's used as-is rather than round-tripped
+        # through a stripped-then-reattached prefix.
+        email = gsa_email(name, self._project)
         try:
             self._runner.run(
                 [
@@ -333,8 +334,14 @@ class GcloudClient:
                 ]
             )
             return email
-        except ClientError:
-            pass  # not found (or a transient describe failure) -> create
+        except ClientError as exc:
+            # Only a genuine "no such GSA" describe failure falls through to
+            # create — anything else (permission denied, a transient API
+            # error, ...) is a real problem the caller needs to see, not
+            # something a blind create-on-any-failure should paper over.
+            stderr = exc.stderr.lower()
+            if "not_found" not in stderr and "does not exist" not in stderr:
+                raise
         self._runner.run(
             [
                 self._gcloud, "iam", "service-accounts", "create", name,
@@ -497,6 +504,14 @@ class KubectlAgentClient:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    # Best-effort zombie reap: kill() already sent SIGKILL,
+                    # so the process is dying (or dead) regardless — this
+                    # second wait is just cleanup, never worth raising or
+                    # blocking longer over.
+                    pass
 
 
 # --- Kubectl (rollout status) -----------------------------------------------------

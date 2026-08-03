@@ -204,6 +204,29 @@ def test_ensure_gsa_exists_path_skips_create():
     assert len(runner.calls) == 1  # only the describe call, no create
 
 
+def test_ensure_gsa_does_not_exist_wording_also_falls_through_to_create():
+    # gcloud's exact NOT_FOUND wording isn't the only phrasing a real describe
+    # failure can carry — "does not exist" must also fall through to create.
+    runner = RecordingRunner(
+        results=[(1, "", "Service account agent-clio does not exist."), (0, "", "")]
+    )
+    client = GcloudClient("example-project", runner=runner)
+    email = client.ensure_gsa("agent-clio")
+    assert email == "agent-clio@example-project.iam.gserviceaccount.com"
+    assert len(runner.calls) == 2  # describe, then create
+
+
+def test_ensure_gsa_reraises_non_not_found_describe_failure():
+    # Anything other than a "no such GSA" describe failure (permission denied,
+    # a transient API error, ...) is a real problem — it must raise rather
+    # than being papered over by a blind create-on-any-failure.
+    runner = RecordingRunner(results=[(1, "", "ERROR: (gcloud...) PERMISSION_DENIED")])
+    client = GcloudClient("example-project", runner=runner)
+    with pytest.raises(ClientError):
+        client.ensure_gsa("agent-clio")
+    assert len(runner.calls) == 1  # never got to (or attempted) create
+
+
 def test_bind_workload_identity_argv():
     runner = RecordingRunner()
     client = GcloudClient("example-project", runner=runner)
@@ -533,17 +556,25 @@ class _FakeBlockingPopen:
     """Stands in for subprocess.Popen when the port-forward never reports a
     port: stdout hangs, and wait() always times out so hello()'s cleanup
     falls through to kill(). Every cleanup call is recorded.
+
+    `wait()` always raises TimeoutExpired regardless of which call it is
+    (both the pre-kill wait and, per the zombie-reap fix, the post-kill
+    one) — every timeout it's given is recorded in `wait_calls` so a test
+    can assert on the exact sequence without the fake needing to know how
+    many times it'll be called.
     """
 
     def __init__(self, event: threading.Event):
         self.stdout = _BlockingReader(event)
         self.terminated = False
         self.killed = False
+        self.wait_calls: list[float | None] = []
 
     def terminate(self):
         self.terminated = True
 
     def wait(self, timeout=None):
+        self.wait_calls.append(timeout)
         raise subprocess.TimeoutExpired(cmd="kubectl", timeout=timeout)
 
     def kill(self):
@@ -568,6 +599,10 @@ def test_agent_hello_times_out_and_cleans_up_when_port_forward_hangs(monkeypatch
     assert elapsed < 5.0
     assert fake_proc.terminated is True
     assert fake_proc.killed is True
+    # Zombie reap: a second, short wait() follows kill() (best-effort — its
+    # own TimeoutExpired here must not propagate and mask the ClientError
+    # already raised above).
+    assert fake_proc.wait_calls == [5, 2]
 
 
 def test_agent_hello_terminates_port_forward_on_success(monkeypatch):

@@ -40,6 +40,8 @@ import yaml
 from cortex_api.catalog import list_personas, list_skills
 from cortex_api.clients import GojiraConflict, gsa_email
 from cortex_api.composer import BundleSpec, compose, validate_agent_yaml
+from cortex_api.config import Config
+from cortex_api.models import Agent
 
 log = logging.getLogger(__name__)
 
@@ -69,7 +71,7 @@ BUILD_POLL_TIMEOUT_S = 600
 _sleep = time.sleep
 
 
-def _resolve_persona_body(config, agent) -> str:
+def _resolve_persona_body(config: Config, agent: Agent) -> str:
     """Look up `agent.persona` in the persona catalog and `{name}`-format its body."""
     personas = {p.id: p for p in list_personas(config.personas_dir)}
     persona_info = personas.get(agent.persona)
@@ -81,7 +83,7 @@ def _resolve_persona_body(config, agent) -> str:
     return persona_info.body.format(name=agent.name)
 
 
-def _resolve_skills(config, agent) -> list:
+def _resolve_skills(config: Config, agent: Agent) -> list:
     """Resolve `agent.skills` (a list of `{"name": ..., "sha": ...}` dicts, the
     shape the DB column holds) against the current skill catalog by id.
 
@@ -378,7 +380,9 @@ class WireStep:
         github.clone(agent.repo_full_name, clone_dir)
 
         k8s_base = clone_dir / "k8s" / "base"
-        sa_email = gsa_email(agent.name, config.gcp_project)
+        # gsa_email() is prefix-agnostic — build the full "agent-<name>" id
+        # here, same as AccessStep does for cloud.ensure_gsa().
+        sa_email = gsa_email(f"agent-{agent.name}", config.gcp_project)
         (k8s_base / "serviceaccount.yaml").write_text(
             SERVICEACCOUNT_YAML_TEMPLATE.format(name=agent.name, gsa_email=sa_email)
         )
@@ -454,9 +458,19 @@ class BuildStep:
         rerun_attempted = False
 
         max_polls = BUILD_POLL_TIMEOUT_S // BUILD_POLL_INTERVAL_S
+        # A countdown rather than `for poll_count in range(max_polls)` so the
+        # self-heal rerun below can reset it: a first build that fails late
+        # (say, poll 55 of 60) would otherwise leave the healed rerun only
+        # the few polls left in the *original* budget to complete in,
+        # starving it of the time a fresh build actually needs. Bounded:
+        # this reset can fire at most once per invocation (gated by
+        # `rerun_attempted`, same as the rerun itself), so the worst case is
+        # two full budgets — 2x BUILD_POLL_TIMEOUT_S — never unbounded.
+        polls_remaining = max_polls
         runs: list[dict] = []
-        for poll_count in range(max_polls):
+        while polls_remaining > 0:
             runs = github.runs_for_commit(agent.repo_full_name, sha)
+            polls_remaining -= 1
 
             # Empty means CI hasn't registered a run against this commit
             # yet (registration lag right after the push) — keep polling,
@@ -484,7 +498,9 @@ class BuildStep:
                         )
                         github.rerun(agent.repo_full_name, run_id)
                         # Keep polling the same sha/run — gh reruns reuse
-                        # the run's id rather than minting a new one.
+                        # the run's id rather than minting a new one. Reset
+                        # the budget: see the countdown comment above.
+                        polls_remaining = max_polls
                     else:
                         raise RuntimeError(
                             f"build run {run_id} completed with conclusion "
@@ -493,7 +509,7 @@ class BuildStep:
                             "invocation)"
                         )
 
-            if poll_count < max_polls - 1:
+            if polls_remaining > 0:
                 _sleep(BUILD_POLL_INTERVAL_S)
 
         raise RuntimeError(
@@ -533,7 +549,7 @@ class DeployStep:
         if not kubectl.rollout_ok(namespace=agent.name, deploy=agent.name):
             raise RuntimeError(f"rollout failed for {agent.name}/{agent.name}")
 
-        env_names = kubectl.deploy_env_names(agent.name, agent.name)
+        env_names = kubectl.deploy_env_names(namespace=agent.name, deploy=agent.name)
         missing = [
             var for var in ("VERTEXAI_PROJECT", "VERTEXAI_LOCATION") if var not in env_names
         ]
@@ -546,7 +562,7 @@ class DeployStep:
             )
 
         expected_sa = f"agent-{agent.name}"
-        actual_sa = kubectl.deploy_service_account(agent.name, agent.name)
+        actual_sa = kubectl.deploy_service_account(namespace=agent.name, deploy=agent.name)
         if actual_sa != expected_sa:
             raise RuntimeError(
                 f"live spec for {agent.name}/{agent.name} has service account "

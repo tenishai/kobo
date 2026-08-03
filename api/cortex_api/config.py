@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class ModelChoice(BaseModel):
@@ -27,31 +27,25 @@ class Config(BaseModel):
     vertex_project: str = "example-model-project"
     vertex_location: str = "us-east5"
     model_group: str = "models@example.com"
-    models: list[ModelChoice] = [
-        ModelChoice(id="vertex_ai/claude-sonnet-4-5", label="Claude Sonnet 4.5")
-    ]
+    models: list[ModelChoice] = Field(
+        default=[ModelChoice(id="vertex_ai/claude-sonnet-4-5", label="Claude Sonnet 4.5")],
+        min_length=1,
+    )
     skills_repo_path: Path | None = None
     personas_dir: Path | None = None  # None -> package templates/personas
     workdir: Path = Path.home() / ".cortex"
     db_url: str = "sqlite:///cortex.db"
 
-    @field_validator("workdir", mode="before")
+    @field_validator("workdir", "skills_repo_path", "personas_dir", mode="before")
     @classmethod
-    def expand_workdir(cls, v):
-        if v is not None:
-            return Path(v).expanduser()
-        return v
+    def _expand_user(cls, v):
+        """Expand a leading `~` in any of the three path-shaped fields.
 
-    @field_validator("skills_repo_path", mode="before")
-    @classmethod
-    def expand_skills_repo_path(cls, v):
-        if v is not None:
-            return Path(v).expanduser()
-        return v
-
-    @field_validator("personas_dir", mode="before")
-    @classmethod
-    def expand_personas_dir(cls, v):
+        One validator for all three (rather than a near-identical one per
+        field) since the transform is identical: `None` passes through
+        untouched (the two optional fields default to it), anything else
+        goes through `Path(...).expanduser()`.
+        """
         if v is not None:
             return Path(v).expanduser()
         return v
@@ -80,6 +74,14 @@ class Config(BaseModel):
             return cls()
 
         with open(path) as f:
-            data = yaml.safe_load(f) or {}
+            data = yaml.safe_load(f)
+
+        if data is None:
+            data = {}
+        elif not isinstance(data, dict):
+            raise ValueError(
+                f"config file {path} must contain a YAML mapping at the top "
+                f"level, got {type(data).__name__}"
+            )
 
         return cls(**data)
