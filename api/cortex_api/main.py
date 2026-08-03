@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
@@ -17,6 +18,13 @@ from cortex_api.catalog import list_personas, list_skills, validate_name
 from cortex_api.clients import ClientError
 from cortex_api.config import Config
 from cortex_api.db import init_db, make_engine, make_session_factory
+from cortex_api.knowledge import (
+    KnowledgeError,
+    delete_knowledge_file,
+    delivery_state,
+    read_knowledge,
+    save_knowledge_file,
+)
 from cortex_api.models import Agent, AgentStatus
 from cortex_api.provisioner import (
     PIPELINE,
@@ -57,6 +65,19 @@ class ChatRequest(BaseModel):
 CHAT_MESSAGE_TEXT_MAX_LEN = 4000
 
 CHAT_MESSAGE_ROLES = {"user", "agent"}
+
+
+class KnowledgeSavePayload(BaseModel):
+    content: str
+
+
+# The delivery-status route's sha path param must look like a real git
+# commit sha (as returned by save_knowledge_file/delete_knowledge_file, both
+# `github.local_head`) before it ever reaches cortex_api.knowledge's
+# delivery_state, which takes any str with no shape check of its own — this
+# is purely an HTTP-layer guard against a malformed path segment. Matches
+# git's own short-to-full hex sha range.
+KNOWLEDGE_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
 
 def _model_label(cfg: Config, model_id: str) -> str:
@@ -141,6 +162,29 @@ def _fail_launch(
         recovery_session.close()
 
     return JSONResponse({"error": error_message}, status_code=503)
+
+
+def _ready_agent_or_error(session: Session, name: str) -> Agent | JSONResponse:
+    """Shared 404/409 guard for the four knowledge routes (P2b) below.
+
+    Unlike `chat_with_agent`/`retry_agent` — each of which inlines its own
+    lookup because their 409 conditions/messages differ (READY-to-chat vs
+    FAILED-to-retry) — all four knowledge routes share the exact same check
+    (unknown agent, or not READY) and message, so it's factored out once
+    here instead of copy-pasted four times.
+
+    Returns the `Agent` row when the guard passes, or the `JSONResponse` a
+    route should return immediately otherwise — callers must `isinstance`-
+    check the result before using it as an `Agent`.
+    """
+    agent = session.query(Agent).filter_by(name=name).first()
+    if agent is None:
+        return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
+    if agent.status != AgentStatus.READY:
+        return JSONResponse(
+            {"error": "agent is not ready for memory changes"}, status_code=409
+        )
+    return agent
 
 
 def get_session(request: Request) -> Iterator[Session]:
@@ -473,6 +517,105 @@ def create_app(
         # state this call put the agent into (about to re-provision), never
         # a value re-read after the pipeline thread is already running.
         return JSONResponse({"name": name, "status": AgentStatus.PROVISIONING}, status_code=202)
+
+    # --- Knowledge (P2b): bundle/knowledge/*.md seed-memory editing -------------
+
+    @app.get("/api/agents/{name}/knowledge")
+    def list_knowledge(name: str, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        agent = _ready_agent_or_error(session, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        try:
+            files = read_knowledge(app.state.clients.github, agent.repo_full_name)
+        except ClientError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+
+        return JSONResponse(
+            {"files": [{"name": f.name, "content": f.content} for f in files]}
+        )
+
+    @app.put("/api/agents/{name}/knowledge/{filename}")
+    def save_knowledge(
+        name: str,
+        filename: str,
+        payload: KnowledgeSavePayload,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        try:
+            sha = save_knowledge_file(
+                app.state.clients.github, agent.repo_full_name, filename, payload.content
+            )
+        except KnowledgeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        except ClientError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+
+        return JSONResponse({"sha": sha})
+
+    @app.delete("/api/agents/{name}/knowledge/{filename}")
+    def delete_knowledge(
+        name: str, filename: str, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        try:
+            sha = delete_knowledge_file(
+                app.state.clients.github, agent.repo_full_name, filename
+            )
+        except KnowledgeError as exc:
+            # knowledge.py carries no structured discriminator between "bad
+            # filename" and "file not there to delete" — both are a plain
+            # KnowledgeError with only their message text to go on. The two
+            # messages have disjoint, stable prefixes ("invalid knowledge
+            # filename: " vs "knowledge file not found: "; see
+            # cortex_api.knowledge._validate_filename/delete_knowledge_file),
+            # so matching on that prefix is the cleanest option available
+            # without touching knowledge.py. It can't misfire: a bad filename
+            # raises from _validate_filename before delete_knowledge_file
+            # ever reaches its own not-found check.
+            message = str(exc)
+            if message.startswith("knowledge file not found:"):
+                return JSONResponse(
+                    {"error": f"no such knowledge file: {filename!r}"}, status_code=404
+                )
+            return JSONResponse({"error": message}, status_code=422)
+        except ClientError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+
+        return JSONResponse({"sha": sha})
+
+    @app.get("/api/agents/{name}/knowledge/delivery/{sha}")
+    def knowledge_delivery(
+        name: str, sha: str, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        if not KNOWLEDGE_SHA_RE.match(sha):
+            return JSONResponse({"error": f"invalid sha: {sha!r}"}, status_code=422)
+
+        clients = app.state.clients
+        try:
+            state = delivery_state(
+                clients.github,
+                clients.kubectl,
+                repo=agent.repo_full_name,
+                namespace=agent.name,
+                deploy=agent.name,
+                sha=sha,
+            )
+        except ClientError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+
+        return JSONResponse(state)
 
     return app
 
