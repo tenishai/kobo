@@ -364,6 +364,62 @@ def test_compose_unreachable_sha_raises_compose_error_naming_sha_and_id(tmp_path
     assert skill.id in message
 
 
+def test_compose_pinned_skill_tar_slip_member_raises_compose_error(tmp_path):
+    """A crafted archive member whose name string-prefixes as
+    `skills/<id>/` but path-escapes via `..` must not be trusted just
+    because `member.name.startswith(prefix)` passes — containment is
+    enforced by resolving the actual extraction target against `dest`, not
+    by a naive string check. Git itself refuses to commit `..` tree entries,
+    but `_materialize_skill` must not rely on that external invariant since
+    the tar is only ever handed to it as bytes, not re-validated as
+    git-produced."""
+    _skills_repo, skill = _make_git_skill(tmp_path)
+    # _materialize_skill's own `dest` is `<compose dest>/bundle/skills/<id>` —
+    # four levels below tmp_path (out/bundle/skills/<id>) — so four `..`
+    # segments walk the crafted member back up to tmp_path itself, well
+    # outside the skill's sandboxed destination.
+    evil_name = f"skills/{skill.id}/../../../../escape.txt"
+    tar_bytes = _build_tar_bytes({evil_name: b"pwned\n"})
+    runner = _RecordingBytesRunner(tar_bytes)
+    dest = tmp_path / "out"
+
+    with pytest.raises(ComposeError) as exc_info:
+        compose(_make_spec(skills=[skill]), dest, runner=runner)
+
+    message = str(exc_info.value)
+    assert evil_name in message
+    # the escape must never have landed anywhere outside the skill's dest.
+    assert not (tmp_path / "escape.txt").exists()
+    assert not (dest / "escape.txt").exists()
+    assert not (dest / "bundle" / "escape.txt").exists()
+
+
+def test_compose_pinned_skill_symlink_member_raises_compose_error(tmp_path):
+    """Symlink members (and any other non-regular, non-directory member) are
+    rejected loudly rather than silently dropped — silent dropping would
+    diverge from the unpinned copytree fallback, which dereferences and
+    copies symlinks. Full symlink support is deliberately not implemented;
+    the failure message names the offending member so the skill can be
+    authored without symlinks instead."""
+    _skills_repo, skill = _make_git_skill(tmp_path)
+    member_name = f"skills/{skill.id}/sneaky-link"
+    buf = BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        info = tarfile.TarInfo(name=member_name)
+        info.type = tarfile.SYMTYPE
+        info.linkname = "/etc/passwd"
+        tar.addfile(info)
+    runner = _RecordingBytesRunner(buf.getvalue())
+    dest = tmp_path / "out"
+
+    with pytest.raises(ComposeError) as exc_info:
+        compose(_make_spec(skills=[skill]), dest, runner=runner)
+
+    message = str(exc_info.value)
+    assert member_name in message
+    assert not (dest / "bundle" / "skills" / skill.id / "sneaky-link").exists()
+
+
 # --- validate_agent_yaml -----------------------------------------------------------
 
 

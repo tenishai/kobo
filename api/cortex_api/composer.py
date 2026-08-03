@@ -177,6 +177,18 @@ def _materialize_skill(skill: SkillInfo, dest: Path, runner: CommandRunner) -> N
     Raises ComposeError, naming both the sha and the skill id, if the sha is
     unreachable in the skills repo (e.g. it was recorded, then the repo was
     rewritten/GC'd out from under it).
+
+    Two guarantees hold for every member of the pinned `git archive` tar,
+    independent of what git itself would allow into a tree: (1) containment
+    — each member's resolved extraction path is verified to land inside
+    `dest`, so a crafted member name (e.g. `skills/<id>/../../../etc/evil`)
+    cannot write outside the destination even though it passes a naive
+    string-prefix check; and (2) no silent symlink (or other non-regular,
+    non-directory) extraction — such a member raises ComposeError naming it,
+    rather than being dropped quietly, which would otherwise diverge from the
+    unpinned copytree fallback's symlink-dereferencing behavior. Directory
+    members are skipped silently; they're created implicitly via
+    `parents=True` when a file beneath them is written.
     """
     skills_repo = skill.path.parents[2]
     if not (skill.sha and (skills_repo / ".git").exists()):
@@ -201,12 +213,30 @@ def _materialize_skill(skill: SkillInfo, dest: Path, runner: CommandRunner) -> N
         ) from exc
 
     dest.mkdir(parents=True)
+    resolved_dest = dest.resolve()
     with tarfile.open(fileobj=BytesIO(archive_bytes)) as tar:
         for member in tar.getmembers():
-            if not member.isfile() or not member.name.startswith(prefix):
+            if not member.name.startswith(prefix):
                 continue
             relative = member.name[len(prefix):]
+            if not relative:
+                # the `skills/<id>/` directory entry itself, if present.
+                continue
             target = dest / relative
+            if not target.resolve().is_relative_to(resolved_dest):
+                raise ComposeError(
+                    f"skill {skill.id!r} archive member {member.name!r} would "
+                    f"extract outside of {dest} (tar-slip); refusing to write it"
+                )
+            if member.isdir():
+                continue
+            if not member.isfile():
+                raise ComposeError(
+                    f"skill {skill.id!r} archive member {member.name!r} is not a "
+                    "regular file or directory (symlinks and other special "
+                    "member types are not supported — author the skill without "
+                    "symlinks)"
+                )
             target.parent.mkdir(parents=True, exist_ok=True)
             extracted = tar.extractfile(member)
             target.write_bytes(extracted.read())
