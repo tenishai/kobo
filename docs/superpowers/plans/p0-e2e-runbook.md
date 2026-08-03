@@ -210,3 +210,15 @@ endpoint for the same reason); (b) the API process needs `gh`, `kubectl`, AND th
 auth plugin's SDK dir on PATH — a missing binary surfaces as a raw 500 through the
 knowledge routes (CommandRunner FileNotFoundError is not wrapped as ClientError);
 flagged to the final review.
+
+**P2b post-review addenda:** (1) Final-review fixes landed (`3cc472d`, re-review
+approved): missing binaries now surface as the house 502 instead of a raw 500, the
+failed-delivery message points at the working remedy (change something and save), and
+the knowledge routes return fixed plain-language 502 bodies with the real error logged
+server-side. (2) The owed live delete validation PASSED: removing `word-of-the-day.md`
+from clio delivered and the new pod's seeder logged `seeded=0 removed=1 unchanged=1` —
+removal convergence proven; clio is back to `gotchas.md` only. (3) One real gap found by
+the review and confirmed in the runtime kit's source: deleting the LAST knowledge file
+strands its seeded rows (git drops the empty dir; the seeder early-returns when
+`knowledge/` is absent). Fix is specced into P2c Task 1, which touches that branch and
+rebuilds the image anyway.
