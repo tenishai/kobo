@@ -25,6 +25,7 @@ Two independent responsibilities live here:
 
 from __future__ import annotations
 
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -214,6 +215,48 @@ def _update_gojira_secrets_from(gojira_yaml_path: Path, name: str) -> None:
     gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
+# Matches a Dockerfile's `FROM <image>` line (composer's own template,
+# `cortex_api.composer._dockerfile`, writes exactly one) anywhere in the
+# file, not just its first line — a leading comment line (as that template
+# has) is not itself a FROM line. Captures the `FROM` keyword plus the
+# whitespace that follows it, so the replacement can preserve that prefix
+# byte-for-byte and only swap the image-ref token itself.
+_DOCKERFILE_FROM_RE = re.compile(r"^(FROM[ \t]+)\S+", re.MULTILINE)
+
+
+def _update_dockerfile_runtime_image(dockerfile_path: Path, runtime_image: str) -> None:
+    """Rewrite the clone's `Dockerfile` so its `FROM` line's image ref is
+    exactly `runtime_image`, leaving every other line (and any trailing
+    content on the FROM line itself) byte-identical.
+
+    This is the runtime-bump incident fix: `cortex_api.composer` bakes the
+    runtime image into a repo's Dockerfile once, at compose time
+    (`FROM <registry>/daedalus-runtime:<tag>`). A later slack connect that
+    only edited `bundle/agent.yaml`'s transports left that pinned image
+    untouched — when the image predated the slack transport's pip extra,
+    the runtime raised `BundleError("transport 'slack' requires the slack
+    extra")` at boot and the agent crashlooped, taking its a2a chat down
+    with it. Every `wire_slack` call now also re-pins the FROM line to the
+    CURRENTLY configured runtime image, so a connect always delivers an
+    image capable of running the transport it's wiring in.
+
+    Idempotent by construction: when the FROM line already names
+    `runtime_image`, the substitution is a no-op and the rewritten text is
+    byte-identical to what was already on disk — so this edit alone never
+    makes `commit_push` see a diff on an already-current repo.
+
+    Uses a replacement function (not a plain substitution string) so that
+    `runtime_image` is inserted literally even if it happens to contain
+    characters (like a backslash) that `re.sub`'s string-replacement syntax
+    would otherwise treat specially.
+    """
+    text = dockerfile_path.read_text()
+    updated = _DOCKERFILE_FROM_RE.sub(
+        lambda match: match.group(1) + runtime_image, text, count=1
+    )
+    dockerfile_path.write_text(updated)
+
+
 def wire_slack(
     github: GitHubClient,
     kubectl: KubectlClient,
@@ -225,6 +268,7 @@ def wire_slack(
     channel: str,
     bot_token: str,
     app_token: str,
+    runtime_image: str,
 ) -> str:
     """Deliver `bot_token`/`app_token` to the agent's namespace and wire its
     repo's Slack transport, mirroring `cortex_api.steps.WireStep` end to end:
@@ -233,8 +277,14 @@ def wire_slack(
        `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN` — the only place either token
        value is ever used; neither is written to a repo file or returned.
     2. Clone `repo` fresh; edit `bundle/agent.yaml` (transports gains/updates
-       the slack entry) and `gojira.yaml` (`secrets_from` gains
-       `{name}-slack`, append-if-missing).
+       the slack entry), `gojira.yaml` (`secrets_from` gains
+       `{name}-slack`, append-if-missing), and `Dockerfile` (its `FROM` line
+       is re-pinned to `runtime_image` — the CURRENT configured runtime
+       image, e.g. `<registry>/daedalus-runtime:<tag>` — so the connect
+       always delivers an image capable of running the transport it's
+       wiring in; see `_update_dockerfile_runtime_image`'s docstring for the
+       crashloop incident this fixes). A no-op when the Dockerfile already
+       names `runtime_image`.
     3. `commit_push("cortex: connect slack")`. If that push actually changed
        something, `gojira.reprovision(gojira_app_id)` so the platform
        regenerates the Deployment with the new `secrets_from` entry. Either
@@ -265,6 +315,7 @@ def wire_slack(
 
         _update_agent_yaml_transport(workdir / "bundle" / "agent.yaml", channel)
         _update_gojira_secrets_from(workdir / "gojira.yaml", name)
+        _update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
 
         changed = github.commit_push(workdir, "cortex: connect slack")
         if changed:

@@ -27,6 +27,7 @@ from cortex_api.config import Config
 from cortex_api.main import create_app
 from cortex_api.models import Agent, AgentStatus, Base
 from tests.fakes import (
+    FAKE_DOCKERFILE_OLD_IMAGE,
     FAKE_LOCAL_HEAD_DEFAULT,
     FakeAgent,
     FakeCloud,
@@ -65,10 +66,12 @@ class _CapturingGitHub(FakeGitHub):
         super().__init__(agent_yaml_transports=agent_yaml_transports, **kwargs)
         self.captured_agent_yaml = ""
         self.captured_gojira_yaml = ""
+        self.captured_dockerfile = ""
 
     def commit_push(self, workdir: Path, message: str) -> bool:
         self.captured_agent_yaml = (workdir / "bundle" / "agent.yaml").read_text()
         self.captured_gojira_yaml = (workdir / "gojira.yaml").read_text()
+        self.captured_dockerfile = (workdir / "Dockerfile").read_text()
         return super().commit_push(workdir, message)
 
 
@@ -322,6 +325,39 @@ def test_connect_slack_wires_secret_transport_and_secrets_from_returns_sha(
     # persisted
     detail = client.get(f"/api/agents/{AGENT_NAME}").json()
     assert detail["slack"] == {"app_id": "A0EXISTING", "channel": CHANNEL}
+
+
+def test_connect_slack_rewrites_dockerfile_to_configured_runtime_image(session_factory, config):
+    # The runtime-bump incident fix: a repo's Dockerfile pins its base image
+    # at compose time, so a connect that only edits agent.yaml/gojira.yaml
+    # can leave a stale base in place — the runtime then crashloops on a
+    # transport whose pip extra that stale image never had. The route must
+    # pass the config's CURRENT runtime_image through to wire_slack, which
+    # re-pins the clone's Dockerfile FROM line to it. FakeGitHub's default
+    # Dockerfile starts on FAKE_DOCKERFILE_OLD_IMAGE, distinct from
+    # `config.runtime_image`'s default, so this proves the rewrite actually
+    # happened rather than the two already matching by coincidence.
+    assert FAKE_DOCKERFILE_OLD_IMAGE != config.runtime_image
+
+    github = _CapturingGitHub()
+    kubectl = FakeKubectl()
+    gojira, app_id = _onboarded_gojira()
+    client = _make_client(session_factory, config, github=github, kubectl=kubectl, gojira=gojira)
+    _seed_agent(session_factory, config, gojira_app_id=app_id, slack_app_id="A0EXISTING")
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/slack/connect",
+        json={"channel": CHANNEL, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+    )
+
+    assert response.status_code == 200
+    assert github.captured_dockerfile == (
+        "# Agent image: the shared runtime plus this agent's bundle.\n"
+        f"FROM {config.runtime_image}\n"
+        "COPY bundle/ /bundle\n"
+    )
+    assert BOT_TOKEN not in github.captured_dockerfile
+    assert APP_TOKEN not in github.captured_dockerfile
 
 
 def test_connect_slack_unknown_agent_returns_404(session_factory, config):

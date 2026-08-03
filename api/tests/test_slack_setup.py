@@ -17,13 +17,29 @@ import pytest
 import yaml
 
 from cortex_api.clients import ClientError, KubectlCLI
-from cortex_api.slack_setup import render_manifest, wait_active, wire_slack
-from tests.fakes import FAKE_LOCAL_HEAD_DEFAULT, FakeGitHub, FakeGojira, FakeKubectl
+from cortex_api.slack_setup import (
+    _update_dockerfile_runtime_image,
+    render_manifest,
+    wait_active,
+    wire_slack,
+)
+from tests.fakes import (
+    FAKE_DOCKERFILE_OLD_IMAGE,
+    FAKE_LOCAL_HEAD_DEFAULT,
+    FakeGitHub,
+    FakeGojira,
+    FakeKubectl,
+)
 
 REPO = "acme/agent-clio"
 NAME = "clio"
 BOT_TOKEN = "xoxb-super-secret-bot-token"
 APP_TOKEN = "xapp-super-secret-app-token"
+# The "current" configured runtime image every wire_slack test passes by
+# default — deliberately distinct from FakeGitHub's own FAKE_DOCKERFILE_OLD_IMAGE
+# default so a test that doesn't override either sees the FROM line actually
+# change (proving the rewrite ran, not just that nothing happened to differ).
+RUNTIME_IMAGE = "registry.example/agents/daedalus-runtime:new"
 
 
 @pytest.fixture(autouse=True)
@@ -249,10 +265,12 @@ class _CapturingGitHub(FakeGitHub):
         super().__init__(agent_yaml_transports=agent_yaml_transports, **kwargs)
         self.captured_agent_yaml = ""
         self.captured_gojira_yaml = ""
+        self.captured_dockerfile = ""
 
     def commit_push(self, workdir: Path, message: str) -> bool:
         self.captured_agent_yaml = (workdir / "bundle" / "agent.yaml").read_text()
         self.captured_gojira_yaml = (workdir / "gojira.yaml").read_text()
+        self.captured_dockerfile = (workdir / "Dockerfile").read_text()
         return super().commit_push(workdir, message)
 
 
@@ -270,6 +288,7 @@ def _wire(
         "channel": channel,
         "bot_token": BOT_TOKEN,
         "app_token": APP_TOKEN,
+        "runtime_image": RUNTIME_IMAGE,
     }
     kwargs.update(overrides)
     sha = wire_slack(github, kubectl, gojira, **kwargs)
@@ -381,3 +400,89 @@ def test_wire_slack_tokens_absent_from_every_file_written_to_the_clone():
     assert APP_TOKEN not in github.captured_agent_yaml
     assert BOT_TOKEN not in github.captured_gojira_yaml
     assert APP_TOKEN not in github.captured_gojira_yaml
+
+
+# --- _update_dockerfile_runtime_image (unit-level) ----------------------------------
+#
+# The runtime-bump incident fix: a repo's Dockerfile pins its base image at
+# compose time; wire_slack must re-pin it to the CURRENT configured runtime
+# image on every connect, so a stale base can never ship without the
+# transport extra it needs. Exercised directly against a tmp_path Dockerfile
+# first (no fake/clone involved) to pin the exact byte-level behavior, then
+# through wire_slack itself below.
+
+
+_DOCKERFILE_TEXT = (
+    "# Agent image: the shared runtime plus this agent's bundle.\n"
+    "FROM {image}\n"
+    "COPY bundle/ /bundle\n"
+)
+
+
+def test_update_dockerfile_runtime_image_rewrites_from_preserves_rest(tmp_path):
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(_DOCKERFILE_TEXT.format(image=FAKE_DOCKERFILE_OLD_IMAGE))
+
+    _update_dockerfile_runtime_image(dockerfile, RUNTIME_IMAGE)
+
+    assert dockerfile.read_text() == _DOCKERFILE_TEXT.format(image=RUNTIME_IMAGE)
+
+
+def test_update_dockerfile_runtime_image_idempotent_when_already_current(tmp_path):
+    dockerfile = tmp_path / "Dockerfile"
+    text = _DOCKERFILE_TEXT.format(image=RUNTIME_IMAGE)
+    dockerfile.write_text(text)
+
+    _update_dockerfile_runtime_image(dockerfile, RUNTIME_IMAGE)
+
+    assert dockerfile.read_text() == text
+
+
+def test_update_dockerfile_runtime_image_only_touches_from_line(tmp_path):
+    # A Dockerfile with content beyond composer's minimal 3-line template
+    # (extra comments/instructions before and after FROM) proves the edit
+    # only ever touches the FROM line itself, never anything else in the
+    # file.
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "# leading comment, unrelated to the runtime image\n"
+        f"FROM {FAKE_DOCKERFILE_OLD_IMAGE}\n"
+        "COPY bundle/ /bundle\n"
+        "# trailing comment\n"
+        'ENTRYPOINT ["/bin/run-agent"]\n'
+    )
+
+    _update_dockerfile_runtime_image(dockerfile, RUNTIME_IMAGE)
+
+    assert dockerfile.read_text() == (
+        "# leading comment, unrelated to the runtime image\n"
+        f"FROM {RUNTIME_IMAGE}\n"
+        "COPY bundle/ /bundle\n"
+        "# trailing comment\n"
+        'ENTRYPOINT ["/bin/run-agent"]\n'
+    )
+
+
+# --- wire_slack: Dockerfile runtime-image rewrite -----------------------------------
+
+
+def test_wire_slack_rewrites_dockerfile_from_line_to_runtime_image():
+    github = _CapturingGitHub()  # defaults to FAKE_DOCKERFILE_OLD_IMAGE
+    _wire(github=github, runtime_image=RUNTIME_IMAGE)
+
+    assert github.captured_dockerfile == _DOCKERFILE_TEXT.format(image=RUNTIME_IMAGE)
+
+
+def test_wire_slack_dockerfile_already_current_is_byte_identical():
+    github = _CapturingGitHub(dockerfile_image=RUNTIME_IMAGE)
+    _wire(github=github, runtime_image=RUNTIME_IMAGE)
+
+    assert github.captured_dockerfile == _DOCKERFILE_TEXT.format(image=RUNTIME_IMAGE)
+
+
+def test_wire_slack_tokens_absent_from_dockerfile():
+    github = _CapturingGitHub()
+    _wire(github=github)
+
+    assert BOT_TOKEN not in github.captured_dockerfile
+    assert APP_TOKEN not in github.captured_dockerfile

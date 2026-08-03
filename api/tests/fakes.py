@@ -150,6 +150,24 @@ resources:
   - service.yaml
 """
 
+# Mirrors cortex_api.composer._dockerfile's exact template shape (a small,
+# fixed 3-line file: a comment, the FROM line, the bundle COPY) — the fixture
+# cortex_api.slack_setup.wire_slack's runtime-bump edit (_update_dockerfile_
+# runtime_image) rewrites the FROM line of.
+DOCKERFILE_TEMPLATE = """\
+# Agent image: the shared runtime plus this agent's bundle.
+FROM {image}
+COPY bundle/ /bundle
+"""
+
+# The base image a freshly generated repo's Dockerfile carries by default —
+# deliberately NOT any test's "current" configured runtime image (e.g.
+# Config.runtime_image's own default), so a wire_slack/connect test can
+# assert the FROM line actually gets rewritten to whatever image is passed
+# in: this is the incident's stale-base shape (an agent repo whose image
+# predates a later-added transport's required extra).
+FAKE_DOCKERFILE_OLD_IMAGE = "registry.example/agents/daedalus-runtime:old"
+
 
 def _app_name_from_repo(repo: str) -> str:
     """"acme/agent-clio" -> "clio" (mirrors agent-<name> repo naming)."""
@@ -224,7 +242,12 @@ class FakeGitHub:
     matching a real gojira.yaml that hasn't been through any
     `secrets_from`-writing edit yet) — the seam for testing that
     `wire_slack`'s edit appends to an existing list rather than clobbering
-    it.
+    it. `dockerfile_image`, defaulting to `FAKE_DOCKERFILE_OLD_IMAGE`, is the
+    base image `clone` writes into a top-level `Dockerfile` (mirroring
+    `cortex_api.composer`'s real template) — always written, unlike the
+    knobs above, since every real agent repo has had a Dockerfile since it
+    was first composed; the runtime-bump fixture `wire_slack`'s
+    `_update_dockerfile_runtime_image` edit rewrites the FROM line of.
     """
 
     def __init__(
@@ -241,6 +264,7 @@ class FakeGitHub:
         local_head_result: str = FAKE_LOCAL_HEAD_DEFAULT,
         agent_yaml_transports: list[dict] | None = None,
         gojira_secrets_from: list[str] | None = None,
+        dockerfile_image: str = FAKE_DOCKERFILE_OLD_IMAGE,
     ):
         self.repos: set[str] = set(existing_repos) if existing_repos else set()
         self.created_from_dir: list[tuple[str, Path]] = []
@@ -257,6 +281,7 @@ class FakeGitHub:
         self._gojira_secrets_from = (
             list(gojira_secrets_from) if gojira_secrets_from is not None else None
         )
+        self._dockerfile_image = dockerfile_image
         self.local_head_calls: list[Path] = []
 
         self._head_sha = head_sha
@@ -307,6 +332,8 @@ class FakeGitHub:
         (base / "podmonitoring.yaml").write_text(PODMONITORING_YAML_TEMPLATE.format(name=name))
         (base / "rules.yaml").write_text(RULES_YAML_TEMPLATE.format(name=name))
         (base / "kustomization.yaml").write_text(KUSTOMIZATION_YAML_TEMPLATE.format(name=name))
+
+        (dest / "Dockerfile").write_text(DOCKERFILE_TEMPLATE.format(image=self._dockerfile_image))
 
         bundle_dir = dest / "bundle"
         if self._agent_yaml_transports is not None:

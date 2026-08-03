@@ -749,6 +749,8 @@ def create_app(
                 {"error": "that doesn't look like a Slack app-level token"}, status_code=422
             )
 
+        cfg: Config = app.state.config
+
         try:
             sha = wire_slack(
                 clients.github,
@@ -760,6 +762,7 @@ def create_app(
                 channel=payload.channel,
                 bot_token=payload.bot_token,
                 app_token=payload.app_token,
+                runtime_image=cfg.runtime_image,
             )
         except ClientError as exc:
             log.warning("slack connect failed: %s", exc)
