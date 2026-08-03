@@ -128,9 +128,10 @@ def load_org_config(local: Config, github: GitHubClient) -> tuple[Config, OrgSta
         raw = org_yaml_path.read_text()
         try:
             data = yaml.safe_load(raw)
-        except yaml.YAMLError as exc:
+        except yaml.YAMLError:
+            log.warning("org config: org.yaml in %s is not valid YAML", local.org_repo, exc_info=True)
             return local, OrgState(
-                False, local.org_repo, f"org.yaml is not valid YAML: {exc}"
+                False, local.org_repo, "org.yaml isn't valid YAML — fix the file in the org config repo"
             )
 
         if data is None:
@@ -153,8 +154,11 @@ def load_org_config(local: Config, github: GitHubClient) -> tuple[Config, OrgSta
         try:
             merged = _revalidate(local.model_copy(update=data))
         except ValidationError as exc:
+            fields = sorted({str(err["loc"][0]) for err in exc.errors() if err.get("loc")})
+            names = ", ".join(fields) if fields else "one of its values"
+            log.warning("org config: org.yaml failed validation: %s", exc)
             return local, OrgState(
-                False, local.org_repo, f"org.yaml failed validation: {exc}"
+                False, local.org_repo, f"org.yaml has an invalid value for {names}"
             )
 
         return merged, OrgState(True, local.org_repo)

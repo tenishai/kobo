@@ -112,6 +112,10 @@ def test_bad_yaml_is_unwired():
     assert org.wired is False
     assert org.repo == ORG_REPO
     assert org.error is not None
+    # Message must be a plain single-line sentence, not raw exception text.
+    assert "\n" not in org.error
+    assert "http" not in org.error
+    assert "org.yaml" in org.error
 
 
 def test_org_yaml_not_a_mapping_is_unwired():
@@ -178,6 +182,10 @@ def test_bad_org_value_fails_config_validation_and_is_unwired():
     assert org.wired is False
     assert org.repo == ORG_REPO
     assert org.error is not None
+    # Message must be a plain single-line sentence naming the field, not raw pydantic text.
+    assert "\n" not in org.error
+    assert "http" not in org.error
+    assert "models" in org.error
 
 
 def test_models_list_round_trips_through_model_choice():
