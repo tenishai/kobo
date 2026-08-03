@@ -1404,6 +1404,33 @@ def test_vertex_image_client_default_token_provider_is_gcloud_print_access_token
     assert client._token_provider is _gcloud_print_access_token
 
 
+def test_vertex_image_client_token_provider_failure_raises_client_error_without_leaking_gcloud_output():
+    # A failing token_provider (the default shells `gcloud auth
+    # print-access-token`, which raises ClientError carrying the full
+    # command line + stderr — possibly the operator's account email) must
+    # not escape generate() unwrapped: every failure mode raises the same
+    # plain _IMAGE_GENERATION_FAILED message, never raw gcloud output.
+    def failing_token_provider() -> str:
+        raise ClientError(
+            "gcloud auth print-access-token failed (rc=1): ERROR: account details"
+        )
+
+    client = VertexImageClient(
+        "acme-project", "us-central1", "gemini-2.5-flash-image",
+        http_client=httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={})
+        )),
+        token_provider=failing_token_provider,
+    )
+
+    with pytest.raises(ClientError) as exc_info:
+        client.generate("a prompt")
+
+    assert str(exc_info.value) == "the picture didn't come through — try again"
+    assert "gcloud" not in str(exc_info.value)
+    assert "account details" not in str(exc_info.value)
+
+
 def test_gcloud_print_access_token_argv_and_pass_through():
     runner = RecordingRunner(results=[(0, "ya29.fake-access-token", "")])
     token = _gcloud_print_access_token(runner)

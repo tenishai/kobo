@@ -1018,9 +1018,22 @@ class VertexImageClient:
             "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
         }
         try:
+            token = self._token_provider()
+        except ClientError as exc:
+            # The default token_provider shells `gcloud auth
+            # print-access-token` via CommandRunner, whose ClientError
+            # message embeds the full command line + stderr (possibly the
+            # operator's account email) — left unwrapped, that would escape
+            # generate() and reach the avatar route's 502 body verbatim.
+            # Log the real error server-side only, and re-raise the same
+            # plain message every other failure mode here raises.
+            log.warning("token provider failed for prompt %r: %r", prompt, exc)
+            raise ClientError(_IMAGE_GENERATION_FAILED) from exc
+
+        try:
             resp = self._http_client.post(
                 url, json=body,
-                headers={"Authorization": f"Bearer {self._token_provider()}"},
+                headers={"Authorization": f"Bearer {token}"},
             )
         except httpx.HTTPError as exc:
             log.warning("image generation request failed for prompt %r: %r", prompt, exc)
