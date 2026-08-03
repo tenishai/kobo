@@ -284,3 +284,12 @@ Google's own migration path points at this model).
 Screenshots in `.superpowers/sdd/smoke/p2d-*.png`. The avatar prompt is the
 deterministic template in `avatars.py` (name + persona description, flat minimal
 square portrait, no text in image).
+
+**P2d post-review addenda:** the token-acquisition failure path now keeps the image
+client's plain message (`3a803ea` — previously an expired gcloud login would have
+echoed raw command output into the panel's error line). Operational notes for the
+record: the live dev DB was migrated with `ALTER TABLE agents ADD COLUMN avatar_png
+TEXT;`; the DB copy is a display cache that can briefly lead or lag the repo record
+(push-then-DB write ordering; heals on the next generate) — the repo file remains the
+record. The verbatim avatar prompt template is pinned byte-for-byte by
+`test_avatar_prompt_exact_template` in `api/tests/test_avatars.py`.
