@@ -97,3 +97,30 @@ propagated yet. Remedy both times: re-run the CI once, then the product's
 Retry resumes from the failed step. **Backlog (high):** tolerate first-build
 propagation — BuildStep should be able to dispatch a fresh run (not just
 re-poll), and/or the generated CI should retry its auth step.
+
+## P1c results (2026-08-03)
+
+**PASSED — and the milestone earned its keep by failing first.** The hardened
+stack's first `echo` create hit a NEW compound failure: GitHub's concurrency
+queue cancelled the newest pending run (the regeneration tree carrying the
+model env), and BuildStep's entry-time head read raced the platform's merge —
+so a stale tree deployed. The new DeployStep verification caught it loudly at
+the right step with the race-remediation hint (contrast: muse failed the same
+class silently at first contact a phase earlier).
+
+Three fixes landed from the incident (BuildStep heals ANY completed
+non-success conclusion including cancelled; re-resolves head every poll and
+follows advances, capped at 2; post-rerun stale-read grace), each with the
+live sequence encoded as a regression test that fails against pre-fix code.
+
+The proof: echo's build ledger row was reset and the product's own Retry
+re-run — BuildStep found the cancelled run at head, dispatched the rerun
+itself (run attempt 2: success), the correct tree applied, DeployStep's
+verification passed, and echo answered first contact. Zero manual CI/kubectl
+commands in the recovery.
+
+Carried to P2 (from the final review's register): post-incident items all
+closed; remaining — pre-existing agent repos lack the concurrency block until
+their workflows regenerate; sweep assumes a single API process; platform ruff
+baseline burn-down before its PR; duplicate-skill-id validation; the ledgered
+UX seams.
