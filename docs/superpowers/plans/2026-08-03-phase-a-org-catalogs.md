@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Never the employer's name or work-app name in any tracked file (plain `grep -i` the vendor names on files BEFORE staging — git grep misses untracked files). Zero infra vocabulary in UI copy. Operator vocabulary is permitted in the bootstrap CLI's output ONLY.
+- Never any client organization's name (the employer's, the work-app's, or any other client's) in any tracked file — client names are treated like secret values: env var or gitignored/org config only (plain `grep -i` the client-name list on files BEFORE staging — git grep misses untracked files). Zero infra vocabulary in UI copy. Operator vocabulary is permitted in the bootstrap CLI's output ONLY.
 - TDD; `make -C api check` and `make -C ui check` fully green before every commit; **git add only named files**.
 - Catalog machinery is `(bucket, prefix)`-generic — prefix defaults to `""` everywhere; the tools phase adds a third catalog without rework.
 - Skills bucket is CI-written only; personas bucket is room-written. The room never writes the skills bucket.
