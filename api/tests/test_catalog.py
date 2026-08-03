@@ -254,6 +254,15 @@ def test_validate_name_trailing_hyphen():
     assert validate_name("agent-") == "must not end with a hyphen"
 
 
+def test_validate_name_24char_ending_hyphen_reports_hyphen_not_length():
+    # Boundary + reason combo: a 24-char name ending in a hyphen is at max
+    # length but must report "must not end with a hyphen", not "too long",
+    # since the trailing-hyphen check runs after the length check.
+    name_24_with_hyphen = "a" * 23 + "-"
+    assert len(name_24_with_hyphen) == 24
+    assert validate_name(name_24_with_hyphen) == "must not end with a hyphen"
+
+
 @pytest.mark.parametrize("name", sorted(RESERVED_NAMES))
 def test_validate_name_reserved(name):
     assert validate_name(name) == "reserved name"

@@ -1,8 +1,10 @@
 // Client-side mirror of the API's name rule (cortex_api's `NAME_RE`:
-// `^[a-z][a-z0-9-]{1,29}$`, 2-30 chars, lowercase letter/digit/hyphen,
+// `^[a-z][a-z0-9-]{1,23}$`, 2-24 chars, lowercase letter/digit/hyphen,
 // must start with a letter). The server is still authoritative — this only
 // exists so the Create modal can reject an obviously-bad name on every
 // keystroke, before spending a debounced round trip on `checkAvailability`.
+// The client's 30-char check is deliberately looser than the server's 24-char
+// max: server checks run on availability, so they're the source of truth.
 //
 // Deliberately stricter than the server in one place: trailing hyphens are
 // technically allowed server-side today, but the UI forbids them (see the
