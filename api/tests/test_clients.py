@@ -17,6 +17,7 @@ import pytest
 
 from cortex_api.clients import (
     AgentClient,
+    ChatMessage,
     ClientError,
     Clients,
     CloudClient,
@@ -30,8 +31,8 @@ from cortex_api.clients import (
     KubectlAgentClient,
     KubectlCLI,
     KubectlClient,
-    _build_hello_envelope,
-    _post_hello,
+    _build_task_envelope,
+    _post_task,
     _wait_for_forwarded_port,
 )
 from cortex_api.config import Config
@@ -485,7 +486,7 @@ def test_gojira_client_default_http_client_has_generous_timeout():
     assert timeout.read == 30.0
 
 
-# --- Agent (a2a hello over kubectl port-forward) ------------------------------
+# --- Agent (a2a chat over kubectl port-forward) --------------------------------
 
 
 class _FakeReader:
@@ -509,17 +510,33 @@ def test_wait_for_forwarded_port_times_out_without_the_line():
         _wait_for_forwarded_port(reader, timeout_s=0.05)
 
 
-def test_build_hello_envelope_shape():
-    envelope = _build_hello_envelope("are you there?")
+def test_build_task_envelope_shape_single_turn():
+    envelope = _build_task_envelope([{"role": "user", "text": "are you there?"}])
     assert envelope["kind"] == "task"
-    assert envelope["id"].startswith("hello-")
-    assert len(envelope["id"]) == len("hello-") + 32  # uuid4().hex
+    assert envelope["id"].startswith("chat-")
+    assert len(envelope["id"]) == len("chat-") + 32  # uuid4().hex
     assert envelope["history"] == [
         {"kind": "message", "role": "user", "parts": [{"kind": "text", "text": "are you there?"}]}
     ]
 
 
-def test_post_hello_sends_envelope_and_extracts_reply():
+def test_build_task_envelope_shape_multi_turn():
+    # Two user turns plus one agent reply in between -> three history
+    # entries in the same order, each mapped to the verified message shape.
+    messages: list[ChatMessage] = [
+        {"role": "user", "text": "hi"},
+        {"role": "agent", "text": "hello yourself"},
+        {"role": "user", "text": "how are you?"},
+    ]
+    envelope = _build_task_envelope(messages)
+    assert envelope["history"] == [
+        {"kind": "message", "role": "user", "parts": [{"kind": "text", "text": "hi"}]},
+        {"kind": "message", "role": "agent", "parts": [{"kind": "text", "text": "hello yourself"}]},
+        {"kind": "message", "role": "user", "parts": [{"kind": "text", "text": "how are you?"}]},
+    ]
+
+
+def test_post_task_sends_envelope_and_extracts_reply():
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -530,33 +547,33 @@ def test_post_hello_sends_envelope_and_extracts_reply():
         )
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    reply = _post_hello(client, 54321, "hello?")
+    reply = _post_task(client, 54321, [{"role": "user", "text": "hello?"}])
 
     assert captured["url"] == "http://127.0.0.1:54321/a2a/tasks"
     assert captured["body"]["history"][0]["parts"][0]["text"] == "hello?"
     assert reply == "hi there"
 
 
-def test_post_hello_raises_on_non_200():
+def test_post_task_raises_on_non_200():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text="boom")
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     with pytest.raises(ClientError):
-        _post_hello(client, 54321, "hello?")
+        _post_task(client, 54321, [{"role": "user", "text": "hello?"}])
 
 
-def test_post_hello_wraps_read_timeout_as_client_error():
+def test_post_task_wraps_read_timeout_as_client_error():
     # httpx.ReadTimeout isn't a ClientError; left unwrapped it would surface
-    # as a raw httpx exception to hello()'s caller (and every identical retry
-    # would hit the same cap). _post_hello must translate it, preserving the
-    # original exception as the cause.
+    # as a raw httpx exception to the caller (hello or converse), and every
+    # identical retry would hit the same cap. _post_task must translate it,
+    # preserving the original exception as the cause.
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("The read operation timed out", request=request)
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     with pytest.raises(ClientError) as exc_info:
-        _post_hello(client, 54321, "hello?")
+        _post_task(client, 54321, [{"role": "user", "text": "hello?"}])
 
     assert isinstance(exc_info.value.__cause__, httpx.ReadTimeout)
 
@@ -660,8 +677,10 @@ def test_agent_hello_terminates_port_forward_on_success(monkeypatch):
     monkeypatch.setattr(
         "cortex_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
     )
+    captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
         return httpx.Response(
             200, json={"status": {"message": {"parts": [{"text": "hi there"}]}}}
         )
@@ -672,6 +691,12 @@ def test_agent_hello_terminates_port_forward_on_success(monkeypatch):
     reply = client.hello("clio", "clio", "hello?")
 
     assert reply == "hi there"
+    # hello() now shares converse()'s _send_task path, so its envelope also
+    # carries the chat- id prefix and a single-turn user history entry.
+    assert captured["body"]["id"].startswith("chat-")
+    assert captured["body"]["history"] == [
+        {"kind": "message", "role": "user", "parts": [{"kind": "text", "text": "hello?"}]}
+    ]
     assert fake_proc.terminated is True
     assert fake_proc.waited is True
 
@@ -690,6 +715,61 @@ def test_agent_hello_terminates_port_forward_even_on_post_failure(monkeypatch):
     )
     with pytest.raises(ClientError):
         client.hello("clio", "clio", "hello?")
+
+    assert fake_proc.terminated is True
+    assert fake_proc.waited is True
+
+
+def test_agent_converse_sends_multi_turn_history_and_terminates_port_forward(monkeypatch):
+    fake_proc = _FakePopen(["Forwarding from 127.0.0.1:54321 -> 80\n"])
+    monkeypatch.setattr(
+        "cortex_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
+    )
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200, json={"status": {"message": {"parts": [{"text": "still here"}]}}}
+        )
+
+    client = KubectlAgentClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    messages: list[ChatMessage] = [
+        {"role": "user", "text": "hi"},
+        {"role": "agent", "text": "hello yourself"},
+        {"role": "user", "text": "how are you?"},
+    ]
+    reply = client.converse("clio", "clio", messages)
+
+    assert reply == "still here"
+    assert captured["body"]["id"].startswith("chat-")
+    assert captured["body"]["history"] == [
+        {"kind": "message", "role": "user", "parts": [{"kind": "text", "text": "hi"}]},
+        {"kind": "message", "role": "agent", "parts": [{"kind": "text", "text": "hello yourself"}]},
+        {"kind": "message", "role": "user", "parts": [{"kind": "text", "text": "how are you?"}]},
+    ]
+    assert fake_proc.terminated is True
+    assert fake_proc.waited is True
+
+
+def test_agent_converse_terminates_port_forward_even_on_post_failure(monkeypatch):
+    # Same ClientError-wrapping guarantee as hello's equivalent test above,
+    # re-exercised through converse() over the shared _send_task machinery.
+    fake_proc = _FakePopen(["Forwarding from 127.0.0.1:54321 -> 80\n"])
+    monkeypatch.setattr(
+        "cortex_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    client = KubectlAgentClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    with pytest.raises(ClientError):
+        client.converse("clio", "clio", [{"role": "user", "text": "hello?"}])
 
     assert fake_proc.terminated is True
     assert fake_proc.waited is True
@@ -807,6 +887,31 @@ def test_fake_agent_satisfies_protocol():
     assert isinstance(fake, AgentClient)
     assert fake.hello("clio", "clio", "hi") == "hello yourself"
     assert fake.calls == [("clio", "clio", "hi")]
+    assert fake.converse("clio", "clio", [{"role": "user", "text": "hi"}]) == "hello yourself"
+    assert fake.converse_calls == [("clio", "clio", [{"role": "user", "text": "hi"}])]
+
+
+def test_fake_agent_converse_records_full_messages_list_per_call():
+    fake = FakeAgent()
+    messages: list[ChatMessage] = [
+        {"role": "user", "text": "hi"},
+        {"role": "agent", "text": "hello yourself"},
+        {"role": "user", "text": "how are you?"},
+    ]
+    fake.converse("clio", "clio", messages)
+    assert fake.converse_calls == [("clio", "clio", messages)]
+
+
+def test_fake_agent_converse_scripted_replies_consumed_in_order():
+    fake = FakeAgent(replies=["first reply", "second reply"])
+    assert fake.converse("clio", "clio", [{"role": "user", "text": "one"}]) == "first reply"
+    assert fake.converse("clio", "clio", [{"role": "user", "text": "two"}]) == "second reply"
+
+
+def test_fake_agent_converse_error_knob():
+    fake = FakeAgent(converse_error="a2a request failed (500): boom")
+    with pytest.raises(ClientError):
+        fake.converse("clio", "clio", [{"role": "user", "text": "hi"}])
 
 
 def test_fake_kubectl_satisfies_protocol():

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cortex_api.clients import ClientError, GojiraConflict
+from cortex_api.clients import ChatMessage, ClientError, GojiraConflict
 
 # --- Generated-scaffolding fixture for FakeGitHub.clone ------------------------
 #
@@ -379,23 +379,49 @@ class FakeCloud:
 
 
 class FakeAgent:
-    """hello() returns a canned reply and records every call it received.
+    """hello()/converse() return a canned or scripted reply and record every
+    call received.
 
     `hello_error`, when set, makes `hello()` raise `ClientError(hello_error)`
     instead of replying — HelloStep is the pipeline's last step, so this is
     the seam for exercising a failure there (agent lands FAILED with
     `first_reply` still None) without needing a real a2a backend.
+
+    `replies`, when given, is consumed one reply per `converse()` call, in
+    order — for scripting a multi-turn conversation's agent side. Once it
+    runs out (or when `replies` isn't given at all), `converse()` falls back
+    to the single canned `reply`. `converse_error` is `hello_error`'s
+    counterpart for the chat path: when set, `converse()` raises
+    `ClientError(converse_error)` instead of replying.
     """
 
-    def __init__(self, *, reply: str = "hello yourself", hello_error: str | None = None):
+    def __init__(
+        self,
+        *,
+        reply: str = "hello yourself",
+        hello_error: str | None = None,
+        replies: list[str] | None = None,
+        converse_error: str | None = None,
+    ):
         self._reply = reply
         self._hello_error = hello_error
+        self._replies = list(replies) if replies is not None else None
+        self._converse_error = converse_error
         self.calls: list[tuple[str, str, str]] = []
+        self.converse_calls: list[tuple[str, str, list[ChatMessage]]] = []
 
     def hello(self, namespace: str, service: str, text: str) -> str:
         self.calls.append((namespace, service, text))
         if self._hello_error is not None:
             raise ClientError(self._hello_error)
+        return self._reply
+
+    def converse(self, namespace: str, service: str, messages: list[ChatMessage]) -> str:
+        self.converse_calls.append((namespace, service, list(messages)))
+        if self._converse_error is not None:
+            raise ClientError(self._converse_error)
+        if self._replies:
+            return self._replies.pop(0)
         return self._reply
 
 

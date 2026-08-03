@@ -29,7 +29,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Protocol, TypedDict, runtime_checkable
 
 import httpx
 
@@ -397,13 +397,25 @@ class GcloudClient:
             raise
 
 
-# --- Agent (a2a "hello" over a kubectl port-forward) -------------------------------
+# --- Agent (a2a chat over a kubectl port-forward) -----------------------------
+
+
+class ChatMessage(TypedDict):
+    """One turn of an a2a chat history."""
+
+    role: str  # "user" | "agent"
+    text: str
 
 
 @runtime_checkable
 class AgentClient(Protocol):
     def hello(self, namespace: str, service: str, text: str) -> str:
         """Say `text` to the agent's a2a endpoint; return its reply text."""
+        ...
+
+    def converse(self, namespace: str, service: str, messages: list[ChatMessage]) -> str:
+        """Send the full `messages` history to the agent's a2a endpoint as
+        one task; return its reply text."""
         ...
 
 
@@ -457,21 +469,28 @@ def _wait_for_forwarded_port(reader, timeout_s: float = 10.0) -> int:
             return int(match.group(1))
 
 
-def _build_hello_envelope(text: str) -> dict:
+def _build_task_envelope(messages: list[ChatMessage]) -> dict:
     return {
         "kind": "task",
-        "id": f"hello-{uuid.uuid4().hex}",
+        "id": f"chat-{uuid.uuid4().hex}",
         "history": [
-            {"kind": "message", "role": "user", "parts": [{"kind": "text", "text": text}]}
+            {
+                "kind": "message",
+                "role": message["role"],
+                "parts": [{"kind": "text", "text": message["text"]}],
+            }
+            for message in messages
         ],
     }
 
 
-def _post_hello(client: httpx.Client, port: int, text: str) -> str:
-    """POST the bare a2a task envelope to the forwarded port; return the reply text.
+def _post_task(client: httpx.Client, port: int, messages: list[ChatMessage]) -> str:
+    """POST the a2a task envelope for `messages` to the forwarded port; return
+    the reply text.
 
-    Factored out from `hello()` so the request/response shape is unit-testable
-    against an httpx.MockTransport-backed client, with no real network involved.
+    Factored out from `_send_task()` so the request/response shape is
+    unit-testable against an httpx.MockTransport-backed client, with no real
+    network involved.
 
     httpx transport errors (timeouts, connection failures, ...) aren't
     ClientError, so left alone they'd surface as raw httpx exceptions to
@@ -479,11 +498,11 @@ def _post_hello(client: httpx.Client, port: int, text: str) -> str:
     original exception as the cause.
     """
     try:
-        resp = client.post(f"http://127.0.0.1:{port}/a2a/tasks", json=_build_hello_envelope(text))
+        resp = client.post(f"http://127.0.0.1:{port}/a2a/tasks", json=_build_task_envelope(messages))
     except httpx.HTTPError as exc:
-        raise ClientError(f"a2a hello request failed: {exc!r}") from exc
+        raise ClientError(f"a2a request failed: {exc!r}") from exc
     if resp.status_code != 200:
-        raise ClientError(f"a2a hello failed ({resp.status_code}): {resp.text}")
+        raise ClientError(f"a2a request failed ({resp.status_code}): {resp.text}")
     return resp.json()["status"]["message"]["parts"][0]["text"]
 
 
@@ -510,6 +529,12 @@ class KubectlAgentClient:
         self._http_client = http_client or httpx.Client(timeout=httpx.Timeout(120.0, connect=10.0))
 
     def hello(self, namespace: str, service: str, text: str) -> str:
+        return self.converse(namespace, service, [{"role": "user", "text": text}])
+
+    def converse(self, namespace: str, service: str, messages: list[ChatMessage]) -> str:
+        return self._send_task(namespace, service, messages)
+
+    def _send_task(self, namespace: str, service: str, messages: list[ChatMessage]) -> str:
         proc = subprocess.Popen(
             [self._kubectl, "-n", namespace, "port-forward", f"svc/{service}", ":80"],
             stdout=subprocess.PIPE,
@@ -518,7 +543,7 @@ class KubectlAgentClient:
         )
         try:
             port = _wait_for_forwarded_port(proc.stdout, self._timeout_s)
-            return _post_hello(self._http_client, port, text)
+            return _post_task(self._http_client, port, messages)
         finally:
             proc.terminate()
             try:
