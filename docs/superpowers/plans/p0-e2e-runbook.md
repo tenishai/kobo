@@ -172,3 +172,41 @@ endpoint's 409 is unit-covered.
 assertion needed an explicit wait — script-side, not a product defect). Cosmetic seam
 for later: agent replies render as plain text, so model markdown (`**repo**`) shows its
 asterisks in bubbles.
+
+## P2b results — knowledge editing live (2026-08-03)
+
+Commits under test: `0fcda43` (knowledge module) → `e1fb70f` (endpoints) → `1245fdd`
+(UI lib + lineDiff) → `da28669` (MemoryPanel). Stack: cortex-api restarted at HEAD,
+agents unchanged. Subject: clio (repo had only `gotchas.md`).
+
+**Browser milestone (Playwright, headless chromium): PASSED — all assertions, two full
+edit→deliver→converge→answer loops.**
+
+Loop 1 — ADD `word-of-the-day.md` ("The word of the day is periwinkle…") from the
+Memory panel, via the review-changes diff preview (2 added lines):
+
+- Delivery chip: "Delivering changes…" → "Changes are in place"
+- Pod rotated `clio-665c46569f-fgj4f` → `clio-75c4c577cf-j2g6q`
+- Seeder (verbatim): `seeder: seeded=1 removed=0 unchanged=1` — the new file seeded,
+  gotchas untouched: **convergence**
+- Chat: "what is the word of the day?" → *"The word of the day is **periwinkle**! 🌸"*
+
+Loop 2 — EDIT the same file (periwinkle → marmalade), diff preview showed exactly
+1 removed + 1 added line:
+
+- Chip delivered; pod rotated to `clio-5f89f94986-z8xgf`
+- Seeder (verbatim): `seeder: seeded=1 removed=0 unchanged=1` — only the edited file's
+  entries replaced, gotchas' seed rows never touched across both deliveries
+- Chat (fresh transcript): → *"The word of the day is **marmalade**! 🍊"*
+
+The delivery status was computed statelessly throughout (CI run for the pushed sha +
+live image tag == sha[:12]); no new DB tables anywhere in P2b. Screenshots in
+`.superpowers/sdd/smoke/p2b-*.png` (gitignored).
+
+**Environment notes from the run (script/env, not product):** (a) the local kubeconfig
+had been re-pointed at the cluster's private endpoint and kubectl hung — re-running
+get-credentials with the DNS endpoint fixed it (the generated CI already uses the DNS
+endpoint for the same reason); (b) the API process needs `gh`, `kubectl`, AND the GKE
+auth plugin's SDK dir on PATH — a missing binary surfaces as a raw 500 through the
+knowledge routes (CommandRunner FileNotFoundError is not wrapped as ClientError);
+flagged to the final review.
