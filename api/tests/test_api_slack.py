@@ -160,7 +160,8 @@ def _onboarded_gojira(**kwargs):
     OnboardStep already ran create_app for it during original provisioning),
     at the cadence connect_slack's wait_active expects (activate_after=1
     unless a test overrides it)."""
-    gojira = FakeGojira(activate_after=1, **kwargs)
+    kwargs.setdefault("activate_after", 1)
+    gojira = FakeGojira(**kwargs)
     app_id = gojira.create_app(
         name=AGENT_NAME, repo_full_name=REPO, cluster="example-cluster", namespace=AGENT_NAME
     )
@@ -384,7 +385,24 @@ def test_connect_slack_bad_channel_format_returns_422(session_factory, config):
     )
 
     assert response.status_code == 422
-    assert "error" in response.json()
+    assert response.json() == {"error": "use a public channel for now (its ID starts with C)"}
+
+
+def test_connect_slack_private_channel_id_returns_422(session_factory, config):
+    # A private-channel id ("G...") is well-formed but unservable: the
+    # rendered manifest's scopes (channels:history, message.channels) only
+    # work for public channels. Same plain message as any other malformed
+    # channel id — see the code comment by SLACK_CHANNEL_RE.
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config, slack_app_id="A0EXISTING")
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/slack/connect",
+        json={"channel": "G1234567", "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "use a public channel for now (its ID starts with C)"}
 
 
 def test_connect_slack_bad_bot_token_returns_422_and_never_echoes_it(session_factory, config):
@@ -425,6 +443,50 @@ def test_connect_slack_client_error_from_kubectl_returns_502(session_factory, co
     kubectl = FakeKubectl(apply_secret_error="kubectl: connection refused")
     gojira, app_id = _onboarded_gojira()
     client = _make_client(session_factory, config, kubectl=kubectl, gojira=gojira)
+    _seed_agent(session_factory, config, gojira_app_id=app_id, slack_app_id="A0EXISTING")
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/slack/connect",
+        json={"channel": CHANNEL, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"error": "couldn't set up Slack — try again"}
+    assert BOT_TOKEN not in response.text
+    assert APP_TOKEN not in response.text
+
+
+def test_connect_slack_gojira_failed_status_returns_502(session_factory, config):
+    # wait_active's "failed" branch must map to the same plain 502 as every
+    # other ClientError here — not bubble up as a raw, uncaught exception
+    # through the route (the bug: wait_active raised bare RuntimeError,
+    # which connect_slack's `except ClientError` does not catch, since
+    # ClientError subclasses RuntimeError and not the reverse).
+    gojira, app_id = _onboarded_gojira(
+        end_status="failed", failed_steps=[{"name": "wire", "status": "failed"}]
+    )
+    client = _make_client(session_factory, config, github=_CapturingGitHub(), gojira=gojira)
+    _seed_agent(session_factory, config, gojira_app_id=app_id, slack_app_id="A0EXISTING")
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/slack/connect",
+        json={"channel": CHANNEL, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"error": "couldn't set up Slack — try again"}
+    assert BOT_TOKEN not in response.text
+    assert APP_TOKEN not in response.text
+
+
+def test_connect_slack_gojira_timeout_returns_502(session_factory, config):
+    # Same mapping, via wait_active's other RuntimeError-turned-ClientError
+    # branch: exhausting every poll without reaching "active" or "failed".
+    # Cheap to exercise here because the module's `_sleep` seam is
+    # monkeypatched to a no-op (see `_no_real_sleep` above) — the 60-poll
+    # budget runs with no real waiting.
+    gojira, app_id = _onboarded_gojira(activate_after=10_000)
+    client = _make_client(session_factory, config, github=_CapturingGitHub(), gojira=gojira)
     _seed_agent(session_factory, config, gojira_app_id=app_id, slack_app_id="A0EXISTING")
 
     response = client.post(

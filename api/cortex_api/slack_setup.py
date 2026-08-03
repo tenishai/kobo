@@ -31,7 +31,7 @@ from pathlib import Path
 
 import yaml
 
-from cortex_api.clients import GitHubClient, GojiraClient, KubectlClient
+from cortex_api.clients import ClientError, GitHubClient, GojiraClient, KubectlClient
 
 # --- render_manifest -----------------------------------------------------------
 
@@ -114,8 +114,16 @@ _sleep = time.sleep
 
 def wait_active(gojira: GojiraClient, app_id: int) -> None:
     """Poll `gojira.app_status(app_id)` every `_POLL_INTERVAL_S`s, up to
-    `_POLL_TIMEOUT_S`s total, until it reports `active`; raise on `failed`
-    (naming the failed steps) or on exhausting every poll without either.
+    `_POLL_TIMEOUT_S`s total, until it reports `active`; raise `ClientError`
+    on `failed` (naming the failed steps) or on exhausting every poll
+    without either.
+
+    Raises `ClientError`, not bare `RuntimeError`, even though this is a
+    local poll loop rather than a platform API call: `connect_slack` (the
+    only caller, via `wire_slack`) catches only `ClientError` to map onto
+    its plain 502, and `ClientError` subclasses `RuntimeError` (not the
+    reverse) — a bare `RuntimeError` here would fall through that `except`
+    and reach the route as an uncaught exception.
 
     A local counterpart to `cortex_api.steps._wait_active` (identical
     polling core and cadence), not a shared import: that helper takes a
@@ -123,7 +131,9 @@ def wait_active(gojira: GojiraClient, app_id: int) -> None:
     is outside this task's allowed file set, so it can't be refactored into
     a shared function without touching a file this task isn't scoped to
     modify. Deliberate small duplication of two constants and this loop;
-    disclosed in the task report.
+    disclosed in the task report. (`steps.py`'s own `_wait_active` keeps
+    raising bare `RuntimeError` — its caller's broad `except` already
+    handles that, and it's out of this task's file scope.)
     """
     max_polls = _POLL_TIMEOUT_S // _POLL_INTERVAL_S
     status_payload: dict = {}
@@ -141,7 +151,7 @@ def wait_active(gojira: GojiraClient, app_id: int) -> None:
                 if step.get("status") == "failed"
             ]
             names = ", ".join(failed_names) if failed_names else "unknown"
-            raise RuntimeError(
+            raise ClientError(
                 f"gojira provisioning failed for app {app_id}: failed steps: {names}"
             )
 
@@ -149,7 +159,7 @@ def wait_active(gojira: GojiraClient, app_id: int) -> None:
         if poll_count < max_polls - 1:
             _sleep(_POLL_INTERVAL_S)
 
-    raise RuntimeError(
+    raise ClientError(
         f"timed out waiting for gojira app {app_id} to become active after "
         f"{_POLL_TIMEOUT_S}s (last status: {status_payload.get('status')!r})"
     )

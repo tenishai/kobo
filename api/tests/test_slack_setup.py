@@ -198,23 +198,26 @@ def test_wait_active_returns_once_status_is_active():
     assert gojira.app_status(app_id)["status"] == "active"
 
 
-def test_wait_active_raises_on_failed_naming_failed_steps():
+def test_wait_active_raises_client_error_on_failed_naming_failed_steps():
+    # ClientError, not bare RuntimeError: connect_slack's route only catches
+    # ClientError, and ClientError subclasses RuntimeError (not the other
+    # way around) — see test_api_slack.py's route-level coverage of this.
     gojira, app_id = _onboarded_gojira(
         activate_after=1,
         end_status="failed",
         failed_steps=[{"name": "wire", "status": "failed"}],
     )
 
-    with pytest.raises(RuntimeError, match="failed steps: wire"):
+    with pytest.raises(ClientError, match="failed steps: wire"):
         wait_active(gojira, app_id)
 
 
-def test_wait_active_raises_on_timeout():
+def test_wait_active_raises_client_error_on_timeout():
     # activate_after far beyond the 60-poll budget (300s / 5s) — app_status
     # stays "pending" for the whole loop.
     gojira, app_id = _onboarded_gojira(activate_after=10_000)
 
-    with pytest.raises(RuntimeError, match="timed out waiting for gojira app"):
+    with pytest.raises(ClientError, match="timed out waiting for gojira app"):
         wait_active(gojira, app_id)
 
 
