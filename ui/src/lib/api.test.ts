@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   chatWithAgent,
+  connectSlack,
   createAgent,
+  createSlackApp,
   deleteKnowledgeFile,
   errorMessage,
   fetchCatalogs,
@@ -299,6 +301,187 @@ describe("knowledge client", () => {
     await expect(fetchDeliveryState("clio", "nope")).rejects.toThrow(
       "no delivery for that sha",
     );
+  });
+});
+
+describe("slack client", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("createSlackApp POSTs /api/agents/{name}/slack/app and returns {app_id, configure_url}", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({
+        app_id: "A123",
+        configure_url: "https://slack.com/apps/A123",
+      }),
+    );
+
+    await expect(createSlackApp("clio")).resolves.toEqual({
+      app_id: "A123",
+      configure_url: "https://slack.com/apps/A123",
+    });
+
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/slack/app", {
+      method: "POST",
+    });
+  });
+
+  it("createSlackApp encodes the agent name in the URL", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({
+        app_id: "A123",
+        configure_url: "https://slack.com/apps/A123",
+      }),
+    );
+
+    await createSlackApp("a b");
+
+    expect(fetch).toHaveBeenCalledWith("/api/agents/a%20b/slack/app", {
+      method: "POST",
+    });
+  });
+
+  it("createSlackApp surfaces a 409's {error} message (already set up)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "Slack is already set up for this agent" },
+        { status: 409, statusText: "Conflict" },
+      ),
+    );
+
+    await expect(createSlackApp("clio")).rejects.toThrow(
+      "Slack is already set up for this agent",
+    );
+  });
+
+  it("createSlackApp surfaces a 503's {error} message (slack not configured)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "Slack is not configured" },
+        { status: 503, statusText: "Service Unavailable" },
+      ),
+    );
+
+    await expect(createSlackApp("clio")).rejects.toThrow(
+      "Slack is not configured",
+    );
+  });
+
+  it("connectSlack POSTs {channel, bot_token, app_token} to /api/agents/{name}/slack/connect and returns {sha}", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ sha: "abc123" }));
+
+    const body = {
+      channel: "C123456",
+      bot_token: "xoxb-secret-token",
+      app_token: "xapp-secret-token",
+    };
+
+    await expect(connectSlack("clio", body)).resolves.toEqual({
+      sha: "abc123",
+    });
+
+    // Assert the exact request, including the raw body bytes — the token
+    // values must pass through untouched, not be redacted or transformed.
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/slack/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    expect(init?.body).toContain("xoxb-secret-token");
+    expect(init?.body).toContain("xapp-secret-token");
+  });
+
+  it("connectSlack encodes the agent name in the URL", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ sha: "abc123" }));
+
+    await connectSlack("a b", {
+      channel: "C123456",
+      bot_token: "xoxb-secret",
+      app_token: "xapp-secret",
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/agents/a%20b/slack/connect",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("connectSlack never logs the token values it's given", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ sha: "abc123" }));
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await connectSlack("clio", {
+      channel: "C123456",
+      bot_token: "xoxb-secret-token",
+      app_token: "xapp-secret-token",
+    });
+
+    expect(logSpy).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it("connectSlack surfaces a 422's {error} message (bad channel)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "use a public channel for now (its ID starts with C)" },
+        { status: 422, statusText: "Unprocessable Entity" },
+      ),
+    );
+
+    await expect(
+      connectSlack("clio", {
+        channel: "general",
+        bot_token: "xoxb-secret",
+        app_token: "xapp-secret",
+      }),
+    ).rejects.toThrow("use a public channel for now (its ID starts with C)");
+  });
+
+  it("connectSlack surfaces a 422's {error} message (bad token prefix)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "bot_token must start with xoxb-" },
+        { status: 422, statusText: "Unprocessable Entity" },
+      ),
+    );
+
+    await expect(
+      connectSlack("clio", {
+        channel: "C123456",
+        bot_token: "wrong-prefix",
+        app_token: "xapp-secret",
+      }),
+    ).rejects.toThrow("bot_token must start with xoxb-");
+  });
+
+  it("connectSlack surfaces the plain 502 {error} message (setup failed)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "couldn't set up Slack — try again" },
+        { status: 502, statusText: "Bad Gateway" },
+      ),
+    );
+
+    await expect(
+      connectSlack("clio", {
+        channel: "C123456",
+        bot_token: "xoxb-secret",
+        app_token: "xapp-secret",
+      }),
+    ).rejects.toThrow("couldn't set up Slack — try again");
   });
 });
 

@@ -20,7 +20,9 @@ import {
   type ChatMessage,
   type KnowledgeFile,
   chatWithAgent,
+  connectSlack,
   createAgent,
+  createSlackApp,
   deleteKnowledgeFile,
   fetchCatalogs,
   fetchDeliveryState,
@@ -199,6 +201,41 @@ export function deliveryQuery(name: string, sha: string | null) {
     enabled: sha !== null,
     refetchInterval: (query) => deliveryRefetchInterval(query.state.data),
   });
+}
+
+/**
+ * Creates the agent's Slack app; on success, invalidates that agent's detail
+ * query so the new `slack.app_id` (and configure_url, surfaced via the
+ * mutation's own result rather than the cache) becomes visible.
+ */
+export function createSlackAppMutation(
+  queryClient: QueryClient,
+  name: string,
+) {
+  return {
+    mutationFn: () => createSlackApp(name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+    },
+  };
+}
+
+/**
+ * Finishes Slack connect (channel + tokens) for the agent; on success,
+ * invalidates that agent's detail query so the new `slack.channel` becomes
+ * visible.
+ */
+export function connectSlackMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (body: {
+      channel: string;
+      bot_token: string;
+      app_token: string;
+    }) => connectSlack(name, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+    },
+  };
 }
 
 // Re-exported so consumers of the query factories don't need a separate

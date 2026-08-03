@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "./api";
 import {
   chatMutation,
+  connectSlackMutation,
+  createSlackAppMutation,
   deleteKnowledgeMutation,
   deliveryQuery,
   deliveryRefetchInterval,
@@ -107,6 +109,96 @@ describe("deleteKnowledgeMutation", () => {
     expect(invalidateQueries).toHaveBeenCalledTimes(1);
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["agents", "clio", "knowledge"],
+    });
+  });
+});
+
+describe("createSlackAppMutation", () => {
+  it("mutationFn delegates to createSlackApp(name)", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          app_id: "A123",
+          configure_url: "https://slack.com/apps/A123",
+        }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = createSlackAppMutation(queryClient, "clio");
+
+    await expect(mutation.mutationFn()).resolves.toEqual({
+      app_id: "A123",
+      configure_url: "https://slack.com/apps/A123",
+    });
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/slack/app", {
+      method: "POST",
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the agent detail key on success — the detail carries slack state", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = createSlackAppMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "clio"],
+    });
+  });
+});
+
+describe("connectSlackMutation", () => {
+  it("mutationFn delegates to connectSlack(name, body)", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ sha: "abc123" }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = connectSlackMutation(queryClient, "clio");
+    const body = {
+      channel: "C123456",
+      bot_token: "xoxb-secret",
+      app_token: "xapp-secret",
+    };
+
+    await expect(mutation.mutationFn(body)).resolves.toEqual({
+      sha: "abc123",
+    });
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/slack/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the agent detail key on success — the detail carries slack state", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = connectSlackMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "clio"],
     });
   });
 });

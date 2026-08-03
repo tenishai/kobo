@@ -28,6 +28,7 @@ export type AgentDetail = AgentSummary & {
   first_reply: string | null;
   error: string | null;
   steps: StepView[];
+  slack: { app_id: string; channel: string | null } | null;
 };
 
 export type Catalogs = {
@@ -240,4 +241,41 @@ export async function fetchDeliveryState(
     `/api/agents/${encodeURIComponent(name)}/knowledge/delivery/${encodeURIComponent(sha)}`,
   );
   return parse<{ state: string; detail: string | null }>(res);
+}
+
+/**
+ * Creates the Slack app for this agent (server calls out to Slack's app
+ * manifest API and returns the app id plus a configure_url for the human
+ * to open and finish install). No request body — the agent name in the
+ * path is all the server needs.
+ */
+export async function createSlackApp(
+  name: string,
+): Promise<{ app_id: string; configure_url: string }> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/slack/app`,
+    { method: "POST" },
+  );
+  return parse<{ app_id: string; configure_url: string }>(res);
+}
+
+/**
+ * Finishes Slack connect: hands the channel and the two tokens (copied by
+ * the human from Slack's app settings page) to the server, which validates
+ * and stores them. The tokens pass straight through in the request body and
+ * are never logged or otherwise inspected here.
+ */
+export async function connectSlack(
+  name: string,
+  body: { channel: string; bot_token: string; app_token: string },
+): Promise<{ sha: string }> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/slack/connect`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  return parse<{ sha: string }>(res);
 }
