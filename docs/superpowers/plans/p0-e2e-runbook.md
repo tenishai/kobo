@@ -222,3 +222,42 @@ the review and confirmed in the runtime kit's source: deleting the LAST knowledg
 strands its seeded rows (git drops the empty dir; the seeder early-returns when
 `knowledge/` is absent). Fix is specced into P2c Task 1, which touches that branch and
 rebuilds the image anyway.
+
+## P2c results — slack connect live (2026-08-03)
+
+Commits under test: `52ecfb2` (runtime kit: slack extra + seeder last-file fix) →
+`938262c`/`530c514` (SlackClient + rotation) → `eb5cd19`/`061231f` (endpoints + wiring)
+→ `534016e`/`bf8a272` (UI lib) → `4458e3b`/`ae9fc0f` (SlackPanel) → `3c89ff6` (private
+channels) → `819482d` (connect delivers the current runtime).
+
+**The proof (screenshot from the sandbox workspace):** a human mentioned
+`@echo what do you remember about how you got here?` in the private channel
+`echo-test` — echo answered IN THREAD from seeded memory ("I remember being assembled
+in the cortex assembly room, then deployed through a specific platform chain: repo →
+onboarding → build → deploy → first contact…"), with the reaction lifecycle completing
+(✅ on the parent) and markdown rendering as Slack bold. Immediately after, the browser
+chat path answered `"both doors open"` — both transports live on one pod.
+
+**The flow as shipped:** one click created the Slack app (A0BMGKNB14M) from the rendered
+manifest; the finish-setup card walked the three no-API steps (install, app-level token,
+channel ID); Finish setup delivered the tokens as a namespace Secret, wired the
+transport + secrets into the repo, and the P2b delivery machinery tracked the rebuild.
+
+**Two live incidents, both converted to product fixes:**
+1. The sandbox channel was PRIVATE — and modern private channels use C-prefixed IDs, so
+   the public-only assumption was wrong. Fixed live via Slack's manifest-update API and
+   permanently in `3c89ff6` (manifests now carry both channel types' grants; channel
+   copy updated). Note: the mention flow works in private channels on the base scopes
+   (`app_mention` is channel-type-agnostic); reading plain messages needs the updated
+   grants, which existing installs pick up on reinstall.
+2. **The connect crashlooped echo** (predicted minutes before impact): the agent repo's
+   Dockerfile pins its runtime base at compose time, so the rebuild shipped the old
+   slack-less base and the runtime's fail-closed transport check crashed the pod —
+   taking a2a chat down with it. Hot-fixed by an operator commit bumping echo's base
+   (`b976303`, delivered and verified), and fixed permanently in `819482d`: every
+   connect now rewrites the Dockerfile to the current runtime, with tests. Verbatim
+   crash: `BundleError: transport 'slack' requires the slack extra`.
+
+Suites at close: API 403, UI 142, runtime kit 16. Seeder on the new base converged
+(`seeded=0 removed=0 unchanged=1`). Setup-card screenshots in
+`.superpowers/sdd/smoke/p2c-slack-state*.png`; the thread screenshot is Kyle's.
