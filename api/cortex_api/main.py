@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from fastapi import Depends, FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -181,6 +182,36 @@ def _fail_launch(
     return JSONResponse({"error": error_message}, status_code=503)
 
 
+def _validation_error_message(exc: RequestValidationError) -> str:
+    """A plain-language message for the app-wide `RequestValidationError`
+    handler (`create_app`, below) — the P2c final-review fix for FastAPI's
+    *default* 422 handler, which was still live (no handler had been
+    registered to override it). That default renders `exc.errors()`
+    verbatim, and Pydantic's own "missing field" error carries an `input`
+    key holding the ENTIRE submitted request body — so a `/slack/connect`
+    call missing `channel` but carrying `bot_token`/`app_token` echoed both
+    pasted Slack tokens straight back in the response body. This handler
+    replaces that default globally (every route, not just Slack's) with the
+    house `{"error": ...}` shape, built ONLY from each error's field
+    location (`loc`) — never from `input`, which must never appear here or
+    in anything this function returns.
+
+    Field names alone (e.g. "channel", "messages.0.role") are just the
+    request's own declared shape, not secret, so naming them is safe and
+    more useful than a fully generic message.
+    """
+    fields = []
+    for error in exc.errors():
+        loc = [str(part) for part in error.get("loc", ()) if part != "body"]
+        if loc:
+            fields.append(".".join(loc))
+    if not fields:
+        return "that request wasn't quite right — check the fields and try again"
+    # dict.fromkeys: de-dupe while preserving first-seen order.
+    names = ", ".join(dict.fromkeys(fields))
+    return f"that request wasn't quite right — check: {names}"
+
+
 def _ready_agent_or_error(
     session: Session,
     name: str,
@@ -238,6 +269,16 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        # Overrides FastAPI's default handler app-wide — see
+        # `_validation_error_message`'s docstring for why (the token-echo
+        # fix) and why every shape-422 across the app is harmonized onto the
+        # same `{"error": ...}` convention the UI already expects elsewhere.
+        return JSONResponse({"error": _validation_error_message(exc)}, status_code=422)
 
     @app.get("/api/healthz")
     def healthz() -> dict:
@@ -703,6 +744,13 @@ def create_app(
             return JSONResponse(
                 {"error": "couldn't set up Slack — try again"}, status_code=502
             )
+
+        # Logged before persisting: if the commit below itself fails, this
+        # line is the only record left of an app Slack now knows about that
+        # cortex's own DB doesn't yet — an orphan-recovery breadcrumb for an
+        # operator to match against Slack's app list. App ids aren't secret
+        # (they're already returned in this route's own 200 response below).
+        log.info("slack app created: %s", slack_app_id)
 
         agent.slack_app_id = slack_app_id
         session.commit()

@@ -6,7 +6,9 @@ plus structural checks that the fakes satisfy the Protocols.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -39,6 +41,7 @@ from cortex_api.clients import (
     _build_task_envelope,
     _post_task,
     _wait_for_forwarded_port,
+    _write_slack_tokens,
 )
 from cortex_api.config import Config
 from tests.fakes import (
@@ -136,6 +139,31 @@ def test_run_bytes_wraps_missing_binary_as_client_error():
     assert "cortex-test-nonexistent-binary-xyz" in str(exc_info.value)
     assert "not found on PATH" in str(exc_info.value)
     assert isinstance(exc_info.value.__cause__, FileNotFoundError)
+
+
+# --- CommandRunner.run redact_args (final-review Finding 3) -----------------------
+#
+# `KubectlCLI.apply_secret`'s stage-1 argv carries `--from-literal=SLACK_*_
+# TOKEN=<value>` — before this fix, CommandRunner.run's unconditional debug
+# log put that full argv (secret values and all) into logs one `--log-level
+# debug` away. Exercised against the REAL CommandRunner (not a fake/recording
+# double): the redaction lives there, so it must be proven there.
+
+
+def test_run_redact_args_true_hides_argv_from_debug_log(caplog):
+    runner = CommandRunner()
+    with caplog.at_level(logging.DEBUG, logger="cortex_api.clients"):
+        runner.run(["echo", "--from-literal=X=secretvalue"], redact_args=True)
+    assert "secretvalue" not in caplog.text
+
+
+def test_run_redact_args_false_by_default_still_logs_full_argv(caplog):
+    # Baseline: redact_args defaults to False, so every other (non-secret-
+    # bearing) caller's existing debug-log behavior is unchanged by this fix.
+    runner = CommandRunner()
+    with caplog.at_level(logging.DEBUG, logger="cortex_api.clients"):
+        runner.run(["echo", "harmless-marker-value"])
+    assert "harmless-marker-value" in caplog.text
 
 
 # --- GitHub (GhCLI) ----------------------------------------------------------
@@ -1033,6 +1061,32 @@ def test_slack_create_app_rotate_preserves_tokens_file_mode(tmp_path):
 
     assert app_id == "A0NEW"
     assert os.stat(tokens_path).st_mode & 0o777 == 0o600
+
+
+def test_write_slack_tokens_tmp_file_never_wider_than_0600_before_copymode(tmp_path, monkeypatch):
+    # Quick-fold: the tmp file used to be created via plain write_text(),
+    # which lands it at umask-default perms (e.g. 0644) for the window
+    # between "content written" and "copymode fixes the mode up" — during
+    # which it already holds the live refresh token. Spy on shutil.copymode
+    # (called right after the content write, right before the atomic
+    # replace) to catch the tmp file's mode at exactly that moment: it must
+    # already be 0600, not merely corrected to it afterward.
+    tokens_path = _write_slack_tokens_file(
+        tmp_path, config_token="old-config", refresh_token="old-refresh"
+    )
+    os.chmod(tokens_path, 0o644)  # an unhardened original, so 0600 can only come from the fix
+    real_copymode = shutil.copymode
+    captured: dict[str, int] = {}
+
+    def spy_copymode(src, dst):
+        captured["tmp_mode_before_copymode"] = os.stat(dst).st_mode & 0o777
+        return real_copymode(src, dst)
+
+    monkeypatch.setattr("cortex_api.clients.shutil.copymode", spy_copymode)
+
+    _write_slack_tokens(tokens_path, "new-config", "new-refresh")
+
+    assert captured["tmp_mode_before_copymode"] == 0o600
 
 
 def test_slack_create_app_second_auth_failure_after_rotate_raises(tmp_path):

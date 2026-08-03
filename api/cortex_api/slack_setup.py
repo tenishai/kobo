@@ -5,10 +5,16 @@ channel/secrets contract through its repo.
 Two independent responsibilities live here:
 
 - `render_manifest` builds the Slack app manifest cortex hands to
-  `SlackClient.create_app` (cortex_api.clients, Task 2). Its scopes/events/
-  settings are copied EXACTLY from the runtime kit's canonical template
-  (`docs/slack-app-manifest.yaml` in the daedalus repo) — the runtime
-  transport's own documented contract, never invented here.
+  `SlackClient.create_app` (cortex_api.clients, Task 2). Its scopes/events
+  are a deliberate SUPERSET of the runtime kit's canonical template
+  (`docs/slack-app-manifest.yaml` in the daedalus repo) — public-channel
+  grants plus private-channel grants (`groups:history`/`message.groups`)
+  together, not a straight copy of one or the other. See the P2c incident-1
+  writeup (`docs/superpowers/plans/p0-e2e-runbook.md`, "P2c results — slack
+  connect live") for why: a live connect crashed on a private channel
+  because the manifest only carried public-channel grants, fixed by
+  rendering both grant sets so cortex never has to guess a channel's type
+  up front.
 
 - `wire_slack` mirrors `cortex_api.steps.WireStep`'s pattern verbatim (clone
   -> edit YAMLs -> commit_push -> reprovision-if-changed -> wait-active):
@@ -42,10 +48,15 @@ _DESCRIPTION_MAX_LEN = 100
 # Not agent-specific; copied verbatim from the canonical template.
 _BACKGROUND_COLOR = "#3d2f5b"
 
-# Bot scopes/events/settings: copied EXACTLY from the runtime kit's canonical
-# manifest (daedalus/docs/slack-app-manifest.yaml) per the plan's Global
-# Constraints — the runtime transport's documented contract, not invented
-# here. Keep byte-identical to that file if it ever changes.
+# Bot scopes/events: a DELIBERATE SUPERSET of the runtime kit's canonical
+# manifest (daedalus/docs/slack-app-manifest.yaml) — public-channel grants
+# (channels:history/message.channels) plus private-channel grants
+# (groups:history/message.groups), both included together. Not a
+# byte-identical copy: P2c incident 1 (docs/superpowers/plans/
+# p0-e2e-runbook.md, "P2c results — slack connect live") was a live connect
+# crashing on a private channel because the manifest carried only the
+# public-channel half of this list — rendering both grant sets means cortex
+# never has to know a channel's type before connecting it.
 _BOT_SCOPES = [
     "app_mentions:read",
     "channels:history",
@@ -249,11 +260,35 @@ def _update_dockerfile_runtime_image(dockerfile_path: Path, runtime_image: str) 
     `runtime_image` is inserted literally even if it happens to contain
     characters (like a backslash) that `re.sub`'s string-replacement syntax
     would otherwise treat specially.
+
+    Raises `ClientError` (never silently no-ops) in the two ways this can
+    fail to actually re-pin anything — final-review Finding 2:
+
+    - The Dockerfile is missing entirely: `Path.read_text()` raises
+      `OSError`, caught and re-raised as `ClientError` naming only the path,
+      same idiom as `cortex_api.clients._read_slack_tokens`.
+    - The Dockerfile has no line matching `_DOCKERFILE_FROM_RE` (some
+      unrecognized/hand-edited Dockerfile shape): `re.sub` on zero matches
+      is itself a silent no-op — it happily writes the file back unchanged
+      and returns, giving no signal that the re-pin never happened. That
+      used to mean the stale-base crashloop this function exists to fix
+      could recur with nothing in the way of a symptom. `re.subn` (which
+      reports the match count) lets this catch that here and raise instead,
+      so the failure surfaces immediately as this route's 502, not as a
+      crashloop discovered later with no trail back to its cause.
     """
-    text = dockerfile_path.read_text()
-    updated = _DOCKERFILE_FROM_RE.sub(
+    try:
+        text = dockerfile_path.read_text()
+    except OSError as exc:
+        raise ClientError(f"Dockerfile not found: {dockerfile_path}") from exc
+
+    updated, count = _DOCKERFILE_FROM_RE.subn(
         lambda match: match.group(1) + runtime_image, text, count=1
     )
+    if count == 0:
+        raise ClientError(
+            f"Dockerfile has no recognizable FROM line to re-pin: {dockerfile_path}"
+        )
     dockerfile_path.write_text(updated)
 
 

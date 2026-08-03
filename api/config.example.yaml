@@ -52,3 +52,10 @@ workdir: ~/.cortex
 
 # Database connection URL (supports sqlite, postgresql, etc)
 db_url: sqlite:///cortex.db
+
+# Path to a gitignored YAML file holding the Slack app-config token pair
+# (slack_app_config_token / slack_app_config_refresh_token) used to create
+# Slack apps from a manifest. Optional: when unset, Slack connect features
+# 503 with "Slack is not configured" rather than failing to start. NEVER put
+# real token values in this (or any tracked) file.
+slack_tokens_path: null

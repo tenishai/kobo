@@ -73,8 +73,17 @@ class SlackApiError(ClientError):
 class CommandRunner:
     """Runs a subprocess command; returns stdout, raises ClientError on rc != 0."""
 
-    def run(self, args: list[str], stdin: str | None = None) -> str:
-        log.debug("exec: %s", " ".join(args))
+    def run(
+        self, args: list[str], stdin: str | None = None, *, redact_args: bool = False
+    ) -> str:
+        # Final-review Finding 3: this debug line used to log the full argv
+        # unconditionally — for `KubectlCLI.apply_secret`'s stage-1 call,
+        # that argv carries `--from-literal=SLACK_*_TOKEN=<value>`, so one
+        # `--log-level debug` away put pasted Slack tokens straight into
+        # logs. `redact_args=True` (passed by `apply_secret`, both stages)
+        # logs a fixed placeholder instead of the real argv; every other
+        # caller is unaffected (default False, unchanged behavior).
+        log.debug("exec: %s", "<redacted argv>" if redact_args else " ".join(args))
         try:
             proc = subprocess.run(args, input=stdin, capture_output=True, text=True, check=False)
         except FileNotFoundError as exc:
@@ -90,15 +99,22 @@ class CommandRunner:
             )
         return stdout
 
-    def run_bytes(self, args: list[str], stdin: bytes | None = None) -> bytes:
+    def run_bytes(
+        self, args: list[str], stdin: bytes | None = None, *, redact_args: bool = False
+    ) -> bytes:
         """Like `run()`, but for commands whose stdout is binary (e.g. `git
         archive`, cortex_api.composer's skill-pinning materialization) —
         `run()`'s `text=True` decode-and-strip would corrupt a tar archive's
         bytes, so this skips both and hands back stdout untouched. Still
         raises ClientError on rc != 0, decoding stderr/stdout only for the
         error message.
+
+        `redact_args` is the same debug-log seam as `run()`'s (see there for
+        the rationale) — carried here too so any future binary-stdout caller
+        with secret-bearing argv gets the same option, even though no
+        current caller of `run_bytes` needs it.
         """
-        log.debug("exec (bytes): %s", " ".join(args))
+        log.debug("exec (bytes): %s", "<redacted argv>" if redact_args else " ".join(args))
         try:
             proc = subprocess.run(args, input=stdin, capture_output=True, text=False, check=False)
         except FileNotFoundError as exc:
@@ -658,7 +674,9 @@ class KubectlClient(Protocol):
         with a rotated token pair. The literal values reach kubectl only via
         this call's argv/stdin; they are never logged, never written to a
         file cortex controls, and never appear in a raised exception's
-        message (the real implementation sanitizes CommandRunner's own
+        message (the real implementation calls `CommandRunner.run` with
+        `redact_args=True` on both stages, so a debug-level log never embeds
+        the argv either, and separately sanitizes CommandRunner's own
         argv-embedding failure message on both stages for exactly this
         reason).
         """
@@ -716,11 +734,19 @@ class KubectlCLI:
     def apply_secret(self, namespace: str, name: str, literals: dict[str, str]) -> None:
         literal_args = [f"--from-literal={key}={value}" for key, value in literals.items()]
         try:
+            # redact_args=True: this stage's argv is the only place either
+            # token literal ever appears (final-review Finding 3) — without
+            # it, CommandRunner.run's own debug log would put the raw
+            # `--from-literal=KEY=value` argv (secret values and all) into
+            # logs one `--log-level debug` away. The stage-2 call below
+            # passes it too, defense-in-depth, even though its own argv
+            # never carries a literal.
             manifest_yaml = self._runner.run(
                 [
                     self._kubectl, "-n", namespace, "create", "secret", "generic", name,
                     *literal_args, "--dry-run=client", "-o", "yaml",
-                ]
+                ],
+                redact_args=True,
             )
         except ClientError as exc:
             # CommandRunner.run's own ClientError message embeds the full
@@ -735,7 +761,9 @@ class KubectlCLI:
             ) from exc
 
         try:
-            self._runner.run([self._kubectl, "apply", "-f", "-"], stdin=manifest_yaml)
+            self._runner.run(
+                [self._kubectl, "apply", "-f", "-"], stdin=manifest_yaml, redact_args=True
+            )
         except ClientError as exc:
             # Same reasoning as above, defense-in-depth: this stage's argv
             # carries no secret material (the manifest is piped via stdin),
@@ -826,7 +854,15 @@ def _write_slack_tokens(tokens_path: Path, config_token: str, refresh_token: str
             new_lines.append(line)
 
     tmp_path = tokens_path.with_name(tokens_path.name + ".tmp")
-    tmp_path.write_text("".join(new_lines))
+    # Create the tmp file at 0600 BEFORE writing its content, rather than a
+    # plain `write_text()` (which creates it at umask-default perms, e.g.
+    # 0644): this file holds a live Slack refresh token from the moment its
+    # first byte lands, and `copymode` below only fixes the mode up AFTER
+    # the full content is already written — closing that transient window
+    # rather than narrowing it.
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write("".join(new_lines))
     if tokens_path.exists():
         # Preserve the original file's mode on the tmp file: the tmp file
         # gets umask-default permissions (e.g. 0644), and os.replace carries

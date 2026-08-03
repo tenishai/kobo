@@ -123,14 +123,21 @@ def test_render_manifest_description_under_100_chars_not_padded():
 class _RecordingRunner:
     """Local duplicate of test_clients.py's RecordingRunner: records exact
     (argv, stdin) per call and replays canned stdout results in order (or
-    reuses the last one for every subsequent call)."""
+    reuses the last one for every subsequent call). Also records each call's
+    `redact_args` flag separately (`redact_flags`) — final-review Finding 3 —
+    without changing `calls`' existing 2-tuple shape, which pre-existing
+    tests below already unpack."""
 
     def __init__(self, results: list[str] | None = None):
         self._results = list(results) if results is not None else [""]
         self.calls: list[tuple[list[str], str | None]] = []
+        self.redact_flags: list[bool] = []
 
-    def run(self, args: list[str], stdin: str | None = None) -> str:
+    def run(
+        self, args: list[str], stdin: str | None = None, *, redact_args: bool = False
+    ) -> str:
         self.calls.append((list(args), stdin))
+        self.redact_flags.append(redact_args)
         if len(self._results) > 1:
             return self._results.pop(0)
         return self._results[0]
@@ -147,7 +154,9 @@ class _FailingRunner:
         self._fail_at = fail_at
         self.calls: list[list[str]] = []
 
-    def run(self, args: list[str], stdin: str | None = None) -> str:
+    def run(
+        self, args: list[str], stdin: str | None = None, *, redact_args: bool = False
+    ) -> str:
         index = len(self.calls)
         self.calls.append(list(args))
         if index == self._fail_at:
@@ -206,6 +215,19 @@ def test_apply_secret_apply_stage_failure_message_excludes_token_values():
         client.apply_secret(NAME, f"{NAME}-slack", {"SLACK_BOT_TOKEN": BOT_TOKEN})
 
     assert BOT_TOKEN not in str(exc_info.value)
+
+
+def test_apply_secret_passes_redact_args_true_on_both_stages():
+    # Final-review Finding 3: apply_secret's stage-1 argv is the only place
+    # either token literal ever appears — it (and, defense-in-depth,
+    # stage-2) must ask CommandRunner.run to redact its debug-log argv
+    # rather than relying on the default (which logs it in full).
+    runner = _RecordingRunner(results=["<rendered secret yaml>", ""])
+    client = KubectlCLI(runner=runner)
+
+    client.apply_secret(NAME, f"{NAME}-slack", {"SLACK_BOT_TOKEN": BOT_TOKEN})
+
+    assert runner.redact_flags == [True, True]
 
 
 # --- wait_active -----------------------------------------------------------------
@@ -461,6 +483,33 @@ def test_update_dockerfile_runtime_image_only_touches_from_line(tmp_path):
         "# trailing comment\n"
         'ENTRYPOINT ["/bin/run-agent"]\n'
     )
+
+
+def test_update_dockerfile_runtime_image_raises_client_error_when_no_from_line(tmp_path):
+    # Final-review Finding 2: an unrecognized Dockerfile shape (no FROM line
+    # at all) used to make re.sub's zero-match substitution a silent no-op —
+    # the file got written back byte-identical and the caller had no signal
+    # the re-pin never happened. Must raise ClientError instead, naming the
+    # problem, so it surfaces as connect_slack's fixed 502 rather than a
+    # stale-base crashloop discovered later with no trail back to its cause.
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text("# no FROM line in this file\nCOPY bundle/ /bundle\n")
+
+    with pytest.raises(ClientError, match="no recognizable FROM line"):
+        _update_dockerfile_runtime_image(dockerfile, RUNTIME_IMAGE)
+
+    # Untouched: the whole point is not to silently rewrite it.
+    assert dockerfile.read_text() == "# no FROM line in this file\nCOPY bundle/ /bundle\n"
+
+
+def test_update_dockerfile_runtime_image_raises_client_error_when_dockerfile_missing(tmp_path):
+    # Same idiom as cortex_api.clients._read_slack_tokens: a missing file
+    # raises ClientError naming only the path, not a raw FileNotFoundError/
+    # OSError escaping to a caller that only expects ClientError.
+    missing = tmp_path / "Dockerfile"
+
+    with pytest.raises(ClientError, match="Dockerfile not found"):
+        _update_dockerfile_runtime_image(missing, RUNTIME_IMAGE)
 
 
 # --- wire_slack: Dockerfile runtime-image rewrite -----------------------------------

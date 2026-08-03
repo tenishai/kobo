@@ -412,6 +412,34 @@ def test_connect_slack_no_app_yet_returns_409(session_factory, config):
     assert response.json() == {"error": "set up a Slack app for this agent first"}
 
 
+def test_connect_slack_missing_channel_returns_422_without_echoing_tokens(
+    session_factory, config
+):
+    # Final-review Finding 1 (CRITICAL): with no RequestValidationError
+    # handler registered, a channel-less body that still carries bot/app
+    # tokens hit FastAPI's *default* 422 handler, whose `detail[].input`
+    # echoes the ENTIRE submitted body verbatim — pasted Slack tokens and
+    # all. The app-wide handler (cortex_api.main.create_app) must intercept
+    # this before FastAPI's default ever renders it, returning the house
+    # `{"error": ...}` shape with neither sentinel anywhere in the body.
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config, slack_app_id="A0EXISTING")
+    bot_sentinel = "xoxb-SENTINEL-BOT-TOKEN"
+    app_sentinel = "xapp-SENTINEL-APP-TOKEN"
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/slack/connect",
+        json={"bot_token": bot_sentinel, "app_token": app_sentinel},
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert set(body) == {"error"}
+    assert isinstance(body["error"], str)
+    assert bot_sentinel not in response.text
+    assert app_sentinel not in response.text
+
+
 def test_connect_slack_bad_channel_format_returns_422(session_factory, config):
     client = _make_client(session_factory, config)
     _seed_agent(session_factory, config, slack_app_id="A0EXISTING")
