@@ -6,6 +6,7 @@ plus structural checks that the fakes satisfy the Protocols.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -995,6 +996,43 @@ def test_slack_create_app_rotates_and_retries_on_token_expired(tmp_path):
     final_text = tokens_path.read_text()
     assert "xoxe.xoxp-1-new-config" in final_text
     assert "xoxe-1-new-refresh" in final_text
+
+
+def test_slack_create_app_rotate_preserves_tokens_file_mode(tmp_path):
+    # An operator may have hardened the tokens file to 0600 (it holds a live
+    # Slack refresh token). Rotation rewrites the file via tmp + os.replace;
+    # the tmp file must not silently widen permissions back to umask-default.
+    tokens_path = _write_slack_tokens_file(
+        tmp_path, config_token="xoxe.xoxp-1-old-config", refresh_token="xoxe-1-old-refresh"
+    )
+    os.chmod(tokens_path, 0o600)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/apps.manifest.create":
+            auth = request.headers.get("authorization")
+            if auth == "Bearer xoxe.xoxp-1-old-config":
+                return httpx.Response(200, json={"ok": False, "error": "token_expired"})
+            assert auth == "Bearer xoxe.xoxp-1-new-config"
+            return httpx.Response(200, json={"ok": True, "app_id": "A0NEW"})
+        elif path == "/api/tooling.tokens.rotate":
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "token": "xoxe.xoxp-1-new-config",
+                    "refresh_token": "xoxe-1-new-refresh",
+                },
+            )
+        raise AssertionError(f"unexpected path {path}")
+
+    client = HttpxSlackClient(
+        tokens_path, http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    app_id = client.create_app({"display_information": {"name": "clio"}})
+
+    assert app_id == "A0NEW"
+    assert os.stat(tokens_path).st_mode & 0o777 == 0o600
 
 
 def test_slack_create_app_second_auth_failure_after_rotate_raises(tmp_path):

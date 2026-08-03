@@ -24,6 +24,7 @@ import logging
 import os
 import queue
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -776,6 +777,13 @@ def _write_slack_tokens(tokens_path: Path, config_token: str, refresh_token: str
 
     tmp_path = tokens_path.with_name(tokens_path.name + ".tmp")
     tmp_path.write_text("".join(new_lines))
+    if tokens_path.exists():
+        # Preserve the original file's mode on the tmp file: the tmp file
+        # gets umask-default permissions (e.g. 0644), and os.replace carries
+        # the SOURCE's mode — so without this, a tokens file an operator
+        # hardened to 0600 would silently widen to 0644 after rotation. This
+        # file holds a live Slack refresh token.
+        shutil.copymode(tokens_path, tmp_path)
     os.replace(tmp_path, tokens_path)
 
 
