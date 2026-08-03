@@ -42,6 +42,12 @@ class Agent(Base):
     )
     repo_full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     gojira_app_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Slack connect (P2c): both nullable, set only once an operator walks the
+    # agent through Finish-Slack-setup — non-secret state only (the app id,
+    # the channel it's wired to). The pasted bot/app tokens themselves are
+    # never persisted anywhere; see cortex_api.slack_setup.wire_slack.
+    slack_app_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    slack_channel: Mapped[str | None] = mapped_column(String(64), nullable=True)
     first_reply: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

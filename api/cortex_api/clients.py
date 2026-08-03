@@ -647,6 +647,23 @@ class KubectlClient(Protocol):
         """
         ...
 
+    def apply_secret(self, namespace: str, name: str, literals: dict[str, str]) -> None:
+        """Idempotent upsert of a generic Secret `name` in `namespace` whose
+        data is exactly `literals` (e.g. `{"SLACK_BOT_TOKEN": ..., "SLACK_APP_TOKEN": ...}`).
+
+        Used by `cortex_api.slack_setup.wire_slack` to deliver the pasted
+        Slack tokens to the agent's namespace: a `create secret --dry-run
+        -o yaml | apply -f -` round trip rather than a plain `create` (which
+        would fail on a second call for the same name) — safe to call again
+        with a rotated token pair. The literal values reach kubectl only via
+        this call's argv/stdin; they are never logged, never written to a
+        file cortex controls, and never appear in a raised exception's
+        message (the real implementation sanitizes CommandRunner's own
+        argv-embedding failure message on both stages for exactly this
+        reason).
+        """
+        ...
+
 
 class KubectlCLI:
     """kubectl-backed KubectlClient."""
@@ -695,6 +712,39 @@ class KubectlCLI:
                 "-o", "jsonpath={.spec.template.spec.containers[0].image}",
             ]
         )
+
+    def apply_secret(self, namespace: str, name: str, literals: dict[str, str]) -> None:
+        literal_args = [f"--from-literal={key}={value}" for key, value in literals.items()]
+        try:
+            manifest_yaml = self._runner.run(
+                [
+                    self._kubectl, "-n", namespace, "create", "secret", "generic", name,
+                    *literal_args, "--dry-run=client", "-o", "yaml",
+                ]
+            )
+        except ClientError as exc:
+            # CommandRunner.run's own ClientError message embeds the full
+            # argv it ran — which, for this specific command, is the only
+            # place the literal secret values ever appear. Re-raise with a
+            # message built from just the underlying stderr/stdout instead,
+            # so a failure here can never leak `literals`' values the way
+            # letting the original exception propagate would.
+            raise ClientError(
+                f"kubectl create secret {name!r} (dry-run) failed: {exc.stderr or exc.stdout}",
+                returncode=exc.returncode, stdout=exc.stdout, stderr=exc.stderr,
+            ) from exc
+
+        try:
+            self._runner.run([self._kubectl, "apply", "-f", "-"], stdin=manifest_yaml)
+        except ClientError as exc:
+            # Same reasoning as above, defense-in-depth: this stage's argv
+            # carries no secret material (the manifest is piped via stdin),
+            # but sanitizing both stages identically means the safety
+            # property doesn't depend on which stage happens to fail.
+            raise ClientError(
+                f"kubectl apply of secret {name!r} failed: {exc.stderr or exc.stdout}",
+                returncode=exc.returncode, stdout=exc.stdout, stderr=exc.stderr,
+            ) from exc
 
 
 # --- Slack (Web API: manifest app creation + config-token rotation) -----------

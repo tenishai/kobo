@@ -33,6 +33,7 @@ from cortex_api.provisioner import (
     run_pipeline,
     sweep_interrupted,
 )
+from cortex_api.slack_setup import render_manifest, wire_slack
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +72,12 @@ class KnowledgeSavePayload(BaseModel):
     content: str
 
 
+class SlackConnectRequest(BaseModel):
+    channel: str
+    bot_token: str
+    app_token: str
+
+
 # The delivery-status route's sha path param must look like a real git
 # commit sha (as returned by save_knowledge_file/delete_knowledge_file, both
 # `github.local_head`) before it ever reaches cortex_api.knowledge's
@@ -78,6 +85,12 @@ class KnowledgeSavePayload(BaseModel):
 # is purely an HTTP-layer guard against a malformed path segment. Matches
 # git's own short-to-full hex sha range.
 KNOWLEDGE_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+
+# Slack channel id shape (Global Constraints, P2c plan): a public ("C...")
+# or private ("G...") channel id, format-only — never a semantic check that
+# the channel actually exists (that's Slack's job when the agent tries to
+# post to it).
+SLACK_CHANNEL_RE = re.compile(r"^[CG][A-Z0-9]{6,}$")
 
 
 def _model_label(cfg: Config, model_id: str) -> str:
@@ -164,14 +177,22 @@ def _fail_launch(
     return JSONResponse({"error": error_message}, status_code=503)
 
 
-def _ready_agent_or_error(session: Session, name: str) -> Agent | JSONResponse:
-    """Shared 404/409 guard for the four knowledge routes (P2b) below.
+def _ready_agent_or_error(
+    session: Session,
+    name: str,
+    *,
+    not_ready_message: str = "agent is not ready for memory changes",
+) -> Agent | JSONResponse:
+    """Shared 404/409 guard for the four knowledge routes (P2b) and the two
+    Slack connect routes (P2c) below.
 
     Unlike `chat_with_agent`/`retry_agent` — each of which inlines its own
     lookup because their 409 conditions/messages differ (READY-to-chat vs
-    FAILED-to-retry) — all four knowledge routes share the exact same check
-    (unknown agent, or not READY) and message, so it's factored out once
-    here instead of copy-pasted four times.
+    FAILED-to-retry) — the knowledge and Slack routes all share the exact
+    same 404/READY check, just with different 409 wording per feature (hence
+    `not_ready_message`, defaulted to the knowledge routes' original text so
+    every existing call site is unaffected), so it's factored out once here
+    instead of copy-pasted across routes.
 
     Returns the `Agent` row when the guard passes, or the `JSONResponse` a
     route should return immediately otherwise — callers must `isinstance`-
@@ -181,9 +202,7 @@ def _ready_agent_or_error(session: Session, name: str) -> Agent | JSONResponse:
     if agent is None:
         return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
     if agent.status != AgentStatus.READY:
-        return JSONResponse(
-            {"error": "agent is not ready for memory changes"}, status_code=409
-        )
+        return JSONResponse({"error": not_ready_message}, status_code=409)
     return agent
 
 
@@ -390,6 +409,12 @@ def create_app(
             for step in agent.steps
         ]
 
+        slack = (
+            {"app_id": agent.slack_app_id, "channel": agent.slack_channel}
+            if agent.slack_app_id is not None
+            else None
+        )
+
         return JSONResponse(
             {
                 "name": agent.name,
@@ -403,6 +428,7 @@ def create_app(
                 "created_at": agent.created_at.isoformat(),
                 "steps": steps,
                 "first_reply": agent.first_reply,
+                "slack": slack,
             }
         )
 
@@ -628,6 +654,118 @@ def create_app(
             )
 
         return JSONResponse(state)
+
+    # --- Slack connect (P2c): app creation + token delivery/wiring --------------
+
+    @app.post("/api/agents/{name}/slack/app")
+    def create_slack_app(name: str, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        agent = _ready_agent_or_error(
+            session, name, not_ready_message="agent is not ready to connect to Slack yet"
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        clients = app.state.clients
+        if clients.slack is None:
+            return JSONResponse({"error": "Slack is not configured"}, status_code=503)
+
+        if agent.slack_app_id is not None:
+            return JSONResponse(
+                {"error": "Slack is already set up for this agent"}, status_code=409
+            )
+
+        cfg: Config = app.state.config
+        # persona_first_line source: the persona catalog's own one-line
+        # `description` field (cortex_api.catalog.PersonaInfo.description —
+        # the same text the /api/catalog/personas route already returns),
+        # looked up by the id recorded on `agent.persona` — NOT the id
+        # itself and NOT the persona's full templated body. Falls back to
+        # an id-derived phrase only if the persona has since been removed
+        # from the catalog, mirroring `_model_label`'s own retired-catalog-
+        # entry fallback above.
+        personas = {p.id: p for p in list_personas(cfg.personas_dir)}
+        persona_info = personas.get(agent.persona)
+        if persona_info is not None:
+            persona_first_line = persona_info.description
+        else:
+            persona_first_line = f"A {agent.persona} agent, reachable in Slack."
+
+        manifest = render_manifest(agent.name, persona_first_line)
+
+        try:
+            slack_app_id = clients.slack.create_app(manifest)
+        except ClientError as exc:
+            log.warning("slack app creation failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't set up Slack — try again"}, status_code=502
+            )
+
+        agent.slack_app_id = slack_app_id
+        session.commit()
+
+        return JSONResponse(
+            {
+                "app_id": slack_app_id,
+                "configure_url": f"https://api.slack.com/apps/{slack_app_id}",
+            }
+        )
+
+    @app.post("/api/agents/{name}/slack/connect")
+    def connect_slack(
+        name: str, payload: SlackConnectRequest, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(
+            session, name, not_ready_message="agent is not ready to connect to Slack yet"
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        clients = app.state.clients
+        if clients.slack is None:
+            return JSONResponse({"error": "Slack is not configured"}, status_code=503)
+
+        if agent.slack_app_id is None:
+            return JSONResponse(
+                {"error": "set up a Slack app for this agent first"}, status_code=409
+            )
+
+        # Format checks only — never echo the submitted values back in an
+        # error body, here or anywhere below.
+        if not SLACK_CHANNEL_RE.match(payload.channel):
+            return JSONResponse(
+                {"error": "that doesn't look like a Slack channel ID"}, status_code=422
+            )
+        if not payload.bot_token.startswith("xoxb-"):
+            return JSONResponse(
+                {"error": "that doesn't look like a Slack bot token"}, status_code=422
+            )
+        if not payload.app_token.startswith("xapp-"):
+            return JSONResponse(
+                {"error": "that doesn't look like a Slack app-level token"}, status_code=422
+            )
+
+        try:
+            sha = wire_slack(
+                clients.github,
+                clients.kubectl,
+                clients.gojira,
+                repo=agent.repo_full_name,
+                name=agent.name,
+                gojira_app_id=agent.gojira_app_id,
+                channel=payload.channel,
+                bot_token=payload.bot_token,
+                app_token=payload.app_token,
+            )
+        except ClientError as exc:
+            log.warning("slack connect failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't set up Slack — try again"}, status_code=502
+            )
+
+        agent.slack_channel = payload.channel
+        session.commit()
+
+        return JSONResponse({"sha": sha})
 
     return app
 

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from cortex_api.clients import ChatMessage, ClientError, GojiraConflict, SlackApiError
 
 # --- Generated-scaffolding fixture for FakeGitHub.clone ------------------------
@@ -207,6 +209,22 @@ class FakeGitHub:
     recorded in both `calls` and the dedicated `local_head_calls` (the exact
     `workdir` it was given), so a test can assert it was called with the same
     workdir `commit_push` saw.
+
+    `agent_yaml_transports` (P2c), when given, makes `clone` also write
+    `bundle/agent.yaml` with `transports` set to exactly that list — the
+    fixture `cortex_api.slack_setup.wire_slack`'s tests edit. Defaults to
+    `None`, in which case `clone` writes no `bundle/agent.yaml` at all —
+    matching a real agent repo's shape closely enough for existing tests
+    (which predate this knob and assert bare `FakeGitHub()` writes no
+    `bundle/` tree at all) while leaving every one of them unaffected: pass
+    e.g. `[{"kind": "a2a", "host": "0.0.0.0", "port": 8080}]` (matching
+    `cortex_api.composer`'s real rendering) for a wire_slack test that needs
+    the file to exist. `gojira_secrets_from`, when given, adds a
+    `secrets_from` key to the written `gojira.yaml` (absent by default,
+    matching a real gojira.yaml that hasn't been through any
+    `secrets_from`-writing edit yet) — the seam for testing that
+    `wire_slack`'s edit appends to an existing list rather than clobbering
+    it.
     """
 
     def __init__(
@@ -221,6 +239,8 @@ class FakeGitHub:
         rerun_followup: list[dict] | None = None,
         knowledge_files: dict[str, str] | None = None,
         local_head_result: str = FAKE_LOCAL_HEAD_DEFAULT,
+        agent_yaml_transports: list[dict] | None = None,
+        gojira_secrets_from: list[str] | None = None,
     ):
         self.repos: set[str] = set(existing_repos) if existing_repos else set()
         self.created_from_dir: list[tuple[str, Path]] = []
@@ -231,6 +251,12 @@ class FakeGitHub:
         self._commit_push_index = 0
         self._knowledge_files = dict(knowledge_files) if knowledge_files else None
         self._local_head_result = local_head_result
+        self._agent_yaml_transports = (
+            list(agent_yaml_transports) if agent_yaml_transports is not None else None
+        )
+        self._gojira_secrets_from = (
+            list(gojira_secrets_from) if gojira_secrets_from is not None else None
+        )
         self.local_head_calls: list[Path] = []
 
         self._head_sha = head_sha
@@ -268,15 +294,30 @@ class FakeGitHub:
         name = _app_name_from_repo(repo)
         base = dest / "k8s" / "base"
         base.mkdir(parents=True, exist_ok=True)
-        (dest / "gojira.yaml").write_text(GOJIRA_YAML_TEMPLATE.format(name=name))
+
+        gojira_yaml_text = GOJIRA_YAML_TEMPLATE.format(name=name)
+        if self._gojira_secrets_from is not None:
+            gojira_data = yaml.safe_load(gojira_yaml_text)
+            gojira_data["secrets_from"] = list(self._gojira_secrets_from)
+            gojira_yaml_text = yaml.safe_dump(gojira_data, sort_keys=False)
+        (dest / "gojira.yaml").write_text(gojira_yaml_text)
+
         (base / "deployment.yaml").write_text(DEPLOYMENT_YAML_TEMPLATE.format(name=name))
         (base / "service.yaml").write_text(SERVICE_YAML_TEMPLATE.format(name=name))
         (base / "podmonitoring.yaml").write_text(PODMONITORING_YAML_TEMPLATE.format(name=name))
         (base / "rules.yaml").write_text(RULES_YAML_TEMPLATE.format(name=name))
         (base / "kustomization.yaml").write_text(KUSTOMIZATION_YAML_TEMPLATE.format(name=name))
 
+        bundle_dir = dest / "bundle"
+        if self._agent_yaml_transports is not None:
+            bundle_dir.mkdir(parents=True, exist_ok=True)
+            agent_yaml_data = {"name": name, "transports": list(self._agent_yaml_transports)}
+            (bundle_dir / "agent.yaml").write_text(
+                yaml.safe_dump(agent_yaml_data, sort_keys=False)
+            )
+
         if self._knowledge_files:
-            knowledge_dir = dest / "bundle" / "knowledge"
+            knowledge_dir = bundle_dir / "knowledge"
             knowledge_dir.mkdir(parents=True, exist_ok=True)
             for filename, content in self._knowledge_files.items():
                 (knowledge_dir / filename).write_text(content)
@@ -487,6 +528,14 @@ class FakeKubectl:
     first 12 chars of `FakeGitHub`'s default `local_head_result` — so a test
     wiring bare `FakeGitHub()`/`FakeKubectl()` together sees a "delivered"
     state without configuring either fake.
+
+    `apply_secret` (P2c) records every call into the dedicated
+    `secrets_applied` list (deliberately NOT `.calls`, which this class's
+    existing tests assert on exactly for `rollout_ok` alone — see above) as
+    `(namespace, name, literals)`, so a `wire_slack` test can assert on the
+    secret name/literals without any real kubectl involved. `apply_secret_error`,
+    when set, raises `ClientError(apply_secret_error)` instead of recording
+    — the seam for exercising `wire_slack`'s/the route's failure handling.
     """
 
     def __init__(
@@ -496,12 +545,15 @@ class FakeKubectl:
         env_names: dict[tuple[str, str], list[str]] | None = None,
         service_accounts: dict[tuple[str, str], str] | None = None,
         images: dict[tuple[str, str], str] | None = None,
+        apply_secret_error: str | None = None,
     ):
         self._rollout_result = rollout_result
         self._env_names = dict(env_names) if env_names else {}
         self._service_accounts = dict(service_accounts) if service_accounts else {}
         self._images = dict(images) if images else {}
+        self._apply_secret_error = apply_secret_error
         self.calls: list[tuple[str, str]] = []
+        self.secrets_applied: list[tuple[str, str, dict[str, str]]] = []
 
     def rollout_ok(self, namespace: str, deploy: str, timeout_s: int = 180) -> bool:
         self.calls.append((namespace, deploy))
@@ -517,6 +569,11 @@ class FakeKubectl:
 
     def deploy_image(self, namespace: str, deploy: str) -> str:
         return self._images.get((namespace, deploy), FAKE_DEPLOY_IMAGE_DEFAULT)
+
+    def apply_secret(self, namespace: str, name: str, literals: dict[str, str]) -> None:
+        if self._apply_secret_error is not None:
+            raise ClientError(self._apply_secret_error)
+        self.secrets_applied.append((namespace, name, dict(literals)))
 
 
 class FakeSlack:
