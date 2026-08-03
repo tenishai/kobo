@@ -27,6 +27,13 @@ class Config(BaseModel):
     vertex_project: str = "example-model-project"
     vertex_location: str = "us-east5"
     model_group: str = "models@example.com"
+    # Model garden image-generation model + region for agent avatar PNGs
+    # (P2d) — a separate location from vertex_location since the avatar
+    # model may not be available (or may be cheaper/faster) in a different
+    # region than the chat models; project is shared with vertex_project
+    # (both hit the same Vertex AI publisher-model surface).
+    avatar_model: str = "gemini-2.5-flash-image"
+    avatar_location: str = "us-central1"
     models: list[ModelChoice] = Field(
         default=[ModelChoice(id="vertex_ai/claude-sonnet-4-5", label="Claude Sonnet 4.5")],
         min_length=1,

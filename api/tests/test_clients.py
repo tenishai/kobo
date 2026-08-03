@@ -5,6 +5,7 @@ plus structural checks that the fakes satisfy the Protocols.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -33,12 +34,15 @@ from cortex_api.clients import (
     GojiraConflict,
     HttpxGojiraClient,
     HttpxSlackClient,
+    ImageClient,
     KubectlAgentClient,
     KubectlCLI,
     KubectlClient,
     SlackApiError,
     SlackClient,
+    VertexImageClient,
     _build_task_envelope,
+    _gcloud_print_access_token,
     _post_task,
     _wait_for_forwarded_port,
     _write_slack_tokens,
@@ -49,6 +53,7 @@ from tests.fakes import (
     FakeCloud,
     FakeGitHub,
     FakeGojira,
+    FakeImage,
     FakeKubectl,
     FakeSlack,
 )
@@ -1168,6 +1173,209 @@ def test_slack_malformed_tokens_file_raises_client_error_naming_path(tmp_path):
     assert str(tokens_path) in str(exc_info.value)
 
 
+# --- Image (VertexImageClient) -------------------------------------------------
+
+
+def test_vertex_image_client_request_shape_url_body_and_auth_header():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.content)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "inlineData": {
+                                        "mimeType": "image/png",
+                                        "data": base64.b64encode(b"x").decode(),
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = VertexImageClient(
+        "acme-project",
+        "us-central1",
+        "gemini-2.5-flash-image",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    client.generate("a small red circle on a white background, minimal icon")
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == (
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/acme-project/"
+        "locations/us-central1/publishers/google/models/gemini-2.5-flash-image:generateContent"
+    )
+    assert captured["json"] == {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": "a small red circle on a white background, minimal icon"}],
+            }
+        ],
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+    }
+    assert captured["auth"] == "Bearer fake-access-token"
+
+
+def test_vertex_image_client_happy_path_skips_text_part_finds_first_inline_data():
+    # Canned reply carries a TEXT part BEFORE the inlineData part (a real
+    # generateContent reply routinely does) — proves generate() scans for the
+    # first inlineData part rather than assuming it's parts[0].
+    png_bytes = b"\x89PNG\r\n\x1a\nrest-of-a-real-png-payload"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"text": "here's your avatar:"},
+                                {
+                                    "inlineData": {
+                                        "mimeType": "image/png",
+                                        "data": base64.b64encode(png_bytes).decode(),
+                                    }
+                                },
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = VertexImageClient(
+        "acme-project", "us-central1", "gemini-2.5-flash-image",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    result = client.generate("a small red circle on a white background")
+
+    assert result == png_bytes
+
+
+def test_vertex_image_client_no_image_part_raises_client_error_without_leaking_prompt():
+    # 200 with no inlineData part at all (safety-blocked or text-only reply).
+    prompt = "a very specific secret prompt about a dragon riding a unicycle"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": "sorry, can't make that"}]}}]},
+        )
+
+    client = VertexImageClient(
+        "acme-project", "us-central1", "gemini-2.5-flash-image",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError) as exc_info:
+        client.generate(prompt)
+
+    assert str(exc_info.value) == "the picture didn't come through — try again"
+    assert prompt not in str(exc_info.value)
+
+
+def test_vertex_image_client_non_200_raises_client_error_without_leaking_prompt():
+    prompt = "a very specific secret prompt about a dragon riding a unicycle"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="internal error")
+
+    client = VertexImageClient(
+        "acme-project", "us-central1", "gemini-2.5-flash-image",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError) as exc_info:
+        client.generate(prompt)
+
+    assert str(exc_info.value) == "the picture didn't come through — try again"
+    assert prompt not in str(exc_info.value)
+
+
+def test_vertex_image_client_malformed_json_raises_client_error_without_leaking_prompt():
+    prompt = "a very specific secret prompt about a dragon riding a unicycle"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="not json at all")
+
+    client = VertexImageClient(
+        "acme-project", "us-central1", "gemini-2.5-flash-image",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError) as exc_info:
+        client.generate(prompt)
+
+    assert str(exc_info.value) == "the picture didn't come through — try again"
+    assert prompt not in str(exc_info.value)
+
+
+def test_vertex_image_client_unexpected_json_shape_raises_client_error():
+    # Well-formed JSON, but missing the candidates/content/parts path
+    # entirely — a different malformed-reply shape than "no inlineData part".
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"unexpected": "shape"})
+
+    client = VertexImageClient(
+        "acme-project", "us-central1", "gemini-2.5-flash-image",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError) as exc_info:
+        client.generate("a prompt")
+
+    assert str(exc_info.value) == "the picture didn't come through — try again"
+
+
+def test_vertex_image_client_default_http_client_has_generous_timeout():
+    # No client injected -> VertexImageClient must build its own with real
+    # headroom over httpx's bare 5s default: image generation is a full
+    # model roundtrip (routinely slow, like KubectlAgentClient's a2a hello),
+    # not a quick CRUD call.
+    client = VertexImageClient("acme-project", "us-central1", "gemini-2.5-flash-image")
+    timeout = client._http_client.timeout
+    assert timeout.connect == 10.0
+    assert timeout.read == 120.0
+
+
+def test_vertex_image_client_default_token_provider_is_gcloud_print_access_token():
+    # No existing google-auth idiom exists anywhere in this codebase (grepped
+    # cortex_api and the wider repo) — the default shells `gcloud auth
+    # print-access-token` through CommandRunner, mirroring every other real
+    # client in this module (GhCLI, GcloudClient, KubectlCLI all shell out
+    # rather than use a google-auth library).
+    client = VertexImageClient("acme-project", "us-central1", "gemini-2.5-flash-image")
+    assert client._token_provider is _gcloud_print_access_token
+
+
+def test_gcloud_print_access_token_argv_and_pass_through():
+    runner = RecordingRunner(results=[(0, "ya29.fake-access-token", "")])
+    token = _gcloud_print_access_token(runner)
+    assert runner.calls == [["gcloud", "auth", "print-access-token"]]
+    assert token == "ya29.fake-access-token"
+
+
 # --- Fakes satisfy the Protocols ----------------------------------------------
 
 
@@ -1415,6 +1623,32 @@ def test_fake_slack_create_error_knob_raises_slack_api_error():
         fake.create_app({"display_information": {"name": "clio"}})
 
 
+def test_fake_image_satisfies_protocol():
+    fake = FakeImage()
+    assert isinstance(fake, ImageClient)
+    result = fake.generate("a small red circle on a white background")
+    assert result.startswith(b"\x89PNG")
+    assert fake.prompts == ["a small red circle on a white background"]
+
+
+def test_fake_image_records_multiple_prompts_in_order():
+    fake = FakeImage()
+    fake.generate("first prompt")
+    fake.generate("second prompt")
+    assert fake.prompts == ["first prompt", "second prompt"]
+
+
+def test_fake_image_custom_image_bytes():
+    fake = FakeImage(image_bytes=b"not-really-a-png-but-configurable")
+    assert fake.generate("a prompt") == b"not-really-a-png-but-configurable"
+
+
+def test_fake_image_generate_error_knob_raises_client_error():
+    fake = FakeImage(generate_error="the picture didn't come through — try again")
+    with pytest.raises(ClientError, match="the picture didn't come through"):
+        fake.generate("a prompt")
+
+
 # --- Clients.real() wiring -----------------------------------------------------
 
 
@@ -1427,6 +1661,24 @@ def test_clients_real_wires_expected_implementations():
     assert isinstance(clients.kubectl, KubectlCLI)
     assert isinstance(clients.agent, KubectlAgentClient)
     assert isinstance(clients, Clients)
+
+
+def test_clients_real_wires_image_client_from_avatar_and_vertex_config():
+    # Always constructible (unlike slack, never gated behind an "is this
+    # configured" check) — project comes from the EXISTING vertex_project
+    # field, location/model from the new avatar_location/avatar_model.
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        vertex_project="acme-model-project",
+        avatar_location="us-east4",
+        avatar_model="some-model",
+    )
+    clients = Clients.real(config)
+    assert isinstance(clients.image, VertexImageClient)
+    assert clients.image._project == "acme-model-project"
+    assert clients.image._location == "us-east4"
+    assert clients.image._model == "some-model"
 
 
 def test_clients_real_wires_slack_none_when_tokens_path_unset():

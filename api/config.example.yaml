@@ -36,6 +36,13 @@ vertex_location: us-east5
 # Email group managing LLM model access and routing
 model_group: models@example.com
 
+# Model garden model used to generate agent avatar PNGs
+avatar_model: gemini-2.5-flash-image
+
+# Google Cloud region for the avatar image-generation endpoint (project is
+# shared with vertex_project above)
+avatar_location: us-central1
+
 # Available LLM models with display labels for UI selection
 models:
   - id: vertex_ai/claude-sonnet-4-5

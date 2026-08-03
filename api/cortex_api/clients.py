@@ -19,6 +19,7 @@ inspect its `.stderr`.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -29,6 +30,7 @@ import subprocess
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypedDict, runtime_checkable
@@ -935,6 +937,124 @@ class HttpxSlackClient:
         return new_config_token
 
 
+# --- Image (Vertex AI Model Garden avatar PNGs) ------------------------------
+
+
+@runtime_checkable
+class ImageClient(Protocol):
+    def generate(self, prompt: str) -> bytes:
+        """Generate one square PNG from `prompt`; raise ClientError on failure."""
+        ...
+
+
+# The single user-visible failure message for every ImageClient.generate
+# failure mode (safety-blocked/no-image 200, non-200, malformed JSON, bad
+# base64) — deliberately generic and never built from the prompt or from
+# server response bodies, since routes build request bodies straight from
+# raised messages (see VertexImageClient.generate below for what DOES get
+# logged, prompt included, server-side only).
+_IMAGE_GENERATION_FAILED = "the picture didn't come through — try again"
+
+
+def _gcloud_print_access_token(runner: CommandRunner | None = None) -> str:
+    """Default `token_provider` for VertexImageClient: shells `gcloud auth
+    print-access-token` via CommandRunner and returns its (already-stripped
+    by CommandRunner.run) stdout.
+
+    No existing google-auth idiom exists anywhere in this codebase (checked
+    cortex_api and the wider repo for `print-access-token`/`google.auth`/
+    `google.oauth2`) — this mirrors the CLI-shell-out idiom every other real
+    client in this module already uses (GhCLI, GcloudClient, KubectlCLI) for
+    exactly the same account/credential surface the caller's `gcloud` CLI is
+    already authenticated with, rather than adding a new google-auth library
+    dependency for this one call.
+    """
+    return (runner or CommandRunner()).run(["gcloud", "auth", "print-access-token"])
+
+
+class VertexImageClient:
+    """Generates one square avatar PNG per prompt via Vertex AI's Model
+    Garden `generateContent` endpoint (`gemini-2.5-flash-image` by default —
+    see `Config.avatar_model`/`avatar_location`), Gemini's image-generation
+    successor to the now-deprecated Imagen `:predict` endpoints (P2d
+    discovery).
+
+    A 200 response doesn't guarantee an image: the model can reply with a
+    safety-blocked or text-only turn (no `inlineData` part anywhere), which
+    is a normal outcome, not a transport error — mapped to the same
+    `ClientError` as an actual failure so every caller has exactly one
+    failure path to handle. Every failure mode below raises the identical
+    plain `_IMAGE_GENERATION_FAILED` message; the prompt itself is logged
+    (server-side only, at warning level) for operators debugging repeated
+    failures, but is never part of a raised exception's message — routes
+    build their response bodies straight from those messages.
+    """
+
+    def __init__(
+        self,
+        project: str,
+        location: str,
+        model: str,
+        http_client: httpx.Client | None = None,
+        token_provider: Callable[[], str] | None = None,
+    ):
+        self._project = project
+        self._location = location
+        self._model = model
+        # Image generation is a full model roundtrip (like KubectlAgentClient's
+        # a2a hello, routinely slow) — same generous headroom over httpx's
+        # bare 5s default, not a quick CRUD call's timeout.
+        self._http_client = http_client or httpx.Client(timeout=httpx.Timeout(120.0, connect=10.0))
+        self._token_provider = token_provider or _gcloud_print_access_token
+
+    def generate(self, prompt: str) -> bytes:
+        url = (
+            f"https://{self._location}-aiplatform.googleapis.com/v1/projects/"
+            f"{self._project}/locations/{self._location}/publishers/google/"
+            f"models/{self._model}:generateContent"
+        )
+        body = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+        }
+        try:
+            resp = self._http_client.post(
+                url, json=body,
+                headers={"Authorization": f"Bearer {self._token_provider()}"},
+            )
+        except httpx.HTTPError as exc:
+            log.warning("image generation request failed for prompt %r: %r", prompt, exc)
+            raise ClientError(_IMAGE_GENERATION_FAILED) from exc
+
+        if resp.status_code != 200:
+            log.warning(
+                "image generation failed (%s) for prompt %r: %s",
+                resp.status_code, prompt, resp.text[:200],
+            )
+            raise ClientError(_IMAGE_GENERATION_FAILED)
+
+        try:
+            parts = resp.json()["candidates"][0]["content"]["parts"]
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            log.warning("malformed image generation reply for prompt %r: %r", prompt, exc)
+            raise ClientError(_IMAGE_GENERATION_FAILED) from exc
+
+        for part in parts:
+            inline_data = part.get("inlineData")
+            if not inline_data:
+                continue
+            try:
+                return base64.b64decode(inline_data["data"])
+            except (KeyError, ValueError, TypeError) as exc:
+                log.warning("malformed inlineData for prompt %r: %r", prompt, exc)
+                raise ClientError(_IMAGE_GENERATION_FAILED) from exc
+
+        # No inlineData part in any reply part at all — safety-blocked or a
+        # text-only turn. A normal, expected outcome, not a transport error.
+        log.warning("no image part in generation reply for prompt %r", prompt)
+        raise ClientError(_IMAGE_GENERATION_FAILED)
+
+
 # --- Wiring -----------------------------------------------------------------------
 
 
@@ -949,6 +1069,14 @@ class Clients:
     # must 503 with a clear "Slack is not configured" error in that case,
     # keeping local setups without Slack tokens working untouched.
     slack: SlackClient | None = None
+    # Unlike slack, ImageClient is always constructible (the vertex project
+    # fields it needs already exist in Config) — Clients.real() below never
+    # gates this behind an "is this configured" check the way it does slack;
+    # it always assigns a real VertexImageClient. The dataclass field itself
+    # still defaults to None purely so every pre-existing direct
+    # `Clients(...)` construction elsewhere in the test suite (predating the
+    # avatar feature) keeps working without needing to pass this field.
+    image: ImageClient | None = None
 
     @classmethod
     def real(cls, config: Config) -> Clients:
@@ -960,6 +1088,9 @@ class Clients:
             cloud=GcloudClient(config.gcp_project, runner=runner),
             agent=KubectlAgentClient(),
             kubectl=KubectlCLI(runner=runner),
+            image=VertexImageClient(
+                config.vertex_project, config.avatar_location, config.avatar_model
+            ),
             slack=HttpxSlackClient(config.slack_tokens_path)
             if config.slack_tokens_path
             else None,

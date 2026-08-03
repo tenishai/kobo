@@ -11,6 +11,7 @@ tests can assert on side effects without touching a real subprocess or network.
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 import yaml
@@ -626,3 +627,38 @@ class FakeSlack:
         if self._create_error is not None:
             raise SlackApiError(f"slack app creation failed: {self._create_error}")
         return self._app_id
+
+
+# Canonical 1x1 transparent PNG (68 bytes) — a real, valid minimal PNG (not a
+# hand-rolled byte string), so a test asserting FakeImage's default return
+# value starts with the PNG magic bytes (`\x89PNG`) is checking something
+# genuinely PNG-shaped, not an arbitrary placeholder.
+FAKE_IMAGE_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+)
+
+
+class FakeImage:
+    """Records every prompt passed to `generate` (in call order, `.prompts`)
+    and returns a configurable `image_bytes` (default `FAKE_IMAGE_PNG_BYTES`,
+    a real tiny valid PNG) — no real Vertex AI backend involved.
+
+    `generate_error`, when set, makes `generate` raise `ClientError
+    (generate_error)` instead of returning bytes — the seam for exercising a
+    route's failure handling (e.g. the "the picture didn't come through —
+    try again" plain message VertexImageClient raises) without a real
+    backend.
+    """
+
+    def __init__(
+        self, *, image_bytes: bytes = FAKE_IMAGE_PNG_BYTES, generate_error: str | None = None
+    ):
+        self._image_bytes = image_bytes
+        self._generate_error = generate_error
+        self.prompts: list[str] = []
+
+    def generate(self, prompt: str) -> bytes:
+        self.prompts.append(prompt)
+        if self._generate_error is not None:
+            raise ClientError(self._generate_error)
+        return self._image_bytes
