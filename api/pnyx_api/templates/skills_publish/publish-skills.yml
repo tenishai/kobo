@@ -1,0 +1,60 @@
+# Publishes this repo's skills to the org's skills bucket and rewrites its
+# index.json whenever a change lands on main. Every pull request runs the
+# same discovery + frontmatter validation first, in `--check` mode (see
+# publish_skills.py's `main`) — no cloud auth needed for that path, so a
+# malformed skill fails the PR instead of the next real publish.
+#
+# Rendered by pnyx's bootstrap CLI: __PNYX_BUCKET__, __PNYX_WIF_PROVIDER__,
+# and __PNYX_SERVICE_ACCOUNT__ below are literal tokens, string-replaced in
+# place (never Python `.format()`'d or Jinja-rendered) — so every `${{ }}`
+# GitHub Actions expression in this file passes through the render
+# untouched.
+name: Publish skills
+
+"on":
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: __PNYX_WIF_PROVIDER__
+          service_account: __PNYX_SERVICE_ACCOUNT__
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install google-cloud-storage pyyaml
+
+      - run: python .github/scripts/publish_skills.py --bucket __PNYX_BUCKET__ --check
+
+  publish:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: __PNYX_WIF_PROVIDER__
+          service_account: __PNYX_SERVICE_ACCOUNT__
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install google-cloud-storage pyyaml
+
+      - run: python .github/scripts/publish_skills.py --bucket __PNYX_BUCKET__
