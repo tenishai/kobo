@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -15,6 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from cortex_api.avatars import avatar_prompt, set_avatar
 from cortex_api.catalog import list_personas, list_skills, validate_name
 from cortex_api.clients import ClientError
 from cortex_api.config import Config
@@ -96,6 +98,12 @@ KNOWLEDGE_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 # supported: Slack has migrated private channels to C ids, so there's no
 # live channel this regex would need to admit.
 SLACK_CHANNEL_RE = re.compile(r"^C[A-Z0-9]{6,}$")
+
+# Avatar generation (P2d, Global Constraint): reject a generated image bigger
+# than this BEFORE it's ever pushed to the repo or cached on the Agent row —
+# a plain backend-result problem (the model returned something oversized),
+# not a user-input problem, hence the 502 rather than a 422.
+AVATAR_MAX_BYTES = 4 * 1024 * 1024
 
 
 def _model_label(cfg: Config, model_id: str) -> str:
@@ -432,6 +440,7 @@ def create_app(
                     "model": a.model_id,
                     "model_label": _model_label(cfg, a.model_id),
                     "created_at": a.created_at.isoformat(),
+                    "has_avatar": a.avatar_png is not None,
                 }
                 for a in agents
             ]
@@ -474,6 +483,7 @@ def create_app(
                 "steps": steps,
                 "first_reply": agent.first_reply,
                 "slack": slack,
+                "has_avatar": agent.avatar_png is not None,
             }
         )
 
@@ -822,6 +832,88 @@ def create_app(
         session.commit()
 
         return JSONResponse({"sha": sha})
+
+    # --- Avatar (P2d): persona-derived face, repo-backed with a display cache ---
+
+    @app.post("/api/agents/{name}/avatar")
+    def generate_avatar(name: str, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        agent = _ready_agent_or_error(
+            session, name, not_ready_message="agent is not ready for an avatar yet"
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        clients = app.state.clients
+        if clients.image is None:
+            return JSONResponse(
+                {"error": "picture generation is not available"}, status_code=503
+            )
+
+        cfg: Config = app.state.config
+        # Same catalog-lookup-by-persona-id idiom as create_slack_app's
+        # persona_first_line above (PersonaInfo.description, looked up by
+        # agent.persona), with the same id-derived fallback for a persona
+        # that's since been removed from the catalog.
+        personas = {p.id: p for p in list_personas(cfg.personas_dir)}
+        persona_info = personas.get(agent.persona)
+        if persona_info is not None:
+            persona_description = persona_info.description
+        else:
+            persona_description = f"A {agent.persona} agent."
+
+        prompt = avatar_prompt(agent.name, persona_description)
+
+        try:
+            png = clients.image.generate(prompt)
+        except ClientError as exc:
+            log.warning("avatar generation failed for %s: %s", name, exc)
+            return JSONResponse({"error": str(exc)}, status_code=502)
+
+        # Size cap enforced BEFORE any store (repo push or DB cache) — a
+        # backend-result problem, not a user-input one, hence 502 not 422.
+        if len(png) > AVATAR_MAX_BYTES:
+            log.warning(
+                "generated avatar for %s exceeded the %d-byte cap (%d bytes)",
+                name, AVATAR_MAX_BYTES, len(png),
+            )
+            return JSONResponse(
+                {"error": "that picture came out too large — try again"}, status_code=502
+            )
+
+        try:
+            sha = set_avatar(clients.github, repo=agent.repo_full_name, png=png)
+        except ClientError as exc:
+            # The push side's own failure mode (repo unreachable, auth
+            # lapsed, ...) — distinct from the image-generation failure
+            # above, so it gets the same generic "couldn't reach your
+            # agent's files" family of message the knowledge/Slack routes
+            # use for this exact class of GitHub-side failure, rather than
+            # this exception's own message.
+            log.warning("avatar push failed for %s: %s", name, exc)
+            return JSONResponse(
+                {"error": "couldn't save your agent's picture — try again"}, status_code=502
+            )
+
+        agent.avatar_png = base64.b64encode(png).decode("ascii")
+        session.commit()
+
+        return JSONResponse({"sha": sha})
+
+    @app.get("/api/agents/{name}/avatar")
+    def get_avatar(name: str, session: Session = Depends(get_session)) -> Response:  # noqa: B008
+        # Deliberately no READY gate here (unlike every route above): a
+        # provisioning agent's page may still render, and an <img> tag just
+        # gets a 404 until a cache exists — the guard would only block a
+        # legitimate "not there yet" read the frontend is designed to tolerate.
+        agent = session.query(Agent).filter_by(name=name).first()
+        if agent is None:
+            return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
+
+        if agent.avatar_png is None:
+            return JSONResponse({"error": "no picture yet"}, status_code=404)
+
+        png = base64.b64decode(agent.avatar_png)
+        return Response(content=png, media_type="image/png")
 
     return app
 

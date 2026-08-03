@@ -48,6 +48,14 @@ class Agent(Base):
     # never persisted anywhere; see cortex_api.slack_setup.wire_slack.
     slack_app_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     slack_channel: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Avatar (P2d): a base64-encoded copy of bundle/avatar.png (the repo is
+    # the source of truth, same as first_reply's relationship to the a2a
+    # endpoint) — cached here purely so list/detail views can render an
+    # <img> without a round trip to GitHub per view. Nullable: most agents
+    # won't have generated one. NOTE: this column postdates create_all on
+    # any already-running dev DB — those need a manual `ALTER TABLE agents
+    # ADD COLUMN avatar_png TEXT;` (fresh DBs get it for free via create_all).
+    avatar_png: Mapped[str | None] = mapped_column(Text, nullable=True)
     first_reply: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
