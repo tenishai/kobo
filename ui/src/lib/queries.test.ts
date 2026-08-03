@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "./api";
-import { chatMutation, retryAgentMutation, shouldRetry } from "./queries";
+import {
+  chatMutation,
+  deleteKnowledgeMutation,
+  deliveryQuery,
+  deliveryRefetchInterval,
+  retryAgentMutation,
+  saveKnowledgeMutation,
+  shouldRetry,
+} from "./queries";
 import type { QueryClient } from "@tanstack/svelte-query";
 
 describe("shouldRetry", () => {
@@ -70,5 +78,75 @@ describe("retryAgentMutation", () => {
 
     expect(invalidateQueries).toHaveBeenCalledTimes(1);
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents"] });
+  });
+});
+
+describe("saveKnowledgeMutation", () => {
+  it("invalidates the knowledge query for this agent on success", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = saveKnowledgeMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "clio", "knowledge"],
+    });
+  });
+});
+
+describe("deleteKnowledgeMutation", () => {
+  it("invalidates the knowledge query for this agent on success", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = deleteKnowledgeMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "clio", "knowledge"],
+    });
+  });
+});
+
+describe("deliveryQuery", () => {
+  it("is disabled when sha is null (nothing to poll for yet)", () => {
+    expect(deliveryQuery("clio", null).enabled).toBe(false);
+  });
+
+  it("is enabled once a sha is known", () => {
+    expect(deliveryQuery("clio", "abc123").enabled).toBe(true);
+  });
+});
+
+describe("deliveryRefetchInterval", () => {
+  it("is false for undefined (no data fetched yet)", () => {
+    expect(deliveryRefetchInterval(undefined)).toBe(false);
+  });
+
+  it("is 3500 while the delivery is building", () => {
+    expect(
+      deliveryRefetchInterval({ state: "building", detail: null }),
+    ).toBe(3500);
+  });
+
+  it("is 3500 while the delivery is rolling", () => {
+    expect(deliveryRefetchInterval({ state: "rolling", detail: null })).toBe(
+      3500,
+    );
+  });
+
+  it("is false once the delivery has succeeded", () => {
+    expect(
+      deliveryRefetchInterval({ state: "delivered", detail: null }),
+    ).toBe(false);
+  });
+
+  it("is false once the delivery has failed", () => {
+    expect(
+      deliveryRefetchInterval({ state: "failed", detail: "boom" }),
+    ).toBe(false);
   });
 });

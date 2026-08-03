@@ -3,9 +3,13 @@ import {
   ApiError,
   chatWithAgent,
   createAgent,
+  deleteKnowledgeFile,
   errorMessage,
   fetchCatalogs,
+  fetchDeliveryState,
   listAgents,
+  listKnowledge,
+  saveKnowledgeFile,
 } from "./api";
 
 function jsonResponse(
@@ -158,6 +162,143 @@ describe("api.ts", () => {
     await expect(
       chatWithAgent("clio", [{ role: "user", text: "hello" }]),
     ).rejects.toThrow("agent unreachable: connection reset");
+  });
+});
+
+describe("knowledge client", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("listKnowledge GETs /api/agents/{name}/knowledge and unwraps {files: [...]} into a plain array", async () => {
+    const files = [
+      { name: "notes.md", content: "hello" },
+      { name: "facts.md", content: "world" },
+    ];
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ files }));
+
+    await expect(listKnowledge("clio")).resolves.toEqual(files);
+
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/knowledge");
+  });
+
+  it("listKnowledge encodes the agent name in the URL", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ files: [] }));
+
+    await listKnowledge("a b");
+
+    expect(fetch).toHaveBeenCalledWith("/api/agents/a%20b/knowledge");
+  });
+
+  it("listKnowledge surfaces a 409's {error} message", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "agent repo unavailable" },
+        { status: 409, statusText: "Conflict" },
+      ),
+    );
+
+    await expect(listKnowledge("clio")).rejects.toThrow(
+      "agent repo unavailable",
+    );
+  });
+
+  it("saveKnowledgeFile PUTs {content} to /api/agents/{name}/knowledge/{filename} and returns {sha}", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ sha: "abc123" }));
+
+    await expect(
+      saveKnowledgeFile("clio", "notes.md", "updated text"),
+    ).resolves.toEqual({ sha: "abc123" });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/agents/clio/knowledge/notes.md",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "updated text" }),
+      },
+    );
+  });
+
+  it("saveKnowledgeFile encodes the filename in the URL", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ sha: "abc123" }));
+
+    await saveKnowledgeFile("clio", "sub dir/notes.md", "x");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/agents/clio/knowledge/sub%20dir%2Fnotes.md",
+      expect.objectContaining({ method: "PUT" }),
+    );
+  });
+
+  it("saveKnowledgeFile surfaces a 409's {error} message", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "knowledge file changed since last read" },
+        { status: 409, statusText: "Conflict" },
+      ),
+    );
+
+    await expect(
+      saveKnowledgeFile("clio", "notes.md", "x"),
+    ).rejects.toThrow("knowledge file changed since last read");
+  });
+
+  it("deleteKnowledgeFile DELETEs /api/agents/{name}/knowledge/{filename} and returns {sha}", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ sha: "def456" }));
+
+    await expect(deleteKnowledgeFile("clio", "notes.md")).resolves.toEqual({
+      sha: "def456",
+    });
+
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/knowledge/notes.md", {
+      method: "DELETE",
+    });
+  });
+
+  it("deleteKnowledgeFile surfaces a 409's {error} message", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "knowledge file changed since last read" },
+        { status: 409, statusText: "Conflict" },
+      ),
+    );
+
+    await expect(deleteKnowledgeFile("clio", "notes.md")).rejects.toThrow(
+      "knowledge file changed since last read",
+    );
+  });
+
+  it("fetchDeliveryState GETs /api/agents/{name}/knowledge/delivery/{sha} and returns {state, detail}", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({ state: "building", detail: null }),
+    );
+
+    await expect(fetchDeliveryState("clio", "abc123")).resolves.toEqual({
+      state: "building",
+      detail: null,
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/agents/clio/knowledge/delivery/abc123",
+    );
+  });
+
+  it("fetchDeliveryState surfaces a 404's {error} message (unknown sha)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "no delivery for that sha" },
+        { status: 404, statusText: "Not Found" },
+      ),
+    );
+
+    await expect(fetchDeliveryState("clio", "nope")).rejects.toThrow(
+      "no delivery for that sha",
+    );
   });
 });
 

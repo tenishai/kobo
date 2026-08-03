@@ -5,9 +5,11 @@
 // later tasks to invalidate.
 //
 // queryKey conventions:
-//   ["agents"]          - the agent list
-//   ["agents", name]    - one agent's detail
-//   ["catalogs"]        - personas/skills/models catalog
+//   ["agents"]                                      - the agent list
+//   ["agents", name]                                - one agent's detail
+//   ["catalogs"]                                    - personas/skills/models catalog
+//   ["agents", name, "knowledge"]                   - an agent's knowledge files
+//   ["agents", name, "knowledge", "delivery", sha]  - delivery state for one sha
 
 import { queryOptions, type QueryClient } from "@tanstack/svelte-query";
 import {
@@ -16,12 +18,17 @@ import {
   type AgentSummary,
   type Catalogs,
   type ChatMessage,
+  type KnowledgeFile,
   chatWithAgent,
   createAgent,
+  deleteKnowledgeFile,
   fetchCatalogs,
+  fetchDeliveryState,
   getAgent,
   listAgents,
+  listKnowledge,
   retryAgent,
+  saveKnowledgeFile,
 } from "./api";
 import { detailRefetchInterval, listRefetchInterval } from "./status";
 
@@ -110,6 +117,90 @@ export function chatMutation(name: string) {
   };
 }
 
+/** An agent's knowledge files. No polling — edits are user-driven, not
+ * something that changes on its own in the background. */
+export function knowledgeQuery(name: string) {
+  return queryOptions({
+    queryKey: ["agents", name, "knowledge"] as const,
+    queryFn: () => listKnowledge(name),
+  });
+}
+
+/**
+ * Saves (creates or updates) one knowledge file; on success, invalidates
+ * that agent's knowledge query so the saved content (and its new sha) is
+ * picked up.
+ */
+export function saveKnowledgeMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: ({
+      filename,
+      content,
+    }: {
+      filename: string;
+      content: string;
+    }) => saveKnowledgeFile(name, filename, content),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["agents", name, "knowledge"],
+      });
+    },
+  };
+}
+
+/**
+ * Deletes one knowledge file; on success, invalidates that agent's
+ * knowledge query so the removed file drops out of the list.
+ */
+export function deleteKnowledgeMutation(
+  queryClient: QueryClient,
+  name: string,
+) {
+  return {
+    mutationFn: (filename: string) => deleteKnowledgeFile(name, filename),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["agents", name, "knowledge"],
+      });
+    },
+  };
+}
+
+/** Poll cadence while a knowledge delivery is still in flight. */
+const DELIVERY_POLL_MS = 3500;
+
+/**
+ * Refetch interval for the delivery-status query. Polls while the latest
+ * known state is still mid-flight (building/rolling), and stops once it
+ * reaches a terminal state (delivered/failed). `data` is undefined before
+ * the first fetch resolves (or while the query is disabled) — nothing to
+ * poll for yet, so that's `false` too.
+ */
+export function deliveryRefetchInterval(data?: {
+  state: string;
+  detail: string | null;
+}): number | false {
+  if (data === undefined) {
+    return false;
+  }
+  return data.state === "building" || data.state === "rolling"
+    ? DELIVERY_POLL_MS
+    : false;
+}
+
+/**
+ * A knowledge delivery's rollout state for a given content sha. Disabled
+ * until a sha exists (before the first save, there's nothing to check yet).
+ */
+export function deliveryQuery(name: string, sha: string | null) {
+  return queryOptions({
+    queryKey: ["agents", name, "knowledge", "delivery", sha] as const,
+    queryFn: () => fetchDeliveryState(name, sha as string),
+    enabled: sha !== null,
+    refetchInterval: (query) => deliveryRefetchInterval(query.state.data),
+  });
+}
+
 // Re-exported so consumers of the query factories don't need a separate
 // import from api.ts just to type their component-level state.
-export type { AgentDetail, AgentSummary, Catalogs, ChatMessage };
+export type { AgentDetail, AgentSummary, Catalogs, ChatMessage, KnowledgeFile };

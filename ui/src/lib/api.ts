@@ -196,3 +196,48 @@ export async function checkAvailability(
   const res = await fetch(`/api/availability?name=${encodeURIComponent(name)}`);
   return parse<{ available: boolean; reason: string | null }>(res);
 }
+
+export type KnowledgeFile = { name: string; content: string };
+
+export async function listKnowledge(name: string): Promise<KnowledgeFile[]> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/knowledge`);
+  const data = await parse<{ files: KnowledgeFile[] }>(res);
+  return data.files;
+}
+
+export async function saveKnowledgeFile(
+  name: string,
+  filename: string,
+  content: string,
+): Promise<{ sha: string }> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/knowledge/${encodeURIComponent(filename)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    },
+  );
+  return parse<{ sha: string }>(res);
+}
+
+export async function deleteKnowledgeFile(
+  name: string,
+  filename: string,
+): Promise<{ sha: string }> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/knowledge/${encodeURIComponent(filename)}`,
+    { method: "DELETE" },
+  );
+  return parse<{ sha: string }>(res);
+}
+
+export async function fetchDeliveryState(
+  name: string,
+  sha: string,
+): Promise<{ state: string; detail: string | null }> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/knowledge/delivery/${encodeURIComponent(sha)}`,
+  );
+  return parse<{ state: string; detail: string | null }>(res);
+}
