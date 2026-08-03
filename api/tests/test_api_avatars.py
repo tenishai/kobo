@@ -256,6 +256,29 @@ def test_generate_avatar_github_client_error_returns_502(session_factory, config
     assert response.json() == {"error": "couldn't save your agent's picture — try again"}
 
 
+def test_generate_avatar_catalogs_unconfigured_falls_back_and_warns(session_factory, config, caplog):
+    github = _CapturingGitHub()
+    image = FakeImage()
+    # Storage with empty personas bucket (unconfigured)
+    empty_storage = FakeStorage()
+    client = _make_client(session_factory, config, github=github, image=image, storage=empty_storage)
+    _seed_agent(session_factory, config)
+
+    response = client.post(f"/api/agents/{AGENT_NAME}/avatar")
+
+    assert response.status_code == 200
+    assert response.json() == {"sha": FAKE_LOCAL_HEAD_DEFAULT}
+    # Verify generic text was used in the prompt
+    assert len(image.prompts) == 1
+    assert f"A {PERSONA} agent." in image.prompts[0]
+    # Verify warning was logged
+    assert any(
+        f"persona {PERSONA!r} not in the catalog" in record.message
+        and "avatar prompt" in record.message
+        for record in caplog.records
+    )
+
+
 def test_generate_avatar_oversize_returns_fixed_502_and_stores_nothing(session_factory, config):
     oversize_bytes = b"x" * (AVATAR_MAX_BYTES + 1)
     github = FakeGitHub()

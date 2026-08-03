@@ -251,6 +251,26 @@ def test_create_slack_app_falls_back_when_persona_removed_from_catalog(session_f
     assert "retired-persona" in description
 
 
+def test_create_slack_app_catalogs_unconfigured_falls_back_and_warns(session_factory, config, caplog):
+    slack = FakeSlack()
+    # Storage with empty personas bucket (unconfigured)
+    empty_storage = FakeStorage()
+    client = _make_client(session_factory, config, slack=slack, storage=empty_storage)
+    _seed_agent(session_factory, config)
+
+    response = client.post(f"/api/agents/{AGENT_NAME}/slack/app")
+
+    assert response.status_code == 200
+    description = slack.manifests[-1]["display_information"]["description"]
+    assert f"A {PERSONA} agent" in description
+    assert "caplog" in dir()  # verify caplog fixture is available
+    assert any(
+        f"persona {PERSONA!r} not in the catalog" in record.message
+        and "slack manifest" in record.message
+        for record in caplog.records
+    )
+
+
 def test_create_slack_app_unknown_agent_returns_404(session_factory, config):
     client = _make_client(session_factory, config)
 

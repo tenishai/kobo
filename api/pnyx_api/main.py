@@ -992,6 +992,7 @@ def create_app(
         if persona_entry is not None:
             persona_first_line = persona_entry.description
         else:
+            log.warning("persona %r not in the catalog — using generic text for slack manifest", agent.persona)
             persona_first_line = f"A {agent.persona} agent, reachable in Slack."
 
         manifest = render_manifest(agent.name, persona_first_line)
@@ -1108,6 +1109,7 @@ def create_app(
         if persona_entry is not None:
             persona_description = persona_entry.description
         else:
+            log.warning("persona %r not in the catalog — using generic text for avatar prompt", agent.persona)
             persona_description = f"A {agent.persona} agent."
 
         prompt = avatar_prompt(agent.name, persona_description)
