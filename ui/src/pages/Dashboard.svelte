@@ -10,13 +10,10 @@
   import EmptyState from "../components/EmptyState.svelte";
   import ErrorState from "../components/ErrorState.svelte";
   import Skeleton from "../components/Skeleton.svelte";
+  import { errorMessage } from "../lib/api";
   import { agentsQuery } from "../lib/queries";
 
   const agents = createQuery(agentsQuery());
-
-  function errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : "Couldn't load agents.";
-  }
 </script>
 
 {#if $agents.isPending}
@@ -32,7 +29,7 @@
   </div>
 {:else if $agents.isError}
   <ErrorState
-    message={errorMessage($agents.error)}
+    message={errorMessage($agents.error, "Couldn't load agents.")}
     onretry={() => $agents.refetch()}
   />
 {:else if $agents.data.length === 0}

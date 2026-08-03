@@ -46,6 +46,24 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Human-readable message for a thrown error — `error.message` when there is
+ * one, else `fallback`. Shared by every page/component that renders a failed
+ * query or mutation (Dashboard, AgentDetail, CreateModal) so the copy and
+ * the cleanup below are applied uniformly instead of each callsite rolling
+ * its own.
+ *
+ * Quoted tokens in the message have their surrounding quote marks stripped
+ * for display — a backend message quoting a name as `'foo-bar'` (or
+ * `"foo-bar"`) reads as `foo-bar`. This is token-scoped (a matched pair of
+ * quotes, not every quote character), so an apostrophe inside a contraction
+ * like "isn't" is left alone — there's no second quote to pair it with.
+ */
+export function errorMessage(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : fallback;
+  return message.replace(/'([^']*)'/g, "$1").replace(/"([^"]*)"/g, "$1");
+}
+
 /** Extract a `.error` string from a parsed JSON body, if it has one. */
 function errorMessageFrom(data: unknown): string | null {
   if (data !== null && typeof data === "object" && "error" in data) {

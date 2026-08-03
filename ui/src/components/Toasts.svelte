@@ -5,11 +5,27 @@
   import { dismiss, toasts } from "../lib/toast.svelte";
 </script>
 
-<div class="toasts">
+<!--
+  The wrapper itself is the live region — always mounted (from before any
+  toast ever exists), carrying `aria-live` so assistive tech registers it up
+  front. A screen reader reliably announces *content changing inside an
+  already-registered live region*, but is inconsistent about announcing a
+  brand-new node that arrives with its own role already attached (which is
+  what the old per-toast `role="status"` did — nothing existed to announce
+  from until the first toast, and that first toast's own arrival was the
+  thing that needed announcing).
+
+  Error toasts additionally carry `role="alert"` themselves: unlike
+  `status`, `alert` is specified for exactly this on-demand/interrupting
+  case, so a dynamically-inserted alert node doesn't need to pre-exist to be
+  announced — it layers assertive severity on top of the container's polite
+  default rather than needing a persistent container of its own.
+-->
+<div class="toasts" aria-live="polite" aria-atomic="false">
   {#each toasts as item (item.id)}
     <div
       class="toast toast--{item.kind}"
-      role={item.kind === "error" ? "alert" : "status"}
+      role={item.kind === "error" ? "alert" : undefined}
     >
       <div class="toast__body">
         <p class="toast__title">{item.title}</p>

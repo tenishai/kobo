@@ -20,7 +20,7 @@
   import ErrorState from "./ErrorState.svelte";
   import Modal from "./Modal.svelte";
   import Skeleton from "./Skeleton.svelte";
-  import { ApiError, checkAvailability } from "../lib/api";
+  import { ApiError, checkAvailability, errorMessage } from "../lib/api";
   import { debounced } from "../lib/debounce";
   import { catalogsQuery, createAgentMutation } from "../lib/queries";
   import { toast } from "../lib/toast.svelte";
@@ -51,11 +51,6 @@
   // (an empty field isn't "invalid", it's just empty).
   const nameError = $derived(name.length > 0 ? validateName(name) : null);
   const nameLocallyValid = $derived(name.length > 0 && nameError === null);
-
-  // Clean up quotes from error messages (e.g., 'x' → x)
-  const cleanSubmitError = $derived(
-    submitError ? submitError.replace(/['"]/g, "") : null,
-  );
 
   type Availability =
     | { status: "idle" }
@@ -155,10 +150,15 @@
           onclose();
         },
         onError: (error: unknown) => {
-          submitError =
-            error instanceof ApiError
-              ? error.message
-              : "Something went wrong. Try again.";
+          submitError = errorMessage(error, "Something went wrong. Try again.");
+          if (error instanceof ApiError && error.status === 409) {
+            // The debounced availability check said this name was free, but
+            // the submit lost the race — someone else took it between the
+            // check and now. Flip availability to match reality so the ✓
+            // next to the field can't keep claiming "available" right above
+            // an error that says otherwise.
+            availability = { status: "unavailable", reason: "Name already taken." };
+          }
         },
       },
     );
@@ -281,9 +281,9 @@
       </div>
     {/if}
 
-    {#if cleanSubmitError}
+    {#if submitError}
       <p class="create-form__status create-form__status--error" role="alert">
-        {cleanSubmitError}
+        {submitError}
       </p>
     {/if}
 
@@ -348,6 +348,14 @@
     margin: 0;
     color: var(--muted);
     font-size: 0.8rem;
+  }
+
+  /* Fixed floor so the idle state (no message rendered at all) reserves the
+     same space a one-line status/error message would take — otherwise the
+     field sits flush against the help text (a stray gap sliver) and then
+     jumps down the moment a message appears. */
+  #create-name-status {
+    min-height: 1.25rem;
   }
 
   .create-form__status--ok {

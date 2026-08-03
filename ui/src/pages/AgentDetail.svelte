@@ -12,6 +12,7 @@
   import Skeleton from "../components/Skeleton.svelte";
   import StatusBadge from "../components/StatusBadge.svelte";
   import StepChecklist from "../components/StepChecklist.svelte";
+  import { errorMessage } from "../lib/api";
   import { agentQuery, retryAgentMutation } from "../lib/queries";
   import { formatHash, route } from "../lib/router.svelte";
   import { toast } from "../lib/toast.svelte";
@@ -26,20 +27,13 @@
   const agent = createQuery(agentQuery(name));
   const retry = createMutation(retryAgentMutation(queryClient, name));
 
-  function errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : "Couldn't load this agent.";
-  }
-
   function handleRetry(): void {
     $retry.mutate(undefined, {
       onSuccess: () => {
         toast.success("Retrying", `Re-running ${name}'s setup…`);
       },
       onError: (error: unknown) => {
-        toast.error(
-          "Retry failed",
-          error instanceof Error ? error.message : "Something went wrong.",
-        );
+        toast.error("Retry failed", errorMessage(error, "Something went wrong."));
       },
     });
   }
@@ -54,7 +48,7 @@
     <Skeleton rows={6} />
   {:else if $agent.isError}
     <ErrorState
-      message={errorMessage($agent.error)}
+      message={errorMessage($agent.error, "Couldn't load this agent.")}
       onretry={() => $agent.refetch()}
     />
   {:else if $agent.data}

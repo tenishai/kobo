@@ -34,7 +34,7 @@
 </script>
 
 <div class="step-checklist">
-  <p class="step-checklist__summary step-checklist__sr-only" role="status" aria-live="polite">
+  <p class="step-checklist__sr-only" role="status" aria-live="polite">
     {doneCount} of {steps.length} steps done
   </p>
   <ul class="step-checklist__list">

@@ -7,6 +7,7 @@
   // keyboard/focus/"open in new tab" behavior for free.
   import StatusBadge from "./StatusBadge.svelte";
   import { formatHash } from "../lib/router.svelte";
+  import { agentTone } from "../lib/status";
   import { relativeTime } from "../lib/time";
   import type { AgentSummary } from "../lib/queries";
 
@@ -23,7 +24,7 @@
     <span class="agent-card__sep" aria-hidden="true">·</span>
     <span class="agent-card__time">{relativeTime(agent.created_at)}</span>
   </div>
-  {#if agent.status === "failed"}
+  {#if agentTone(agent.status) === "fail"}
     <p class="agent-card__error">Something went wrong — open for details.</p>
   {/if}
 </a>

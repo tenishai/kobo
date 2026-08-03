@@ -91,4 +91,27 @@ describe("toast store", () => {
     expect(() => vi.advanceTimersByTime(5000)).not.toThrow();
     expect(toasts).toHaveLength(0);
   });
+
+  it("clears the pending auto-dismiss timer handle on manual dismiss", () => {
+    const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+    toast.success("manual clear");
+    const id = toasts[0].id;
+    dismiss(id);
+    expect(clearSpy).toHaveBeenCalledTimes(1);
+    clearSpy.mockRestore();
+  });
+
+  it("a cleared timer never runs its dismissal path again after manual dismiss", () => {
+    const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+    toast.success("manual then advance");
+    dismiss(toasts[0].id);
+    clearSpy.mockClear();
+    // The timer was already cleared above, so letting fake time run past
+    // its original 5s deadline must not clear (or otherwise touch) it a
+    // second time — there's nothing left pending to run.
+    vi.advanceTimersByTime(5000);
+    expect(clearSpy).not.toHaveBeenCalled();
+    expect(toasts).toHaveLength(0);
+    clearSpy.mockRestore();
+  });
 });
