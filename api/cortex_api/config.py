@@ -35,15 +35,20 @@ class Config(BaseModel):
     personas_dir: Path | None = None  # None -> package templates/personas
     workdir: Path = Path.home() / ".cortex"
     db_url: str = "sqlite:///cortex.db"
+    # Path to the gitignored Slack config-token pair (P2c); None means Slack
+    # connect is unconfigured — Clients.real() gates on this to leave slack=None.
+    slack_tokens_path: Path | None = None
 
-    @field_validator("workdir", "skills_repo_path", "personas_dir", mode="before")
+    @field_validator(
+        "workdir", "skills_repo_path", "personas_dir", "slack_tokens_path", mode="before"
+    )
     @classmethod
     def _expand_user(cls, v):
-        """Expand a leading `~` in any of the three path-shaped fields.
+        """Expand a leading `~` in any of the path-shaped fields.
 
-        One validator for all three (rather than a near-identical one per
+        One validator for all of them (rather than a near-identical one per
         field) since the transform is identical: `None` passes through
-        untouched (the two optional fields default to it), anything else
+        untouched (the optional fields default to it), anything else
         goes through `Path(...).expanduser()`.
         """
         if v is not None:

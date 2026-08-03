@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cortex_api.clients import ChatMessage, ClientError, GojiraConflict
+from cortex_api.clients import ChatMessage, ClientError, GojiraConflict, SlackApiError
 
 # --- Generated-scaffolding fixture for FakeGitHub.clone ------------------------
 #
@@ -517,3 +517,28 @@ class FakeKubectl:
 
     def deploy_image(self, namespace: str, deploy: str) -> str:
         return self._images.get((namespace, deploy), FAKE_DEPLOY_IMAGE_DEFAULT)
+
+
+class FakeSlack:
+    """Records every manifest passed to `create_app` (in call order) and
+    returns a configurable `app_id` (default "A0FAKE") — no real Slack Web
+    API involved. `create_error`, when set, makes `create_app` raise
+    `SlackApiError(create_error)` instead of succeeding, the seam for
+    exercising a route's failure handling (Task 3) without a real backend.
+
+    Config-token rotation is deliberately NOT modeled here: it's entirely
+    internal to `HttpxSlackClient` (a token-expiry retry against Slack's
+    tokens API), invisible at the `SlackClient` Protocol level this fake
+    stands in for.
+    """
+
+    def __init__(self, *, app_id: str = "A0FAKE", create_error: str | None = None):
+        self._app_id = app_id
+        self._create_error = create_error
+        self.manifests: list[dict] = []
+
+    def create_app(self, manifest: dict) -> str:
+        self.manifests.append(manifest)
+        if self._create_error is not None:
+            raise SlackApiError(f"slack app creation failed: {self._create_error}")
+        return self._app_id

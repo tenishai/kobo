@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import re
 import subprocess
@@ -58,6 +59,14 @@ class ClientError(RuntimeError):
 
 class GojiraConflict(RuntimeError):
     """gojira already has an app connected for this repo (409 on create)."""
+
+
+class SlackApiError(ClientError):
+    """Slack's Web API returned `ok: false` (a non-auth failure, or a token
+    rotation attempt that itself failed) — a ClientError subclass so it's
+    caught by the same 502 mapping every other ClientError gets, without
+    routes needing a Slack-specific except clause.
+    """
 
 
 class CommandRunner:
@@ -687,6 +696,151 @@ class KubectlCLI:
         )
 
 
+# --- Slack (Web API: manifest app creation + config-token rotation) -----------
+
+
+_SLACK_API_BASE = "https://slack.com/api"
+_SLACK_TOKEN_KEY = "slack_app_config_token"
+_SLACK_REFRESH_KEY = "slack_app_config_refresh_token"
+# Slack's only two config-token failure modes that mean "rotate and retry" —
+# anything else is a real problem the caller needs to see, not something a
+# blind rotate-on-any-failure should paper over.
+_SLACK_AUTH_ERRORS = frozenset({"token_expired", "invalid_auth"})
+
+
+@runtime_checkable
+class SlackClient(Protocol):
+    def create_app(self, manifest: dict) -> str:
+        """Create a Slack app from `manifest`; return its app_id."""
+        ...
+
+
+def _read_slack_tokens(tokens_path: Path) -> tuple[str, str]:
+    """Parse `tokens_path`'s two `key: value` lines; returns (config_token,
+    refresh_token).
+
+    Deliberately a tolerant line-based parse rather than a full YAML load:
+    the file mixes free-form comment lines with exactly two `key: value`
+    lines (see module docstring context — this mirrors the rotation
+    tooling's own approach), and the same line-oriented reasoning lets
+    `_write_slack_tokens` below replace just those two lines on rewrite
+    without disturbing anything else in the file.
+
+    Both a missing file and one missing either required key raise
+    `ClientError` naming only the path — never the file's contents, which
+    may itself hold partial token material.
+    """
+    try:
+        lines = tokens_path.read_text().splitlines()
+    except OSError as exc:
+        raise ClientError(f"slack tokens file not found: {tokens_path}") from exc
+
+    values: dict[str, str] = {}
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        values[key.strip()] = value.strip()
+
+    try:
+        return values[_SLACK_TOKEN_KEY], values[_SLACK_REFRESH_KEY]
+    except KeyError as exc:
+        raise ClientError(f"slack tokens file missing required keys: {tokens_path}") from exc
+
+
+def _write_slack_tokens(tokens_path: Path, config_token: str, refresh_token: str) -> None:
+    """Rewrite `tokens_path` with a fresh (config_token, refresh_token) pair,
+    preserving every comment/blank line untouched and replacing only the two
+    `key: value` lines.
+
+    Written atomically (tmp file + `os.replace`) so a crash mid-write can
+    never leave a half-written file: Slack's refresh token is single-use, so
+    losing the just-returned new pair after already spending the old one
+    would lock cortex out of rotating ever again.
+    """
+    try:
+        lines = tokens_path.read_text().splitlines(keepends=True)
+    except OSError as exc:
+        raise ClientError(f"slack tokens file not found: {tokens_path}") from exc
+
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(f"{_SLACK_TOKEN_KEY}:"):
+            new_lines.append(f"{_SLACK_TOKEN_KEY}: {config_token}\n")
+        elif stripped.startswith(f"{_SLACK_REFRESH_KEY}:"):
+            new_lines.append(f"{_SLACK_REFRESH_KEY}: {refresh_token}\n")
+        else:
+            new_lines.append(line)
+
+    tmp_path = tokens_path.with_name(tokens_path.name + ".tmp")
+    tmp_path.write_text("".join(new_lines))
+    os.replace(tmp_path, tokens_path)
+
+
+class HttpxSlackClient:
+    """Slack Web API client for app-manifest creation, with automatic
+    config-token rotation.
+
+    Slack's app-config tokens expire in ~12h; `create_app` reads the current
+    token from `tokens_path` on every call (never cached across calls) so a
+    rotation from a previous call — or from outside this process entirely —
+    is always picked up fresh. On `ok: false` with error `token_expired` or
+    `invalid_auth`, it rotates the pair exactly once (persisting the new pair
+    to `tokens_path` before using it) and retries the create exactly once;
+    a second auth failure after that raises rather than looping forever.
+    """
+
+    def __init__(self, tokens_path: Path, http_client: httpx.Client | None = None):
+        self._tokens_path = tokens_path
+        self._client = http_client or httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0))
+
+    def create_app(self, manifest: dict) -> str:
+        config_token, _ = _read_slack_tokens(self._tokens_path)
+        return self._create_app(manifest, config_token, retried=False)
+
+    def _create_app(self, manifest: dict, config_token: str, *, retried: bool) -> str:
+        resp = self._client.post(
+            f"{_SLACK_API_BASE}/apps.manifest.create",
+            data={"manifest": json.dumps(manifest)},
+            headers={"Authorization": f"Bearer {config_token}"},
+        )
+        body = resp.json()
+        if body.get("ok"):
+            return body["app_id"]
+
+        error = body.get("error", "unknown_error")
+        if error in _SLACK_AUTH_ERRORS and not retried:
+            new_config_token = self._rotate()
+            return self._create_app(manifest, new_config_token, retried=True)
+
+        # Never include `manifest` or any token material here — just Slack's
+        # own error code.
+        raise SlackApiError(f"slack app creation failed: {error}")
+
+    def _rotate(self) -> str:
+        """Rotate the config-token pair via `tooling.tokens.rotate` and
+        persist the new pair to `tokens_path` BEFORE returning it — see the
+        class docstring and `_write_slack_tokens` for why persist-first is
+        load-bearing (the refresh token is single-use).
+        """
+        _, refresh_token = _read_slack_tokens(self._tokens_path)
+        resp = self._client.post(
+            f"{_SLACK_API_BASE}/tooling.tokens.rotate",
+            data={"refresh_token": refresh_token},
+        )
+        body = resp.json()
+        if not body.get("ok"):
+            error = body.get("error", "unknown_error")
+            raise SlackApiError(f"slack token rotation failed: {error}")
+
+        new_config_token = body["token"]
+        new_refresh_token = body["refresh_token"]
+        _write_slack_tokens(self._tokens_path, new_config_token, new_refresh_token)
+        return new_config_token
+
+
 # --- Wiring -----------------------------------------------------------------------
 
 
@@ -697,6 +851,10 @@ class Clients:
     cloud: CloudClient
     agent: AgentClient
     kubectl: KubectlClient
+    # None when Slack connect isn't configured (no slack_tokens_path) — routes
+    # must 503 with a clear "Slack is not configured" error in that case,
+    # keeping local setups without Slack tokens working untouched.
+    slack: SlackClient | None = None
 
     @classmethod
     def real(cls, config: Config) -> Clients:
@@ -708,4 +866,7 @@ class Clients:
             cloud=GcloudClient(config.gcp_project, runner=runner),
             agent=KubectlAgentClient(),
             kubectl=KubectlCLI(runner=runner),
+            slack=HttpxSlackClient(config.slack_tokens_path)
+            if config.slack_tokens_path
+            else None,
         )

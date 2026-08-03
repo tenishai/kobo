@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -28,15 +29,25 @@ from cortex_api.clients import (
     GojiraClient,
     GojiraConflict,
     HttpxGojiraClient,
+    HttpxSlackClient,
     KubectlAgentClient,
     KubectlCLI,
     KubectlClient,
+    SlackApiError,
+    SlackClient,
     _build_task_envelope,
     _post_task,
     _wait_for_forwarded_port,
 )
 from cortex_api.config import Config
-from tests.fakes import FakeAgent, FakeCloud, FakeGitHub, FakeGojira, FakeKubectl
+from tests.fakes import (
+    FakeAgent,
+    FakeCloud,
+    FakeGitHub,
+    FakeGojira,
+    FakeKubectl,
+    FakeSlack,
+)
 
 
 class RecordingRunner:
@@ -875,6 +886,196 @@ def test_agent_converse_terminates_port_forward_even_on_post_failure(monkeypatch
     assert fake_proc.waited is True
 
 
+# --- Slack (HttpxSlackClient) --------------------------------------------------
+#
+# Fake-shaped-but-obviously-fake token literals only (never real Slack token
+# material) — these strings exist purely to prove the client reads/writes the
+# right file fields and never leaks them into exception messages.
+
+SLACK_TOKENS_TEMPLATE = """\
+# Slack app-configuration credentials for P2c (sandbox workspace).
+# GITIGNORED (*.local.yaml) — never commit.
+# Access token expires ~12h from issue; rotate BOTH via tooling.tokens.rotate.
+slack_app_config_token: {config_token}
+slack_app_config_refresh_token: {refresh_token}
+"""
+
+
+def _write_slack_tokens_file(tmp_path: Path, *, config_token: str, refresh_token: str) -> Path:
+    path = tmp_path / "slack.local.yaml"
+    path.write_text(
+        SLACK_TOKENS_TEMPLATE.format(config_token=config_token, refresh_token=refresh_token)
+    )
+    return path
+
+
+def test_slack_create_app_request_shape_and_auth_header(tmp_path):
+    tokens_path = _write_slack_tokens_file(
+        tmp_path,
+        config_token="xoxe.xoxp-1-fake-config-token",
+        refresh_token="xoxe-1-fake-refresh-token",
+    )
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("authorization")
+        captured["manifest"] = parse_qs(request.content.decode())["manifest"][0]
+        return httpx.Response(200, json={"ok": True, "app_id": "A0FAKE"})
+
+    client = HttpxSlackClient(
+        tokens_path, http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    manifest = {"display_information": {"name": "clio"}}
+    app_id = client.create_app(manifest)
+
+    assert app_id == "A0FAKE"
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://slack.com/api/apps.manifest.create"
+    assert captured["auth"] == "Bearer xoxe.xoxp-1-fake-config-token"
+    assert captured["manifest"] == json.dumps(manifest)
+
+
+def test_slack_create_app_rotates_and_retries_on_token_expired(tmp_path):
+    tokens_path = _write_slack_tokens_file(
+        tmp_path, config_token="xoxe.xoxp-1-old-config", refresh_token="xoxe-1-old-refresh"
+    )
+    calls: list[str] = []
+    file_at_retry: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        calls.append(path)
+        if path == "/api/apps.manifest.create":
+            auth = request.headers.get("authorization")
+            if auth == "Bearer xoxe.xoxp-1-old-config":
+                return httpx.Response(200, json={"ok": False, "error": "token_expired"})
+            # Retry with the rotated token: the tokens file must already
+            # carry the new pair by the time this fires (persist-before-use).
+            file_at_retry["text"] = tokens_path.read_text()
+            assert auth == "Bearer xoxe.xoxp-1-new-config"
+            return httpx.Response(200, json={"ok": True, "app_id": "A0NEW"})
+        elif path == "/api/tooling.tokens.rotate":
+            body = parse_qs(request.content.decode())
+            assert body["refresh_token"][0] == "xoxe-1-old-refresh"
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "token": "xoxe.xoxp-1-new-config",
+                    "refresh_token": "xoxe-1-new-refresh",
+                },
+            )
+        raise AssertionError(f"unexpected path {path}")
+
+    client = HttpxSlackClient(
+        tokens_path, http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    app_id = client.create_app({"display_information": {"name": "clio"}})
+
+    assert app_id == "A0NEW"
+    assert calls == [
+        "/api/apps.manifest.create",
+        "/api/tooling.tokens.rotate",
+        "/api/apps.manifest.create",
+    ]
+    # File already held the new pair (and not the old, single-use refresh
+    # token) BEFORE the retry fired.
+    assert "xoxe.xoxp-1-new-config" in file_at_retry["text"]
+    assert "xoxe-1-new-refresh" in file_at_retry["text"]
+    assert "xoxe-1-old-refresh" not in file_at_retry["text"]
+    assert "xoxe.xoxp-1-old-config" not in file_at_retry["text"]
+    # Comment lines survived the rewrite.
+    assert "# GITIGNORED" in file_at_retry["text"]
+    assert "# Access token expires ~12h from issue" in file_at_retry["text"]
+
+    # And the final on-disk state matches (the rewrite wasn't undone/re-read
+    # stale afterward).
+    final_text = tokens_path.read_text()
+    assert "xoxe.xoxp-1-new-config" in final_text
+    assert "xoxe-1-new-refresh" in final_text
+
+
+def test_slack_create_app_second_auth_failure_after_rotate_raises(tmp_path):
+    tokens_path = _write_slack_tokens_file(
+        tmp_path, config_token="xoxe.xoxp-1-old-config", refresh_token="xoxe-1-old-refresh"
+    )
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        calls.append(path)
+        if path == "/api/apps.manifest.create":
+            return httpx.Response(200, json={"ok": False, "error": "invalid_auth"})
+        elif path == "/api/tooling.tokens.rotate":
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "token": "xoxe.xoxp-1-new-config",
+                    "refresh_token": "xoxe-1-new-refresh",
+                },
+            )
+        raise AssertionError(f"unexpected path {path}")
+
+    client = HttpxSlackClient(
+        tokens_path, http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    with pytest.raises(SlackApiError):
+        client.create_app({"display_information": {"name": "clio"}})
+
+    # Exactly one rotate-and-retry — never an infinite loop.
+    assert calls == [
+        "/api/apps.manifest.create",
+        "/api/tooling.tokens.rotate",
+        "/api/apps.manifest.create",
+    ]
+
+
+def test_slack_create_app_non_auth_error_raises_slack_api_error_without_token_material(tmp_path):
+    tokens_path = _write_slack_tokens_file(
+        tmp_path,
+        config_token="xoxe.xoxp-1-super-secret-config",
+        refresh_token="xoxe-1-super-secret-refresh",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": False, "error": "invalid_manifest"})
+
+    client = HttpxSlackClient(
+        tokens_path, http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    with pytest.raises(SlackApiError) as exc_info:
+        client.create_app({"display_information": {"name": "clio"}})
+
+    assert isinstance(exc_info.value, ClientError)
+    assert "invalid_manifest" in str(exc_info.value)
+    assert "xoxe.xoxp-1-super-secret-config" not in str(exc_info.value)
+    assert "xoxe-1-super-secret-refresh" not in str(exc_info.value)
+
+
+def test_slack_missing_tokens_file_raises_client_error_naming_path(tmp_path):
+    missing_path = tmp_path / "does-not-exist.yaml"
+    client = HttpxSlackClient(missing_path)
+
+    with pytest.raises(ClientError) as exc_info:
+        client.create_app({"display_information": {"name": "clio"}})
+
+    assert str(missing_path) in str(exc_info.value)
+
+
+def test_slack_malformed_tokens_file_raises_client_error_naming_path(tmp_path):
+    tokens_path = tmp_path / "slack.local.yaml"
+    tokens_path.write_text("# just a comment\nsome_other_key: value\n")
+    client = HttpxSlackClient(tokens_path)
+
+    with pytest.raises(ClientError) as exc_info:
+        client.create_app({"display_information": {"name": "clio"}})
+
+    assert str(tokens_path) in str(exc_info.value)
+
+
 # --- Fakes satisfy the Protocols ----------------------------------------------
 
 
@@ -1093,6 +1294,35 @@ def test_fake_kubectl_deploy_image_configurable_per_namespace_deploy():
     assert fake.deploy_image("other", "other").rsplit(":", 1)[-1] == "ed17ed17ed17"
 
 
+def test_fake_slack_satisfies_protocol():
+    fake = FakeSlack()
+    assert isinstance(fake, SlackClient)
+    manifest = {"display_information": {"name": "clio"}}
+    assert fake.create_app(manifest) == "A0FAKE"
+    assert fake.manifests == [manifest]
+
+
+def test_fake_slack_custom_app_id():
+    fake = FakeSlack(app_id="A1234567")
+    assert fake.create_app({"display_information": {"name": "clio"}}) == "A1234567"
+
+
+def test_fake_slack_records_multiple_manifests_in_order():
+    fake = FakeSlack()
+    fake.create_app({"display_information": {"name": "one"}})
+    fake.create_app({"display_information": {"name": "two"}})
+    assert fake.manifests == [
+        {"display_information": {"name": "one"}},
+        {"display_information": {"name": "two"}},
+    ]
+
+
+def test_fake_slack_create_error_knob_raises_slack_api_error():
+    fake = FakeSlack(create_error="invalid_manifest")
+    with pytest.raises(SlackApiError, match="invalid_manifest"):
+        fake.create_app({"display_information": {"name": "clio"}})
+
+
 # --- Clients.real() wiring -----------------------------------------------------
 
 
@@ -1105,3 +1335,26 @@ def test_clients_real_wires_expected_implementations():
     assert isinstance(clients.kubectl, KubectlCLI)
     assert isinstance(clients.agent, KubectlAgentClient)
     assert isinstance(clients, Clients)
+
+
+def test_clients_real_wires_slack_none_when_tokens_path_unset():
+    # No slack_tokens_path configured -> slack stays None so local setups
+    # without a Slack config-token pair keep working untouched.
+    config = Config(gojira_url="http://gojira.local", gcp_project="example-project")
+    clients = Clients.real(config)
+    assert clients.slack is None
+
+
+def test_clients_real_wires_slack_when_tokens_path_set(tmp_path):
+    tokens_path = tmp_path / "slack.local.yaml"
+    tokens_path.write_text(
+        "slack_app_config_token: xoxe.xoxp-1-fake\n"
+        "slack_app_config_refresh_token: xoxe-1-fake\n"
+    )
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        slack_tokens_path=tokens_path,
+    )
+    clients = Clients.real(config)
+    assert isinstance(clients.slack, HttpxSlackClient)

@@ -122,3 +122,19 @@ def test_load_empty_yaml_file_falls_back_to_defaults(tmp_path):
     config = Config.load(yaml_path)
 
     assert config.github_org == "example-org"
+
+
+# --- slack_tokens_path -----------------------------------------------------
+
+
+def test_slack_tokens_path_default_none():
+    assert Config().slack_tokens_path is None
+
+
+def test_slack_tokens_path_expands_tilde(tmp_path):
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text("slack_tokens_path: ~/slack.local.yaml\n")
+
+    config = Config.load(yaml_path)
+
+    assert config.slack_tokens_path == Path.home() / "slack.local.yaml"
