@@ -20,6 +20,7 @@ from pnyx_api.clients import ClientError, Clients
 from pnyx_api.config import Config
 from pnyx_api.main import AVATAR_MAX_BYTES, create_app
 from pnyx_api.models import Agent, AgentStatus, Base
+from pnyx_api.personas import seed_default_personas
 from tests.fakes import (
     FAKE_IMAGE_PNG_BYTES,
     FAKE_LOCAL_HEAD_DEFAULT,
@@ -29,6 +30,7 @@ from tests.fakes import (
     FakeGojira,
     FakeImage,
     FakeKubectl,
+    FakeStorage,
 )
 
 AGENT_NAME = "clio"
@@ -76,7 +78,14 @@ def session_factory(tmp_path):
 
 @pytest.fixture
 def config(tmp_path):
-    return Config(workdir=tmp_path / "work")
+    # Task 5: generate_avatar's persona-description lookup now reads the
+    # bucket catalog (via search.get_entry) instead of the old local-clone
+    # scanner — buckets must be named for that lookup to find anything.
+    return Config(
+        workdir=tmp_path / "work",
+        skills_bucket="skills-bucket",
+        personas_bucket="personas-bucket",
+    )
 
 
 # Sentinel distinguishing "image kwarg not passed" (-> default FakeImage())
@@ -86,7 +95,14 @@ def config(tmp_path):
 _IMAGE_UNSET = object()
 
 
-def _make_client(session_factory, config, *, github=None, image=_IMAGE_UNSET):
+def _make_client(session_factory, config, *, github=None, image=_IMAGE_UNSET, storage=None):
+    if storage is None:
+        # Seeded the same way a real bootstrap seeds a fresh org's bucket —
+        # gives generate_avatar's persona-description lookup something real
+        # to find ("helpful-generalist") without every call site here
+        # needing to set this up itself.
+        storage = FakeStorage()
+        seed_default_personas(storage, bucket=config.personas_bucket)
     return TestClient(
         create_app(
             session_factory,
@@ -98,6 +114,7 @@ def _make_client(session_factory, config, *, github=None, image=_IMAGE_UNSET):
                 agent=FakeAgent(),
                 kubectl=FakeKubectl(),
                 image=FakeImage() if image is _IMAGE_UNSET else image,
+                storage=storage,
             ),
         )
     )

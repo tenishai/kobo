@@ -54,16 +54,10 @@ models:
   - id: vertex_ai/claude-sonnet-4-5
     label: Claude Sonnet 4.5
 
-# Local or remote path to skills repository (null uses package defaults)
-skills_repo_path: null
-
-# Directory containing agent persona definitions (null uses package templates)
-personas_dir: null
-
-# Bucket-catalog era replacements for skills_repo_path/personas_dir above
-# (Tasks 4/5 own the consumers). Full name (owner/repo) of the org's skills
-# repo, and the GCS buckets backing the skills/personas catalogs — empty
-# string means unconfigured for all three.
+# Full name (owner/repo) of the org's skills repo (its own publish
+# pipeline, if any, populates the bucket below — pnyx itself never clones
+# it), and the GCS buckets pnyx-api actually reads the skills/personas
+# catalogs from (Task 5) — empty string means unconfigured for all three.
 skills_repo: null
 skills_bucket: ""
 personas_bucket: ""

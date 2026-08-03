@@ -43,14 +43,14 @@ class Config(BaseModel):
         default=[ModelChoice(id="vertex_ai/claude-sonnet-4-5", label="Claude Sonnet 4.5")],
         min_length=1,
     )
-    skills_repo_path: Path | None = None
-    personas_dir: Path | None = None  # None -> package templates/personas
-    # Bucket-catalog era replacements for skills_repo_path/personas_dir above
-    # (Task 4/5 own the consumers that will read these — this task only adds
-    # the fields so org.yaml can already set them). skills_repo is the full
-    # name (owner/repo) of the org's skills repo; skills_bucket/personas_
-    # bucket are the GCS buckets backing the catalogs; empty string means
-    # unconfigured for all three.
+    # skills_repo is the full name (owner/repo) of the org's skills repo (its
+    # own publish pipeline, if any, is what actually populates the buckets
+    # below — pnyx itself never clones it); skills_bucket/personas_bucket are
+    # the GCS buckets backing the catalogs pnyx-api actually reads from
+    # (Task 5). Empty string means unconfigured for all three. These
+    # replace the old skills_repo_path/personas_dir local-clone fields
+    # (Task 5 deleted the consumers that read a local git checkout/directory
+    # in favor of bucket catalogs).
     skills_repo: str | None = None
     skills_bucket: str = ""
     personas_bucket: str = ""
@@ -72,17 +72,15 @@ class Config(BaseModel):
     # connect is unconfigured — Clients.real() gates on this to leave slack=None.
     slack_tokens_path: Path | None = None
 
-    @field_validator(
-        "workdir", "skills_repo_path", "personas_dir", "slack_tokens_path", mode="before"
-    )
+    @field_validator("workdir", "slack_tokens_path", mode="before")
     @classmethod
     def _expand_user(cls, v):
         """Expand a leading `~` in any of the path-shaped fields.
 
-        One validator for all of them (rather than a near-identical one per
-        field) since the transform is identical: `None` passes through
-        untouched (the optional fields default to it), anything else
-        goes through `Path(...).expanduser()`.
+        One validator for both (rather than a near-identical one per field)
+        since the transform is identical: `None` passes through untouched
+        (the optional field defaults to it), anything else goes through
+        `Path(...).expanduser()`.
         """
         if v is not None:
             return Path(v).expanduser()

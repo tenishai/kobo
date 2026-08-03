@@ -9,17 +9,21 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
-import tarfile
 from dataclasses import dataclass
-from io import BytesIO
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import jsonschema
 import yaml
 
-from pnyx_api.catalog import SkillInfo
-from pnyx_api.clients import ClientError, CommandRunner
+# Type-only: `pnyx_api.steps` imports `BundleSpec`/`compose`/`validate_agent_
+# yaml` from this module, so a real (runtime) import the other way round
+# would be circular. `from __future__ import annotations` (below) already
+# makes every annotation in this file a lazy string, so `StagedSkill` is only
+# ever needed by type checkers, never at import time — `_materialize_skill`
+# only ever accesses `.id`/`.dir` on it, duck-typed, no isinstance check.
+if TYPE_CHECKING:
+    from pnyx_api.steps import StagedSkill
 
 _VENDOR_SCHEMA_PATH = Path(__file__).parent / "vendor" / "bundle.schema.json"
 
@@ -45,7 +49,7 @@ class BundleSpec:
     name: str
     persona_body: str  # already {name}-substituted by caller
     model_id: str
-    skills: list[SkillInfo]  # may be empty
+    skills: list[StagedSkill]  # may be empty; already staged on local disk
     runtime_image: str
     vertex_project: str
     vertex_location: str
@@ -154,95 +158,55 @@ def _dockerfile(spec: BundleSpec) -> str:
     )
 
 
-def _materialize_skill(skill: SkillInfo, dest: Path, runner: CommandRunner) -> None:
-    """Write one skill's tree into the not-yet-existing `dest` directory.
+def _materialize_skill(skill: StagedSkill, dest: Path) -> None:
+    """Copy one already-staged skill directory into the not-yet-existing
+    `dest`.
 
-    Pinning (Task 6): when `skill.sha` is set and the skill's source repo is
-    a real git repo (has a `.git` entry — `skill.path` is always
-    `<skills_repo>/skills/<id>/SKILL.md`, so its second-level parent is the
-    repo root), the content is read at that *exact* sha via `git archive`
-    piped through `tarfile` in memory — never from whatever the working tree
-    currently holds. This is what actually enforces "pinned at assembly":
-    a retry (or any later recomposition) that resolves the same recorded sha
-    ships identical bytes regardless of where the skills repo's HEAD has
-    since moved. `git archive`'s output is captured as raw bytes (`run_bytes`
-    — `run()`'s text-mode decode/strip would corrupt a tar archive) and
-    extracted without ever shelling out to `tar` or using a shell pipe.
+    Bucket catalogs (Task 5) replace the old sha-pinned `git archive`
+    materialization entirely: `pnyx_api.steps._stage_skills` has already
+    downloaded the skill's current bucket content to local disk (`skill.dir`)
+    by the time this runs, comparing/repairing the sha pin there — this
+    function's only remaining job is copying those already-resolved bytes
+    into the bundle tree.
 
-    Skills with no recorded sha, or backed by a plain directory rather than a
-    git repo (as in most unit tests' fixtures), fall back to the original
-    copytree-from-working-tree behavior — unpinned, but that's the only
-    sensible thing to do when there's no commit to pin to.
-
-    Raises ComposeError, naming both the sha and the skill id, if the sha is
-    unreachable in the skills repo (e.g. it was recorded, then the repo was
-    rewritten/GC'd out from under it).
-
-    Two guarantees hold for every member of the pinned `git archive` tar,
-    independent of what git itself would allow into a tree: (1) containment
-    — each member's resolved extraction path is verified to land inside
-    `dest`, so a crafted member name (e.g. `skills/<id>/../../../etc/evil`)
-    cannot write outside the destination even though it passes a naive
-    string-prefix check; and (2) no silent symlink (or other non-regular,
-    non-directory) extraction — such a member raises ComposeError naming it,
-    rather than being dropped quietly, which would otherwise diverge from the
-    unpinned copytree fallback's symlink-dereferencing behavior. Directory
-    members are skipped silently; they're created implicitly via
-    `parents=True` when a file beneath them is written.
+    The same containment/symlink-rejection discipline the old tar-extraction
+    path enforced is kept here verbatim in spirit, just walking `skill.dir`'s
+    real filesystem entries instead of tar members: (1) containment — every
+    entry's target path is verified to resolve inside `dest` before it's
+    written; and (2) no symlink (or other non-regular, non-directory) entry
+    is ever silently followed/copied — such an entry raises ComposeError
+    naming it, rather than being dropped quietly. Directory entries are
+    skipped explicitly; they're created via `parents=True` when a file
+    beneath them is written.
     """
-    skills_repo = skill.path.parents[2]
-    if not (skill.sha and (skills_repo / ".git").exists()):
-        # Copy the whole skill directory (SKILL.md plus any references/scripts/
-        # assets alongside it) rather than symlinking — the sync-plugins
-        # copy-don't-symlink pattern, so a composed bundle is self-contained.
-        shutil.copytree(skill.path.parent, dest)
-        return
-
-    prefix = f"skills/{skill.id}/"
-    try:
-        archive_bytes = runner.run_bytes(
-            [
-                "git", "-C", str(skills_repo), "archive", "--format=tar",
-                skill.sha, "--", f"skills/{skill.id}",
-            ]
-        )
-    except ClientError as exc:
-        raise ComposeError(
-            f"skill {skill.id!r} recorded sha {skill.sha!r} is unreachable in "
-            f"skills repo {skills_repo}: {exc}"
-        ) from exc
-
     dest.mkdir(parents=True)
     resolved_dest = dest.resolve()
-    with tarfile.open(fileobj=BytesIO(archive_bytes)) as tar:
-        for member in tar.getmembers():
-            if not member.name.startswith(prefix):
-                continue
-            relative = member.name[len(prefix):]
-            if not relative:
-                # the `skills/<id>/` directory entry itself, if present.
-                continue
-            target = dest / relative
-            if not target.resolve().is_relative_to(resolved_dest):
-                raise ComposeError(
-                    f"skill {skill.id!r} archive member {member.name!r} would "
-                    f"extract outside of {dest} (tar-slip); refusing to write it"
-                )
-            if member.isdir():
-                continue
-            if not member.isfile():
-                raise ComposeError(
-                    f"skill {skill.id!r} archive member {member.name!r} is not a "
-                    "regular file or directory (symlinks and other special "
-                    "member types are not supported — author the skill without "
-                    "symlinks)"
-                )
-            target.parent.mkdir(parents=True, exist_ok=True)
-            extracted = tar.extractfile(member)
-            target.write_bytes(extracted.read())
+    for entry in sorted(skill.dir.rglob("*")):
+        relative = entry.relative_to(skill.dir)
+        target = dest / relative
+        if not target.resolve().is_relative_to(resolved_dest):
+            raise ComposeError(
+                f"skill {skill.id!r} staged member {relative.as_posix()!r} would "
+                f"extract outside of {dest} (path escape); refusing to write it"
+            )
+        if entry.is_symlink():
+            raise ComposeError(
+                f"skill {skill.id!r} staged member {relative.as_posix()!r} is a "
+                "symlink (symlinks are not supported — author the skill without "
+                "symlinks)"
+            )
+        if entry.is_dir():
+            continue
+        if not entry.is_file():
+            raise ComposeError(
+                f"skill {skill.id!r} staged member {relative.as_posix()!r} is not "
+                "a regular file or directory"
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(entry.read_bytes())
 
 
-def compose(spec: BundleSpec, dest: Path, runner: CommandRunner | None = None) -> None:
+def compose(spec: BundleSpec, dest: Path) -> None:
     """Write a daedalus agent bundle tree to `dest`.
 
     Produces:
@@ -253,10 +217,6 @@ def compose(spec: BundleSpec, dest: Path, runner: CommandRunner | None = None) -
         dest/bundle/knowledge/gotchas.md
         dest/bundle/skills/<id>/**   (one materialized tree per spec.skills
                                       entry — see `_materialize_skill`)
-
-    `runner` is the CommandRunner used for any sha-pinned skill's `git
-    archive` call; defaults to a fresh real one (only ever exercised for
-    skills that actually need it — see `_materialize_skill`).
     """
     bundle_dir = dest / "bundle"
     bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -272,9 +232,8 @@ def compose(spec: BundleSpec, dest: Path, runner: CommandRunner | None = None) -
     if spec.skills:
         skills_dir = bundle_dir / "skills"
         skills_dir.mkdir(parents=True, exist_ok=True)
-        runner = runner or CommandRunner()
         for skill in spec.skills:
-            _materialize_skill(skill, skills_dir / skill.id, runner)
+            _materialize_skill(skill, skills_dir / skill.id)
 
     (dest / "Dockerfile").write_text(_dockerfile(spec))
 

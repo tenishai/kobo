@@ -1,22 +1,22 @@
-"""Tests for pnyx_api.steps: RepoStep, OnboardStep, AccessStep.
+"""Tests for pnyx_api.steps: RepoStep (persona/skill resolution against the
+bucket catalogs, Task 5), OnboardStep, AccessStep.
 
-Each step is exercised directly — construct a `Ctx`, call `step.run(ctx)` — against
-the platform-client fakes in tests/fakes.py, the same style test_engine.py uses for
-its toy steps but with the real Task 6 steps. No real subprocess/network/sleep: the
-module's `_sleep` is monkeypatched to a no-op everywhere a poll loop might run more
+Each step is exercised directly — construct a `Ctx`, call `step.run(ctx)` —
+against the platform-client fakes in tests/fakes.py, the same style
+test_engine.py uses for its toy steps but with the real steps. RepoStep's
+persona/skill fixtures come from conftest.py's shared `config`/`fake_storage`
+(the two packaged personas + one sample skill, `shared/word-games/`, pinned
+at `source-sha: "seedsha"`). No real subprocess/network/sleep: the module's
+`_sleep` is monkeypatched to a no-op everywhere a poll loop might run more
 than a couple of iterations, so the whole file runs in well under a second.
 """
 
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
-
 import pytest
 
 from pnyx_api.clients import Clients
-from pnyx_api.composer import BundleSpec
-from pnyx_api.config import Config
+from pnyx_api.composer import BundleSpec, compose
 from pnyx_api.models import Agent
 from pnyx_api.provisioner import Ctx
 from pnyx_api.steps import (
@@ -25,12 +25,17 @@ from pnyx_api.steps import (
     AccessStep,
     OnboardStep,
     RepoStep,
+    StagedSkill,
+    _resolve_persona_body,
+    _stage_skills,
 )
-from tests.fakes import FakeCloud, FakeGitHub, FakeGojira
+from tests.fakes import FakeCloud, FakeGitHub, FakeGojira, FakeStorage
 
 AGENT_NAME = "clio"
 PERSONA = "helpful-generalist"
 MODEL_ID = "vertex_ai/claude-sonnet-4-5"
+
+WORD_GAMES_SKILL = {"name": "word-games", "team": "shared", "sha": "seedsha"}
 
 
 @pytest.fixture(autouse=True)
@@ -45,38 +50,6 @@ def _no_real_sleep(monkeypatch):
 
     fake_sleep.calls = sleep_calls
     monkeypatch.setattr(steps_module, "_sleep", fake_sleep)
-
-
-def _git(repo: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", "-c", "user.email=test@example.com", "-c", "user.name=Test", *args],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-    )
-
-
-def _make_skills_repo(tmp_path: Path, skill_id: str = "echo") -> Path:
-    repo = tmp_path / "skills-repo"
-    skill_dir = repo / "skills" / skill_id
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {skill_id}\ndescription: Echoes things.\n---\nEcho skill body.\n"
-    )
-    _git(repo, "init", "-q")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "init")
-    return repo
-
-
-def _head_sha(repo: Path) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
 
 
 def _make_agent(
@@ -109,17 +82,150 @@ def _make_ctx(session, agent, config, clients) -> Ctx:
     return Ctx(agent=agent, session=session, config=config, clients=clients, workdir=workdir)
 
 
-def _clients(*, github=None, gojira=None, cloud=None) -> Clients:
-    return Clients(github=github, gojira=gojira, cloud=cloud, agent=None, kubectl=None)
+def _clients(*, github=None, gojira=None, cloud=None, storage=None) -> Clients:
+    return Clients(
+        github=github, gojira=gojira, cloud=cloud, agent=None, kubectl=None, storage=storage
+    )
+
+
+# --- _resolve_persona_body ------------------------------------------------------
+
+
+def test_resolve_persona_body_reads_bucket_and_substitutes_name(
+    session_factory, config, fake_storage
+):
+    session, agent = _make_agent(session_factory, name="sam", persona="helpful-generalist")
+    engine = session.get_bind()
+
+    body = _resolve_persona_body(config, fake_storage, engine, agent)
+
+    assert "sam" in body
+    assert "{name}" not in body
+
+
+def test_resolve_persona_body_strips_description_header(session_factory, config, fake_storage):
+    session, agent = _make_agent(session_factory, name="sam", persona="blank")
+    engine = session.get_bind()
+
+    body = _resolve_persona_body(config, fake_storage, engine, agent)
+
+    assert not body.startswith("<!--")
+    assert "description:" not in body
+
+
+def test_resolve_persona_body_unknown_persona_raises_clear_message(
+    session_factory, config, fake_storage
+):
+    session, agent = _make_agent(session_factory, persona="ghost-persona")
+    engine = session.get_bind()
+
+    with pytest.raises(RuntimeError, match="ghost-persona"):
+        _resolve_persona_body(config, fake_storage, engine, agent)
+
+
+def test_resolve_persona_body_survives_braces_in_purpose(session_factory, config):
+    """Regression for the `.replace` swap (closes the ledgered P1a brace
+    hazard): a persona body containing OTHER literal braces (not just the
+    `{name}` placeholder) must survive untouched — a `.format()`-based
+    implementation would choke on (or misinterpret) them."""
+    storage = FakeStorage()
+    storage.write_bytes(
+        config.personas_bucket,
+        "brace-persona/persona.md",
+        b"<!-- description: Handles curly input. -->\n"
+        b"You are {name}. Handles {curly} input and echoes back "
+        b"{whatever} the user sends, braces and all.\n",
+        content_type="text/markdown",
+    )
+    session, agent = _make_agent(session_factory, name="sam", persona="brace-persona")
+    engine = session.get_bind()
+
+    body = _resolve_persona_body(config, storage, engine, agent)
+
+    assert "sam" in body
+    assert "{curly}" in body
+    assert "{whatever}" in body
+    assert "{name}" not in body
+
+
+# --- _stage_skills ---------------------------------------------------------------
+
+
+def test_stage_skills_downloads_into_staging_preserving_relative_paths(
+    session_factory, config, fake_storage, tmp_path
+):
+    _session, agent = _make_agent(session_factory, skills=[dict(WORD_GAMES_SKILL)])
+    staging = tmp_path / "staging"
+
+    staged = _stage_skills(fake_storage, config, agent, staging)
+
+    assert staged == [StagedSkill(id="word-games", dir=staging / "word-games")]
+    assert (staging / "word-games" / "SKILL.md").is_file()
+
+
+def test_stage_skills_sha_drift_proceeds_and_updates_recorded_pin(
+    session_factory, config, fake_storage, tmp_path, caplog
+):
+    # The catalog's SKILL.md has moved on since this agent picked it: fresh
+    # source-sha metadata that no longer matches the recorded pin.
+    fake_storage.write_bytes(
+        "skills-bucket",
+        "shared/word-games/SKILL.md",
+        b"---\nname: word-games\ndescription: Plays word games.\n---\nUpdated body.\n",
+        metadata={"source-sha": "newsha"},
+        content_type="text/markdown",
+    )
+    session, agent = _make_agent(session_factory, skills=[dict(WORD_GAMES_SKILL)])
+    staging = tmp_path / "staging"
+
+    with caplog.at_level("WARNING"):
+        staged = _stage_skills(fake_storage, config, agent, staging)
+
+    # Proceeds with the CURRENT content — never fails on drift.
+    assert len(staged) == 1
+    assert "Updated body." in (staging / "word-games" / "SKILL.md").read_text()
+    assert any("word-games" in message for message in caplog.messages)
+
+    # The row's recorded sha is corrected...
+    assert agent.skills[0]["sha"] == "newsha"
+
+    # ...and that correction actually persists via a plain commit (the JSON
+    # column was reassigned, not mutated in place).
+    session.commit()
+    reloaded = session_factory().get(Agent, agent.id)
+    assert reloaded.skills[0]["sha"] == "newsha"
+
+
+def test_stage_skills_vanished_skill_raises_exact_message(
+    session_factory, config, fake_storage, tmp_path
+):
+    _session, agent = _make_agent(
+        session_factory, skills=[{"name": "ghost-skill", "team": "shared", "sha": "whatever"}]
+    )
+    staging = tmp_path / "staging"
+
+    with pytest.raises(
+        RuntimeError, match=r"^skill no longer in the catalog: shared/ghost-skill$"
+    ):
+        _stage_skills(fake_storage, config, agent, staging)
+
+
+def test_stage_skills_no_drift_leaves_row_untouched(session_factory, config, fake_storage, tmp_path):
+    _session, agent = _make_agent(session_factory, skills=[dict(WORD_GAMES_SKILL)])
+    staging = tmp_path / "staging"
+
+    _stage_skills(fake_storage, config, agent, staging)
+
+    assert agent.skills == [dict(WORD_GAMES_SKILL)]
 
 
 # --- RepoStep -----------------------------------------------------------------
 
 
-def test_repo_step_happy_path_creates_and_records_repo(session_factory, config):
+def test_repo_step_happy_path_creates_and_records_repo(session_factory, config, fake_storage):
     session, agent = _make_agent(session_factory)
     github = FakeGitHub()
-    ctx = _make_ctx(session, agent, config, _clients(github=github))
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
 
     RepoStep().run(ctx)
 
@@ -132,10 +238,10 @@ def test_repo_step_happy_path_creates_and_records_repo(session_factory, config):
     assert (created_src / "bundle" / "agent.yaml").is_file()
 
 
-def test_repo_step_substitutes_persona_name_placeholder(session_factory, config):
+def test_repo_step_substitutes_persona_name_placeholder(session_factory, config, fake_storage):
     session, agent = _make_agent(session_factory, name="sam")
     github = FakeGitHub()
-    ctx = _make_ctx(session, agent, config, _clients(github=github))
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
 
     RepoStep().run(ctx)
 
@@ -144,67 +250,22 @@ def test_repo_step_substitutes_persona_name_placeholder(session_factory, config)
     assert "{name}" not in persona_text
 
 
-def test_repo_step_resolves_skills_by_id_into_bundle(session_factory, tmp_path):
-    skills_repo = _make_skills_repo(tmp_path)
-    # A real recorded sha (the fixture repo's actual HEAD) — this repo is a
-    # real git repo, so RepoStep's skill materialization is now the
-    # sha-pinned git-archive path (see pnyx_api.composer), which needs a
-    # sha that's actually reachable.
-    sha = _head_sha(skills_repo)
-    config = Config(workdir=tmp_path / "work", skills_repo_path=skills_repo)
-    session, agent = _make_agent(
-        session_factory, skills=[{"name": "echo", "sha": sha}]
-    )
+def test_repo_step_resolves_skills_by_id_into_bundle(session_factory, config, fake_storage):
+    session, agent = _make_agent(session_factory, skills=[dict(WORD_GAMES_SKILL)])
     github = FakeGitHub()
-    ctx = _make_ctx(session, agent, config, _clients(github=github))
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
 
     RepoStep().run(ctx)
 
-    assert (ctx.workdir / "repo" / "bundle" / "skills" / "echo" / "SKILL.md").is_file()
+    assert (ctx.workdir / "repo" / "bundle" / "skills" / "word-games" / "SKILL.md").is_file()
 
 
-def test_repo_step_pins_skill_to_recorded_sha_even_after_head_advances(session_factory, tmp_path):
-    """The Task 6 regression this whole change exists for: a retry (or any
-    later recomposition) that resolves the agent row's recorded skill sha
-    must ship the content from THAT sha — not whatever the skills repo's
-    HEAD has since moved to. Before this fix, RepoStep re-resolved skills
-    against the skills repo's current working tree on every run, silently
-    shipping newer content once HEAD moved.
-    """
-    skills_repo = _make_skills_repo(tmp_path)
-    old_sha = _head_sha(skills_repo)
-
-    # Advance HEAD with changed skill content, as if someone pushed an update
-    # to the skills repo after this agent picked "echo".
-    (skills_repo / "skills" / "echo" / "SKILL.md").write_text(
-        "---\nname: echo\ndescription: Echoes things.\n---\nNEW echo skill body.\n"
-    )
-    _git(skills_repo, "add", "-A")
-    _git(skills_repo, "commit", "-q", "-m", "update echo")
-    assert _head_sha(skills_repo) != old_sha
-
-    config = Config(workdir=tmp_path / "work", skills_repo_path=skills_repo)
+def test_repo_step_unknown_skill_id_raises_clear_message(session_factory, config, fake_storage):
     session, agent = _make_agent(
-        session_factory, skills=[{"name": "echo", "sha": old_sha}]
+        session_factory, skills=[{"name": "ghost-skill", "team": "shared", "sha": "whatever"}]
     )
     github = FakeGitHub()
-    ctx = _make_ctx(session, agent, config, _clients(github=github))
-
-    RepoStep().run(ctx)
-
-    shipped = (
-        ctx.workdir / "repo" / "bundle" / "skills" / "echo" / "SKILL.md"
-    ).read_text()
-    assert "Echo skill body" in shipped
-    assert "NEW echo skill body" not in shipped
-
-
-def test_repo_step_unknown_skill_id_raises_clear_message(session_factory, config):
-    session, agent = _make_agent(
-        session_factory, skills=[{"name": "ghost-skill", "sha": "whatever"}]
-    )
-    github = FakeGitHub()
-    ctx = _make_ctx(session, agent, config, _clients(github=github))
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
 
     with pytest.raises(RuntimeError, match="ghost-skill"):
         RepoStep().run(ctx)
@@ -213,10 +274,10 @@ def test_repo_step_unknown_skill_id_raises_clear_message(session_factory, config
     assert github.created_from_dir == []
 
 
-def test_repo_step_unknown_persona_id_raises_clear_message(session_factory, config):
+def test_repo_step_unknown_persona_id_raises_clear_message(session_factory, config, fake_storage):
     session, agent = _make_agent(session_factory, persona="ghost-persona")
     github = FakeGitHub()
-    ctx = _make_ctx(session, agent, config, _clients(github=github))
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
 
     with pytest.raises(RuntimeError, match="ghost-persona"):
         RepoStep().run(ctx)
@@ -252,19 +313,16 @@ def test_repo_step_resume_when_row_already_matches_skips_creation(session_factor
     assert not (ctx.workdir / "repo").exists()
 
 
-def test_repo_step_rmtrees_stale_compose_dir_before_recomposing(session_factory, tmp_path):
+def test_repo_step_rmtrees_stale_compose_dir_before_recomposing(session_factory, config, fake_storage):
     """Retry-safety: a prior partial attempt may have left a compose dir with a
     skills subtree behind; compose() raises FileExistsError on top of that, so
     RepoStep must clear it first."""
-    skills_repo = _make_skills_repo(tmp_path, skill_id="echo")
-    sha = _head_sha(skills_repo)
-    config = Config(workdir=tmp_path / "work", skills_repo_path=skills_repo)
-    session, agent = _make_agent(session_factory, skills=[{"name": "echo", "sha": sha}])
+    session, agent = _make_agent(session_factory, skills=[dict(WORD_GAMES_SKILL)])
     github = FakeGitHub()
-    ctx = _make_ctx(session, agent, config, _clients(github=github))
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
 
     # Pre-seed a stale skills subtree that compose() would refuse to overwrite
-    stale_dir = ctx.workdir / "repo" / "bundle" / "skills" / "echo"
+    stale_dir = ctx.workdir / "repo" / "bundle" / "skills" / "word-games"
     stale_dir.mkdir(parents=True)
     (stale_dir / "stale_file.txt").write_text("leftover from failed attempt\n")
 
@@ -272,34 +330,34 @@ def test_repo_step_rmtrees_stale_compose_dir_before_recomposing(session_factory,
     RepoStep().run(ctx)
 
     # Verify the stale file is gone and the fresh compose succeeded
-    assert not (ctx.workdir / "repo" / "bundle" / "skills" / "echo" / "stale_file.txt").exists()
-    assert (ctx.workdir / "repo" / "bundle" / "skills" / "echo" / "SKILL.md").is_file()
+    assert not (
+        ctx.workdir / "repo" / "bundle" / "skills" / "word-games" / "stale_file.txt"
+    ).exists()
+    assert (ctx.workdir / "repo" / "bundle" / "skills" / "word-games" / "SKILL.md").is_file()
     assert (ctx.workdir / "repo" / "bundle" / "agent.yaml").is_file()
 
 
 def test_repo_step_compose_raises_without_rmtree_on_stale_skills(tmp_path):
     """Sanity guard: verify that compose() would raise FileExistsError if we
     didn't rmtree the stale skills subtree first."""
-    from pnyx_api.composer import compose
-
-    skills_repo = _make_skills_repo(tmp_path, skill_id="echo")
-    config = Config(workdir=tmp_path / "work", skills_repo_path=skills_repo)
-
-    # Get the skill info for the spec
-    from pnyx_api.catalog import list_skills
-    skills = list_skills(skills_repo)
+    skill_dir = tmp_path / "staged" / "echo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: echo\ndescription: Echoes things.\n---\nEcho skill body.\n"
+    )
+    skill = StagedSkill(id="echo", dir=skill_dir)
 
     spec = BundleSpec(
         name="test-agent",
         persona_body="You are {name}.",
         model_id="vertex_ai/claude-sonnet-4-5",
-        skills=skills,
+        skills=[skill],
         runtime_image="image:latest",
         vertex_project="proj",
         vertex_location="us-central1",
     )
 
-    compose_dir = config.workdir / "repo"
+    compose_dir = tmp_path / "work" / "repo"
 
     # First compose succeeds
     compose(spec, compose_dir)

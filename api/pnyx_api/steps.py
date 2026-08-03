@@ -33,13 +33,14 @@ from __future__ import annotations
 import logging
 import shutil
 import time
-from dataclasses import replace
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
 
-from pnyx_api.catalog import list_personas, list_skills
-from pnyx_api.clients import GojiraConflict, gsa_email
+from pnyx_api.catalog import _DESCRIPTION_HEADER_RE
+from pnyx_api.clients import GojiraConflict, StorageClient, StorageNotFound, gsa_email
 from pnyx_api.composer import BundleSpec, compose, validate_agent_yaml
 from pnyx_api.config import Config
 from pnyx_api.models import Agent
@@ -92,53 +93,128 @@ BUILD_RERUN_STALE_GRACE_POLLS = 3
 _sleep = time.sleep
 
 
-def _resolve_persona_body(config: Config, agent: Agent) -> str:
-    """Look up `agent.persona` in the persona catalog and `{name}`-format its body."""
-    personas = {p.id: p for p in list_personas(config.personas_dir)}
-    persona_info = personas.get(agent.persona)
-    if persona_info is None:
+def _resolve_persona_body(
+    config: Config, storage: StorageClient, engine, agent: Agent
+) -> str:
+    """Read `agent.persona`'s body straight from the personas bucket (bucket
+    catalogs, Task 5) and substitute the agent's own name into it.
+
+    `f"{agent.persona}/persona.md"`: personas are org-wide and flat under
+    their id in the bucket (see `pnyx_api.personas.create_persona`'s own key
+    shape, `f"{prefix}{id_}/persona.md"`) — no team segment needed to find
+    one. `engine` is accepted for parity with this step's other bucket-
+    catalog callers (and room for a future FTS cross-check) but isn't needed
+    for this direct-by-id bucket read.
+
+    Strips the leading `<!-- description: ... -->` header line if present
+    (the same convention `pnyx_api.catalog._parse_persona_file` parses off
+    the packaged/room-authored bodies), then substitutes the agent's name via
+    plain `.replace` — never `.format`, which would choke on (or
+    misinterpret) any other literal `{...}` the persona's own purpose/
+    boundaries text might carry (the ledgered P1a brace hazard this closes).
+    """
+    key = f"{agent.persona}/persona.md"
+    try:
+        raw = storage.read_bytes(config.personas_bucket, key)
+    except StorageNotFound as exc:
         raise RuntimeError(
             f"persona {agent.persona!r} (recorded on agent {agent.name!r}) is not "
             "in the persona catalog"
-        )
-    return persona_info.body.format(name=agent.name)
+        ) from exc
+
+    text = raw.decode()
+    newline = text.find("\n")
+    first_line = text[:newline] if newline != -1 else text
+    if _DESCRIPTION_HEADER_RE.match(first_line):
+        body = text[newline + 1 :] if newline != -1 else ""
+    else:
+        body = text
+    return body.replace("{name}", agent.name)
 
 
-def _resolve_skills(config: Config, agent: Agent) -> list:
-    """Resolve `agent.skills` (a list of `{"name": ..., "sha": ...}` dicts, the
-    shape the DB column holds) against the current skill catalog by id.
+@dataclass
+class StagedSkill:
+    id: str
+    dir: Path
 
-    A skill id the agent recorded that's no longer in the catalog (removed
-    upstream since the agent picked it) is a hard failure, not a silent drop:
-    the composed bundle would otherwise ship without a skill the operator
-    believes it has.
 
-    Pinning (Task 6): the catalog lookup is by id only — its SkillInfo always
-    carries the skills repo's *current* HEAD sha (`list_skills`'s scan). The
-    row's own recorded `sha` (set once, at first successful resolution — see
-    `pnyx_api.main`'s create-agent route) is authoritative over that and is
-    substituted in here on every resolution, first-time or retry alike: a
-    retry after the skills repo's HEAD has since moved must still compose the
-    content from the sha this agent actually picked, not whatever HEAD is now.
-    `compose()` (pnyx_api.composer) is what actually enforces this pin, by
-    materializing each skill via `git archive` at the sha it's handed here
-    rather than copying the working tree.
+def _stage_skills(
+    storage: StorageClient, config: Config, agent: Agent, staging: Path
+) -> list[StagedSkill]:
+    """Download every one of `agent.skills`'s entries (each a `{"name": ...,
+    "team": ..., "sha": ...}` dict, the shape the DB column holds) from the
+    skills bucket into `staging/<id>/`, preserving each object's relative
+    path under the bucket's `<team>/<id>/` prefix.
+
+    A skill (or its whole team) that's vanished from the catalog since this
+    agent picked it (`storage.list_keys` returns no keys under that prefix)
+    is a hard failure, not a silent drop — the composed bundle would
+    otherwise ship without a skill the operator believes it has.
+
+    Sha drift: `SKILL.md`'s own `source-sha` custom metadata (set by
+    whatever publishes the skills bucket) is compared against the sha
+    recorded on the agent row at pick time. A mismatch means the catalog
+    entry has moved on since the pick — pnyx has only ever kept the ONE
+    current copy of a skill's tree in the bucket (unlike the old skills-repo
+    git-archive path, which could still resolve an older commit), so there is
+    no older content left to actually pin to. The honest move is to proceed
+    with what's actually there now and correct the recorded pin to match,
+    logged at warning — never to fail the whole provision over a catalog
+    that simply moved between pick and assembly. `agent.skills` is
+    reassigned to a fresh list (rather than mutating an entry dict in place)
+    so the caller's session actually sees the JSON column as dirty and
+    commits the correction — mutating a dict already inside the existing
+    list would not be detected by SQLAlchemy's change tracking.
     """
-    catalog = {skill.id: skill for skill in list_skills(config.skills_repo_path)}
-    resolved = []
+    staged: list[StagedSkill] = []
+    resolved_entries: list[dict] = []
+    drifted = False
+
     for entry in agent.skills:
         skill_id = entry["name"]
-        skill_info = catalog.get(skill_id)
-        if skill_info is None:
-            raise RuntimeError(
-                f"skill {skill_id!r} recorded on agent {agent.name!r} is no longer "
-                "in the skill catalog"
+        team = entry["team"]
+        recorded_sha = entry.get("sha") or ""
+        prefix = f"{team}/{skill_id}/"
+
+        keys = storage.list_keys(config.skills_bucket, prefix)
+        if not keys:
+            raise RuntimeError(f"skill no longer in the catalog: {team}/{skill_id}")
+
+        skill_dir = staging / skill_id
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        for key in keys:
+            relative = key[len(prefix) :]
+            if not relative:
+                # the `<team>/<id>/` "directory" placeholder object itself,
+                # if the publisher writes one — nothing to download.
+                continue
+            target = skill_dir / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(storage.read_bytes(config.skills_bucket, key))
+
+        try:
+            metadata = storage.object_metadata(config.skills_bucket, f"{prefix}SKILL.md")
+        except StorageNotFound:
+            metadata = {}
+        current_sha = metadata.get("metadata", {}).get("source-sha", "")
+
+        if recorded_sha and current_sha and current_sha != recorded_sha:
+            log.warning(
+                "skill %r (team %r) drifted since agent %r picked it — recorded "
+                "sha %r, catalog now at %r; shipping current content and "
+                "updating the recorded pin",
+                skill_id, team, agent.name, recorded_sha, current_sha,
             )
-        recorded_sha = entry.get("sha")
-        if recorded_sha:
-            skill_info = replace(skill_info, sha=recorded_sha)
-        resolved.append(skill_info)
-    return resolved
+            entry = {**entry, "sha": current_sha}
+            drifted = True
+
+        resolved_entries.append(entry)
+        staged.append(StagedSkill(id=skill_id, dir=skill_dir))
+
+    if drifted:
+        agent.skills = resolved_entries
+
+    return staged
 
 
 class RepoStep:
@@ -151,6 +227,8 @@ class RepoStep:
         agent = ctx.agent
         config = ctx.config
         github = ctx.clients.github
+        storage = ctx.clients.storage
+        engine = ctx.session.get_bind()
 
         repo = f"{config.github_org}/agent-{agent.name}"
 
@@ -170,14 +248,19 @@ class RepoStep:
                 f"{agent.name!r} — refusing to adopt it"
             )
 
-        persona_body = _resolve_persona_body(config, agent)
-        skills = _resolve_skills(config, agent)
+        persona_body = _resolve_persona_body(config, storage, engine, agent)
+
+        staging_dir = ctx.workdir / "staging"
+        # Retry safety (mirrors compose_dir's own rmtree below): a prior
+        # attempt may have left a partial staging download behind.
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        staged_skills = _stage_skills(storage, config, agent, staging_dir)
 
         spec = BundleSpec(
             name=agent.name,
             persona_body=persona_body,
             model_id=agent.model_id,
-            skills=skills,
+            skills=staged_skills,
             runtime_image=config.runtime_image,
             vertex_project=config.vertex_project,
             vertex_location=config.vertex_location,

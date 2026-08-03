@@ -30,8 +30,15 @@ from pnyx_api.main import create_app, get_session
 from pnyx_api.models import Agent, AgentStatus, Base
 from tests.fakes import FakeAgent, FakeCloud, FakeGitHub, FakeGojira, FakeKubectl
 
+# fake_storage: reuses conftest.py's shared fixture (seeded with both
+# catalogs — the two packaged personas + the sample "shared/word-games"
+# skill) rather than redefining it here; only this module's `config`/
+# `clients` need their own local fixtures (full platform-client wiring the
+# conftest.py `client` fixture doesn't provide).
+
 AGENT_NAME = "clio"
 PERSONA = "helpful-generalist"
+TEAM = "clio-team"
 
 ALL_STEP_NAMES = ["repo", "onboard", "access", "wire", "build", "deploy", "hello"]
 
@@ -59,7 +66,11 @@ def session_factory(tmp_path):
 
 @pytest.fixture
 def config(tmp_path):
-    return Config(workdir=tmp_path / "work")
+    return Config(
+        workdir=tmp_path / "work",
+        skills_bucket="skills-bucket",
+        personas_bucket="personas-bucket",
+    )
 
 
 @pytest.fixture
@@ -78,13 +89,14 @@ def fake_agent():
 
 
 @pytest.fixture
-def clients(fake_github, fake_gojira, fake_agent):
+def clients(fake_github, fake_gojira, fake_agent, fake_storage):
     return Clients(
         github=fake_github,
         gojira=fake_gojira,
         cloud=FakeCloud(),
         agent=fake_agent,
         kubectl=FakeKubectl(),
+        storage=fake_storage,
     )
 
 
@@ -118,7 +130,7 @@ def _poll_until(client, name, statuses, deadline_s=POLL_DEADLINE_S):
 def test_create_agent_returns_201_pending_then_provisions_to_ready(client):
     response = client.post(
         "/api/agents",
-        json={"name": AGENT_NAME, "persona": PERSONA, "skills": [], "model": None},
+        json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM, "skills": [], "model": None},
     )
 
     assert response.status_code == 201
@@ -133,7 +145,7 @@ def test_create_agent_returns_201_pending_then_provisions_to_ready(client):
 
 
 def test_create_agent_step_labels_match_ui_checklist_vocabulary(client):
-    client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA})
+    client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM})
 
     body = _poll_until(client, AGENT_NAME, {"ready", "failed"})
 
@@ -150,14 +162,14 @@ def test_create_agent_step_labels_match_ui_checklist_vocabulary(client):
 
 
 def test_create_agent_no_model_falls_back_to_default(client, config):
-    client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA})
+    client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM})
 
     body = _poll_until(client, AGENT_NAME, {"ready", "failed"})
     assert body["model"] == config.models[0].id
 
 
 def test_create_agent_duplicate_name_returns_409(client):
-    payload = {"name": AGENT_NAME, "persona": PERSONA}
+    payload = {"name": AGENT_NAME, "persona": PERSONA, "team": TEAM}
 
     first = client.post("/api/agents", json=payload)
     assert first.status_code == 201
@@ -225,7 +237,7 @@ def test_create_agent_name_toctou_maps_integrity_error_to_409(
     race_client = TestClient(app)
 
     response = race_client.post(
-        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA}
+        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM}
     )
 
     assert response.status_code == 409
@@ -234,7 +246,7 @@ def test_create_agent_name_toctou_maps_integrity_error_to_409(
 
 def test_create_agent_unknown_persona_returns_422(client):
     response = client.post(
-        "/api/agents", json={"name": AGENT_NAME, "persona": "ghost-persona"}
+        "/api/agents", json={"name": AGENT_NAME, "persona": "ghost-persona", "team": TEAM}
     )
 
     assert response.status_code == 422
@@ -244,7 +256,12 @@ def test_create_agent_unknown_persona_returns_422(client):
 def test_create_agent_unknown_skill_returns_422(client):
     response = client.post(
         "/api/agents",
-        json={"name": AGENT_NAME, "persona": PERSONA, "skills": ["ghost-skill"]},
+        json={
+            "name": AGENT_NAME,
+            "persona": PERSONA,
+            "team": TEAM,
+            "skills": [{"id": "ghost-skill", "team": "shared"}],
+        },
     )
 
     assert response.status_code == 422
@@ -254,7 +271,7 @@ def test_create_agent_unknown_skill_returns_422(client):
 def test_create_agent_unknown_model_returns_422(client):
     response = client.post(
         "/api/agents",
-        json={"name": AGENT_NAME, "persona": PERSONA, "model": "not-a-real-model"},
+        json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM, "model": "not-a-real-model"},
     )
 
     assert response.status_code == 422
@@ -263,7 +280,7 @@ def test_create_agent_unknown_model_returns_422(client):
 
 def test_create_agent_invalid_name_returns_422(client):
     response = client.post(
-        "/api/agents", json={"name": "Not Valid!", "persona": PERSONA}
+        "/api/agents", json={"name": "Not Valid!", "persona": PERSONA, "team": TEAM}
     )
 
     assert response.status_code == 422
@@ -272,7 +289,7 @@ def test_create_agent_invalid_name_returns_422(client):
 
 def test_create_agent_invalid_name_never_reaches_the_pipeline(client, fake_github):
     """A 422 must reject before touching any platform client."""
-    client.post("/api/agents", json={"name": "Not Valid!", "persona": PERSONA})
+    client.post("/api/agents", json={"name": "Not Valid!", "persona": PERSONA, "team": TEAM})
 
     assert fake_github.calls == []
 
@@ -290,17 +307,122 @@ def test_create_agent_name_rule_violations_return_422_with_distinct_reason(
 ):
     """Same distinct reasons as the availability route (`validate_name`),
     surfaced in create's 422 error message rather than a bare "invalid name"."""
-    response = client.post("/api/agents", json={"name": name, "persona": PERSONA})
+    response = client.post(
+        "/api/agents", json={"name": name, "persona": PERSONA, "team": TEAM}
+    )
 
     assert response.status_code == 422
     assert expected_reason in response.json()["error"]
+
+
+def test_create_agent_bad_team_slug_returns_422(client):
+    response = client.post(
+        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": "Not Valid!"}
+    )
+
+    assert response.status_code == 422
+    assert "error" in response.json()
+
+
+def test_create_agent_catalogs_not_configured_returns_422(session_factory, tmp_path):
+    """Controller decision #2: an unwired org (no catalog bucket named at
+    all) 422s with the SAME copy the search/refresh routes' 503 uses — a
+    setup problem, not a bad request — and this must happen before any Agent
+    row is written."""
+    unwired_config = Config(workdir=tmp_path / "work")
+    client = TestClient(create_app(session_factory, config=unwired_config))
+
+    response = client.post(
+        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM}
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "catalogs aren't set up yet"}
+
+    session = session_factory()
+    assert session.query(Agent).filter_by(name=AGENT_NAME).first() is None
+    session.close()
+
+
+def test_create_agent_persists_team_and_exposes_it_in_detail_and_list(client):
+    response = client.post(
+        "/api/agents",
+        json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM, "skills": [], "model": None},
+    )
+
+    assert response.status_code == 201
+
+    detail = client.get(f"/api/agents/{AGENT_NAME}").json()
+    assert detail["team"] == TEAM
+
+    listing = client.get("/api/agents").json()["agents"]
+    assert listing[0]["team"] == TEAM
+
+
+def test_get_agent_team_is_null_for_pre_existing_rows(session_factory, config, clients):
+    """Detail/list responses gain "team", but a row that predates this
+    column (or was simply never given one) must render null, not 500."""
+    client = TestClient(create_app(session_factory, config=config, clients=clients))
+    session = session_factory()
+    session.add(
+        Agent(
+            name=AGENT_NAME,
+            persona=PERSONA,
+            model_id=config.models[0].id,
+            status=AgentStatus.READY,
+        )
+    )
+    session.commit()
+    session.close()
+
+    detail = client.get(f"/api/agents/{AGENT_NAME}").json()
+    assert detail["team"] is None
+
+    listing = client.get("/api/agents").json()["agents"]
+    assert listing[0]["team"] is None
+
+
+def test_create_agent_pipeline_materializes_staged_skill_and_persona_body(client, fake_github):
+    """Pipeline-to-READY, end to end: a picked skill is staged from the
+    skills bucket and lands in the pushed repo's bundle, and the persona
+    body is `{name}`-substituted with the agent's own name — asserted
+    directly against FakeGitHub's recorded push tree (`created_from_dir`),
+    the same idiom test_steps.py's RepoStep tests use.
+    """
+    response = client.post(
+        "/api/agents",
+        json={
+            "name": AGENT_NAME,
+            "persona": PERSONA,
+            "team": TEAM,
+            "skills": [{"id": "word-games", "team": "shared"}],
+        },
+    )
+    assert response.status_code == 201
+
+    body = _poll_until(client, AGENT_NAME, {"ready", "failed"})
+    assert body["status"] == "ready"
+    assert body["skills"] == [{"name": "word-games", "team": "shared", "sha": "seedsha"}]
+
+    assert len(fake_github.created_from_dir) == 1
+    _repo, pushed_src = fake_github.created_from_dir[0]
+
+    skill_md = (pushed_src / "bundle" / "skills" / "word-games" / "SKILL.md").read_text()
+    assert "word-games" in skill_md
+
+    persona_md = (pushed_src / "bundle" / "persona.md").read_text()
+    assert AGENT_NAME in persona_md
+    assert "{name}" not in persona_md
 
 
 # --- GET /api/agents ---------------------------------------------------------------
 
 
 def test_list_agents_returns_name_status_model_created_at(client, config):
-    client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "model": None})
+    client.post(
+        "/api/agents",
+        json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM, "model": None},
+    )
 
     response = client.get("/api/agents")
 
@@ -334,13 +456,14 @@ def test_get_agent_unknown_name_returns_404(client):
 # --- Failure + retry ---------------------------------------------------------------
 
 
-def _failing_clients(fake_github, fake_agent, failing_gojira):
+def _failing_clients(fake_github, fake_agent, failing_gojira, fake_storage):
     return Clients(
         github=fake_github,
         gojira=failing_gojira,
         cloud=FakeCloud(),
         agent=fake_agent,
         kubectl=FakeKubectl(),
+        storage=fake_storage,
     )
 
 
@@ -360,10 +483,18 @@ def _seed_agent(session_factory, config, *, status=AgentStatus.READY, model_id=N
     session.close()
 
 
-def _client_with_agent(session_factory, config, fake_github, fake_gojira, fake_agent):
+def _client_with_agent(
+    session_factory, config, fake_github, fake_gojira, fake_agent, fake_storage=None
+):
     """Same shape as `_failing_clients`, but for chat tests that need their
     own specifically-configured FakeAgent (scripted replies/converse_error)
-    rather than the module `fake_agent` fixture's fixed canned reply."""
+    rather than the module `fake_agent` fixture's fixed canned reply.
+
+    `fake_storage` defaults to None: every caller here seeds the agent
+    directly (bypassing create_agent's catalog validation entirely), so none
+    of them need a wired catalog — unlike `_failing_clients`, whose callers
+    DO go through create_agent.
+    """
     return TestClient(
         create_app(
             session_factory,
@@ -374,13 +505,14 @@ def _client_with_agent(session_factory, config, fake_github, fake_gojira, fake_a
                 cloud=FakeCloud(),
                 agent=fake_agent,
                 kubectl=FakeKubectl(),
+                storage=fake_storage,
             ),
         )
     )
 
 
 def test_create_agent_failure_surfaces_failing_step_error_and_aborts_the_rest(
-    session_factory, config, fake_github, fake_agent
+    session_factory, config, fake_github, fake_agent, fake_storage
 ):
     failing_gojira = FakeGojira(
         activate_after=1,
@@ -391,11 +523,11 @@ def test_create_agent_failure_surfaces_failing_step_error_and_aborts_the_rest(
         create_app(
             session_factory,
             config=config,
-            clients=_failing_clients(fake_github, fake_agent, failing_gojira),
+            clients=_failing_clients(fake_github, fake_agent, failing_gojira, fake_storage),
         )
     )
 
-    response = client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA})
+    response = client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM})
     assert response.status_code == 201
 
     body = _poll_until(client, AGENT_NAME, {"ready", "failed"})
@@ -415,7 +547,7 @@ def test_create_agent_failure_surfaces_failing_step_error_and_aborts_the_rest(
 
 
 def test_create_agent_hello_step_failure_leaves_agent_failed_with_no_reply(
-    session_factory, config, fake_github, fake_gojira
+    session_factory, config, fake_github, fake_gojira, fake_storage
 ):
     """HelloStep is the pipeline's last step; a failure there should look
     like any other step failure (agent FAILED, that step's row FAILED with
@@ -433,11 +565,12 @@ def test_create_agent_hello_step_failure_leaves_agent_failed_with_no_reply(
                 cloud=FakeCloud(),
                 agent=failing_agent,
                 kubectl=FakeKubectl(),
+                storage=fake_storage,
             ),
         )
     )
 
-    response = client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA})
+    response = client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM})
     assert response.status_code == 201
 
     body = _poll_until(client, AGENT_NAME, {"ready", "failed"})
@@ -452,7 +585,7 @@ def test_create_agent_hello_step_failure_leaves_agent_failed_with_no_reply(
 
 
 def test_retry_when_not_failed_returns_409(client):
-    client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA})
+    client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM})
     _poll_until(client, AGENT_NAME, {"ready", "failed"})
 
     response = client.post(f"/api/agents/{AGENT_NAME}/retry")
@@ -469,7 +602,7 @@ def test_retry_unknown_agent_returns_404(client):
 
 
 def test_retry_after_fixing_failure_reaches_ready_without_rerunning_done_steps(
-    session_factory, config, fake_github, fake_agent
+    session_factory, config, fake_github, fake_agent, fake_storage
 ):
     failing_gojira = FakeGojira(
         activate_after=1,
@@ -480,11 +613,11 @@ def test_retry_after_fixing_failure_reaches_ready_without_rerunning_done_steps(
         create_app(
             session_factory,
             config=config,
-            clients=_failing_clients(fake_github, fake_agent, failing_gojira),
+            clients=_failing_clients(fake_github, fake_agent, failing_gojira, fake_storage),
         )
     )
 
-    client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA})
+    client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM})
     first_body = _poll_until(client, AGENT_NAME, {"ready", "failed"})
     assert first_body["status"] == "failed"
 
@@ -588,7 +721,7 @@ def test_create_agent_launch_failure_returns_503_and_agent_lands_failed(
     race_client = TestClient(create_app(session_factory, config=config, clients=clients))
 
     response = race_client.post(
-        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA}
+        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM}
     )
 
     assert response.status_code == 503
@@ -918,7 +1051,7 @@ def test_create_agent_launch_failure_with_poisoned_session_still_returns_503_and
     race_client = TestClient(app)
 
     response = race_client.post(
-        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA}
+        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM}
     )
 
     assert response.status_code == 503
@@ -980,7 +1113,7 @@ def test_create_agent_launch_failure_with_session_close_raising_still_returns_50
     race_client = TestClient(app)
 
     response = race_client.post(
-        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA}
+        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM}
     )
 
     assert response.status_code == 503

@@ -47,24 +47,6 @@ def test_workdir_expands_tilde(tmp_path):
     assert config.workdir == Path.home() / ".pnyx"
 
 
-def test_skills_repo_path_expands_tilde(tmp_path):
-    yaml_path = tmp_path / "config.yaml"
-    yaml_path.write_text("skills_repo_path: ~/.pnyx/skills\n")
-
-    config = Config.load(yaml_path)
-
-    assert config.skills_repo_path == Path.home() / ".pnyx/skills"
-
-
-def test_personas_dir_expands_tilde(tmp_path):
-    yaml_path = tmp_path / "config.yaml"
-    yaml_path.write_text("personas_dir: ~/personas\n")
-
-    config = Config.load(yaml_path)
-
-    assert config.personas_dir == Path.home() / "personas"
-
-
 def test_pnyx_config_env_var_missing_raises_error(tmp_path, monkeypatch):
     missing_path = tmp_path / "does-not-exist.yaml"
     monkeypatch.setenv("PNYX_CONFIG", str(missing_path))

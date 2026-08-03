@@ -23,7 +23,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from pnyx_api.catalog import list_personas
+from pnyx_api.catalog import _parse_persona_file
 from pnyx_api.clients import StorageClient, StorageNotFound
 from pnyx_api.search import CatalogEntry
 
@@ -264,7 +264,15 @@ def seed_default_personas(storage: StorageClient, *, bucket: str, prefix: str = 
     index = _read_index(storage, bucket, prefix)
     index_by_id = {entry["id"]: entry for entry in index}
 
-    for info in list_personas(None):
+    # Inlines what `catalog.list_personas(None)` used to do (Task 5 deleted
+    # it along with the old local-clone directory-scanning path it also
+    # supported) — glob the packaged templates, parsing each with the same
+    # `_parse_persona_file` helper, skipping a malformed one rather than
+    # raising.
+    for path in sorted(_PACKAGE_PERSONAS_DIR.glob("*.md")):
+        info = _parse_persona_file(path)
+        if info is None:
+            continue
         key = f"{prefix}{info.id}/persona.md"
         try:
             storage.read_bytes(bucket, key)
@@ -275,11 +283,10 @@ def seed_default_personas(storage: StorageClient, *, bucket: str, prefix: str = 
         if exists:
             skipped += 1
         else:
-            packaged_path = _PACKAGE_PERSONAS_DIR / f"{info.id}.md"
             storage.write_bytes(
                 bucket,
                 key,
-                packaged_path.read_bytes(),
+                path.read_bytes(),
                 metadata={"team": "shared", "creator": "pnyx"},
                 content_type="text/markdown",
             )

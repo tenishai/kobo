@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from pnyx_api.avatars import avatar_prompt, set_avatar
-from pnyx_api.catalog import list_personas, list_skills, validate_name
+from pnyx_api.catalog import validate_name
 from pnyx_api.clients import ClientError
 from pnyx_api.config import Config
 from pnyx_api.db import init_db, make_engine, make_session_factory
@@ -40,7 +40,7 @@ from pnyx_api.provisioner import (
     run_pipeline,
     sweep_interrupted,
 )
-from pnyx_api.search import CATALOG_TTL_S, ingest_indexes
+from pnyx_api.search import CATALOG_TTL_S, get_entry, ingest_indexes
 from pnyx_api.search import search as catalog_search
 from pnyx_api.search import teams as catalog_teams_query
 from pnyx_api.slack_setup import render_manifest, wire_slack
@@ -55,10 +55,24 @@ if TYPE_CHECKING:
     from pnyx_api.clients import Clients
 
 
+class SkillPick(BaseModel):
+    """One entry of `CreateAgentRequest.skills`: a skill id plus the catalog
+    team it belongs to — a skill id is only unique within its own team
+    (`pnyx_api.search.get_entry`'s (kind, id, team) key), so the team must be
+    named alongside the id rather than assumed from the agent's own creating
+    team."""
+
+    id: str
+    team: str
+
+
 class CreateAgentRequest(BaseModel):
     name: str
     persona: str
-    skills: list[str] = []
+    # The creating team (Task 5, bucket catalogs) — same slug shape as
+    # `CreatePersonaRequest.team` below.
+    team: str = Field(pattern=r"^[a-z][a-z0-9-]{0,23}$")
+    skills: list[SkillPick] = []
     model: str | None = None
 
 
@@ -393,22 +407,6 @@ def create_app(
             "default": cfg.models[0].id,
         }
 
-    @app.get("/api/catalog/personas")
-    def catalog_personas() -> dict:
-        cfg: Config = app.state.config
-        personas = list_personas(cfg.personas_dir)
-        return {"personas": [{"id": p.id, "description": p.description} for p in personas]}
-
-    @app.get("/api/catalog/skills")
-    def catalog_skills() -> dict:
-        cfg: Config = app.state.config
-        skills = list_skills(cfg.skills_repo_path)
-        return {
-            "skills": [
-                {"id": s.id, "description": s.description, "sha": s.sha} for s in skills
-            ]
-        }
-
     # --- Catalog search (Task 3): FTS5 over the bucket-published indexes ---
 
     @app.get("/api/skills/search")
@@ -562,18 +560,43 @@ def create_app(
                 {"error": f"invalid name ({name_reason}): {payload.name!r}"}, status_code=422
             )
 
-        personas = {p.id: p for p in list_personas(cfg.personas_dir)}
-        if payload.persona not in personas:
+        # Bucket catalogs (Task 5): TTL-refresh via the same hook the search
+        # routes use, then validate persona/skills against the FTS table —
+        # never the old local-clone scanners. All of this must happen BEFORE
+        # any Agent row is written.
+        engine = session.get_bind()
+        _maybe_refresh_catalogs(app, engine)
+
+        if not configured_catalogs(cfg):
+            # Same copy as the search/refresh routes' 503 — deliberate: an
+            # unwired org (no catalog bucket named at all) means there is
+            # nothing to validate against, and that's a setup problem, not a
+            # bad request.
+            return JSONResponse(
+                {"error": "catalogs aren't set up yet"}, status_code=422
+            )
+
+        # Personas are org-wide — the id alone is unique across the whole
+        # personas index, so no team is required (or known) to look one up.
+        persona_entry = get_entry(engine, "persona", payload.persona, team=None)
+        if persona_entry is None:
             return JSONResponse(
                 {"error": f"unknown persona: {payload.persona!r}"}, status_code=422
             )
 
-        skills_catalog = {s.id: s for s in list_skills(cfg.skills_repo_path)}
-        unknown_skills = [s for s in payload.skills if s not in skills_catalog]
-        if unknown_skills:
-            return JSONResponse(
-                {"error": f"unknown skills: {unknown_skills}"}, status_code=422
-            )
+        resolved_skills = []
+        for pick in payload.skills:
+            skill_entry = get_entry(engine, "skill", pick.id, pick.team)
+            if skill_entry is None:
+                return JSONResponse(
+                    {
+                        "error": (
+                            f"unknown skill: {pick.id!r} in team {pick.team!r}"
+                        )
+                    },
+                    status_code=422,
+                )
+            resolved_skills.append((pick, skill_entry))
 
         model_ids = {m.id for m in cfg.models}
         if payload.model is not None and payload.model not in model_ids:
@@ -591,8 +614,12 @@ def create_app(
         agent = Agent(
             name=payload.name,
             persona=payload.persona,
+            team=payload.team,
             model_id=model_id,
-            skills=[{"name": s, "sha": skills_catalog[s].sha} for s in payload.skills],
+            skills=[
+                {"name": pick.id, "team": pick.team, "sha": entry.sha}
+                for pick, entry in resolved_skills
+            ],
             status=AgentStatus.PENDING,
         )
         session.add(agent)
@@ -657,6 +684,7 @@ def create_app(
                 {
                     "name": a.name,
                     "status": a.status,
+                    "team": a.team,
                     "model": a.model_id,
                     "model_label": _model_label(cfg, a.model_id),
                     "created_at": a.created_at.isoformat(),
@@ -693,6 +721,7 @@ def create_app(
             {
                 "name": agent.name,
                 "persona": agent.persona,
+                "team": agent.team,
                 "model": agent.model_id,
                 "model_label": _model_label(cfg, agent.model_id),
                 "skills": agent.skills,
@@ -949,19 +978,19 @@ def create_app(
                 {"error": "Slack is already set up for this agent"}, status_code=409
             )
 
-        cfg: Config = app.state.config
         # persona_first_line source: the persona catalog's own one-line
-        # `description` field (pnyx_api.catalog.PersonaInfo.description —
-        # the same text the /api/catalog/personas route already returns),
+        # `description` field (bucket catalogs, Task 5 — the FTS entry's
+        # `description`, same text the /api/personas/search route returns),
         # looked up by the id recorded on `agent.persona` — NOT the id
         # itself and NOT the persona's full templated body. Falls back to
         # an id-derived phrase only if the persona has since been removed
         # from the catalog, mirroring `_model_label`'s own retired-catalog-
         # entry fallback above.
-        personas = {p.id: p for p in list_personas(cfg.personas_dir)}
-        persona_info = personas.get(agent.persona)
-        if persona_info is not None:
-            persona_first_line = persona_info.description
+        engine = session.get_bind()
+        _maybe_refresh_catalogs(app, engine)
+        persona_entry = get_entry(engine, "persona", agent.persona, team=None)
+        if persona_entry is not None:
+            persona_first_line = persona_entry.description
         else:
             persona_first_line = f"A {agent.persona} agent, reachable in Slack."
 
@@ -1069,15 +1098,15 @@ def create_app(
                 {"error": "picture generation is not available"}, status_code=503
             )
 
-        cfg: Config = app.state.config
         # Same catalog-lookup-by-persona-id idiom as create_slack_app's
-        # persona_first_line above (PersonaInfo.description, looked up by
+        # persona_first_line above (the FTS entry's description, looked up by
         # agent.persona), with the same id-derived fallback for a persona
         # that's since been removed from the catalog.
-        personas = {p.id: p for p in list_personas(cfg.personas_dir)}
-        persona_info = personas.get(agent.persona)
-        if persona_info is not None:
-            persona_description = persona_info.description
+        engine = session.get_bind()
+        _maybe_refresh_catalogs(app, engine)
+        persona_entry = get_entry(engine, "persona", agent.persona, team=None)
+        if persona_entry is not None:
+            persona_description = persona_entry.description
         else:
             persona_description = f"A {agent.persona} agent."
 

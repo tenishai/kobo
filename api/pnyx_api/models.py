@@ -35,6 +35,13 @@ class Agent(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(63), unique=True, nullable=False)
     persona: Mapped[str] = mapped_column(String(63), nullable=False)
+    # The creating team (Task 5, bucket catalogs): `payload.team` on
+    # POST /api/agents. Nullable: this column postdates create_all on any
+    # already-running dev DB, same pattern as avatar_png below — those need
+    # a manual `ALTER TABLE agents ADD COLUMN team VARCHAR;` (fresh DBs get
+    # it for free via create_all), and pre-existing rows simply have no team
+    # recorded.
+    team: Mapped[str | None] = mapped_column(String(63), nullable=True)
     model_id: Mapped[str] = mapped_column(String(255), nullable=False)
     skills: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     status: Mapped[str] = mapped_column(

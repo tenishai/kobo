@@ -1,20 +1,16 @@
 import json
-import subprocess
-import tarfile
-from dataclasses import replace
-from io import BytesIO
 from pathlib import Path
 
 import pytest
 import yaml
 
-from pnyx_api.catalog import SkillInfo
 from pnyx_api.composer import BundleSpec, ComposeError, compose, validate_agent_yaml
+from pnyx_api.steps import StagedSkill
 
 _RUNTIME_IMAGE = "registry.example/agents/daedalus-runtime:latest"
 
 
-def _make_spec(skills: list[SkillInfo] | None = None) -> BundleSpec:
+def _make_spec(skills: list[StagedSkill] | None = None) -> BundleSpec:
     return BundleSpec(
         name="sam",
         persona_body="You are sam, a helpful assistant.\n",
@@ -26,19 +22,19 @@ def _make_spec(skills: list[SkillInfo] | None = None) -> BundleSpec:
     )
 
 
-def _make_skill(tmp_path: Path, skill_id: str = "echo") -> SkillInfo:
-    skill_dir = tmp_path / "skills-src" / skill_id
+def _make_skill(tmp_path: Path, skill_id: str = "echo") -> StagedSkill:
+    """A skill already "staged" on local disk — the shape `pnyx_api.steps.
+    _stage_skills` hands `compose()` after downloading it from the skills
+    bucket. Composer tests build this directly rather than going through
+    staging, since staging itself is `_stage_skills`'s own concern
+    (`tests/test_steps.py`)."""
+    skill_dir = tmp_path / "staged" / skill_id
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         f"---\nname: {skill_id}\ndescription: Echoes things.\n---\nEcho skill body.\n"
     )
     (skill_dir / "reference.py").write_text("def helper():\n    return 1\n")
-    return SkillInfo(
-        id=skill_id,
-        description="Echoes things.",
-        path=skill_dir / "SKILL.md",
-        sha="deadbeef",
-    )
+    return StagedSkill(id=skill_id, dir=skill_dir)
 
 
 # --- compose(): exact file set -----------------------------------------------
@@ -187,10 +183,10 @@ def test_compose_dockerfile_matches_runtime_image(tmp_path):
     )
 
 
-# --- skill tree copy ---------------------------------------------------------------
+# --- staged skill copy (Task 5: bucket catalogs replace git-archive pinning) ------
 
 
-def test_compose_copies_whole_skill_tree(tmp_path):
+def test_compose_copies_whole_staged_skill_tree(tmp_path):
     dest = tmp_path / "out"
     skill = _make_skill(tmp_path)
 
@@ -198,7 +194,7 @@ def test_compose_copies_whole_skill_tree(tmp_path):
 
     copied = dest / "bundle" / "skills" / "echo"
     assert copied.is_dir()
-    assert (copied / "SKILL.md").read_text() == skill.path.read_text()
+    assert (copied / "SKILL.md").read_text() == (skill.dir / "SKILL.md").read_text()
     assert (copied / "reference.py").read_text() == "def helper():\n    return 1\n"
 
 
@@ -213,211 +209,36 @@ def test_compose_copies_multiple_skills_by_id(tmp_path):
     assert (dest / "bundle" / "skills" / "other" / "SKILL.md").is_file()
 
 
-# --- sha-pinned skill materialization (Task 6) --------------------------------
-#
-# `_make_skill` above (plain directory, no `.git`) exercises the fallback path
-# and is left untouched by all of this — the tests below build a *real*
-# git-backed skills repo so the sha-aware `git archive` path in
-# `_materialize_skill` (pnyx_api.composer) actually activates.
-
-
-def _git(repo: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", "-c", "user.email=test@example.com", "-c", "user.name=Test", *args],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-    )
-
-
-def _head_sha(repo: Path) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
-
-
-def _make_git_skill(tmp_path: Path, skill_id: str = "echo", body: str = "Echo skill body.\n"):
-    """Build a real git-backed skills repo with one skill committed; return
-    (skills_repo_path, SkillInfo pointing at HEAD's sha)."""
-    skills_repo = tmp_path / "skills-repo"
-    skill_dir = skills_repo / "skills" / skill_id
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {skill_id}\ndescription: Echoes things.\n---\n{body}"
-    )
-    (skill_dir / "reference.py").write_text("def helper():\n    return 1\n")
-    _git(skills_repo, "init", "-q")
-    _git(skills_repo, "add", "-A")
-    _git(skills_repo, "commit", "-q", "-m", "init")
-    skill = SkillInfo(
-        id=skill_id,
-        description="Echoes things.",
-        path=skill_dir / "SKILL.md",
-        sha=_head_sha(skills_repo),
-    )
-    return skills_repo, skill
-
-
-def _build_tar_bytes(entries: dict[str, bytes]) -> bytes:
-    buf = BytesIO()
-    with tarfile.open(fileobj=buf, mode="w") as tar:
-        for name, content in entries.items():
-            info = tarfile.TarInfo(name=name)
-            info.size = len(content)
-            tar.addfile(info, BytesIO(content))
-    return buf.getvalue()
-
-
-class _RecordingBytesRunner:
-    """CommandRunner test double: records exact argv for run_bytes() calls
-    and hands back a canned in-memory tar rather than shelling out for
-    real — isolates the argv-shape assertion below from actual git archive
-    behavior (which the golden-content test further down covers for real)."""
-
-    def __init__(self, tar_bytes: bytes):
-        self._tar_bytes = tar_bytes
-        self.calls: list[list[str]] = []
-
-    def run_bytes(self, args: list[str], stdin: bytes | None = None) -> bytes:
-        self.calls.append(list(args))
-        return self._tar_bytes
-
-    def run(self, args, stdin=None):  # pragma: no cover - not expected to be hit
-        raise AssertionError("run() should not be called for skill materialization")
-
-
-def test_compose_pinned_skill_archive_argv_exact(tmp_path):
-    skills_repo, skill = _make_git_skill(tmp_path)
-    tar_bytes = _build_tar_bytes({f"skills/{skill.id}/SKILL.md": b"pinned content\n"})
-    runner = _RecordingBytesRunner(tar_bytes)
+def test_compose_copies_nested_staged_files(tmp_path):
+    skill = _make_skill(tmp_path)
+    (skill.dir / "scripts").mkdir()
+    (skill.dir / "scripts" / "helper.sh").write_text("#!/bin/sh\necho hi\n")
     dest = tmp_path / "out"
 
-    compose(_make_spec(skills=[skill]), dest, runner=runner)
+    compose(_make_spec(skills=[skill]), dest)
 
-    assert runner.calls == [
-        [
-            "git", "-C", str(skills_repo), "archive", "--format=tar",
-            skill.sha, "--", f"skills/{skill.id}",
-        ]
-    ]
-    assert (dest / "bundle" / "skills" / "echo" / "SKILL.md").read_text() == "pinned content\n"
-
-
-def test_compose_pinned_skill_strips_prefix_for_nested_files(tmp_path):
-    _skills_repo, skill = _make_git_skill(tmp_path)
-    tar_bytes = _build_tar_bytes(
-        {
-            f"skills/{skill.id}/SKILL.md": b"pinned SKILL.md\n",
-            f"skills/{skill.id}/scripts/helper.py": b"def helper():\n    return 1\n",
-        }
+    assert (dest / "bundle" / "skills" / "echo" / "scripts" / "helper.sh").read_text() == (
+        "#!/bin/sh\necho hi\n"
     )
-    runner = _RecordingBytesRunner(tar_bytes)
-    dest = tmp_path / "out"
-
-    compose(_make_spec(skills=[skill]), dest, runner=runner)
-
-    skill_dir = dest / "bundle" / "skills" / "echo"
-    assert (skill_dir / "SKILL.md").read_text() == "pinned SKILL.md\n"
-    assert (skill_dir / "scripts" / "helper.py").read_text() == "def helper():\n    return 1\n"
 
 
-def test_compose_pinned_skill_ships_old_content_after_head_advances(tmp_path):
-    """Golden-content test, no mocking: real git repo, real CommandRunner.
-    Advance the skills repo's HEAD with changed content after recording a
-    sha, then compose with that OLD sha — the bundle must carry the OLD
-    bytes, proving materialization reads the pinned commit, not the working
-    tree gojira/pnyx-api would otherwise see."""
-    skills_repo, old_skill = _make_git_skill(tmp_path, body="OLD echo skill body.\n")
-
-    (skills_repo / "skills" / "echo" / "SKILL.md").write_text(
-        "---\nname: echo\ndescription: Echoes things.\n---\nNEW echo skill body.\n"
-    )
-    _git(skills_repo, "add", "-A")
-    _git(skills_repo, "commit", "-q", "-m", "advance head")
-    assert _head_sha(skills_repo) != old_skill.sha
-
-    dest = tmp_path / "out"
-    compose(_make_spec(skills=[old_skill]), dest)  # real CommandRunner, no mocking
-
-    shipped = (dest / "bundle" / "skills" / "echo" / "SKILL.md").read_text()
-    assert "OLD echo skill body" in shipped
-    assert "NEW echo skill body" not in shipped
-    # the reference.py alongside SKILL.md at that same old commit also landed
-    assert (dest / "bundle" / "skills" / "echo" / "reference.py").is_file()
-
-
-def test_compose_unreachable_sha_raises_compose_error_naming_sha_and_id(tmp_path):
-    _skills_repo, skill = _make_git_skill(tmp_path)
-    bogus_sha = "0" * 40
-    bogus = replace(skill, sha=bogus_sha)
+def test_compose_staged_skill_symlink_member_raises_compose_error(tmp_path):
+    """Symlink members are rejected loudly rather than silently
+    followed/copied — a downloaded bucket skill can never legitimately
+    contain one (GCS objects are plain files), but the same defense the old
+    git-archive extraction path enforced is kept here verbatim in spirit:
+    author the skill without symlinks instead of pnyx silently dereferencing
+    one."""
+    skill = _make_skill(tmp_path)
+    (skill.dir / "sneaky-link").symlink_to(skill.dir / "SKILL.md")
     dest = tmp_path / "out"
 
     with pytest.raises(ComposeError) as exc_info:
-        compose(_make_spec(skills=[bogus]), dest)
+        compose(_make_spec(skills=[skill]), dest)
 
     message = str(exc_info.value)
-    assert bogus_sha in message
-    assert skill.id in message
-
-
-def test_compose_pinned_skill_tar_slip_member_raises_compose_error(tmp_path):
-    """A crafted archive member whose name string-prefixes as
-    `skills/<id>/` but path-escapes via `..` must not be trusted just
-    because `member.name.startswith(prefix)` passes — containment is
-    enforced by resolving the actual extraction target against `dest`, not
-    by a naive string check. Git itself refuses to commit `..` tree entries,
-    but `_materialize_skill` must not rely on that external invariant since
-    the tar is only ever handed to it as bytes, not re-validated as
-    git-produced."""
-    _skills_repo, skill = _make_git_skill(tmp_path)
-    # _materialize_skill's own `dest` is `<compose dest>/bundle/skills/<id>` —
-    # four levels below tmp_path (out/bundle/skills/<id>) — so four `..`
-    # segments walk the crafted member back up to tmp_path itself, well
-    # outside the skill's sandboxed destination.
-    evil_name = f"skills/{skill.id}/../../../../escape.txt"
-    tar_bytes = _build_tar_bytes({evil_name: b"pwned\n"})
-    runner = _RecordingBytesRunner(tar_bytes)
-    dest = tmp_path / "out"
-
-    with pytest.raises(ComposeError) as exc_info:
-        compose(_make_spec(skills=[skill]), dest, runner=runner)
-
-    message = str(exc_info.value)
-    assert evil_name in message
-    # the escape must never have landed anywhere outside the skill's dest.
-    assert not (tmp_path / "escape.txt").exists()
-    assert not (dest / "escape.txt").exists()
-    assert not (dest / "bundle" / "escape.txt").exists()
-
-
-def test_compose_pinned_skill_symlink_member_raises_compose_error(tmp_path):
-    """Symlink members (and any other non-regular, non-directory member) are
-    rejected loudly rather than silently dropped — silent dropping would
-    diverge from the unpinned copytree fallback, which dereferences and
-    copies symlinks. Full symlink support is deliberately not implemented;
-    the failure message names the offending member so the skill can be
-    authored without symlinks instead."""
-    _skills_repo, skill = _make_git_skill(tmp_path)
-    member_name = f"skills/{skill.id}/sneaky-link"
-    buf = BytesIO()
-    with tarfile.open(fileobj=buf, mode="w") as tar:
-        info = tarfile.TarInfo(name=member_name)
-        info.type = tarfile.SYMTYPE
-        info.linkname = "/etc/passwd"
-        tar.addfile(info)
-    runner = _RecordingBytesRunner(buf.getvalue())
-    dest = tmp_path / "out"
-
-    with pytest.raises(ComposeError) as exc_info:
-        compose(_make_spec(skills=[skill]), dest, runner=runner)
-
-    message = str(exc_info.value)
-    assert member_name in message
-    assert not (dest / "bundle" / "skills" / skill.id / "sneaky-link").exists()
+    assert "sneaky-link" in message
+    assert not (dest / "bundle" / "skills" / "echo" / "sneaky-link").exists()
 
 
 # --- validate_agent_yaml -----------------------------------------------------------

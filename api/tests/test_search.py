@@ -219,6 +219,44 @@ def test_get_entry_missing_is_none(engine, storage):
     assert get_entry(engine, "skill", "nonexistent", "shared") is None
 
 
+def test_get_entry_team_none_matches_any_team(engine):
+    # Task 5 controller decision #1: team is optional — None matches any
+    # team, since a persona lookup (org-wide, id unique across the whole
+    # personas index) shouldn't have to know which team authored it first.
+    storage = FakeStorage(
+        buckets={
+            "personas-bucket": {
+                "index.json": (
+                    _index_bytes(
+                        [
+                            {
+                                "id": "helpful-generalist",
+                                "name": "Helpful Generalist",
+                                "description": "A friendly all-rounder",
+                                "team": "platform",
+                                "tags": [],
+                                "builtin": True,
+                            }
+                        ]
+                    ),
+                    {},
+                )
+            }
+        }
+    )
+    ingest_indexes(engine, storage, {"persona": "personas-bucket"})
+
+    entry = get_entry(engine, "persona", "helpful-generalist")
+    assert entry is not None
+    assert entry.team == "platform"
+
+
+def test_get_entry_team_positional_still_scopes(engine, storage):
+    # team, when given, is still a positional-or-keyword filter — unchanged
+    # behavior for skill lookups, which must stay scoped to one team.
+    assert get_entry(engine, "skill", "code-review", "platform") is None
+
+
 def test_teams_distinct_and_sorted(engine, storage):
     _ingest(engine, storage)
     assert teams(engine) == ["platform", "shared"]

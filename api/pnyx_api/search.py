@@ -239,18 +239,25 @@ def search(
     return [_row_to_entry(row) for row in rows]
 
 
-def get_entry(engine: Engine, kind: str, id: str, team: str) -> CatalogEntry | None:
-    """The single `(kind, id, team)` entry, or None if there's no such row —
-    an id is only unique within its own team, so all three are required."""
+def get_entry(engine: Engine, kind: str, id: str, team: str | None = None) -> CatalogEntry | None:
+    """The single `(kind, id[, team])` entry, or None if there's no such row.
+
+    A skill id is only unique within its own team, so a skill lookup should
+    always pass `team`. A persona id, by contrast, is unique across the
+    whole personas index regardless of team (personas are org-wide) — Task 5
+    callers resolving `payload.persona` don't know (or care) which team
+    authored it, so `team` is optional here: `None` matches any team,
+    rather than forcing every caller to look the team up first just to ask
+    for it back.
+    """
     ensure_fts(engine)
+    sql = f"SELECT {_COLUMNS} FROM catalog_fts WHERE kind = :kind AND id = :id"
+    params: dict = {"kind": kind, "id": id}
+    if team is not None:
+        sql += " AND team = :team"
+        params["team"] = team
     with engine.connect() as conn:
-        row = conn.execute(
-            text(
-                f"SELECT {_COLUMNS} FROM catalog_fts "
-                "WHERE kind = :kind AND id = :id AND team = :team"
-            ),
-            {"kind": kind, "id": id, "team": team},
-        ).first()
+        row = conn.execute(text(sql), params).first()
     return _row_to_entry(row) if row is not None else None
 
 
