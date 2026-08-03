@@ -14,7 +14,7 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -32,6 +32,7 @@ from pnyx_api.knowledge import (
 )
 from pnyx_api.models import Agent, AgentStatus
 from pnyx_api.org import OrgState, load_org_config
+from pnyx_api.personas import PersonaError, PersonaExists, PersonaFields, create_persona
 from pnyx_api.provisioner import (
     PIPELINE,
     STEP_LABELS,
@@ -85,6 +86,13 @@ class SlackConnectRequest(BaseModel):
     channel: str
     bot_token: str
     app_token: str
+
+
+class CreatePersonaRequest(PersonaFields):
+    """POST /api/personas body: every PersonaFields field plus the creating
+    team (`^[a-z][a-z0-9-]{0,23}$`, same slug shape as a persona/skill tag)."""
+
+    team: str = Field(pattern=r"^[a-z][a-z0-9-]{0,23}$")
 
 
 # The delivery-status route's sha path param must look like a real git
@@ -473,6 +481,59 @@ def create_app(
         # have to change this route's contract at all.
         return JSONResponse(
             {"skills": counts.get("skill", 0), "personas": counts.get("persona", 0)}
+        )
+
+    # --- Persona builder (Task 4): fixed form -> deterministic template ---
+
+    @app.post("/api/personas", status_code=201)
+    def create_persona_route(
+        payload: CreatePersonaRequest, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        cfg: Config = app.state.config
+        clients = app.state.clients
+
+        if clients is None or clients.storage is None or not cfg.personas_bucket:
+            return JSONResponse(
+                {"error": "catalogs aren't set up yet"}, status_code=503
+            )
+
+        try:
+            entry = create_persona(
+                clients.storage,
+                bucket=cfg.personas_bucket,
+                fields=payload,
+                team=payload.team,
+            )
+            # Ingest right away, with the FULL kind->bucket mapping (Task 4
+            # controller decision #1) — NOT just {"persona": ...}, since
+            # ingest_indexes does a full rebuild of every kind it's handed;
+            # a persona-only ingest here would wipe the skills table clean.
+            # create_persona itself never does this (see its docstring) —
+            # it's storage-only, so this route is the one place that makes
+            # a fresh persona instantly searchable.
+            engine = session.get_bind()
+            ingest_indexes(engine, clients.storage, configured_catalogs(cfg))
+            app.state.catalog_loaded_at = time.monotonic()
+        except PersonaError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        except PersonaExists:
+            return JSONResponse(
+                {"error": "a persona with that name already exists"}, status_code=409
+            )
+        except ClientError as exc:
+            log.warning("persona create failed: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=502)
+
+        return JSONResponse(
+            {
+                "id": entry.id,
+                "name": entry.name,
+                "description": entry.description,
+                "team": entry.team,
+                "tags": entry.tags,
+                "builtin": entry.builtin,
+            },
+            status_code=201,
         )
 
     @app.get("/api/availability")
