@@ -344,6 +344,41 @@ def _failing_clients(fake_github, fake_agent, failing_gojira):
     )
 
 
+def _seed_agent(session_factory, config, *, status=AgentStatus.READY, model_id=None):
+    """Insert an Agent row directly, bypassing the pipeline — chat/label tests
+    only care about the row's status/model_id, not how it got there."""
+    session = session_factory()
+    session.add(
+        Agent(
+            name=AGENT_NAME,
+            persona=PERSONA,
+            model_id=model_id if model_id is not None else config.models[0].id,
+            status=status,
+        )
+    )
+    session.commit()
+    session.close()
+
+
+def _client_with_agent(session_factory, config, fake_github, fake_gojira, fake_agent):
+    """Same shape as `_failing_clients`, but for chat tests that need their
+    own specifically-configured FakeAgent (scripted replies/converse_error)
+    rather than the module `fake_agent` fixture's fixed canned reply."""
+    return TestClient(
+        create_app(
+            session_factory,
+            config=config,
+            clients=Clients(
+                github=fake_github,
+                gojira=fake_gojira,
+                cloud=FakeCloud(),
+                agent=fake_agent,
+                kubectl=FakeKubectl(),
+            ),
+        )
+    )
+
+
 def test_create_agent_failure_surfaces_failing_step_error_and_aborts_the_rest(
     session_factory, config, fake_github, fake_agent
 ):
@@ -564,6 +599,199 @@ def test_create_agent_launch_failure_returns_503_and_agent_lands_failed(
     assert agent.status == AgentStatus.FAILED
     assert agent.error == "failed to start provisioning: no more threads"
     session.close()
+
+
+# --- POST /api/agents/{name}/chat --------------------------------------------------
+
+
+def test_chat_happy_path_returns_reply_and_forwards_exact_messages(
+    client, session_factory, config, fake_agent
+):
+    _seed_agent(session_factory, config)
+    messages = [
+        {"role": "user", "text": "hi"},
+        {"role": "agent", "text": "hello yourself, human"},
+        {"role": "user", "text": "how are you?"},
+    ]
+
+    response = client.post(f"/api/agents/{AGENT_NAME}/chat", json={"messages": messages})
+
+    assert response.status_code == 200
+    assert response.json() == {"reply": "hello yourself, human"}
+    assert len(fake_agent.converse_calls) == 1
+    namespace, service, recorded = fake_agent.converse_calls[0]
+    assert namespace == AGENT_NAME
+    assert service == AGENT_NAME
+    assert recorded == messages
+
+
+def test_chat_multi_turn_each_call_forwards_its_own_full_transcript(
+    session_factory, config, fake_github, fake_gojira
+):
+    """The server is stateless: each POST carries the whole transcript so
+    far, and each converse() call must record exactly that call's messages —
+    never a merge with, or carryover from, a prior call."""
+    fake_agent = FakeAgent(replies=["hi there!", "still doing fine"])
+    client = _client_with_agent(session_factory, config, fake_github, fake_gojira, fake_agent)
+    _seed_agent(session_factory, config)
+
+    first_messages = [{"role": "user", "text": "hi"}]
+    first = client.post(f"/api/agents/{AGENT_NAME}/chat", json={"messages": first_messages})
+    assert first.status_code == 200
+    assert first.json() == {"reply": "hi there!"}
+
+    second_messages = first_messages + [
+        {"role": "agent", "text": "hi there!"},
+        {"role": "user", "text": "how are you?"},
+    ]
+    second = client.post(f"/api/agents/{AGENT_NAME}/chat", json={"messages": second_messages})
+    assert second.status_code == 200
+    assert second.json() == {"reply": "still doing fine"}
+
+    assert len(fake_agent.converse_calls) == 2
+    assert fake_agent.converse_calls[0] == (AGENT_NAME, AGENT_NAME, first_messages)
+    assert fake_agent.converse_calls[1] == (AGENT_NAME, AGENT_NAME, second_messages)
+
+
+def test_chat_unknown_agent_returns_404(client):
+    response = client.post(
+        "/api/agents/does-not-exist/chat", json={"messages": [{"role": "user", "text": "hi"}]}
+    )
+
+    assert response.status_code == 404
+    assert "error" in response.json()
+
+
+@pytest.mark.parametrize(
+    "status", [AgentStatus.PENDING, AgentStatus.PROVISIONING, AgentStatus.FAILED]
+)
+def test_chat_non_ready_agent_returns_409(client, session_factory, config, status):
+    _seed_agent(session_factory, config, status=status)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat", json={"messages": [{"role": "user", "text": "hi"}]}
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"error": "agent is not ready to chat"}
+
+
+def test_chat_empty_messages_returns_422(client, session_factory, config):
+    _seed_agent(session_factory, config)
+
+    response = client.post(f"/api/agents/{AGENT_NAME}/chat", json={"messages": []})
+
+    assert response.status_code == 422
+    assert "error" in response.json()
+
+
+def test_chat_last_message_not_user_returns_422(client, session_factory, config):
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat",
+        json={"messages": [{"role": "user", "text": "hi"}, {"role": "agent", "text": "yo"}]},
+    )
+
+    assert response.status_code == 422
+    assert "error" in response.json()
+
+
+def test_chat_empty_text_returns_422(client, session_factory, config):
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat", json={"messages": [{"role": "user", "text": ""}]}
+    )
+
+    assert response.status_code == 422
+    assert "error" in response.json()
+
+
+def test_chat_text_over_4000_chars_returns_422(client, session_factory, config):
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat",
+        json={"messages": [{"role": "user", "text": "a" * 4001}]},
+    )
+
+    assert response.status_code == 422
+    assert "error" in response.json()
+
+
+def test_chat_unknown_role_returns_422(client, session_factory, config):
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat",
+        json={"messages": [{"role": "system", "text": "hi"}]},
+    )
+
+    assert response.status_code == 422
+    assert "error" in response.json()
+
+
+def test_chat_converse_error_returns_502_with_client_error_message(
+    session_factory, config, fake_github, fake_gojira
+):
+    fake_agent = FakeAgent(converse_error="a2a request failed (500): boom")
+    client = _client_with_agent(session_factory, config, fake_github, fake_gojira, fake_agent)
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat", json={"messages": [{"role": "user", "text": "hi"}]}
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"error": "agent unreachable: a2a request failed (500): boom"}
+
+
+# --- model_label fold-in ------------------------------------------------------------
+
+
+def test_list_agents_includes_model_label_from_catalog(client, session_factory, config):
+    _seed_agent(session_factory, config)
+
+    response = client.get("/api/agents")
+
+    row = response.json()["agents"][0]
+    assert row["model"] == config.models[0].id
+    assert row["model_label"] == config.models[0].label
+
+
+def test_get_agent_includes_model_label_from_catalog(client, session_factory, config):
+    _seed_agent(session_factory, config)
+
+    response = client.get(f"/api/agents/{AGENT_NAME}")
+
+    body = response.json()
+    assert body["model"] == config.models[0].id
+    assert body["model_label"] == config.models[0].label
+
+
+def test_list_agents_model_label_falls_back_to_raw_id_when_not_in_catalog(
+    client, session_factory, config
+):
+    _seed_agent(session_factory, config, model_id="ancient-model-no-longer-offered")
+
+    response = client.get("/api/agents")
+
+    row = response.json()["agents"][0]
+    assert row["model"] == "ancient-model-no-longer-offered"
+    assert row["model_label"] == "ancient-model-no-longer-offered"
+
+
+def test_get_agent_model_label_falls_back_to_raw_id_when_not_in_catalog(
+    client, session_factory, config
+):
+    _seed_agent(session_factory, config, model_id="ancient-model-no-longer-offered")
+
+    response = client.get(f"/api/agents/{AGENT_NAME}")
+
+    body = response.json()
+    assert body["model"] == "ancient-model-no-longer-offered"
+    assert body["model_label"] == "ancient-model-no-longer-offered"
 
 
 def test_retry_agent_launch_failure_returns_503_and_a_later_retry_still_succeeds(

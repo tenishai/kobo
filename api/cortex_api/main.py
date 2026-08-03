@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from cortex_api.catalog import list_personas, list_skills, validate_name
+from cortex_api.clients import ClientError
 from cortex_api.config import Config
 from cortex_api.db import init_db, make_engine, make_session_factory
 from cortex_api.models import Agent, AgentStatus
@@ -40,6 +41,33 @@ class CreateAgentRequest(BaseModel):
     persona: str
     skills: list[str] = []
     model: str | None = None
+
+
+class ChatMessagePayload(BaseModel):
+    role: str
+    text: str
+
+
+class ChatRequest(BaseModel):
+    messages: list[ChatMessagePayload]
+
+
+# Chat message text is bounded to keep one a2a task's payload (and its cost)
+# sane — matches the brief's guard exactly, not an arbitrary framework default.
+CHAT_MESSAGE_TEXT_MAX_LEN = 4000
+
+CHAT_MESSAGE_ROLES = {"user", "agent"}
+
+
+def _model_label(cfg: Config, model_id: str) -> str:
+    """The catalog label for `model_id`, or the raw id itself when it isn't
+    (or is no longer) in `cfg.models` — an agent created under an older
+    config whose model has since been retired from the catalog must still
+    render, not 500."""
+    for model in cfg.models:
+        if model.id == model_id:
+            return model.label
+    return model_id
 
 
 def _fail_launch(
@@ -286,6 +314,7 @@ def create_app(
 
     @app.get("/api/agents")
     def list_agents(session: Session = Depends(get_session)) -> dict:  # noqa: B008
+        cfg: Config = app.state.config
         agents = session.query(Agent).order_by(Agent.id).all()
         return {
             "agents": [
@@ -293,6 +322,7 @@ def create_app(
                     "name": a.name,
                     "status": a.status,
                     "model": a.model_id,
+                    "model_label": _model_label(cfg, a.model_id),
                     "created_at": a.created_at.isoformat(),
                 }
                 for a in agents
@@ -301,6 +331,7 @@ def create_app(
 
     @app.get("/api/agents/{name}")
     def get_agent(name: str, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        cfg: Config = app.state.config
         agent = session.query(Agent).filter_by(name=name).first()
         if agent is None:
             return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
@@ -320,6 +351,7 @@ def create_app(
                 "name": agent.name,
                 "persona": agent.persona,
                 "model": agent.model_id,
+                "model_label": _model_label(cfg, agent.model_id),
                 "skills": agent.skills,
                 "status": agent.status,
                 "repo_full_name": agent.repo_full_name,
@@ -329,6 +361,59 @@ def create_app(
                 "first_reply": agent.first_reply,
             }
         )
+
+    @app.post("/api/agents/{name}/chat")
+    def chat_with_agent(
+        name: str, payload: ChatRequest, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        agent = session.query(Agent).filter_by(name=name).first()
+        if agent is None:
+            return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
+
+        if agent.status != AgentStatus.READY:
+            return JSONResponse({"error": "agent is not ready to chat"}, status_code=409)
+
+        messages = payload.messages
+        if not messages:
+            return JSONResponse({"error": "messages must not be empty"}, status_code=422)
+
+        for message in messages:
+            if message.role not in CHAT_MESSAGE_ROLES:
+                return JSONResponse(
+                    {"error": f"unknown role: {message.role!r}"}, status_code=422
+                )
+            if not message.text:
+                return JSONResponse(
+                    {"error": "message text must not be empty"}, status_code=422
+                )
+            if len(message.text) > CHAT_MESSAGE_TEXT_MAX_LEN:
+                return JSONResponse(
+                    {
+                        "error": (
+                            f"message text exceeds {CHAT_MESSAGE_TEXT_MAX_LEN} characters"
+                        )
+                    },
+                    status_code=422,
+                )
+
+        if messages[-1].role != "user":
+            return JSONResponse(
+                {"error": "last message must have role 'user'"}, status_code=422
+            )
+
+        # Same namespace/service derivation as HelloStep (cortex_api.steps)
+        # for this same agent's a2a endpoint — both are just the agent's name.
+        clients = app.state.clients
+        try:
+            reply = clients.agent.converse(
+                namespace=agent.name,
+                service=agent.name,
+                messages=[{"role": m.role, "text": m.text} for m in messages],
+            )
+        except ClientError as exc:
+            return JSONResponse({"error": f"agent unreachable: {exc}"}, status_code=502)
+
+        return JSONResponse({"reply": reply})
 
     @app.post("/api/agents/{name}/retry", status_code=202)
     def retry_agent(name: str, request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
