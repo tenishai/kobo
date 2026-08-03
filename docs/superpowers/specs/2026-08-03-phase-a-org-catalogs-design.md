@@ -100,6 +100,10 @@ reuse) and referenced by the new agent's bundle like any catalog persona.
   by team/origin), plus "Build your own" opening the persona-builder form inline.
 - **Skills step**: search box backed by `/api/skills/search`, team filter, team badges
   on results. Selection behavior and sha-pinning unchanged.
+- **Team**: the create flow records the creating team on the agent (a picker sharing
+  the skills filter's team list; honor-system until Phase B identity makes it real).
+  Forward-prep: team-scoped tool loading in the upcoming tools phase needs agents to
+  have a team.
 
 ## The bootstrap tool and org status
 
