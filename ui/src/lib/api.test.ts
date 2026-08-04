@@ -8,7 +8,6 @@ import {
   createSlackApp,
   deleteKnowledgeFile,
   errorMessage,
-  fetchCatalogs,
   fetchDeliveryState,
   fetchModels,
   fetchOrgStatus,
@@ -105,31 +104,6 @@ describe("api.ts", () => {
       default: "gpt-5",
     });
 
-    expect(fetch).toHaveBeenCalledWith("/api/catalog/models");
-  });
-
-  // fetchCatalogs is a @deprecated compatibility shim (Task 10 removes it):
-  // the old three-endpoint Promise.all pointed two of its three fetches at
-  // endpoints that no longer exist (/api/catalog/personas, /api/catalog/skills),
-  // which would error at runtime today. It now fetches ONLY models and
-  // returns empty personas/skills arrays in the same shape CreateModal.svelte
-  // already consumes.
-  it("fetchCatalogs (deprecated shim) fetches only models and returns empty personas/skills", async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(
-      jsonResponse({
-        models: [{ id: "gpt-5", label: "GPT-5" }],
-        default: "gpt-5",
-      }),
-    );
-
-    await expect(fetchCatalogs()).resolves.toEqual({
-      personas: [],
-      skills: [],
-      models: [{ id: "gpt-5", label: "GPT-5" }],
-      defaultModel: "gpt-5",
-    });
-
-    expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenCalledWith("/api/catalog/models");
   });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateName } from "./validate";
+import { splitLines, splitTags, validateName, validateSlug } from "./validate";
 
 describe("validateName", () => {
   it("accepts a plain lowercase name", () => {
@@ -53,5 +53,100 @@ describe("validateName", () => {
 
   it("rejects a trailing hyphen (matches the server's own rule)", () => {
     expect(validateName("agent-")).toBe("Can't end with a hyphen.");
+  });
+});
+
+describe("validateSlug", () => {
+  it("accepts a plain lowercase slug", () => {
+    expect(validateSlug("growth")).toBeNull();
+  });
+
+  it("accepts inner hyphens and digits", () => {
+    expect(validateSlug("growth-team-7")).toBeNull();
+  });
+
+  it("accepts a single character (unlike validateName's 2-char floor)", () => {
+    expect(validateSlug("a")).toBeNull();
+  });
+
+  it("accepts a trailing hyphen (unlike validateName, the server's slug pattern allows one)", () => {
+    expect(validateSlug("growth-")).toBeNull();
+  });
+
+  it("accepts the maximum length (24 chars)", () => {
+    expect(validateSlug("a".repeat(24))).toBeNull();
+  });
+
+  it("rejects an empty string", () => {
+    expect(validateSlug("")).toBe("Use 1-24 characters.");
+  });
+
+  it("rejects a slug longer than 24 characters", () => {
+    expect(validateSlug("a".repeat(25))).toBe("Use 1-24 characters.");
+  });
+
+  it("rejects uppercase letters", () => {
+    expect(validateSlug("Growth")).toBe(
+      "Use lowercase letters, numbers, and hyphens only.",
+    );
+  });
+
+  it("rejects other symbols/spaces", () => {
+    expect(validateSlug("growth_team")).toBe(
+      "Use lowercase letters, numbers, and hyphens only.",
+    );
+    expect(validateSlug("growth team")).toBe(
+      "Use lowercase letters, numbers, and hyphens only.",
+    );
+  });
+
+  it("rejects a leading digit", () => {
+    expect(validateSlug("7growth")).toBe("Must start with a letter.");
+  });
+
+  it("rejects a leading hyphen", () => {
+    expect(validateSlug("-growth")).toBe("Must start with a letter.");
+  });
+});
+
+describe("splitTags", () => {
+  it("splits on commas", () => {
+    expect(splitTags("a,b,c")).toEqual(["a", "b", "c"]);
+  });
+
+  it("splits on whitespace", () => {
+    expect(splitTags("a b c")).toEqual(["a", "b", "c"]);
+  });
+
+  it("splits on a mix of commas and whitespace, trimming pieces", () => {
+    expect(splitTags("a, b   c,, d ")).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("returns an empty array for blank input", () => {
+    expect(splitTags("")).toEqual([]);
+    expect(splitTags("   ")).toEqual([]);
+    expect(splitTags(" , , ")).toEqual([]);
+  });
+});
+
+describe("splitLines", () => {
+  it("splits one item per line", () => {
+    expect(splitLines("first\nsecond\nthird")).toEqual([
+      "first",
+      "second",
+      "third",
+    ]);
+  });
+
+  it("trims each line and drops blank lines", () => {
+    expect(splitLines("  first  \n\n  \nsecond\n")).toEqual([
+      "first",
+      "second",
+    ]);
+  });
+
+  it("returns an empty array for blank input", () => {
+    expect(splitLines("")).toEqual([]);
+    expect(splitLines("\n\n  \n")).toEqual([]);
   });
 });

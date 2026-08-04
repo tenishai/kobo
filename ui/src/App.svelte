@@ -8,7 +8,14 @@
   import Toasts from "./components/Toasts.svelte";
   import AgentDetail from "./pages/AgentDetail.svelte";
   import Dashboard from "./pages/Dashboard.svelte";
-  import { catalogsQuery, shouldRetry } from "./lib/queries";
+  import {
+    modelsQuery,
+    orgStatusQuery,
+    personasSearchQuery,
+    shouldRetry,
+    skillsSearchQuery,
+    teamsQuery,
+  } from "./lib/queries";
   import { route } from "./lib/router.svelte";
 
   // `shouldRetry` (queries.ts) skips retries for 4xx responses so a 404
@@ -22,13 +29,21 @@
     },
   });
 
-  // The "warm modal" trick: catalogs (personas/skills/models) are only
-  // needed once the Create modal opens, so they're not fetched on page
-  // load — only prefetched the moment the user shows intent to create
-  // (hovering or focusing the button), so the modal has data the instant
-  // it actually opens.
+  // The "warm modal" trick: the catalogs (models, teams, the unfiltered
+  // persona/skill searches, org wiring status) are only needed once the
+  // Create modal opens, so they're not fetched on page load — only
+  // prefetched the moment the user shows intent to create (hovering or
+  // focusing the button), so the modal has data the instant it actually
+  // opens. Every one of these is exactly what CreateModal's own queries
+  // ask for on a fresh, unfiltered open (empty search text, no team
+  // filter), so a warm cache means the modal renders instantly instead of
+  // a page of skeletons.
   function prefetchCatalogs(): void {
-    void queryClient.prefetchQuery(catalogsQuery());
+    void queryClient.prefetchQuery(modelsQuery());
+    void queryClient.prefetchQuery(teamsQuery());
+    void queryClient.prefetchQuery(orgStatusQuery());
+    void queryClient.prefetchQuery(personasSearchQuery("", null));
+    void queryClient.prefetchQuery(skillsSearchQuery("", null));
   }
 
   // `createOpen` is fully controlled here: the header button sets it true,

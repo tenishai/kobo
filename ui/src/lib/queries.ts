@@ -7,7 +7,6 @@
 // queryKey conventions:
 //   ["agents"]                                      - the agent list
 //   ["agents", name]                                - one agent's detail
-//   ["catalogs"]                                    - personas/skills/models catalog (deprecated shim, Task 10 removes)
 //   ["agents", name, "knowledge"]                   - an agent's knowledge files
 //   ["agents", name, "knowledge", "delivery", sha]  - delivery state for one sha
 //   ["catalog", "models"]                           - the model list + default
@@ -21,7 +20,6 @@ import {
   ApiError,
   type AgentDetail,
   type AgentSummary,
-  type Catalogs,
   type CatalogEntry,
   type ChatMessage,
   type KnowledgeFile,
@@ -33,7 +31,6 @@ import {
   createPersona,
   createSlackApp,
   deleteKnowledgeFile,
-  fetchCatalogs,
   fetchDeliveryState,
   fetchModels,
   fetchOrgStatus,
@@ -48,8 +45,6 @@ import {
   searchSkills,
 } from "./api";
 import { detailRefetchInterval, listRefetchInterval } from "./status";
-
-const CATALOGS_STALE_MS = 5 * 60 * 1000;
 
 /**
  * The single retry policy for every query in the app (wired into the
@@ -84,19 +79,6 @@ export function agentQuery(name: string) {
     queryKey: ["agents", name] as const,
     queryFn: () => getAgent(name),
     refetchInterval: (query) => detailRefetchInterval(query.state.data),
-  });
-}
-
-/**
- * Persona/skill/model catalog.
- * @deprecated Task 10 removes this along with `fetchCatalogs` — see that
- * function's doc comment. Static-ish, so no polling — just a long staleTime.
- */
-export function catalogsQuery() {
-  return queryOptions({
-    queryKey: ["catalogs"] as const,
-    queryFn: fetchCatalogs,
-    staleTime: CATALOGS_STALE_MS,
   });
 }
 
@@ -358,7 +340,6 @@ export function generateAvatarMutation(queryClient: QueryClient, name: string) {
 export type {
   AgentDetail,
   AgentSummary,
-  Catalogs,
   CatalogEntry,
   ChatMessage,
   KnowledgeFile,

@@ -32,13 +32,6 @@ export type AgentDetail = AgentSummary & {
   slack: { app_id: string; channel: string | null } | null;
 };
 
-export type Catalogs = {
-  personas: { id: string; description: string }[];
-  skills: { id: string; description: string; sha: string }[];
-  models: { id: string; label: string }[];
-  defaultModel: string;
-};
-
 /** One catalog search result — a skill or a persona, both served by the
  * same shape (`GET /api/skills/search`, `GET /api/personas/search`). `sha`
  * is set for skills (their content's git blob sha); `builtin` is set for
@@ -205,24 +198,6 @@ export async function fetchModels(): Promise<{
   return parse<{ models: { id: string; label: string }[]; default: string }>(
     res,
   );
-}
-
-/**
- * @deprecated Task 10 removes this — personas/skills now come from the
- * search queries (`searchPersonas`/`searchSkills`), fetched on demand as the
- * user types rather than pulled whole. Kept only so `CreateModal.svelte`
- * (Task 10's job to rewire onto the search queries) keeps compiling and
- * rendering until then: the old three-endpoint `Promise.all` here pointed
- * two of its three fetches at endpoints that no longer exist
- * (`/api/catalog/personas`, `/api/catalog/skills`), which would throw at
- * runtime today. This now fetches ONLY models and returns empty
- * personas/skills arrays, in the same `Catalogs` shape the modal already
- * consumes — so it renders its existing empty-catalog copy instead of
- * erroring.
- */
-export async function fetchCatalogs(): Promise<Catalogs> {
-  const { models, default: defaultModel } = await fetchModels();
-  return { personas: [], skills: [], models, defaultModel };
 }
 
 /** Builds a `?q=...&team=...` query string: `q` is always present (even
