@@ -20,6 +20,9 @@ dist/
 # Env-specific runbook values
 *.local.md
 *.local.yaml
+*.pem
+*.key
+github-app.local.pem
 
 # Editor / OS
 .DS_Store
