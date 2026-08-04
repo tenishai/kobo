@@ -83,6 +83,10 @@ class StepResult:
 
 
 def _skills_repo_name(config: Config) -> str:
+    if config.skills_repo and "/" in config.skills_repo:
+        raise ValueError(
+            "skills_repo must be a bare repo name (no '/'); pnyx adds the owner"
+        )
     return config.skills_repo or f"{config.github_org}-skills"
 
 

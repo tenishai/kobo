@@ -54,9 +54,10 @@ models:
   - id: vertex_ai/claude-sonnet-4-5
     label: Claude Sonnet 4.5
 
-# Full name (owner/repo) of the org's skills repo (its own publish
-# pipeline, if any, populates the bucket below — pnyx itself never clones
-# it), and the GCS buckets pnyx-api actually reads the skills/personas
+# Bare repo name (e.g., "skills", not "owner/skills") of the org's skills
+# repo (its own publish pipeline, if any, populates the bucket below — pnyx
+# itself never clones it) — pnyx prefixes it with github_org for every
+# GitHub operation. GCS buckets pnyx-api actually reads the skills/personas
 # catalogs from (Task 5) — empty string means unconfigured for all three.
 skills_repo: null
 skills_bucket: ""

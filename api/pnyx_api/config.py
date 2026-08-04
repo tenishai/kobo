@@ -43,14 +43,15 @@ class Config(BaseModel):
         default=[ModelChoice(id="vertex_ai/claude-sonnet-4-5", label="Claude Sonnet 4.5")],
         min_length=1,
     )
-    # skills_repo is the full name (owner/repo) of the org's skills repo (its
-    # own publish pipeline, if any, is what actually populates the buckets
-    # below — pnyx itself never clones it); skills_bucket/personas_bucket are
-    # the GCS buckets backing the catalogs pnyx-api actually reads from
-    # (Task 5). Empty string means unconfigured for all three. These
-    # replace the old skills_repo_path/personas_dir local-clone fields
-    # (Task 5 deleted the consumers that read a local git checkout/directory
-    # in favor of bucket catalogs).
+    # skills_repo is the bare repo name (e.g., "skills", not "owner/skills")
+    # of the org's skills repo (its own publish pipeline, if any, is what
+    # actually populates the buckets below — pnyx itself never clones it);
+    # pnyx prefixes it with github_org for every GitHub operation.
+    # skills_bucket/personas_bucket are the GCS buckets backing the catalogs
+    # pnyx-api actually reads from (Task 5). Empty string means unconfigured
+    # for all three. These replace the old skills_repo_path/personas_dir
+    # local-clone fields (Task 5 deleted the consumers that read a local git
+    # checkout/directory in favor of bucket catalogs).
     skills_repo: str | None = None
     skills_bucket: str = ""
     personas_bucket: str = ""

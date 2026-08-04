@@ -559,3 +559,39 @@ def test_output_lines_are_column_aligned():
     lines = [bootstrap._format_line(r) for r in results]
     name_starts = {line.index(r.name) for line, r in zip(lines, results, strict=True)}
     assert len(name_starts) == 1
+
+
+# --- skills_repo validation: rejects owner-qualified values ----------------------
+
+
+def test_skills_repo_with_owner_slash_rejects_and_other_steps_still_run(
+    config, github, storage, tmp_path
+):
+    """Hardening: skills_repo containing "/" (e.g., "acme-corp/skills") is
+    rejected with a clear error message. Steps that use _skills_repo_name
+    (step 1: org-config repo, step 4: skills-publish) fail with that message,
+    but every later step still runs — step isolation at work.
+    """
+    bad_config = config.model_copy(update={"skills_repo": "acme-corp/skills"})
+    clients = _clients(github, storage)
+
+    results = run_bootstrap(bad_config, clients, out=lambda _line: None)
+    by_name = {r.name: r for r in results}
+
+    # Both steps that call _skills_repo_name fail with the exact error message.
+    org_config_result = by_name[bootstrap.STEP_ORG_CONFIG_REPO]
+    assert org_config_result.status == "failed"
+    assert org_config_result.detail == "skills_repo must be a bare repo name (no '/'); pnyx adds the owner"
+
+    skills_publish_result = by_name[bootstrap.STEP_SKILLS_PUBLISH]
+    assert skills_publish_result.status == "failed"
+    assert skills_publish_result.detail == "skills_repo must be a bare repo name (no '/'); pnyx adds the owner"
+
+    # Every other step still ran despite the two failures above.
+    assert by_name[bootstrap.STEP_SKILLS_BUCKET].status == "done"
+    assert by_name[bootstrap.STEP_PERSONAS_BUCKET].status == "done"
+    assert by_name[bootstrap.STEP_DEFAULT_PERSONAS].status == "done"
+    assert by_name[bootstrap.STEP_CATALOG_INGEST].status == "done"
+
+    # Exit code is 1 because at least one step failed.
+    assert _exit_code(results) == 1
