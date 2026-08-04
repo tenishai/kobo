@@ -1,0 +1,407 @@
+"""Route tests for GET /api/org/status (Phase A Task 8): the room's
+read-only wiring visibility — six checks over org config, both catalog
+buckets, both catalog indexes, and the deploy platform.
+
+Same full TestClient/create_app harness as test_api_search.py/
+test_api_agents.py. `fake_storage`/`config` are conftest.py's shared
+fixtures (seeded with both catalogs: the two packaged personas plus one
+sample skill and both `index.json`s) — this module only adds its own
+`clients`/`app` wiring (a bare Clients with fakes for every client the
+route never touches) and an `org` knob per test.
+
+Every test asserts the *whole* six-check array in order (Task 8 controller
+decision #1: org-config, skills-bucket, personas-bucket, skills-index,
+personas-seeded, deploy-platform) — this both pins the exact ids/labels/
+details the brief specifies verbatim and proves a degraded case flips
+exactly its own check, nothing else.
+"""
+
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from pnyx_api.clients import Clients
+from pnyx_api.config import Config
+from pnyx_api.main import create_app
+from pnyx_api.models import Base
+from pnyx_api.org import OrgState
+from tests.fakes import (
+    FakeAgent,
+    FakeCloud,
+    FakeGitHub,
+    FakeGojira,
+    FakeKubectl,
+    FakeStorage,
+)
+
+ORG_REPO = "acme-corp/pnyx-config"
+GITHUB_ORG = "acme-corp"
+
+
+def _clients(*, gojira=None, storage=None) -> Clients:
+    """A Clients with every non-storage/gojira field a bare fake — this
+    route never touches github/cloud/agent/kubectl, but the Clients
+    dataclass requires them (no defaults)."""
+    return Clients(
+        github=FakeGitHub(),
+        gojira=gojira if gojira is not None else FakeGojira(),
+        cloud=FakeCloud(),
+        agent=FakeAgent(),
+        kubectl=FakeKubectl(),
+        storage=storage,
+    )
+
+
+def _client(config: Config, clients: Clients, tmp_path, *, org: OrgState | None = None) -> TestClient:
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/pnyx.db", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    return TestClient(create_app(session_factory, config=config, clients=clients, org=org))
+
+
+@pytest.fixture
+def wired_org():
+    return OrgState(True, ORG_REPO)
+
+
+@pytest.fixture
+def wired_config(config: Config) -> Config:
+    """conftest.py's `config` fixture, plus a `github_org` — the route
+    reports this only when `org.wired` is True (controller decision #2)."""
+    return config.model_copy(update={"github_org": GITHUB_ORG})
+
+
+def test_all_green_against_seeded_fakes(wired_config, fake_storage, tmp_path, wired_org):
+    client = _client(
+        wired_config, _clients(storage=fake_storage), tmp_path, org=wired_org
+    )
+
+    response = client.get("/api/org/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["org"] == GITHUB_ORG
+    assert body["wired"] is True
+    assert body["checks"] == [
+        {
+            "id": "org-config",
+            "label": "Organization settings",
+            "ok": True,
+            "detail": ORG_REPO,
+        },
+        {
+            "id": "skills-bucket",
+            "label": "Skills catalog storage",
+            "ok": True,
+            "detail": wired_config.skills_bucket,
+        },
+        {
+            "id": "personas-bucket",
+            "label": "Personas storage",
+            "ok": True,
+            "detail": wired_config.personas_bucket,
+        },
+        {
+            "id": "skills-index",
+            "label": "Skills index",
+            "ok": True,
+            "detail": "updated 2026-08-03T00:00:00Z",
+        },
+        {
+            "id": "personas-seeded",
+            "label": "Personas",
+            "ok": True,
+            "detail": "2 personas",
+        },
+        {
+            "id": "deploy-platform",
+            "label": "Deploy platform",
+            "ok": True,
+            "detail": f"connected to {wired_config.gojira_cluster}",
+        },
+    ]
+
+
+def test_check_ids_and_labels_are_exact_and_in_order(wired_config, fake_storage, tmp_path, wired_org):
+    client = _client(
+        wired_config, _clients(storage=fake_storage), tmp_path, org=wired_org
+    )
+
+    checks = client.get("/api/org/status").json()["checks"]
+
+    assert [c["id"] for c in checks] == [
+        "org-config",
+        "skills-bucket",
+        "personas-bucket",
+        "skills-index",
+        "personas-seeded",
+        "deploy-platform",
+    ]
+    assert [c["label"] for c in checks] == [
+        "Organization settings",
+        "Skills catalog storage",
+        "Personas storage",
+        "Skills index",
+        "Personas",
+        "Deploy platform",
+    ]
+
+
+def _check(body: dict, check_id: str) -> dict:
+    return next(c for c in body["checks"] if c["id"] == check_id)
+
+
+def _other_checks_ok(body: dict, *except_ids: str) -> bool:
+    return all(c["ok"] for c in body["checks"] if c["id"] not in except_ids)
+
+
+# --- org-config -----------------------------------------------------------
+
+
+def test_unwired_org_flips_only_org_config_check(wired_config, fake_storage, tmp_path):
+    unwired = OrgState(False, None, "no org configured")
+    client = _client(wired_config, _clients(storage=fake_storage), tmp_path, org=unwired)
+
+    response = client.get("/api/org/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["org"] is None
+    assert body["wired"] is False
+    assert _check(body, "org-config") == {
+        "id": "org-config",
+        "label": "Organization settings",
+        "ok": False,
+        "detail": "no org configured",
+    }
+    assert _other_checks_ok(body, "org-config")
+
+
+def test_unwired_org_with_clone_error_detail_is_the_error(wired_config, fake_storage, tmp_path):
+    unwired = OrgState(False, ORG_REPO, f"couldn't clone {ORG_REPO}: boom")
+    client = _client(wired_config, _clients(storage=fake_storage), tmp_path, org=unwired)
+
+    body = client.get("/api/org/status").json()
+
+    assert _check(body, "org-config")["ok"] is False
+    assert _check(body, "org-config")["detail"] == f"couldn't clone {ORG_REPO}: boom"
+
+
+# --- skills-bucket / personas-bucket ---------------------------------------
+
+
+def test_empty_skills_bucket_name_flips_only_that_check(fake_storage, tmp_path, wired_org):
+    config = Config(workdir=tmp_path / "work", skills_bucket="", personas_bucket="personas-bucket")
+    client = _client(config, _clients(storage=fake_storage), tmp_path, org=wired_org)
+
+    body = client.get("/api/org/status").json()
+
+    assert _check(body, "skills-bucket") == {
+        "id": "skills-bucket",
+        "label": "Skills catalog storage",
+        "ok": False,
+        "detail": "not configured",
+    }
+    assert _other_checks_ok(body, "skills-bucket", "skills-index")
+    # skills-index also depends on the skills bucket being configured.
+    assert _check(body, "skills-index")["ok"] is False
+
+
+def test_empty_personas_bucket_name_flips_only_that_check(fake_storage, tmp_path, wired_org):
+    config = Config(workdir=tmp_path / "work", skills_bucket="skills-bucket", personas_bucket="")
+    client = _client(config, _clients(storage=fake_storage), tmp_path, org=wired_org)
+
+    body = client.get("/api/org/status").json()
+
+    assert _check(body, "personas-bucket") == {
+        "id": "personas-bucket",
+        "label": "Personas storage",
+        "ok": False,
+        "detail": "not configured",
+    }
+    assert _check(body, "personas-seeded")["ok"] is False
+    assert _other_checks_ok(body, "personas-bucket", "personas-seeded")
+
+
+def test_bucket_list_keys_client_error_flips_only_that_check(wired_config, tmp_path, wired_org):
+    storage = FakeStorage(
+        buckets={
+            wired_config.skills_bucket: {"index.json": (b'{"entries": []}', {"updated": "x"})},
+            wired_config.personas_bucket: {"index.json": (b'{"entries": [{"id": "a"}]}', {})},
+        },
+        list_error="storage backend unavailable",
+    )
+    client = _client(wired_config, _clients(storage=storage), tmp_path, org=wired_org)
+
+    body = client.get("/api/org/status").json()
+
+    assert _check(body, "skills-bucket")["ok"] is False
+    assert _check(body, "personas-bucket")["ok"] is False
+    # the two bucket checks are the only ones that call list_keys.
+    assert _check(body, "org-config")["ok"] is True
+    assert _check(body, "deploy-platform")["ok"] is True
+
+
+def test_storage_none_flips_bucket_and_index_checks(wired_config, tmp_path, wired_org):
+    client = _client(wired_config, _clients(storage=None), tmp_path, org=wired_org)
+
+    body = client.get("/api/org/status").json()
+
+    assert _check(body, "skills-bucket")["ok"] is False
+    assert _check(body, "personas-bucket")["ok"] is False
+    assert _check(body, "skills-index")["ok"] is False
+    assert _check(body, "personas-seeded")["ok"] is False
+    assert _check(body, "org-config")["ok"] is True
+    assert _check(body, "deploy-platform")["ok"] is True
+
+
+# --- skills-index -----------------------------------------------------------
+
+
+def test_missing_skills_index_flips_only_that_check(wired_config, tmp_path, wired_org):
+    storage = FakeStorage(
+        buckets={
+            wired_config.skills_bucket: {},
+            wired_config.personas_bucket: {"index.json": (b'{"entries": [{"id": "a"}]}', {})},
+        }
+    )
+    client = _client(wired_config, _clients(storage=storage), tmp_path, org=wired_org)
+
+    body = client.get("/api/org/status").json()
+
+    assert _check(body, "skills-index") == {
+        "id": "skills-index",
+        "label": "Skills index",
+        "ok": False,
+        "detail": "no skills published yet",
+    }
+    # skills-bucket itself is still reachable (list_keys succeeds against an
+    # empty-but-present bucket) — only the index object is missing.
+    assert _check(body, "skills-bucket")["ok"] is True
+    assert _other_checks_ok(body, "skills-index")
+
+
+# --- personas-seeded ---------------------------------------------------------
+
+
+def test_missing_personas_index_flips_only_that_check(wired_config, tmp_path, wired_org):
+    storage = FakeStorage(
+        buckets={
+            wired_config.skills_bucket: {"index.json": (b'{"entries": [{"id": "a"}]}', {"updated": "x"})},
+            wired_config.personas_bucket: {},
+        }
+    )
+    client = _client(wired_config, _clients(storage=storage), tmp_path, org=wired_org)
+
+    body = client.get("/api/org/status").json()
+
+    assert _check(body, "personas-seeded")["ok"] is False
+    assert _check(body, "personas-bucket")["ok"] is True
+    assert _other_checks_ok(body, "personas-seeded")
+
+
+def test_empty_personas_entries_flips_only_that_check(wired_config, tmp_path, wired_org):
+    storage = FakeStorage(
+        buckets={
+            wired_config.skills_bucket: {"index.json": (b'{"entries": [{"id": "a"}]}', {"updated": "x"})},
+            wired_config.personas_bucket: {"index.json": (b'{"entries": []}', {})},
+        }
+    )
+    client = _client(wired_config, _clients(storage=storage), tmp_path, org=wired_org)
+
+    body = client.get("/api/org/status").json()
+
+    assert _check(body, "personas-seeded") == {
+        "id": "personas-seeded",
+        "label": "Personas",
+        "ok": False,
+        "detail": "0 personas",
+    }
+    assert _other_checks_ok(body, "personas-seeded")
+
+
+def test_malformed_personas_index_json_never_500s(wired_config, tmp_path, wired_org):
+    storage = FakeStorage(
+        buckets={
+            wired_config.skills_bucket: {"index.json": (b'{"entries": [{"id": "a"}]}', {"updated": "x"})},
+            wired_config.personas_bucket: {"index.json": (b"not json", {})},
+        }
+    )
+    client = _client(wired_config, _clients(storage=storage), tmp_path, org=wired_org)
+
+    response = client.get("/api/org/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    check = _check(body, "personas-seeded")
+    assert check["ok"] is False
+    assert isinstance(check["detail"], str) and check["detail"]
+    assert _other_checks_ok(body, "personas-seeded")
+
+
+# --- deploy-platform ---------------------------------------------------------
+
+
+def test_ping_false_flips_only_deploy_platform_check(wired_config, fake_storage, tmp_path, wired_org):
+    client = _client(
+        wired_config,
+        _clients(gojira=FakeGojira(ping_result=False), storage=fake_storage),
+        tmp_path,
+        org=wired_org,
+    )
+
+    body = client.get("/api/org/status").json()
+
+    assert _check(body, "deploy-platform") == {
+        "id": "deploy-platform",
+        "label": "Deploy platform",
+        "ok": False,
+        "detail": "can't reach the deploy platform",
+    }
+    assert _other_checks_ok(body, "deploy-platform")
+
+
+def test_empty_cluster_flips_only_deploy_platform_check(fake_storage, tmp_path, wired_org):
+    config = Config(
+        workdir=tmp_path / "work",
+        skills_bucket="skills-bucket",
+        personas_bucket="personas-bucket",
+        gojira_cluster="",
+    )
+    client = _client(config, _clients(storage=fake_storage), tmp_path, org=wired_org)
+
+    body = client.get("/api/org/status").json()
+
+    assert _check(body, "deploy-platform") == {
+        "id": "deploy-platform",
+        "label": "Deploy platform",
+        "ok": False,
+        "detail": "no cluster configured",
+    }
+    assert _other_checks_ok(body, "deploy-platform")
+
+
+def test_route_always_200_even_fully_unwired(tmp_path):
+    """A completely bare app (no clients at all, default unwired org) must
+    still answer 200 with every check reporting honestly unwired/unreachable
+    — never a 500."""
+    config = Config(workdir=tmp_path / "work")  # skills_bucket/personas_bucket default ""
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/pnyx.db", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    client = TestClient(create_app(session_factory, config=config))
+
+    response = client.get("/api/org/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["org"] is None
+    assert body["wired"] is False
+    assert all(c["ok"] is False for c in body["checks"])

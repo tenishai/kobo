@@ -633,6 +633,78 @@ def test_gojira_client_default_http_client_has_generous_timeout():
     assert timeout.read == 30.0
 
 
+# --- Gojira.ping (Task 8: org status's deploy-platform check) -----------------
+
+
+def test_gojira_ping_request_shape_and_auth_header():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"apps": []})
+
+    client = HttpxGojiraClient(
+        "http://gojira.local", token="secret-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert client.ping() is True
+    assert captured["method"] == "GET"
+    assert captured["url"] == "http://gojira.local/api/v1/apps"
+    assert captured["auth"] == "Bearer secret-token"
+
+
+def test_gojira_ping_no_token_sends_no_auth_header():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "authorization" not in request.headers
+        return httpx.Response(200, json={"apps": []})
+
+    client = HttpxGojiraClient(
+        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+
+    assert client.ping() is True
+
+
+def test_gojira_ping_false_on_non_200():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    client = HttpxGojiraClient(
+        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+
+    assert client.ping() is False
+
+
+def test_gojira_ping_false_on_404():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="not found")
+
+    client = HttpxGojiraClient(
+        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+
+    assert client.ping() is False
+
+
+def test_gojira_ping_never_raises_on_transport_error():
+    # A connection failure (unreachable host, refused connection, ...) must
+    # come back as a plain False, not an escaping httpx exception — ping()'s
+    # whole contract (clients.py's GojiraClient Protocol) is that it never
+    # raises.
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = HttpxGojiraClient(
+        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+
+    assert client.ping() is False
+
+
 # --- Agent (a2a chat over kubectl port-forward) --------------------------------
 
 
@@ -1984,6 +2056,16 @@ def test_fake_gojira_conflict_on_create():
     fake = FakeGojira(conflict_repos={"acme/agent-clio"})
     with pytest.raises(GojiraConflict):
         fake.create_app(name="clio", repo_full_name="acme/agent-clio", cluster="dev", namespace="clio")
+
+
+def test_fake_gojira_ping_defaults_true():
+    fake = FakeGojira()
+    assert fake.ping() is True
+
+
+def test_fake_gojira_ping_knob():
+    fake = FakeGojira(ping_result=False)
+    assert fake.ping() is False
 
 
 def test_fake_github_runs_for_commit_sequence_can_end_in_failure():

@@ -339,6 +339,17 @@ class GojiraClient(Protocol):
         """POST /apps/{id}/provision to re-run the provisioner."""
         ...
 
+    def ping(self) -> bool:
+        """GET {base}/api/v1/apps (auth'd); True iff 200.
+
+        Read-only reachability probe for the org status route's
+        deploy-platform check (Task 8) — deliberately never raises: any
+        transport failure (unreachable host, timeout, ...) or non-200
+        response is just False, the same way every other check on that
+        route reports "not reachable" rather than a 500.
+        """
+        ...
+
 
 class HttpxGojiraClient:
     """Talks to gojira's onboarding API over httpx."""
@@ -391,6 +402,18 @@ class HttpxGojiraClient:
         )
         if resp.status_code != 303:
             raise ClientError(f"reprovision({app_id}) failed ({resp.status_code}): {resp.text}")
+
+    def ping(self) -> bool:
+        # This is a visibility probe, not an action a caller reacts to — a
+        # connection refused/timeout/DNS failure (httpx.HTTPError, the same
+        # transport-error family `_post_task` below wraps) must read exactly
+        # like a non-200 reply (both just "not reachable right now"), never
+        # an exception the org-status route has to remember to catch.
+        try:
+            resp = self._client.get(f"{self._base_url}/api/v1/apps", headers=self._headers())
+        except httpx.HTTPError:
+            return False
+        return resp.status_code == 200
 
 
 # --- Cloud (GCP) ------------------------------------------------------------------

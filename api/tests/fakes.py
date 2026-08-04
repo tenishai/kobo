@@ -495,6 +495,12 @@ class FakeGojira:
     """Walks a created app from "pending" to `end_status` on the
     `activate_after`-th status poll; records reprovision calls; can simulate a
     409 conflict on create for repos named in `conflict_repos`.
+
+    `ping_result` (Task 8, org status's deploy-platform check) is the fixed
+    bool `ping()` returns — defaults to True (the wired-happy-path), same
+    knob idiom as every other fake's canned-result/error switches here: a
+    test flips it to False to exercise the check's "can't reach the deploy
+    platform" branch without a real gojira backend.
     """
 
     def __init__(
@@ -504,11 +510,13 @@ class FakeGojira:
         end_status: str = "active",
         conflict_repos: set[str] | None = None,
         failed_steps: list[dict] | None = None,
+        ping_result: bool = True,
     ):
         self._activate_after = activate_after
         self._end_status = end_status
         self._conflict_repos = set(conflict_repos) if conflict_repos else set()
         self._failed_steps = list(failed_steps) if failed_steps else []
+        self._ping_result = ping_result
         self._apps: dict[int, dict] = {}
         self._next_id = 1
         self.reprovision_calls: list[int] = []
@@ -550,6 +558,10 @@ class FakeGojira:
         app = self._apps[app_id]
         app["status"] = "pending"
         app["polls"] = 0
+
+    def ping(self) -> bool:
+        self.calls.append("ping")
+        return self._ping_result
 
 
 class FakeCloud:

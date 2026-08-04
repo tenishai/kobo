@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import re
 import threading
@@ -20,7 +21,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from pnyx_api.avatars import avatar_prompt, set_avatar
 from pnyx_api.catalog import validate_name
-from pnyx_api.clients import ClientError
+from pnyx_api.clients import ClientError, StorageNotFound
 from pnyx_api.config import Config
 from pnyx_api.db import init_db, make_engine, make_session_factory
 from pnyx_api.knowledge import (
@@ -343,6 +344,123 @@ def _ready_agent_or_error(
     return agent
 
 
+# --- Org status (Task 8): the room's read-only wiring visibility ------------
+#
+# Six checks, each individually try/excepted so a single unreachable backend
+# never takes the whole route down with it (`ClientError` -> that check's own
+# `ok: False` with a plain sentence — the route itself always answers 200).
+# Every label/detail here is user-facing copy (Global Constraint: zero infra
+# vocabulary) — "bucket"/"storage" appear because the checks ARE about
+# storage, not as a leaked implementation detail.
+
+
+def _org_config_check(org: OrgState) -> dict:
+    """ok = org.wired; detail = org.error when set (every unwired reason,
+    including the plain "no org configured" default), otherwise the repo
+    name itself — `org.error or org.repo` reads as one formula for both
+    branches since `load_org_config` (pnyx_api.org) only ever sets one of
+    the two (a wired OrgState carries no error; an unwired one always
+    carries a plain-sentence error)."""
+    return {
+        "id": "org-config",
+        "label": "Organization settings",
+        "ok": org.wired,
+        "detail": org.error or org.repo or "",
+    }
+
+
+def _bucket_check(check_id: str, label: str, clients: Clients | None, bucket: str) -> dict:
+    """Whether `bucket` (the raw `config.skills_bucket`/`personas_bucket`
+    value — no computed default) is reachable via `storage.list_keys`
+    (Task 8 controller decision #4).
+
+    An empty bucket name means "not configured" outright — `list_keys` is
+    never even called — same as `clients`/`clients.storage` being absent
+    entirely (an unwired room, or the local dev harness that never wires
+    storage at all): both mean there's nothing to check yet, not a broken
+    connection. `ok: True`'s detail is the bucket name itself — an
+    operator-adjacent value, but decision #4 accepts it since this whole
+    route IS the wiring surface.
+    """
+    if not bucket or clients is None or clients.storage is None:
+        return {"id": check_id, "label": label, "ok": False, "detail": "not configured"}
+    try:
+        clients.storage.list_keys(bucket, "")
+    except ClientError:
+        return {
+            "id": check_id,
+            "label": label,
+            "ok": False,
+            "detail": f"can't reach {label.lower()}",
+        }
+    return {"id": check_id, "label": label, "ok": True, "detail": bucket}
+
+
+def _skills_index_check(clients: Clients | None, bucket: str) -> dict:
+    check_id, label = "skills-index", "Skills index"
+    if not bucket or clients is None or clients.storage is None:
+        return {"id": check_id, "label": label, "ok": False, "detail": "not configured"}
+    try:
+        meta = clients.storage.object_metadata(bucket, "index.json")
+    except StorageNotFound:
+        return {"id": check_id, "label": label, "ok": False, "detail": "no skills published yet"}
+    except ClientError:
+        return {"id": check_id, "label": label, "ok": False, "detail": "can't reach the skills index"}
+    return {
+        "id": check_id,
+        "label": label,
+        "ok": True,
+        "detail": f"updated {meta.get('updated', 'unknown')}",
+    }
+
+
+def _personas_seeded_check(clients: Clients | None, bucket: str) -> dict:
+    check_id, label = "personas-seeded", "Personas"
+    if not bucket or clients is None or clients.storage is None:
+        return {"id": check_id, "label": label, "ok": False, "detail": "not configured"}
+    try:
+        raw = clients.storage.read_bytes(bucket, "index.json")
+    except StorageNotFound:
+        return {"id": check_id, "label": label, "ok": False, "detail": "no personas seeded yet"}
+    except ClientError:
+        return {"id": check_id, "label": label, "ok": False, "detail": "can't reach personas storage"}
+
+    # A malformed index.json (bad JSON, or JSON that isn't the expected
+    # {"entries": [...]} shape) must never 500 this route (Task 8
+    # controller decision #5) — json.loads/`.get` failures aren't
+    # ClientError, so they're caught here explicitly.
+    try:
+        entries = json.loads(raw).get("entries", [])
+    except (ValueError, AttributeError, TypeError):
+        return {"id": check_id, "label": label, "ok": False, "detail": "personas index is unreadable"}
+
+    count = len(entries)
+    return {"id": check_id, "label": label, "ok": count > 0, "detail": f"{count} personas"}
+
+
+def _deploy_platform_check(clients: Clients | None, cluster: str) -> dict:
+    check_id, label = "deploy-platform", "Deploy platform"
+    ping_ok = False
+    if clients is not None:
+        try:
+            ping_ok = clients.gojira.ping()
+        except ClientError:
+            # HttpxGojiraClient.ping() already never raises (see its own
+            # docstring) — this is defense-in-depth for any other
+            # GojiraClient implementation (a future one, or a test fake)
+            # that doesn't honor that contract.
+            ping_ok = False
+
+    if not cluster:
+        return {"id": check_id, "label": label, "ok": False, "detail": "no cluster configured"}
+    if not ping_ok:
+        return {
+            "id": check_id, "label": label, "ok": False,
+            "detail": "can't reach the deploy platform",
+        }
+    return {"id": check_id, "label": label, "ok": True, "detail": f"connected to {cluster}"}
+
+
 def get_session(request: Request) -> Iterator[Session]:
     """Dependency yielding a SQLAlchemy session bound to the app's session factory."""
     session_factory: sessionmaker[Session] = request.app.state.session_factory
@@ -405,6 +523,31 @@ def create_app(
         return {
             "models": [{"id": m.id, "label": m.label} for m in cfg.models],
             "default": cfg.models[0].id,
+        }
+
+    # --- Org status (Task 8): read-only wiring visibility for the room ------
+
+    @app.get("/api/org/status")
+    def org_status() -> dict:
+        cfg: Config = app.state.config
+        clients: Clients | None = app.state.clients
+        org: OrgState = app.state.org
+
+        return {
+            "org": cfg.github_org if org.wired else None,
+            "wired": org.wired,
+            "checks": [
+                _org_config_check(org),
+                _bucket_check(
+                    "skills-bucket", "Skills catalog storage", clients, cfg.skills_bucket
+                ),
+                _bucket_check(
+                    "personas-bucket", "Personas storage", clients, cfg.personas_bucket
+                ),
+                _skills_index_check(clients, cfg.skills_bucket),
+                _personas_seeded_check(clients, cfg.personas_bucket),
+                _deploy_platform_check(clients, cfg.gojira_cluster),
+            ],
         }
 
     # --- Catalog search (Task 3): FTS5 over the bucket-published indexes ---
