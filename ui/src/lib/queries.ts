@@ -7,9 +7,14 @@
 // queryKey conventions:
 //   ["agents"]                                      - the agent list
 //   ["agents", name]                                - one agent's detail
-//   ["catalogs"]                                    - personas/skills/models catalog
+//   ["catalogs"]                                    - personas/skills/models catalog (deprecated shim, Task 10 removes)
 //   ["agents", name, "knowledge"]                   - an agent's knowledge files
 //   ["agents", name, "knowledge", "delivery", sha]  - delivery state for one sha
+//   ["catalog", "models"]                           - the model list + default
+//   ["catalog", "teams"]                             - the team-slug list
+//   ["catalog", "skills", {q, team}]                - a skill catalog search
+//   ["catalog", "personas", {q, team}]              - a persona catalog search
+//   ["org", "status"]                               - org bootstrap/wiring status
 
 import { queryOptions, type QueryClient } from "@tanstack/svelte-query";
 import {
@@ -17,21 +22,30 @@ import {
   type AgentDetail,
   type AgentSummary,
   type Catalogs,
+  type CatalogEntry,
   type ChatMessage,
   type KnowledgeFile,
+  type OrgStatus,
+  type PersonaForm,
   chatWithAgent,
   connectSlack,
   createAgent,
+  createPersona,
   createSlackApp,
   deleteKnowledgeFile,
   fetchCatalogs,
   fetchDeliveryState,
+  fetchModels,
+  fetchOrgStatus,
+  fetchTeams,
   generateAvatar,
   getAgent,
   listAgents,
   listKnowledge,
   retryAgent,
   saveKnowledgeFile,
+  searchPersonas,
+  searchSkills,
 } from "./api";
 import { detailRefetchInterval, listRefetchInterval } from "./status";
 
@@ -73,13 +87,93 @@ export function agentQuery(name: string) {
   });
 }
 
-/** Persona/skill/model catalog. Static-ish, so no polling — just a long staleTime. */
+/**
+ * Persona/skill/model catalog.
+ * @deprecated Task 10 removes this along with `fetchCatalogs` — see that
+ * function's doc comment. Static-ish, so no polling — just a long staleTime.
+ */
 export function catalogsQuery() {
   return queryOptions({
     queryKey: ["catalogs"] as const,
     queryFn: fetchCatalogs,
     staleTime: CATALOGS_STALE_MS,
   });
+}
+
+/** How long a catalog search result (skill or persona) is considered fresh
+ * before a refetch — short enough that a newly-created persona/skill shows
+ * up promptly, long enough to avoid refetching on every keystroke-driven
+ * re-render of the same query key. */
+const CATALOG_SEARCH_STALE_MS = 15_000;
+
+/** How long org status is considered fresh. Bootstrap wiring changes rarely
+ * (a human ran a CLI step), so this can sit longer than a catalog search. */
+const ORG_STATUS_STALE_MS = 30_000;
+
+/** The model list + default. No polling — the model catalog doesn't change
+ * on its own in the background. */
+export function modelsQuery() {
+  return queryOptions({
+    queryKey: ["catalog", "models"] as const,
+    queryFn: fetchModels,
+  });
+}
+
+/** The team-slug list, for the team picker in the create/persona-builder
+ * flows. */
+export function teamsQuery() {
+  return queryOptions({
+    queryKey: ["catalog", "teams"] as const,
+    queryFn: fetchTeams,
+  });
+}
+
+/** A skill catalog search for the given query/team. Keyed on both so each
+ * distinct search has its own cache entry. */
+export function skillsSearchQuery(q: string, team: string | null) {
+  return queryOptions({
+    queryKey: ["catalog", "skills", { q, team }] as const,
+    queryFn: () => searchSkills(q, team),
+    staleTime: CATALOG_SEARCH_STALE_MS,
+  });
+}
+
+/** A persona catalog search for the given query/team. Keyed on both so each
+ * distinct search has its own cache entry. */
+export function personasSearchQuery(q: string, team: string | null) {
+  return queryOptions({
+    queryKey: ["catalog", "personas", { q, team }] as const,
+    queryFn: () => searchPersonas(q, team),
+    staleTime: CATALOG_SEARCH_STALE_MS,
+  });
+}
+
+/** Org bootstrap/wiring status, shown on the admin/org-status view. */
+export function orgStatusQuery() {
+  return queryOptions({
+    queryKey: ["org", "status"] as const,
+    queryFn: fetchOrgStatus,
+    staleTime: ORG_STATUS_STALE_MS,
+  });
+}
+
+/**
+ * Creates a persona; on success, invalidates both the persona search
+ * queries (so the new persona appears in results) and the team list (a
+ * persona can be created under a team slug that wasn't in the catalog
+ * yet — see the `team` field on `PersonaForm`). TanStack's `invalidateQueries`
+ * match is a *prefix* match, so `["catalog", "personas"]` covers every
+ * `["catalog", "personas", {q, team}]` search-result cache entry, not just
+ * one.
+ */
+export function createPersonaMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: (body: PersonaForm) => createPersona(body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["catalog", "personas"] });
+      queryClient.invalidateQueries({ queryKey: ["catalog", "teams"] });
+    },
+  };
 }
 
 /** Creates an agent; on success, invalidates the agent list so it appears. */
@@ -261,4 +355,13 @@ export function generateAvatarMutation(queryClient: QueryClient, name: string) {
 
 // Re-exported so consumers of the query factories don't need a separate
 // import from api.ts just to type their component-level state.
-export type { AgentDetail, AgentSummary, Catalogs, ChatMessage, KnowledgeFile };
+export type {
+  AgentDetail,
+  AgentSummary,
+  Catalogs,
+  CatalogEntry,
+  ChatMessage,
+  KnowledgeFile,
+  OrgStatus,
+  PersonaForm,
+};

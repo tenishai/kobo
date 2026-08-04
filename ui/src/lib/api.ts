@@ -39,6 +39,39 @@ export type Catalogs = {
   defaultModel: string;
 };
 
+/** One catalog search result — a skill or a persona, both served by the
+ * same shape (`GET /api/skills/search`, `GET /api/personas/search`). `sha`
+ * is set for skills (their content's git blob sha); `builtin` is set for
+ * personas (true for the shipped defaults, false/absent for user-created
+ * ones). */
+export type CatalogEntry = {
+  id: string;
+  name: string;
+  description: string;
+  team: string;
+  tags: string[];
+  sha?: string;
+  builtin?: boolean;
+};
+
+/** The persona builder's form — posted verbatim as the body of
+ * `POST /api/personas`. `tags` is required here (the server enforces 1-6);
+ * the form itself enforcing that is Task 10's job. */
+export type PersonaForm = {
+  name: string;
+  role: string;
+  purpose: string;
+  tone: "warm" | "direct" | "playful" | "formal";
+  tone_note: string;
+  boundaries: string[];
+  tags: string[];
+  team: string;
+};
+
+export type OrgCheck = { id: string; label: string; ok: boolean; detail: string };
+
+export type OrgStatus = { org: string | null; wired: boolean; checks: OrgCheck[] };
+
 export type ChatMessage = { role: "user" | "agent"; text: string };
 
 export class ApiError extends Error {
@@ -141,7 +174,8 @@ export async function getAgent(name: string): Promise<AgentDetail> {
 export async function createAgent(body: {
   name: string;
   persona: string;
-  skills: string[];
+  team: string;
+  skills: { id: string; team: string }[];
   model: string | null;
 }): Promise<{ name: string; status: string }> {
   const res = await fetch("/api/agents", {
@@ -159,25 +193,88 @@ export async function retryAgent(name: string): Promise<void> {
   await parse(res);
 }
 
+/** `GET /api/catalog/models` — the one catalog endpoint that survived the
+ * move to search: skills and personas are now `searchSkills`/`searchPersonas`
+ * below, but the model list is small and fixed, so it's still fetched
+ * whole. */
+export async function fetchModels(): Promise<{
+  models: { id: string; label: string }[];
+  default: string;
+}> {
+  const res = await fetch("/api/catalog/models");
+  return parse<{ models: { id: string; label: string }[]; default: string }>(
+    res,
+  );
+}
+
+/**
+ * @deprecated Task 10 removes this — personas/skills now come from the
+ * search queries (`searchPersonas`/`searchSkills`), fetched on demand as the
+ * user types rather than pulled whole. Kept only so `CreateModal.svelte`
+ * (Task 10's job to rewire onto the search queries) keeps compiling and
+ * rendering until then: the old three-endpoint `Promise.all` here pointed
+ * two of its three fetches at endpoints that no longer exist
+ * (`/api/catalog/personas`, `/api/catalog/skills`), which would throw at
+ * runtime today. This now fetches ONLY models and returns empty
+ * personas/skills arrays, in the same `Catalogs` shape the modal already
+ * consumes — so it renders its existing empty-catalog copy instead of
+ * erroring.
+ */
 export async function fetchCatalogs(): Promise<Catalogs> {
-  const [personasRes, skillsRes, modelsRes] = await Promise.all([
-    fetch("/api/catalog/personas"),
-    fetch("/api/catalog/skills"),
-    fetch("/api/catalog/models"),
-  ]);
+  const { models, default: defaultModel } = await fetchModels();
+  return { personas: [], skills: [], models, defaultModel };
+}
 
-  const [personas, skills, models] = await Promise.all([
-    parse<{ personas: Catalogs["personas"] }>(personasRes),
-    parse<{ skills: Catalogs["skills"] }>(skillsRes),
-    parse<{ models: Catalogs["models"]; default: string }>(modelsRes),
-  ]);
+/** Builds a `?q=...&team=...` query string: `q` is always present (even
+ * empty), `team` is omitted entirely when null. Shared by the two catalog
+ * search endpoints below. */
+function searchQueryString(q: string, team: string | null): string {
+  const params = new URLSearchParams();
+  params.set("q", q);
+  if (team !== null) {
+    params.set("team", team);
+  }
+  return params.toString();
+}
 
-  return {
-    personas: personas.personas,
-    skills: skills.skills,
-    models: models.models,
-    defaultModel: models.default,
-  };
+export async function searchSkills(
+  q: string,
+  team: string | null,
+): Promise<CatalogEntry[]> {
+  const res = await fetch(`/api/skills/search?${searchQueryString(q, team)}`);
+  const data = await parse<{ results: CatalogEntry[] }>(res);
+  return data.results;
+}
+
+export async function searchPersonas(
+  q: string,
+  team: string | null,
+): Promise<CatalogEntry[]> {
+  const res = await fetch(
+    `/api/personas/search?${searchQueryString(q, team)}`,
+  );
+  const data = await parse<{ results: CatalogEntry[] }>(res);
+  return data.results;
+}
+
+export async function fetchTeams(): Promise<string[]> {
+  const res = await fetch("/api/catalog/teams");
+  const data = await parse<{ teams: string[] }>(res);
+  return data.teams;
+}
+
+export async function createPersona(body: PersonaForm): Promise<CatalogEntry> {
+  const res = await fetch("/api/personas", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parse<CatalogEntry>(res);
+}
+
+export async function fetchOrgStatus(): Promise<OrgStatus> {
+  const res = await fetch("/api/org/status");
+  return parse<OrgStatus>(res);
 }
 
 export async function chatWithAgent(

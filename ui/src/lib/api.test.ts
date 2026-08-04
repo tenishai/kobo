@@ -4,15 +4,21 @@ import {
   chatWithAgent,
   connectSlack,
   createAgent,
+  createPersona,
   createSlackApp,
   deleteKnowledgeFile,
   errorMessage,
   fetchCatalogs,
   fetchDeliveryState,
+  fetchModels,
+  fetchOrgStatus,
+  fetchTeams,
   generateAvatar,
   listAgents,
   listKnowledge,
   saveKnowledgeFile,
+  searchPersonas,
+  searchSkills,
 } from "./api";
 
 function jsonResponse(
@@ -86,31 +92,69 @@ describe("api.ts", () => {
     await expect(listAgents()).resolves.toEqual(agents);
   });
 
-  it("fetchCatalogs merges three responses and maps default -> defaultModel", async () => {
-    vi.mocked(fetch).mockImplementation(async (input) => {
-      const url = String(input);
-      if (url.includes("personas")) {
-        return jsonResponse({ personas: [{ id: "helper", description: "A helper persona" }] });
-      }
-      if (url.includes("skills")) {
-        return jsonResponse({
-          skills: [{ id: "read-code", description: "Read code", sha: "abc123" }],
-        });
-      }
-      if (url.includes("models")) {
-        return jsonResponse({
-          models: [{ id: "gpt-5", label: "GPT-5" }],
-          default: "gpt-5",
-        });
-      }
-      throw new Error(`unexpected url: ${url}`);
+  it("fetchModels GETs /api/catalog/models and returns {models, default} verbatim", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({
+        models: [{ id: "gpt-5", label: "GPT-5" }],
+        default: "gpt-5",
+      }),
+    );
+
+    await expect(fetchModels()).resolves.toEqual({
+      models: [{ id: "gpt-5", label: "GPT-5" }],
+      default: "gpt-5",
     });
 
+    expect(fetch).toHaveBeenCalledWith("/api/catalog/models");
+  });
+
+  // fetchCatalogs is a @deprecated compatibility shim (Task 10 removes it):
+  // the old three-endpoint Promise.all pointed two of its three fetches at
+  // endpoints that no longer exist (/api/catalog/personas, /api/catalog/skills),
+  // which would error at runtime today. It now fetches ONLY models and
+  // returns empty personas/skills arrays in the same shape CreateModal.svelte
+  // already consumes.
+  it("fetchCatalogs (deprecated shim) fetches only models and returns empty personas/skills", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({
+        models: [{ id: "gpt-5", label: "GPT-5" }],
+        default: "gpt-5",
+      }),
+    );
+
     await expect(fetchCatalogs()).resolves.toEqual({
-      personas: [{ id: "helper", description: "A helper persona" }],
-      skills: [{ id: "read-code", description: "Read code", sha: "abc123" }],
+      personas: [],
+      skills: [],
       models: [{ id: "gpt-5", label: "GPT-5" }],
       defaultModel: "gpt-5",
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith("/api/catalog/models");
+  });
+
+  it("createAgent POSTs the new body shape ({team, skills: [{id, team}]}) to /api/agents", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({ name: "foo", status: "provisioning" }),
+    );
+
+    const body = {
+      name: "foo",
+      persona: "helper",
+      team: "shared",
+      skills: [{ id: "read-code", team: "shared" }],
+      model: "gpt-5",
+    };
+
+    await expect(createAgent(body)).resolves.toEqual({
+      name: "foo",
+      status: "provisioning",
+    });
+
+    expect(fetch).toHaveBeenCalledWith("/api/agents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     });
   });
 
@@ -123,7 +167,13 @@ describe("api.ts", () => {
     );
 
     await expect(
-      createAgent({ name: "foo", persona: "helper", skills: [], model: null }),
+      createAgent({
+        name: "foo",
+        persona: "helper",
+        team: "shared",
+        skills: [],
+        model: null,
+      }),
     ).rejects.toThrow("name taken: 'foo'");
   });
 
@@ -561,6 +611,188 @@ describe("avatar client", () => {
     await expect(generateAvatar("clio")).rejects.toThrow(
       "the picture didn't come through — try again",
     );
+  });
+});
+
+describe("catalog search / teams / persona builder / org status client", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("searchSkills GETs /api/skills/search?q=<q> and unwraps {results: [...]}, omitting team when null", async () => {
+    const results = [
+      {
+        id: "read-code",
+        name: "Read code",
+        description: "Reads source files",
+        team: "shared",
+        tags: ["fs"],
+        sha: "abc123",
+      },
+    ];
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ results }));
+
+    await expect(searchSkills("read", null)).resolves.toEqual(results);
+
+    expect(fetch).toHaveBeenCalledWith("/api/skills/search?q=read");
+  });
+
+  it("searchSkills includes team in the query string when given", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ results: [] }));
+
+    await searchSkills("read", "growth");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/skills/search?q=read&team=growth",
+    );
+  });
+
+  it("searchSkills always sends q, even when empty", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ results: [] }));
+
+    await searchSkills("", null);
+
+    expect(fetch).toHaveBeenCalledWith("/api/skills/search?q=");
+  });
+
+  it("searchSkills escapes a hostile q containing '&' and spaces", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ results: [] }));
+
+    await searchSkills("a&b c", "team one");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/skills/search?q=a%26b+c&team=team+one",
+    );
+  });
+
+  it("searchPersonas GETs /api/personas/search?q=<q> and unwraps {results: [...]}, omitting team when null", async () => {
+    const results = [
+      {
+        id: "helper",
+        name: "Helper",
+        description: "A helpful persona",
+        team: "shared",
+        tags: ["general"],
+        builtin: true,
+      },
+    ];
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ results }));
+
+    await expect(searchPersonas("help", null)).resolves.toEqual(results);
+
+    expect(fetch).toHaveBeenCalledWith("/api/personas/search?q=help");
+  });
+
+  it("searchPersonas escapes a hostile q containing '&' and spaces, and includes team", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ results: [] }));
+
+    await searchPersonas("a&b c", "growth team");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/personas/search?q=a%26b+c&team=growth+team",
+    );
+  });
+
+  it("fetchTeams GETs /api/catalog/teams and unwraps {teams: [...]} into a plain array", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({ teams: ["shared", "growth"] }),
+    );
+
+    await expect(fetchTeams()).resolves.toEqual(["shared", "growth"]);
+
+    expect(fetch).toHaveBeenCalledWith("/api/catalog/teams");
+  });
+
+  it("createPersona POSTs the form body to /api/personas and returns the created CatalogEntry", async () => {
+    const body = {
+      name: "helper",
+      role: "assistant",
+      purpose: "helps with things",
+      tone: "warm" as const,
+      tone_note: "friendly but concise",
+      boundaries: ["no secrets"],
+      tags: ["general"],
+      team: "shared",
+    };
+    const created = {
+      id: "helper",
+      name: "helper",
+      description: "helps with things",
+      team: "shared",
+      tags: ["general"],
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(created, { status: 201 }),
+    );
+
+    await expect(createPersona(body)).resolves.toEqual(created);
+
+    expect(fetch).toHaveBeenCalledWith("/api/personas", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  });
+
+  it("createPersona surfaces a 409's {error} message (name collision)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "a persona with that name already exists" },
+        { status: 409, statusText: "Conflict" },
+      ),
+    );
+
+    await expect(
+      createPersona({
+        name: "helper",
+        role: "assistant",
+        purpose: "helps",
+        tone: "warm",
+        tone_note: "",
+        boundaries: [],
+        tags: ["general"],
+        team: "shared",
+      }),
+    ).rejects.toThrow("a persona with that name already exists");
+  });
+
+  it("createPersona surfaces a 503's {error} message (catalogs not set up)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "catalogs aren't set up yet" },
+        { status: 503, statusText: "Service Unavailable" },
+      ),
+    );
+
+    await expect(
+      createPersona({
+        name: "helper",
+        role: "assistant",
+        purpose: "helps",
+        tone: "warm",
+        tone_note: "",
+        boundaries: [],
+        tags: ["general"],
+        team: "shared",
+      }),
+    ).rejects.toThrow("catalogs aren't set up yet");
+  });
+
+  it("fetchOrgStatus GETs /api/org/status and returns {org, wired, checks} verbatim", async () => {
+    const status = {
+      org: "acme-org",
+      wired: true,
+      checks: [{ id: "argo", label: "ArgoCD", ok: true, detail: "synced" }],
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(status));
+
+    await expect(fetchOrgStatus()).resolves.toEqual(status);
+
+    expect(fetch).toHaveBeenCalledWith("/api/org/status");
   });
 });
 

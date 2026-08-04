@@ -141,7 +141,12 @@
       {
         name: createdName,
         persona: selectedPersona,
-        skills: Array.from(selectedSkills),
+        // TODO(Task 10): "shared" is a placeholder — team picking (and
+        // real per-skill team tagging) lands with the team-scoped
+        // catalog rewire; this is a mechanical type bridge only, no
+        // behavior change.
+        team: "shared",
+        skills: Array.from(selectedSkills).map((id) => ({ id, team: "shared" })),
         model: selectedModel,
       },
       {
