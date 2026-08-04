@@ -87,10 +87,13 @@ RUN pip install --no-cache-dir ./api
 # The built UI. The mounted runtime config points ui_dist at this path.
 COPY --from=ui-build /ui/dist /srv/ui
 
-# Run as a non-root user.
-RUN groupadd --system kobo && useradd --system --gid kobo --home-dir /app --shell /usr/sbin/nologin kobo \
-    && chown -R kobo:kobo /app /srv/ui
-USER kobo
+# Run as a non-root user with an explicit numeric UID so Kubernetes'
+# runAsNonRoot can verify it (a named USER is unverifiable without a mounted
+# /etc/passwd — the pod is rejected with CreateContainerConfigError).
+RUN groupadd --system --gid 1001 kobo \
+    && useradd --system --uid 1001 --gid kobo --home-dir /app --shell /usr/sbin/nologin kobo \
+    && chown -R 1001:1001 /app /srv/ui
+USER 1001
 
 ENV PORT=8080
 EXPOSE 8080
