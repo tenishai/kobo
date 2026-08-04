@@ -674,14 +674,14 @@ def test_gojira_client_default_http_client_has_generous_timeout():
 # --- Gojira.ping (Task 8: org status's deploy-platform check) -----------------
 
 
-def test_gojira_ping_request_shape_and_auth_header():
+def test_gojira_ping_healthz_request_shape():
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["method"] = request.method
         captured["url"] = str(request.url)
         captured["auth"] = request.headers.get("authorization")
-        return httpx.Response(200, json={"apps": []})
+        return httpx.Response(200, json={})
 
     client = HttpxGojiraClient(
         "http://gojira.local", token="secret-token",
@@ -690,17 +690,20 @@ def test_gojira_ping_request_shape_and_auth_header():
 
     assert client.ping() is True
     assert captured["method"] == "GET"
-    assert captured["url"] == "http://gojira.local/api/v1/apps"
-    assert captured["auth"] == "Bearer secret-token"
+    assert captured["url"] == "http://gojira.local/healthz"
+    assert captured["auth"] is None
 
 
-def test_gojira_ping_no_token_sends_no_auth_header():
+def test_gojira_ping_never_sends_auth_header():
     def handler(request: httpx.Request) -> httpx.Response:
+        # ping() is an auth-free health probe, even when a token is configured
         assert "authorization" not in request.headers
-        return httpx.Response(200, json={"apps": []})
+        assert str(request.url) == "http://gojira.local/healthz"
+        return httpx.Response(200, json={})
 
     client = HttpxGojiraClient(
-        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
+        "http://gojira.local", token="secret-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler))
     )
 
     assert client.ping() is True

@@ -428,13 +428,13 @@ class HttpxGojiraClient:
             raise ClientError(f"reprovision({app_id}) failed ({resp.status_code}): {resp.text}")
 
     def ping(self) -> bool:
-        # This is a visibility probe, not an action a caller reacts to — a
-        # connection refused/timeout/DNS failure, or any other exception
-        # during header construction/URL building/etc must read exactly like
-        # a non-200 reply (both just "not reachable right now"), never an
-        # exception the org-status route has to remember to catch.
+        # Health check probe to GET {base}/healthz — a generic reachability
+        # check that doesn't require auth, only success (200) or failure (any
+        # other status/exception reads as "not reachable right now"). The deploy
+        # platform's apps endpoint is POST-only (405 on GET), so this health
+        # endpoint is the reliable check for org-status visibility.
         try:
-            resp = self._client.get(f"{self._base_url}/api/v1/apps", headers=self._headers())
+            resp = self._client.get(f"{self._base_url}/healthz")
         except Exception:
             log.debug("gojira ping failed", exc_info=True)
             return False
