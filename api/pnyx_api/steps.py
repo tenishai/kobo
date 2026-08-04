@@ -371,6 +371,24 @@ class OnboardStep:
             # reports the conflict; trust the id we already have and just
             # keep polling it.
             app_id = agent.gojira_app_id
+            # Live-incident fix: a conflict-resume alone can't recover from a
+            # platform-side provisioning failure (e.g. an environmental
+            # kubectl outage during the original attempt). create_app's
+            # conflict only says the app already exists — it says nothing
+            # about whether gojira's own provisioning of it ever succeeded.
+            # If the id we're resuming onto is stuck in gojira's terminal
+            # `failed` state, just polling would read that same stale
+            # failure straight back and raise immediately, and nothing would
+            # ever tell gojira to actually retry — the product Retry could
+            # never converge, even after an operator fixes the environment.
+            # So: check gojira's live status here and, if it's failed,
+            # re-kick it via reprovision() before waiting — the same call
+            # WireStep already makes for its own reprovision trigger. Any
+            # other status (provisioning/queued/active) means gojira is
+            # already converging or done on its own; keep today's behavior
+            # and just wait.
+            if gojira.app_status(app_id).get("status") == "failed":
+                gojira.reprovision(app_id)
         else:
             agent.gojira_app_id = app_id
 

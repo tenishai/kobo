@@ -490,6 +490,76 @@ def test_onboard_step_resumes_on_conflict_when_id_already_recorded(session_facto
     assert f"app_status:{prior_app_id}" in gojira.calls
 
 
+def test_onboard_step_conflict_resume_reprovisions_a_failed_app(session_factory, config):
+    """The live incident, reproduced exactly: a first provisioning attempt's
+    OnboardStep created the app, then failed (an environmental kubectl outage
+    on gojira's own side) — the app is now stuck in gojira's terminal
+    `failed` state. An operator fixes the environment and the product Retry
+    re-runs OnboardStep: create_app 409-conflicts (the app already exists)
+    and the resume branch adopts the recorded id, exactly like the plain
+    resume test above. The difference this test pins: that recorded id's
+    live status is `failed`, not provisioning/active — so a bare "trust the
+    id and keep polling" would just read the same stale failure straight
+    back and raise, and the retry could never converge. Asserts the fix:
+    reprovision() is called exactly once (on the right id) before the step
+    waits, and the step then succeeds.
+    """
+    repo = _repo_full_name(config)
+    gojira = FakeGojira(activate_after=1, end_status="failed", failed_steps=[
+        {"name": "provision", "status": "failed", "error": "kubectl outage"},
+    ])
+    # Seed the fake exactly like the plain resume test: a prior attempt's
+    # create_app already succeeded...
+    prior_app_id = gojira.create_app(
+        name=AGENT_NAME, repo_full_name=repo, cluster=config.gojira_cluster, namespace=AGENT_NAME
+    )
+    # ...and that prior attempt's own poll already observed it land in
+    # gojira's terminal `failed` state (the stale status this retry must not
+    # just trust).
+    assert gojira.app_status(prior_app_id)["status"] == "failed"
+    gojira._conflict_repos.add(repo)  # now gojira reports a live conflict for this repo
+    # The operator has fixed the environment: a reprovision from here on
+    # would actually succeed. Flip the fake's target status accordingly
+    # (same idiom test_api_agents.py's retry-recovery test uses) so the
+    # step's own reprovision -> _wait_active sequence can observe that.
+    gojira._end_status = "active"
+
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=prior_app_id)
+    ctx = _make_ctx(session, agent, config, _clients(gojira=gojira))
+
+    result = OnboardStep().run(ctx)
+
+    assert gojira.reprovision_calls == [prior_app_id]
+    assert agent.gojira_app_id == prior_app_id
+    assert "active" in result
+
+
+def test_onboard_step_conflict_resume_active_app_does_not_reprovision(session_factory, config):
+    """Pins the surgical condition: a conflict-resume onto an id that's
+    already `active` (not `failed`) must NOT reprovision — reprovision is
+    only for re-kicking a terminally-failed platform app, not a routine
+    "someone else already onboarded this" resume. Any status other than
+    `failed` (provisioning/queued/active) keeps today's plain-wait
+    behavior.
+    """
+    repo = _repo_full_name(config)
+    gojira = FakeGojira(activate_after=1)  # default end_status="active"
+    prior_app_id = gojira.create_app(
+        name=AGENT_NAME, repo_full_name=repo, cluster=config.gojira_cluster, namespace=AGENT_NAME
+    )
+    assert gojira.app_status(prior_app_id)["status"] == "active"
+    gojira._conflict_repos.add(repo)  # now gojira reports a live conflict for this repo
+
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=prior_app_id)
+    ctx = _make_ctx(session, agent, config, _clients(gojira=gojira))
+
+    result = OnboardStep().run(ctx)
+
+    assert gojira.reprovision_calls == []
+    assert agent.gojira_app_id == prior_app_id
+    assert "active" in result
+
+
 def test_onboard_step_times_out_after_max_polls(session_factory, config):
     repo = _repo_full_name(config)
     session, agent = _make_agent(session_factory, repo_full_name=repo)
