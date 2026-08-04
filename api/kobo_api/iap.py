@@ -151,7 +151,7 @@ class IapVerifier:
 
         try:
             pyjwk = jwt.PyJWK.from_dict(jwk)
-        except (jwt.InvalidKeyError, KeyError, ValueError) as exc:
+        except Exception as exc:  # broad: PyJWKError isn't an InvalidKeyError
             log.warning("iap: malformed jwk for kid %s: %s", kid, exc)
             raise IapError("could not verify assertion") from exc
 
@@ -175,6 +175,12 @@ class IapMiddleware(BaseHTTPMiddleware):
     (`kobo_api.main`) only when `Config.iap_audience` is non-empty. On
     success, stashes the verified `email` claim at `request.state.iap_email`
     for downstream use (future team mapping).
+
+    Coverage caveat: `BaseHTTPMiddleware` only sees ASGI `http` scopes. Any
+    future `@app.websocket(...)` route runs over the `websocket` scope and
+    would NOT pass through this middleware at all — it would need its own
+    IAP verification. No websocket routes exist today, but this is not
+    something to discover the hard way later.
     """
 
     def __init__(self, app: ASGIApp, *, verifier: IapVerifier):

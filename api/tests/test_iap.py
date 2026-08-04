@@ -15,7 +15,7 @@ import time
 
 import jwt
 import pytest
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from fastapi import Request
 from fastapi.testclient import TestClient
 
@@ -186,6 +186,80 @@ def test_verify_kid_rotation_refetches_once_and_succeeds():
 
     assert claims["email"] == "person@example.com"
     assert fetcher.calls == 2
+
+
+# --- Alg-substitution regression -----------------------------------------
+#
+# `verify()` pins `algorithms=["ES256"]` in the `jwt.decode` call — it never
+# reads or trusts the token header's own `alg`, which an attacker fully
+# controls. These three tests each forge a token that is well-formed and
+# carries the REAL `kid`, but is signed (or not signed at all) under a
+# different alg than ES256. If a future edit ever widened `algorithms=` or
+# switched to reading `alg` from the header, these would be the tests that
+# catch it — every one must still raise `IapError`.
+
+
+def _forged_claims(email: str = "person@example.com") -> dict:
+    """The same claim shape `_sign` produces, built by hand so it can be fed
+    to `jwt.encode` under non-ES256 algs (which `_sign` doesn't support)."""
+    now = int(time.time())
+    return {
+        "aud": AUDIENCE,
+        "iss": IAP_ISSUER,
+        "iat": now,
+        "exp": now + 3600,
+        "sub": "accounts.google.com:1234567890",
+        "email": email,
+    }
+
+
+def test_verify_alg_none_token_raises_iap_error():
+    """An unsigned `alg: none` token — otherwise a valid-shaped payload
+    carrying the real `kid` — must still be rejected. There is no
+    signature at all here; accepting it would mean skipping verification
+    entirely whenever the header merely claims `none`."""
+    _, jwk = _generate_jwk()
+    verifier = IapVerifier(AUDIENCE, jwks_fetcher=_counting_fetcher({"keys": [jwk]}))
+    token = jwt.encode(
+        _forged_claims(), key=None, algorithm="none", headers={"kid": KID}
+    )
+
+    with pytest.raises(IapError):
+        verifier.verify(token)
+
+
+def test_verify_hs256_substitution_raises_iap_error():
+    """A token HMAC-signed with a plain shared secret (not IAP's ES256
+    key), carrying the real `kid` in its header. Pinning
+    `algorithms=["ES256"]` must reject this outright — the classic
+    RS256-as-HS256 confusion attack, HS256 flavor."""
+    _, jwk = _generate_jwk()
+    verifier = IapVerifier(AUDIENCE, jwks_fetcher=_counting_fetcher({"keys": [jwk]}))
+    token = jwt.encode(
+        _forged_claims(),
+        "a-plain-shared-secret-well-over-32-bytes-long",
+        algorithm="HS256",
+        headers={"kid": KID},
+    )
+
+    with pytest.raises(IapError):
+        verifier.verify(token)
+
+
+def test_verify_rs256_substitution_raises_iap_error():
+    """A token signed with a freshly generated RSA key under RS256,
+    carrying the real `kid`. A different asymmetric alg than the pinned
+    ES256 — must still be rejected rather than verified against whatever
+    alg the header names."""
+    _, jwk = _generate_jwk()
+    verifier = IapVerifier(AUDIENCE, jwks_fetcher=_counting_fetcher({"keys": [jwk]}))
+    rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    token = jwt.encode(
+        _forged_claims(), rsa_key, algorithm="RS256", headers={"kid": KID}
+    )
+
+    with pytest.raises(IapError):
+        verifier.verify(token)
 
 
 # --- Middleware: route-level via TestClient, iap_audience set -----------
