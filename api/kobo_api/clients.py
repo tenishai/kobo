@@ -81,7 +81,12 @@ class CommandRunner:
     """Runs a subprocess command; returns stdout, raises ClientError on rc != 0."""
 
     def run(
-        self, args: list[str], stdin: str | None = None, *, redact_args: bool = False
+        self,
+        args: list[str],
+        stdin: str | None = None,
+        *,
+        redact_args: bool = False,
+        env: dict[str, str] | None = None,
     ) -> str:
         # Final-review Finding 3: this debug line used to log the full argv
         # unconditionally — for `KubectlCLI.apply_secret`'s stage-1 call,
@@ -90,9 +95,25 @@ class CommandRunner:
         # logs. `redact_args=True` (passed by `apply_secret`, both stages)
         # logs a fixed placeholder instead of the real argv; every other
         # caller is unaffected (default False, unchanged behavior).
+        #
+        # `env` (Task 3: GitHub App installation tokens) is the same kind of
+        # secret-bearing input, carried a different way — as a subprocess
+        # env var (GhCLI's GH_TOKEN) rather than argv — so it is NEVER
+        # logged here, at any level, under any flag. When set, the
+        # subprocess gets `{**os.environ, **env}`; when None (the default),
+        # `subprocess.run` gets no `env=` kwarg at all, so behavior for
+        # every existing caller is byte-identical to before this parameter
+        # existed.
         log.debug("exec: %s", "<redacted argv>" if redact_args else " ".join(args))
         try:
-            proc = subprocess.run(args, input=stdin, capture_output=True, text=True, check=False)
+            proc = subprocess.run(
+                args,
+                input=stdin,
+                capture_output=True,
+                text=True,
+                check=False,
+                env={**os.environ, **env} if env else None,
+            )
         except FileNotFoundError as exc:
             raise ClientError(f"{args[0]}: not found on PATH") from exc
         stdout = proc.stdout.strip()
@@ -107,7 +128,12 @@ class CommandRunner:
         return stdout
 
     def run_bytes(
-        self, args: list[str], stdin: bytes | None = None, *, redact_args: bool = False
+        self,
+        args: list[str],
+        stdin: bytes | None = None,
+        *,
+        redact_args: bool = False,
+        env: dict[str, str] | None = None,
     ) -> bytes:
         """Like `run()`, but for commands whose stdout is binary (e.g. `git
         archive`, kobo_api.composer's skill-pinning materialization) —
@@ -119,11 +145,19 @@ class CommandRunner:
         `redact_args` is the same debug-log seam as `run()`'s (see there for
         the rationale) — carried here too so any future binary-stdout caller
         with secret-bearing argv gets the same option, even though no
-        current caller of `run_bytes` needs it.
+        current caller of `run_bytes` needs it. `env` is the same overlay as
+        `run()`'s too, same never-logged rule.
         """
         log.debug("exec (bytes): %s", "<redacted argv>" if redact_args else " ".join(args))
         try:
-            proc = subprocess.run(args, input=stdin, capture_output=True, text=False, check=False)
+            proc = subprocess.run(
+                args,
+                input=stdin,
+                capture_output=True,
+                text=False,
+                check=False,
+                env={**os.environ, **env} if env else None,
+            )
         except FileNotFoundError as exc:
             raise ClientError(f"{args[0]}: not found on PATH") from exc
         if proc.returncode != 0:
@@ -232,46 +266,74 @@ class GitHubClient(Protocol):
 
 
 class GhCLI:
-    """git + gh backed GitHubClient, using the operator's `gh auth` session.
+    """git + gh backed GitHubClient.
+
+    Two modes, chosen by `token_provider`: with none (the default), git/gh
+    run under the operator's own ambient `gh auth` session, unchanged —
+    dev's only mode today. With one set (deployed, Task 3: `Clients.real()`
+    wires an `InstallationTokenProvider` there iff the App config is fully
+    set), every invocation below passes `env={"GH_TOKEN": token_provider()}`
+    — `gh` reads GH_TOKEN directly; `git` picks it up via the credential
+    helper the deployed container bakes in (`gh auth git-credential`,
+    Task 4's job, not this class's). Called fresh per invocation rather than
+    cached here — `InstallationTokenProvider.token()` already caches, so
+    this always gets a live token without this class needing to know
+    anything about its expiry.
 
     Mirrors gojira's GhCLI (gojira/github.py): auth-free local git plumbing
     plus `gh` for anything that needs the GitHub API.
     """
 
-    def __init__(self, runner: CommandRunner | None = None, git: str = "git", gh: str = "gh"):
+    def __init__(
+        self,
+        runner: CommandRunner | None = None,
+        git: str = "git",
+        gh: str = "gh",
+        token_provider: Callable[[], str] | None = None,
+    ):
         self._runner = runner or CommandRunner()
         self._git = git
         self._gh = gh
+        self._token_provider = token_provider
+
+    def _env(self) -> dict[str, str] | None:
+        if self._token_provider is None:
+            return None
+        return {"GH_TOKEN": self._token_provider()}
 
     def repo_exists(self, repo: str) -> bool:
         try:
-            self._runner.run([self._gh, "repo", "view", repo])
+            self._runner.run([self._gh, "repo", "view", repo], env=self._env())
             return True
         except ClientError:
             return False
 
     def create_repo_from_dir(self, repo: str, src: Path) -> None:
-        self._runner.run([self._git, "-C", str(src), "init"])
-        self._runner.run([self._git, "-C", str(src), "branch", "-M", "main"])
-        self._runner.run([self._git, "-C", str(src), "add", "-A"])
+        self._runner.run([self._git, "-C", str(src), "init"], env=self._env())
+        self._runner.run([self._git, "-C", str(src), "branch", "-M", "main"], env=self._env())
+        self._runner.run([self._git, "-C", str(src), "add", "-A"], env=self._env())
         self._runner.run(
             [
                 self._git, "-C", str(src),
                 "-c", f"user.name={COMMIT_AUTHOR_NAME}",
                 "-c", f"user.email={COMMIT_AUTHOR_EMAIL}",
                 "commit", "-m", "Initial commit",
-            ]
+            ],
+            env=self._env(),
         )
         self._runner.run(
-            [self._gh, "repo", "create", repo, "--private", "--source", str(src), "--push"]
+            [self._gh, "repo", "create", repo, "--private", "--source", str(src), "--push"],
+            env=self._env(),
         )
 
     def clone(self, repo: str, dest: Path) -> None:
-        self._runner.run([self._gh, "repo", "clone", repo, str(dest)])
+        self._runner.run([self._gh, "repo", "clone", repo, str(dest)], env=self._env())
 
     def commit_push(self, workdir: Path, message: str) -> bool:
-        self._runner.run([self._git, "-C", str(workdir), "add", "-A"])
-        status = self._runner.run([self._git, "-C", str(workdir), "status", "--porcelain"])
+        self._runner.run([self._git, "-C", str(workdir), "add", "-A"], env=self._env())
+        status = self._runner.run(
+            [self._git, "-C", str(workdir), "status", "--porcelain"], env=self._env()
+        )
         if not status:
             log.info("nothing to commit in %s", workdir)
             return False
@@ -281,28 +343,35 @@ class GhCLI:
                 "-c", f"user.name={COMMIT_AUTHOR_NAME}",
                 "-c", f"user.email={COMMIT_AUTHOR_EMAIL}",
                 "commit", "-m", message,
-            ]
+            ],
+            env=self._env(),
         )
-        self._runner.run([self._git, "-C", str(workdir), "push"])
+        self._runner.run([self._git, "-C", str(workdir), "push"], env=self._env())
         return True
 
     def open_pr(self, workdir: Path, *, repo: str, branch: str, title: str, body: str) -> str:
-        self._runner.run([self._git, "-C", str(workdir), "checkout", "-b", branch])
-        self._runner.run([self._git, "-C", str(workdir), "add", "-A"])
+        self._runner.run(
+            [self._git, "-C", str(workdir), "checkout", "-b", branch], env=self._env()
+        )
+        self._runner.run([self._git, "-C", str(workdir), "add", "-A"], env=self._env())
         self._runner.run(
             [
                 self._git, "-C", str(workdir),
                 "-c", f"user.name={COMMIT_AUTHOR_NAME}",
                 "-c", f"user.email={COMMIT_AUTHOR_EMAIL}",
                 "commit", "-m", title,
-            ]
+            ],
+            env=self._env(),
         )
-        self._runner.run([self._git, "-C", str(workdir), "push", "-u", "origin", branch])
+        self._runner.run(
+            [self._git, "-C", str(workdir), "push", "-u", "origin", branch], env=self._env()
+        )
         return self._runner.run(
             [
                 self._gh, "pr", "create",
                 "--repo", repo, "--title", title, "--body", body, "--head", branch,
-            ]
+            ],
+            env=self._env(),
         )
 
     def find_pr(self, repo: str, *, branch: str) -> str | None:
@@ -311,16 +380,19 @@ class GhCLI:
                 self._gh, "pr", "list",
                 "--repo", repo, "--head", branch, "--state", "open",
                 "--json", "url", "--jq", ".[0].url",
-            ]
+            ],
+            env=self._env(),
         )
         return out if out else None
 
     def local_head(self, workdir: Path) -> str:
-        return self._runner.run([self._git, "-C", str(workdir), "rev-parse", "HEAD"])
+        return self._runner.run(
+            [self._git, "-C", str(workdir), "rev-parse", "HEAD"], env=self._env()
+        )
 
     def head_sha(self, repo: str) -> str:
         return self._runner.run(
-            [self._gh, "api", f"repos/{repo}/commits", "--jq", ".[0].sha"]
+            [self._gh, "api", f"repos/{repo}/commits", "--jq", ".[0].sha"], env=self._env()
         )
 
     def runs_for_commit(self, repo: str, sha: str) -> list[dict]:
@@ -328,7 +400,8 @@ class GhCLI:
             [
                 self._gh, "run", "list", "--repo", repo, "--commit", sha,
                 "--json", "databaseId,status,conclusion",
-            ]
+            ],
+            env=self._env(),
         )
         runs = json.loads(out) if out else []
         return [
@@ -341,7 +414,9 @@ class GhCLI:
         ]
 
     def rerun(self, repo: str, run_id: int) -> None:
-        self._runner.run([self._gh, "run", "rerun", str(run_id), "--repo", repo])
+        self._runner.run(
+            [self._gh, "run", "rerun", str(run_id), "--repo", repo], env=self._env()
+        )
 
 
 # --- Gojira ---------------------------------------------------------------------
@@ -1418,9 +1493,25 @@ class Clients:
     @classmethod
     def real(cls, config: Config) -> Clients:
         """Wire the real, subprocess/network-backed implementations."""
+        # Local import: kobo_api.github_app imports ClientError from this
+        # module, so a module-level import here would be circular. Deferred
+        # to call time, by which point both modules are fully loaded.
+        from kobo_api.github_app import InstallationTokenProvider
+
         runner = CommandRunner()
+        token_provider = None
+        if (
+            config.github_app_id
+            and config.github_app_installation_id
+            and config.github_app_private_key_path
+        ):
+            token_provider = InstallationTokenProvider(
+                config.github_app_id,
+                config.github_app_installation_id,
+                config.github_app_private_key_path,
+            ).token
         return cls(
-            github=GhCLI(runner=runner),
+            github=GhCLI(runner=runner, token_provider=token_provider),
             gojira=HttpxGojiraClient(config.gojira_url, token=config.gojira_token),
             cloud=GcloudClient(config.gcp_project, runner=runner),
             agent=KubectlAgentClient(),

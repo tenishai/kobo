@@ -84,8 +84,22 @@ class Config(BaseModel):
     # default) disables verification entirely, matching today's unauthenticated
     # local dev setup.
     iap_audience: str = ""
+    # GitHub App identity kobo authenticates as when deployed (Task 3),
+    # instead of borrowing the operator's ambient `gh auth` session
+    # (dev's only mode today) — Clients.real() (kobo_api.clients) wires an
+    # InstallationTokenProvider (kobo_api.github_app) into GhCLI iff all
+    # three of these are set; any one left empty/unset means dev mode,
+    # unchanged.
+    github_app_id: str = ""
+    github_app_installation_id: str = ""
+    # Path to the App's PEM-encoded private key. Read lazily on first token
+    # mint, never logged. NEVER put a real key in a tracked file.
+    github_app_private_key_path: Path | None = None
 
-    @field_validator("workdir", "slack_tokens_path", "ui_dist", mode="before")
+    @field_validator(
+        "workdir", "slack_tokens_path", "ui_dist", "github_app_private_key_path",
+        mode="before",
+    )
     @classmethod
     def _expand_user(cls, v):
         """Expand a leading `~` in any of the path-shaped fields.

@@ -64,19 +64,32 @@ from tests.fakes import (
 
 
 class RecordingRunner:
-    """Test double for CommandRunner: records exact argv for every call and
-    replays canned (returncode, stdout, stderr) results in order (or reuses a
-    single configured result for every call). Raises ClientError on rc != 0,
-    exactly like the real CommandRunner, so real client branching logic (e.g.
-    ensure_gsa's describe-then-create) exercises for real against it.
+    """Test double for CommandRunner: records exact argv (and, per Task 3,
+    the exact `env` overlay) for every call, and replays canned (returncode,
+    stdout, stderr) results in order (or reuses a single configured result
+    for every call). Raises ClientError on rc != 0, exactly like the real
+    CommandRunner, so real client branching logic (e.g. ensure_gsa's
+    describe-then-create) exercises for real against it.
     """
 
     def __init__(self, results: list[tuple[int, str, str]] | None = None):
         self._results = list(results) if results is not None else [(0, "", "")]
         self.calls: list[list[str]] = []
+        # Parallel to `calls`: the `env` kwarg each call was made with (None
+        # when the caller passed none) — GhCLI's token_provider wiring is
+        # the only thing exercising this today.
+        self.envs: list[dict[str, str] | None] = []
 
-    def run(self, args: list[str], stdin: str | None = None) -> str:
+    def run(
+        self,
+        args: list[str],
+        stdin: str | None = None,
+        *,
+        redact_args: bool = False,
+        env: dict[str, str] | None = None,
+    ) -> str:
         self.calls.append(list(args))
+        self.envs.append(env)
         if len(self._results) > 1:
             rc, out, err = self._results.pop(0)
         else:
@@ -173,6 +186,99 @@ def test_run_redact_args_false_by_default_still_logs_full_argv(caplog):
     with caplog.at_level(logging.DEBUG, logger="kobo_api.clients"):
         runner.run(["echo", "harmless-marker-value"])
     assert "harmless-marker-value" in caplog.text
+
+
+# --- CommandRunner env overlay (Task 3: GitHub App installation tokens) -----------
+#
+# `run()`/`run_bytes()` gain a keyword `env` — when set, the subprocess gets
+# `{**os.environ, **env}`; when None (every pre-existing caller, unchanged),
+# no `env=` kwarg reaches subprocess.run at all, so behavior is byte-identical
+# to before this parameter existed. Exercised against the REAL CommandRunner
+# (real subprocesses) since the property under test — does the overlay
+# actually reach the child, and does it ever mutate this process's own
+# os.environ or get logged — can only be proven there.
+
+
+def test_run_env_overlay_reaches_the_subprocess():
+    runner = CommandRunner()
+    result = runner.run(
+        [sys.executable, "-c", "import os; print(os.environ.get('KOBO_TEST_VAR', 'MISSING'))"],
+        env={"KOBO_TEST_VAR": "hello"},
+    )
+    assert result == "hello"
+
+
+def test_run_env_overlay_preserves_existing_os_environ_vars():
+    # {**os.environ, **env} — the subprocess still inherits the parent's own
+    # environment (e.g. PATH), it isn't replaced by the overlay.
+    runner = CommandRunner()
+    result = runner.run(
+        [sys.executable, "-c", "import os; print('PATH' in os.environ)"],
+        env={"KOBO_TEST_VAR": "hello"},
+    )
+    assert result == "True"
+
+
+def test_run_env_none_by_default_is_byte_identical_to_before(monkeypatch):
+    # No env= kwarg reaches subprocess.run at all when the caller passes
+    # none — proven by capturing subprocess.run's actual call kwargs.
+    captured = {}
+    real_run = subprocess.run
+
+    def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    runner = CommandRunner()
+    runner.run([sys.executable, "-c", "pass"])
+    assert captured["env"] is None
+
+
+def test_run_env_overlay_does_not_mutate_os_environ():
+    runner = CommandRunner()
+    before = dict(os.environ)
+    runner.run(
+        [sys.executable, "-c", "pass"], env={"KOBO_TEST_ONLY_VAR": "should-not-leak"}
+    )
+    assert os.environ == before
+    assert "KOBO_TEST_ONLY_VAR" not in os.environ
+
+
+def test_run_env_never_appears_in_client_error_message():
+    runner = CommandRunner()
+    with pytest.raises(ClientError) as exc_info:
+        runner.run([sys.executable, "-c", "import sys; sys.exit(1)"], env={"GH_TOKEN": "ghs_SECRETVALUE"})
+    assert "ghs_SECRETVALUE" not in str(exc_info.value)
+
+
+def test_run_env_never_logged_at_debug_level(caplog):
+    runner = CommandRunner()
+    with caplog.at_level(logging.DEBUG, logger="kobo_api.clients"):
+        runner.run([sys.executable, "-c", "pass"], env={"GH_TOKEN": "ghs_SECRETDEBUGVALUE"})
+    assert "ghs_SECRETDEBUGVALUE" not in caplog.text
+
+
+def test_run_bytes_env_overlay_reaches_the_subprocess():
+    runner = CommandRunner()
+    result = runner.run_bytes(
+        [
+            sys.executable, "-c",
+            "import os, sys; sys.stdout.buffer.write(os.environ.get('KOBO_TEST_VAR', 'MISSING').encode())",
+        ],
+        env={"KOBO_TEST_VAR": "bytesval"},
+    )
+    assert result == b"bytesval"
+
+
+def test_run_bytes_env_overlay_does_not_mutate_os_environ():
+    runner = CommandRunner()
+    before = dict(os.environ)
+    runner.run_bytes(
+        [sys.executable, "-c", "pass"], env={"KOBO_TEST_ONLY_VAR": "should-not-leak"}
+    )
+    assert os.environ == before
+    assert "KOBO_TEST_ONLY_VAR" not in os.environ
 
 
 # --- GitHub (GhCLI) ----------------------------------------------------------
@@ -375,6 +481,96 @@ def test_local_head_argv_and_parsing():
     result = client.local_head(Path("/tmp/agent-clio"))
     assert runner.calls == [["git", "-C", "/tmp/agent-clio", "rev-parse", "HEAD"]]
     assert result == "ed17ed17ed17ed17ed17ed17ed17ed17ed17ed17"
+
+
+# --- GitHub (GhCLI.token_provider — Task 3: GitHub App installation tokens) -------
+#
+# Deployed, GhCLI authenticates as an installed App instead of the operator's
+# ambient `gh auth` session: `token_provider`, when set, makes every gh/git
+# invocation pass `env={"GH_TOKEN": token_provider()}`. No `token_provider`
+# (dev, unchanged) means every call's `env` stays None, exactly as before
+# this parameter existed — the pre-existing GhCLI tests above already prove
+# that (they never pass token_provider and never inspect `runner.envs`).
+
+
+def test_ghcli_passes_gh_token_env_when_provider_set():
+    runner = RecordingRunner(results=[(0, "", "")])
+    client = GhCLI(runner=runner, token_provider=lambda: "ghs_faketoken123")
+
+    client.repo_exists("acme/agent-clio")
+
+    assert runner.envs == [{"GH_TOKEN": "ghs_faketoken123"}]
+
+
+def test_ghcli_env_absent_when_no_token_provider():
+    runner = RecordingRunner(results=[(0, "", "")])
+    client = GhCLI(runner=runner)
+
+    client.repo_exists("acme/agent-clio")
+
+    assert runner.envs == [None]
+
+
+def test_ghcli_token_provider_called_fresh_per_invocation():
+    # "Provider called per-invocation (fresh cached token)" — a multi-call
+    # method (create_repo_from_dir: 5 runner.run calls) must call the
+    # provider once per call, not once total and reuse — the provider
+    # itself (InstallationTokenProvider.token, in real use) is what caches;
+    # GhCLI must never short-circuit that by calling it only once.
+    tokens = iter(["tok-1", "tok-2", "tok-3", "tok-4", "tok-5"])
+    calls = []
+
+    def provider():
+        tok = next(tokens)
+        calls.append(tok)
+        return tok
+
+    runner = RecordingRunner()
+    client = GhCLI(runner=runner, token_provider=provider)
+
+    client.create_repo_from_dir("acme/agent-clio", Path("/tmp/agent-clio"))
+
+    assert len(calls) == 5
+    assert runner.envs == [{"GH_TOKEN": tok} for tok in calls]
+
+
+def test_ghcli_failing_command_error_never_contains_the_token():
+    # Security self-review: the installation token must never appear in a
+    # ClientError raised from a failed gh/git call. RecordingRunner's
+    # ClientError message (like the real CommandRunner's) is built purely
+    # from argv + stdout/stderr — env is a separate channel entirely — so
+    # this also guards against a future change accidentally folding env
+    # into that message.
+    runner = RecordingRunner(results=[(1, "", "fatal: repository not found")])
+    client = GhCLI(runner=runner, token_provider=lambda: "ghs_SUPERSECRETTOKEN")
+
+    with pytest.raises(ClientError) as exc_info:
+        client.head_sha("acme/agent-clio")
+
+    assert "ghs_SUPERSECRETTOKEN" not in str(exc_info.value)
+
+
+def test_ghcli_real_runner_failing_command_error_never_contains_the_token(caplog):
+    # Same property, but against the REAL CommandRunner (real subprocess,
+    # real env passing) rather than RecordingRunner — belt and suspenders on
+    # the actual code path a deployed room runs.
+    runner = CommandRunner()
+    client = GhCLI(
+        runner=runner,
+        git=sys.executable,
+        gh=sys.executable,
+        token_provider=lambda: "ghs_REALRUNNERSECRET",
+    )
+    with (
+        caplog.at_level(logging.DEBUG, logger="kobo_api.clients"),
+        pytest.raises(ClientError) as exc_info,
+    ):
+        # "git" here is sys.executable with no script — a real failure
+        # (python prints its own usage/error and exits nonzero) with no
+        # involvement from kobo's own code in choosing what to print.
+        client.local_head(Path("/nonexistent/path/xyz"))
+    assert "ghs_REALRUNNERSECRET" not in str(exc_info.value)
+    assert "ghs_REALRUNNERSECRET" not in caplog.text
 
 
 # --- Cloud (GcloudClient) -----------------------------------------------------
@@ -2511,3 +2707,54 @@ def test_clients_real_wires_storage_client_unconditionally():
     clients = Clients.real(config)
     assert isinstance(clients.storage, HttpxStorageClient)
     assert clients.storage._project == "example-project"
+
+
+# --- Clients.real() GitHub App wiring (Task 3) -------------------------------
+
+
+def test_clients_real_leaves_github_token_provider_none_when_app_config_unset():
+    # dev = operator's own `gh auth` login, unchanged.
+    config = Config(gojira_url="http://gojira.local", gcp_project="example-project")
+    clients = Clients.real(config)
+    assert isinstance(clients.github, GhCLI)
+    assert clients.github._token_provider is None
+
+
+def test_clients_real_leaves_github_token_provider_none_when_only_some_app_config_set(
+    tmp_path,
+):
+    # All three of github_app_id/github_app_installation_id/
+    # github_app_private_key_path must be set together — any subset still
+    # means dev mode.
+    key_path = tmp_path / "app.pem"
+    key_path.write_text("not-a-real-key")
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        github_app_id="123",
+        github_app_installation_id="456",
+        # github_app_private_key_path deliberately left unset.
+    )
+    clients = Clients.real(config)
+    assert clients.github._token_provider is None
+
+
+def test_clients_real_wires_github_token_provider_when_app_config_fully_set(tmp_path):
+    key_path = tmp_path / "app.pem"
+    key_path.write_text("not-a-real-key")
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        github_app_id="123",
+        github_app_installation_id="456",
+        github_app_private_key_path=key_path,
+    )
+    clients = Clients.real(config)
+    assert isinstance(clients.github, GhCLI)
+    assert clients.github._token_provider is not None
+    # It's InstallationTokenProvider.token, bound to an instance configured
+    # from this same config — not just "some callable".
+    bound_provider = clients.github._token_provider.__self__
+    assert bound_provider._app_id == "123"
+    assert bound_provider._installation_id == "456"
+    assert bound_provider._private_key_path == key_path

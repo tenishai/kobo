@@ -100,3 +100,16 @@ ui_dist: null
 # 401 before the request reaches any route. Empty (the default) disables
 # verification entirely — the unauthenticated local dev setup.
 iap_audience: ""
+
+# GitHub App identity kobo authenticates as when deployed, instead of
+# borrowing the operator's ambient `gh auth` session (dev's only mode
+# today, and what you get when any of the three fields below is left
+# empty/unset). All three must be set together to switch GhCLI's git/gh
+# calls over to a minted installation token.
+github_app_id: ""
+github_app_installation_id: ""
+
+# Path to the App's PEM-encoded private key. Read lazily on first token
+# mint; never logged. NEVER put a real private key in a tracked file —
+# point this at a gitignored path (or a mounted Secret, deployed).
+github_app_private_key_path: null
