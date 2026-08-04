@@ -68,8 +68,7 @@ _PUBLISH_PR_BODY = (
     "- `.github/workflows/publish-skills.yml` — validates every skill on "
     "each pull request (no cloud auth needed for that), and publishes to "
     "the catalog bucket on every push to main\n"
-    "- `.github/scripts/publish_skills.py` — the validator/publisher itself\n"
-    "- `README.md` — only if this repo doesn't already have one\n\n"
+    "- `.github/scripts/publish_skills.py` — the validator/publisher itself\n\n"
     "Nothing here touches any existing skill content. Merge whenever it's "
     "convenient — pnyx reads the published bucket, never this repo "
     "directly, so nothing depends on this landing quickly.\n"
@@ -261,7 +260,13 @@ def _step_skills_publish(config: Config, clients: Clients) -> StepResult:
         # pnyx adopts what lands there, never overwrites it.
         return StepResult(STEP_SKILLS_PUBLISH, "skipped", "publish pipeline managed by the org")
 
-    repo = _skills_repo_name(config)
+    # `_skills_repo_name` is a BARE name (org.yaml's own stored convention —
+    # see `_org_yaml_context`) — but every GitHub call bootstrap itself makes
+    # must be owner-qualified: `gh` resolves a bare repo argument under the
+    # invoking user's own account, never the org's, so a bare name here would
+    # silently target the wrong namespace (Finding 1). Step 1's org-config
+    # repo already gets this right; this is the same fix applied here.
+    repo = f"{config.github_org}/{_skills_repo_name(config)}"
     bucket = _skills_bucket_name(config)
 
     if not clients.github.repo_exists(repo):
@@ -309,16 +314,9 @@ def _step_default_personas(config: Config, clients: Clients) -> StepResult:
 
 
 def _step_catalog_ingest(config: Config, clients: Clients) -> StepResult:
-    # Local import: avoids a module-level import cycle (pnyx_api.main itself
-    # imports pnyx_api.org, whose load_org_config this module's main() also
-    # calls — importing configured_catalogs at module scope is harmless
-    # today, but keeping it lazy here means this function's own dependency on
-    # pnyx_api.main can never become a real cycle no matter how main.py
-    # changes later).
-    from pnyx_api.main import configured_catalogs
-
+    base_url = config.api_base_url.rstrip("/")
     try:
-        resp = httpx.post(f"{config.api_base_url}/api/catalogs/refresh", timeout=5.0)
+        resp = httpx.post(f"{base_url}/api/catalogs/refresh", timeout=5.0)
         if 200 <= resp.status_code < 300:
             body = resp.json()
             return StepResult(
@@ -344,7 +342,19 @@ def _step_catalog_ingest(config: Config, clients: Clients) -> StepResult:
 
     engine = make_engine(config.db_url)
     ensure_fts(engine)
-    counts = ingest_indexes(engine, clients.storage, configured_catalogs(config))
+    # Built from the COMPUTED bucket-name helpers (same ones steps 2/3/5 use),
+    # never `pnyx_api.main.configured_catalogs` (Finding 2): that reads the
+    # raw `config.skills_bucket`/`personas_bucket` fields, which are still ""
+    # on a fresh org (the fallback-when-unset defaulting lives in
+    # `_skills_bucket_name`/`_personas_bucket_name`, not on the Config fields
+    # themselves) — so the raw-field mapping would silently be `{}` and this
+    # ingest a no-op reported as "done". Both helpers always return a
+    # non-empty name after defaulting, so this mapping is never empty.
+    catalogs = {
+        "skill": _skills_bucket_name(config),
+        "persona": _personas_bucket_name(config),
+    }
+    counts = ingest_indexes(engine, clients.storage, catalogs)
     return StepResult(
         STEP_CATALOG_INGEST,
         "done",

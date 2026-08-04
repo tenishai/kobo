@@ -29,7 +29,14 @@ from tests.fakes import FakeGitHub, FakeStorage
 GITHUB_ORG = "acme-corp"
 SKILLS_BUCKET = "acme-corp-skills"
 PERSONAS_BUCKET = "acme-corp-personas"
-SKILLS_REPO = "acme-corp-skills"  # bootstrap's computed default has no owner prefix
+# `_skills_repo_name`'s own computed default (and org.yaml's stored value)
+# is bare — no owner prefix — but every GitHub call bootstrap itself makes
+# must be owner-qualified (Finding 1: `gh` resolves a bare repo argument
+# under the invoking user's own account, never the org's). SKILLS_REPO_BARE
+# is what org.yaml stores/what a bare `_skills_repo_name` returns; SKILLS_REPO
+# is what actually reaches every FakeGitHub call in this file.
+SKILLS_REPO_BARE = "acme-corp-skills"
+SKILLS_REPO = f"{GITHUB_ORG}/{SKILLS_REPO_BARE}"
 
 # A bare `{word}` placeholder — the shape a leftover, un-substituted Python
 # `.format()`/f-string token would take. Deliberately does NOT match GitHub
@@ -131,12 +138,39 @@ def test_render_publish_workflow_no_leftover_tokens_and_gha_expression_survives(
 
 @pytest.fixture
 def config(tmp_path):
+    """The PRE-SET-buckets path: skills_bucket/personas_bucket are given
+    explicitly, so every test using this fixture exercises bootstrap with
+    those raw Config fields already non-empty. `fresh_config` below is the
+    other path — a TRUE fresh org with neither field set at all — kept as a
+    separate fixture so Finding 2's regression (the catalog-ingest fallback
+    silently seeing `{}` when the raw fields are still "") stays covered by
+    a test that can't accidentally pass because these fields happen to be set.
+    """
     return Config(
         github_org=GITHUB_ORG,
         workdir=tmp_path / "work",
         db_url=f"sqlite:///{tmp_path / 'pnyx.db'}",
         skills_bucket=SKILLS_BUCKET,
         personas_bucket=PERSONAS_BUCKET,
+    )
+
+
+@pytest.fixture
+def fresh_config(tmp_path):
+    """A TRUE fresh org (Finding 2 regression coverage): `skills_bucket`/
+    `personas_bucket` are left at their Config default ("" — unset), unlike
+    `config` above. Before the fix, `_step_catalog_ingest`'s fallback built
+    its bucket mapping from `pnyx_api.main.configured_catalogs`, which reads
+    those raw fields directly — both "" here, so the mapping was `{}` and
+    the ingest a silent no-op reported as "done". The fix reads the same
+    computed `_skills_bucket_name`/`_personas_bucket_name` helpers steps
+    2/3/5 already use, which always default to a non-empty
+    `f"{github_org}-skills"`/`f"{github_org}-personas"` name.
+    """
+    return Config(
+        github_org=GITHUB_ORG,
+        workdir=tmp_path / "work",
+        db_url=f"sqlite:///{tmp_path / 'pnyx.db'}",
     )
 
 
@@ -173,6 +207,10 @@ def no_real_network(monkeypatch):
 
 
 def test_fresh_org_run_every_step_done(config, github, storage, tmp_path):
+    """Pre-set-buckets path (the `config` fixture already has skills_bucket/
+    personas_bucket set) — `test_fresh_config_no_buckets_set_...` below is
+    the other path, a TRUE fresh org where those fields are still "".
+    """
     clients = _clients(github, storage)
     lines: list[str] = []
     results = run_bootstrap(config, clients, out=lines.append)
@@ -207,9 +245,11 @@ def test_fresh_org_run_every_step_done(config, github, storage, tmp_path):
 
     # skills repo scaffolded with the rendered workflow + vendored script, no
     # leftover placeholders anywhere in the rendered workflow (inspected the
-    # same clone()-replay way as the org-config repo above).
+    # same clone()-replay way as the org-config repo above). Owner-prefixed
+    # (Finding 1) — `create_repo_from_dir` never sees the bare computed name.
     skills_repo, _skills_src = github.created_from_dir[1]
     assert skills_repo == SKILLS_REPO
+    assert f"repo_exists:{SKILLS_REPO}" in github.calls
     skills_repo_clone = tmp_path / "inspect-skills-repo"
     github.clone(skills_repo, skills_repo_clone)
     workflow_text = (skills_repo_clone / ".github" / "workflows" / "publish-skills.yml").read_text()
@@ -233,6 +273,103 @@ def test_fresh_org_run_every_step_done(config, github, storage, tmp_path):
     # Output is column-aligned: every line's step name starts at the same index.
     name_starts = {line.index(result.name) for line, result in zip(lines, results, strict=True)}
     assert len(name_starts) == 1
+
+
+# --- fresh-defaults run: catalog ingest must see the computed bucket names -------
+
+
+def test_fresh_config_no_buckets_set_ingest_still_reports_seeded_personas(
+    fresh_config, github, storage
+):
+    """Finding 2 regression: on a TRUE fresh org (no skills_bucket/
+    personas_bucket configured at all — the `fresh_config` fixture, not the
+    pre-set `config` one), the catalog-ingest step must still see the
+    personas step 5 just seeded in this same run — via the same computed
+    `f"{github_org}-personas"` bucket name step 5 wrote them into — rather
+    than silently ingesting from `{}` and reporting "done" with nothing
+    seeded.
+    """
+    clients = _clients(github, storage)
+
+    results = run_bootstrap(fresh_config, clients, out=lambda _line: None)
+
+    personas_result = next(r for r in results if r.name == bootstrap.STEP_DEFAULT_PERSONAS)
+    assert personas_result.status == "done"
+
+    ingest_result = results[-1]
+    assert ingest_result.name == bootstrap.STEP_CATALOG_INGEST
+    assert ingest_result.status == "done"
+    assert "direct" in ingest_result.detail
+    # Both packaged default personas, seeded moments earlier in this same
+    # run — NOT "personas=0", which is what the raw-field
+    # (`configured_catalogs`) mapping would have silently produced.
+    assert "personas=2" in ingest_result.detail
+
+
+# --- explicit skills_repo: still owner-qualified for every GitHub call ------------
+
+
+def test_skills_publish_owner_qualifies_an_explicit_skills_repo_name(config, storage):
+    """Finding 1 regression, the explicit-name variant: `skills_repo:
+    "skills"` is a BARE name — org.yaml's own stored convention (see
+    `test_render_org_yaml_uses_explicit_names_verbatim_when_set`) — but a
+    bare name handed to `gh` resolves under the invoking user's own account,
+    never the org's. Every GitHub call this step makes must therefore target
+    `f"{github_org}/skills"`, not the bare `"skills"`.
+    """
+    named_config = config.model_copy(update={"skills_repo": "skills"})
+    full_repo = f"{GITHUB_ORG}/skills"
+    github = FakeGitHub(track_pushed_content=True)
+    clients = _clients(github, storage)
+
+    results = run_bootstrap(named_config, clients, out=lambda _line: None)
+
+    publish_result = next(r for r in results if r.name == bootstrap.STEP_SKILLS_PUBLISH)
+    assert publish_result.status == "done"
+
+    # repo_exists and create_repo_from_dir (the fresh-repo path) both saw the
+    # full, owner-qualified name — never the bare "skills".
+    assert f"repo_exists:{full_repo}" in github.calls
+    assert "repo_exists:skills" not in github.calls
+    # created_from_dir[0] is the org-config repo (step 1) — the skills repo
+    # (this step, step 4) is created second.
+    created_repo, _src = github.created_from_dir[1]
+    assert created_repo == full_repo
+
+
+def test_skills_publish_owner_qualifies_an_explicit_skills_repo_name_pr_path(
+    config, storage, tmp_path
+):
+    """Same as above, but the PR path (repo already exists, no workflow
+    yet) — covers `clone` and `open_pr` (the other two of the four GitHub
+    calls Finding 1 named) with the same explicit bare `skills_repo` value.
+    """
+    named_config = config.model_copy(update={"skills_repo": "skills"})
+    full_repo = f"{GITHUB_ORG}/skills"
+    github = FakeGitHub(
+        existing_repos={f"{GITHUB_ORG}/pnyx-config", full_repo},
+        track_pushed_content=True,
+        pr_url="https://github.com/acme-corp/skills/pull/1",
+    )
+    clients = _clients(github, storage)
+
+    results = run_bootstrap(named_config, clients, out=lambda _line: None)
+
+    publish_result = next(r for r in results if r.name == bootstrap.STEP_SKILLS_PUBLISH)
+    assert publish_result.status == "done"
+
+    assert f"clone:{full_repo}" in github.calls
+    assert "clone:skills" not in github.calls
+    assert len(github.open_pr_calls) == 1
+    call = github.open_pr_calls[0]
+    assert call["repo"] == full_repo
+
+    # And the content that was actually PR'd carries the rendered workflow —
+    # inspected via clone() the same way the other PR-path test does.
+    pr_clone = tmp_path / "inspect-pr-named-repo"
+    github.clone(full_repo, pr_clone)
+    workflow_text = (pr_clone / ".github" / "workflows" / "publish-skills.yml").read_text()
+    _assert_no_leftover_placeholders(workflow_text)
 
 
 # --- idempotence: second run -----------------------------------------------------
