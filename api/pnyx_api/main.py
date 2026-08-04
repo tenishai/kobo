@@ -378,9 +378,8 @@ def _bucket_check(check_id: str, label: str, clients: Clients | None, bucket: st
     never even called — same as `clients`/`clients.storage` being absent
     entirely (an unwired room, or the local dev harness that never wires
     storage at all): both mean there's nothing to check yet, not a broken
-    connection. `ok: True`'s detail is the bucket name itself — an
-    operator-adjacent value, but decision #4 accepts it since this whole
-    route IS the wiring surface.
+    connection. `ok: True`'s detail is always "connected" (no bucket name
+    leaked to the UI).
     """
     if not bucket or clients is None or clients.storage is None:
         return {"id": check_id, "label": label, "ok": False, "detail": "not configured"}
@@ -393,7 +392,7 @@ def _bucket_check(check_id: str, label: str, clients: Clients | None, bucket: st
             "ok": False,
             "detail": f"can't reach {label.lower()}",
         }
-    return {"id": check_id, "label": label, "ok": True, "detail": bucket}
+    return {"id": check_id, "label": label, "ok": True, "detail": "connected"}
 
 
 def _skills_index_check(clients: Clients | None, bucket: str) -> dict:
@@ -423,7 +422,7 @@ def _personas_seeded_check(clients: Clients | None, bucket: str) -> dict:
     except StorageNotFound:
         return {"id": check_id, "label": label, "ok": False, "detail": "no personas seeded yet"}
     except ClientError:
-        return {"id": check_id, "label": label, "ok": False, "detail": "can't reach personas storage"}
+        return {"id": check_id, "label": label, "ok": False, "detail": "can't read the personas list"}
 
     # A malformed index.json (bad JSON, or JSON that isn't the expected
     # {"entries": [...]} shape) must never 500 this route (Task 8
@@ -432,7 +431,7 @@ def _personas_seeded_check(clients: Clients | None, bucket: str) -> dict:
     try:
         entries = json.loads(raw).get("entries", [])
     except (ValueError, AttributeError, TypeError):
-        return {"id": check_id, "label": label, "ok": False, "detail": "personas index is unreadable"}
+        return {"id": check_id, "label": label, "ok": False, "detail": "the personas list is unreadable"}
 
     count = len(entries)
     return {"id": check_id, "label": label, "ok": count > 0, "detail": f"{count} personas"}
@@ -533,21 +532,36 @@ def create_app(
         clients: Clients | None = app.state.clients
         org: OrgState = app.state.org
 
+        # Six checks, each individually try/excepted so a single unreachable
+        # backend never takes the whole route down — the route itself always
+        # answers 200, never a 500. Each check callable returns (ok, detail);
+        # ids/labels/order stay exactly as-is.
+        checks_to_run = [
+            ("org-config", "Organization settings", lambda: _org_config_check(org)),
+            ("skills-bucket", "Skills catalog storage", lambda: _bucket_check("skills-bucket", "Skills catalog storage", clients, cfg.skills_bucket)),
+            ("personas-bucket", "Personas storage", lambda: _bucket_check("personas-bucket", "Personas storage", clients, cfg.personas_bucket)),
+            ("skills-index", "Skills index", lambda: _skills_index_check(clients, cfg.skills_bucket)),
+            ("personas-seeded", "Personas", lambda: _personas_seeded_check(clients, cfg.personas_bucket)),
+            ("deploy-platform", "Deploy platform", lambda: _deploy_platform_check(clients, cfg.gojira_cluster)),
+        ]
+
+        checks = []
+        for check_id, label, check_callable in checks_to_run:
+            try:
+                checks.append(check_callable())
+            except Exception:
+                log.warning("org status check %s failed", check_id, exc_info=True)
+                checks.append({
+                    "id": check_id,
+                    "label": label,
+                    "ok": False,
+                    "detail": "something went wrong running this check",
+                })
+
         return {
             "org": cfg.github_org if org.wired else None,
             "wired": org.wired,
-            "checks": [
-                _org_config_check(org),
-                _bucket_check(
-                    "skills-bucket", "Skills catalog storage", clients, cfg.skills_bucket
-                ),
-                _bucket_check(
-                    "personas-bucket", "Personas storage", clients, cfg.personas_bucket
-                ),
-                _skills_index_check(clients, cfg.skills_bucket),
-                _personas_seeded_check(clients, cfg.personas_bucket),
-                _deploy_platform_check(clients, cfg.gojira_cluster),
-            ],
+            "checks": checks,
         }
 
     # --- Catalog search (Task 3): FTS5 over the bucket-published indexes ---

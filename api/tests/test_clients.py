@@ -705,6 +705,20 @@ def test_gojira_ping_never_raises_on_transport_error():
     assert client.ping() is False
 
 
+def test_gojira_ping_never_raises_on_arbitrary_exception():
+    # Any exception during the request (not just httpx.HTTPError) must come
+    # back as a plain False — ping()'s whole contract is that it never
+    # raises, regardless of exception origin (header construction, URL
+    # joining, anything).
+    client = HttpxGojiraClient("http://gojira.local")
+    # Monkeypatch _headers to raise RuntimeError
+    def raising_headers():
+        raise RuntimeError("something broke in header construction")
+    client._headers = raising_headers
+
+    assert client.ping() is False
+
+
 # --- Agent (a2a chat over kubectl port-forward) --------------------------------
 
 

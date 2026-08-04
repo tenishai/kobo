@@ -98,13 +98,13 @@ def test_all_green_against_seeded_fakes(wired_config, fake_storage, tmp_path, wi
             "id": "skills-bucket",
             "label": "Skills catalog storage",
             "ok": True,
-            "detail": wired_config.skills_bucket,
+            "detail": "connected",
         },
         {
             "id": "personas-bucket",
             "label": "Personas storage",
             "ok": True,
-            "detail": wired_config.personas_bucket,
+            "detail": "connected",
         },
         {
             "id": "skills-index",
@@ -405,3 +405,43 @@ def test_route_always_200_even_fully_unwired(tmp_path):
     assert body["org"] is None
     assert body["wired"] is False
     assert all(c["ok"] is False for c in body["checks"])
+
+
+def test_check_raising_arbitrary_exception_is_isolated(wired_config, fake_storage, tmp_path, wired_org):
+    """When any check function raises an arbitrary exception (not a
+    ClientError the check expected to handle), the blanket isolation wraps it
+    — response is still 200, exactly that check ok=False with the backstop
+    detail, and all other checks are unaffected."""
+    storage = FakeStorage(
+        buckets={
+            wired_config.skills_bucket: {"index.json": (b'{"entries": [{"id": "a"}]}', {"updated": "x"})},
+            wired_config.personas_bucket: {"index.json": (b'{"entries": [{"id": "a"}]}', {})},
+        }
+    )
+    # Create the app and client normally
+    client_obj = _client(
+        wired_config, _clients(storage=storage), tmp_path, org=wired_org
+    )
+
+    # Monkeypatch FakeStorage.object_metadata to raise RuntimeError instead
+    # of returning normally — simulates a check-level catastrophe.
+    def raising_object_metadata(bucket: str, key: str):
+        raise RuntimeError("storage layer exploded")
+    storage.object_metadata = raising_object_metadata
+
+    response = client_obj.get("/api/org/status")
+
+    assert response.status_code == 200
+    body = response.json()
+
+    # skills-index check calls object_metadata and should now be backstopped
+    skills_index_check = _check(body, "skills-index")
+    assert skills_index_check["ok"] is False
+    assert skills_index_check["detail"] == "something went wrong running this check"
+
+    # All other checks should still be ok, unaffected by the exception
+    assert _check(body, "org-config")["ok"] is True
+    assert _check(body, "skills-bucket")["ok"] is True
+    assert _check(body, "personas-bucket")["ok"] is True
+    assert _check(body, "personas-seeded")["ok"] is True
+    assert _check(body, "deploy-platform")["ok"] is True

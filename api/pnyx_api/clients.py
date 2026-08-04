@@ -405,13 +405,14 @@ class HttpxGojiraClient:
 
     def ping(self) -> bool:
         # This is a visibility probe, not an action a caller reacts to — a
-        # connection refused/timeout/DNS failure (httpx.HTTPError, the same
-        # transport-error family `_post_task` below wraps) must read exactly
-        # like a non-200 reply (both just "not reachable right now"), never
-        # an exception the org-status route has to remember to catch.
+        # connection refused/timeout/DNS failure, or any other exception
+        # during header construction/URL building/etc must read exactly like
+        # a non-200 reply (both just "not reachable right now"), never an
+        # exception the org-status route has to remember to catch.
         try:
             resp = self._client.get(f"{self._base_url}/api/v1/apps", headers=self._headers())
-        except httpx.HTTPError:
+        except Exception:
+            log.debug("gojira ping failed", exc_info=True)
             return False
         return resp.status_code == 200
 
