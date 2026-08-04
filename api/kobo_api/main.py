@@ -45,6 +45,7 @@ from kobo_api.search import CATALOG_TTL_S, get_entry, ingest_indexes
 from kobo_api.search import search as catalog_search
 from kobo_api.search import teams as catalog_teams_query
 from kobo_api.slack_setup import render_manifest, wire_slack
+from kobo_api.static_ui import mount_ui
 
 log = logging.getLogger(__name__)
 
@@ -1322,6 +1323,11 @@ def create_app(
 
         png = base64.b64decode(agent.avatar_png)
         return Response(content=png, media_type="image/png")
+
+    # --- Built UI (Task 1): last, so every /api/* route above always wins ---
+
+    if config.ui_dist:
+        mount_ui(app, config.ui_dist)
 
     return app
 

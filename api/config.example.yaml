@@ -87,3 +87,9 @@ db_url: sqlite:///kobo.db
 # 503 with "Slack is not configured" rather than failing to start. NEVER put
 # real token values in this (or any tracked) file.
 slack_tokens_path: null
+
+# Path to a built UI dist/ directory (e.g. ui/dist from `npm run build`) to
+# serve alongside the API on the same origin, no CORS. Unset (the default)
+# means dev: the API runs alone and the UI runs separately via its own dev
+# server, proxying /api.
+ui_dist: null

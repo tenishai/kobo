@@ -72,8 +72,13 @@ class Config(BaseModel):
     # Path to the gitignored Slack config-token pair (P2c); None means Slack
     # connect is unconfigured — Clients.real() gates on this to leave slack=None.
     slack_tokens_path: Path | None = None
+    # Path to a built UI `dist/` directory (e.g. `ui/dist` from `npm run
+    # build`) to serve alongside the API, same origin, no CORS (Task 1).
+    # None (the default) means dev: no UI is mounted, matching today's setup
+    # of a separate dev server proxying /api — the API alone.
+    ui_dist: Path | None = None
 
-    @field_validator("workdir", "slack_tokens_path", mode="before")
+    @field_validator("workdir", "slack_tokens_path", "ui_dist", mode="before")
     @classmethod
     def _expand_user(cls, v):
         """Expand a leading `~` in any of the path-shaped fields.
