@@ -395,7 +395,7 @@ class _FakeBucket:
 
 class _FakeBucketClient:
     """Mirrors `google.cloud.storage.Client`'s surface `sync()` calls:
-    `.get_bucket(name) -> Bucket` — exactly what `_real_client()`'s real
+    `.bucket(name) -> Bucket` — exactly what `_real_client()`'s real
     `storage.Client()` would need to support for this script to run
     unmodified against it.
     """
@@ -403,7 +403,7 @@ class _FakeBucketClient:
     def __init__(self):
         self._buckets: dict[str, _FakeBucket] = {}
 
-    def get_bucket(self, name: str) -> _FakeBucket:
+    def bucket(self, name: str) -> _FakeBucket:
         return self._buckets.setdefault(name, _FakeBucket(name))
 
 
@@ -435,7 +435,7 @@ def test_sync_uploads_with_metadata_and_returns_counts(ps, tmp_path, monkeypatch
     result = ps.sync(client, "skills-bucket", [skill], "deadbeef")
 
     assert result == {"uploaded": 1, "deleted": 0}
-    bucket = client.get_bucket("skills-bucket")
+    bucket = client.bucket("skills-bucket")
     obj = bucket.objects["acme/code-review/SKILL.md"]
     assert obj["metadata"] == {"source-sha": "deadbeef"}
     assert obj["content_type"] == "text/markdown"
@@ -458,7 +458,7 @@ def test_sync_uploads_with_metadata_and_returns_counts(ps, tmp_path, monkeypatch
 def test_sync_prunes_stale_but_spares_index_json(ps, tmp_path, monkeypatch):
     monkeypatch.setattr(ps, "_utcnow_iso", lambda: "2026-08-03T00:00:00Z")
     client = _FakeBucketClient()
-    bucket = client.get_bucket("skills-bucket")
+    bucket = client.bucket("skills-bucket")
     # Pre-seed leftover state from a previous publish: a skill file that no
     # longer exists in this run's discovered set, plus an existing index.json
     # (which must be spared by the prune even though it's never in the
@@ -489,7 +489,7 @@ def test_sync_multiple_files_per_skill_all_uploaded(ps, tmp_path, monkeypatch):
     result = ps.sync(client, "skills-bucket", [skill], "sha1")
 
     assert result["uploaded"] == 3
-    bucket = client.get_bucket("skills-bucket")
+    bucket = client.bucket("skills-bucket")
     assert set(bucket.objects) == {
         "acme/code-review/SKILL.md",
         "acme/code-review/reference.md",
@@ -544,7 +544,7 @@ def test_main_publish_path_uses_real_client_seam_and_github_sha(ps, tmp_path, mo
     rc = ps.main(["--bucket", "skills-bucket"])
 
     assert rc == 0
-    bucket = fake_client.get_bucket("skills-bucket")
+    bucket = fake_client.bucket("skills-bucket")
     assert "shared/word-games/SKILL.md" in bucket.objects
     index = json.loads(bucket.objects["index.json"]["data"])
     assert index["entries"][0]["sha"] == "sha123"

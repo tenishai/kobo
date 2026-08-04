@@ -290,11 +290,13 @@ def sync(client, bucket: str, skills: list[Skill], sha: str) -> dict:
     left over from a prior publish, and rewrite `index.json`.
 
     `client` is duck-typed to the one corner of the `google-cloud-storage`
-    surface this needs: `client.get_bucket(name) -> bucket`; `bucket.blob(key)
-    -> blob` with a `.metadata` setter plus `.upload_from_string(data,
+    surface this needs: `client.bucket(name) -> bucket` (a handle, no API call);
+    `bucket.blob(key) -> blob` with a `.metadata` setter plus `.upload_from_string(data,
     content_type=...)`; `bucket.list_blobs(prefix=...)` yielding blobs with
-    `.name`/`.delete()`. Every uploaded object (skill files and `index.json`
-    alike) carries custom metadata `{"source-sha": sha}`.
+    `.name`/`.delete()`. This script requires only object-level permissions
+    (e.g. roles/storage.objectAdmin); no bucket-metadata operations. Every
+    uploaded object (skill files and `index.json` alike) carries custom
+    metadata `{"source-sha": sha}`.
 
     The prune is computed from a prefix-wide listing (every object currently
     in the bucket) minus this run's newly-uploaded key set — never a
@@ -304,7 +306,7 @@ def sync(client, bucket: str, skills: list[Skill], sha: str) -> dict:
     since it's uploaded separately, last): a bucket with versioning enabled
     is the safety net for its history, not this prune.
     """
-    bucket_obj = client.get_bucket(bucket)
+    bucket_obj = client.bucket(bucket)
 
     new_keys: set[str] = set()
     uploaded = 0
