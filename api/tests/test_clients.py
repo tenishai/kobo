@@ -279,6 +279,44 @@ def test_open_pr_argv(tmp_path):
     assert pr_url == "https://github.com/acme-corp/skills/pull/7"
 
 
+# --- GitHub (GhCLI.find_pr, live-incident fix: open-PR idempotence) ---------------
+
+
+def test_find_pr_argv_and_url_when_found():
+    runner = RecordingRunner(
+        results=[(0, "https://github.com/acme-corp/skills/pull/7", "")]
+    )
+    client = GhCLI(runner=runner)
+    result = client.find_pr("acme-corp/skills", branch="pnyx-skills-publish")
+
+    assert runner.calls == [
+        [
+            "gh", "pr", "list",
+            "--repo", "acme-corp/skills", "--head", "pnyx-skills-publish",
+            "--state", "open", "--json", "url", "--jq", ".[0].url",
+        ]
+    ]
+    assert result == "https://github.com/acme-corp/skills/pull/7"
+
+
+def test_find_pr_returns_none_when_no_open_pr():
+    # gh's --jq '.[0].url' against an empty PR list prints nothing —
+    # RecordingRunner's canned "" mirrors that (CommandRunner.run's real
+    # strip() already collapses a trailing-newline-only stdout to "" too).
+    runner = RecordingRunner(results=[(0, "", "")])
+    client = GhCLI(runner=runner)
+    result = client.find_pr("acme-corp/skills", branch="pnyx-skills-publish")
+
+    assert runner.calls == [
+        [
+            "gh", "pr", "list",
+            "--repo", "acme-corp/skills", "--head", "pnyx-skills-publish",
+            "--state", "open", "--json", "url", "--jq", ".[0].url",
+        ]
+    ]
+    assert result is None
+
+
 def test_head_sha_argv_and_parsing():
     # No trailing newline here: the real CommandRunner already strips stdout
     # before GhCLI ever sees it (RecordingRunner intentionally doesn't, to

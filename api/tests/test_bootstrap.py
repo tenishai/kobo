@@ -430,6 +430,46 @@ def test_existing_skills_repo_without_workflow_opens_pr(config, storage, tmp_pat
     assert github.created_from_dir == []
 
 
+# --- live-incident fix: PR still open on a re-run reports skipped ----------------
+
+
+def test_second_run_with_pr_still_open_reports_skipped_and_does_not_reopen_pr(config, storage):
+    """The exact live-incident scenario (Phase A idempotence re-run): run 1
+    opens the skills-publish-workflow PR from the fixed `PUBLISH_PR_BRANCH`.
+    Run 2 fires before that PR has merged — the skills repo's default branch
+    still has no workflow file (this fake's generic `clone()` template never
+    gains a `.github/workflows/` tree on its own; `track_pushed_content` is
+    deliberately left off here so the default-branch clone stays workflow-
+    absent across both runs, unlike `open_pr`'s snapshot-based tests above).
+
+    Before the fix, run 2 fell through to `open_pr`, which re-pushed the
+    same branch name and failed non-fast-forward against the remote branch
+    run 1 already pushed. The fix: `find_pr` sees run 1's still-open PR and
+    run 2 reports `skipped` with its URL instead of retrying `open_pr`.
+    """
+    github = FakeGitHub(
+        existing_repos={f"{GITHUB_ORG}/pnyx-config", SKILLS_REPO},
+        pr_url="https://github.com/acme-corp/acme-corp-skills/pull/9",
+    )
+    clients = _clients(github, storage)
+
+    first_results = run_bootstrap(config, clients, out=lambda _line: None)
+    first_publish = next(r for r in first_results if r.name == bootstrap.STEP_SKILLS_PUBLISH)
+    assert first_publish.status == "done"
+    assert first_publish.detail == "https://github.com/acme-corp/acme-corp-skills/pull/9"
+    assert len(github.open_pr_calls) == 1
+
+    second_results = run_bootstrap(config, clients, out=lambda _line: None)
+    second_publish = next(r for r in second_results if r.name == bootstrap.STEP_SKILLS_PUBLISH)
+
+    assert second_publish.status == "skipped"
+    assert second_publish.detail == "PR already open: https://github.com/acme-corp/acme-corp-skills/pull/9"
+    # open_pr was not retried on run 2 — the non-fast-forward push the
+    # incident hit never had a chance to happen.
+    assert len(github.open_pr_calls) == 1
+    assert f"find_pr:{SKILLS_REPO}:{bootstrap.PUBLISH_PR_BRANCH}" in github.calls
+
+
 # --- skills_publish_external: skip without touching GitHub -----------------------
 
 

@@ -173,6 +173,20 @@ class GitHubClient(Protocol):
         """
         ...
 
+    def find_pr(self, repo: str, *, branch: str) -> str | None:
+        """URL of the open PR from `branch` in `repo`, or None if there isn't
+        one.
+
+        The idempotence check `open_pr` callers need before retrying a PR
+        path a second time (bootstrap's skills-publish-workflow install,
+        Task 7 live-incident fix): run 1 opens a PR from a fixed branch name
+        and leaves it open; run 2's `open_pr` would otherwise `git push`
+        that same branch a second time and fail non-fast-forward against the
+        remote branch run 1 already pushed. Checking this first lets the
+        caller report "skipped" with the existing PR's URL instead.
+        """
+        ...
+
     def local_head(self, workdir: Path) -> str:
         """The just-pushed local clone's head commit sha (`git rev-parse HEAD`
         against `workdir`), not a fresh API read.
@@ -290,6 +304,16 @@ class GhCLI:
                 "--repo", repo, "--title", title, "--body", body, "--head", branch,
             ]
         )
+
+    def find_pr(self, repo: str, *, branch: str) -> str | None:
+        out = self._runner.run(
+            [
+                self._gh, "pr", "list",
+                "--repo", repo, "--head", branch, "--state", "open",
+                "--json", "url", "--jq", ".[0].url",
+            ]
+        )
+        return out if out else None
 
     def local_head(self, workdir: Path) -> str:
         return self._runner.run([self._git, "-C", str(workdir), "rev-parse", "HEAD"])

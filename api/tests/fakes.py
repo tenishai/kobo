@@ -283,6 +283,17 @@ class FakeGitHub:
     right one there instead. `pr_url`, `open_pr`'s canned return value
     (Task 7), and `open_pr_calls`, the exact-argument recording for it, are
     documented on `open_pr` itself below.
+
+    `open_prs` (Task 7 live-incident fix), when given, seeds `find_pr`'s
+    open-PR map: keys are `f"{repo}#{branch}"`, values the PR URL `find_pr`
+    should report as already open for that repo/branch pair. Defaults to
+    `None` (no PR open anywhere), so every pre-existing test — which
+    predates `find_pr` entirely — is unaffected. `open_pr` itself also
+    writes into this same map (keyed off the `repo`/`branch` it was called
+    with, valued with the fake's own `pr_url`) the moment it's called, so a
+    single fake run through bootstrap twice reproduces the incident shape
+    exactly: run 1's `open_pr` registers the PR, and run 2's `find_pr` sees
+    it there without either being configured explicitly.
     """
 
     def __init__(
@@ -304,6 +315,7 @@ class FakeGitHub:
         clone_error: str | None = None,
         track_pushed_content: bool = False,
         pr_url: str = "https://github.com/acme-corp/example-org-skills/pull/1",
+        open_prs: dict[str, str] | None = None,
     ):
         self.repos: set[str] = set(existing_repos) if existing_repos else set()
         self.created_from_dir: list[tuple[str, Path]] = []
@@ -314,6 +326,7 @@ class FakeGitHub:
         self._pushed_content: dict[str, dict[str, bytes]] = {}
         self._pr_url = pr_url
         self.open_pr_calls: list[dict] = []
+        self._open_prs: dict[str, str] = dict(open_prs) if open_prs else {}
         self._commit_push_results = list(commit_push_results) if commit_push_results else [True]
         self._commit_push_index = 0
         self._knowledge_files = dict(knowledge_files) if knowledge_files else None
@@ -444,13 +457,24 @@ class FakeGitHub:
         test inspect what was pushed via the same public `clone()` seam
         rather than reaching into a caller's own (possibly by-then-deleted)
         `workdir`.
+
+        Also registers `pr_url` into the `find_pr` map under this exact
+        `repo`/`branch` pair (see `open_prs` on the class docstring) — a
+        second call against the same fake (run 2 of bootstrap, say) sees the
+        PR `find_pr` reports as already open, without a test needing to
+        configure `open_prs` by hand.
         """
         self.calls.append(f"open_pr:{repo}:{branch}")
         self.open_pr_calls.append(
             {"workdir": workdir, "repo": repo, "branch": branch, "title": title, "body": body}
         )
         self._snapshot_pushed_content(repo, workdir)
+        self._open_prs[f"{repo}#{branch}"] = self._pr_url
         return self._pr_url
+
+    def find_pr(self, repo: str, *, branch: str) -> str | None:
+        self.calls.append(f"find_pr:{repo}:{branch}")
+        return self._open_prs.get(f"{repo}#{branch}")
 
     def local_head(self, workdir: Path) -> str:
         self.calls.append(f"local_head:{workdir}")

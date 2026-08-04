@@ -292,6 +292,21 @@ def _step_skills_publish(config: Config, clients: Clients) -> StepResult:
                 STEP_SKILLS_PUBLISH, "skipped", f"{repo} already has a publish workflow"
             )
 
+        # Live-incident fix (idempotence re-run): a prior run may have
+        # already opened the publish-workflow PR from this same fixed branch
+        # (PUBLISH_PR_BRANCH) and it's still open — the workflow hasn't
+        # reached the default branch yet, so workflow_path.exists() above
+        # still says "absent". Retrying open_pr() in that state re-pushes
+        # the same branch name and fails non-fast-forward against the
+        # remote branch the earlier run already pushed. Checking for that
+        # open PR first and reporting "skipped" is the idempotent response;
+        # only a genuinely fresh branch falls through to open_pr() below.
+        existing_pr_url = clients.github.find_pr(repo, branch=PUBLISH_PR_BRANCH)
+        if existing_pr_url is not None:
+            return StepResult(
+                STEP_SKILLS_PUBLISH, "skipped", f"PR already open: {existing_pr_url}"
+            )
+
         workflow_path.parent.mkdir(parents=True, exist_ok=True)
         workflow_path.write_text(render_publish_workflow(config, bucket))
         scripts_path = workdir / ".github" / "scripts" / "publish_skills.py"
