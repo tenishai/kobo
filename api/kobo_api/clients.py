@@ -1464,6 +1464,33 @@ class HttpxStorageClient:
 # --- Wiring -----------------------------------------------------------------------
 
 
+def installation_token_provider(config: Config) -> Callable[[], str] | None:
+    """The GitHub App installation-token provider for `config`, or None when
+    the App is not fully configured (dev = operator's gh login).
+
+    Extracted out of `Clients.real` so `build_default_app` (kobo_api.main)
+    can wire the same App-authed provider into the separate GhCLI it builds
+    for the boot-time org-config clone — a PRIVATE org-config repo needs App
+    auth there too, not just in the Clients built afterward.
+    """
+    # Local import: kobo_api.github_app imports ClientError from this
+    # module, so a module-level import here would be circular. Deferred to
+    # call time, by which point both modules are fully loaded.
+    from kobo_api.github_app import InstallationTokenProvider
+
+    if (
+        config.github_app_id
+        and config.github_app_installation_id
+        and config.github_app_private_key_path
+    ):
+        return InstallationTokenProvider(
+            config.github_app_id,
+            config.github_app_installation_id,
+            config.github_app_private_key_path,
+        ).token
+    return None
+
+
 @dataclass
 class Clients:
     github: GitHubClient
@@ -1493,23 +1520,8 @@ class Clients:
     @classmethod
     def real(cls, config: Config) -> Clients:
         """Wire the real, subprocess/network-backed implementations."""
-        # Local import: kobo_api.github_app imports ClientError from this
-        # module, so a module-level import here would be circular. Deferred
-        # to call time, by which point both modules are fully loaded.
-        from kobo_api.github_app import InstallationTokenProvider
-
         runner = CommandRunner()
-        token_provider = None
-        if (
-            config.github_app_id
-            and config.github_app_installation_id
-            and config.github_app_private_key_path
-        ):
-            token_provider = InstallationTokenProvider(
-                config.github_app_id,
-                config.github_app_installation_id,
-                config.github_app_private_key_path,
-            ).token
+        token_provider = installation_token_provider(config)
         return cls(
             github=GhCLI(runner=runner, token_provider=token_provider),
             gojira=HttpxGojiraClient(config.gojira_url, token=config.gojira_token),

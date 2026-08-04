@@ -1356,16 +1356,27 @@ def build_default_app() -> FastAPI:
     # implementations that most tests (which only need `create_app` and a
     # fake/None clients object) never touch — keeping this import inside the
     # function keeps importing `kobo_api.main` itself cheap for them.
-    from kobo_api.clients import Clients, CommandRunner, GhCLI
+    from kobo_api.clients import (
+        Clients,
+        CommandRunner,
+        GhCLI,
+        installation_token_provider,
+    )
 
     local_config = Config.load(None)
     # One GhCLI, built once, just for the org-config clone below — Clients.
-    # real() (below) builds its own separate GhCLI for everything else. Boot
-    # never crashes on an org problem: load_org_config catches every clone/
-    # parse/validation failure itself and falls back to `local_config`
-    # unchanged, paired with an unwired OrgState an unwired room can render
-    # honestly (Tasks 3/8 consume `app.state.org`).
-    github = GhCLI(runner=CommandRunner())
+    # real() (below) builds its own separate GhCLI for everything else. It's
+    # App-authed via the same `installation_token_provider` helper Clients.
+    # real() uses, whenever the App is fully configured, so a PRIVATE
+    # org-config repo clones at boot instead of falling back to the
+    # operator's (absent, in a deployed room) `gh auth` session. Boot never
+    # crashes on an org problem: load_org_config catches every clone/parse/
+    # validation failure itself and falls back to `local_config` unchanged,
+    # paired with an unwired OrgState an unwired room can render honestly
+    # (Tasks 3/8 consume `app.state.org`).
+    github = GhCLI(
+        runner=CommandRunner(), token_provider=installation_token_provider(local_config)
+    )
     config, org = load_org_config(local_config, github)
 
     config.workdir.mkdir(parents=True, exist_ok=True)

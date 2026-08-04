@@ -49,6 +49,7 @@ from kobo_api.clients import (
     _post_task,
     _wait_for_forwarded_port,
     _write_slack_tokens,
+    installation_token_provider,
 )
 from kobo_api.config import Config
 from tests.fakes import (
@@ -2758,3 +2759,79 @@ def test_clients_real_wires_github_token_provider_when_app_config_fully_set(tmp_
     assert bound_provider._app_id == "123"
     assert bound_provider._installation_id == "456"
     assert bound_provider._private_key_path == key_path
+
+
+# --- installation_token_provider() (extracted from Clients.real, reused by --------
+# --- main.build_default_app for the boot-time org-config clone) -------------------
+
+
+def test_installation_token_provider_none_when_app_config_unset():
+    config = Config(gojira_url="http://gojira.local", gcp_project="example-project")
+    assert installation_token_provider(config) is None
+
+
+def test_installation_token_provider_none_when_only_some_app_config_set(tmp_path):
+    # All three of github_app_id/github_app_installation_id/
+    # github_app_private_key_path must be set together — any subset still
+    # means dev mode (None).
+    key_path = tmp_path / "app.pem"
+    key_path.write_text("not-a-real-key")
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        github_app_id="123",
+        github_app_installation_id="456",
+        # github_app_private_key_path deliberately left unset.
+    )
+    assert installation_token_provider(config) is None
+
+    config_missing_id = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        github_app_installation_id="456",
+        github_app_private_key_path=key_path,
+    )
+    assert installation_token_provider(config_missing_id) is None
+
+
+def test_installation_token_provider_wires_callable_when_app_config_fully_set(tmp_path):
+    key_path = tmp_path / "app.pem"
+    key_path.write_text("not-a-real-key")
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        github_app_id="123",
+        github_app_installation_id="456",
+        github_app_private_key_path=key_path,
+    )
+    provider = installation_token_provider(config)
+    assert provider is not None
+    assert callable(provider)
+    # Bound to an InstallationTokenProvider instance configured from this
+    # same config — not just "some callable" — without minting a real token
+    # (construction reads the key lazily, only on first `.token()` call).
+    bound_provider = provider.__self__
+    assert bound_provider._app_id == "123"
+    assert bound_provider._installation_id == "456"
+    assert bound_provider._private_key_path == key_path
+
+
+def test_installation_token_provider_wired_into_boot_org_clone_gh_cli():
+    # Guards the actual bug fix: main.build_default_app must build the
+    # org-config-clone GhCLI with this same helper's provider (not None),
+    # so a PRIVATE org-config repo clones at boot when the App is
+    # configured, instead of only being App-authed later inside
+    # Clients.real(). This exercises the same wiring build_default_app does,
+    # without booting the whole app (db/gojira/etc).
+    from kobo_api.clients import GhCLI
+
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        github_app_id="123",
+        github_app_installation_id="456",
+        github_app_private_key_path=Path("/nonexistent/app.pem"),
+    )
+    github = GhCLI(runner=CommandRunner(), token_provider=installation_token_provider(config))
+    assert github._token_provider is not None
+    assert github._token_provider.__self__._app_id == "123"
