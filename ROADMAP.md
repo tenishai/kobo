@@ -1,39 +1,46 @@
 # Pnyx Roadmap
 
 The phased plan at a glance. Details live in the
-[design document](docs/superpowers/specs/2026-08-01-cortex-agent-assembly-poc-design.md).
+[design document](docs/superpowers/specs/2026-08-01-cortex-agent-assembly-poc-design.md) and the
+[Phase A design](docs/superpowers/specs/2026-08-03-phase-a-org-catalogs-design.md).
 
-## P0 — Foundations *(current)*
+## P0 — Foundations *(shipped)*
 
-The chain works before the room exists: a hand-written bundle repo deploys end to end with no
-manual step after one API call.
+A hand-written bundle repo deploys end to end with no manual step after one API call:
+daedalus runtime image + convergent knowledge seeder, gojira `agent` class with JSON
+connect/status API, exemplar bundle + E2E runbook against the dev cluster.
 
-- daedalus runtime base image + convergent knowledge seeder (branch: `feat/runtime-image`)
-- gojira: `agent` class readiness probe → generated Service; JSON connect/status API; opt-in
-  setup-PR auto-merge (branch: `feat/agent-deploys`)
-- Hand-written exemplar bundle repo + E2E runbook against the dev cluster
+## P1 — The assembly room *(shipped)*
 
-## P1 — The assembly room
+Create → working agent, entirely from the UI: composer + provisioner + GitHub/gojira
+integrations; dashboard, single-modal create, plain-English progress checklist,
+detail page; per-agent techne stores on PVCs.
 
-Create → working agent, entirely from the UI.
+## P2 — Talk, learn & connect *(shipped)*
 
-- pnyx-api: composer (schema-validated bundles, skill materialization, diff-before-write),
-  provisioner (persisted step pipeline incl. model access via group membership), GitHub/gojira
-  integrations
-- pnyx-ui: dashboard, single-modal create (name · persona · skills · model), plain-English
-  progress checklist with adaptive polling, detail page with per-component panels
-- Per-agent techne stores on PVCs
+Chat pane over a2a · knowledge editing with convergent reseed · per-agent Slack app
+from a scoped manifest + one "Finish Slack setup" card · avatar generation.
 
-## P2 — Talk, learn & connect
+## Phase A — Org catalogs & client bootstrap *(shipped)*
 
-- Chat/training pane against the deployed agent (a2a message/send + SSE trace)
-- Knowledge editing that reseeds convergently on redeploy
-- Slack integration: per-agent app from a scoped manifest template + one "Finish Slack setup" card
-- Avatar generation in the persona panel
-- Archive/Library extraction from per-agent memory stores
+One bootstrap command wires a client org: org-config repo, per-catalog buckets
+(skills CI-published from the org's repo, personas room-written), FTS5 search behind
+the create modal, inline persona builder, creating team recorded, read-only org
+status with honest unwired states. Externally-managed publish pipelines are adopted,
+never overwritten.
+
+## Next
+
+- **Tools** — team-authored enforcement code the runtime always executes around the
+  reply; team-scoped loading, UI upload or repo-folder import through one validator
+  (own spec; trust model locked).
+- **Phase B — Client hosting & identity** — the room under a client's domain behind
+  IAP; verified-identity header contract; client-onboarding mechanics (GitHub App,
+  keyless DNS delegation).
+- **P3 — Colleagues** — a2a links between agents (cabal/limenal), allow-list
+  checkboxes with agent-card badges, dual enforcement.
 
 ## Later
 
-- cabal graduation (multi-agent links) · limenal tool gateway · ladon-backed secrets
-- Reaction-based mutation approvals over Slack
-- Observability wiring (argus) · UI auth & multi-tenancy · multi-environment promote flows
+- Reaction-based mutation approvals over Slack · Archive/Library extraction
+- Observability wiring (argus) · multi-environment promote flows · ladon-backed secrets

@@ -293,3 +293,60 @@ TEXT;`; the DB copy is a display cache that can briefly lead or lag the repo rec
 (push-then-DB write ordering; heals on the next generate) — the repo file remains the
 record. The verbatim avatar prompt template is pinned byte-for-byte by
 `test_avatar_prompt_exact_template` in `api/tests/test_avatars.py`.
+
+## Phase A results (2026-08-04) — first client onboarded, agent assembled from org catalogs
+
+Exit criterion met end to end: one bootstrap command wired the first client org, the
+org's skills published to its catalog bucket through CI, and a brand-new agent was
+assembled from the browser using a form-built persona and a bucket-searched,
+team-filtered skill — reaching READY 7/7 with first words.
+
+**Bootstrap run 1 (fresh org):** every step done — org-config repo created, both
+catalog buckets created (versioned), publish-workflow PR opened against the org's
+skills repo, 2 default personas seeded, first ingest `personas=2` via the computed-
+bucket fallback (the room was still unwired, so the refresh endpoint 503'd — exactly
+the fresh-org path the review cycle had hardened). **Run 2 (idempotence, live):**
+steps 1–5 skipped (step 4: "PR already open"), ingest done, exit 0.
+
+**Publish:** the PR's own check run passed with no cloud auth (the PR-job split
+proving itself); after merge, the publish run authenticated via WIF as the dedicated
+publisher SA and uploaded under object-only permissions. `POST /api/catalogs/refresh`
+→ `{"skills": 2, "personas": 2}`; both skills searchable with team + source-sha.
+`GET /api/org/status`: all six checks green.
+
+**Create flow (browser, screenshots `phase-a-0*.png`):** unwired honesty check first
+(both sections showed the exact "Catalogs aren't set up yet" copy while no org was
+wired). Then: agent `sage`, typed team `platform`, persona built inline
+("Trail Guide", purpose containing literal `{curly}` braces), skill `survey-field`
+picked through the `shared` team filter. Verified in the pushed repo before READY:
+`bundle/persona.md` rendered with `{name}` → sage and `{curly}` verbatim (the brace
+hazard is closed for real), `bundle/skills/survey-field/SKILL.md` byte-identical to
+the bucket object, whose live custom metadata carries `source-sha` exactly as the
+stager reads it. Team is recorded on the agent row (API detail; no UI surface yet —
+ledgered).
+
+**Live incidents, all root-caused (6):**
+1. Bootstrap re-run collided with its own open PR → product fix: the step now finds
+   the open PR and skips with its URL.
+2. First publish 403 → product fix: the publisher script uses a bucket handle, never
+   bucket-metadata reads — object-only permissions suffice.
+3. Agent run 1 failed at onboarding: the shared kubeconfig pointed at the cluster's
+   private endpoint again — and the recurrence mystery is solved: the deploy
+   platform's own get-credentials call was rewriting it every provisioning run.
+   Fixed at the source (the platform now requests the DNS endpoint).
+4. Product Retry only polled a terminally-failed platform app → product fix: retry
+   reprovisions a failed app before waiting.
+5. The reprovision kick raced its own status read (stale `failed` in the pre-start
+   window) → product fix: bounded leave-failed grace before the wait.
+6. Group-add needed the Cloud Identity API enabled on the dev project once the room
+   ran under an explicit quota project (previously riding ambient operator config) —
+   enabled durably.
+
+Attempt 5: READY 7/7. First words (verbatim opening): "Hello! Welcome to the assembly
+room! I was assembled right here in the pnyx assembly room, then deployed through
+what we call the platform chain…" — the persona, knowledge seed, and model chain all
+speaking at once.
+
+Suites at close: API 666, UI 193, publish-template 33 (within API count), platform
+287. The room, the platform, and the publish pipeline each gained fixes their fakes
+could not have found — which is what the live milestone is for.

@@ -10,7 +10,7 @@ Compose an AI agent — persona, skills, tools, mutation gates, seed memories �
 [![Bundles: daedalus](https://img.shields.io/badge/bundles-daedalus-6f42c1.svg)](https://github.com/tenishai/daedalus)
 [![UI: Svelte 5 · API: FastAPI](https://img.shields.io/badge/UI-Svelte%205%20%C2%B7%20FastAPI-ff3e00.svg)](docs/superpowers/specs/2026-08-01-cortex-agent-assembly-poc-design.md)
 
-[Design](docs/superpowers/specs/2026-08-01-cortex-agent-assembly-poc-design.md) &nbsp;·&nbsp; [Roadmap](ROADMAP.md) &nbsp;·&nbsp; [P0 Plan](docs/superpowers/plans/2026-08-01-p0-foundations.md)
+[Design](docs/superpowers/specs/2026-08-01-cortex-agent-assembly-poc-design.md) &nbsp;·&nbsp; [Roadmap](ROADMAP.md) &nbsp;·&nbsp; [Phase A Design](docs/superpowers/specs/2026-08-03-phase-a-org-catalogs-design.md)
 
 </div>
 
