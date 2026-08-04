@@ -1,7 +1,7 @@
-// Client-side mirror of the API's name rule (pnyx_api's `NAME_RE`:
+// Client-side mirror of the API's name rule (kobo_api's `NAME_RE`:
 // `^[a-z][a-z0-9-]{1,23}$` plus `MAX_NAME_LENGTH = 24`, so 2-24 chars,
 // lowercase letter/digit/hyphen, must start with a letter, must not end
-// with a hyphen — pnyx_api.catalog.validate_name enforces the exact same
+// with a hyphen — kobo_api.catalog.validate_name enforces the exact same
 // four checks, in the exact same order). The server is still authoritative
 // (`checkAvailability`'s round trip is the source of truth) — this only
 // exists so the Create modal can reject an obviously-bad name on every
@@ -30,7 +30,7 @@ export function validateName(name: string): string | null {
   return null;
 }
 
-// Shared slug rule for a team or a persona tag (Task 10): pnyx_api's own
+// Shared slug rule for a team or a persona tag (Task 10): kobo_api's own
 // pattern for both — `main.py`'s `CreateAgentRequest.team` /
 // `CreatePersonaRequest.team` are `Field(pattern=r"^[a-z][a-z0-9-]{0,23}$")`,
 // and `personas.py`'s `_TAG_RE` is that exact same pattern — one slug rule,

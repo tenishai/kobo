@@ -4,8 +4,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from pnyx_api.composer import BundleSpec, ComposeError, compose, validate_agent_yaml
-from pnyx_api.steps import StagedSkill
+from kobo_api.composer import BundleSpec, ComposeError, compose, validate_agent_yaml
+from kobo_api.steps import StagedSkill
 
 _RUNTIME_IMAGE = "registry.example/agents/daedalus-runtime:latest"
 
@@ -23,7 +23,7 @@ def _make_spec(skills: list[StagedSkill] | None = None) -> BundleSpec:
 
 
 def _make_skill(tmp_path: Path, skill_id: str = "echo") -> StagedSkill:
-    """A skill already "staged" on local disk — the shape `pnyx_api.steps.
+    """A skill already "staged" on local disk — the shape `kobo_api.steps.
     _stage_skills` hands `compose()` after downloading it from the skills
     bucket. Composer tests build this directly rather than going through
     staging, since staging itself is `_stage_skills`'s own concern
@@ -127,7 +127,7 @@ def test_compose_agent_card_lists_picked_skills(tmp_path):
     card = json.loads((dest / "bundle" / "agent-card.json").read_text())
     assert card == {
         "name": "sam",
-        "description": "Assembled by pnyx.",
+        "description": "Assembled by kobo.",
         "version": "0.1.0",
         "capabilities": [],
         "skills": [{"id": "echo"}],
@@ -162,7 +162,7 @@ def test_compose_knowledge_gotchas_content(tmp_path):
 
     assert (dest / "bundle" / "knowledge" / "gotchas.md").read_text() == (
         "## Deployment chain\n"
-        "You were assembled in the pnyx assembly room and deployed through the\n"
+        "You were assembled in the kobo assembly room and deployed through the\n"
         "platform chain: repo, onboarding, build, deploy, first contact. If someone\n"
         "asks how you got here, tell them that.\n"
     )
@@ -227,7 +227,7 @@ def test_compose_staged_skill_symlink_member_raises_compose_error(tmp_path):
     followed/copied — a downloaded bucket skill can never legitimately
     contain one (GCS objects are plain files), but the same defense the old
     git-archive extraction path enforced is kept here verbatim in spirit:
-    author the skill without symlinks instead of pnyx silently dereferencing
+    author the skill without symlinks instead of kobo silently dereferencing
     one."""
     skill = _make_skill(tmp_path)
     (skill.dir / "sneaky-link").symlink_to(skill.dir / "SKILL.md")

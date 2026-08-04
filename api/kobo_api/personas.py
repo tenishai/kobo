@@ -4,11 +4,11 @@ the bootstrap uses to populate a fresh bucket with the packaged defaults
 (`templates/personas/*.md`).
 
 Both write paths (`create_persona`, `seed_default_personas`) are storage
-only — neither ever calls `pnyx_api.search.ingest_indexes`. That's a
+only — neither ever calls `kobo_api.search.ingest_indexes`. That's a
 deliberate split, not an oversight: `ingest_indexes` does a FULL rebuild of
 every catalog kind it's handed, so a function here that ingested just the
 personas catalog would silently wipe every skill entry out of search. The
-route (`pnyx_api.main`) does the ingest itself, right after a successful
+route (`kobo_api.main`) does the ingest itself, right after a successful
 create, with the FULL kind->bucket mapping — see `create_persona`'s
 docstring for the detail. `seed_default_personas` is the same story: the
 bootstrap's own ingest step follows it.
@@ -23,16 +23,16 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from pnyx_api.catalog import _parse_persona_file
-from pnyx_api.clients import StorageClient, StorageNotFound
-from pnyx_api.search import CatalogEntry
+from kobo_api.catalog import _parse_persona_file
+from kobo_api.clients import StorageClient, StorageNotFound
+from kobo_api.search import CatalogEntry
 
 TONES = ("warm", "direct", "playful", "formal")
 
 # A persona id: lowercase, starts with a letter, up to 40 chars of
 # letters/digits/hyphens after that (trailing hyphens are fine — see
 # persona_id's docstring for why that can legitimately happen after
-# truncation; contrast with pnyx_api.catalog.NAME_RE, which bans them).
+# truncation; contrast with kobo_api.catalog.NAME_RE, which bans them).
 PERSONA_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
 
 _TAG_RE = re.compile(r"^[a-z][a-z0-9-]{0,23}$")
@@ -119,7 +119,7 @@ def render_persona(fields: PersonaFields) -> str:
     the "Identity" line must survive verbatim in the output (it's the
     agent-name placeholder substituted at provision time — the same
     convention the packaged templates already use, see
-    `pnyx_api.catalog.PersonaInfo.body`'s docstring) — a `.format(name=...)`
+    `kobo_api.catalog.PersonaInfo.body`'s docstring) — a `.format(name=...)`
     call would eat it. And `purpose`/`boundaries` are free-form user text
     that may itself contain `{`/`}` — running the assembled template back
     through `.format()` would raise (or silently misinterpret) on those.
@@ -192,7 +192,7 @@ def create_persona(
     `search.ingest_indexes` does a full catalog rebuild from every
     configured bucket at once (Task 3) — calling it here with just the
     personas bucket would silently wipe every skill entry out of the FTS
-    table. The route (`pnyx_api.main`) re-ingests with the FULL
+    table. The route (`kobo_api.main`) re-ingests with the FULL
     kind->bucket mapping right after this returns successfully (Task 4
     controller decision #1 — the change that closes that hazard; see
     test_api_personas.py's regression test proving a pre-existing skill
@@ -287,7 +287,7 @@ def seed_default_personas(storage: StorageClient, *, bucket: str, prefix: str = 
                 bucket,
                 key,
                 path.read_bytes(),
-                metadata={"team": "shared", "creator": "pnyx"},
+                metadata={"team": "shared", "creator": "kobo"},
                 content_type="text/markdown",
             )
             seeded += 1

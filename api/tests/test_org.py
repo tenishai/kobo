@@ -1,15 +1,15 @@
-"""Tests for pnyx_api.org: clone pnyx-config, read org.yaml, merge over the
+"""Tests for kobo_api.org: clone kobo-config, read org.yaml, merge over the
 locally-loaded Config. Every case exercises real org.yaml content flowing
 through FakeGitHub.clone into an actual merged Config — never mocks
 asserting mocks.
 """
 
-from pnyx_api.config import Config, ModelChoice
-from pnyx_api.main import create_app
-from pnyx_api.org import ORG_KEYS, OrgState, load_org_config
+from kobo_api.config import Config, ModelChoice
+from kobo_api.main import create_app
+from kobo_api.org import ORG_KEYS, OrgState, load_org_config
 from tests.fakes import FakeGitHub
 
-ORG_REPO = "acme-corp/pnyx-config"
+ORG_REPO = "acme-corp/kobo-config"
 
 
 def test_org_repo_none_is_unwired_without_cloning():

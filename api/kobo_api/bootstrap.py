@@ -1,4 +1,4 @@
-"""Bootstrap CLI (Phase A Task 7): `python -m pnyx_api.bootstrap` wires a
+"""Bootstrap CLI (Phase A Task 7): `python -m kobo_api.bootstrap` wires a
 fresh client org in one idempotent command — the org-config repo, the two
 catalog buckets, the skills repo's publish workflow, the packaged default
 personas, and a first catalog ingest.
@@ -29,14 +29,14 @@ from typing import TYPE_CHECKING
 import httpx
 import yaml
 
-from pnyx_api.config import Config
-from pnyx_api.db import make_engine
-from pnyx_api.org import ORG_KEYS, load_org_config
-from pnyx_api.personas import seed_default_personas
-from pnyx_api.search import ensure_fts, ingest_indexes
+from kobo_api.config import Config
+from kobo_api.db import make_engine
+from kobo_api.org import ORG_KEYS, load_org_config
+from kobo_api.personas import seed_default_personas
+from kobo_api.search import ensure_fts, ingest_indexes
 
 if TYPE_CHECKING:
-    from pnyx_api.clients import Clients
+    from kobo_api.clients import Clients
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ _PUBLISH_SCRIPT_PATH = _SKILLS_PUBLISH_DIR / "publish_skills.py"
 # The branch bootstrap opens its skills-repo publish-workflow PR from — fixed
 # (not per-run unique) so a second bootstrap run against a repo whose PR is
 # still open reuses the same branch name rather than piling up duplicates.
-PUBLISH_PR_BRANCH = "pnyx-skills-publish"
+PUBLISH_PR_BRANCH = "kobo-skills-publish"
 
 STEP_ORG_CONFIG_REPO = "org-config repo"
 STEP_SKILLS_BUCKET = "skills bucket"
@@ -62,7 +62,7 @@ STEP_CATALOG_INGEST = "catalog ingest"
 # non-fresh-repo path) — what it does, plus the merge instruction the brief
 # calls for. Never built from any config value, so it's a fixed constant.
 _PUBLISH_PR_BODY = (
-    "pnyx's bootstrap noticed this repo has no skills-publish workflow yet, "
+    "kobo's bootstrap noticed this repo has no skills-publish workflow yet, "
     "and opened this PR to add one.\n\n"
     "This PR adds:\n"
     "- `.github/workflows/publish-skills.yml` — validates every skill on "
@@ -70,7 +70,7 @@ _PUBLISH_PR_BODY = (
     "the catalog bucket on every push to main\n"
     "- `.github/scripts/publish_skills.py` — the validator/publisher itself\n\n"
     "Nothing here touches any existing skill content. Merge whenever it's "
-    "convenient — pnyx reads the published bucket, never this repo "
+    "convenient — kobo reads the published bucket, never this repo "
     "directly, so nothing depends on this landing quickly.\n"
 )
 
@@ -85,7 +85,7 @@ class StepResult:
 def _skills_repo_name(config: Config) -> str:
     if config.skills_repo and "/" in config.skills_repo:
         raise ValueError(
-            "skills_repo must be a bare repo name (no '/'); pnyx adds the owner"
+            "skills_repo must be a bare repo name (no '/'); kobo adds the owner"
         )
     return config.skills_repo or f"{config.github_org}-skills"
 
@@ -103,33 +103,33 @@ def _personas_bucket_name(config: Config) -> str:
 # in the template's own content is at risk of being misread as a format spec) -
 
 
-# One token per pnyx_api.org.ORG_KEYS entry — kept in exact 1:1 correspondence
+# One token per kobo_api.org.ORG_KEYS entry — kept in exact 1:1 correspondence
 # with that frozenset (the module-level assert right below fails fast on
 # import if they ever drift; a missing/extra key is also independently
 # caught by any test that renders org.yaml at all — a missing token leaves a
-# literal `__PNYX_*__` behind, an extra one raises KeyError immediately).
+# literal `__KOBO_*__` behind, an extra one raises KeyError immediately).
 
 _ORG_YAML_TOKENS = {
-    "github_org": "__PNYX_GITHUB_ORG__",
-    "skills_repo": "__PNYX_SKILLS_REPO__",
-    "skills_bucket": "__PNYX_SKILLS_BUCKET__",
-    "personas_bucket": "__PNYX_PERSONAS_BUCKET__",
-    "gojira_cluster": "__PNYX_GOJIRA_CLUSTER__",
-    "runtime_image": "__PNYX_RUNTIME_IMAGE__",
-    "gcp_project": "__PNYX_GCP_PROJECT__",
-    "vertex_project": "__PNYX_VERTEX_PROJECT__",
-    "vertex_location": "__PNYX_VERTEX_LOCATION__",
-    "model_group": "__PNYX_MODEL_GROUP__",
-    "avatar_model": "__PNYX_AVATAR_MODEL__",
-    "avatar_location": "__PNYX_AVATAR_LOCATION__",
-    "models": "__PNYX_MODELS__",
-    "skills_publish_wif_provider": "__PNYX_SKILLS_PUBLISH_WIF_PROVIDER__",
-    "skills_publish_service_account": "__PNYX_SKILLS_PUBLISH_SERVICE_ACCOUNT__",
-    "skills_publish_external": "__PNYX_SKILLS_PUBLISH_EXTERNAL__",
+    "github_org": "__KOBO_GITHUB_ORG__",
+    "skills_repo": "__KOBO_SKILLS_REPO__",
+    "skills_bucket": "__KOBO_SKILLS_BUCKET__",
+    "personas_bucket": "__KOBO_PERSONAS_BUCKET__",
+    "gojira_cluster": "__KOBO_GOJIRA_CLUSTER__",
+    "runtime_image": "__KOBO_RUNTIME_IMAGE__",
+    "gcp_project": "__KOBO_GCP_PROJECT__",
+    "vertex_project": "__KOBO_VERTEX_PROJECT__",
+    "vertex_location": "__KOBO_VERTEX_LOCATION__",
+    "model_group": "__KOBO_MODEL_GROUP__",
+    "avatar_model": "__KOBO_AVATAR_MODEL__",
+    "avatar_location": "__KOBO_AVATAR_LOCATION__",
+    "models": "__KOBO_MODELS__",
+    "skills_publish_wif_provider": "__KOBO_SKILLS_PUBLISH_WIF_PROVIDER__",
+    "skills_publish_service_account": "__KOBO_SKILLS_PUBLISH_SERVICE_ACCOUNT__",
+    "skills_publish_external": "__KOBO_SKILLS_PUBLISH_EXTERNAL__",
 }
 
 assert set(_ORG_YAML_TOKENS) == ORG_KEYS, (
-    "bootstrap's org.yaml token map has drifted from pnyx_api.org.ORG_KEYS"
+    "bootstrap's org.yaml token map has drifted from kobo_api.org.ORG_KEYS"
 )
 
 
@@ -176,7 +176,7 @@ def _yaml_scalar(value: object) -> str:
 
 
 def render_org_yaml(config: Config) -> str:
-    """`org_config/org.yaml.tmpl` with every `__PNYX_*__` token literally
+    """`org_config/org.yaml.tmpl` with every `__KOBO_*__` token literally
     replaced by `config`'s current value for that key (see
     `_org_yaml_context`) — deterministic, golden-tested.
     """
@@ -196,15 +196,15 @@ def _skills_repo_readme() -> str:
 
 
 def render_publish_workflow(config: Config, bucket: str) -> str:
-    """Task 6's `publish-skills.yml` template with its three `__PNYX_*__`
+    """Task 6's `publish-skills.yml` template with its three `__KOBO_*__`
     tokens literally replaced — same non-.format()/non-Jinja convention as
     `render_org_yaml` (and as that template's own docstring demands, so its
     `${{ }}` GitHub Actions expressions pass through untouched).
     """
     text = (_SKILLS_PUBLISH_DIR / "publish-skills.yml").read_text()
-    text = text.replace("__PNYX_BUCKET__", bucket)
-    text = text.replace("__PNYX_WIF_PROVIDER__", config.skills_publish_wif_provider)
-    text = text.replace("__PNYX_SERVICE_ACCOUNT__", config.skills_publish_service_account)
+    text = text.replace("__KOBO_BUCKET__", bucket)
+    text = text.replace("__KOBO_WIF_PROVIDER__", config.skills_publish_wif_provider)
+    text = text.replace("__KOBO_SERVICE_ACCOUNT__", config.skills_publish_service_account)
     return text
 
 
@@ -212,7 +212,7 @@ def render_publish_workflow(config: Config, bucket: str) -> str:
 
 
 def _step_org_config_repo(config: Config, clients: Clients) -> StepResult:
-    repo = f"{config.github_org}/pnyx-config"
+    repo = f"{config.github_org}/kobo-config"
     if clients.github.repo_exists(repo):
         return StepResult(STEP_ORG_CONFIG_REPO, "skipped", f"{repo} already exists")
 
@@ -261,7 +261,7 @@ def _scaffold_skills_repo_dir(dest: Path, config: Config, bucket: str) -> None:
 def _step_skills_publish(config: Config, clients: Clients) -> StepResult:
     if config.skills_publish_external:
         # A real client already runs its own publisher into its bucket;
-        # pnyx adopts what lands there, never overwrites it.
+        # kobo adopts what lands there, never overwrites it.
         return StepResult(STEP_SKILLS_PUBLISH, "skipped", "publish pipeline managed by the org")
 
     # `_skills_repo_name` is a BARE name (org.yaml's own stored convention —
@@ -317,7 +317,7 @@ def _step_skills_publish(config: Config, clients: Clients) -> StepResult:
             workdir,
             repo=repo,
             branch=PUBLISH_PR_BRANCH,
-            title="pnyx: publish skills to the catalog bucket",
+            title="kobo: publish skills to the catalog bucket",
             body=_PUBLISH_PR_BODY,
         )
 
@@ -350,7 +350,7 @@ def _step_catalog_ingest(config: Config, clients: Clients) -> StepResult:
     except Exception as exc:  # noqa: BLE001
         # Broad by design (Task 7 controller decision #2: "ANY exception or
         # non-2xx -> fall back") — a connect error, a timeout, a malformed
-        # JSON body, anything: this pnyx-api may simply not be up yet on a
+        # JSON body, anything: this kobo-api may simply not be up yet on a
         # fresh org's very first bootstrap run, and the exact failure mode
         # is irrelevant to what happens next (the direct-ingest fallback
         # below), only worth logging.
@@ -362,7 +362,7 @@ def _step_catalog_ingest(config: Config, clients: Clients) -> StepResult:
     engine = make_engine(config.db_url)
     ensure_fts(engine)
     # Built from the COMPUTED bucket-name helpers (same ones steps 2/3/5 use),
-    # never `pnyx_api.main.configured_catalogs` (Finding 2): that reads the
+    # never `kobo_api.main.configured_catalogs` (Finding 2): that reads the
     # raw `config.skills_bucket`/`personas_bucket` fields, which are still ""
     # on a fresh org (the fallback-when-unset defaulting lives in
     # `_skills_bucket_name`/`_personas_bucket_name`, not on the Config fields
@@ -441,7 +441,7 @@ def _exit_code(results: list[StepResult]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """Load config + merge org config exactly like `build_default_app`
-    (`pnyx_api.main`), then run every bootstrap step against the real
+    (`kobo_api.main`), then run every bootstrap step against the real
     clients.
 
     The org repo may not exist yet on a first run — `load_org_config`
@@ -454,8 +454,8 @@ def main(argv: list[str] | None = None) -> int:
     # Local import: keeps the httpx/subprocess-backed real clients out of
     # this module's own import graph for callers that only need
     # `run_bootstrap`/`StepResult` against fakes (same rationale as
-    # `pnyx_api.main.build_default_app`'s identical local import).
-    from pnyx_api.clients import Clients, CommandRunner, GhCLI
+    # `kobo_api.main.build_default_app`'s identical local import).
+    from kobo_api.clients import Clients, CommandRunner, GhCLI
 
     local_config = Config.load(None)
     github = GhCLI(runner=CommandRunner())

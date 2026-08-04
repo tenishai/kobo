@@ -1,4 +1,4 @@
-"""Tests for pnyx_api.bootstrap: the idempotent `python -m pnyx_api.bootstrap`
+"""Tests for kobo_api.bootstrap: the idempotent `python -m kobo_api.bootstrap`
 CLI that wires a fresh client org — org-config repo, catalog buckets, the
 skills repo's publish workflow, default personas, first catalog ingest.
 Exercised entirely against fakes (FakeGitHub/FakeStorage) — no real network,
@@ -13,17 +13,17 @@ import httpx
 import pytest
 import yaml
 
-from pnyx_api import bootstrap
-from pnyx_api.bootstrap import (
+from kobo_api import bootstrap
+from kobo_api.bootstrap import (
     StepResult,
     _exit_code,
     render_org_yaml,
     render_publish_workflow,
     run_bootstrap,
 )
-from pnyx_api.clients import Clients
-from pnyx_api.config import Config
-from pnyx_api.org import ORG_KEYS
+from kobo_api.clients import Clients
+from kobo_api.config import Config
+from kobo_api.org import ORG_KEYS
 from tests.fakes import FakeGitHub, FakeStorage
 
 GITHUB_ORG = "acme-corp"
@@ -47,7 +47,7 @@ _BARE_PLACEHOLDER_RE = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
 
 
 def _assert_no_leftover_placeholders(text: str) -> None:
-    assert "__PNYX_" not in text
+    assert "__KOBO_" not in text
     assert not _BARE_PLACEHOLDER_RE.search(text)
 
 
@@ -149,7 +149,7 @@ def config(tmp_path):
     return Config(
         github_org=GITHUB_ORG,
         workdir=tmp_path / "work",
-        db_url=f"sqlite:///{tmp_path / 'pnyx.db'}",
+        db_url=f"sqlite:///{tmp_path / 'kobo.db'}",
         skills_bucket=SKILLS_BUCKET,
         personas_bucket=PERSONAS_BUCKET,
     )
@@ -160,7 +160,7 @@ def fresh_config(tmp_path):
     """A TRUE fresh org (Finding 2 regression coverage): `skills_bucket`/
     `personas_bucket` are left at their Config default ("" — unset), unlike
     `config` above. Before the fix, `_step_catalog_ingest`'s fallback built
-    its bucket mapping from `pnyx_api.main.configured_catalogs`, which reads
+    its bucket mapping from `kobo_api.main.configured_catalogs`, which reads
     those raw fields directly — both "" here, so the mapping was `{}` and
     the ingest a silent no-op reported as "done". The fix reads the same
     computed `_skills_bucket_name`/`_personas_bucket_name` helpers steps
@@ -170,7 +170,7 @@ def fresh_config(tmp_path):
     return Config(
         github_org=GITHUB_ORG,
         workdir=tmp_path / "work",
-        db_url=f"sqlite:///{tmp_path / 'pnyx.db'}",
+        db_url=f"sqlite:///{tmp_path / 'kobo.db'}",
     )
 
 
@@ -191,7 +191,7 @@ def _clients(github, storage) -> Clients:
 @pytest.fixture(autouse=True)
 def no_real_network(monkeypatch):
     """Every run touches step 6, which tries `httpx.post` against
-    `config.api_base_url` first — no real pnyx-api server is up during these
+    `config.api_base_url` first — no real kobo-api server is up during these
     tests ("Tests (all against fakes; no network)" per the brief), so this
     simulates "not reachable yet" by default for every test here. Tests that
     want the primary (refresh-endpoint) path override `bootstrap.httpx.post`
@@ -229,9 +229,9 @@ def test_fresh_org_run_every_step_done(config, github, storage, tmp_path):
     # org-config repo: created (the tmpdir it was composed in is cleaned up
     # by bootstrap itself right after — inspect the pushed content the same
     # way a later boot would, via clone()).
-    assert github.repo_exists(f"{GITHUB_ORG}/pnyx-config")
+    assert github.repo_exists(f"{GITHUB_ORG}/kobo-config")
     org_repo, _org_src = github.created_from_dir[0]
-    assert org_repo == f"{GITHUB_ORG}/pnyx-config"
+    assert org_repo == f"{GITHUB_ORG}/kobo-config"
     org_config_clone = tmp_path / "inspect-org-config"
     github.clone(org_repo, org_config_clone)
     org_yaml_text = (org_config_clone / "org.yaml").read_text()
@@ -347,7 +347,7 @@ def test_skills_publish_owner_qualifies_an_explicit_skills_repo_name_pr_path(
     named_config = config.model_copy(update={"skills_repo": "skills"})
     full_repo = f"{GITHUB_ORG}/skills"
     github = FakeGitHub(
-        existing_repos={f"{GITHUB_ORG}/pnyx-config", full_repo},
+        existing_repos={f"{GITHUB_ORG}/kobo-config", full_repo},
         track_pushed_content=True,
         pr_url="https://github.com/acme-corp/skills/pull/1",
     )
@@ -397,7 +397,7 @@ def test_second_run_steps_1_through_5_skipped_step_6_still_done(config, github, 
 
 def test_existing_skills_repo_without_workflow_opens_pr(config, storage, tmp_path):
     github = FakeGitHub(
-        existing_repos={f"{GITHUB_ORG}/pnyx-config", SKILLS_REPO},
+        existing_repos={f"{GITHUB_ORG}/kobo-config", SKILLS_REPO},
         track_pushed_content=True,
         pr_url="https://github.com/acme-corp/acme-corp-skills/pull/3",
     )
@@ -413,7 +413,7 @@ def test_existing_skills_repo_without_workflow_opens_pr(config, storage, tmp_pat
     call = github.open_pr_calls[0]
     assert call["repo"] == SKILLS_REPO
     assert call["branch"] == bootstrap.PUBLISH_PR_BRANCH
-    assert call["title"] == "pnyx: publish skills to the catalog bucket"
+    assert call["title"] == "kobo: publish skills to the catalog bucket"
     assert "publish-skills.yml" in call["body"]
 
     # The PR'd content actually carries the rendered workflow + script —
@@ -448,7 +448,7 @@ def test_second_run_with_pr_still_open_reports_skipped_and_does_not_reopen_pr(co
     run 2 reports `skipped` with its URL instead of retrying `open_pr`.
     """
     github = FakeGitHub(
-        existing_repos={f"{GITHUB_ORG}/pnyx-config", SKILLS_REPO},
+        existing_repos={f"{GITHUB_ORG}/kobo-config", SKILLS_REPO},
         pr_url="https://github.com/acme-corp/acme-corp-skills/pull/9",
     )
     clients = _clients(github, storage)
@@ -621,11 +621,11 @@ def test_skills_repo_with_owner_slash_rejects_and_other_steps_still_run(
     # Both steps that call _skills_repo_name fail with the exact error message.
     org_config_result = by_name[bootstrap.STEP_ORG_CONFIG_REPO]
     assert org_config_result.status == "failed"
-    assert org_config_result.detail == "skills_repo must be a bare repo name (no '/'); pnyx adds the owner"
+    assert org_config_result.detail == "skills_repo must be a bare repo name (no '/'); kobo adds the owner"
 
     skills_publish_result = by_name[bootstrap.STEP_SKILLS_PUBLISH]
     assert skills_publish_result.status == "failed"
-    assert skills_publish_result.detail == "skills_repo must be a bare repo name (no '/'); pnyx adds the owner"
+    assert skills_publish_result.detail == "skills_repo must be a bare repo name (no '/'); kobo adds the owner"
 
     # Every other step still ran despite the two failures above.
     assert by_name[bootstrap.STEP_SKILLS_BUCKET].status == "done"

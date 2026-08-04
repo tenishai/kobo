@@ -1,4 +1,4 @@
-"""Tests for pnyx_api.steps: WireStep, BuildStep, DeployStep.
+"""Tests for kobo_api.steps: WireStep, BuildStep, DeployStep.
 
 WireStep is the highest-stakes step in the pipeline: it encodes the P0 live
 E2E finding that gojira's generator *preserves* kustomization.yaml entries
@@ -18,10 +18,10 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from pnyx_api.clients import Clients
-from pnyx_api.models import Agent
-from pnyx_api.provisioner import Ctx
-from pnyx_api.steps import (
+from kobo_api.clients import Clients
+from kobo_api.models import Agent
+from kobo_api.provisioner import Ctx
+from kobo_api.steps import (
     BUILD_MAX_HEAD_ADVANCES,
     BUILD_POLL_INTERVAL_S,
     BUILD_POLL_TIMEOUT_S,
@@ -46,7 +46,7 @@ MODEL_ID = "vertex_ai/claude-sonnet-4-5"
 def _no_real_sleep(monkeypatch):
     """WireStep (via _wait_active) and BuildStep both run poll loops; never
     let either sleep for real."""
-    import pnyx_api.steps as steps_module
+    import kobo_api.steps as steps_module
 
     sleep_calls = []
 
@@ -276,7 +276,7 @@ def test_register_resources_is_idempotent_when_entries_already_present(tmp_path)
     """Direct unit test of the kustomization-registration helper: re-running
     against a file that already has one (or both) of the new entries must not
     produce duplicates."""
-    from pnyx_api.steps import _register_resources
+    from kobo_api.steps import _register_resources
 
     kustomization_path = tmp_path / "kustomization.yaml"
     kustomization_path.write_text(
@@ -299,7 +299,7 @@ def test_register_resources_preserves_apiversion_and_kind(tmp_path):
     """_register_resources parses and re-dumps the *whole* kustomization file,
     not just its resources list — apiVersion/kind must round-trip untouched
     alongside the newly-appended entries."""
-    from pnyx_api.steps import _register_resources
+    from kobo_api.steps import _register_resources
 
     kustomization_path = tmp_path / "kustomization.yaml"
     kustomization_path.write_text(
@@ -650,7 +650,7 @@ def test_build_step_times_out_after_max_polls(session_factory, config):
 
 
 def test_build_step_sleeps_at_the_configured_interval(session_factory, config, monkeypatch):
-    import pnyx_api.steps as steps_module
+    import kobo_api.steps as steps_module
 
     repo = _repo_full_name(config)
     session, agent = _make_agent(session_factory, repo_full_name=repo)

@@ -1,4 +1,4 @@
-"""Unit tests for pnyx_api.personas: persona_id slugification, the
+"""Unit tests for kobo_api.personas: persona_id slugification, the
 deterministic render_persona template, and the storage-only
 create_persona/seed_default_personas functions — no FastAPI app involved.
 
@@ -15,8 +15,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import pnyx_api.personas as personas_module
-from pnyx_api.personas import (
+import kobo_api.personas as personas_module
+from kobo_api.personas import (
     PersonaError,
     PersonaExists,
     PersonaFields,
@@ -312,7 +312,7 @@ def test_seed_default_personas_first_run_writes_all():
         assert entry["tags"] == []
 
     meta = storage.object_metadata("personas-bucket", "blank/persona.md")
-    assert meta["metadata"] == {"team": "shared", "creator": "pnyx"}
+    assert meta["metadata"] == {"team": "shared", "creator": "kobo"}
 
 
 def test_seed_default_personas_preserves_packaged_file_bytes():

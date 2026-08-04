@@ -1,10 +1,10 @@
-"""Org config repo (pnyx-config) load + merge (Phase A Task 2).
+"""Org config repo (kobo-config) load + merge (Phase A Task 2).
 
-At boot, `build_default_app` (pnyx_api.main) clones the client's org's
-`pnyx-config` repo (named by `Config.org_repo`) and reads its `org.yaml`,
+At boot, `build_default_app` (kobo_api.main) clones the client's org's
+`kobo-config` repo (named by `Config.org_repo`) and reads its `org.yaml`,
 whose values — when present and valid — override the matching fields on the
 locally-loaded `Config`. This is the only place org values ever reach a
-running pnyx: every downstream reader (catalog search, bootstrap, org status,
+running kobo: every downstream reader (catalog search, bootstrap, org status,
 ...) just reads the already-merged `Config` `build_default_app` hands to
 `create_app`, unchanged.
 
@@ -26,8 +26,8 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
-from pnyx_api.clients import ClientError, GitHubClient
-from pnyx_api.config import Config
+from kobo_api.clients import ClientError, GitHubClient
+from kobo_api.config import Config
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ ORG_KEYS = frozenset(
 class OrgState:
     """Whether org config is wired in, and why not when it isn't.
 
-    Stored at `app.state.org` (`pnyx_api.main.create_app`) so routes that
+    Stored at `app.state.org` (`kobo_api.main.create_app`) so routes that
     need to render an honest "org not configured" / "org config broken"
     state (Tasks 3/8) can do so, rather than an unwired room's empty
     catalogs looking like a coincidence.

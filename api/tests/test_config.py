@@ -5,7 +5,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from pnyx_api.config import Config
+from kobo_api.config import Config
 
 
 def test_load_none_returns_defaults_without_touching_disk(tmp_path, monkeypatch):
@@ -15,13 +15,13 @@ def test_load_none_returns_defaults_without_touching_disk(tmp_path, monkeypatch)
     # regardless of what's sitting in whatever directory the suite happens
     # to run from.
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("PNYX_CONFIG", raising=False)
+    monkeypatch.delenv("KOBO_CONFIG", raising=False)
 
     config = Config.load(None)
 
     assert config.github_org == "example-org"
     assert config.model_group == "models@example.com"
-    assert config.workdir == Path.home() / ".pnyx"
+    assert config.workdir == Path.home() / ".kobo"
 
 
 def test_load_tmp_yaml_overrides_github_org_and_coerces_workdir(tmp_path):
@@ -40,16 +40,16 @@ def test_load_tmp_yaml_overrides_github_org_and_coerces_workdir(tmp_path):
 
 def test_workdir_expands_tilde(tmp_path):
     yaml_path = tmp_path / "config.yaml"
-    yaml_path.write_text("workdir: ~/.pnyx\n")
+    yaml_path.write_text("workdir: ~/.kobo\n")
 
     config = Config.load(yaml_path)
 
-    assert config.workdir == Path.home() / ".pnyx"
+    assert config.workdir == Path.home() / ".kobo"
 
 
-def test_pnyx_config_env_var_missing_raises_error(tmp_path, monkeypatch):
+def test_kobo_config_env_var_missing_raises_error(tmp_path, monkeypatch):
     missing_path = tmp_path / "does-not-exist.yaml"
-    monkeypatch.setenv("PNYX_CONFIG", str(missing_path))
+    monkeypatch.setenv("KOBO_CONFIG", str(missing_path))
 
     with pytest.raises(FileNotFoundError, match=re.escape(str(missing_path))):
         Config.load()
@@ -57,12 +57,12 @@ def test_pnyx_config_env_var_missing_raises_error(tmp_path, monkeypatch):
 
 def test_config_local_yaml_missing_falls_back_to_defaults(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("PNYX_CONFIG", raising=False)
+    monkeypatch.delenv("KOBO_CONFIG", raising=False)
 
     config = Config.load()
 
     assert config.github_org == "example-org"
-    assert config.workdir == Path.home() / ".pnyx"
+    assert config.workdir == Path.home() / ".kobo"
 
 
 # --- models: min_length=1 ------------------------------------------------------
@@ -159,9 +159,9 @@ def test_org_config_field_defaults():
 def test_org_config_fields_overridable(tmp_path):
     yaml_path = tmp_path / "config.yaml"
     yaml_path.write_text(
-        "org_repo: acme-corp/pnyx-config\n"
-        "api_base_url: https://pnyx.acme.example\n"
-        "skills_repo: acme-corp/pnyx-skills\n"
+        "org_repo: acme-corp/kobo-config\n"
+        "api_base_url: https://kobo.acme.example\n"
+        "skills_repo: acme-corp/kobo-skills\n"
         "skills_bucket: acme-skills-bucket\n"
         "personas_bucket: acme-personas-bucket\n"
         "skills_publish_wif_provider: projects/123/locations/global/workloadIdentityPools/x\n"
@@ -171,9 +171,9 @@ def test_org_config_fields_overridable(tmp_path):
 
     config = Config.load(yaml_path)
 
-    assert config.org_repo == "acme-corp/pnyx-config"
-    assert config.api_base_url == "https://pnyx.acme.example"
-    assert config.skills_repo == "acme-corp/pnyx-skills"
+    assert config.org_repo == "acme-corp/kobo-config"
+    assert config.api_base_url == "https://kobo.acme.example"
+    assert config.skills_repo == "acme-corp/kobo-skills"
     assert config.skills_bucket == "acme-skills-bucket"
     assert config.personas_bucket == "acme-personas-bucket"
     assert config.skills_publish_wif_provider == (

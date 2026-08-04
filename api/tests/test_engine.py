@@ -1,4 +1,4 @@
-"""Tests for pnyx_api.provisioner: the step engine's ledger persistence,
+"""Tests for kobo_api.provisioner: the step engine's ledger persistence,
 fire-and-return threading, and resumable retry. Exercised against toy Steps
 defined here — real steps arrive in Tasks 6-8.
 """
@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from pnyx_api.clients import Clients
-from pnyx_api.models import Agent, AgentStatus, AgentStep, StepStatus
-from pnyx_api.provisioner import reset_failed_steps, run_pipeline, sweep_interrupted
+from kobo_api.clients import Clients
+from kobo_api.models import Agent, AgentStatus, AgentStep, StepStatus
+from kobo_api.provisioner import reset_failed_steps, run_pipeline, sweep_interrupted
 
 # No real backend is touched by the toy steps below, so every client slot is None.
 NO_CLIENTS = Clients(github=None, gojira=None, cloud=None, agent=None, kubectl=None)

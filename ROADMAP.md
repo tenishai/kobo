@@ -1,4 +1,4 @@
-# Pnyx Roadmap
+# Kobo Roadmap
 
 The phased plan at a glance. Details live in the
 [design document](docs/superpowers/specs/2026-08-01-cortex-agent-assembly-poc-design.md) and the

@@ -1,18 +1,18 @@
 """Unit tests for the skills-publish workflow template (Phase A Task 6):
-`api/pnyx_api/templates/skills_publish/publish_skills.py`, the script pnyx's
+`api/kobo_api/templates/skills_publish/publish_skills.py`, the script kobo's
 bootstrap installs into a client org's skills repo so it can run inside that
 repo's own GitHub Action.
 
 The templates directory ships as packaged data, not an importable package —
 a client repo only ever runs `python .github/scripts/publish_skills.py`, it
 never `import`s it — so this test module loads the script the same way,
-by path via `importlib.util`, rather than `from pnyx_api.templates...
-import publish_skills`. That also keeps pnyx's own test suite free of any
+by path via `importlib.util`, rather than `from kobo_api.templates...
+import publish_skills`. That also keeps kobo's own test suite free of any
 `google-cloud-storage` dependency: the script only imports that SDK lazily,
 inside `_real_client()`, and `--check` (discover + validate only) never
 calls it at all. Every `sync()` test below exercises a small duck-typed fake
 bucket client defined right here (test-local, not `tests/fakes.py` — a
-different protocol family than `pnyx_api.clients.StorageClient`) that mirrors
+different protocol family than `kobo_api.clients.StorageClient`) that mirrors
 only the `google-cloud-storage` surface the script actually calls.
 """
 
@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-_TEMPLATES_DIR = Path(__file__).parent.parent / "pnyx_api" / "templates" / "skills_publish"
+_TEMPLATES_DIR = Path(__file__).parent.parent / "kobo_api" / "templates" / "skills_publish"
 _SCRIPT_PATH = _TEMPLATES_DIR / "publish_skills.py"
 _YML_PATH = _TEMPLATES_DIR / "publish-skills.yml"
 
@@ -552,30 +552,30 @@ def test_main_publish_path_uses_real_client_seam_and_github_sha(ps, tmp_path, mo
 
 # --- workflow template: token inventory + shape ------------------------------------
 
-_PNYX_TOKEN_RE = re.compile(r"__PNYX_[A-Z_]+__")
+_KOBO_TOKEN_RE = re.compile(r"__KOBO_[A-Z_]+__")
 
-_EXPECTED_TOKENS = {"__PNYX_BUCKET__", "__PNYX_WIF_PROVIDER__", "__PNYX_SERVICE_ACCOUNT__"}
+_EXPECTED_TOKENS = {"__KOBO_BUCKET__", "__KOBO_WIF_PROVIDER__", "__KOBO_SERVICE_ACCOUNT__"}
 
 
 def test_workflow_token_inventory_is_exactly_pinned():
     text = _YML_PATH.read_text()
-    assert set(_PNYX_TOKEN_RE.findall(text)) == _EXPECTED_TOKENS
+    assert set(_KOBO_TOKEN_RE.findall(text)) == _EXPECTED_TOKENS
 
 
 def test_workflow_no_leftover_tokens_after_literal_replacement():
     text = _YML_PATH.read_text()
     rendered = (
-        text.replace("__PNYX_BUCKET__", "example-org-skills")
+        text.replace("__KOBO_BUCKET__", "example-org-skills")
         .replace(
-            "__PNYX_WIF_PROVIDER__",
+            "__KOBO_WIF_PROVIDER__",
             "projects/123/locations/global/workloadIdentityPools/example-pool/providers/github",
         )
         .replace(
-            "__PNYX_SERVICE_ACCOUNT__",
+            "__KOBO_SERVICE_ACCOUNT__",
             "skills-publisher@example-project.iam.gserviceaccount.com",
         )
     )
-    assert "__PNYX_" not in rendered
+    assert "__KOBO_" not in rendered
     # A literal-token render must never disturb any `${{ }}` GitHub Actions
     # expression already in the template (the whole reason bootstrap uses
     # plain string replacement rather than any `{}`-based templating).
@@ -628,8 +628,8 @@ def test_workflow_jobs_run_check_on_pr_and_publish_on_push():
     publish_uses = [step["uses"] for step in publish_job["steps"] if "uses" in step]
     assert any(u.startswith("google-github-actions/auth@") for u in publish_uses)
     auth_step = next(step for step in publish_job["steps"] if step.get("uses", "").startswith("google-github-actions/auth@"))
-    assert auth_step["with"]["workload_identity_provider"] == "__PNYX_WIF_PROVIDER__"
-    assert auth_step["with"]["service_account"] == "__PNYX_SERVICE_ACCOUNT__"
+    assert auth_step["with"]["workload_identity_provider"] == "__KOBO_WIF_PROVIDER__"
+    assert auth_step["with"]["service_account"] == "__KOBO_SERVICE_ACCOUNT__"
     publish_pip = next(
         (step["run"] for step in publish_job["steps"] if step.get("run", "").startswith("pip install")),
         None,

@@ -1,4 +1,4 @@
-"""FastAPI app factory for pnyx-api."""
+"""FastAPI app factory for kobo-api."""
 
 from __future__ import annotations
 
@@ -19,32 +19,32 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from pnyx_api.avatars import avatar_prompt, set_avatar
-from pnyx_api.catalog import validate_name
-from pnyx_api.clients import ClientError, StorageNotFound
-from pnyx_api.config import Config
-from pnyx_api.db import init_db, make_engine, make_session_factory
-from pnyx_api.knowledge import (
+from kobo_api.avatars import avatar_prompt, set_avatar
+from kobo_api.catalog import validate_name
+from kobo_api.clients import ClientError, StorageNotFound
+from kobo_api.config import Config
+from kobo_api.db import init_db, make_engine, make_session_factory
+from kobo_api.knowledge import (
     KnowledgeError,
     delete_knowledge_file,
     delivery_state,
     read_knowledge,
     save_knowledge_file,
 )
-from pnyx_api.models import Agent, AgentStatus
-from pnyx_api.org import OrgState, load_org_config
-from pnyx_api.personas import PersonaError, PersonaExists, PersonaFields, create_persona
-from pnyx_api.provisioner import (
+from kobo_api.models import Agent, AgentStatus
+from kobo_api.org import OrgState, load_org_config
+from kobo_api.personas import PersonaError, PersonaExists, PersonaFields, create_persona
+from kobo_api.provisioner import (
     PIPELINE,
     STEP_LABELS,
     reset_failed_steps,
     run_pipeline,
     sweep_interrupted,
 )
-from pnyx_api.search import CATALOG_TTL_S, get_entry, ingest_indexes
-from pnyx_api.search import search as catalog_search
-from pnyx_api.search import teams as catalog_teams_query
-from pnyx_api.slack_setup import render_manifest, wire_slack
+from kobo_api.search import CATALOG_TTL_S, get_entry, ingest_indexes
+from kobo_api.search import search as catalog_search
+from kobo_api.search import teams as catalog_teams_query
+from kobo_api.slack_setup import render_manifest, wire_slack
 
 log = logging.getLogger(__name__)
 
@@ -53,13 +53,13 @@ log = logging.getLogger(__name__)
 # them) don't pay for it. `build_default_app` below does the real import,
 # right where `Clients.real(...)` is actually constructed.
 if TYPE_CHECKING:
-    from pnyx_api.clients import Clients
+    from kobo_api.clients import Clients
 
 
 class SkillPick(BaseModel):
     """One entry of `CreateAgentRequest.skills`: a skill id plus the catalog
     team it belongs to — a skill id is only unique within its own team
-    (`pnyx_api.search.get_entry`'s (kind, id, team) key), so the team must be
+    (`kobo_api.search.get_entry`'s (kind, id, team) key), so the team must be
     named alongside the id rather than assumed from the agent's own creating
     team."""
 
@@ -112,7 +112,7 @@ class CreatePersonaRequest(PersonaFields):
 
 # The delivery-status route's sha path param must look like a real git
 # commit sha (as returned by save_knowledge_file/delete_knowledge_file, both
-# `github.local_head`) before it ever reaches pnyx_api.knowledge's
+# `github.local_head`) before it ever reaches kobo_api.knowledge's
 # delivery_state, which takes any str with no shape check of its own — this
 # is purely an HTTP-layer guard against a malformed path segment. Matches
 # git's own short-to-full hex sha range.
@@ -152,7 +152,7 @@ def configured_catalogs(config: Config) -> dict[str, str]:
     config.skills_bucket, "persona": config.personas_bucket}` with
     empty-string values removed. This is the single place that lists the
     known catalog kinds — adding a third (the upcoming "tool" kind) is one
-    more entry here; `ingest_indexes` (pnyx_api.search) iterates whatever
+    more entry here; `ingest_indexes` (kobo_api.search) iterates whatever
     mapping it's given, so nothing else needs to change. An empty dict means
     nothing is configured at all.
     """
@@ -358,7 +358,7 @@ def _org_config_check(org: OrgState) -> dict:
     """ok = org.wired; detail = org.error when set (every unwired reason,
     including the plain "no org configured" default), otherwise the repo
     name itself — `org.error or org.repo` reads as one formula for both
-    branches since `load_org_config` (pnyx_api.org) only ever sets one of
+    branches since `load_org_config` (kobo_api.org) only ever sets one of
     the two (a wired OrgState carries no error; an unwired one always
     carries a plain-sentence error)."""
     return {
@@ -477,7 +477,7 @@ def create_app(
     clients: Clients | None = None,
     org: OrgState | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="pnyx-api")
+    app = FastAPI(title="kobo-api")
     app.state.config = config
     app.state.clients = clients
     app.state.session_factory = session_factory
@@ -932,7 +932,7 @@ def create_app(
                 {"error": "last message must have role 'user'"}, status_code=422
             )
 
-        # Same namespace/service derivation as HelloStep (pnyx_api.steps)
+        # Same namespace/service derivation as HelloStep (kobo_api.steps)
         # for this same agent's a2a endpoint — both are just the agent's name.
         clients = app.state.clients
         try:
@@ -1068,7 +1068,7 @@ def create_app(
             # KnowledgeError with only their message text to go on. The two
             # messages have disjoint, stable prefixes ("invalid knowledge
             # filename: " vs "knowledge file not found: "; see
-            # pnyx_api.knowledge._validate_filename/delete_knowledge_file),
+            # kobo_api.knowledge._validate_filename/delete_knowledge_file),
             # so matching on that prefix is the cleanest option available
             # without touching knowledge.py. It can't misfire: a bad filename
             # raises from _validate_filename before delete_knowledge_file
@@ -1164,7 +1164,7 @@ def create_app(
 
         # Logged before persisting: if the commit below itself fails, this
         # line is the only record left of an app Slack now knows about that
-        # pnyx's own DB doesn't yet — an orphan-recovery breadcrumb for an
+        # kobo's own DB doesn't yet — an orphan-recovery breadcrumb for an
         # operator to match against Slack's app list. App ids aren't secret
         # (they're already returned in this route's own 200 response below).
         log.info("slack app created: %s", slack_app_id)
@@ -1328,11 +1328,11 @@ def create_app(
 
 def build_default_app() -> FastAPI:
     """Wire the real config, org config, database, and platform clients."""
-    # Local import: `pnyx_api.clients` pulls in httpx/subprocess-backed
+    # Local import: `kobo_api.clients` pulls in httpx/subprocess-backed
     # implementations that most tests (which only need `create_app` and a
     # fake/None clients object) never touch — keeping this import inside the
-    # function keeps importing `pnyx_api.main` itself cheap for them.
-    from pnyx_api.clients import Clients, CommandRunner, GhCLI
+    # function keeps importing `kobo_api.main` itself cheap for them.
+    from kobo_api.clients import Clients, CommandRunner, GhCLI
 
     local_config = Config.load(None)
     # One GhCLI, built once, just for the org-config clone below — Clients.

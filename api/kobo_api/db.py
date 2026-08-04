@@ -1,4 +1,4 @@
-"""SQLAlchemy engine/session plumbing for pnyx-api.
+"""SQLAlchemy engine/session plumbing for kobo-api.
 
 File-based SQLite with `check_same_thread=False` (gojira's threading pattern) so a
 single engine can be shared across FastAPI's threaded request handlers.
@@ -10,7 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from pnyx_api.models import Base
+from kobo_api.models import Base
 
 
 def make_engine(url: str) -> Engine:

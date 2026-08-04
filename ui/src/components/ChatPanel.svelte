@@ -25,7 +25,7 @@
   const MAX_MESSAGES = 50;
 
   // Mirrors the server's per-message cap (CHAT_MESSAGE_TEXT_MAX_LEN in
-  // pnyx_api/main.py) so an over-length send is refused here instead of
+  // kobo_api/main.py) so an over-length send is refused here instead of
   // round-tripping to a guaranteed 422. JS string length counts UTF-16 code
   // units, not the server's Python code points, so this is strictly
   // conservative — never lets through more than the server would accept.

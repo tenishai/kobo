@@ -1,11 +1,11 @@
 """Tests for the public agent routes: create/list/detail/retry — the
-one-click pipeline (`pnyx_api.provisioner.PIPELINE`) exercised end-to-end
+one-click pipeline (`kobo_api.provisioner.PIPELINE`) exercised end-to-end
 through the fake platform clients (`tests/fakes.py`), the same way a real
 deploy would run it, just with every backend faked.
 
 Same no-real-sleep discipline as test_steps.py/test_steps_wire.py: the
 pipeline's own poll loops (OnboardStep/WireStep's gojira poll, BuildStep's CI
-poll) must never actually block, so `pnyx_api.steps._sleep` is
+poll) must never actually block, so `kobo_api.steps._sleep` is
 monkeypatched to a no-op here too (this file doesn't share test_steps.py's
 module, so the autouse fixture is replicated rather than imported).
 
@@ -24,10 +24,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from pnyx_api.clients import Clients
-from pnyx_api.config import Config
-from pnyx_api.main import create_app, get_session
-from pnyx_api.models import Agent, AgentStatus, Base
+from kobo_api.clients import Clients
+from kobo_api.config import Config
+from kobo_api.main import create_app, get_session
+from kobo_api.models import Agent, AgentStatus, Base
 from tests.fakes import FakeAgent, FakeCloud, FakeGitHub, FakeGojira, FakeKubectl
 
 # fake_storage: reuses conftest.py's shared fixture (seeded with both
@@ -50,7 +50,7 @@ POLL_INTERVAL_S = 0.02
 def _no_real_sleep(monkeypatch):
     """The assembled pipeline's steps poll gojira/CI; never let those loops
     sleep for real (see module docstring re: the deadline-poll's own sleep)."""
-    import pnyx_api.steps as steps_module
+    import kobo_api.steps as steps_module
 
     monkeypatch.setattr(steps_module, "_sleep", lambda seconds: None)
 
@@ -58,7 +58,7 @@ def _no_real_sleep(monkeypatch):
 @pytest.fixture
 def session_factory(tmp_path):
     engine = create_engine(
-        f"sqlite:///{tmp_path}/pnyx.db", connect_args={"check_same_thread": False}
+        f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
     )
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)
@@ -663,7 +663,7 @@ def test_retry_agent_race_second_call_409s_and_pipeline_fires_once(
     gate) and fire the pipeline exactly once; the second must see
     PROVISIONING and 409 without ever touching the pipeline again.
     """
-    import pnyx_api.main as main_module
+    import kobo_api.main as main_module
 
     seed_session = session_factory()
     seed_session.add(
@@ -711,7 +711,7 @@ def test_create_agent_launch_failure_returns_503_and_agent_lands_failed(
     a caller-actionable 503 instead of a raw 500, and the agent lands FAILED
     (i.e. retryable) rather than stuck in PENDING.
     """
-    import pnyx_api.main as main_module
+    import kobo_api.main as main_module
 
     def _raising_run_pipeline(session_factory, agent_id, *, config, clients, steps):
         raise RuntimeError("no more threads")
@@ -936,7 +936,7 @@ def test_retry_agent_launch_failure_returns_503_and_a_later_retry_still_succeeds
     retry against a working pipeline can succeed. Reuses the recording-no-op
     pattern from the race test above for that follow-up.
     """
-    import pnyx_api.main as main_module
+    import kobo_api.main as main_module
 
     seed_session = session_factory()
     seed_session.add(
@@ -1032,7 +1032,7 @@ def test_create_agent_launch_failure_with_poisoned_session_still_returns_503_and
     response is still the caller-actionable 503 JSON, and the agent still
     lands FAILED — via the fresh session, since the original is unusable.
     """
-    import pnyx_api.main as main_module
+    import kobo_api.main as main_module
 
     def _raising_run_pipeline(session_factory, agent_id, *, config, clients, steps):
         raise RuntimeError("no more threads")
@@ -1094,7 +1094,7 @@ def test_create_agent_launch_failure_with_session_close_raising_still_returns_50
     response must still be the caller-actionable 503, and the agent must
     still land FAILED via the fresh recovery session.
     """
-    import pnyx_api.main as main_module
+    import kobo_api.main as main_module
 
     def _raising_run_pipeline(session_factory, agent_id, *, config, clients, steps):
         raise RuntimeError("no more threads")

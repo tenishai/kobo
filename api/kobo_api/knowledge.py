@@ -5,13 +5,13 @@ Deployment yet.
 
 Every operation here clones the repo fresh into a `tempfile.TemporaryDirectory`
 and discards it before returning — there is no local working copy kept around
-between calls, mirroring how the rest of pnyx_api treats a repo clone as a
-disposable means to an end (see `pnyx_api.steps`), never state of its own.
+between calls, mirroring how the rest of kobo_api treats a repo clone as a
+disposable means to an end (see `kobo_api.steps`), never state of its own.
 
 `delivery_state` needs no local clone at all: it's a pure read against two
 already-authoritative sources (the commit's CI run, the live Deployment's
-image) with no pnyx-side state to keep in sync — see its docstring for the
-exact branch logic, which mirrors `pnyx_api.steps.BuildStep`'s
+image) with no kobo-side state to keep in sync — see its docstring for the
+exact branch logic, which mirrors `kobo_api.steps.BuildStep`'s
 newest-run-first convention over `runs_for_commit`.
 """
 
@@ -22,7 +22,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from pnyx_api.clients import GitHubClient, KubectlClient
+from kobo_api.clients import GitHubClient, KubectlClient
 
 # 1-40 chars: a lowercase letter, then lowercase/digit/hyphen, ".md" — no path
 # separators, no leading dot/digit/hyphen, nothing that could escape
@@ -98,7 +98,7 @@ def save_knowledge_file(github: GitHubClient, repo: str, filename: str, content:
         knowledge_dir = workdir / "bundle" / "knowledge"
         knowledge_dir.mkdir(parents=True, exist_ok=True)
         (knowledge_dir / filename).write_text(content, encoding="utf-8")
-        github.commit_push(workdir, f"pnyx: update knowledge/{filename}")
+        github.commit_push(workdir, f"kobo: update knowledge/{filename}")
         return github.local_head(workdir)
 
 
@@ -117,7 +117,7 @@ def delete_knowledge_file(github: GitHubClient, repo: str, filename: str) -> str
         if not target.is_file():
             raise KnowledgeError(f"knowledge file not found: {filename}")
         target.unlink()
-        github.commit_push(workdir, f"pnyx: remove knowledge/{filename}")
+        github.commit_push(workdir, f"kobo: remove knowledge/{filename}")
         return github.local_head(workdir)
 
 
@@ -132,10 +132,10 @@ def delivery_state(
 ) -> dict:
     """Whether the commit `sha` (as returned by save/delete above) has made
     it to the live Deployment yet — a stateless poll target for the UI, with
-    no pnyx-side record of "in-flight saves" to keep in sync.
+    no kobo-side record of "in-flight saves" to keep in sync.
 
     runs = github.runs_for_commit(repo, sha), newest first (same convention
-    BuildStep relies on, pnyx_api.steps.BuildStep):
+    BuildStep relies on, kobo_api.steps.BuildStep):
       - no runs yet: "building" — registration lag, the same grace BuildStep
         extends CI before treating an empty list as anything but "not yet".
       - newest run not completed (queued or in_progress): "building".

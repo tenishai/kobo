@@ -1,4 +1,4 @@
-"""Tests for pnyx_api.steps: RepoStep (persona/skill resolution against the
+"""Tests for kobo_api.steps: RepoStep (persona/skill resolution against the
 bucket catalogs, Task 5), OnboardStep, AccessStep.
 
 Each step is exercised directly — construct a `Ctx`, call `step.run(ctx)` —
@@ -15,11 +15,11 @@ from __future__ import annotations
 
 import pytest
 
-from pnyx_api.clients import Clients
-from pnyx_api.composer import BundleSpec, compose
-from pnyx_api.models import Agent
-from pnyx_api.provisioner import Ctx
-from pnyx_api.steps import (
+from kobo_api.clients import Clients
+from kobo_api.composer import BundleSpec, compose
+from kobo_api.models import Agent
+from kobo_api.provisioner import Ctx
+from kobo_api.steps import (
     ONBOARD_REPROVISION_GRACE_POLLS,
     POLL_INTERVAL_S,
     POLL_TIMEOUT_S,
@@ -42,7 +42,7 @@ WORD_GAMES_SKILL = {"name": "word-games", "team": "shared", "sha": "seedsha"}
 @pytest.fixture(autouse=True)
 def _no_real_sleep(monkeypatch):
     """Every OnboardStep test runs a poll loop; never let it sleep for real."""
-    import pnyx_api.steps as steps_module
+    import kobo_api.steps as steps_module
 
     sleep_calls = []
 
@@ -652,7 +652,7 @@ def test_onboard_step_times_out_after_max_polls(session_factory, config):
 
 
 def test_onboard_step_sleep_called_with_correct_interval(session_factory, config, monkeypatch):
-    import pnyx_api.steps as steps_module
+    import kobo_api.steps as steps_module
 
     repo = _repo_full_name(config)
     session, agent = _make_agent(session_factory, repo_full_name=repo)

@@ -1,4 +1,4 @@
-"""Platform clients for pnyx-api.
+"""Platform clients for kobo-api.
 
 Every operation the provisioner performs against the outside world (GitHub,
 gojira, GCP, an already-deployed agent's a2a endpoint, kubectl) sits behind a
@@ -38,15 +38,15 @@ from urllib.parse import quote
 
 import httpx
 
-from pnyx_api.config import Config
+from kobo_api.config import Config
 
 log = logging.getLogger(__name__)
 
-# git commit author for commits pnyx makes on the caller's behalf (setup
+# git commit author for commits kobo makes on the caller's behalf (setup
 # commits, artifact pushes) — explicit so it works in environments with no
 # git user configured, mirroring gojira's GhCLI (gojira/github.py).
-COMMIT_AUTHOR_NAME = "Pnyx"
-COMMIT_AUTHOR_EMAIL = "noreply@pnyx.dev"
+COMMIT_AUTHOR_NAME = "Kobo"
+COMMIT_AUTHOR_EMAIL = "noreply@kobo.dev"
 
 
 class ClientError(RuntimeError):
@@ -110,7 +110,7 @@ class CommandRunner:
         self, args: list[str], stdin: bytes | None = None, *, redact_args: bool = False
     ) -> bytes:
         """Like `run()`, but for commands whose stdout is binary (e.g. `git
-        archive`, pnyx_api.composer's skill-pinning materialization) —
+        archive`, kobo_api.composer's skill-pinning materialization) —
         `run()`'s `text=True` decode-and-strip would corrupt a tar archive's
         bytes, so this skips both and hands back stdout untouched. Still
         raises ClientError on rc != 0, decoding stderr/stdout only for the
@@ -164,12 +164,12 @@ class GitHubClient(Protocol):
         branch. Returns the PR's URL.
 
         Unlike `commit_push` (which stages/commits/pushes onto whatever
-        branch is already checked out — used for repos pnyx owns outright,
+        branch is already checked out — used for repos kobo owns outright,
         like an agent repo), this always creates its own branch first: the
-        caller here is a repo pnyx does NOT own outright (bootstrap's
+        caller here is a repo kobo does NOT own outright (bootstrap's
         skills-repo publish-workflow install, Task 7) — a PR earns the same
         review an operator would give any other change to that repo, rather
-        than pnyx pushing straight to its default branch.
+        than kobo pushing straight to its default branch.
         """
         ...
 
@@ -463,7 +463,7 @@ def gsa_email(name: str, project: str) -> str:
     Prefix-agnostic: this is only the email-format helper, not the naming
     policy — callers that need an agent's GSA build the full `agent-<name>`
     id themselves before calling this (both `GcloudClient.ensure_gsa` below
-    and `WireStep`, `pnyx_api/steps.py`, which needs the same email for the
+    and `WireStep`, `kobo_api/steps.py`, which needs the same email for the
     KSA's Workload Identity annotation), so the real client and `FakeCloud`
     (`tests/fakes.py`) now behave identically for any name it's given.
     """
@@ -726,7 +726,7 @@ class KubectlClient(Protocol):
         (empty list when it has none).
 
         Defense-in-depth for the stale-apply race (see DeployStep,
-        `pnyx_api/steps.py`): `rollout_ok` only proves *some* generation of
+        `kobo_api/steps.py`): `rollout_ok` only proves *some* generation of
         the Deployment rolled out cleanly, not that it's the generation
         carrying WireStep's contract — a racing `kubectl apply` from a
         concurrent CI run can land an older, unwired tree last and still
@@ -744,12 +744,12 @@ class KubectlClient(Protocol):
         """Container 0's image reference on the *live* Deployment (e.g.
         `.../gojira-app:abc123def456`).
 
-        Used by the knowledge module's delivery check (`pnyx_api.knowledge`)
+        Used by the knowledge module's delivery check (`kobo_api.knowledge`)
         to tell whether a saved edit has actually rolled out yet: generated
         CI tags the image it builds with the first 12 chars of the commit
         sha it built from, so comparing this tag against a known commit's
         `sha[:12]` is a stateless way to answer "is that commit live" without
-        any of pnyx's own state to keep in sync.
+        any of kobo's own state to keep in sync.
         """
         ...
 
@@ -757,13 +757,13 @@ class KubectlClient(Protocol):
         """Idempotent upsert of a generic Secret `name` in `namespace` whose
         data is exactly `literals` (e.g. `{"SLACK_BOT_TOKEN": ..., "SLACK_APP_TOKEN": ...}`).
 
-        Used by `pnyx_api.slack_setup.wire_slack` to deliver the pasted
+        Used by `kobo_api.slack_setup.wire_slack` to deliver the pasted
         Slack tokens to the agent's namespace: a `create secret --dry-run
         -o yaml | apply -f -` round trip rather than a plain `create` (which
         would fail on a second call for the same name) — safe to call again
         with a rotated token pair. The literal values reach kubectl only via
         this call's argv/stdin; they are never logged, never written to a
-        file pnyx controls, and never appear in a raised exception's
+        file kobo controls, and never appear in a raised exception's
         message (the real implementation calls `CommandRunner.run` with
         `redact_args=True` on both stages, so a debug-level log never embeds
         the argv either, and separately sanitizes CommandRunner's own
@@ -926,7 +926,7 @@ def _write_slack_tokens(tokens_path: Path, config_token: str, refresh_token: str
     Written atomically (tmp file + `os.replace`) so a crash mid-write can
     never leave a half-written file: Slack's refresh token is single-use, so
     losing the just-returned new pair after already spending the old one
-    would lock pnyx out of rotating ever again.
+    would lock kobo out of rotating ever again.
     """
     try:
         lines = tokens_path.read_text().splitlines(keepends=True)
@@ -1050,7 +1050,7 @@ def _gcloud_print_access_token(runner: CommandRunner | None = None) -> str:
     by CommandRunner.run) stdout.
 
     No existing google-auth idiom exists anywhere in this codebase (checked
-    pnyx_api and the wider repo for `print-access-token`/`google.auth`/
+    kobo_api and the wider repo for `print-access-token`/`google.auth`/
     `google.oauth2`) — this mirrors the CLI-shell-out idiom every other real
     client in this module already uses (GhCLI, GcloudClient, KubectlCLI) for
     exactly the same account/credential surface the caller's `gcloud` CLI is
@@ -1280,7 +1280,7 @@ class HttpxStorageClient:
         # object-resource part, then the media bytes part) — httpx has no
         # built-in for this shape (its `files=` helper builds multipart/
         # form-data, a different content type), so it's assembled by hand.
-        boundary = f"pnyx-{uuid.uuid4().hex}"
+        boundary = f"kobo-{uuid.uuid4().hex}"
         body = (
             f"--{boundary}\r\n"
             "Content-Type: application/json; charset=UTF-8\r\n\r\n"

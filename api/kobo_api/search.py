@@ -30,12 +30,12 @@ from dataclasses import dataclass
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from pnyx_api.clients import ClientError, StorageClient, StorageNotFound
+from kobo_api.clients import ClientError, StorageClient, StorageNotFound
 
 log = logging.getLogger(__name__)
 
 # How long a loaded catalog table is considered fresh before a route's TTL
-# hook (pnyx_api.main._maybe_refresh_catalogs) re-ingests it.
+# hook (kobo_api.main._maybe_refresh_catalogs) re-ingests it.
 CATALOG_TTL_S = 60
 
 _COLUMNS = "id, name, description, team, tags, kind, sha, builtin"

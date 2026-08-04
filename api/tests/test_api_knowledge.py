@@ -7,7 +7,7 @@ Same harness shape as test_api_agents.py (own `session_factory`/`config`
 fixtures, a `TestClient` built from `create_app`), trimmed to what these
 routes actually need: no pipeline/provisioning involved here, so agents are
 seeded directly at whatever status a test wants, already carrying a
-`repo_full_name` (these routes need one to call into `pnyx_api.knowledge`
+`repo_full_name` (these routes need one to call into `kobo_api.knowledge`
 at all).
 """
 
@@ -20,11 +20,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from pnyx_api.clients import ClientError, Clients
-from pnyx_api.config import Config
-from pnyx_api.knowledge import KNOWLEDGE_MAX_BYTES
-from pnyx_api.main import create_app
-from pnyx_api.models import Agent, AgentStatus, Base
+from kobo_api.clients import ClientError, Clients
+from kobo_api.config import Config
+from kobo_api.knowledge import KNOWLEDGE_MAX_BYTES
+from kobo_api.main import create_app
+from kobo_api.models import Agent, AgentStatus, Base
 from tests.fakes import (
     FAKE_LOCAL_HEAD_DEFAULT,
     FakeAgent,
@@ -94,7 +94,7 @@ class _RaisingKubectl(FakeKubectl):
 @pytest.fixture
 def session_factory(tmp_path):
     engine = create_engine(
-        f"sqlite:///{tmp_path}/pnyx.db", connect_args={"check_same_thread": False}
+        f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
     )
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)
@@ -213,7 +213,7 @@ def test_save_knowledge_creates_file_commits_and_returns_sha(session_factory, co
     assert response.status_code == 200
     assert response.json() == {"sha": FAKE_LOCAL_HEAD_DEFAULT}
     assert github.captured_knowledge == {"gotchas.md": "new content"}
-    assert github.pushes[-1][1] == "pnyx: update knowledge/gotchas.md"
+    assert github.pushes[-1][1] == "kobo: update knowledge/gotchas.md"
 
 
 def test_save_knowledge_overwrites_existing_file(session_factory, config):
@@ -321,7 +321,7 @@ def test_delete_knowledge_removes_file_commits_and_returns_sha(session_factory, 
     assert response.status_code == 200
     assert response.json() == {"sha": FAKE_LOCAL_HEAD_DEFAULT}
     assert github.captured_knowledge == {"keep.md": "stay"}
-    assert github.pushes[-1][1] == "pnyx: remove knowledge/gotchas.md"
+    assert github.pushes[-1][1] == "kobo: remove knowledge/gotchas.md"
 
 
 def test_delete_knowledge_unknown_agent_returns_404(session_factory, config):

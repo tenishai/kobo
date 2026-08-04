@@ -1,7 +1,7 @@
 """Bundle composer: writes a daedalus agent bundle tree to disk and validates
 `agent.yaml` against a vendored copy of daedalus's `docs/bundle.schema.json`.
 
-The schema lives at `pnyx_api/vendor/bundle.schema.json`, copied verbatim
+The schema lives at `kobo_api/vendor/bundle.schema.json`, copied verbatim
 from the daedalus repo — never hand-edited.
 """
 
@@ -16,14 +16,14 @@ from typing import TYPE_CHECKING
 import jsonschema
 import yaml
 
-# Type-only: `pnyx_api.steps` imports `BundleSpec`/`compose`/`validate_agent_
+# Type-only: `kobo_api.steps` imports `BundleSpec`/`compose`/`validate_agent_
 # yaml` from this module, so a real (runtime) import the other way round
 # would be circular. `from __future__ import annotations` (below) already
 # makes every annotation in this file a lazy string, so `StagedSkill` is only
 # ever needed by type checkers, never at import time — `_materialize_skill`
 # only ever accesses `.id`/`.dir` on it, duck-typed, no isinstance check.
 if TYPE_CHECKING:
-    from pnyx_api.steps import StagedSkill
+    from kobo_api.steps import StagedSkill
 
 _VENDOR_SCHEMA_PATH = Path(__file__).parent / "vendor" / "bundle.schema.json"
 
@@ -34,7 +34,7 @@ _AGENT_MODEL_DEFAULT_RE = re.compile(r"\$\{AGENT_MODEL:-([^}]*)\}")
 
 _GOTCHAS_MD = (
     "## Deployment chain\n"
-    "You were assembled in the pnyx assembly room and deployed through the\n"
+    "You were assembled in the kobo assembly room and deployed through the\n"
     "platform chain: repo, onboarding, build, deploy, first contact. If someone\n"
     "asks how you got here, tell them that.\n"
 )
@@ -143,7 +143,7 @@ def _render_agent_yaml(spec: BundleSpec) -> str:
 def _agent_card(spec: BundleSpec) -> dict:
     return {
         "name": spec.name,
-        "description": "Assembled by pnyx.",
+        "description": "Assembled by kobo.",
         "version": "0.1.0",
         "capabilities": [],
         "skills": [{"id": skill.id} for skill in spec.skills],
@@ -163,7 +163,7 @@ def _materialize_skill(skill: StagedSkill, dest: Path) -> None:
     `dest`.
 
     Bucket catalogs (Task 5) replace the old sha-pinned `git archive`
-    materialization entirely: `pnyx_api.steps._stage_skills` has already
+    materialization entirely: `kobo_api.steps._stage_skills` has already
     downloaded the skill's current bucket content to local disk (`skill.dir`)
     by the time this runs, comparing/repairing the sha pin there — this
     function's only remaining job is copying those already-resolved bytes

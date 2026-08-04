@@ -1,7 +1,7 @@
 import pytest
 
-from pnyx_api.catalog import NAME_RE, RESERVED_NAMES, validate_name
-from pnyx_api.models import Agent
+from kobo_api.catalog import NAME_RE, RESERVED_NAMES, validate_name
+from kobo_api.models import Agent
 
 # --- NAME_RE -----------------------------------------------------------------
 

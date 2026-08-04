@@ -23,11 +23,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from pnyx_api.clients import Clients
-from pnyx_api.config import Config
-from pnyx_api.main import create_app
-from pnyx_api.models import Base
-from pnyx_api.org import OrgState
+from kobo_api.clients import Clients
+from kobo_api.config import Config
+from kobo_api.main import create_app
+from kobo_api.models import Base
+from kobo_api.org import OrgState
 from tests.fakes import (
     FakeAgent,
     FakeCloud,
@@ -37,7 +37,7 @@ from tests.fakes import (
     FakeStorage,
 )
 
-ORG_REPO = "acme-corp/pnyx-config"
+ORG_REPO = "acme-corp/kobo-config"
 GITHUB_ORG = "acme-corp"
 
 
@@ -57,7 +57,7 @@ def _clients(*, gojira=None, storage=None) -> Clients:
 
 def _client(config: Config, clients: Clients, tmp_path, *, org: OrgState | None = None) -> TestClient:
     engine = create_engine(
-        f"sqlite:///{tmp_path}/pnyx.db", connect_args={"check_same_thread": False}
+        f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
     )
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
@@ -392,7 +392,7 @@ def test_route_always_200_even_fully_unwired(tmp_path):
     — never a 500."""
     config = Config(workdir=tmp_path / "work")  # skills_bucket/personas_bucket default ""
     engine = create_engine(
-        f"sqlite:///{tmp_path}/pnyx.db", connect_args={"check_same_thread": False}
+        f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
     )
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)

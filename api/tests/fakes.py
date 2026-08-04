@@ -1,4 +1,4 @@
-"""In-memory test fakes for the platform-client Protocols (pnyx_api.clients).
+"""In-memory test fakes for the platform-client Protocols (kobo_api.clients).
 
 Mirror the P0-observed behaviors of the real GitHub/gojira/gcloud/kubectl/a2a
 backends closely enough that step logic exercised against these fakes behaves
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import yaml
 
-from pnyx_api.clients import (
+from kobo_api.clients import (
     ChatMessage,
     ClientError,
     GojiraConflict,
@@ -142,7 +142,7 @@ GENERATED_KUSTOMIZATION_RESOURCES = ["deployment.yaml", "podmonitoring.yaml", "r
 # together — the P2b knowledge-module happy path — reads as "delivered"
 # without either fake needing any configuration: the real backends' delivery
 # contract is that CI tags the image it builds with the first 12 chars of
-# the commit sha it built from (see pnyx_api.knowledge.delivery_state).
+# the commit sha it built from (see kobo_api.knowledge.delivery_state).
 FAKE_LOCAL_HEAD_DEFAULT = "ed17ed17ed17ed17ed17ed17ed17ed17ed17ed17"
 FAKE_DEPLOY_IMAGE_DEFAULT = f"gojira-app:{FAKE_LOCAL_HEAD_DEFAULT[:12]}"
 
@@ -157,9 +157,9 @@ resources:
   - service.yaml
 """
 
-# Mirrors pnyx_api.composer._dockerfile's exact template shape (a small,
+# Mirrors kobo_api.composer._dockerfile's exact template shape (a small,
 # fixed 3-line file: a comment, the FROM line, the bundle COPY) — the fixture
-# pnyx_api.slack_setup.wire_slack's runtime-bump edit (_update_dockerfile_
+# kobo_api.slack_setup.wire_slack's runtime-bump edit (_update_dockerfile_
 # runtime_image) rewrites the FROM line of.
 DOCKERFILE_TEMPLATE = """\
 # Agent image: the shared runtime plus this agent's bundle.
@@ -222,7 +222,7 @@ class FakeGitHub:
     `knowledge_files` (P2b), when given, is a `{filename: content}` map that
     `clone` also materializes, under `bundle/knowledge/`, alongside the
     generated scaffolding above — this is how a test puts existing seed-memory
-    files in the cloned repo for `pnyx_api.knowledge.read_knowledge` (and
+    files in the cloned repo for `kobo_api.knowledge.read_knowledge` (and
     friends) to find. Defaults to `None`, in which case `clone` writes no
     `bundle/knowledge/` tree at all (matching a real agent repo that has none
     yet) — every test that constructs a bare `FakeGitHub()` is unaffected by
@@ -237,13 +237,13 @@ class FakeGitHub:
 
     `agent_yaml_transports` (P2c), when given, makes `clone` also write
     `bundle/agent.yaml` with `transports` set to exactly that list — the
-    fixture `pnyx_api.slack_setup.wire_slack`'s tests edit. Defaults to
+    fixture `kobo_api.slack_setup.wire_slack`'s tests edit. Defaults to
     `None`, in which case `clone` writes no `bundle/agent.yaml` at all —
     matching a real agent repo's shape closely enough for existing tests
     (which predate this knob and assert bare `FakeGitHub()` writes no
     `bundle/` tree at all) while leaving every one of them unaffected: pass
     e.g. `[{"kind": "a2a", "host": "0.0.0.0", "port": 8080}]` (matching
-    `pnyx_api.composer`'s real rendering) for a wire_slack test that needs
+    `kobo_api.composer`'s real rendering) for a wire_slack test that needs
     the file to exist. `gojira_secrets_from`, when given, adds a
     `secrets_from` key to the written `gojira.yaml` (absent by default,
     matching a real gojira.yaml that hasn't been through any
@@ -251,14 +251,14 @@ class FakeGitHub:
     `wire_slack`'s edit appends to an existing list rather than clobbering
     it. `dockerfile_image`, defaulting to `FAKE_DOCKERFILE_OLD_IMAGE`, is the
     base image `clone` writes into a top-level `Dockerfile` (mirroring
-    `pnyx_api.composer`'s real template) — always written, unlike the
+    `kobo_api.composer`'s real template) — always written, unlike the
     knobs above, since every real agent repo has had a Dockerfile since it
     was first composed; the runtime-bump fixture `wire_slack`'s
     `_update_dockerfile_runtime_image` edit rewrites the FROM line of.
 
     `org_yaml` (Task 2), when given, makes `clone` also write a top-level
-    `org.yaml` with exactly that text — the fixture `pnyx_api.org.
-    load_org_config`'s tests use to control what a cloned pnyx-config repo's
+    `org.yaml` with exactly that text — the fixture `kobo_api.org.
+    load_org_config`'s tests use to control what a cloned kobo-config repo's
     org.yaml contains. Defaults to `None`, in which case `clone` writes no
     `org.yaml` at all (matching every other repo, none of which have ever
     had one). `clone_error`, when set, makes `clone` raise
@@ -276,7 +276,7 @@ class FakeGitHub:
     instead of synthesizing the generated-agent-repo tree. Defaults to
     `False`, so every pre-existing test (the whole agent-repo pipeline, whose
     `clone()` calls deliberately model "what gojira's own onboarding left in
-    the repo", NOT a replay of whatever pnyx itself pushed) is unaffected —
+    the repo", NOT a replay of whatever kobo itself pushed) is unaffected —
     this is purely for Task 7's bootstrap, which pushes/clones repos (the
     org-config repo, an org's skills repo) gojira never touches at all, so a
     faithful "clone reflects exactly what was last pushed" model is the
@@ -702,7 +702,7 @@ class FakeKubectl:
 
     `images` (P2b) is the same kind of `{(namespace, deploy): image}` map for
     `deploy_image`, the knowledge module's delivery check
-    (`pnyx_api.knowledge.delivery_state`). An unconfigured (namespace,
+    (`kobo_api.knowledge.delivery_state`). An unconfigured (namespace,
     deploy) pair defaults to `FAKE_DEPLOY_IMAGE_DEFAULT`, whose tag is the
     first 12 chars of `FakeGitHub`'s default `local_head_result` — so a test
     wiring bare `FakeGitHub()`/`FakeKubectl()` together sees a "delivered"
@@ -826,7 +826,7 @@ class FakeStorage:
     immediately (mirroring the real HttpxStorageClient.ensure_bucket, which
     always creates with `versioning.enabled: true`), while a bucket seeded
     directly via the `buckets` kwarg starts out NOT versioned — modeling a
-    pre-existing bucket whose versioning state predates pnyx, exactly the
+    pre-existing bucket whose versioning state predates kobo, exactly the
     case `ensure_versioning` exists to close.
 
     Every call is recorded into `.calls` as `"method:bucket:key_or_prefix"`.

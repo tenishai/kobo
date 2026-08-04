@@ -1,11 +1,11 @@
-"""Name validation and persona-file parsing for pnyx-api.
+"""Name validation and persona-file parsing for kobo-api.
 
 Personas ship as markdown templates inside the package (`templates/
-personas/`); `pnyx_api.personas` reads them directly via `_parse_persona_
+personas/`); `kobo_api.personas` reads them directly via `_parse_persona_
 file` for seeding (`seed_default_personas`). The old local-clone catalog
 scanners (`list_skills`, over a git-managed skills repo; `list_personas`,
 over an operator-supplied directory) are gone as of Task 5 — assembly now
-reads both catalogs from their buckets (`pnyx_api.search`, `pnyx_api.steps`).
+reads both catalogs from their buckets (`kobo_api.search`, `kobo_api.steps`).
 """
 
 from __future__ import annotations
@@ -21,22 +21,22 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,23}$")
 
 MAX_NAME_LENGTH = 24
 
-# Names the platform (or pnyx itself) already gives special meaning —
+# Names the platform (or kobo itself) already gives special meaning —
 # never available for an agent, regardless of how they'd otherwise pass
-# NAME_RE. `gojira`/`pnyx`/`cortex` guard against an agent shadowing the
-# platform services themselves (`cortex` is this project's former name,
-# kept reserved so an old link or habit can't collide with a live agent);
-# the `kube-*` pair guards against colliding with reserved Kubernetes
-# namespaces (each agent's namespace is its own name).
+# NAME_RE. `gojira`/`kobo`/`pnyx`/`cortex` guard against an agent shadowing
+# the platform services themselves (`pnyx` and `cortex` are this project's
+# former names, kept reserved so an old link or habit can't collide with a
+# live agent); the `kube-*` pair guards against colliding with reserved
+# Kubernetes namespaces (each agent's namespace is its own name).
 RESERVED_NAMES = frozenset(
-    {"default", "kube-system", "kube-public", "gojira", "pnyx", "cortex"}
+    {"default", "kube-system", "kube-public", "gojira", "kobo", "pnyx", "cortex"}
 )
 
 
 def validate_name(name: str) -> str | None:
     """Validate a candidate agent name; return None if valid, or a short
     human-readable reason if not — shared by the availability check and
-    create validation (`pnyx_api.main`) so both report identical reasons.
+    create validation (`kobo_api.main`) so both report identical reasons.
 
     Order matters: length is checked before NAME_RE itself so an over-long
     name gets the specific "too long" reason instead of the generic

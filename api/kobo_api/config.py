@@ -1,4 +1,4 @@
-"""Pnyx API configuration.
+"""Kobo API configuration.
 
 Loads settings from a YAML file (or pure defaults) into a pydantic model.
 """
@@ -20,8 +20,8 @@ class ModelChoice(BaseModel):
 class Config(BaseModel):
     github_org: str = "example-org"
     # Full name (owner/repo) of the client's org config repo — cloned at
-    # boot and merged over this file's own values (pnyx_api.org.load_org_
-    # config). None means no org config repo is configured; pnyx runs on
+    # boot and merged over this file's own values (kobo_api.org.load_org_
+    # config). None means no org config repo is configured; kobo runs on
     # this file's values alone.
     org_repo: str | None = None
     runtime_image: str = "registry.example/agents/daedalus-runtime:latest"
@@ -45,10 +45,10 @@ class Config(BaseModel):
     )
     # skills_repo is the bare repo name (e.g., "skills", not "owner/skills")
     # of the org's skills repo (its own publish pipeline, if any, is what
-    # actually populates the buckets below — pnyx itself never clones it);
-    # pnyx prefixes it with github_org for every GitHub operation.
+    # actually populates the buckets below — kobo itself never clones it);
+    # kobo prefixes it with github_org for every GitHub operation.
     # skills_bucket/personas_bucket are the GCS buckets backing the catalogs
-    # pnyx-api actually reads from (Task 5). Empty string means unconfigured
+    # kobo-api actually reads from (Task 5). Empty string means unconfigured
     # for all three. These replace the old skills_repo_path/personas_dir
     # local-clone fields (Task 5 deleted the consumers that read a local git
     # checkout/directory in favor of bucket catalogs).
@@ -57,18 +57,18 @@ class Config(BaseModel):
     personas_bucket: str = ""
     # WIF provider + service account identity the org's own skills-publish
     # pipeline (if any) runs as. skills_publish_external True means that
-    # pipeline is external to pnyx — pnyx must never install or modify
+    # pipeline is external to kobo — kobo must never install or modify
     # anything in the skills repo itself.
     skills_publish_wif_provider: str = ""
     skills_publish_service_account: str = ""
     skills_publish_external: bool = False
-    # This pnyx instance's own reachable base URL (bootstrap CLI / org
+    # This kobo instance's own reachable base URL (bootstrap CLI / org
     # status consumers, Task 3+) — not org.yaml-settable (ORG_KEYS excludes
     # it), same as workdir/db_url below: it describes *this* machine, not
     # anything the org can hand out.
     api_base_url: str = "http://127.0.0.1:8100"
-    workdir: Path = Path.home() / ".pnyx"
-    db_url: str = "sqlite:///pnyx.db"
+    workdir: Path = Path.home() / ".kobo"
+    db_url: str = "sqlite:///kobo.db"
     # Path to the gitignored Slack config-token pair (P2c); None means Slack
     # connect is unconfigured — Clients.real() gates on this to leave slack=None.
     slack_tokens_path: Path | None = None
@@ -92,16 +92,16 @@ class Config(BaseModel):
         """Load config from YAML, falling back to pure defaults.
 
         Resolution order for `path` when not given explicitly:
-        1. `PNYX_CONFIG` environment variable (must exist)
+        1. `KOBO_CONFIG` environment variable (must exist)
         2. `config.local.yaml` beside the current working directory (silent if absent)
         3. Pure defaults (no file touched) if neither exists.
         """
         if path is None:
-            env_path = os.environ.get("PNYX_CONFIG")
+            env_path = os.environ.get("KOBO_CONFIG")
             if env_path:
                 path = Path(env_path)
                 if not path.exists():
-                    raise FileNotFoundError(f"PNYX_CONFIG points to missing file: {path}")
+                    raise FileNotFoundError(f"KOBO_CONFIG points to missing file: {path}")
             else:
                 candidate = Path.cwd() / "config.local.yaml"
                 if candidate.exists():

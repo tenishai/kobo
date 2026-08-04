@@ -1,4 +1,4 @@
-"""Tests for pnyx_api.clients: real-client argv/request construction (via a
+"""Tests for kobo_api.clients: real-client argv/request construction (via a
 RecordingRunner and httpx.MockTransport — no real subprocesses or network),
 plus structural checks that the fakes satisfy the Protocols.
 """
@@ -20,7 +20,7 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from pnyx_api.clients import (
+from kobo_api.clients import (
     AgentClient,
     ChatMessage,
     ClientError,
@@ -50,7 +50,7 @@ from pnyx_api.clients import (
     _wait_for_forwarded_port,
     _write_slack_tokens,
 )
-from pnyx_api.config import Config
+from kobo_api.config import Config
 from tests.fakes import (
     FakeAgent,
     FakeCloud,
@@ -135,8 +135,8 @@ def test_run_bytes_passes_stdin_bytes_through():
 def test_run_wraps_missing_binary_as_client_error():
     runner = CommandRunner()
     with pytest.raises(ClientError) as exc_info:
-        runner.run(["pnyx-test-nonexistent-binary-xyz"])
-    assert "pnyx-test-nonexistent-binary-xyz" in str(exc_info.value)
+        runner.run(["kobo-test-nonexistent-binary-xyz"])
+    assert "kobo-test-nonexistent-binary-xyz" in str(exc_info.value)
     assert "not found on PATH" in str(exc_info.value)
     assert isinstance(exc_info.value.__cause__, FileNotFoundError)
 
@@ -144,8 +144,8 @@ def test_run_wraps_missing_binary_as_client_error():
 def test_run_bytes_wraps_missing_binary_as_client_error():
     runner = CommandRunner()
     with pytest.raises(ClientError) as exc_info:
-        runner.run_bytes(["pnyx-test-nonexistent-binary-xyz"])
-    assert "pnyx-test-nonexistent-binary-xyz" in str(exc_info.value)
+        runner.run_bytes(["kobo-test-nonexistent-binary-xyz"])
+    assert "kobo-test-nonexistent-binary-xyz" in str(exc_info.value)
     assert "not found on PATH" in str(exc_info.value)
     assert isinstance(exc_info.value.__cause__, FileNotFoundError)
 
@@ -161,7 +161,7 @@ def test_run_bytes_wraps_missing_binary_as_client_error():
 
 def test_run_redact_args_true_hides_argv_from_debug_log(caplog):
     runner = CommandRunner()
-    with caplog.at_level(logging.DEBUG, logger="pnyx_api.clients"):
+    with caplog.at_level(logging.DEBUG, logger="kobo_api.clients"):
         runner.run(["echo", "--from-literal=X=secretvalue"], redact_args=True)
     assert "secretvalue" not in caplog.text
 
@@ -170,7 +170,7 @@ def test_run_redact_args_false_by_default_still_logs_full_argv(caplog):
     # Baseline: redact_args defaults to False, so every other (non-secret-
     # bearing) caller's existing debug-log behavior is unchanged by this fix.
     runner = CommandRunner()
-    with caplog.at_level(logging.DEBUG, logger="pnyx_api.clients"):
+    with caplog.at_level(logging.DEBUG, logger="kobo_api.clients"):
         runner.run(["echo", "harmless-marker-value"])
     assert "harmless-marker-value" in caplog.text
 
@@ -252,29 +252,29 @@ def test_open_pr_argv(tmp_path):
     pr_url = client.open_pr(
         tmp_path,
         repo="acme-corp/skills",
-        branch="pnyx-skills-publish",
-        title="pnyx: publish skills to the catalog bucket",
+        branch="kobo-skills-publish",
+        title="kobo: publish skills to the catalog bucket",
         body="This PR adds the publish workflow.",
     )
 
     assert runner.calls[0] == [
-        "git", "-C", str(tmp_path), "checkout", "-b", "pnyx-skills-publish",
+        "git", "-C", str(tmp_path), "checkout", "-b", "kobo-skills-publish",
     ]
     assert runner.calls[1] == ["git", "-C", str(tmp_path), "add", "-A"]
     # commit call carries explicit author flags (so it works with no git
     # config) — same convention as create_repo_from_dir/commit_push above.
     assert runner.calls[2][:3] == ["git", "-C", str(tmp_path)]
     assert "commit" in runner.calls[2]
-    assert runner.calls[2][-2:] == ["-m", "pnyx: publish skills to the catalog bucket"]
+    assert runner.calls[2][-2:] == ["-m", "kobo: publish skills to the catalog bucket"]
     assert runner.calls[3] == [
-        "git", "-C", str(tmp_path), "push", "-u", "origin", "pnyx-skills-publish",
+        "git", "-C", str(tmp_path), "push", "-u", "origin", "kobo-skills-publish",
     ]
     assert runner.calls[4] == [
         "gh", "pr", "create",
         "--repo", "acme-corp/skills",
-        "--title", "pnyx: publish skills to the catalog bucket",
+        "--title", "kobo: publish skills to the catalog bucket",
         "--body", "This PR adds the publish workflow.",
-        "--head", "pnyx-skills-publish",
+        "--head", "kobo-skills-publish",
     ]
     assert pr_url == "https://github.com/acme-corp/skills/pull/7"
 
@@ -287,12 +287,12 @@ def test_find_pr_argv_and_url_when_found():
         results=[(0, "https://github.com/acme-corp/skills/pull/7", "")]
     )
     client = GhCLI(runner=runner)
-    result = client.find_pr("acme-corp/skills", branch="pnyx-skills-publish")
+    result = client.find_pr("acme-corp/skills", branch="kobo-skills-publish")
 
     assert runner.calls == [
         [
             "gh", "pr", "list",
-            "--repo", "acme-corp/skills", "--head", "pnyx-skills-publish",
+            "--repo", "acme-corp/skills", "--head", "kobo-skills-publish",
             "--state", "open", "--json", "url", "--jq", ".[0].url",
         ]
     ]
@@ -305,12 +305,12 @@ def test_find_pr_returns_none_when_no_open_pr():
     # strip() already collapses a trailing-newline-only stdout to "" too).
     runner = RecordingRunner(results=[(0, "", "")])
     client = GhCLI(runner=runner)
-    result = client.find_pr("acme-corp/skills", branch="pnyx-skills-publish")
+    result = client.find_pr("acme-corp/skills", branch="kobo-skills-publish")
 
     assert runner.calls == [
         [
             "gh", "pr", "list",
-            "--repo", "acme-corp/skills", "--head", "pnyx-skills-publish",
+            "--repo", "acme-corp/skills", "--head", "kobo-skills-publish",
             "--state", "open", "--json", "url", "--jq", ".[0].url",
         ]
     ]
@@ -958,7 +958,7 @@ def test_send_task_wraps_popen_oserror_as_client_error(monkeypatch):
     def raise_oserror(*args, **kwargs):
         raise OSError("no such file or directory: kubectl")
 
-    monkeypatch.setattr("pnyx_api.clients.subprocess.Popen", raise_oserror)
+    monkeypatch.setattr("kobo_api.clients.subprocess.Popen", raise_oserror)
 
     client = KubectlAgentClient()
     with pytest.raises(ClientError) as exc_info:
@@ -972,7 +972,7 @@ def test_agent_hello_times_out_and_cleans_up_when_port_forward_hangs(monkeypatch
     event = threading.Event()  # never set -> fake stdout.readline() never returns
     fake_proc = _FakeBlockingPopen(event)
     monkeypatch.setattr(
-        "pnyx_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
+        "kobo_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
     )
 
     client = KubectlAgentClient(port_forward_timeout_s=0.5)
@@ -995,7 +995,7 @@ def test_agent_hello_times_out_and_cleans_up_when_port_forward_hangs(monkeypatch
 def test_agent_hello_terminates_port_forward_on_success(monkeypatch):
     fake_proc = _FakePopen(["Forwarding from 127.0.0.1:54321 -> 80\n"])
     monkeypatch.setattr(
-        "pnyx_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
+        "kobo_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
     )
     captured = {}
 
@@ -1024,7 +1024,7 @@ def test_agent_hello_terminates_port_forward_on_success(monkeypatch):
 def test_agent_hello_terminates_port_forward_even_on_post_failure(monkeypatch):
     fake_proc = _FakePopen(["Forwarding from 127.0.0.1:54321 -> 80\n"])
     monkeypatch.setattr(
-        "pnyx_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
+        "kobo_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1043,7 +1043,7 @@ def test_agent_hello_terminates_port_forward_even_on_post_failure(monkeypatch):
 def test_agent_converse_sends_multi_turn_history_and_terminates_port_forward(monkeypatch):
     fake_proc = _FakePopen(["Forwarding from 127.0.0.1:54321 -> 80\n"])
     monkeypatch.setattr(
-        "pnyx_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
+        "kobo_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
     )
     captured = {}
 
@@ -1079,7 +1079,7 @@ def test_agent_converse_terminates_port_forward_even_on_post_failure(monkeypatch
     # re-exercised through converse() over the shared _send_task machinery.
     fake_proc = _FakePopen(["Forwarding from 127.0.0.1:54321 -> 80\n"])
     monkeypatch.setattr(
-        "pnyx_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
+        "kobo_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1262,7 +1262,7 @@ def test_write_slack_tokens_tmp_file_never_wider_than_0600_before_copymode(tmp_p
         captured["tmp_mode_before_copymode"] = os.stat(dst).st_mode & 0o777
         return real_copymode(src, dst)
 
-    monkeypatch.setattr("pnyx_api.clients.shutil.copymode", spy_copymode)
+    monkeypatch.setattr("kobo_api.clients.shutil.copymode", spy_copymode)
 
     _write_slack_tokens(tokens_path, "new-config", "new-refresh")
 
@@ -1571,7 +1571,7 @@ def test_vertex_image_client_default_http_client_has_generous_timeout():
 
 def test_vertex_image_client_default_token_provider_is_gcloud_print_access_token():
     # No existing google-auth idiom exists anywhere in this codebase (grepped
-    # pnyx_api and the wider repo) — the default shells `gcloud auth
+    # kobo_api and the wider repo) — the default shells `gcloud auth
     # print-access-token` through CommandRunner, mirroring every other real
     # client in this module (GhCLI, GcloudClient, KubectlCLI all shell out
     # rather than use a google-auth library).
@@ -2058,13 +2058,13 @@ def test_fake_github_satisfies_protocol(tmp_path):
     head = fake.local_head(tmp_path)
     assert head and fake.local_head_calls == [tmp_path]
     pr_url = fake.open_pr(
-        tmp_path, repo="acme/agent-clio", branch="pnyx-skills-publish", title="t", body="b"
+        tmp_path, repo="acme/agent-clio", branch="kobo-skills-publish", title="t", body="b"
     )
     assert pr_url and fake.open_pr_calls == [
         {
             "workdir": tmp_path,
             "repo": "acme/agent-clio",
-            "branch": "pnyx-skills-publish",
+            "branch": "kobo-skills-publish",
             "title": "t",
             "body": "b",
         }
@@ -2399,7 +2399,7 @@ def test_fake_storage_ensure_bucket_already_enables_versioning():
 
 def test_fake_storage_ensure_versioning_true_for_pre_seeded_bucket():
     # A bucket seeded via the constructor kwarg models a pre-existing bucket
-    # whose versioning state predates pnyx -> the first ensure_versioning
+    # whose versioning state predates kobo -> the first ensure_versioning
     # call reports "changed", exercising the exact case ensure_versioning
     # exists for.
     fake = FakeStorage(buckets={"b": {}})

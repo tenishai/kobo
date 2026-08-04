@@ -13,12 +13,12 @@ test:
 	venv/bin/python -m pytest -q
 
 lint:
-	venv/bin/ruff check pnyx_api tests
+	venv/bin/ruff check kobo_api tests
 
 check: lint test
 
 run:
-	venv/bin/uvicorn --factory pnyx_api.main:build_default_app --port 8100
+	venv/bin/uvicorn --factory kobo_api.main:build_default_app --port 8100
 
 bootstrap:
-	venv/bin/python -m pnyx_api.bootstrap
+	venv/bin/python -m kobo_api.bootstrap

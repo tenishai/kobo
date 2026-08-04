@@ -15,10 +15,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from pnyx_api.clients import Clients
-from pnyx_api.config import Config
-from pnyx_api.main import _maybe_refresh_catalogs, create_app
-from pnyx_api.models import Base
+from kobo_api.clients import Clients
+from kobo_api.config import Config
+from kobo_api.main import _maybe_refresh_catalogs, create_app
+from kobo_api.models import Base
 from tests.fakes import (
     FakeAgent,
     FakeCloud,
@@ -73,7 +73,7 @@ def _minimal_clients(**kwargs) -> Clients:
 
 def _make_client(config: Config, clients: Clients, tmp_path) -> TestClient:
     engine = create_engine(
-        f"sqlite:///{tmp_path}/pnyx.db", connect_args={"check_same_thread": False}
+        f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
     )
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
@@ -205,7 +205,7 @@ def test_ttl_lock_serializes_concurrent_refreshes(config, tmp_path):
         }
     )
     engine = create_engine(
-        f"sqlite:///{tmp_path}/pnyx.db", connect_args={"check_same_thread": False}
+        f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
     )
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)

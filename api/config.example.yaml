@@ -1,14 +1,14 @@
 # Copy to config.local.yaml (gitignored) and fill in real values, or point
-# PNYX_CONFIG at a file with this shape. Any field omitted falls back to
-# the default baked into pnyx_api.config.Config.
+# KOBO_CONFIG at a file with this shape. Any field omitted falls back to
+# the default baked into kobo_api.config.Config.
 
 # GitHub organization containing agent implementations
 github_org: example-org
 
-# Full name (owner/repo) of the client's org config repo (pnyx-config).
+# Full name (owner/repo) of the client's org config repo (kobo-config).
 # Cloned at boot and its org.yaml merged over this file's own values (see
-# pnyx_api.org.load_org_config) — null means no org config repo is
-# configured, and pnyx runs on this file's values alone.
+# kobo_api.org.load_org_config) — null means no org config repo is
+# configured, and kobo runs on this file's values alone.
 org_repo: null
 
 # OCI image URI for the daedalus runtime executor
@@ -26,7 +26,7 @@ gojira_token: null
 # not set here) must be the FULL Artifact Registry path
 # (<location>-docker.pkg.dev/<project>/<repo>), never the short repo name —
 # a short name produced a confusing empty-arg gcloud failure at image-push
-# time. Not pnyx's config to hold, but worth the reminder here since this
+# time. Not kobo's config to hold, but worth the reminder here since this
 # cluster name is what ties an agent's onboarding to that registration.
 gojira_cluster: example-cluster
 
@@ -55,9 +55,9 @@ models:
     label: Claude Sonnet 4.5
 
 # Bare repo name (e.g., "skills", not "owner/skills") of the org's skills
-# repo (its own publish pipeline, if any, populates the bucket below — pnyx
-# itself never clones it) — pnyx prefixes it with github_org for every
-# GitHub operation. GCS buckets pnyx-api actually reads the skills/personas
+# repo (its own publish pipeline, if any, populates the bucket below — kobo
+# itself never clones it) — kobo prefixes it with github_org for every
+# GitHub operation. GCS buckets kobo-api actually reads the skills/personas
 # catalogs from (Task 5) — empty string means unconfigured for all three.
 skills_repo: null
 skills_bucket: ""
@@ -65,21 +65,21 @@ personas_bucket: ""
 
 # Workload Identity Federation provider + service account the org's own
 # skills-publish pipeline (if any) runs as. skills_publish_external true
-# means that pipeline is external to pnyx — pnyx must never install or
+# means that pipeline is external to kobo — kobo must never install or
 # modify anything in the skills repo itself.
 skills_publish_wif_provider: ""
 skills_publish_service_account: ""
 skills_publish_external: false
 
-# Base URL this pnyx API instance is reachable at (bootstrap CLI / org
+# Base URL this kobo API instance is reachable at (bootstrap CLI / org
 # status, Task 3+) — describes this machine, not anything org-supplied.
 api_base_url: http://127.0.0.1:8100
 
 # Local directory for persistent runtime state and cache
-workdir: ~/.pnyx
+workdir: ~/.kobo
 
 # Database connection URL (supports sqlite, postgresql, etc)
-db_url: sqlite:///pnyx.db
+db_url: sqlite:///kobo.db
 
 # Path to a gitignored YAML file holding the Slack app-config token pair
 # (slack_app_config_token / slack_app_config_refresh_token) used to create

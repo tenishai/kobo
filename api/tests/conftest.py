@@ -5,11 +5,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from pnyx_api.config import Config
-from pnyx_api.db import init_db
-from pnyx_api.main import create_app
-from pnyx_api.models import Base
-from pnyx_api.personas import seed_default_personas
+from kobo_api.config import Config
+from kobo_api.db import init_db
+from kobo_api.main import create_app
+from kobo_api.models import Base
+from kobo_api.personas import seed_default_personas
 from tests.fakes import FakeStorage
 
 # Bucket-catalog fixture rework (Task 5, done once here): every test module
@@ -21,7 +21,7 @@ PERSONAS_BUCKET = "personas-bucket"
 
 # The one sample skill every fixture-seeded storage carries: `shared/
 # word-games/`, whose SKILL.md's `source-sha` custom metadata ("seedsha") is
-# the pin `pnyx_api.steps._stage_skills` compares an agent's recorded sha
+# the pin `kobo_api.steps._stage_skills` compares an agent's recorded sha
 # against — tests that want to exercise sha-drift/vanished-skill paths do so
 # by mutating or removing this fixture's own bucket state.
 SAMPLE_SKILL_TEAM = "shared"
@@ -44,7 +44,7 @@ SKILL_INDEX_ENTRIES = [
 @pytest.fixture
 def session_factory(tmp_path):
     engine = create_engine(
-        f"sqlite:///{tmp_path}/pnyx.db", connect_args={"check_same_thread": False}
+        f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
     )
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)

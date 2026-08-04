@@ -1,0 +1,30 @@
+# org.yaml — this repo's only content.
+#
+# This repo (kobo-config) holds ROOM configuration for kobo, the agent
+# assembly room — nothing else. It is never where team content lives: no
+# skills, no personas, no agent bundles. Those are catalog data, published to
+# their own GCS buckets (see README.md in this repo for the split). Every key
+# below is one field of kobo_api.config.Config that kobo merges over its own
+# local defaults at boot (kobo_api.org.load_org_config) — the same allowlist
+# that governs which keys here are ever read is kobo_api.org.ORG_KEYS; an
+# unrecognized key is rejected rather than silently ignored.
+#
+# Rendered once by kobo's bootstrap CLI from the values it ran with — review
+# and edit freely from here on, this file is the org's source of truth.
+
+github_org: __KOBO_GITHUB_ORG__
+skills_repo: __KOBO_SKILLS_REPO__
+skills_bucket: __KOBO_SKILLS_BUCKET__
+personas_bucket: __KOBO_PERSONAS_BUCKET__
+gojira_cluster: __KOBO_GOJIRA_CLUSTER__
+runtime_image: __KOBO_RUNTIME_IMAGE__
+gcp_project: __KOBO_GCP_PROJECT__
+vertex_project: __KOBO_VERTEX_PROJECT__
+vertex_location: __KOBO_VERTEX_LOCATION__
+model_group: __KOBO_MODEL_GROUP__
+avatar_model: __KOBO_AVATAR_MODEL__
+avatar_location: __KOBO_AVATAR_LOCATION__
+models: __KOBO_MODELS__
+skills_publish_wif_provider: __KOBO_SKILLS_PUBLISH_WIF_PROVIDER__
+skills_publish_service_account: __KOBO_SKILLS_PUBLISH_SERVICE_ACCOUNT__
+skills_publish_external: __KOBO_SKILLS_PUBLISH_EXTERNAL__

@@ -1,8 +1,8 @@
 """publish_skills.py — runs inside the client repo's own GitHub Action
-(installed there by pnyx's bootstrap alongside `publish-skills.yml`, the
+(installed there by kobo's bootstrap alongside `publish-skills.yml`, the
 sibling workflow template in this same directory). This file ships as
-packaged data inside pnyx (`pnyx_api/templates/skills_publish/`); it is never
-imported by pnyx itself — only copied byte-for-byte into a client org's
+packaged data inside kobo (`kobo_api/templates/skills_publish/`); it is never
+imported by kobo itself — only copied byte-for-byte into a client org's
 skills repo at `.github/scripts/publish_skills.py` and invoked as a plain
 script (`python .github/scripts/publish_skills.py --bucket ...`).
 
@@ -11,7 +11,7 @@ validate time — pyyaml is the one third-party dependency the workflow's
 `pip install` step brings in alongside `google-cloud-storage`, which this
 module never imports at module scope. `google-cloud-storage` is imported
 lazily, only inside `_real_client()` (only ever called from `main()`'s
-publish path, never from `--check`), so a PR's `--check` run — and pnyx's
+publish path, never from `--check`), so a PR's `--check` run — and kobo's
 own test suite, which loads this file by path via `importlib.util` and
 exercises `sync()` against a duck-typed fake client — never needs that SDK
 installed at all.
@@ -26,7 +26,7 @@ Every skill directory's `SKILL.md` carries `---`-fenced YAML frontmatter
 line if omitted; `tags`, optional). The published bucket layout mirrors the
 discovered tree: every file under a skill's directory lands at
 `<team>/<id>/<relpath>`, plus one `index.json` at the bucket root — the same
-contract `pnyx_api.search._load_catalog_entries` reads back
+contract `kobo_api.search._load_catalog_entries` reads back
 (`{"generated_at": ..., "entries": [{"id", "name", "description", "team",
 "tags", "sha"}, ...]}`).
 """
@@ -44,9 +44,9 @@ from pathlib import Path
 
 import yaml
 
-# Authoritative for this script (echoes pnyx_api.catalog.NAME_RE's shape, but
+# Authoritative for this script (echoes kobo_api.catalog.NAME_RE's shape, but
 # is deliberately its own pattern rather than an import — this file has to
-# run standalone in a client repo with no pnyx_api on its path at all).
+# run standalone in a client repo with no kobo_api on its path at all).
 SKILL_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,39}$")
 
 # A tag is a plain slug: lowercase alnum groups separated by single hyphens,
@@ -220,7 +220,7 @@ def validate(skill_dir: Path) -> tuple[str, str, list[str]]:
     description = frontmatter.get("description")
     if not description:
         # Same fallback semantic the pre-Task-5 catalog frontmatter parser
-        # used (pnyx_api.catalog's old `_parse_skill_frontmatter`): the
+        # used (kobo_api.catalog's old `_parse_skill_frontmatter`): the
         # first non-blank line of the body, if any.
         description = next((line.strip() for line in body.splitlines() if line.strip()), "")
     if not description:
@@ -256,7 +256,7 @@ def _utcnow_iso() -> str:
 
 
 def build_index(skills: list[Skill], sha: str) -> dict:
-    """The Task 3 index contract (see `pnyx_api.search._load_catalog_entries`
+    """The Task 3 index contract (see `kobo_api.search._load_catalog_entries`
     for the reader side): entries sorted by `(team, id)` so the published
     file's diff is stable run to run regardless of filesystem iteration
     order.
@@ -341,7 +341,7 @@ def sync(client, bucket: str, skills: list[Skill], sha: str) -> dict:
 
 def _real_client():
     """The real `google.cloud.storage.Client`, imported lazily so nothing at
-    module scope — including pnyx's own test suite loading this file by path
+    module scope — including kobo's own test suite loading this file by path
     — ever needs the `google-cloud-storage` SDK installed. Only `main()`'s
     publish path (never `--check`) calls this.
     """

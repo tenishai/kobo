@@ -1,4 +1,4 @@
-"""Unit tests for pnyx_api.search: FTS5 ingestion + the query functions built
+"""Unit tests for kobo_api.search: FTS5 ingestion + the query functions built
 on top of it, exercised against `FakeStorage` (tests/fakes.py) — no real GCS
 or network involved anywhere.
 """
@@ -9,9 +9,9 @@ import json
 
 import pytest
 
-from pnyx_api.clients import ClientError
-from pnyx_api.db import make_engine
-from pnyx_api.search import (
+from kobo_api.clients import ClientError
+from kobo_api.db import make_engine
+from kobo_api.search import (
     CatalogEntry,
     ensure_fts,
     get_entry,

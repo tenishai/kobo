@@ -15,12 +15,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from pnyx_api.avatars import avatar_prompt
-from pnyx_api.clients import ClientError, Clients
-from pnyx_api.config import Config
-from pnyx_api.main import AVATAR_MAX_BYTES, create_app
-from pnyx_api.models import Agent, AgentStatus, Base
-from pnyx_api.personas import seed_default_personas
+from kobo_api.avatars import avatar_prompt
+from kobo_api.clients import ClientError, Clients
+from kobo_api.config import Config
+from kobo_api.main import AVATAR_MAX_BYTES, create_app
+from kobo_api.models import Agent, AgentStatus, Base
+from kobo_api.personas import seed_default_personas
 from tests.fakes import (
     FAKE_IMAGE_PNG_BYTES,
     FAKE_LOCAL_HEAD_DEFAULT,
@@ -70,7 +70,7 @@ class _RaisingGitHub(FakeGitHub):
 @pytest.fixture
 def session_factory(tmp_path):
     engine = create_engine(
-        f"sqlite:///{tmp_path}/pnyx.db", connect_args={"check_same_thread": False}
+        f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
     )
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)
@@ -160,7 +160,7 @@ def test_generate_avatar_happy_path_pushes_caches_and_returns_sha(session_factor
     assert response.status_code == 200
     assert response.json() == {"sha": FAKE_LOCAL_HEAD_DEFAULT}
     assert github.captured_avatar_bytes == FAKE_IMAGE_PNG_BYTES
-    assert github.pushes[-1][1] == "pnyx: set avatar"
+    assert github.pushes[-1][1] == "kobo: set avatar"
     assert image.prompts == [EXPECTED_PROMPT]
 
     session = session_factory()
