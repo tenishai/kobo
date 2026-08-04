@@ -17,10 +17,12 @@
 
   let {
     team,
+    teamValid,
     oncancel,
     oncreated,
   }: {
     team: string;
+    teamValid: boolean;
     oncancel: () => void;
     oncreated: (id: string) => void;
   } = $props();
@@ -66,7 +68,8 @@
   });
 
   const canCreate = $derived(
-    name.trim().length > 0 &&
+    teamValid &&
+      name.trim().length > 0 &&
       role.trim().length > 0 &&
       purpose.trim().length > 0 &&
       tags.length >= 1 &&
@@ -228,6 +231,10 @@
     </p>
   {/if}
 
+  {#if !teamValid}
+    <p class="persona-builder__hint">Pick your team above first.</p>
+  {/if}
+
   <div class="persona-builder__actions">
     <button type="button" class="persona-builder__cancel" onclick={oncancel}>
       Cancel
@@ -290,6 +297,12 @@
 
   .persona-builder__status--error {
     color: var(--fail);
+  }
+
+  .persona-builder__hint {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.8rem;
   }
 
   .persona-builder__actions {

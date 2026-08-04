@@ -156,6 +156,8 @@
   function handlePersonaCreated(id: string): void {
     personaOverride = id;
     builderOpen = false;
+    personaQ = "";
+    personaSearchTerm.set("");
     toast.success("Persona ready");
   }
 
@@ -397,6 +399,7 @@
       {:else if builderOpen}
         <PersonaBuilder
           {team}
+          {teamValid}
           oncancel={() => (builderOpen = false)}
           oncreated={handlePersonaCreated}
         />
