@@ -235,6 +235,50 @@ def test_commit_push_commits_and_pushes_when_dirty(tmp_path):
     assert "update" in runner.calls[2]
 
 
+# --- GitHub (GhCLI.open_pr, Task 7) -------------------------------------------
+
+
+def test_open_pr_argv(tmp_path):
+    runner = RecordingRunner(
+        results=[
+            (0, "", ""),  # checkout -b
+            (0, "", ""),  # add -A
+            (0, "", ""),  # commit
+            (0, "", ""),  # push -u origin <branch>
+            (0, "https://github.com/acme-corp/skills/pull/7", ""),  # gh pr create
+        ]
+    )
+    client = GhCLI(runner=runner)
+    pr_url = client.open_pr(
+        tmp_path,
+        repo="acme-corp/skills",
+        branch="pnyx-skills-publish",
+        title="pnyx: publish skills to the catalog bucket",
+        body="This PR adds the publish workflow.",
+    )
+
+    assert runner.calls[0] == [
+        "git", "-C", str(tmp_path), "checkout", "-b", "pnyx-skills-publish",
+    ]
+    assert runner.calls[1] == ["git", "-C", str(tmp_path), "add", "-A"]
+    # commit call carries explicit author flags (so it works with no git
+    # config) — same convention as create_repo_from_dir/commit_push above.
+    assert runner.calls[2][:3] == ["git", "-C", str(tmp_path)]
+    assert "commit" in runner.calls[2]
+    assert runner.calls[2][-2:] == ["-m", "pnyx: publish skills to the catalog bucket"]
+    assert runner.calls[3] == [
+        "git", "-C", str(tmp_path), "push", "-u", "origin", "pnyx-skills-publish",
+    ]
+    assert runner.calls[4] == [
+        "gh", "pr", "create",
+        "--repo", "acme-corp/skills",
+        "--title", "pnyx: publish skills to the catalog bucket",
+        "--body", "This PR adds the publish workflow.",
+        "--head", "pnyx-skills-publish",
+    ]
+    assert pr_url == "https://github.com/acme-corp/skills/pull/7"
+
+
 def test_head_sha_argv_and_parsing():
     # No trailing newline here: the real CommandRunner already strips stdout
     # before GhCLI ever sees it (RecordingRunner intentionally doesn't, to
@@ -1886,6 +1930,18 @@ def test_fake_github_satisfies_protocol(tmp_path):
     fake.rerun("acme/agent-clio", runs[0]["id"])
     head = fake.local_head(tmp_path)
     assert head and fake.local_head_calls == [tmp_path]
+    pr_url = fake.open_pr(
+        tmp_path, repo="acme/agent-clio", branch="pnyx-skills-publish", title="t", body="b"
+    )
+    assert pr_url and fake.open_pr_calls == [
+        {
+            "workdir": tmp_path,
+            "repo": "acme/agent-clio",
+            "branch": "pnyx-skills-publish",
+            "title": "t",
+            "body": "b",
+        }
+    ]
 
 
 def test_fake_gojira_satisfies_protocol():

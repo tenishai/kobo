@@ -1,4 +1,4 @@
-.PHONY: install test lint check run
+.PHONY: install test lint check run bootstrap
 
 venv/bin/pip:
 	python3.12 -m venv venv
@@ -19,3 +19,6 @@ check: lint test
 
 run:
 	venv/bin/uvicorn --factory pnyx_api.main:build_default_app --port 8100
+
+bootstrap:
+	venv/bin/python -m pnyx_api.bootstrap

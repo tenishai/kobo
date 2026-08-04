@@ -157,6 +157,22 @@ class GitHubClient(Protocol):
         """Stage, commit, and push everything under workdir. False if nothing changed."""
         ...
 
+    def open_pr(self, workdir: Path, *, repo: str, branch: str, title: str, body: str) -> str:
+        """From a dirty clone (`workdir`, already `clone()`d and then edited
+        by the caller): checkout a fresh `branch`, stage and commit
+        everything under it, push it, and open a PR against `repo`'s default
+        branch. Returns the PR's URL.
+
+        Unlike `commit_push` (which stages/commits/pushes onto whatever
+        branch is already checked out — used for repos pnyx owns outright,
+        like an agent repo), this always creates its own branch first: the
+        caller here is a repo pnyx does NOT own outright (bootstrap's
+        skills-repo publish-workflow install, Task 7) — a PR earns the same
+        review an operator would give any other change to that repo, rather
+        than pnyx pushing straight to its default branch.
+        """
+        ...
+
     def local_head(self, workdir: Path) -> str:
         """The just-pushed local clone's head commit sha (`git rev-parse HEAD`
         against `workdir`), not a fresh API read.
@@ -255,6 +271,25 @@ class GhCLI:
         )
         self._runner.run([self._git, "-C", str(workdir), "push"])
         return True
+
+    def open_pr(self, workdir: Path, *, repo: str, branch: str, title: str, body: str) -> str:
+        self._runner.run([self._git, "-C", str(workdir), "checkout", "-b", branch])
+        self._runner.run([self._git, "-C", str(workdir), "add", "-A"])
+        self._runner.run(
+            [
+                self._git, "-C", str(workdir),
+                "-c", f"user.name={COMMIT_AUTHOR_NAME}",
+                "-c", f"user.email={COMMIT_AUTHOR_EMAIL}",
+                "commit", "-m", title,
+            ]
+        )
+        self._runner.run([self._git, "-C", str(workdir), "push", "-u", "origin", branch])
+        return self._runner.run(
+            [
+                self._gh, "pr", "create",
+                "--repo", repo, "--title", title, "--body", body, "--head", branch,
+            ]
+        )
 
     def local_head(self, workdir: Path) -> str:
         return self._runner.run([self._git, "-C", str(workdir), "rev-parse", "HEAD"])

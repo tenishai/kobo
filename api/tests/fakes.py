@@ -267,6 +267,22 @@ class FakeGitHub:
     unwired-on-`ClientError` path) without a real git/gh subprocess. The
     call is still recorded in `.calls`/`.cloned` first, same as every other
     call here, before the error is raised.
+
+    `track_pushed_content` (Task 7), when True, makes `create_repo_from_dir`
+    snapshot every file under `src` (read at call time, before the caller's
+    own tmpdir is cleaned up) into a per-repo store; `clone` for a repo with
+    such a snapshot writes back exactly those files (nothing else — the
+    synthetic gojira scaffolding below is skipped entirely for that repo)
+    instead of synthesizing the generated-agent-repo tree. Defaults to
+    `False`, so every pre-existing test (the whole agent-repo pipeline, whose
+    `clone()` calls deliberately model "what gojira's own onboarding left in
+    the repo", NOT a replay of whatever pnyx itself pushed) is unaffected —
+    this is purely for Task 7's bootstrap, which pushes/clones repos (the
+    org-config repo, an org's skills repo) gojira never touches at all, so a
+    faithful "clone reflects exactly what was last pushed" model is the
+    right one there instead. `pr_url`, `open_pr`'s canned return value
+    (Task 7), and `open_pr_calls`, the exact-argument recording for it, are
+    documented on `open_pr` itself below.
     """
 
     def __init__(
@@ -286,12 +302,18 @@ class FakeGitHub:
         dockerfile_image: str = FAKE_DOCKERFILE_OLD_IMAGE,
         org_yaml: str | None = None,
         clone_error: str | None = None,
+        track_pushed_content: bool = False,
+        pr_url: str = "https://github.com/acme-corp/example-org-skills/pull/1",
     ):
         self.repos: set[str] = set(existing_repos) if existing_repos else set()
         self.created_from_dir: list[tuple[str, Path]] = []
         self.cloned: list[tuple[str, Path]] = []
         self.pushes: list[tuple[Path, str]] = []
         self.calls: list[str] = []
+        self._track_pushed_content = track_pushed_content
+        self._pushed_content: dict[str, dict[str, bytes]] = {}
+        self._pr_url = pr_url
+        self.open_pr_calls: list[dict] = []
         self._commit_push_results = list(commit_push_results) if commit_push_results else [True]
         self._commit_push_index = 0
         self._knowledge_files = dict(knowledge_files) if knowledge_files else None
@@ -330,16 +352,41 @@ class FakeGitHub:
         self.calls.append(f"repo_exists:{repo}")
         return repo in self.repos
 
+    def _snapshot_pushed_content(self, repo: str, src: Path) -> None:
+        """Read every file under `src` now, synchronously — the real
+        caller's tmpdir (Task 7's bootstrap, notably) is typically deleted
+        the moment the call that invoked this returns, so this is the only
+        chance to snapshot what was actually pushed. No-op unless the fake
+        was constructed with `track_pushed_content=True`.
+        """
+        if not self._track_pushed_content:
+            return
+        self._pushed_content[repo] = {
+            p.relative_to(src).as_posix(): p.read_bytes() for p in src.rglob("*") if p.is_file()
+        }
+
     def create_repo_from_dir(self, repo: str, src: Path) -> None:
         self.calls.append(f"create_repo_from_dir:{repo}")
         self.created_from_dir.append((repo, src))
         self.repos.add(repo)
+        self._snapshot_pushed_content(repo, src)
 
     def clone(self, repo: str, dest: Path) -> None:
         self.calls.append(f"clone:{repo}")
         self.cloned.append((repo, dest))
         if self._clone_error is not None:
             raise ClientError(self._clone_error)
+
+        if repo in self._pushed_content:
+            # A repo tracked via `track_pushed_content`: model this clone as
+            # exactly what was last pushed to it, nothing more — the generic
+            # generated-agent-repo scaffolding below deliberately does not
+            # apply (see the class docstring).
+            for rel_path, data in self._pushed_content[repo].items():
+                target = dest / rel_path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+            return
 
         name = _app_name_from_repo(repo)
         base = dest / "k8s" / "base"
@@ -386,6 +433,24 @@ class FakeGitHub:
         if self._commit_push_index < len(self._commit_push_results) - 1:
             self._commit_push_index += 1
         return result
+
+    def open_pr(self, workdir: Path, *, repo: str, branch: str, title: str, body: str) -> str:
+        """Records the exact call (`open_pr_calls`, one dict per call) and
+        returns the fixed `pr_url` the fake was constructed with — no real
+        `git`/`gh` subprocess involved. Also snapshots `workdir`'s current
+        content the same way `create_repo_from_dir` does (see
+        `_snapshot_pushed_content`) when `track_pushed_content=True` — a
+        later `clone()` of `repo` then reflects the PR's content, letting a
+        test inspect what was pushed via the same public `clone()` seam
+        rather than reaching into a caller's own (possibly by-then-deleted)
+        `workdir`.
+        """
+        self.calls.append(f"open_pr:{repo}:{branch}")
+        self.open_pr_calls.append(
+            {"workdir": workdir, "repo": repo, "branch": branch, "title": title, "body": body}
+        )
+        self._snapshot_pushed_content(repo, workdir)
+        return self._pr_url
 
     def local_head(self, workdir: Path) -> str:
         self.calls.append(f"local_head:{workdir}")
