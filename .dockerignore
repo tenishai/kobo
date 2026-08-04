@@ -1,0 +1,19 @@
+# Build context excludes for the container image (Dockerfile at repo root).
+# Defense in depth: none of these should ever reach the build context, let
+# alone the image, but the .dockerignore is a second gate alongside .gitignore.
+
+.git
+.superpowers
+docs
+
+# Python virtualenvs and caches — the image installs the API fresh via pip.
+**/venv
+**/__pycache__
+
+# Node deps and build output — the image runs its own `npm ci` + build.
+**/node_modules
+
+# Local state, ledgers, and secrets that must never be baked into an image.
+**/*.db
+**/*.local.yaml
+**/*.pem

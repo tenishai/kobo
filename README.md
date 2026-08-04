@@ -102,6 +102,15 @@ current work.
 
 To run the Kobo API locally: `make -C api install` to set up the environment. Copy `api/config.example.yaml` to `api/config.local.yaml` and fill in your values (or use examples for testing). Then run `make -C api run` — the API serves on `:8100`. The dev API is unauthenticated and CORS-open, so bind it to localhost only and never expose it beyond your machine. For the UI: `make -C ui install` then `make -C ui dev` (serves on :5173, proxying to the API).
 
+## Container
+
+Kobo also ships as a single container image (UI + API) built from the repo-root `Dockerfile`:
+`docker build -t kobo .`. The image bakes no configuration and no secrets — at runtime, mount a
+config file and point `KOBO_CONFIG` at it (see `api/config.example.yaml`), with `ui_dist: /srv/ui`
+set there so the API serves the UI baked into the image. It listens on `:8080` and runs as a
+non-root user with `git`, `gh`, `kubectl`, and `gcloud` on `PATH` for the operations the API shells
+out to.
+
 ## Documentation
 
 - [Roadmap](ROADMAP.md) — the phased plan (Foundations → Assembly room → Talk, learn & connect) at a glance

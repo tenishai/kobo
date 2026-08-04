@@ -2,6 +2,29 @@
 # KOBO_CONFIG at a file with this shape. Any field omitted falls back to
 # the default baked into kobo_api.config.Config.
 
+# --- Container deployment, at a glance -------------------------------------
+# The container image (repo-root Dockerfile) bakes no config and no secrets;
+# this file (or one shaped like it) arrives at runtime via a mounted file
+# referenced by the KOBO_CONFIG env var. The keys most relevant to running
+# kobo as that container, gathered here for reference — each still lives at
+# its own place below, values are unchanged:
+#   ui_dist              -> set to /srv/ui, where the image's build stage
+#                            copies the built UI (see "ui_dist" below).
+#   iap_audience         -> set when an identity-aware proxy sits in front
+#                            of the deployed container (see "iap_audience").
+#   github_app_id
+#   github_app_installation_id
+#   github_app_private_key_path
+#                        -> set together to authenticate as a GitHub App
+#                           instead of the ambient `gh auth` session that
+#                           dev relies on (see the github_app_* keys below;
+#                           the private key path should point at a mounted
+#                           Secret, never a baked-in file).
+#   db_url               -> point this at a path on a mounted volume (e.g.
+#                           sqlite:////data/kobo.db) so state survives
+#                           container restarts (see "db_url" below).
+# -----------------------------------------------------------------------------
+
 # GitHub organization containing agent implementations
 github_org: example-org
 
