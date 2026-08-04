@@ -525,6 +525,21 @@ class FakeGojira:
     knob idiom as every other fake's canned-result/error switches here: a
     test flips it to False to exercise the check's "can't reach the deploy
     platform" branch without a real gojira backend.
+
+    `status_sequence` (live-incident fix #2, the post-reprovision
+    read-after-write race), when given, makes every `app_status` call return
+    the next status in this list instead of running the
+    `activate_after`/`end_status` state machine above — held at the last
+    entry once exhausted, the same replay convention as `FakeGitHub`'s
+    `head_sha_sequence`. This is the only way to model gojira's real
+    behavior around a reprovision: `reprovision()` resets this fake's
+    internal state to `"pending"` immediately, but the live incident showed
+    the platform's status row can still read the OLD run's terminal
+    `"failed"` for one more poll before a NEW run's `"provisioning"`
+    actually lands — a stale read the plain pending/activate_after
+    mechanics can't reproduce (a freshly-`"pending"` app there is never
+    `"failed"`). Defaults to `None`, so every pre-existing test (all of
+    which use `activate_after`/`end_status`) is unaffected.
     """
 
     def __init__(
@@ -535,12 +550,15 @@ class FakeGojira:
         conflict_repos: set[str] | None = None,
         failed_steps: list[dict] | None = None,
         ping_result: bool = True,
+        status_sequence: list[str] | None = None,
     ):
         self._activate_after = activate_after
         self._end_status = end_status
         self._conflict_repos = set(conflict_repos) if conflict_repos else set()
         self._failed_steps = list(failed_steps) if failed_steps else []
         self._ping_result = ping_result
+        self._status_sequence = list(status_sequence) if status_sequence else None
+        self._status_index = 0
         self._apps: dict[int, dict] = {}
         self._next_id = 1
         self.reprovision_calls: list[int] = []
@@ -570,7 +588,12 @@ class FakeGojira:
         self.calls.append(f"app_status:{app_id}")
         app = self._apps[app_id]
         app["polls"] += 1
-        if app["status"] == "pending" and app["polls"] >= self._activate_after:
+        if self._status_sequence is not None:
+            index = min(self._status_index, len(self._status_sequence) - 1)
+            if self._status_index < len(self._status_sequence) - 1:
+                self._status_index += 1
+            app["status"] = self._status_sequence[index]
+        elif app["status"] == "pending" and app["polls"] >= self._activate_after:
             app["status"] = self._end_status
         if app["status"] == "failed":
             app["steps"] = list(self._failed_steps)

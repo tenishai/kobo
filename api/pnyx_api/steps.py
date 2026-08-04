@@ -73,6 +73,15 @@ BUILD_POLL_TIMEOUT_S = 600
 # naming the observed shas) rather than looping indefinitely.
 BUILD_MAX_HEAD_ADVANCES = 2
 
+# Grace budget for OnboardStep's post-reprovision status read (live-incident
+# fix #2, follow-up to the reprovision fix above `_wait_active`). Deliberately
+# NOT POLL_TIMEOUT_S // POLL_INTERVAL_S — that budget belongs to
+# `_wait_active`'s much longer "wait for provisioning to actually finish"
+# loop; this one only answers the narrower question "did the new run start
+# yet", so a small, dedicated count is both sufficient and keeps the bound
+# tight. See the call site for the incident this closes.
+ONBOARD_REPROVISION_GRACE_POLLS = 6
+
 # After BuildStep fires its one self-heal rerun, gh's API can briefly still
 # echo the PRE-rerun completed/non-success payload (the same read-after-write
 # lag BuildStep already accounts for on `head_sha`) — this many polls of
@@ -389,6 +398,39 @@ class OnboardStep:
             # and just wait.
             if gojira.app_status(app_id).get("status") == "failed":
                 gojira.reprovision(app_id)
+                # Live-incident fix #2: reprovision() being *accepted* is not
+                # the same thing as the platform's status row having been
+                # *updated* yet — live, gojira started the new run ~2s later,
+                # but this step's very next read landed in the window before
+                # that run flipped the row, and saw the OLD run's terminal
+                # `failed` (with its now-irrelevant failed-steps detail)
+                # straight back, raising immediately even though the rerun
+                # was genuinely underway. This is a plain read-after-write
+                # race — the same class of lag BuildStep already learned to
+                # absorb on CI-run reads (P1c's stale-rerun grace) — so the
+                # lesson applies here too: a write that's just been accepted
+                # deserves a bounded grace period before a read that
+                # contradicts it is trusted. Poll here, locally, until the
+                # status actually leaves "failed" (or the small dedicated
+                # budget above runs out); only then hand off to
+                # `_wait_active`, whose own failed-means-failed semantic is
+                # correct for every other caller and must NOT be loosened to
+                # accommodate this — the grace belongs only to the moment
+                # right after a reprovision kick.
+                for grace_poll in range(ONBOARD_REPROVISION_GRACE_POLLS):
+                    status = gojira.app_status(app_id).get("status")
+                    if status != "failed":
+                        break
+                    if grace_poll < ONBOARD_REPROVISION_GRACE_POLLS - 1:
+                        _sleep(POLL_INTERVAL_S)
+                else:
+                    raise RuntimeError(
+                        f"gojira app {app_id} is still 'failed' after "
+                        f"reprovision() was accepted and "
+                        f"{ONBOARD_REPROVISION_GRACE_POLLS} poll(s) of grace — "
+                        "the platform did not start the requested rerun for "
+                        f"app {app_id}"
+                    )
         else:
             agent.gojira_app_id = app_id
 

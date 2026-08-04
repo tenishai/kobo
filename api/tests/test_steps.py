@@ -20,6 +20,7 @@ from pnyx_api.composer import BundleSpec, compose
 from pnyx_api.models import Agent
 from pnyx_api.provisioner import Ctx
 from pnyx_api.steps import (
+    ONBOARD_REPROVISION_GRACE_POLLS,
     POLL_INTERVAL_S,
     POLL_TIMEOUT_S,
     AccessStep,
@@ -532,6 +533,83 @@ def test_onboard_step_conflict_resume_reprovisions_a_failed_app(session_factory,
     assert gojira.reprovision_calls == [prior_app_id]
     assert agent.gojira_app_id == prior_app_id
     assert "active" in result
+
+
+def test_onboard_step_conflict_resume_survives_stale_failed_read_after_reprovision(
+    session_factory, config
+):
+    """Follow-up live incident, verified against the platform's DB: gojira
+    DID accept the reprovision() kick above (a fresh provision run started
+    ~2s later) but `_wait_active`'s first poll landed in the window before
+    that new run flipped the app's status — it read the OLD run's stale
+    `failed` (still carrying the old run's failed-steps detail) and raised
+    immediately, even though the rerun was genuinely underway. A plain
+    read-after-write race, the same class this codebase already learned to
+    absorb on CI-run reads (BuildStep's grace, P1c).
+
+    Modeled directly via `status_sequence`: the initial check reads
+    `failed` (triggering reprovision), the very next read echoes that SAME
+    stale `failed`, then the platform's new run actually shows up as
+    `provisioning`, then `active`. Asserts the fix: the step still succeeds,
+    and reprovision() is called exactly once — the stale echo must not
+    trigger a second reprovision kick.
+    """
+    repo = _repo_full_name(config)
+    gojira = FakeGojira(status_sequence=["failed", "failed", "provisioning", "active"])
+    prior_app_id = gojira.create_app(
+        name=AGENT_NAME, repo_full_name=repo, cluster=config.gojira_cluster, namespace=AGENT_NAME
+    )
+    gojira._conflict_repos.add(repo)  # now gojira reports a live conflict for this repo
+
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=prior_app_id)
+    ctx = _make_ctx(session, agent, config, _clients(gojira=gojira))
+
+    result = OnboardStep().run(ctx)
+
+    assert gojira.reprovision_calls == [prior_app_id]
+    assert agent.gojira_app_id == prior_app_id
+    assert "active" in result
+
+
+def test_onboard_step_conflict_resume_raises_when_rerun_never_starts(session_factory, config):
+    """Companion to the stale-read race above: if the platform's status
+    genuinely never leaves `failed` (it never actually started the
+    requested rerun at all — as opposed to merely being slow to reflect it),
+    the grace budget must eventually give up. The raised message must name
+    the truth of what happened — the platform never started the rerun — not
+    misreport it as a fresh provisioning failure, since gojira's own
+    failed-steps detail here is entirely the stale original run's.
+    """
+    repo = _repo_full_name(config)
+    gojira = FakeGojira(
+        activate_after=1,
+        end_status="failed",
+        failed_steps=[{"name": "provision", "status": "failed", "error": "kubectl outage"}],
+    )
+    prior_app_id = gojira.create_app(
+        name=AGENT_NAME, repo_full_name=repo, cluster=config.gojira_cluster, namespace=AGENT_NAME
+    )
+    assert gojira.app_status(prior_app_id)["status"] == "failed"
+    gojira._conflict_repos.add(repo)  # now gojira reports a live conflict for this repo
+    # Unlike the recovering test above, the platform never actually starts a
+    # new run here: `_end_status` stays "failed", so reprovision()'s reset to
+    # "pending" just lands right back on "failed" on the very next poll,
+    # every time — modeling a reprovision that was accepted but never acted
+    # on.
+
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=prior_app_id)
+    ctx = _make_ctx(session, agent, config, _clients(gojira=gojira))
+
+    with pytest.raises(RuntimeError) as exc_info:
+        OnboardStep().run(ctx)
+
+    message = str(exc_info.value)
+    assert "did not start the requested rerun" in message
+    assert f"app {prior_app_id}" in message
+    assert gojira.reprovision_calls == [prior_app_id]
+    # Exactly the dedicated grace budget's worth of post-reprovision polls,
+    # plus the one initial-check poll before reprovision() was even called.
+    assert gojira.calls.count(f"app_status:{prior_app_id}") == 1 + 1 + ONBOARD_REPROVISION_GRACE_POLLS
 
 
 def test_onboard_step_conflict_resume_active_app_does_not_reprovision(session_factory, config):
