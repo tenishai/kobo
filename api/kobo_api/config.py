@@ -77,6 +77,13 @@ class Config(BaseModel):
     # None (the default) means dev: no UI is mounted, matching today's setup
     # of a separate dev server proxying /api — the API alone.
     ui_dist: Path | None = None
+    # The audience string your identity proxy signs its assertions for
+    # (Task 2) — when non-empty, every request (API and UI alike) must carry
+    # a verified `x-goog-iap-jwt-assertion` header naming this audience, or
+    # the app answers 401 before the request reaches any route. Empty (the
+    # default) disables verification entirely, matching today's unauthenticated
+    # local dev setup.
+    iap_audience: str = ""
 
     @field_validator("workdir", "slack_tokens_path", "ui_dist", mode="before")
     @classmethod

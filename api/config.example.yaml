@@ -93,3 +93,10 @@ slack_tokens_path: null
 # means dev: the API runs alone and the UI runs separately via its own dev
 # server, proxying /api.
 ui_dist: null
+
+# The audience string your identity proxy signs its assertions for. When
+# set, every request (API and UI alike) must carry a verified
+# `x-goog-iap-jwt-assertion` header naming this audience, or the app answers
+# 401 before the request reaches any route. Empty (the default) disables
+# verification entirely — the unauthenticated local dev setup.
+iap_audience: ""

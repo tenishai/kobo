@@ -15,6 +15,7 @@ dependencies = [
     "pyyaml",
     "httpx",
     "jsonschema",
+    "PyJWT[crypto]",
 ]
 
 [project.optional-dependencies]

@@ -8,7 +8,7 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 
 from fastapi import Depends, FastAPI, Request, Response
@@ -24,6 +24,7 @@ from kobo_api.catalog import validate_name
 from kobo_api.clients import ClientError, StorageNotFound
 from kobo_api.config import Config
 from kobo_api.db import init_db, make_engine, make_session_factory
+from kobo_api.iap import IapMiddleware, IapVerifier
 from kobo_api.knowledge import (
     KnowledgeError,
     delete_knowledge_file,
@@ -477,6 +478,7 @@ def create_app(
     config: Config,
     clients: Clients | None = None,
     org: OrgState | None = None,
+    iap_jwks_fetcher: Callable[[], dict] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="kobo-api")
     app.state.config = config
@@ -502,6 +504,22 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Identity-proxy assertion verification (deployability plan, Task 2):
+    # active only when `config.iap_audience` is non-empty — registered here,
+    # explicitly before the built-UI mount at the bottom of this function, so
+    # it's clear at a glance that it covers the whole app (every `/api/*`
+    # route above AND the UI's static/SPA paths below), not just the API.
+    # `iap_jwks_fetcher` is a test-only seam (mirrors `clients`/`org` above):
+    # real boots never pass it, leaving `IapVerifier` to fetch IAP's real
+    # public keys over the network; tests inject one backed by a
+    # locally-generated keypair so the verify path runs against real
+    # cryptography instead of a mock. See kobo_api.iap for the full contract.
+    if config.iap_audience:
+        app.add_middleware(
+            IapMiddleware,
+            verifier=IapVerifier(config.iap_audience, jwks_fetcher=iap_jwks_fetcher),
+        )
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(
