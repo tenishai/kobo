@@ -835,16 +835,23 @@ def test_gojira_app_status_get():
     assert client.app_status(7) == {"id": 7, "status": "active"}
 
 
-def test_gojira_reprovision_posts_and_accepts_303_without_following():
+def test_gojira_reprovision_posts_api_route_with_bearer_and_accepts_202():
+    # The UI form route (/apps/{id}/provision) sits behind gojira's
+    # IAP-identity gate, which a server-to-server caller can never satisfy —
+    # reprovision must ride the token-gated /api/v1 namespace like every
+    # other programmatic call.
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
-        assert str(request.url) == "http://gojira.local/apps/7/provision"
-        return httpx.Response(303, headers={"location": "/apps/7"})
+        assert str(request.url) == "http://gojira.local/api/v1/apps/7/provision"
+        assert request.headers["Authorization"] == "Bearer tok"
+        return httpx.Response(202, json={"id": 7, "status": "provisioning"})
 
     client = HttpxGojiraClient(
-        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
+        "http://gojira.local",
+        token="tok",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
-    client.reprovision(7)  # must not raise, must not attempt to follow the redirect
+    client.reprovision(7)  # must not raise
 
 
 def test_gojira_reprovision_raises_on_unexpected_status():

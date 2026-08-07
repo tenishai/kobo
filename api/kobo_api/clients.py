@@ -494,12 +494,13 @@ class HttpxGojiraClient:
         return resp.json()
 
     def reprovision(self, app_id: int) -> None:
+        # Rides /api/v1 (not the UI's form route, which sits behind gojira's
+        # IAP-identity gate that no server-to-server caller can satisfy).
         resp = self._client.post(
-            f"{self._base_url}/apps/{app_id}/provision",
+            f"{self._base_url}/api/v1/apps/{app_id}/provision",
             headers=self._headers(),
-            follow_redirects=False,
         )
-        if resp.status_code != 303:
+        if resp.status_code != 202:
             raise ClientError(f"reprovision({app_id}) failed ({resp.status_code}): {resp.text}")
 
     def ping(self) -> bool:
