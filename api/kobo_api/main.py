@@ -45,6 +45,13 @@ from kobo_api.provisioner import (
 from kobo_api.search import CATALOG_TTL_S, get_entry, ingest_indexes
 from kobo_api.search import search as catalog_search
 from kobo_api.search import teams as catalog_teams_query
+from kobo_api.skills import (
+    SkillsError,
+    add_catalog_skill,
+    read_local_skill,
+    remove_skill,
+    save_local_skill,
+)
 from kobo_api.slack_setup import render_manifest, wire_slack
 from kobo_api.static_ui import mount_ui
 
@@ -97,6 +104,26 @@ CHAT_MESSAGE_ROLES = {"user", "agent"}
 
 class KnowledgeSavePayload(BaseModel):
     content: str
+
+
+class SkillSavePayload(BaseModel):
+    """PUT .../skills/local/{skill_id} body — same one-field shape as
+    KnowledgeSavePayload above; kobo_api.skills.save_local_skill does its own
+    content validation (size, frontmatter), so there's nothing more to
+    declare here."""
+
+    content: str
+
+
+class CatalogSkillPayload(BaseModel):
+    """POST .../skills/catalog body: the catalog id plus the team it belongs
+    to — same (id, team) shape as SkillPick above (a skill id is only unique
+    within its own team), just with `name` rather than `id` as the field
+    label since this is the skill's directory name, not a catalog row's
+    primary key."""
+
+    name: str
+    team: str
 
 
 class SlackConnectRequest(BaseModel):
@@ -1134,6 +1161,222 @@ def create_app(
             )
 
         return JSONResponse(state)
+
+    # --- Skills (Task 2): post-assembly catalog picks + local guardrails --------
+    #
+    # `agent.skills` (the JSON column populated at creation/assembly time,
+    # kobo_api.steps._stage_skills) is the single source of truth for what an
+    # agent carries — each entry a `{"name", "team", "sha"}` dict for a
+    # catalog pick (an assembly-era entry carries no "source" key at all;
+    # every route below treats that the same as `"source": "catalog"`, never
+    # a third state) or a `{"name", "source": "local"}` dict for a
+    # guardrail-authored one. Every mutation below reassigns `agent.skills`
+    # to a fresh list rather than editing an entry dict in place — same
+    # reasoning as `_stage_skills`'s own sha-drift correction: SQLAlchemy's
+    # JSON column change tracking only notices a new list object, not a
+    # mutated dict already inside the old one.
+
+    def _skill_source(entry: dict) -> str:
+        """An entry's provenance, legacy-entry-safe: assembly-time picks
+        predate the "source" key entirely, and are exactly the entries a
+        real catalog pick would carry, so a missing key reads as "catalog",
+        never as some third unclassified state."""
+        return entry.get("source", "catalog")
+
+    def _skill_conflict(skill_id: str) -> JSONResponse:
+        """The one 409 body both the catalog-add and local-save routes
+        return on a name collision — worded identically regardless of which
+        direction the collision runs, since from the caller's side it's the
+        same fact either way: this agent already has a skill by this name."""
+        return JSONResponse(
+            {"error": f"the agent already carries a skill named {skill_id!r}"},
+            status_code=409,
+        )
+
+    @app.get("/api/agents/{name}/skills")
+    def list_skills(name: str, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        agent = _ready_agent_or_error(session, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        # Purely a DB-column read — unlike list_knowledge, this never touches
+        # the repo (provenance already lives on the row), so there's no
+        # ClientError seam here.
+        skills = []
+        for entry in agent.skills:
+            source = _skill_source(entry)
+            skills.append(
+                {
+                    "name": entry["name"],
+                    "team": entry.get("team"),
+                    "source": source,
+                    "sha": entry.get("sha"),
+                    "editable": source == "local",
+                }
+            )
+        return JSONResponse({"skills": skills})
+
+    @app.post("/api/agents/{name}/skills/catalog")
+    def add_skill_from_catalog(
+        name: str,
+        payload: CatalogSkillPayload,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        # Collision check BEFORE any repo work, either-class: re-picking a
+        # name this agent already carries — whether that existing entry is
+        # itself a catalog pick or a local guardrail file — is a 409, not a
+        # silent overwrite.
+        if any(entry["name"] == payload.name for entry in agent.skills):
+            return _skill_conflict(payload.name)
+
+        try:
+            commit_sha, source_sha = add_catalog_skill(
+                app.state.clients.github,
+                app.state.clients.storage,
+                app.state.config,
+                agent.repo_full_name,
+                payload.name,
+                payload.team,
+            )
+        except SkillsError as exc:
+            # kobo_api.skills carries no structured discriminator between
+            # "bad skill id" and "catalog no longer serves this team/id" —
+            # both are a plain SkillsError with only their message text to go
+            # on. The two messages have disjoint, stable prefixes ("invalid
+            # skill id: " vs "skill no longer in the catalog: "; see
+            # kobo_api.skills._validate_skill_id/add_catalog_skill), so
+            # matching on that prefix is the cleanest option available
+            # without touching skills.py — same idiom as delete_knowledge's
+            # own KnowledgeError prefix match below.
+            message = str(exc)
+            if message.startswith("skill no longer in the catalog:"):
+                return JSONResponse({"error": message}, status_code=404)
+            return JSONResponse({"error": message}, status_code=422)
+        except ClientError as exc:
+            log.warning("skills route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+            )
+
+        # The sha recorded on the row is the catalog's CURRENT source-sha for
+        # this pick (add_catalog_skill's second return value) — the pin a
+        # later provision/resume would compare against — never the pushed
+        # commit sha (`commit_sha`, this route's own response), which is a
+        # different value entirely and answers a different question (what
+        # got pushed just now, not what the catalog's content pins to).
+        agent.skills = [entry for entry in agent.skills if entry["name"] != payload.name] + [
+            {"name": payload.name, "team": payload.team, "sha": source_sha, "source": "catalog"}
+        ]
+        session.commit()
+
+        return JSONResponse({"sha": commit_sha})
+
+    @app.delete("/api/agents/{name}/skills/{skill_id}")
+    def delete_skill(
+        name: str, skill_id: str, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        # One remove_skill call handles either class: a catalog pick and a
+        # locally-authored skill both live under the same
+        # bundle/skills/<id>/ tree, so there's nothing to branch on here —
+        # this IS the "unified delete" the brief calls for.
+        try:
+            sha = remove_skill(app.state.clients.github, agent.repo_full_name, skill_id)
+        except SkillsError as exc:
+            message = str(exc)
+            if message.startswith("skill not found:"):
+                return JSONResponse({"error": message}, status_code=404)
+            return JSONResponse({"error": message}, status_code=422)
+        except ClientError as exc:
+            log.warning("skills route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+            )
+
+        agent.skills = [entry for entry in agent.skills if entry["name"] != skill_id]
+        session.commit()
+
+        return JSONResponse({"sha": sha})
+
+    @app.get("/api/agents/{name}/skills/local/{skill_id}")
+    def get_local_skill(
+        name: str, skill_id: str, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        # Content is never served for a catalog-class id, even if the repo
+        # happens to have a SKILL.md there (every catalog pick's tree does) —
+        # checked against the row BEFORE calling into the repo at all, same
+        # as the collision checks above, so a catalog id costs no clone.
+        entry = next((e for e in agent.skills if e["name"] == skill_id), None)
+        if entry is None or _skill_source(entry) != "local":
+            return JSONResponse(
+                {"error": f"no such local skill: {skill_id!r}"}, status_code=404
+            )
+
+        try:
+            content = read_local_skill(app.state.clients.github, agent.repo_full_name, skill_id)
+        except SkillsError as exc:
+            message = str(exc)
+            if message.startswith("skill not found:"):
+                return JSONResponse(
+                    {"error": f"no such local skill: {skill_id!r}"}, status_code=404
+                )
+            return JSONResponse({"error": message}, status_code=422)
+        except ClientError as exc:
+            log.warning("skills route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+            )
+
+        return JSONResponse({"name": skill_id, "content": content})
+
+    @app.put("/api/agents/{name}/skills/local/{skill_id}")
+    def save_local_skill_route(
+        name: str,
+        skill_id: str,
+        payload: SkillSavePayload,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        # Collision check BEFORE any repo work — but only against a
+        # catalog-class entry: overwriting your OWN existing local skill via
+        # this same route is the ordinary edit path (save_local_skill's
+        # overwrite semantics), never a collision.
+        entry = next((e for e in agent.skills if e["name"] == skill_id), None)
+        if entry is not None and _skill_source(entry) == "catalog":
+            return _skill_conflict(skill_id)
+
+        try:
+            sha = save_local_skill(
+                app.state.clients.github, agent.repo_full_name, skill_id, payload.content
+            )
+        except SkillsError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        except ClientError as exc:
+            log.warning("skills route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+            )
+
+        agent.skills = [e for e in agent.skills if e["name"] != skill_id] + [
+            {"name": skill_id, "source": "local"}
+        ]
+        session.commit()
+
+        return JSONResponse({"sha": sha})
 
     # --- Slack connect (P2c): app creation + token delivery/wiring --------------
 
