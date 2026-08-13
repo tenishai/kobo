@@ -60,6 +60,13 @@ from kobo_api.skills import (
 )
 from kobo_api.slack_setup import render_manifest, wire_slack
 from kobo_api.static_ui import mount_ui
+from kobo_api.tooling import (
+    ToolingError,
+    delete_tooling_file,
+    import_tooling,
+    list_tooling,
+    upload_tooling_file,
+)
 
 log = logging.getLogger(__name__)
 
@@ -140,6 +147,25 @@ class IntakeUploadPayload(BaseModel):
 
     filename: str
     content: str
+
+
+class ToolingUploadPayload(BaseModel):
+    """POST .../tooling body: same one-shot-upload shape as
+    IntakeUploadPayload above (filename alongside its content, not a
+    `{filename}` path segment) — a tooling upload is a fresh file pick from
+    a form, not an edit of an already-named resource."""
+
+    filename: str
+    content: str
+
+
+class ToolingImportPayload(BaseModel):
+    """POST .../tooling/import body: the source repo (`owner/repo`) and the
+    folder path within it to walk — see kobo_api.tooling.import_tooling for
+    the validation and partial-pass semantics."""
+
+    repo: str
+    path: str
 
 
 class SlackConnectRequest(BaseModel):
@@ -1514,6 +1540,130 @@ def create_app(
         return JSONResponse(
             {"sha": sha, "note": "memories are kept — only the source file was removed"}
         )
+
+    # --- Tooling (2026-08-13 addendum): the staged door for an agent's --------
+    # LAW-to-be — `bundle/tools/*.{py,go}`, validated and delivered, but with
+    # no enforcement yet (a separate, later contract). Same
+    # clone/list/upload/delete plumbing as intake above, plus a second
+    # write path (import_tooling) that pulls every matching file out of some
+    # OTHER repo's folder in one delivery. See kobo_api.tooling's module
+    # docstring for the full honesty-guarantee reasoning.
+
+    @app.get("/api/agents/{name}/tooling")
+    def list_tooling_route(name: str, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        agent = _ready_agent_or_error(session, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        clients = app.state.clients
+        try:
+            files = list_tooling(
+                clients.github,
+                clients.kubectl,
+                repo=agent.repo_full_name,
+                namespace=agent.name,
+                deploy=agent.name,
+            )
+        except ClientError as exc:
+            log.warning("tooling route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+            )
+
+        return JSONResponse({"files": files})
+
+    @app.post("/api/agents/{name}/tooling")
+    def upload_tooling(
+        name: str,
+        payload: ToolingUploadPayload,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        cfg: Config = app.state.config
+        try:
+            sha = upload_tooling_file(
+                app.state.clients.github,
+                agent.repo_full_name,
+                payload.filename,
+                payload.content,
+                runtime_image=cfg.runtime_image,
+            )
+        except ToolingError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        except ClientError as exc:
+            log.warning("tooling route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+            )
+
+        return JSONResponse({"sha": sha})
+
+    @app.post("/api/agents/{name}/tooling/import")
+    def import_tooling_route(
+        name: str,
+        payload: ToolingImportPayload,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        cfg: Config = app.state.config
+        try:
+            result = import_tooling(
+                app.state.clients.github,
+                agent.repo_full_name,
+                source_repo=payload.repo,
+                source_path=payload.path,
+                runtime_image=cfg.runtime_image,
+            )
+        except ToolingError as exc:
+            # Request-shape failures (a malformed owner/repo, a traversal
+            # attempt in the path) — distinct from a per-file entry in the
+            # result's own "rejected" list, which is a 200: those are
+            # candidate files that failed the SAME validator individually,
+            # not a bad request overall.
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        except ClientError as exc:
+            log.warning("tooling route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+            )
+
+        return JSONResponse(result)
+
+    @app.delete("/api/agents/{name}/tooling/{filename}")
+    def delete_tooling(
+        name: str, filename: str, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        try:
+            sha = delete_tooling_file(app.state.clients.github, agent.repo_full_name, filename)
+        except ToolingError as exc:
+            # Same disjoint-prefix idiom as delete_intake above: tooling.py
+            # carries no structured discriminator between "bad filename" and
+            # "file not there to delete", so the message's stable prefix
+            # ("tooling file not found: " vs "invalid tooling filename: ") is
+            # what's matched on.
+            message = str(exc)
+            if message.startswith("tooling file not found:"):
+                return JSONResponse(
+                    {"error": f"no such tooling file: {filename!r}"}, status_code=404
+                )
+            return JSONResponse({"error": message}, status_code=422)
+        except ClientError as exc:
+            log.warning("tooling route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+            )
+
+        return JSONResponse({"sha": sha})
 
     # --- Slack connect (P2c): app creation + token delivery/wiring --------------
 

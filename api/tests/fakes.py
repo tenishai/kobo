@@ -263,6 +263,26 @@ class FakeGitHub:
     cloned repo. Defaults to `None` (no `bundle/intake/` tree at all,
     matching a real agent repo that's never had an upload).
 
+    `tooling_files` (Tooling staged door), when given, is a `{filename:
+    content}` map materialized under `bundle/tools/` — same idiom as
+    `intake_files`, for `kobo_api.tooling.list_tooling`/`delete_tooling_file`
+    to find existing uploaded/imported tooling files in the cloned agent
+    repo. Defaults to `None` (no `bundle/tools/` tree at all).
+
+    `tooling_source_files` (Tooling staged door), when given, maps a SOURCE
+    repo's full name to a `{relative_path: content}` map (content may be
+    `str`, UTF-8 encoded on write, or raw `bytes` — the latter is how a test
+    seeds a candidate file that ISN'T valid UTF-8, for
+    `kobo_api.tooling.import_tooling`'s decode-failure path) that `clone`
+    also materializes at that path, parent dirs created as needed. This is
+    keyed by repo (not layered onto `tooling_files`/the generic scaffolding
+    above) because `import_tooling` clones a repo distinct from the agent's
+    own — a plain `acme/tools-library`-shaped fixture, say — via this exact
+    same `FakeGitHub`; a test builds one fake and calls `clone` on it twice
+    (once per repo), and this knob only ever fires for the repo name(s) it
+    names, leaving the agent repo's own clone (and every pre-existing test)
+    completely unaffected. Defaults to `None` (no extra files for any repo).
+
     `intake_commit_shas`, `rev_parse_results`, and `ancestor_pairs` (Task 3)
     together model the three new GhCLI-only methods `kobo_api.intake.
     list_intake` calls (`commit_shas_for_paths`, `rev_parse_prefix`,
@@ -367,6 +387,8 @@ class FakeGitHub:
         intake_commit_shas: dict[str, str] | None = None,
         rev_parse_results: dict[str, str | None] | None = None,
         ancestor_pairs: set[tuple[str, str]] | None = None,
+        tooling_files: dict[str, str] | None = None,
+        tooling_source_files: dict[str, dict[str, str | bytes]] | None = None,
     ):
         self.repos: set[str] = set(existing_repos) if existing_repos else set()
         self.created_from_dir: list[tuple[str, Path]] = []
@@ -396,6 +418,12 @@ class FakeGitHub:
         self._intake_commit_shas = dict(intake_commit_shas) if intake_commit_shas else {}
         self._rev_parse_results = dict(rev_parse_results) if rev_parse_results else {}
         self._ancestor_pairs = set(ancestor_pairs) if ancestor_pairs else set()
+        self._tooling_files = dict(tooling_files) if tooling_files else None
+        self._tooling_source_files = (
+            {repo: dict(files) for repo, files in tooling_source_files.items()}
+            if tooling_source_files
+            else {}
+        )
 
         self._head_sha = head_sha
         self._head_sha_sequence = list(head_sha_sequence) if head_sha_sequence else None
@@ -497,6 +525,19 @@ class FakeGitHub:
             intake_dir.mkdir(parents=True, exist_ok=True)
             for filename, content in self._intake_files.items():
                 (intake_dir / filename).write_text(content)
+
+        if self._tooling_files:
+            tools_dir = bundle_dir / "tools"
+            tools_dir.mkdir(parents=True, exist_ok=True)
+            for filename, content in self._tooling_files.items():
+                (tools_dir / filename).write_text(content)
+
+        if repo in self._tooling_source_files:
+            for rel_path, content in self._tooling_source_files[repo].items():
+                target = dest / rel_path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                raw = content.encode("utf-8") if isinstance(content, str) else content
+                target.write_bytes(raw)
 
     def commit_push(self, workdir: Path, message: str) -> bool:
         self.calls.append(f"commit_push:{message}")
