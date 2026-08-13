@@ -9,6 +9,7 @@
 //   ["agents", name]                                - one agent's detail
 //   ["agents", name, "knowledge"]                   - an agent's knowledge files
 //   ["agents", name, "knowledge", "delivery", sha]  - delivery state for one sha
+//   ["agents", name, "skills"]                      - an agent's skills (catalog + local)
 //   ["catalog", "models"]                           - the model list + default
 //   ["catalog", "teams"]                             - the team-slug list
 //   ["catalog", "skills", {q, team}]                - a skill catalog search
@@ -19,18 +20,21 @@ import { queryOptions, type QueryClient } from "@tanstack/svelte-query";
 import {
   ApiError,
   type AgentDetail,
+  type AgentSkill,
   type AgentSummary,
   type CatalogEntry,
   type ChatMessage,
   type KnowledgeFile,
   type OrgStatus,
   type PersonaForm,
+  addCatalogSkill,
   chatWithAgent,
   connectSlack,
   createAgent,
   createPersona,
   createSlackApp,
   deleteKnowledgeFile,
+  deleteSkill,
   fetchDeliveryState,
   fetchModels,
   fetchOrgStatus,
@@ -39,8 +43,10 @@ import {
   getAgent,
   listAgents,
   listKnowledge,
+  listSkills,
   retryAgent,
   saveKnowledgeFile,
+  saveLocalSkill,
   searchPersonas,
   searchSkills,
 } from "./api";
@@ -280,6 +286,60 @@ export function deliveryQuery(name: string, sha: string | null) {
   });
 }
 
+/** An agent's skills — catalog picks and local guardrail files alike. No
+ * polling — same reasoning as `knowledgeQuery`: edits here are user-driven,
+ * never something that changes in the background on its own. */
+export function agentSkillsQuery(name: string) {
+  return queryOptions({
+    queryKey: ["agents", name, "skills"] as const,
+    queryFn: () => listSkills(name),
+  });
+}
+
+/**
+ * Picks a skill from the org catalog for this agent; on success, invalidates
+ * that agent's skills query so the new pick (and its provenance line) shows
+ * up.
+ */
+export function addCatalogSkillMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: ({ skillName, team }: { skillName: string; team: string }) =>
+      addCatalogSkill(name, skillName, team),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "skills"] });
+    },
+  };
+}
+
+/**
+ * Removes a skill — catalog pick or local guardrail alike (the server's one
+ * unified delete path for both); on success, invalidates that agent's
+ * skills query so the removed entry drops out of the list.
+ */
+export function deleteSkillMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (skillId: string) => deleteSkill(name, skillId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "skills"] });
+    },
+  };
+}
+
+/**
+ * Saves (creates or overwrites) one local guardrail skill's content; on
+ * success, invalidates that agent's skills query so the saved content (and
+ * its new sha) is picked up.
+ */
+export function saveLocalSkillMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: ({ skillId, content }: { skillId: string; content: string }) =>
+      saveLocalSkill(name, skillId, content),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "skills"] });
+    },
+  };
+}
+
 /**
  * Creates the agent's Slack app; on success, invalidates that agent's detail
  * query so the new `slack.app_id` (and configure_url, surfaced via the
@@ -339,6 +399,7 @@ export function generateAvatarMutation(queryClient: QueryClient, name: string) {
 // import from api.ts just to type their component-level state.
 export type {
   AgentDetail,
+  AgentSkill,
   AgentSummary,
   CatalogEntry,
   ChatMessage,

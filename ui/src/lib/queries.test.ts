@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, type CatalogEntry, type OrgStatus } from "./api";
+import { ApiError, readLocalSkill, type AgentSkill, type CatalogEntry, type OrgStatus } from "./api";
 import {
+  addCatalogSkillMutation,
+  agentSkillsQuery,
   chatMutation,
   connectSlackMutation,
   createPersonaMutation,
   createSlackAppMutation,
   deleteKnowledgeMutation,
+  deleteSkillMutation,
   deliveryQuery,
   deliveryRefetchInterval,
   generateAvatarMutation,
@@ -14,6 +17,7 @@ import {
   personasSearchQuery,
   retryAgentMutation,
   saveKnowledgeMutation,
+  saveLocalSkillMutation,
   shouldRetry,
   skillsSearchQuery,
   teamsQuery,
@@ -504,5 +508,234 @@ describe("createPersonaMutation", () => {
     expect(invalidateQueries).toHaveBeenNthCalledWith(2, {
       queryKey: ["catalog", "teams"],
     });
+  });
+});
+
+describe("agentSkillsQuery", () => {
+  it("has queryKey ['agents', name, 'skills']", () => {
+    expect(agentSkillsQuery("clio").queryKey).toEqual([
+      "agents",
+      "clio",
+      "skills",
+    ]);
+  });
+
+  it("queryFn GETs /api/agents/{name}/skills and unwraps {skills: [...]}", async () => {
+    const skills: AgentSkill[] = [
+      {
+        name: "read-code",
+        team: "shared",
+        source: "catalog",
+        sha: "abc123def456",
+        editable: false,
+      },
+      { name: "my-guardrail", team: null, source: "local", sha: null, editable: true },
+    ];
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ skills }),
+    } as Response);
+
+    await expect(
+      callQueryFn<AgentSkill[]>(agentSkillsQuery("clio")),
+    ).resolves.toEqual(skills);
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/skills");
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("addCatalogSkillMutation", () => {
+  it("mutationFn POSTs {name, team} to /api/agents/{name}/skills/catalog and returns {sha}", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ sha: "abc123" }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = addCatalogSkillMutation(queryClient, "clio");
+
+    await expect(
+      mutation.mutationFn({ skillName: "read-code", team: "shared" }),
+    ).resolves.toEqual({ sha: "abc123" });
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/skills/catalog", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "read-code", team: "shared" }),
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the agent's skills query on success", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = addCatalogSkillMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "clio", "skills"],
+    });
+  });
+
+  it("surfaces a 409's {error} message (name collision) through parse()", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      statusText: "Conflict",
+      text: async () =>
+        JSON.stringify({
+          error: "the agent already carries a skill named 'read-code'",
+        }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = addCatalogSkillMutation(queryClient, "clio");
+
+    await expect(
+      mutation.mutationFn({ skillName: "read-code", team: "shared" }),
+    ).rejects.toThrow("the agent already carries a skill named 'read-code'");
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("deleteSkillMutation", () => {
+  it("mutationFn DELETEs /api/agents/{name}/skills/{skillId} and returns {sha}", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ sha: "def456" }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = deleteSkillMutation(queryClient, "clio");
+
+    await expect(mutation.mutationFn("read-code")).resolves.toEqual({
+      sha: "def456",
+    });
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/skills/read-code", {
+      method: "DELETE",
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the agent's skills query on success", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = deleteSkillMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "clio", "skills"],
+    });
+  });
+});
+
+describe("saveLocalSkillMutation", () => {
+  it("mutationFn PUTs {content} to /api/agents/{name}/skills/local/{skillId} and returns {sha}", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ sha: "ghi789" }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = saveLocalSkillMutation(queryClient, "clio");
+    const content = "---\nname: my-guardrail\ndescription: keeps things safe\n---\nBody text.";
+
+    await expect(
+      mutation.mutationFn({ skillId: "my-guardrail", content }),
+    ).resolves.toEqual({ sha: "ghi789" });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/agents/clio/skills/local/my-guardrail",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      },
+    );
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the agent's skills query on success", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = saveLocalSkillMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "clio", "skills"],
+    });
+  });
+});
+
+describe("readLocalSkill", () => {
+  it("GETs /api/agents/{name}/skills/local/{skillId} and returns {name, content}", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          name: "my-guardrail",
+          content: "---\nname: my-guardrail\ndescription: x\n---\n",
+        }),
+    } as Response);
+
+    await expect(readLocalSkill("clio", "my-guardrail")).resolves.toEqual({
+      name: "my-guardrail",
+      content: "---\nname: my-guardrail\ndescription: x\n---\n",
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/agents/clio/skills/local/my-guardrail",
+    );
+
+    vi.unstubAllGlobals();
+  });
+
+  it("surfaces a 404's {error} message through parse() (unknown local skill)", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      statusText: "Not Found",
+      text: async () =>
+        JSON.stringify({ error: "no such local skill: 'nope'" }),
+    } as Response);
+
+    await expect(readLocalSkill("clio", "nope")).rejects.toThrow(
+      "no such local skill: 'nope'",
+    );
+
+    vi.unstubAllGlobals();
   });
 });

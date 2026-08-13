@@ -316,6 +316,90 @@ export async function fetchDeliveryState(
   return parse<{ state: string; detail: string | null }>(res);
 }
 
+/** One entry of `GET /api/agents/{name}/skills` — a catalog pick or a
+ * locally-authored guardrail skill, both served by the same shape. `team`
+ * and `sha` are set for a catalog pick (the catalog team it came from, and
+ * the catalog's current pin for it); both are `null` for a local skill,
+ * which carries no catalog provenance at all. `editable` is `true` exactly
+ * when `source === "local"` — a catalog pick's content lives in the
+ * catalog, not something this room edits in place. */
+export type AgentSkill = {
+  name: string;
+  team: string | null;
+  source: "catalog" | "local";
+  sha: string | null;
+  editable: boolean;
+};
+
+export async function listSkills(name: string): Promise<AgentSkill[]> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/skills`);
+  const data = await parse<{ skills: AgentSkill[] }>(res);
+  return data.skills;
+}
+
+/**
+ * Picks a skill from the org catalog for this agent (`team`/`skillName`
+ * identify it there). Returns the pushed commit's sha, same
+ * delivery-tracking shape every other mutation here returns.
+ */
+export async function addCatalogSkill(
+  name: string,
+  skillName: string,
+  team: string,
+): Promise<{ sha: string }> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/skills/catalog`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: skillName, team }),
+    },
+  );
+  return parse<{ sha: string }>(res);
+}
+
+/** Removes a skill — catalog pick or local guardrail alike, the server's
+ * single unified delete path for both classes. */
+export async function deleteSkill(
+  name: string,
+  skillId: string,
+): Promise<{ sha: string }> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/skills/${encodeURIComponent(skillId)}`,
+    { method: "DELETE" },
+  );
+  return parse<{ sha: string }>(res);
+}
+
+/** The current content of one local (guardrail-authored) skill. Never
+ * served for a catalog pick — the server 404s that case instead. */
+export async function readLocalSkill(
+  name: string,
+  skillId: string,
+): Promise<{ name: string; content: string }> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/skills/local/${encodeURIComponent(skillId)}`,
+  );
+  return parse<{ name: string; content: string }>(res);
+}
+
+/** Saves (creates or overwrites) one local skill's content. */
+export async function saveLocalSkill(
+  name: string,
+  skillId: string,
+  content: string,
+): Promise<{ sha: string }> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/skills/local/${encodeURIComponent(skillId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    },
+  );
+  return parse<{ sha: string }>(res);
+}
+
 /**
  * Creates the Slack app for this agent (server calls out to Slack's app
  * manifest API and returns the app id plus a configure_url for the human
