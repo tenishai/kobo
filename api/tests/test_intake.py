@@ -342,6 +342,29 @@ def test_list_intake_non_hex_short_tag_is_pending_never_crashes():
     assert files[0]["status"] == "pending"
 
 
+def test_list_intake_digest_pinned_image_with_matching_tag_resolves_ingested():
+    # Live repro (digest-pinned deploy fix): the platform's regenerated CI
+    # now applies Deployments pinned BY DIGEST (`repo:tag@sha256:...`) —
+    # this must resolve exactly as
+    # test_list_intake_file_commit_equals_live_commit_is_ingested does, not
+    # regress to "pending" because the digest hex got mistaken for the tag.
+    github = FakeGitHub(
+        intake_files={"notes.md": "content"},
+        intake_commit_shas={"bundle/intake/notes.md": OLDER_SHA},
+        rev_parse_results={"oldoldoldold": OLDER_SHA},
+    )
+    kubectl = FakeKubectl(
+        images={
+            (NAMESPACE, DEPLOY): (
+                f"gojira-app:{OLDER_SHA[:12]}"
+                "@sha256:3c68b1e1a2a3f4b5c6d7e8f900112233445566778899aabbccddeeff0011223"
+            )
+        }
+    )
+    files = list_intake(github, kubectl, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
+    assert files[0]["status"] == "ingested"
+
+
 def test_list_intake_mixed_statuses_across_multiple_files():
     github = FakeGitHub(
         intake_files={"old.md": "stale", "fresh.md": "brand new"},

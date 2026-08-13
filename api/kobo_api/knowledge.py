@@ -22,7 +22,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from kobo_api.clients import GitHubClient, KubectlClient
+from kobo_api.clients import GitHubClient, KubectlClient, image_tag
 
 # 1-40 chars: a lowercase letter, then lowercase/digit/hyphen, ".md" — no path
 # separators, no leading dot/digit/hyphen, nothing that could escape
@@ -145,12 +145,18 @@ def delivery_state(
         present): an identical re-save no-ops in commit_push and reports the
         same failed sha again, so the detail steers toward actually changing
         the content, not just saving again.
-      - success: compare kubectl.deploy_image(namespace, deploy)'s tag (the
-        part after the last ":") against sha[:12] — generated CI tags the
-        image it builds with exactly that prefix, and applies the manifests
-        in that same run, so a tag match is proof this exact commit is live.
-        Match -> "delivered"; anything else -> "rolling" (the successful run
-        completed, but the newer image hasn't rolled out yet).
+      - success: compare kubectl.deploy_image(namespace, deploy)'s tag
+        (via `image_tag`, kobo_api.clients — handles both a plain
+        `repo:tag` and a digest-pinned `repo:tag@sha256:...` apply, the
+        platform's generated CI moved to the latter) against sha[:12] —
+        generated CI tags the image it builds with exactly that prefix,
+        and applies the manifests in that same run, so a tag match is
+        proof this exact commit is live. Match -> "delivered"; anything
+        else -> "rolling" (the successful run completed, but the newer
+        image hasn't rolled out yet). A tagless digest-only image
+        (`repo@sha256:...`, `image_tag` -> None) can't be matched to a
+        sha at all, so it also reads "rolling" — an honest pending state,
+        not a crash.
     """
     runs = github.runs_for_commit(repo, sha)
     if not runs:
@@ -167,7 +173,10 @@ def delivery_state(
         }
 
     image = kubectl.deploy_image(namespace, deploy)
-    tag = image.rsplit(":", 1)[-1]
-    if tag == sha[:12]:
+    tag = image_tag(image)
+    # None means a tagless digest-only image (`repo@sha256:...`) — there's no
+    # tag to compare against sha[:12] at all, so it can't be proven delivered;
+    # "rolling" is the honest pending state here, not a crash.
+    if tag is not None and tag == sha[:12]:
         return {"state": "delivered", "detail": None}
     return {"state": "rolling", "detail": None}

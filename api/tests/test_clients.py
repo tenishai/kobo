@@ -49,6 +49,7 @@ from kobo_api.clients import (
     _post_task,
     _wait_for_forwarded_port,
     _write_slack_tokens,
+    image_tag,
     installation_token_provider,
 )
 from kobo_api.config import Config
@@ -850,6 +851,50 @@ def test_deploy_image_argv_and_value():
             "-o", "jsonpath={.spec.template.spec.containers[0].image}",
         ]
     ]
+
+
+# --- image_tag (digest-pinned deploy fix, live incident) -----------------------
+#
+# The platform's regenerated CI now applies Deployment images pinned BY
+# DIGEST (`repo:tag@sha256:...`) rather than by tag alone — a plain
+# `image.rsplit(":", 1)[-1]` parse (the old bug, still present in knowledge.py
+# and intake.py until this fix lands) would yield the digest hex instead of
+# the tag in that shape, sticking delivery chips at "rolling"/"pending"
+# forever. `image_tag` strips the `@sha256:...` suffix FIRST so the
+# trailing-colon split can never mistake the digest hex for a tag.
+
+
+def test_image_tag_plain_tag():
+    assert image_tag("us-docker.pkg.dev/example/gojira-app:ed17ed17ed17") == "ed17ed17ed17"
+
+
+def test_image_tag_tag_at_digest():
+    # The live repro: digest-pinned apply, with the tag still present before
+    # the '@sha256:...' suffix.
+    assert (
+        image_tag(
+            "us-east4-docker.pkg.dev/p/r/network:63bd0c4fef25"
+            "@sha256:3c68b1e1a2a3f4b5c6d7e8f900112233445566778899aabbccddeeff0011223"
+        )
+        == "63bd0c4fef25"
+    )
+
+
+def test_image_tag_digest_only_returns_none():
+    # No tag at all — just a repo@sha256:digest reference.
+    assert (
+        image_tag(
+            "us-docker.pkg.dev/example/gojira-app"
+            "@sha256:3c68b1e1a2a3f4b5c6d7e8f900112233445566778899aabbccddeeff0011223"
+        )
+        is None
+    )
+
+
+def test_image_tag_port_no_tag_returns_none():
+    # A registry port looks like a trailing ":segment", but that segment
+    # contains a '/', so it must not be mistaken for a tag.
+    assert image_tag("registry:5000/repo") is None
 
 
 # --- Gojira (HttpxGojiraClient) ------------------------------------------------

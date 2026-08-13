@@ -34,7 +34,7 @@ import re
 import tempfile
 from pathlib import Path
 
-from kobo_api.clients import GitHubClient, KubectlClient
+from kobo_api.clients import GitHubClient, KubectlClient, image_tag
 from kobo_api.composer import update_dockerfile_runtime_image
 
 # 1-40 chars: a lowercase letter, then lowercase/digit/hyphen, then ".md" or
@@ -163,19 +163,24 @@ def list_intake(
     do not simplify): clone once; for every intake file, get its last-touch
     commit via `github.commit_shas_for_paths` (one `git log -1 -- <path>`
     per file); read the live Deployment's image via
-    `kubectl.deploy_image(namespace, deploy)` and take the tag (the part
-    after the last ":", generated CI's 12-hex commit-prefix convention —
-    same read `kobo_api.knowledge.delivery_state` makes); resolve that tag
-    to a full commit sha inside THIS clone via `github.rev_parse_prefix`
-    (None if it doesn't resolve — an image built from a since-force-pushed
-    sha, or a malformed/non-hex tag like "latest").
+    `kubectl.deploy_image(namespace, deploy)` and take the tag (via
+    `image_tag`, kobo_api.clients — handles both a plain `repo:tag` and a
+    digest-pinned `repo:tag@sha256:...` apply, the platform's generated CI
+    convention, generated CI's 12-hex commit-prefix convention — same read
+    `kobo_api.knowledge.delivery_state` makes); resolve that tag to a full
+    commit sha inside THIS clone via `github.rev_parse_prefix` (None if it
+    doesn't resolve — an image built from a since-force-pushed sha, a
+    malformed/non-hex tag like "latest", or a tagless digest-only image
+    that `image_tag` itself already reports as having no tag at all).
 
     A file is "ingested" iff the tag resolved to a commit AND that commit
     is the file's last-touch commit or a descendant of it
     (`github.is_ancestor(file_commit, live_commit)` — equality counts,
     matching git's own `merge-base --is-ancestor` semantics). Anything else
-    — an unresolvable tag, or a file whose last-touch commit is NOT an
-    ancestor of the live commit — is "pending". This is pure boot-ordering
+    — an unresolvable (or absent) tag, or a file whose last-touch commit is
+    NOT an ancestor of the live commit — is "pending" (a tagless digest-only
+    image can't be matched to a sha at all, so every file reads "pending" in
+    that case — an honest state, not a crash). This is pure boot-ordering
     logic: if the live pod's commit already contains this file, the runtime
     seeder (which runs once at boot, ingesting whatever `bundle/intake/`
     held at that point) must have processed it before this pod started
@@ -199,8 +204,12 @@ def list_intake(
         commit_shas = github.commit_shas_for_paths(workdir, rel_paths)
 
         image = kubectl.deploy_image(namespace, deploy)
-        tag = image.rsplit(":", 1)[-1]
-        live_commit = github.rev_parse_prefix(workdir, tag)
+        tag = image_tag(image)
+        # None means a tagless digest-only image (`repo@sha256:...`) — there's
+        # no tag to resolve at all, so every file below falls through to
+        # "pending" (the honest state; rev_parse_prefix is never called with
+        # a None prefix).
+        live_commit = github.rev_parse_prefix(workdir, tag) if tag is not None else None
 
         results = []
         for path, rel_path in zip(paths, rel_paths):

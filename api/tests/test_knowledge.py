@@ -286,6 +286,51 @@ def test_delivery_state_newest_run_is_index_zero():
     assert state == {"state": "delivered", "detail": None}
 
 
+def test_delivery_state_delivered_when_image_is_digest_pinned_with_matching_tag():
+    # Live repro (digest-pinned deploy fix): the platform's regenerated CI
+    # now applies Deployments pinned BY DIGEST (`repo:tag@sha256:...`) — the
+    # tag before the '@' must still be matched against sha[:12], not the
+    # digest hex. Must be RED (rolling, not delivered) before the image_tag
+    # fix lands.
+    sha = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+    github = FakeGitHub(
+        runs_by_sha={sha: [[{"id": 1, "status": "completed", "conclusion": "success"}]]}
+    )
+    kubectl = FakeKubectl(
+        images={
+            ("clio", "clio"): (
+                f"gojira-app:{sha[:12]}"
+                "@sha256:3c68b1e1a2a3f4b5c6d7e8f900112233445566778899aabbccddeeff0011223"
+            )
+        }
+    )
+    state = delivery_state(
+        github, kubectl, repo="acme/agent-clio", namespace="clio", deploy="clio", sha=sha
+    )
+    assert state == {"state": "delivered", "detail": None}
+
+
+def test_delivery_state_rolling_when_image_is_digest_only_no_tag():
+    # A tagless digest-only image (`repo@sha256:...`) can't be matched to a
+    # sha at all — an honest "rolling" (pending) state, not a crash.
+    sha = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+    github = FakeGitHub(
+        runs_by_sha={sha: [[{"id": 1, "status": "completed", "conclusion": "success"}]]}
+    )
+    kubectl = FakeKubectl(
+        images={
+            ("clio", "clio"): (
+                "gojira-app"
+                "@sha256:3c68b1e1a2a3f4b5c6d7e8f900112233445566778899aabbccddeeff0011223"
+            )
+        }
+    )
+    state = delivery_state(
+        github, kubectl, repo="acme/agent-clio", namespace="clio", deploy="clio", sha=sha
+    )
+    assert state == {"state": "rolling", "detail": None}
+
+
 def test_delivery_state_defaults_wired_happy_path_reads_delivered():
     # FakeGitHub()/FakeKubectl() defaults are deliberately consistent (see
     # tests/fakes.py FAKE_LOCAL_HEAD_DEFAULT/FAKE_DEPLOY_IMAGE_DEFAULT) — a

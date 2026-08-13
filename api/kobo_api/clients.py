@@ -917,6 +917,24 @@ class KubectlClient(Protocol):
         ...
 
 
+def image_tag(image: str) -> str | None:
+    """The tag of a container image reference, or None when it has none.
+
+    Handles all three shapes kubectl can hand back: `repo:tag`,
+    `repo:tag@sha256:digest` (digest-pinned apply — the platform's
+    generated CI moved to this), and `repo@sha256:digest` (no tag at
+    all). The digest part is stripped FIRST, so the trailing-colon split
+    can never mistake the digest hex for a tag. A repo with a port but
+    no tag (`registry:5000/repo`) also returns None (the split segment
+    contains a `/`).
+    """
+    base = image.split("@", 1)[0]
+    tail = base.rsplit(":", 1)
+    if len(tail) != 2 or "/" in tail[1]:
+        return None
+    return tail[1]
+
+
 class KubectlCLI:
     """kubectl-backed KubectlClient."""
 
