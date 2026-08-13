@@ -25,6 +25,12 @@ from kobo_api.clients import ClientError, StorageNotFound
 from kobo_api.config import Config
 from kobo_api.db import init_db, make_engine, make_session_factory
 from kobo_api.iap import IapMiddleware, IapVerifier
+from kobo_api.intake import (
+    IntakeError,
+    delete_intake_file,
+    list_intake,
+    upload_intake_file,
+)
 from kobo_api.knowledge import (
     KnowledgeError,
     delete_knowledge_file,
@@ -124,6 +130,16 @@ class CatalogSkillPayload(BaseModel):
 
     name: str
     team: str
+
+
+class IntakeUploadPayload(BaseModel):
+    """POST .../intake body: the filename alongside its content (unlike
+    knowledge/skill saves, which take the filename from the URL path) —
+    intake is a one-shot upload, not an edit of a named existing resource,
+    so there's no `{filename}` in the route to key off of."""
+
+    filename: str
+    content: str
 
 
 class SlackConnectRequest(BaseModel):
@@ -1377,6 +1393,101 @@ def create_app(
         session.commit()
 
         return JSONResponse({"sha": sha})
+
+    # --- Intake (Task 3): one-shot memory upload files + ingest status ----------
+    #
+    # `bundle/intake/*` files are ingested into the agent's live memory
+    # exactly ONCE, by a runtime seeder that runs on boot (a later task) —
+    # these three routes are just the upload/list/delete plumbing, plus
+    # list_intake's ancestor-derived pending/ingested status per file (see
+    # its docstring, kobo_api.intake). No JSON column on Agent tracks
+    # intake, unlike skills: status is derived fresh from git ancestry vs
+    # the live image every time, nothing here to keep in sync.
+
+    @app.get("/api/agents/{name}/intake")
+    def list_intake_route(name: str, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        agent = _ready_agent_or_error(session, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        # Same namespace/deploy convention as knowledge_delivery above:
+        # both are just the agent's own name.
+        clients = app.state.clients
+        try:
+            files = list_intake(
+                clients.github,
+                clients.kubectl,
+                repo=agent.repo_full_name,
+                namespace=agent.name,
+                deploy=agent.name,
+            )
+        except ClientError as exc:
+            log.warning("intake route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+            )
+
+        return JSONResponse({"files": files})
+
+    @app.post("/api/agents/{name}/intake")
+    def upload_intake(
+        name: str,
+        payload: IntakeUploadPayload,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        try:
+            sha = upload_intake_file(
+                app.state.clients.github, agent.repo_full_name, payload.filename, payload.content
+            )
+        except IntakeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        except ClientError as exc:
+            log.warning("intake route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+            )
+
+        return JSONResponse({"sha": sha})
+
+    @app.delete("/api/agents/{name}/intake/{filename}")
+    def delete_intake(
+        name: str, filename: str, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        try:
+            sha = delete_intake_file(app.state.clients.github, agent.repo_full_name, filename)
+        except IntakeError as exc:
+            # Same disjoint-prefix idiom as delete_knowledge above: intake.py
+            # carries no structured discriminator between "bad filename" and
+            # "file not there to delete", so the message's stable prefix
+            # ("intake file not found: ", vs "invalid intake filename: ") is
+            # what's matched on.
+            message = str(exc)
+            if message.startswith("intake file not found:"):
+                return JSONResponse(
+                    {"error": f"no such intake file: {filename!r}"}, status_code=404
+                )
+            return JSONResponse({"error": message}, status_code=422)
+        except ClientError as exc:
+            log.warning("intake route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+            )
+
+        # Deleting the source upload never touches whatever the seeder
+        # already wrote into the agent's actual memory from it (out of
+        # scope for kobo, a runtime concern) — this note says so in plain
+        # language rather than leaving that ambiguous.
+        return JSONResponse(
+            {"sha": sha, "note": "memories are kept — only the source file was removed"}
+        )
 
     # --- Slack connect (P2c): app creation + token delivery/wiring --------------
 

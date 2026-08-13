@@ -256,6 +256,53 @@ class FakeGitHub:
     was first composed; the runtime-bump fixture `wire_slack`'s
     `_update_dockerfile_runtime_image` edit rewrites the FROM line of.
 
+    `intake_files` (Task 3), when given, is a `{filename: content}` map that
+    `clone` also materializes, under `bundle/intake/` — same idiom as
+    `knowledge_files` above, for `kobo_api.intake.list_intake`/
+    `delete_intake_file` to find existing one-shot upload files in the
+    cloned repo. Defaults to `None` (no `bundle/intake/` tree at all,
+    matching a real agent repo that's never had an upload).
+
+    `intake_commit_shas`, `rev_parse_results`, and `ancestor_pairs` (Task 3)
+    together model the three new GhCLI-only methods `kobo_api.intake.
+    list_intake` calls (`commit_shas_for_paths`, `rev_parse_prefix`,
+    `is_ancestor`) — none of which have any other caller, so unlike every
+    other knob above, there's no "generic clone-time content" to fake: each
+    is a direct lookup table.
+
+    `intake_commit_shas` maps a path exactly as `list_intake` builds it
+    (`"bundle/intake/<filename>"`) to the commit sha `commit_shas_for_paths`
+    should report as that file's last-touch commit; a path not in the map
+    defaults to `local_head_result` (`FAKE_LOCAL_HEAD_DEFAULT` by default) —
+    "this file was last touched at the repo's own current head", the
+    natural default for a file a test didn't bother giving its own commit.
+
+    `rev_parse_results` maps a prefix string (as `list_intake` passes it —
+    the live image's tag) to the full sha `rev_parse_prefix` should resolve
+    it to, or explicitly `None` for "does not resolve". A prefix not in the
+    map falls back to a small real-git-like heuristic: resolves to
+    `local_head_result` if `local_head_result` starts with it (the tag
+    naturally derived from `FAKE_DEPLOY_IMAGE_DEFAULT`, whose tag IS
+    `FAKE_LOCAL_HEAD_DEFAULT`'s own first 12 chars, resolves this way with
+    no configuration needed), otherwise `None` — so a garbage/non-hex tag
+    (e.g. "latest") safely resolves to `None` by default, matching the real
+    GhCLI's never-raises contract, without a test needing to spell that out.
+
+    `ancestor_pairs` is a `{(ancestor, descendant)}` set of non-equal pairs
+    `is_ancestor` should report `True` for beyond the automatic equality
+    case (`is_ancestor(x, x)` is always `True` here, mirroring git's own
+    `merge-base --is-ancestor` semantics, with no knob needed for it).
+    Defaults to empty — so two different, unconfigured shas read as "not
+    proven an ancestor" (pending), the conservative default.
+
+    Together, the defaults above mean a bare `FakeGitHub(intake_files=...)`/
+    `FakeKubectl()` pair reads every intake file as "ingested" out of the
+    box (the same "wired happy path needs no configuration" property as
+    `FAKE_LOCAL_HEAD_DEFAULT`/`FAKE_DEPLOY_IMAGE_DEFAULT` give
+    `delivery_state`) — a test overrides one or more of these three knobs
+    only to exercise a genuinely different (pending, or ancestor-but-not-
+    equal) case.
+
     `org_yaml` (Task 2), when given, makes `clone` also write a top-level
     `org.yaml` with exactly that text — the fixture `kobo_api.org.
     load_org_config`'s tests use to control what a cloned kobo-config repo's
@@ -316,6 +363,10 @@ class FakeGitHub:
         track_pushed_content: bool = False,
         pr_url: str = "https://github.com/acme-corp/example-org-skills/pull/1",
         open_prs: dict[str, str] | None = None,
+        intake_files: dict[str, str] | None = None,
+        intake_commit_shas: dict[str, str] | None = None,
+        rev_parse_results: dict[str, str | None] | None = None,
+        ancestor_pairs: set[tuple[str, str]] | None = None,
     ):
         self.repos: set[str] = set(existing_repos) if existing_repos else set()
         self.created_from_dir: list[tuple[str, Path]] = []
@@ -341,6 +392,10 @@ class FakeGitHub:
         self._org_yaml = org_yaml
         self._clone_error = clone_error
         self.local_head_calls: list[Path] = []
+        self._intake_files = dict(intake_files) if intake_files else None
+        self._intake_commit_shas = dict(intake_commit_shas) if intake_commit_shas else {}
+        self._rev_parse_results = dict(rev_parse_results) if rev_parse_results else {}
+        self._ancestor_pairs = set(ancestor_pairs) if ancestor_pairs else set()
 
         self._head_sha = head_sha
         self._head_sha_sequence = list(head_sha_sequence) if head_sha_sequence else None
@@ -437,6 +492,12 @@ class FakeGitHub:
             for filename, content in self._knowledge_files.items():
                 (knowledge_dir / filename).write_text(content)
 
+        if self._intake_files:
+            intake_dir = bundle_dir / "intake"
+            intake_dir.mkdir(parents=True, exist_ok=True)
+            for filename, content in self._intake_files.items():
+                (intake_dir / filename).write_text(content)
+
     def commit_push(self, workdir: Path, message: str) -> bool:
         self.calls.append(f"commit_push:{message}")
         self.pushes.append((workdir, message))
@@ -513,6 +574,26 @@ class FakeGitHub:
             else:
                 self._runs_by_sha[sha] = [[{"id": run_id, **self._rerun_result}]]
             self._run_index_by_sha[sha] = 0
+
+    def commit_shas_for_paths(self, workdir: Path, paths: list[str]) -> dict[str, str]:
+        self.calls.append(f"commit_shas_for_paths:{sorted(paths)}")
+        return {
+            path: self._intake_commit_shas.get(path, self._local_head_result) for path in paths
+        }
+
+    def is_ancestor(self, workdir: Path, ancestor: str, descendant: str) -> bool:
+        self.calls.append(f"is_ancestor:{ancestor}:{descendant}")
+        if ancestor == descendant:
+            return True
+        return (ancestor, descendant) in self._ancestor_pairs
+
+    def rev_parse_prefix(self, workdir: Path, prefix: str) -> str | None:
+        self.calls.append(f"rev_parse_prefix:{prefix}")
+        if prefix in self._rev_parse_results:
+            return self._rev_parse_results[prefix]
+        if self._local_head_result.startswith(prefix):
+            return self._local_head_result
+        return None
 
 
 class FakeGojira:

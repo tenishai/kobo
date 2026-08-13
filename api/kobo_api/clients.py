@@ -264,6 +264,41 @@ class GitHubClient(Protocol):
         """
         ...
 
+    def commit_shas_for_paths(self, workdir: Path, paths: list[str]) -> dict[str, str]:
+        """Each path's last-touch commit sha (`git log -1 --format=%H --
+        <path>`, run once per path) inside an already-cloned `workdir`.
+
+        Used by `kobo_api.intake.list_intake` to find, for every
+        `bundle/intake/*` file, the commit that last modified it — the
+        input `is_ancestor` compares against the live Deployment's commit to
+        derive that file's pending/ingested status.
+        """
+        ...
+
+    def is_ancestor(self, workdir: Path, ancestor: str, descendant: str) -> bool:
+        """Whether `ancestor` is `descendant` itself or reachable from it
+        (`git merge-base --is-ancestor ancestor descendant`) inside
+        `workdir`'s history.
+
+        Equality counts as ancestry here — matches git's own semantics for
+        this flag — which is exactly the shape `list_intake` relies on: a
+        file whose last-touch commit IS the live commit is exactly as
+        "ingested" as one genuinely older.
+        """
+        ...
+
+    def rev_parse_prefix(self, workdir: Path, prefix: str) -> str | None:
+        """Resolve `prefix` to a full commit sha inside `workdir`'s history,
+        or `None` if it doesn't resolve to anything — never raises for
+        unresolvable input.
+
+        `list_intake` calls this with the live image's 12-hex commit-prefix
+        tag; an image built from a since-force-pushed sha (or any other
+        malformed/non-hex tag, e.g. "latest") must read as "can't prove
+        ingested" (pending), not crash the whole listing.
+        """
+        ...
+
 
 class GhCLI:
     """git + gh backed GitHubClient.
@@ -417,6 +452,39 @@ class GhCLI:
         self._runner.run(
             [self._gh, "run", "rerun", str(run_id), "--repo", repo], env=self._env()
         )
+
+    def commit_shas_for_paths(self, workdir: Path, paths: list[str]) -> dict[str, str]:
+        return {
+            path: self._runner.run(
+                [self._git, "-C", str(workdir), "log", "-1", "--format=%H", "--", path],
+                env=self._env(),
+            )
+            for path in paths
+        }
+
+    def is_ancestor(self, workdir: Path, ancestor: str, descendant: str) -> bool:
+        try:
+            self._runner.run(
+                [
+                    self._git, "-C", str(workdir),
+                    "merge-base", "--is-ancestor", ancestor, descendant,
+                ],
+                env=self._env(),
+            )
+            return True
+        except ClientError as exc:
+            if exc.returncode == 1:
+                return False
+            raise
+
+    def rev_parse_prefix(self, workdir: Path, prefix: str) -> str | None:
+        try:
+            return self._runner.run(
+                [self._git, "-C", str(workdir), "rev-parse", f"{prefix}^{{commit}}"],
+                env=self._env(),
+            )
+        except ClientError:
+            return None
 
 
 # --- Gojira ---------------------------------------------------------------------
