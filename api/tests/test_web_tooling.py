@@ -494,6 +494,23 @@ def test_import_tooling_route_traversal_source_path_returns_422(session_factory,
     assert github.cloned == []
 
 
+def test_import_tooling_route_nonexistent_source_path_returns_404(session_factory, config):
+    github = _CapturingGitHub(
+        tooling_source_files={SOURCE_REPO: {"other/thing.py": VALID_PY}}
+    )
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/tooling/import",
+        json={"repo": SOURCE_REPO, "path": "tools"},
+    )
+
+    assert response.status_code == 404
+    assert "tooling source path not found" in response.json()["error"]
+    assert github.pushes == []
+
+
 def test_import_tooling_route_unknown_agent_returns_404(session_factory, config):
     client = _make_client(session_factory, config)
 

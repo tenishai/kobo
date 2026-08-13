@@ -276,11 +276,13 @@ def import_tooling(
         github.clone(source_repo, source_workdir)
         source_dir = source_workdir / source_path
 
+        if not source_dir.is_dir():
+            raise ToolingError(f"tooling import path not found: {source_path} in {source_repo}")
+
         candidates: list[tuple[str, bytes]] = []
-        if source_dir.is_dir():
-            for entry in sorted(source_dir.iterdir(), key=lambda p: p.name):
-                if entry.is_file() and entry.suffix in _TOOLING_EXTENSIONS:
-                    candidates.append((entry.name, entry.read_bytes()))
+        for entry in sorted(source_dir.iterdir(), key=lambda p: p.name):
+            if entry.is_file() and entry.suffix in _TOOLING_EXTENSIONS:
+                candidates.append((entry.name, entry.read_bytes()))
 
         passed: list[tuple[str, bytes]] = []
         rejected: list[dict] = []

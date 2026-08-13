@@ -386,8 +386,17 @@ def test_import_tooling_is_non_recursive():
     assert result["rejected"] == []
 
 
-def test_import_tooling_missing_source_folder_yields_empty_result():
+def test_import_tooling_nonexistent_source_folder_raises_with_not_found_prefix():
     github = _CapturingGitHub(tooling_source_files={SOURCE_REPO: {"other/thing.py": VALID_PY}})
+    with pytest.raises(ToolingError, match=r"^tooling import path not found:"):
+        import_tooling(github, REPO, source_repo=SOURCE_REPO, source_path="tools")
+    # Source cloned, but agent repo never cloned since validation fails before walking
+    assert [r for r, _ in github.cloned] == [SOURCE_REPO]
+
+
+def test_import_tooling_empty_source_folder_still_yields_empty_result():
+    # Create the folder but don't put any .py/.go files in it — using a non-.py/.go file
+    github = _CapturingGitHub(tooling_source_files={SOURCE_REPO: {"tools/readme.txt": "placeholder\n"}})
     result = import_tooling(github, REPO, source_repo=SOURCE_REPO, source_path="tools")
 
     assert result == {"sha": None, "imported": [], "rejected": []}

@@ -1622,11 +1622,17 @@ def create_app(
             )
         except ToolingError as exc:
             # Request-shape failures (a malformed owner/repo, a traversal
-            # attempt in the path) — distinct from a per-file entry in the
-            # result's own "rejected" list, which is a 200: those are
-            # candidate files that failed the SAME validator individually,
-            # not a bad request overall.
-            return JSONResponse({"error": str(exc)}, status_code=422)
+            # attempt in the path, or a nonexistent source path) — distinct
+            # from a per-file entry in the result's own "rejected" list, which
+            # is a 200: those are candidate files that failed the SAME
+            # validator individually, not a bad request overall.
+            message = str(exc)
+            if message.startswith("tooling import path not found:"):
+                return JSONResponse(
+                    {"error": f"tooling source path not found: {payload.path!r} in {payload.repo!r}"},
+                    status_code=404,
+                )
+            return JSONResponse({"error": message}, status_code=422)
         except ClientError as exc:
             log.warning("tooling route failed: %s", exc)
             return JSONResponse(
