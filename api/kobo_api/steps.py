@@ -147,6 +147,40 @@ class StagedSkill:
     dir: Path
 
 
+def _materialize_catalog_skill(
+    storage: StorageClient, config: Config, team: str, skill_id: str, dest_dir: Path
+) -> str:
+    """Download the catalog skill `<team>/<skill_id>/` into dest_dir.
+
+    Same containment rule as before the extraction: a bucket key must not
+    escape dest_dir. Returns the SKILL.md object's current source-sha
+    custom metadata ("" when the publisher set none). Raises RuntimeError
+    when the catalog no longer serves the skill.
+    """
+    prefix = f"{team}/{skill_id}/"
+    keys = storage.list_keys(config.skills_bucket, prefix)
+    if not keys:
+        raise RuntimeError(f"skill no longer in the catalog: {team}/{skill_id}")
+    resolved_dest = dest_dir.resolve()
+    for key in keys:
+        relative = key[len(prefix):]
+        if not relative:
+            continue
+        target = dest_dir / relative
+        if not target.resolve().is_relative_to(resolved_dest):
+            raise RuntimeError(
+                f"skill {skill_id!r} (team {team!r}) bucket key {key!r} "
+                f"would download outside its staging directory; refusing to write it"
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(storage.read_bytes(config.skills_bucket, key))
+    try:
+        metadata = storage.object_metadata(config.skills_bucket, f"{prefix}SKILL.md")
+    except StorageNotFound:
+        metadata = {}
+    return metadata.get("metadata", {}).get("source-sha", "")
+
+
 def _stage_skills(
     storage: StorageClient, config: Config, agent: Agent, staging: Path
 ) -> list[StagedSkill]:
@@ -183,43 +217,10 @@ def _stage_skills(
         skill_id = entry["name"]
         team = entry["team"]
         recorded_sha = entry.get("sha") or ""
-        prefix = f"{team}/{skill_id}/"
-
-        keys = storage.list_keys(config.skills_bucket, prefix)
-        if not keys:
-            raise RuntimeError(f"skill no longer in the catalog: {team}/{skill_id}")
 
         skill_dir = staging / skill_id
         skill_dir.mkdir(parents=True, exist_ok=True)
-        resolved_skill_dir = skill_dir.resolve()
-        for key in keys:
-            relative = key[len(prefix) :]
-            if not relative:
-                # the `<team>/<id>/` "directory" placeholder object itself,
-                # if the publisher writes one — nothing to download.
-                continue
-            target = skill_dir / relative
-            # Containment: a bucket key is an arbitrary string, not a
-            # filesystem path — the same tar-slip concern the old git-archive
-            # extraction guarded against (see kobo_api.composer's
-            # _materialize_skill), just at download time instead of copy
-            # time. A malicious/malformed key like
-            # "<team>/<id>/../../../etc/evil" must not be allowed to write
-            # outside this skill's own staging directory.
-            if not target.resolve().is_relative_to(resolved_skill_dir):
-                raise RuntimeError(
-                    f"skill {skill_id!r} (team {team!r}) bucket key {key!r} "
-                    f"would download outside its staging directory; refusing "
-                    "to write it"
-                )
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(storage.read_bytes(config.skills_bucket, key))
-
-        try:
-            metadata = storage.object_metadata(config.skills_bucket, f"{prefix}SKILL.md")
-        except StorageNotFound:
-            metadata = {}
-        current_sha = metadata.get("metadata", {}).get("source-sha", "")
+        current_sha = _materialize_catalog_skill(storage, config, team, skill_id, skill_dir)
 
         if recorded_sha and current_sha and current_sha != recorded_sha:
             log.warning(
