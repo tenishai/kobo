@@ -25,6 +25,7 @@ from kobo_api.intake import INTAKE_MAX_BYTES
 from kobo_api.main import create_app
 from kobo_api.models import Agent, AgentStatus, Base
 from tests.fakes import (
+    FAKE_DOCKERFILE_OLD_IMAGE,
     FAKE_LOCAL_HEAD_DEFAULT,
     FakeAgent,
     FakeCloud,
@@ -56,6 +57,7 @@ class _CapturingGitHub(FakeGitHub):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.captured_intake: dict[str, str] = {}
+        self.captured_dockerfile = ""
 
     def commit_push(self, workdir: Path, message: str) -> bool:
         intake_dir = workdir / "bundle" / "intake"
@@ -65,6 +67,7 @@ class _CapturingGitHub(FakeGitHub):
                 for path in intake_dir.iterdir()
                 if path.is_file()
             }
+        self.captured_dockerfile = (workdir / "Dockerfile").read_text()
         return super().commit_push(workdir, message)
 
 
@@ -227,6 +230,38 @@ def test_upload_intake_route_creates_commits_and_returns_sha(session_factory, co
     assert response.json() == {"sha": SHA}
     assert github.captured_intake == {"notes.md": "new content"}
     assert github.pushes[-1][1] == "kobo: add intake/notes.md"
+
+
+def test_upload_intake_route_rewrites_dockerfile_to_configured_runtime_image(
+    session_factory, config
+):
+    # B1: the route must pass the org's CURRENT config.runtime_image through
+    # to upload_intake_file, which re-pins the clone's Dockerfile FROM line
+    # to it in the same commit as the uploaded file — closing the
+    # false-ingested window (an agent composed before a runtime bump ships a
+    # seeder-less image; without this re-pin, list_intake's ancestor
+    # derivation could call the upload "ingested" before any seeder capable
+    # of ingesting it ever ran). FakeGitHub's default Dockerfile starts on
+    # FAKE_DOCKERFILE_OLD_IMAGE, distinct from config.runtime_image's own
+    # default, so this proves the rewrite actually happened.
+    assert FAKE_DOCKERFILE_OLD_IMAGE != config.runtime_image
+
+    github = _CapturingGitHub()
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/intake",
+        json={"filename": "notes.md", "content": "new content"},
+    )
+
+    assert response.status_code == 200
+    assert github.captured_intake == {"notes.md": "new content"}
+    assert github.captured_dockerfile == (
+        "# Agent image: the shared runtime plus this agent's bundle.\n"
+        f"FROM {config.runtime_image}\n"
+        "COPY bundle/ /bundle\n"
+    )
 
 
 def test_upload_intake_route_accepts_txt_extension(session_factory, config):

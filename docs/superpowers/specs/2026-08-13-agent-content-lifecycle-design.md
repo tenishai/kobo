@@ -93,9 +93,14 @@ seeder semantics, different UI copy.
   No auto-cleanup policy in v1.
 - **Runtime rollout**: ships as a runtime-image bump recorded in the org
   config's `runtime_image`; agents pick it up on their next delivery, and an
-  intake upload IS a delivery — no special migration step. Agents on older
-  runtimes simply carry unprocessed `intake/` files until their image
-  catches up (visible as a stuck *pending* chip; acceptable, documented).
+  intake upload IS a delivery — no special migration step. An agent composed
+  before the bump has its Dockerfile's `FROM` line still pinned to the OLD
+  runtime, so `upload_intake_file` re-pins it to the CURRENT `runtime_image`
+  in the SAME commit as the uploaded file, every time. That means the
+  upload's own delivery always carries an intake-capable seeder — by the
+  time boot ordering lets the status derivation call a file *ingested*, the
+  pod that booted really ran the intake pass, never a seeder-less image left
+  over from before the bump.
 
 ## Slack operator gate
 

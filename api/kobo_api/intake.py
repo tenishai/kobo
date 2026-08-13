@@ -17,6 +17,15 @@ boot-ordering inference (no kobo-side state of "has this been ingested yet"
 to keep in sync) — if the live pod's commit descends from (or IS) the
 commit that last touched a given intake file, the seeder must have already
 seen that file on its way up.
+
+Final-review fix (the false-ingested window): that ancestor derivation is
+only trustworthy if the pod it's inferring from actually ran an
+intake-capable seeder. An agent composed before a runtime bump ships every
+image FROM the old runtime; without a re-pin, an upload's own delivery boots
+a seeder-less image, yet `list_intake` would still call the file "ingested"
+the instant the live commit descends from that push — arming a Remove that
+permanently loses content the seeder never saw. `upload_intake_file`'s
+`runtime_image` parameter closes that window: see its docstring.
 """
 
 from __future__ import annotations
@@ -26,6 +35,7 @@ import tempfile
 from pathlib import Path
 
 from kobo_api.clients import GitHubClient, KubectlClient
+from kobo_api.composer import update_dockerfile_runtime_image
 
 # 1-40 chars: a lowercase letter, then lowercase/digit/hyphen, then ".md" or
 # ".txt" — same no-path-separator, no-leading-dot/digit/hyphen shape as
@@ -62,7 +72,14 @@ def _validate_content(content: str) -> None:
         )
 
 
-def upload_intake_file(github: GitHubClient, repo: str, filename: str, content: str) -> str:
+def upload_intake_file(
+    github: GitHubClient,
+    repo: str,
+    filename: str,
+    content: str,
+    *,
+    runtime_image: str | None = None,
+) -> str:
     """Write (or overwrite) `bundle/intake/<filename>` and push it.
 
     Returns the pushed commit's local sha (`github.local_head`), same
@@ -71,6 +88,23 @@ def upload_intake_file(github: GitHubClient, repo: str, filename: str, content: 
     identical to what's already there, `commit_push` reports False (nothing
     to commit) but this still returns `local_head` — the truthful answer,
     since nothing changed and whatever was live before still is.
+
+    `runtime_image`, when given (the route always passes the org's current
+    `Config.runtime_image`), re-pins the clone's Dockerfile `FROM` line to
+    it in this SAME commit — the false-ingested-window fix: an agent
+    composed before a runtime bump has its Dockerfile pinned to the OLD
+    image, so an intake upload that only wrote the file would deliver a
+    seeder-less image on its next boot, yet `list_intake`'s ancestor
+    derivation would still call that file "ingested" the moment the live
+    pod's commit descends from this push — a Remove armed against content a
+    seeder never actually saw. Re-pinning here, in the same push that adds
+    the file, means the delivery this upload triggers always carries an
+    intake-capable seeder before the derivation can call anything ingested.
+    Reuses `kobo_api.composer.update_dockerfile_runtime_image` — the exact
+    same idempotent, raise-on-unrecognized-FROM edit `kobo_api.slack_setup.
+    wire_slack` already makes for the sibling runtime-bump incident there.
+    `None` (the default) skips the edit entirely, unchanged from before this
+    parameter existed — every pre-existing caller is unaffected.
     """
     _validate_filename(filename)
     _validate_content(content)
@@ -80,6 +114,8 @@ def upload_intake_file(github: GitHubClient, repo: str, filename: str, content: 
         intake_dir = workdir / "bundle" / "intake"
         intake_dir.mkdir(parents=True, exist_ok=True)
         (intake_dir / filename).write_text(content, encoding="utf-8")
+        if runtime_image is not None:
+            update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
         github.commit_push(workdir, f"kobo: add intake/{filename}")
         return github.local_head(workdir)
 

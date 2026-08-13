@@ -1460,9 +1460,14 @@ def create_app(
         if isinstance(agent, JSONResponse):
             return agent
 
+        cfg: Config = app.state.config
         try:
             sha = upload_intake_file(
-                app.state.clients.github, agent.repo_full_name, payload.filename, payload.content
+                app.state.clients.github,
+                agent.repo_full_name,
+                payload.filename,
+                payload.content,
+                runtime_image=cfg.runtime_image,
             )
         except IntakeError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)

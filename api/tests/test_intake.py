@@ -26,7 +26,7 @@ from kobo_api.intake import (
     list_intake,
     upload_intake_file,
 )
-from tests.fakes import FAKE_LOCAL_HEAD_DEFAULT, FakeGitHub, FakeKubectl
+from tests.fakes import FAKE_DOCKERFILE_OLD_IMAGE, FAKE_LOCAL_HEAD_DEFAULT, FakeGitHub, FakeKubectl
 
 REPO = "acme/agent-clio"
 NAMESPACE = "clio"
@@ -38,16 +38,23 @@ DEPLOY = "clio"
 NEWER_SHA = "newnewnewnewnewnewnewnewnewnewnewnewnewn"
 OLDER_SHA = "oldoldoldoldoldoldoldoldoldoldoldoldoldo"
 
+# The "current" configured runtime image the runtime-re-pin tests pass —
+# deliberately distinct from FakeGitHub's own FAKE_DOCKERFILE_OLD_IMAGE
+# default so a test proves the FROM line actually changed, not that the two
+# happened to already match.
+RUNTIME_IMAGE = "registry.example/agents/daedalus-runtime:new"
+
 
 class _CapturingGitHub(FakeGitHub):
-    """Snapshots bundle/intake/* content the moment commit_push is called —
-    the only window in which the caller's cloned workdir still exists,
-    since intake.py discards its TemporaryDirectory as part of returning.
-    Mirrors test_knowledge.py's own _CapturingGitHub."""
+    """Snapshots bundle/intake/* content and the Dockerfile the moment
+    commit_push is called — the only window in which the caller's cloned
+    workdir still exists, since intake.py discards its TemporaryDirectory as
+    part of returning. Mirrors test_knowledge.py's own _CapturingGitHub."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.captured_intake: dict[str, str] = {}
+        self.captured_dockerfile = ""
 
     def commit_push(self, workdir: Path, message: str) -> bool:
         intake_dir = workdir / "bundle" / "intake"
@@ -57,6 +64,7 @@ class _CapturingGitHub(FakeGitHub):
                 for path in intake_dir.iterdir()
                 if path.is_file()
             }
+        self.captured_dockerfile = (workdir / "Dockerfile").read_text()
         return super().commit_push(workdir, message)
 
 
@@ -135,6 +143,74 @@ def test_upload_intake_file_accepts_content_at_exact_byte_cap():
     exact = "a" * INTAKE_MAX_BYTES
     upload_intake_file(github, REPO, "notes.md", exact)
     assert github.captured_intake == {"notes.md": exact}
+
+
+# --- upload_intake_file: runtime_image re-pin (the false-ingested-window fix) -----
+#
+# B1: an agent composed before a runtime bump has its Dockerfile pinned to
+# the OLD image. Without a re-pin, an intake upload's own delivery boots a
+# seeder-less image, yet list_intake's ancestor derivation would still call
+# the file "ingested" the moment the live commit descends from this push —
+# arming a Remove against content the seeder never actually saw. The route
+# always passes the org's current runtime_image; upload_intake_file re-pins
+# the Dockerfile FROM line to it, in the SAME commit as the uploaded file.
+
+
+def test_upload_intake_file_with_runtime_image_rewrites_dockerfile_in_same_commit():
+    github = _CapturingGitHub()  # defaults to FAKE_DOCKERFILE_OLD_IMAGE
+    assert FAKE_DOCKERFILE_OLD_IMAGE != RUNTIME_IMAGE
+
+    upload_intake_file(
+        github, REPO, "notes.md", "new content", runtime_image=RUNTIME_IMAGE
+    )
+
+    # Both files landed in the one push this call made.
+    assert len(github.pushes) == 1
+    assert github.captured_intake == {"notes.md": "new content"}
+    assert github.captured_dockerfile == (
+        "# Agent image: the shared runtime plus this agent's bundle.\n"
+        f"FROM {RUNTIME_IMAGE}\n"
+        "COPY bundle/ /bundle\n"
+    )
+
+
+def test_upload_intake_file_runtime_image_omitted_leaves_dockerfile_untouched():
+    # None (the default) is a no-op edit entirely — every pre-existing
+    # caller of upload_intake_file is unaffected by this parameter's
+    # addition.
+    github = _CapturingGitHub()
+    upload_intake_file(github, REPO, "notes.md", "new content")
+    assert github.captured_dockerfile == (
+        "# Agent image: the shared runtime plus this agent's bundle.\n"
+        f"FROM {FAKE_DOCKERFILE_OLD_IMAGE}\n"
+        "COPY bundle/ /bundle\n"
+    )
+
+
+def test_upload_intake_file_identical_content_and_already_pinned_from_is_noop():
+    # Content byte-identical to what's already there AND the Dockerfile
+    # already names runtime_image: a real git backend would see nothing to
+    # commit (FakeGitHub models that outcome via commit_push_results=[False],
+    # same as test_upload_intake_file_returns_local_head_even_when_nothing_
+    # changed — FakeGitHub doesn't diff content itself). The Dockerfile edit
+    # is a no-op byte-for-byte (same idempotent semantics as wire_slack's own
+    # re-pin), and upload_intake_file still returns the truthful local_head.
+    github = _CapturingGitHub(
+        intake_files={"notes.md": "same"},
+        dockerfile_image=RUNTIME_IMAGE,
+        commit_push_results=[False],
+    )
+
+    result = upload_intake_file(
+        github, REPO, "notes.md", "same", runtime_image=RUNTIME_IMAGE
+    )
+
+    assert github.captured_dockerfile == (
+        "# Agent image: the shared runtime plus this agent's bundle.\n"
+        f"FROM {RUNTIME_IMAGE}\n"
+        "COPY bundle/ /bundle\n"
+    )
+    assert result == FAKE_LOCAL_HEAD_DEFAULT
 
 
 # --- delete_intake_file -----------------------------------------------------

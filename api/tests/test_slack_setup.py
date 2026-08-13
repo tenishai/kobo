@@ -17,12 +17,8 @@ import pytest
 import yaml
 
 from kobo_api.clients import ClientError, KubectlCLI
-from kobo_api.slack_setup import (
-    _update_dockerfile_runtime_image,
-    render_manifest,
-    wait_active,
-    wire_slack,
-)
+from kobo_api.composer import update_dockerfile_runtime_image
+from kobo_api.slack_setup import render_manifest, wait_active, wire_slack
 from tests.fakes import (
     FAKE_DOCKERFILE_OLD_IMAGE,
     FAKE_LOCAL_HEAD_DEFAULT,
@@ -424,14 +420,17 @@ def test_wire_slack_tokens_absent_from_every_file_written_to_the_clone():
     assert APP_TOKEN not in github.captured_gojira_yaml
 
 
-# --- _update_dockerfile_runtime_image (unit-level) ----------------------------------
+# --- update_dockerfile_runtime_image (unit-level) -----------------------------------
 #
 # The runtime-bump incident fix: a repo's Dockerfile pins its base image at
 # compose time; wire_slack must re-pin it to the CURRENT configured runtime
 # image on every connect, so a stale base can never ship without the
 # transport extra it needs. Exercised directly against a tmp_path Dockerfile
 # first (no fake/clone involved) to pin the exact byte-level behavior, then
-# through wire_slack itself below.
+# through wire_slack itself below. The helper itself now lives in
+# kobo_api.composer (hoisted so kobo_api.intake.upload_intake_file can reuse
+# it for the sibling incident there) — imported from there, not from
+# kobo_api.slack_setup.
 
 
 _DOCKERFILE_TEXT = (
@@ -445,7 +444,7 @@ def test_update_dockerfile_runtime_image_rewrites_from_preserves_rest(tmp_path):
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text(_DOCKERFILE_TEXT.format(image=FAKE_DOCKERFILE_OLD_IMAGE))
 
-    _update_dockerfile_runtime_image(dockerfile, RUNTIME_IMAGE)
+    update_dockerfile_runtime_image(dockerfile, RUNTIME_IMAGE)
 
     assert dockerfile.read_text() == _DOCKERFILE_TEXT.format(image=RUNTIME_IMAGE)
 
@@ -455,7 +454,7 @@ def test_update_dockerfile_runtime_image_idempotent_when_already_current(tmp_pat
     text = _DOCKERFILE_TEXT.format(image=RUNTIME_IMAGE)
     dockerfile.write_text(text)
 
-    _update_dockerfile_runtime_image(dockerfile, RUNTIME_IMAGE)
+    update_dockerfile_runtime_image(dockerfile, RUNTIME_IMAGE)
 
     assert dockerfile.read_text() == text
 
@@ -474,7 +473,7 @@ def test_update_dockerfile_runtime_image_only_touches_from_line(tmp_path):
         'ENTRYPOINT ["/bin/run-agent"]\n'
     )
 
-    _update_dockerfile_runtime_image(dockerfile, RUNTIME_IMAGE)
+    update_dockerfile_runtime_image(dockerfile, RUNTIME_IMAGE)
 
     assert dockerfile.read_text() == (
         "# leading comment, unrelated to the runtime image\n"
@@ -496,7 +495,7 @@ def test_update_dockerfile_runtime_image_raises_client_error_when_no_from_line(t
     dockerfile.write_text("# no FROM line in this file\nCOPY bundle/ /bundle\n")
 
     with pytest.raises(ClientError, match="no recognizable FROM line"):
-        _update_dockerfile_runtime_image(dockerfile, RUNTIME_IMAGE)
+        update_dockerfile_runtime_image(dockerfile, RUNTIME_IMAGE)
 
     # Untouched: the whole point is not to silently rewrite it.
     assert dockerfile.read_text() == "# no FROM line in this file\nCOPY bundle/ /bundle\n"
@@ -509,7 +508,7 @@ def test_update_dockerfile_runtime_image_raises_client_error_when_dockerfile_mis
     missing = tmp_path / "Dockerfile"
 
     with pytest.raises(ClientError, match="Dockerfile not found"):
-        _update_dockerfile_runtime_image(missing, RUNTIME_IMAGE)
+        update_dockerfile_runtime_image(missing, RUNTIME_IMAGE)
 
 
 # --- wire_slack: Dockerfile runtime-image rewrite -----------------------------------

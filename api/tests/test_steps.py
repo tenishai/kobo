@@ -220,6 +220,33 @@ def test_stage_skills_no_drift_leaves_row_untouched(session_factory, config, fak
     assert agent.skills == [dict(WORD_GAMES_SKILL)]
 
 
+def test_stage_skills_local_entry_skipped_and_passed_through(
+    session_factory, config, fake_storage, tmp_path
+):
+    # S3: a local-provenance entry (`{"name", "source": "local"}`, no
+    # "team") used to KeyError on `entry["team"]` — nothing today reaches
+    # this path (compose only runs pre-repo-creation), but the landmine is
+    # real. It must be skipped (no download attempted — local skills live in
+    # the repo bundle already) and passed through unchanged in whatever
+    # `agent.skills` ends up as, alongside a normal catalog pick staged as
+    # usual.
+    local_entry = {"name": "custom-thing", "source": "local"}
+    _session, agent = _make_agent(
+        session_factory, skills=[dict(WORD_GAMES_SKILL), dict(local_entry)]
+    )
+    staging = tmp_path / "staging"
+
+    staged = _stage_skills(fake_storage, config, agent, staging)
+
+    # Only the catalog skill is staged/downloaded.
+    assert staged == [StagedSkill(id="word-games", dir=staging / "word-games")]
+    assert not (staging / "custom-thing").exists()
+
+    # No drift here, so agent.skills is untouched — but this also proves no
+    # KeyError was raised reaching this point.
+    assert agent.skills == [dict(WORD_GAMES_SKILL), dict(local_entry)]
+
+
 def test_stage_skills_malicious_key_escaping_staging_dir_raises(
     session_factory, config, fake_storage, tmp_path
 ):

@@ -31,7 +31,6 @@ Two independent responsibilities live here:
 
 from __future__ import annotations
 
-import re
 import tempfile
 import time
 from pathlib import Path
@@ -39,6 +38,7 @@ from pathlib import Path
 import yaml
 
 from kobo_api.clients import ClientError, GitHubClient, GojiraClient, KubectlClient
+from kobo_api.composer import update_dockerfile_runtime_image
 
 # --- render_manifest -----------------------------------------------------------
 
@@ -226,72 +226,6 @@ def _update_gojira_secrets_from(gojira_yaml_path: Path, name: str) -> None:
     gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
-# Matches a Dockerfile's `FROM <image>` line (composer's own template,
-# `kobo_api.composer._dockerfile`, writes exactly one) anywhere in the
-# file, not just its first line — a leading comment line (as that template
-# has) is not itself a FROM line. Captures the `FROM` keyword plus the
-# whitespace that follows it, so the replacement can preserve that prefix
-# byte-for-byte and only swap the image-ref token itself.
-_DOCKERFILE_FROM_RE = re.compile(r"^(FROM[ \t]+)\S+", re.MULTILINE)
-
-
-def _update_dockerfile_runtime_image(dockerfile_path: Path, runtime_image: str) -> None:
-    """Rewrite the clone's `Dockerfile` so its `FROM` line's image ref is
-    exactly `runtime_image`, leaving every other line (and any trailing
-    content on the FROM line itself) byte-identical.
-
-    This is the runtime-bump incident fix: `kobo_api.composer` bakes the
-    runtime image into a repo's Dockerfile once, at compose time
-    (`FROM <registry>/daedalus-runtime:<tag>`). A later slack connect that
-    only edited `bundle/agent.yaml`'s transports left that pinned image
-    untouched — when the image predated the slack transport's pip extra,
-    the runtime raised `BundleError("transport 'slack' requires the slack
-    extra")` at boot and the agent crashlooped, taking its a2a chat down
-    with it. Every `wire_slack` call now also re-pins the FROM line to the
-    CURRENTLY configured runtime image, so a connect always delivers an
-    image capable of running the transport it's wiring in.
-
-    Idempotent by construction: when the FROM line already names
-    `runtime_image`, the substitution is a no-op and the rewritten text is
-    byte-identical to what was already on disk — so this edit alone never
-    makes `commit_push` see a diff on an already-current repo.
-
-    Uses a replacement function (not a plain substitution string) so that
-    `runtime_image` is inserted literally even if it happens to contain
-    characters (like a backslash) that `re.sub`'s string-replacement syntax
-    would otherwise treat specially.
-
-    Raises `ClientError` (never silently no-ops) in the two ways this can
-    fail to actually re-pin anything — final-review Finding 2:
-
-    - The Dockerfile is missing entirely: `Path.read_text()` raises
-      `OSError`, caught and re-raised as `ClientError` naming only the path,
-      same idiom as `kobo_api.clients._read_slack_tokens`.
-    - The Dockerfile has no line matching `_DOCKERFILE_FROM_RE` (some
-      unrecognized/hand-edited Dockerfile shape): `re.sub` on zero matches
-      is itself a silent no-op — it happily writes the file back unchanged
-      and returns, giving no signal that the re-pin never happened. That
-      used to mean the stale-base crashloop this function exists to fix
-      could recur with nothing in the way of a symptom. `re.subn` (which
-      reports the match count) lets this catch that here and raise instead,
-      so the failure surfaces immediately as this route's 502, not as a
-      crashloop discovered later with no trail back to its cause.
-    """
-    try:
-        text = dockerfile_path.read_text()
-    except OSError as exc:
-        raise ClientError(f"Dockerfile not found: {dockerfile_path}") from exc
-
-    updated, count = _DOCKERFILE_FROM_RE.subn(
-        lambda match: match.group(1) + runtime_image, text, count=1
-    )
-    if count == 0:
-        raise ClientError(
-            f"Dockerfile has no recognizable FROM line to re-pin: {dockerfile_path}"
-        )
-    dockerfile_path.write_text(updated)
-
-
 def wire_slack(
     github: GitHubClient,
     kubectl: KubectlClient,
@@ -317,9 +251,11 @@ def wire_slack(
        is re-pinned to `runtime_image` — the CURRENT configured runtime
        image, e.g. `<registry>/daedalus-runtime:<tag>` — so the connect
        always delivers an image capable of running the transport it's
-       wiring in; see `_update_dockerfile_runtime_image`'s docstring for the
-       crashloop incident this fixes). A no-op when the Dockerfile already
-       names `runtime_image`.
+       wiring in; see `kobo_api.composer.update_dockerfile_runtime_image`'s
+       docstring for the crashloop incident this fixes (and for
+       `kobo_api.intake.upload_intake_file`, the sibling incident it was
+       hoisted to also fix). A no-op when the Dockerfile already names
+       `runtime_image`.
     3. `commit_push("kobo: connect slack")`. If that push actually changed
        something, `gojira.reprovision(gojira_app_id)` so the platform
        regenerates the Deployment with the new `secrets_from` entry. Either
@@ -350,7 +286,7 @@ def wire_slack(
 
         _update_agent_yaml_transport(workdir / "bundle" / "agent.yaml", channel)
         _update_gojira_secrets_from(workdir / "gojira.yaml", name)
-        _update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
+        update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
 
         changed = github.commit_push(workdir, "kobo: connect slack")
         if changed:

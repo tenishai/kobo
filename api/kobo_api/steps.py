@@ -214,6 +214,15 @@ def _stage_skills(
     drifted = False
 
     for entry in agent.skills:
+        if entry.get("source") == "local":
+            # Local skills live in the repo bundle already; staging is
+            # catalog-only. No current path reaches this (compose only runs
+            # pre-repo-creation, before a local skill could exist), but a
+            # local entry carries no "team" key, so falling through to the
+            # lookups below would KeyError.
+            resolved_entries.append(entry)
+            continue
+
         skill_id = entry["name"]
         team = entry["team"]
         recorded_sha = entry.get("sha") or ""
