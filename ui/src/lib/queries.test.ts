@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, readLocalSkill, type AgentSkill, type CatalogEntry, type OrgStatus } from "./api";
+import { ApiError, readLocalSkill, type AgentSkill, type CatalogEntry, type IntakeFile, type OrgStatus } from "./api";
 import {
   addCatalogSkillMutation,
   agentSkillsQuery,
@@ -7,11 +7,14 @@ import {
   connectSlackMutation,
   createPersonaMutation,
   createSlackAppMutation,
+  deleteIntakeMutation,
   deleteKnowledgeMutation,
   deleteSkillMutation,
   deliveryQuery,
   deliveryRefetchInterval,
   generateAvatarMutation,
+  intakeQuery,
+  intakeRefetchInterval,
   modelsQuery,
   orgStatusQuery,
   personasSearchQuery,
@@ -21,6 +24,7 @@ import {
   shouldRetry,
   skillsSearchQuery,
   teamsQuery,
+  uploadIntakeMutation,
 } from "./queries";
 import type { QueryClient } from "@tanstack/svelte-query";
 
@@ -737,5 +741,170 @@ describe("readLocalSkill", () => {
     );
 
     vi.unstubAllGlobals();
+  });
+});
+
+describe("intakeQuery", () => {
+  it("has queryKey ['agents', name, 'intake']", () => {
+    expect(intakeQuery("clio").queryKey).toEqual(["agents", "clio", "intake"]);
+  });
+
+  it("queryFn GETs /api/agents/{name}/intake and unwraps {files: [...]}", async () => {
+    const files: IntakeFile[] = [
+      { name: "notes.md", content_bytes: 42, status: "pending" },
+      { name: "old-notes.txt", content_bytes: 100, status: "ingested" },
+    ];
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ files }),
+    } as Response);
+
+    await expect(
+      callQueryFn<IntakeFile[]>(intakeQuery("clio")),
+    ).resolves.toEqual(files);
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/intake");
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("intakeRefetchInterval", () => {
+  it("is false for undefined (no data fetched yet)", () => {
+    expect(intakeRefetchInterval(undefined)).toBe(false);
+  });
+
+  it("is false once every file is ingested", () => {
+    expect(
+      intakeRefetchInterval([
+        { name: "a.md", content_bytes: 1, status: "ingested" },
+        { name: "b.txt", content_bytes: 2, status: "ingested" },
+      ]),
+    ).toBe(false);
+  });
+
+  it("is false for an empty file list", () => {
+    expect(intakeRefetchInterval([])).toBe(false);
+  });
+
+  it("is 5000 while any file is still pending", () => {
+    expect(
+      intakeRefetchInterval([
+        { name: "a.md", content_bytes: 1, status: "ingested" },
+        { name: "b.txt", content_bytes: 2, status: "pending" },
+      ]),
+    ).toBe(5000);
+  });
+});
+
+describe("uploadIntakeMutation", () => {
+  it("mutationFn POSTs {filename, content} to /api/agents/{name}/intake and returns {sha}", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ sha: "abc123" }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = uploadIntakeMutation(queryClient, "clio");
+    const body = { filename: "notes.md", content: "# hello" };
+
+    await expect(mutation.mutationFn(body)).resolves.toEqual({
+      sha: "abc123",
+    });
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/intake", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the agent's intake query on success", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = uploadIntakeMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "clio", "intake"],
+    });
+  });
+
+  it("surfaces a 422 IntakeError message through parse()", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 422,
+      statusText: "Unprocessable Entity",
+      text: async () =>
+        JSON.stringify({
+          error: "invalid intake filename: 'Notes.pdf'",
+        }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = uploadIntakeMutation(queryClient, "clio");
+
+    await expect(
+      mutation.mutationFn({ filename: "Notes.pdf", content: "x" }),
+    ).rejects.toThrow("invalid intake filename: 'Notes.pdf'");
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("deleteIntakeMutation", () => {
+  it("mutationFn DELETEs /api/agents/{name}/intake/{filename} and returns {sha, note}", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          sha: "def456",
+          note: "memories are kept — only the source file was removed",
+        }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = deleteIntakeMutation(queryClient, "clio");
+
+    await expect(mutation.mutationFn("notes.md")).resolves.toEqual({
+      sha: "def456",
+      note: "memories are kept — only the source file was removed",
+    });
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/intake/notes.md", {
+      method: "DELETE",
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the agent's intake query on success", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = deleteIntakeMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "clio", "intake"],
+    });
   });
 });

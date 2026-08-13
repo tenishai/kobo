@@ -10,6 +10,7 @@
 //   ["agents", name, "knowledge"]                   - an agent's knowledge files
 //   ["agents", name, "knowledge", "delivery", sha]  - delivery state for one sha
 //   ["agents", name, "skills"]                      - an agent's skills (catalog + local)
+//   ["agents", name, "intake"]                      - an agent's intake files
 //   ["catalog", "models"]                           - the model list + default
 //   ["catalog", "teams"]                             - the team-slug list
 //   ["catalog", "skills", {q, team}]                - a skill catalog search
@@ -24,6 +25,7 @@ import {
   type AgentSummary,
   type CatalogEntry,
   type ChatMessage,
+  type IntakeFile,
   type KnowledgeFile,
   type OrgStatus,
   type PersonaForm,
@@ -33,6 +35,7 @@ import {
   createAgent,
   createPersona,
   createSlackApp,
+  deleteIntake,
   deleteKnowledgeFile,
   deleteSkill,
   fetchDeliveryState,
@@ -42,6 +45,7 @@ import {
   generateAvatar,
   getAgent,
   listAgents,
+  listIntake,
   listKnowledge,
   listSkills,
   retryAgent,
@@ -49,6 +53,7 @@ import {
   saveLocalSkill,
   searchPersonas,
   searchSkills,
+  uploadIntake,
 } from "./api";
 import { detailRefetchInterval, listRefetchInterval } from "./status";
 
@@ -340,6 +345,65 @@ export function saveLocalSkillMutation(queryClient: QueryClient, name: string) {
   };
 }
 
+/** An agent's intake files — one-shot uploads awaiting the runtime seeder.
+ * No polling of its own here; the refetch cadence lives in
+ * `intakeRefetchInterval` below, wired through `refetchInterval` the same
+ * way `deliveryQuery` wires `deliveryRefetchInterval`. */
+export function intakeQuery(name: string) {
+  return queryOptions({
+    queryKey: ["agents", name, "intake"] as const,
+    queryFn: () => listIntake(name),
+    refetchInterval: (query) => intakeRefetchInterval(query.state.data),
+  });
+}
+
+/** Poll cadence while at least one intake file is still awaiting the
+ * runtime seeder. */
+const INTAKE_POLL_MS = 5000;
+
+/**
+ * Refetch interval for the intake list query. Polls while any file in the
+ * list is still `"pending"` (the seeder hasn't ingested it yet), and stops
+ * once every file has reached `"ingested"` — same shape as
+ * `deliveryRefetchInterval`. `data` is undefined before the first fetch
+ * resolves (nothing to poll for yet), and an empty list has no pending file
+ * by definition — both are `false`.
+ */
+export function intakeRefetchInterval(data?: IntakeFile[]): number | false {
+  if (data === undefined) {
+    return false;
+  }
+  return data.some((file) => file.status === "pending") ? INTAKE_POLL_MS : false;
+}
+
+/**
+ * Uploads (creates or overwrites) one intake file; on success, invalidates
+ * that agent's intake query so the new file (and its fresh "pending"
+ * status) shows up.
+ */
+export function uploadIntakeMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: ({ filename, content }: { filename: string; content: string }) =>
+      uploadIntake(name, filename, content),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "intake"] });
+    },
+  };
+}
+
+/**
+ * Removes an intake file's source upload; on success, invalidates that
+ * agent's intake query so the removed entry drops out of the list.
+ */
+export function deleteIntakeMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (filename: string) => deleteIntake(name, filename),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "intake"] });
+    },
+  };
+}
+
 /**
  * Creates the agent's Slack app; on success, invalidates that agent's detail
  * query so the new `slack.app_id` (and configure_url, surfaced via the
@@ -403,6 +467,7 @@ export type {
   AgentSummary,
   CatalogEntry,
   ChatMessage,
+  IntakeFile,
   KnowledgeFile,
   OrgStatus,
   PersonaForm,

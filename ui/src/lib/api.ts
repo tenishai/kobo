@@ -30,6 +30,12 @@ export type AgentDetail = AgentSummary & {
   error: string | null;
   steps: StepView[];
   slack: { app_id: string; channel: string | null } | null;
+  /** Whether the Slack panel should render at all — false when an operator
+   * config block hides Slack connect from this room entirely (see the
+   * server's `_slack_operator_block`). Independent of `slack` itself: a
+   * room can have `slack_visible: false` and still carry `slack` state from
+   * before the block was applied. */
+  slack_visible: boolean;
 };
 
 /** One catalog search result — a skill or a persona, both served by the
@@ -398,6 +404,55 @@ export async function saveLocalSkill(
     },
   );
   return parse<{ sha: string }>(res);
+}
+
+/** One `bundle/intake/*` file — a one-shot upload meant to be ingested into
+ * the agent's memory exactly once by a runtime seeder. `status` is derived
+ * fresh by the server from git ancestry vs. the live image on every list
+ * call, never kobo-side state: `"pending"` until the live pod's commit
+ * descends from (or is) the commit that last touched this file,
+ * `"ingested"` once it does. */
+export type IntakeFile = {
+  name: string;
+  content_bytes: number;
+  status: "pending" | "ingested";
+};
+
+export async function listIntake(name: string): Promise<IntakeFile[]> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/intake`);
+  const data = await parse<{ files: IntakeFile[] }>(res);
+  return data.files;
+}
+
+/** Uploads (creates or overwrites) one intake file. Unlike knowledge/skill
+ * saves, the filename travels in the request body, not the URL path — this
+ * is a one-shot upload, not an edit of a named existing resource. */
+export async function uploadIntake(
+  name: string,
+  filename: string,
+  content: string,
+): Promise<{ sha: string }> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/intake`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename, content }),
+  });
+  return parse<{ sha: string }>(res);
+}
+
+/** Removes an intake file's source upload. `note` is the server's
+ * plain-language reminder that this only removes the source file — whatever
+ * the runtime seeder already ingested from it into the agent's actual
+ * memory stays. */
+export async function deleteIntake(
+  name: string,
+  filename: string,
+): Promise<{ sha: string; note: string }> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/intake/${encodeURIComponent(filename)}`,
+    { method: "DELETE" },
+  );
+  return parse<{ sha: string; note: string }>(res);
 }
 
 /**
