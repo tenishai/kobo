@@ -484,6 +484,91 @@ def test_local_head_argv_and_parsing():
     assert result == "ed17ed17ed17ed17ed17ed17ed17ed17ed17ed17"
 
 
+# --- GitHub (GhCLI intake methods: commit_shas_for_paths, is_ancestor, rev_parse_prefix) ----
+#
+# Added for intake (Task 3c: list_intake's commit history checks): three plumbing methods
+# that were previously unexercised, now pinned to their exact argv and return-value contracts.
+
+
+def test_commit_shas_for_paths_argv_and_returns_dict():
+    # One path -> one git log invocation; multiple paths -> one per path.
+    runner = RecordingRunner(
+        results=[
+            (0, "abc123abc123abc123abc123abc123abc123abc1", ""),
+            (0, "def456def456def456def456def456def456def4", ""),
+        ]
+    )
+    client = GhCLI(runner=runner)
+    result = client.commit_shas_for_paths(Path("/tmp/repo"), ["file1.py", "file2.py"])
+
+    assert runner.calls == [
+        ["git", "-C", "/tmp/repo", "log", "-1", "--format=%H", "--", "file1.py"],
+        ["git", "-C", "/tmp/repo", "log", "-1", "--format=%H", "--", "file2.py"],
+    ]
+    assert result == {
+        "file1.py": "abc123abc123abc123abc123abc123abc123abc1",
+        "file2.py": "def456def456def456def456def456def456def4",
+    }
+
+
+def test_is_ancestor_rc_zero_returns_true():
+    # git merge-base --is-ancestor exits 0 when ancestor is reachable from descendant.
+    runner = RecordingRunner(results=[(0, "", "")])
+    client = GhCLI(runner=runner)
+    result = client.is_ancestor(Path("/tmp/repo"), "abc123", "def456")
+
+    assert runner.calls == [
+        ["git", "-C", "/tmp/repo", "merge-base", "--is-ancestor", "abc123", "def456"]
+    ]
+    assert result is True
+
+
+def test_is_ancestor_rc_one_returns_false():
+    # git merge-base --is-ancestor exits 1 when ancestor is NOT reachable from descendant.
+    runner = RecordingRunner(results=[(1, "", "")])
+    client = GhCLI(runner=runner)
+    result = client.is_ancestor(Path("/tmp/repo"), "abc123", "def456")
+
+    assert result is False
+
+
+def test_is_ancestor_rc_128_reraises():
+    # git merge-base --is-ancestor exits 128 for errors (bad refs, missing repo).
+    # Any exit code other than 0 or 1 must re-raise, not swallow.
+    runner = RecordingRunner(results=[(128, "", "fatal: invalid revision range")])
+    client = GhCLI(runner=runner)
+
+    with pytest.raises(ClientError) as exc_info:
+        client.is_ancestor(Path("/tmp/repo"), "bad-ref", "other-bad-ref")
+
+    assert exc_info.value.returncode == 128
+
+
+def test_rev_parse_prefix_resolvable_returns_stripped_sha():
+    # Resolves a 12-hex prefix (or any committish) to its full sha. The ^{commit}
+    # peel is deliberate (annotated-tag safety): ensures we always get the commit
+    # sha, never a tag object's own id.
+    runner = RecordingRunner(results=[(0, "abcdef0123456789abcdef0123456789abcdef01", "")])
+    client = GhCLI(runner=runner)
+    result = client.rev_parse_prefix(Path("/tmp/repo"), "abcdef01234567")
+
+    assert runner.calls == [
+        ["git", "-C", "/tmp/repo", "rev-parse", "abcdef01234567^{commit}"]
+    ]
+    assert result == "abcdef0123456789abcdef0123456789abcdef01"
+
+
+def test_rev_parse_prefix_unresolvable_returns_none():
+    # Unable to resolve (bad prefix, force-pushed ref, non-existent tag) — returns
+    # None rather than raising, so callers can distinguish "not found" (pending)
+    # from "found and ingested" without try/except.
+    runner = RecordingRunner(results=[(1, "", "fatal: bad revision 'nosuchprefix^{commit}'")])
+    client = GhCLI(runner=runner)
+    result = client.rev_parse_prefix(Path("/tmp/repo"), "nosuchprefix")
+
+    assert result is None
+
+
 # --- GitHub (GhCLI.token_provider — Task 3: GitHub App installation tokens) -------
 #
 # Deployed, GhCLI authenticates as an installed App instead of the operator's
