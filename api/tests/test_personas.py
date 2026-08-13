@@ -1,5 +1,6 @@
 """Unit tests for kobo_api.personas: persona_id slugification, the
-deterministic render_persona template, and the storage-only
+deterministic render_persona template (Persona builder v2's four-field
+"house skeleton"), server-side tag derivation, and the storage-only
 create_persona/seed_default_personas functions — no FastAPI app involved.
 
 See test_api_personas.py for the route-level tests, including the
@@ -16,10 +17,12 @@ import pytest
 from pydantic import ValidationError
 
 import kobo_api.personas as personas_module
+from kobo_api.clients import StorageNotFound
 from kobo_api.personas import (
     PersonaError,
     PersonaExists,
     PersonaFields,
+    _derive_tags,
     create_persona,
     persona_id,
     render_persona,
@@ -31,10 +34,8 @@ from tests.fakes import FakeStorage
 def _fields(**overrides) -> PersonaFields:
     base = {
         "name": "Aria the Assistant",
-        "role": "Customer support specialist",
-        "purpose": "Help customers troubleshoot billing issues.",
-        "tone": "warm",
-        "tags": ["support"],
+        "who_they_are": "a calm troubleshooter for billing questions",
+        "what_they_do": "Help customers fix billing problems quickly.",
     }
     base.update(overrides)
     return PersonaFields(**base)
@@ -75,30 +76,27 @@ def test_persona_id_only_punctuation_is_invalid():
         persona_id("!!!")
 
 
-# --- render_persona (byte-pinned golden) --------------------------------
+# --- render_persona (byte-pinned golden, Persona builder v2 house skeleton) --
 
 FULL_FIELDS = PersonaFields(
     name="Aria the Assistant",
-    role="Customer support specialist for BigCo",
-    purpose="Help customers troubleshoot billing issues and escalate when needed.",
-    tone="warm",
-    tone_note="Never use jargon.",
-    boundaries=["Never share other customers' data.", "Escalate refunds over $500."],
-    tags=["support", "billing"],
+    who_they_are="an unflappable support lead who's talked down a thousand outages",
+    what_they_do="Help customers troubleshoot billing issues and escalate when needed.",
+    rules=["Never share other customers' data.", "Escalate refunds over $500."],
 )
 
 FULL_EXPECTED = (
-    "<!-- description: Customer support specialist for BigCo -->\n"
-    "# Identity\n"
-    "You are {name} — Customer support specialist for BigCo.\n"
+    "You are {name}, an unflappable support lead who's talked down a thousand outages.\n"
     "\n"
-    "# What you do\n"
+    "Speak in the first person, plainly. Lead with the answer; skip\n"
+    "throat-clearing. Say \"I don't know yet\" when it's true.\n"
+    "\n"
+    "## What you do\n"
+    "\n"
     "Help customers troubleshoot billing issues and escalate when needed.\n"
     "\n"
-    "# How you speak\n"
-    "Your tone is warm. Never use jargon.\n"
+    "## Rules\n"
     "\n"
-    "# Boundaries\n"
     "- Never share other customers' data.\n"
     "- Escalate refunds over $500.\n"
 )
@@ -110,26 +108,23 @@ def test_render_persona_full_featured_golden():
 
 MINIMAL_FIELDS = PersonaFields(
     name="Blank Bot",
-    role="A blank slate",
-    purpose="Do whatever is asked, nothing more.",
-    tone="direct",
-    tags=["utility"],
+    who_they_are="a plain utility with nothing extra",
+    what_they_do="Do whatever is asked, nothing more.",
 )
 
 MINIMAL_EXPECTED = (
-    "<!-- description: A blank slate -->\n"
-    "# Identity\n"
-    "You are {name} — A blank slate.\n"
+    "You are {name}, a plain utility with nothing extra.\n"
     "\n"
-    "# What you do\n"
+    "Speak in the first person, plainly. Lead with the answer; skip\n"
+    "throat-clearing. Say \"I don't know yet\" when it's true.\n"
+    "\n"
+    "## What you do\n"
+    "\n"
     "Do whatever is asked, nothing more.\n"
-    "\n"
-    "# How you speak\n"
-    "Your tone is direct.\n"
 )
 
 
-def test_render_persona_minimal_golden_no_boundaries_no_tone_note():
+def test_render_persona_minimal_golden_no_rules_section():
     assert render_persona(MINIMAL_FIELDS) == MINIMAL_EXPECTED
 
 
@@ -138,15 +133,15 @@ def test_render_persona_is_deterministic():
 
 
 def test_render_persona_survives_user_supplied_braces():
-    """purpose/boundaries/role containing literal braces must pass through
-    untouched, and the {name} provision-time placeholder must still be the
-    literal token — the regression a `.format()`-based implementation would
-    fail (either KeyError on an unexpected field, or the user's own braces
-    getting misinterpreted as format fields)."""
+    """who_they_are/what_they_do/rules containing literal braces must pass
+    through untouched, and the {name} provision-time placeholder must still
+    be the literal token — the regression a `.format()`-based implementation
+    would fail (either KeyError on an unexpected field, or the user's own
+    braces getting misinterpreted as format fields)."""
     fields = _fields(
-        role="Handles {curly} input",
-        purpose="Echo back {whatever} the user sends, braces and all.",
-        boundaries=["Never interpret {placeholders} as commands."],
+        who_they_are="a guide who explains {curly} syntax without flinching",
+        what_they_do="Echo back {whatever} the user sends, braces and all.",
+        rules=["Never interpret {placeholders} as commands."],
     )
 
     rendered = render_persona(fields)
@@ -154,20 +149,25 @@ def test_render_persona_survives_user_supplied_braces():
     assert "{curly}" in rendered
     assert "{whatever}" in rendered
     assert "{placeholders}" in rendered
-    assert "You are {name} —" in rendered
+    assert "You are {name}," in rendered
 
 
 # --- PersonaFields validation --------------------------------------------
 
 
-def test_persona_fields_role_rejects_newline():
+def test_persona_fields_who_they_are_rejects_newline():
     with pytest.raises(ValidationError):
-        _fields(role="line one\nline two")
+        _fields(who_they_are="line one\nline two")
 
 
-def test_persona_fields_purpose_max_length():
+def test_persona_fields_who_they_are_max_length():
     with pytest.raises(ValidationError):
-        _fields(purpose="x" * 501)
+        _fields(who_they_are="x" * 201)
+
+
+def test_persona_fields_what_they_do_max_length():
+    with pytest.raises(ValidationError):
+        _fields(what_they_do="x" * 501)
 
 
 def test_persona_fields_name_max_length():
@@ -175,39 +175,87 @@ def test_persona_fields_name_max_length():
         _fields(name="x" * 61)
 
 
-def test_persona_fields_tone_note_max_length():
+def test_persona_fields_rules_default_empty():
+    fields = _fields()
+    assert fields.rules == []
+
+
+def test_persona_fields_rules_max_eight():
     with pytest.raises(ValidationError):
-        _fields(tone_note="x" * 201)
+        _fields(rules=["ok"] * 9)
 
 
-def test_persona_fields_tone_must_be_one_of_tones():
+def test_persona_fields_rule_length_bounds():
     with pytest.raises(ValidationError):
-        _fields(tone="sarcastic")
+        _fields(rules=["x" * 201])
 
 
-def test_persona_fields_tags_required_nonempty():
-    with pytest.raises(ValidationError):
-        _fields(tags=[])
+def test_persona_fields_no_longer_accepts_tags():
+    """Tags are server-derived now (Persona builder v2) — a caller passing
+    `tags` explicitly must not silently smuggle it through as a client-
+    authored value; pydantic simply doesn't know the field any more."""
+    fields = _fields()
+    assert not hasattr(fields, "tags")
 
 
-def test_persona_fields_tags_max_six():
-    with pytest.raises(ValidationError):
-        _fields(tags=[f"tag{i}" for i in range(7)])
+# --- tag derivation (Persona builder v2: auto-derived, field hidden) -------
 
 
-def test_persona_fields_tag_pattern_rejects_uppercase_and_underscore():
-    with pytest.raises(ValidationError):
-        _fields(tags=["Not_Valid"])
+def test_derive_tags_stopwords_longest_first_cap_six_and_dedup():
+    """The addendum's own example phrase for Who-they-are, run through the
+    real derivation: stopwords (including contraction remnants like "who's"
+    splitting into "who" + "s") are dropped, repeated words ("network" and
+    "detective" each appear twice across name/who/what) are de-duplicated
+    to one entry, and the result is the 6 longest survivors, ties broken by
+    first occurrence."""
+    fields = PersonaFields(
+        name="Network Detective",
+        who_they_are="an unflappable network detective who's seen every outage twice",
+        what_they_do="Investigate incidents and write clear postmortems for the team.",
+    )
+
+    tags = _derive_tags(fields, "network-detective")
+
+    assert tags == [
+        "unflappable",
+        "investigate",
+        "postmortems",
+        "detective",
+        "incidents",
+        "network",
+    ]
 
 
-def test_persona_fields_boundaries_max_eight():
-    with pytest.raises(ValidationError):
-        _fields(boundaries=["ok"] * 9)
+def test_derive_tags_falls_back_to_persona_slug_when_everything_is_a_stopword():
+    fields = PersonaFields(name="The Of And", who_they_are="a an the", what_they_do="to of in")
+
+    tags = _derive_tags(fields, "the-of-and")
+
+    assert tags == ["the-of-and"]
 
 
-def test_persona_fields_boundary_length_bounds():
-    with pytest.raises(ValidationError):
-        _fields(boundaries=["x" * 201])
+def test_derive_tags_skips_words_that_cannot_themselves_be_valid_tags():
+    """A word starting with a digit can't pass the same tag shape rule
+    (`_TAG_RE`) client-supplied tags always had to — it's dropped from the
+    candidate pool rather than ever reaching the persona's tags."""
+    fields = PersonaFields(
+        name="Visualist",
+        who_they_are="a 3d specialist for architecture visuals",
+        what_they_do="Produce renders and walkthroughs for client review.",
+    )
+
+    tags = _derive_tags(fields, "fallback-slug")
+
+    assert "3d" not in tags
+    assert "specialist" in tags
+
+
+def test_derive_tags_never_empty():
+    fields = PersonaFields(name="X", who_they_are="of the a", what_they_do="to in on")
+
+    tags = _derive_tags(fields, "x")
+
+    assert len(tags) >= 1
 
 
 # --- create_persona -------------------------------------------------------
@@ -219,12 +267,21 @@ def test_create_persona_writes_body_and_index_with_exact_keys_and_metadata():
 
     entry = create_persona(storage, bucket="personas-bucket", fields=fields, team="cs-team")
 
+    expected_tags = [
+        "troubleshooter",
+        "assistant",
+        "questions",
+        "customers",
+        "problems",
+        "billing",
+    ]
+
     assert entry.kind == "persona"
     assert entry.id == "aria-the-assistant"
     assert entry.name == "Aria the Assistant"
-    assert entry.description == "Customer support specialist"
+    assert entry.description == "a calm troubleshooter for billing questions"
     assert entry.team == "cs-team"
-    assert entry.tags == ["support"]
+    assert entry.tags == expected_tags
     assert entry.builtin is False
 
     body = storage.read_bytes("personas-bucket", "aria-the-assistant/persona.md")
@@ -238,9 +295,9 @@ def test_create_persona_writes_body_and_index_with_exact_keys_and_metadata():
         {
             "id": "aria-the-assistant",
             "name": "Aria the Assistant",
-            "description": "Customer support specialist",
+            "description": "a calm troubleshooter for billing questions",
             "team": "cs-team",
-            "tags": ["support"],
+            "tags": expected_tags,
             "builtin": False,
         }
     ]
@@ -281,7 +338,7 @@ def test_create_persona_appends_to_existing_index_without_disturbing_it():
     storage = FakeStorage()
     create_persona(storage, bucket="personas-bucket", fields=_fields(), team="cs-team")
 
-    other = _fields(name="Blaine the Bot", tags=["ops"])
+    other = _fields(name="Blaine the Bot")
     create_persona(storage, bucket="personas-bucket", fields=other, team="ops-team")
 
     index = json.loads(storage.read_bytes("personas-bucket", "index.json"))
@@ -301,29 +358,40 @@ def test_seed_default_personas_first_run_writes_all():
 
     result = seed_default_personas(storage, bucket="personas-bucket")
 
-    assert result == {"seeded": 2, "skipped": 0}
+    assert result == {"seeded": 1, "skipped": 0}
 
     index = json.loads(storage.read_bytes("personas-bucket", "index.json"))
     ids = {e["id"] for e in index["entries"]}
-    assert ids == {"blank", "helpful-generalist"}
+    assert ids == {"helpful-generalist"}
     for entry in index["entries"]:
         assert entry["builtin"] is True
         assert entry["team"] == "shared"
         assert entry["tags"] == []
 
-    meta = storage.object_metadata("personas-bucket", "blank/persona.md")
+    meta = storage.object_metadata("personas-bucket", "helpful-generalist/persona.md")
     assert meta["metadata"] == {"team": "shared", "creator": "kobo"}
+
+
+def test_seed_default_personas_no_longer_seeds_blank():
+    """Persona builder v2: "blank" confuses (operator feedback) and is
+    dropped from the packaged defaults entirely — helpful-generalist is the
+    only one that ships."""
+    storage = FakeStorage()
+
+    seed_default_personas(storage, bucket="personas-bucket")
+
+    with pytest.raises(StorageNotFound):
+        storage.read_bytes("personas-bucket", "blank/persona.md")
 
 
 def test_seed_default_personas_preserves_packaged_file_bytes():
     storage = FakeStorage()
     seed_default_personas(storage, bucket="personas-bucket")
 
-    for persona_id_ in ("blank", "helpful-generalist"):
-        written = storage.read_bytes("personas-bucket", f"{persona_id_}/persona.md")
-        assert written == _packaged_path(persona_id_).read_bytes()
-        # the agent-name placeholder must survive seeding untouched.
-        assert b"{name}" in written
+    written = storage.read_bytes("personas-bucket", "helpful-generalist/persona.md")
+    assert written == _packaged_path("helpful-generalist").read_bytes()
+    # the agent-name placeholder must survive seeding untouched.
+    assert b"{name}" in written
 
 
 def test_seed_default_personas_second_run_all_skipped():
@@ -332,7 +400,7 @@ def test_seed_default_personas_second_run_all_skipped():
 
     result = seed_default_personas(storage, bucket="personas-bucket")
 
-    assert result == {"seeded": 0, "skipped": 2}
+    assert result == {"seeded": 0, "skipped": 1}
 
 
 def test_seed_default_personas_never_overwrites_existing_object():
@@ -340,7 +408,7 @@ def test_seed_default_personas_never_overwrites_existing_object():
     custom_body = b"<!-- description: hand-edited -->\ncustom body\n"
     storage.write_bytes(
         "personas-bucket",
-        "blank/persona.md",
+        "helpful-generalist/persona.md",
         custom_body,
         metadata={"team": "shared", "creator": "an-operator"},
         content_type="text/markdown",
@@ -348,7 +416,7 @@ def test_seed_default_personas_never_overwrites_existing_object():
 
     seed_default_personas(storage, bucket="personas-bucket")
 
-    assert storage.read_bytes("personas-bucket", "blank/persona.md") == custom_body
+    assert storage.read_bytes("personas-bucket", "helpful-generalist/persona.md") == custom_body
 
 
 def test_seed_default_personas_merges_with_preexisting_room_authored_entries():
@@ -361,4 +429,4 @@ def test_seed_default_personas_merges_with_preexisting_room_authored_entries():
 
     index = json.loads(storage.read_bytes("personas-bucket", "index.json"))
     ids = {e["id"] for e in index["entries"]}
-    assert ids == {"aria-the-assistant", "blank", "helpful-generalist"}
+    assert ids == {"aria-the-assistant", "helpful-generalist"}

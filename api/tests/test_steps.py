@@ -105,7 +105,12 @@ def test_resolve_persona_body_reads_bucket_and_substitutes_name(
 
 
 def test_resolve_persona_body_strips_description_header(session_factory, config, fake_storage):
-    session, agent = _make_agent(session_factory, name="sam", persona="blank")
+    # "helpful-generalist" is the only packaged persona seeded into
+    # `fake_storage` since Persona builder v2 dropped "blank" from the
+    # packaged defaults (seed_default_personas no longer emits it) — it
+    # still carries the same `<!-- description: ... -->` header this test
+    # exists to prove gets stripped.
+    session, agent = _make_agent(session_factory, name="sam", persona="helpful-generalist")
     engine = session.get_bind()
 
     body = _resolve_persona_body(config, fake_storage, engine, agent)

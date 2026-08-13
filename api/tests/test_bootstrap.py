@@ -269,7 +269,9 @@ def test_fresh_org_run_every_step_done(config, github, storage, tmp_path):
     # and picked up the just-seeded personas.
     ingest_detail = results[-1].detail
     assert "direct" in ingest_detail
-    assert "personas=2" in ingest_detail  # both packaged default personas
+    # The one packaged default persona (Persona builder v2 dropped "blank"
+    # from the packaged defaults — only helpful-generalist ships now).
+    assert "personas=1" in ingest_detail
 
     # Output is column-aligned: every line's step name starts at the same index.
     name_starts = {line.index(result.name) for line, result in zip(lines, results, strict=True)}
@@ -301,10 +303,10 @@ def test_fresh_config_no_buckets_set_ingest_still_reports_seeded_personas(
     assert ingest_result.name == bootstrap.STEP_CATALOG_INGEST
     assert ingest_result.status == "done"
     assert "direct" in ingest_result.detail
-    # Both packaged default personas, seeded moments earlier in this same
+    # The one packaged default persona, seeded moments earlier in this same
     # run — NOT "personas=0", which is what the raw-field
     # (`configured_catalogs`) mapping would have silently produced.
-    assert "personas=2" in ingest_result.detail
+    assert "personas=1" in ingest_result.detail
 
 
 # --- explicit skills_repo: still owner-qualified for every GitHub call ------------

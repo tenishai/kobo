@@ -19,15 +19,12 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from kobo_api.catalog import _parse_persona_file
 from kobo_api.clients import StorageClient, StorageNotFound
 from kobo_api.search import CatalogEntry
-
-TONES = ("warm", "direct", "playful", "formal")
 
 # A persona id: lowercase, starts with a letter, up to 40 chars of
 # letters/digits/hyphens after that (trailing hyphens are fine — see
@@ -40,6 +37,35 @@ _TAG_RE = re.compile(r"^[a-z][a-z0-9-]{0,23}$")
 _NON_ALNUM_RUN_RE = re.compile(r"[^a-z0-9]+")
 
 _PACKAGE_PERSONAS_DIR = Path(__file__).parent / "templates" / "personas"
+
+# --- tag derivation (Persona builder v2 addendum) --------------------------
+
+# Every lowercase alphanumeric "word" (`_WORD_RE`) out of Name + Who-they-are
+# + What-they-do is a tag candidate UNLESS it's one of these plain function
+# words — including the single-letter/two-letter remnants a contraction
+# splits into once the apostrophe itself is just a word boundary to
+# `_WORD_RE` ("who's" -> "who" + "s", "they're" -> "they" + "re", "I've" ->
+# "i" + "ve", "don't" -> "don" + "t", "we'll" -> "we" + "ll", "I'm" -> "i" +
+# "m"). Deliberately NOT pruned further (no directional/temporal words like
+# "down"/"before"/"again"): those can carry real meaning in a short persona
+# blurb, and `_derive_tags`'s own longest-first ordering already pushes
+# short filler words to the bottom before the cap(6) cuts them.
+_STOPWORDS = frozenset(
+    "a an the and or but nor of to in on at for with without by from as "
+    "is are was were be been being "
+    "who whom whose what which when where why how "
+    "they them their theirs you your yours we us our ours i me my mine "
+    "he him his she her hers it its this that these those itself himself "
+    "herself myself yourself "
+    "do does did done doing have has had having "
+    "will would shall should could can may might must "
+    "not no so if then than "
+    "each every any all some one two three first second next last more "
+    "most other another such only own same too very "
+    "s t re ve ll d m just also".split()
+)
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
 
 
 class PersonaError(Exception):
@@ -54,41 +80,34 @@ class PersonaExists(Exception):
 
 
 class PersonaFields(BaseModel):
-    name: str = Field(min_length=1, max_length=60)
-    role: str = Field(min_length=1, max_length=120)
-    purpose: str = Field(min_length=1, max_length=500)
-    tone: Literal["warm", "direct", "playful", "formal"]
-    tone_note: str = Field(default="", max_length=200)
-    boundaries: list[str] = Field(default_factory=list, max_length=8)
-    # Deliberately no default (unlike boundaries/tone_note, both explicitly
-    # documented as optional in the brief): the brief's own comment for this
-    # field never says "optional", so at least one tag is required — a
-    # default of `[]` here would make a completely tag-less submission
-    # silently pass pydantic (defaults aren't validated unless the caller
-    # opts into validate_default), which would contradict "1-6 items".
-    tags: list[str] = Field(min_length=1, max_length=6)
+    """The Persona builder v2 form (addendum): four fields, down from
+    seven. Role/Purpose/Tone/Tone-note/Boundaries/Tags are gone — Rules
+    absorbs Boundaries' job (a short list of always/never one-liners), and
+    tags are no longer client-supplied at all (see `_derive_tags`, called
+    from `create_persona`, never from here — this model has no `tags`
+    field, so there's nothing for a caller to smuggle a client-authored
+    value through as)."""
 
-    @field_validator("role")
+    name: str = Field(min_length=1, max_length=60)
+    who_they_are: str = Field(min_length=1, max_length=200)
+    what_they_do: str = Field(min_length=1, max_length=500)
+    # 0-8 optional one-liners ("things they always or never do") — Rules is
+    # explicitly optional in the brief, unlike who_they_are/what_they_do.
+    rules: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("who_they_are")
     @classmethod
-    def _role_one_line(cls, v: str) -> str:
+    def _who_they_are_one_line(cls, v: str) -> str:
         if "\n" in v:
-            raise ValueError("role must be a single line (no newlines)")
+            raise ValueError("who_they_are must be a single line (no newlines)")
         return v
 
-    @field_validator("boundaries")
+    @field_validator("rules")
     @classmethod
-    def _boundaries_shape(cls, v: list[str]) -> list[str]:
+    def _rules_shape(cls, v: list[str]) -> list[str]:
         for item in v:
             if not (1 <= len(item) <= 200):
-                raise ValueError(f"each boundary must be 1-200 chars: {item!r}")
-        return v
-
-    @field_validator("tags")
-    @classmethod
-    def _tags_shape(cls, v: list[str]) -> list[str]:
-        for tag in v:
-            if not _TAG_RE.fullmatch(tag):
-                raise ValueError(f"invalid tag: {tag!r}")
+                raise ValueError(f"each rule must be 1-200 chars: {item!r}")
         return v
 
 
@@ -116,32 +135,71 @@ def render_persona(fields: PersonaFields) -> str:
     concatenation, NEVER `str.format`.
 
     Two things `.format()` would get wrong: the literal `{name}` token in
-    the "Identity" line must survive verbatim in the output (it's the
+    the opening line must survive verbatim in the output (it's the
     agent-name placeholder substituted at provision time — the same
     convention the packaged templates already use, see
-    `kobo_api.catalog.PersonaInfo.body`'s docstring) — a `.format(name=...)`
-    call would eat it. And `purpose`/`boundaries` are free-form user text
-    that may itself contain `{`/`}` — running the assembled template back
-    through `.format()` would raise (or silently misinterpret) on those.
-    Concatenating the field values in as plain strings sidesteps both.
+    `kobo_api.catalog.PersonaInfo.body`'s docstring, and the exact
+    replacement `kobo_api.steps` later does with
+    `body.replace("{name}", agent.name)`) — a `.format(name=...)` call would
+    eat it. And `who_they_are`/`what_they_do`/`rules` are free-form user
+    text that may itself contain `{`/`}` — running the assembled template
+    back through `.format()` would raise (or silently misinterpret) on
+    those. Concatenating the field values in as plain strings sidesteps
+    both.
+
+    Emits the "house skeleton" the Persona builder v2 addendum specifies: a
+    fixed, org-neutral voice paragraph (structural template text, not
+    client branding), then a What-you-do section, then an optional Rules
+    section — Rules is omitted entirely (no heading, no blank line) when
+    `fields.rules` is empty, the same conditional-section convention v1's
+    Boundaries used.
     """
-    tone_note_suffix = " " + fields.tone_note if fields.tone_note else ""
     lines = [
-        "<!-- description: " + fields.role + " -->",
-        "# Identity",
-        "You are {name} — " + fields.role + ".",
+        "You are {name}, " + fields.who_they_are + ".",
         "",
-        "# What you do",
-        fields.purpose,
+        "Speak in the first person, plainly. Lead with the answer; skip",
+        "throat-clearing. Say \"I don't know yet\" when it's true.",
         "",
-        "# How you speak",
-        "Your tone is " + fields.tone + "." + tone_note_suffix,
+        "## What you do",
+        "",
+        fields.what_they_do,
     ]
-    if fields.boundaries:
+    if fields.rules:
         lines.append("")
-        lines.append("# Boundaries")
-        lines.extend("- " + boundary for boundary in fields.boundaries)
+        lines.append("## Rules")
+        lines.append("")
+        lines.extend("- " + rule for rule in fields.rules)
     return "\n".join(lines) + "\n"
+
+
+def _derive_tags(fields: PersonaFields, slug: str) -> list[str]:
+    """Auto-derive 1-6 persona tags server-side (Persona builder v2
+    addendum: tags are no longer a form field at all — the UI sends none).
+
+    Every lowercase alphanumeric word out of Name + Who-they-are +
+    What-they-do (`_WORD_RE`) is a candidate, minus `_STOPWORDS`, minus
+    anything that couldn't itself pass as a tag (`_TAG_RE` — must start
+    with a letter, max 24 chars, the exact shape client-supplied tags were
+    always required to have back when there was a tags field at all),
+    de-duplicated (first occurrence wins), then sorted longest-word-first —
+    `sorted(..., reverse=True)` is still a *stable* sort, so same-length
+    words keep that first-occurrence order rather than reversing too — and
+    capped at 6.
+
+    If NONE of that survives (every word in the source text was a
+    stopword), the persona's own slug is the fallback tag, truncated to the
+    same 24-char cap: `slug` is already lowercase alphanumeric-or-hyphen and
+    always starts with a letter (`PERSONA_ID_RE`), so `slug[:24]` is always
+    `_TAG_RE`-valid — guaranteeing at least one tag either way.
+    """
+    text = f"{fields.name} {fields.who_they_are} {fields.what_they_do}".lower()
+    seen: dict[str, None] = {}
+    for word in _WORD_RE.findall(text):
+        if word in _STOPWORDS or not _TAG_RE.fullmatch(word):
+            continue
+        seen.setdefault(word, None)
+    ranked = sorted(seen, key=len, reverse=True)
+    return ranked[:6] if ranked else [slug[:24]]
 
 
 def _read_index(storage: StorageClient, bucket: str, prefix: str) -> list[dict]:
@@ -199,7 +257,9 @@ def create_persona(
     entry survives a persona create).
 
     Raises `PersonaError` if `fields.name` doesn't slugify to a valid id,
-    `PersonaExists` if that id is already in the index.
+    `PersonaExists` if that id is already in the index. Tags are derived
+    here (`_derive_tags`), not read off `fields` — Persona builder v2 has no
+    client-supplied tags field at all.
     """
     id_ = persona_id(fields.name)
 
@@ -216,12 +276,12 @@ def create_persona(
         content_type="text/markdown",
     )
 
-    tags = list(fields.tags)
+    tags = _derive_tags(fields, id_)
     index.append(
         {
             "id": id_,
             "name": fields.name,
-            "description": fields.role,
+            "description": fields.who_they_are,
             "team": team,
             "tags": tags,
             "builtin": False,
@@ -233,7 +293,7 @@ def create_persona(
         kind="persona",
         id=id_,
         name=fields.name,
-        description=fields.role,
+        description=fields.who_they_are,
         team=team,
         tags=tags,
         builtin=False,

@@ -44,10 +44,8 @@ SKILL_ENTRIES = [
 
 VALID_PAYLOAD = {
     "name": "Aria the Assistant",
-    "role": "Customer support specialist",
-    "purpose": "Help customers troubleshoot billing issues.",
-    "tone": "warm",
-    "tags": ["support"],
+    "who_they_are": "a calm troubleshooter for billing questions",
+    "what_they_do": "Help customers troubleshoot billing issues.",
     "team": "cs-team",
 }
 
@@ -111,12 +109,35 @@ def test_create_persona_201(client, fake_storage):
     assert response.json() == {
         "id": "aria-the-assistant",
         "name": "Aria the Assistant",
-        "description": "Customer support specialist",
+        "description": "a calm troubleshooter for billing questions",
         "team": "cs-team",
-        "tags": ["support"],
+        # Server-derived (Persona builder v2 — the UI sends no tags at
+        # all): the 6 longest non-stopword words out of name + who_they_are
+        # + what_they_do, longest first. See test_personas.py's dedicated
+        # `_derive_tags` tests for the algorithm itself; this just pins that
+        # the route wires it through end to end.
+        "tags": [
+            "troubleshooter",
+            "troubleshoot",
+            "assistant",
+            "questions",
+            "customers",
+            "billing",
+        ],
         "builtin": False,
     }
     assert "write_bytes:personas-bucket:aria-the-assistant/persona.md" in fake_storage.calls
+
+
+def test_create_persona_201_with_rules(client):
+    """Rules (optional, up to 8) render into the body's Rules section — a
+    regression pin that the route passes `rules` through to `create_persona`
+    like every other field, not just the three required ones."""
+    payload = {**VALID_PAYLOAD, "rules": ["Never share account numbers.", "Be concise."]}
+
+    response = client.post("/api/personas", json=payload)
+
+    assert response.status_code == 201
 
 
 def test_create_persona_is_instantly_searchable(client):
@@ -157,20 +178,22 @@ def test_create_persona_duplicate_409(client):
     assert response.json() == {"error": "a persona with that name already exists"}
 
 
-def test_create_persona_422_bad_tone(client):
-    response = client.post("/api/personas", json={**VALID_PAYLOAD, "tone": "sarcastic"})
-
-    assert response.status_code == 422
-
-
 def test_create_persona_422_bad_team_shape(client):
     response = client.post("/api/personas", json={**VALID_PAYLOAD, "team": "Not Valid!"})
 
     assert response.status_code == 422
 
 
-def test_create_persona_422_missing_tags(client):
-    payload = {k: v for k, v in VALID_PAYLOAD.items() if k != "tags"}
+def test_create_persona_422_missing_who_they_are(client):
+    payload = {k: v for k, v in VALID_PAYLOAD.items() if k != "who_they_are"}
+
+    response = client.post("/api/personas", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_create_persona_422_too_many_rules(client):
+    payload = {**VALID_PAYLOAD, "rules": ["ok"] * 9}
 
     response = client.post("/api/personas", json=payload)
 

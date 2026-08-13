@@ -4,7 +4,7 @@ buckets, both catalog indexes, and the deploy platform.
 
 Same full TestClient/create_app harness as test_api_search.py/
 test_api_agents.py. `fake_storage`/`config` are conftest.py's shared
-fixtures (seeded with both catalogs: the two packaged personas plus one
+fixtures (seeded with both catalogs: the one packaged persona plus one
 sample skill and both `index.json`s) — this module only adds its own
 `clients`/`app` wiring (a bare Clients with fakes for every client the
 route never touches) and an `org` knob per test.
@@ -116,7 +116,7 @@ def test_all_green_against_seeded_fakes(wired_config, fake_storage, tmp_path, wi
             "id": "personas-seeded",
             "label": "Personas",
             "ok": True,
-            "detail": "2 personas",
+            "detail": "1 personas",
         },
         {
             "id": "deploy-platform",
