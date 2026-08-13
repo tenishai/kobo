@@ -24,7 +24,12 @@ export type StepView = {
 
 export type AgentDetail = AgentSummary & {
   persona: string;
-  skills: { name: string; sha: string }[];
+  /** Raw `agent.skills` DB entries, verbatim: a catalog pick carries
+   * `team`/`sha`; a locally-authored guardrail skill carries neither (just
+   * `source: "local"`) — see `AgentSkill` (the richer, server-normalized
+   * shape `GET /api/agents/{name}/skills` serves) for the shape both are
+   * mapped into elsewhere in this room. */
+  skills: { name: string; sha?: string; team?: string; source?: string }[];
   repo_full_name: string | null;
   first_reply: string | null;
   error: string | null;
