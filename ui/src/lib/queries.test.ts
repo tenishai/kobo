@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, readLocalSkill, type AgentSkill, type CatalogEntry, type IntakeFile, type OrgStatus } from "./api";
+import { ApiError, readLocalSkill, type AgentSkill, type CatalogEntry, type IntakeFile, type OrgStatus, type ToolingFile } from "./api";
 import {
   addCatalogSkillMutation,
   agentSkillsQuery,
@@ -10,9 +10,11 @@ import {
   deleteIntakeMutation,
   deleteKnowledgeMutation,
   deleteSkillMutation,
+  deleteToolingMutation,
   deliveryQuery,
   deliveryRefetchInterval,
   generateAvatarMutation,
+  importToolingMutation,
   intakeQuery,
   intakeRefetchInterval,
   modelsQuery,
@@ -24,7 +26,9 @@ import {
   shouldRetry,
   skillsSearchQuery,
   teamsQuery,
+  toolingQuery,
   uploadIntakeMutation,
+  uploadToolingMutation,
 } from "./queries";
 import type { QueryClient } from "@tanstack/svelte-query";
 
@@ -902,6 +906,231 @@ describe("deleteIntakeMutation", () => {
     expect(invalidateQueries).toHaveBeenCalledTimes(1);
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["agents", "clio", "intake"],
+    });
+  });
+});
+
+describe("toolingQuery", () => {
+  it("has queryKey ['agents', name, 'tooling']", () => {
+    expect(toolingQuery("clio").queryKey).toEqual([
+      "agents",
+      "clio",
+      "tooling",
+    ]);
+  });
+
+  it("queryFn GETs /api/agents/{name}/tooling and unwraps {files: [...]}", async () => {
+    const files: ToolingFile[] = [
+      { name: "guard.py", content_bytes: 128, delivered: true },
+      { name: "helper.go", content_bytes: 256, delivered: false },
+    ];
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ files }),
+    } as Response);
+
+    await expect(
+      callQueryFn<ToolingFile[]>(toolingQuery("clio")),
+    ).resolves.toEqual(files);
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/tooling");
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("uploadToolingMutation", () => {
+  it("mutationFn POSTs {filename, content} to /api/agents/{name}/tooling and returns {sha}", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ sha: "abc123" }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = uploadToolingMutation(queryClient, "clio");
+    const body = { filename: "guard.py", content: "def run():\n    pass\n" };
+
+    await expect(mutation.mutationFn(body)).resolves.toEqual({
+      sha: "abc123",
+    });
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/tooling", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the agent's tooling query on success", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = uploadToolingMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "clio", "tooling"],
+    });
+  });
+
+  it("surfaces a 422 syntax-error-with-line-number message through parse(), verbatim", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 422,
+      statusText: "Unprocessable Entity",
+      text: async () =>
+        JSON.stringify({
+          error: "tooling file has a syntax error on line 3: invalid syntax",
+        }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = uploadToolingMutation(queryClient, "clio");
+
+    await expect(
+      mutation.mutationFn({ filename: "bad.py", content: "def f(:\n  pass" }),
+    ).rejects.toThrow(
+      "tooling file has a syntax error on line 3: invalid syntax",
+    );
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("importToolingMutation", () => {
+  it("mutationFn POSTs {repo, path} to /api/agents/{name}/tooling/import and returns the partial-pass result", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const result = {
+      sha: "def456",
+      imported: ["guard.py"],
+      rejected: [
+        {
+          name: "broken.py",
+          reason: "tooling file has a syntax error on line 1: invalid syntax",
+        },
+      ],
+    };
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify(result),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = importToolingMutation(queryClient, "clio");
+    const body = { repo: "some-org/tools-repo", path: "shared-guardrails" };
+
+    await expect(mutation.mutationFn(body)).resolves.toEqual(result);
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/tooling/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the agent's tooling query on success", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = importToolingMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "clio", "tooling"],
+    });
+  });
+
+  it("propagates a 404 (with its verbatim message) when the source path doesn't exist in the repo", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      statusText: "Not Found",
+      text: async () =>
+        JSON.stringify({
+          error:
+            "tooling source path not found: 'nope' in 'some-org/tools-repo'",
+        }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = importToolingMutation(queryClient, "clio");
+
+    let caught: unknown;
+    try {
+      await mutation.mutationFn({
+        repo: "some-org/tools-repo",
+        path: "nope",
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(ApiError);
+    expect((caught as ApiError).status).toBe(404);
+    expect((caught as ApiError).message).toBe(
+      "tooling source path not found: 'nope' in 'some-org/tools-repo'",
+    );
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("deleteToolingMutation", () => {
+  it("mutationFn DELETEs /api/agents/{name}/tooling/{filename} and returns {sha}", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ sha: "ghi789" }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = deleteToolingMutation(queryClient, "clio");
+
+    await expect(mutation.mutationFn("guard.py")).resolves.toEqual({
+      sha: "ghi789",
+    });
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/tooling/guard.py", {
+      method: "DELETE",
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the agent's tooling query on success", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = deleteToolingMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "clio", "tooling"],
     });
   });
 });

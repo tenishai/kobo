@@ -11,6 +11,7 @@
 //   ["agents", name, "knowledge", "delivery", sha]  - delivery state for one sha
 //   ["agents", name, "skills"]                      - an agent's skills (catalog + local)
 //   ["agents", name, "intake"]                      - an agent's intake files
+//   ["agents", name, "tooling"]                     - an agent's tooling files
 //   ["catalog", "models"]                           - the model list + default
 //   ["catalog", "teams"]                             - the team-slug list
 //   ["catalog", "skills", {q, team}]                - a skill catalog search
@@ -29,6 +30,7 @@ import {
   type KnowledgeFile,
   type OrgStatus,
   type PersonaForm,
+  type ToolingFile,
   addCatalogSkill,
   chatWithAgent,
   connectSlack,
@@ -38,22 +40,26 @@ import {
   deleteIntake,
   deleteKnowledgeFile,
   deleteSkill,
+  deleteTooling,
   fetchDeliveryState,
   fetchModels,
   fetchOrgStatus,
   fetchTeams,
   generateAvatar,
   getAgent,
+  importTooling,
   listAgents,
   listIntake,
   listKnowledge,
   listSkills,
+  listTooling,
   retryAgent,
   saveKnowledgeFile,
   saveLocalSkill,
   searchPersonas,
   searchSkills,
   uploadIntake,
+  uploadTooling,
 } from "./api";
 import { detailRefetchInterval, listRefetchInterval } from "./status";
 
@@ -404,6 +410,66 @@ export function deleteIntakeMutation(queryClient: QueryClient, name: string) {
   };
 }
 
+/** An agent's tooling files — the staged door for its LAW-to-be
+ * (2026-08-13 addendum). No polling — same reasoning as `agentSkillsQuery`:
+ * uploads/imports/removes here are all user-driven, never something that
+ * changes in the background on its own (unlike `intakeQuery`, there's no
+ * background seeder racing to flip a status field this query would need to
+ * catch up to — `delivered` only moves on the next deploy of the pod
+ * itself, and the shared delivery chip already covers that window). */
+export function toolingQuery(name: string) {
+  return queryOptions({
+    queryKey: ["agents", name, "tooling"] as const,
+    queryFn: () => listTooling(name),
+  });
+}
+
+/**
+ * Uploads (creates or overwrites) one tooling file; on success, invalidates
+ * that agent's tooling query so the saved file (and its new sha/delivery
+ * state) is picked up.
+ */
+export function uploadToolingMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: ({ filename, content }: { filename: string; content: string }) =>
+      uploadTooling(name, filename, content),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "tooling"] });
+    },
+  };
+}
+
+/**
+ * Imports every `.py`/`.go` file that passes validation from some other
+ * repo's folder in one delivery; on success, invalidates that agent's
+ * tooling query so any newly-imported files show up. Invalidates
+ * unconditionally, even when nothing passed (`sha: null`) — a harmless
+ * no-op refetch, and it keeps this mutation's success handling uniform with
+ * upload/delete rather than branching on the result shape.
+ */
+export function importToolingMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: ({ repo, path }: { repo: string; path: string }) =>
+      importTooling(name, repo, path),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "tooling"] });
+    },
+  };
+}
+
+/**
+ * Removes a tooling file; on success, invalidates that agent's tooling query
+ * so the removed file drops out of the list.
+ */
+export function deleteToolingMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (filename: string) => deleteTooling(name, filename),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "tooling"] });
+    },
+  };
+}
+
 /**
  * Creates the agent's Slack app; on success, invalidates that agent's detail
  * query so the new `slack.app_id` (and configure_url, surfaced via the
@@ -471,4 +537,5 @@ export type {
   KnowledgeFile,
   OrgStatus,
   PersonaForm,
+  ToolingFile,
 };

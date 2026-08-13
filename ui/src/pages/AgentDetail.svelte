@@ -16,6 +16,7 @@
   import SlackPanel from "../components/SlackPanel.svelte";
   import StatusBadge from "../components/StatusBadge.svelte";
   import StepChecklist from "../components/StepChecklist.svelte";
+  import ToolingPanel from "../components/ToolingPanel.svelte";
   import { errorMessage } from "../lib/api";
   import { agentQuery, generateAvatarMutation, retryAgentMutation } from "../lib/queries";
   import { formatHash, route } from "../lib/router.svelte";
@@ -182,6 +183,7 @@
       <ChatPanel agentName={data.name} />
       <MemoryPanel agentName={data.name} />
       <SkillsPanel agentName={data.name} />
+      <ToolingPanel agentName={data.name} />
       {#if data.slack_visible}
         <SlackPanel agentName={data.name} slack={data.slack} />
       {/if}
