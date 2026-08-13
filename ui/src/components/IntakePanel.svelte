@@ -140,10 +140,15 @@
     if (!INTAKE_FILENAME_RE.test(filename)) {
       return "Use lowercase letters, numbers, and hyphens, ending in .md or .txt.";
     }
-    if ($intake.data?.some((file) => file.name === filename)) {
-      return "There's already a file with this name.";
-    }
     return null;
+  });
+
+  const filenameMatch = $derived.by((): IntakeFile | null => {
+    if (filename.length === 0 || !INTAKE_FILENAME_RE.test(filename)) {
+      return null;
+    }
+    const match = $intake.data?.find((file) => file.name === filename);
+    return match ?? null;
   });
 
   const canUpload = $derived.by((): boolean => {
@@ -266,6 +271,12 @@
         {#if filenameError}
           <p class="intake-form__status intake-form__status--error" role="alert">
             {filenameError}
+          </p>
+        {:else if filenameMatch}
+          <p class="intake-form__help">
+            {filenameMatch.status === "ingested"
+              ? "Re-uploading under this name teaches your agent again from the new content — what it already learned stays."
+              : "This will replace the waiting file before it's learned."}
           </p>
         {/if}
       </div>
