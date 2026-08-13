@@ -262,3 +262,37 @@ def test_save_local_skill_identical_content_still_returns_head():
     github = FakeGitHub(commit_push_results=[False])
     sha = save_local_skill(github, REPO, "survey-field", SAMPLE_CONTENT)
     assert sha == FAKE_LOCAL_HEAD_DEFAULT
+
+
+def test_save_local_skill_rejects_trailing_newline_in_id():
+    github = _CapturingGitHub()
+    with pytest.raises(SkillsError, match="invalid skill id"):
+        save_local_skill(github, REPO, "survey-field\n", SAMPLE_CONTENT)
+    assert github.pushes == []
+
+
+def test_remove_skill_rejects_trailing_newline_in_id():
+    github = FakeGitHub()
+    with pytest.raises(SkillsError, match="invalid skill id"):
+        remove_skill(github, REPO, "survey-field\n")
+    assert github.cloned == []
+
+
+def test_save_local_skill_accepts_max_length_id():
+    github = _CapturingGitHub()
+    max_id = "a" + "b" * 39  # 'a' + 39 more chars = 40 total
+    sha = save_local_skill(github, REPO, max_id, SAMPLE_CONTENT)
+    assert github.captured_skills == {f"{max_id}/SKILL.md": SAMPLE_CONTENT}
+    assert sha == FAKE_LOCAL_HEAD_DEFAULT
+
+
+def test_save_local_skill_accepts_max_size_content():
+    github = _CapturingGitHub()
+    # Create content that is exactly 65536 bytes
+    header = "---\nname: x\ndescription: d\n---\n"
+    remaining = SKILL_MAX_BYTES - len(header.encode("utf-8"))
+    content = header + "x" * remaining
+    assert len(content.encode("utf-8")) == SKILL_MAX_BYTES
+    sha = save_local_skill(github, REPO, "survey-field", content)
+    assert github.captured_skills == {"survey-field/SKILL.md": content}
+    assert sha == FAKE_LOCAL_HEAD_DEFAULT

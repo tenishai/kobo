@@ -47,7 +47,7 @@ class SkillsError(Exception):
 
 
 def _validate_skill_id(skill_id: str) -> None:
-    if not SKILL_ID_RE.match(skill_id):
+    if not SKILL_ID_RE.fullmatch(skill_id):
         raise SkillsError(f"invalid skill id: {skill_id!r}")
 
 
