@@ -129,6 +129,7 @@
   let filename = $state("");
   let content = $state("");
   let uploadError = $state<string | null>(null);
+  let fileReadError = $state<string | null>(null);
 
   const contentBytes = $derived(new TextEncoder().encode(content).length);
   const contentTooLarge = $derived(contentBytes > INTAKE_MAX_BYTES);
@@ -176,6 +177,34 @@
       return `${kb.toFixed(kb < 10 ? 1 : 0)} KB`;
     }
     return `${(kb / 1024).toFixed(1)} MB`;
+  }
+
+  function handleFileSelect(event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) {
+      return;
+    }
+    fileReadError = null;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const text = e.target?.result as string;
+        content = text;
+        // Extract lowercased basename without extension, then append original extension
+        const withoutExt = file.name.lastIndexOf(".")
+          ? file.name.slice(0, file.name.lastIndexOf("."))
+          : file.name;
+        const ext = file.name.slice(withoutExt.length);
+        filename = (withoutExt + ext).toLowerCase();
+      } catch {
+        fileReadError = "Couldn't read this file. Try another.";
+      }
+    };
+    reader.onerror = () => {
+      fileReadError = "Couldn't read this file. Try another.";
+    };
+    reader.readAsText(file);
   }
 
   function handleUpload(event: SubmitEvent): void {
@@ -254,6 +283,27 @@
   </div>
 
   <form class="intake-form" onsubmit={handleUpload}>
+    <div class="intake-form__field">
+      <label class="intake-form__label" for="intake-file">Choose file</label>
+      <div class="intake-form__file-row">
+        <input
+          id="intake-file"
+          class="intake-form__file-input"
+          type="file"
+          accept=".md,.txt"
+          onchange={handleFileSelect}
+          aria-describedby="intake-file-status"
+        />
+        <div id="intake-file-status">
+          {#if fileReadError}
+            <p class="intake-form__status intake-form__status--error" role="alert">
+              {fileReadError}
+            </p>
+          {/if}
+        </div>
+      </div>
+    </div>
+
     <div class="intake-form__field">
       <label class="intake-form__label" for="intake-filename">File name</label>
       <input
@@ -481,6 +531,28 @@
 
   .intake-form__status--error {
     color: var(--fail);
+  }
+
+  .intake-form__file-row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .intake-form__file-input {
+    padding: var(--space-2xs) var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 0.9rem;
+  }
+
+  .intake-form__file-input:hover {
+    border-color: var(--accent);
+    color: var(--accent);
   }
 
   .intake-form__submit {
