@@ -58,17 +58,16 @@ export type CatalogEntry = {
   builtin?: boolean;
 };
 
-/** The persona builder's form — posted verbatim as the body of
- * `POST /api/personas`. `tags` is required here (the server enforces 1-6);
- * the form itself enforcing that is Task 10's job. */
+/** The persona builder's form (Persona builder v2 addendum) — posted
+ * verbatim as the body of `POST /api/personas`. Four fields, down from
+ * seven: no `tags` (the server derives them from name/who_they_are/
+ * what_they_do — `kobo_api.personas._derive_tags`), no role/purpose/tone/
+ * tone_note (Rules absorbs what Boundaries used to). */
 export type PersonaForm = {
   name: string;
-  role: string;
-  purpose: string;
-  tone: "warm" | "direct" | "playful" | "formal";
-  tone_note: string;
-  boundaries: string[];
-  tags: string[];
+  who_they_are: string;
+  what_they_do: string;
+  rules: string[];
   team: string;
 };
 

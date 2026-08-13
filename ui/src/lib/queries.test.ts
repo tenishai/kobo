@@ -461,18 +461,15 @@ describe("createPersonaMutation", () => {
     vi.stubGlobal("fetch", vi.fn());
     const body = {
       name: "helper",
-      role: "assistant",
-      purpose: "helps with things",
-      tone: "warm" as const,
-      tone_note: "",
-      boundaries: [],
-      tags: ["general"],
+      who_they_are: "an unflappable network detective who's seen every outage twice",
+      what_they_do: "helps with things",
+      rules: [],
       team: "shared",
     };
     const created = {
       id: "helper",
       name: "helper",
-      description: "helps with things",
+      description: "an unflappable network detective who's seen every outage twice",
       team: "shared",
       tags: ["general"],
     };

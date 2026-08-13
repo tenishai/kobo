@@ -1,19 +1,25 @@
 <script lang="ts">
   // Inline "create a new persona" form: swapped in for CreateModal's persona
-  // search list when the user picks its "Build your own" card. This
-  // component owns only its own six form fields (name, role, purpose, tone,
-  // tone note, boundaries) plus tags, and the mutation that posts them — it
-  // does NOT own the "which persona is selected" or "am I showing the list
-  // or the builder" state, both of which stay in CreateModal (this is the
-  // thing that swaps in and out, not the thing deciding when to swap).
-  // `team` is passed in from CreateModal's own team field rather than being
-  // a field here: the brief's fixed-field list for this form never
-  // includes one, so there's nothing to re-enter — whatever the create
-  // form's team currently says is what the new persona is tagged with.
+  // search list when the user picks its "Build your own" card. Persona
+  // builder v2 (addendum): four fields — name, who they are, what they do,
+  // and an optional rules list — down from the original seven. Tags/tone/
+  // role/purpose/boundaries are gone: Rules absorbs boundaries' job, and
+  // tags are now derived server-side (`kobo_api.personas._derive_tags`) —
+  // this form sends none at all.
+  //
+  // This component owns only its own four form fields plus the mutation
+  // that posts them — it does NOT own the "which persona is selected" or
+  // "am I showing the list or the builder" state, both of which stay in
+  // CreateModal (this is the thing that swaps in and out, not the thing
+  // deciding when to swap). `team` is passed in from CreateModal's own team
+  // field rather than being a field here: the brief's fixed-field list for
+  // this form never includes one, so there's nothing to re-enter —
+  // whatever the create form's team currently says is what the new persona
+  // is tagged with.
   import { createMutation, useQueryClient } from "@tanstack/svelte-query";
   import { ApiError, errorMessage, type PersonaForm } from "../lib/api";
   import { createPersonaMutation } from "../lib/queries";
-  import { splitLines, splitTags, validateSlug } from "../lib/validate";
+  import { splitLines } from "../lib/validate";
 
   let {
     team,
@@ -30,52 +36,27 @@
   const queryClient = useQueryClient();
   const mutation = createMutation(createPersonaMutation(queryClient));
 
-  type Tone = PersonaForm["tone"];
-
   let name = $state("");
-  let role = $state("");
-  let purpose = $state("");
-  let tone = $state<Tone>("warm");
-  let toneNote = $state("");
-  let boundariesInput = $state("");
-  let tagsInput = $state("");
+  let whoTheyAre = $state("");
+  let whatTheyDo = $state("");
+  let rulesInput = $state("");
   let submitError = $state<string | null>(null);
 
-  const boundaries = $derived(splitLines(boundariesInput));
-  const tags = $derived(splitTags(tagsInput));
+  const rules = $derived(splitLines(rulesInput));
 
   // Shown only once there's something to say about it — an untouched
-  // textarea isn't "invalid", it's just empty, same convention as
-  // CreateModal's nameError.
-  const boundariesError = $derived(
-    boundaries.length > 8 ? "Use up to 8, one per line." : null,
+  // textarea isn't "invalid", it's just empty, same convention v1 used for
+  // its Boundaries field.
+  const rulesError = $derived(
+    rules.length > 8 ? "Use up to 8, one per line." : null,
   );
-
-  const tagsError = $derived.by((): string | null => {
-    if (tagsInput.trim().length === 0) {
-      return null;
-    }
-    if (tags.length === 0) {
-      return "Add at least one tag.";
-    }
-    if (tags.length > 6) {
-      return "Use up to 6 tags.";
-    }
-    if (tags.some((tag) => validateSlug(tag) !== null)) {
-      return "Tags must be lowercase letters, numbers, and hyphens.";
-    }
-    return null;
-  });
 
   const canCreate = $derived(
     teamValid &&
       name.trim().length > 0 &&
-      role.trim().length > 0 &&
-      purpose.trim().length > 0 &&
-      tags.length >= 1 &&
-      tags.length <= 6 &&
-      tags.every((tag) => validateSlug(tag) === null) &&
-      boundaries.length <= 8 &&
+      whoTheyAre.trim().length > 0 &&
+      whatTheyDo.trim().length > 0 &&
+      rules.length <= 8 &&
       !$mutation.isPending,
   );
 
@@ -87,12 +68,9 @@
     submitError = null;
     const body: PersonaForm = {
       name,
-      role,
-      purpose,
-      tone,
-      tone_note: toneNote,
-      boundaries,
-      tags,
+      who_they_are: whoTheyAre,
+      what_they_do: whatTheyDo,
+      rules,
       team,
     };
     $mutation.mutate(body, {
@@ -129,97 +107,51 @@
   </div>
 
   <div class="persona-builder__field">
-    <label class="persona-builder__label" for="persona-builder-role">Role</label>
-    <input
-      id="persona-builder-role"
-      class="persona-builder__input"
-      type="text"
-      bind:value={role}
-      autocomplete="off"
-    />
-  </div>
-
-  <div class="persona-builder__field">
-    <label class="persona-builder__label" for="persona-builder-purpose">Purpose</label>
-    <textarea
-      id="persona-builder-purpose"
-      class="persona-builder__textarea"
-      bind:value={purpose}
-      rows="3"
-    ></textarea>
-  </div>
-
-  <div class="persona-builder__field">
-    <label class="persona-builder__label" for="persona-builder-tone">Tone</label>
-    <select
-      id="persona-builder-tone"
-      class="persona-builder__input"
-      value={tone}
-      onchange={(event) =>
-        (tone = (event.currentTarget as HTMLSelectElement).value as Tone)}
-    >
-      <option value="warm">Warm</option>
-      <option value="direct">Direct</option>
-      <option value="playful">Playful</option>
-      <option value="formal">Formal</option>
-    </select>
-  </div>
-
-  <div class="persona-builder__field">
-    <label class="persona-builder__label" for="persona-builder-tone-note">
-      Tone note (optional)
+    <label class="persona-builder__label" for="persona-builder-who-they-are">
+      Who they are
     </label>
     <input
-      id="persona-builder-tone-note"
+      id="persona-builder-who-they-are"
       class="persona-builder__input"
       type="text"
-      bind:value={toneNote}
+      bind:value={whoTheyAre}
+      placeholder="an unflappable network detective who's seen every outage twice"
       autocomplete="off"
     />
+    <p class="persona-builder__help">One vivid line — who is this agent?</p>
   </div>
 
   <div class="persona-builder__field">
-    <label class="persona-builder__label" for="persona-builder-boundaries">
-      Boundaries (optional)
+    <label class="persona-builder__label" for="persona-builder-what-they-do">
+      What they do
     </label>
     <textarea
-      id="persona-builder-boundaries"
+      id="persona-builder-what-they-do"
       class="persona-builder__textarea"
-      bind:value={boundariesInput}
+      bind:value={whatTheyDo}
       rows="3"
-      placeholder="One per line"
-      aria-describedby="persona-builder-boundaries-status"
-      aria-invalid={boundariesError !== null}
     ></textarea>
-    <p class="persona-builder__help">One per line, up to 8.</p>
-    <div id="persona-builder-boundaries-status">
-      {#if boundariesError}
-        <p class="persona-builder__status persona-builder__status--error" role="alert">
-          {boundariesError}
-        </p>
-      {/if}
-    </div>
+    <p class="persona-builder__help">2-4 sentences, plain prose.</p>
   </div>
 
   <div class="persona-builder__field">
-    <label class="persona-builder__label" for="persona-builder-tags">Tags</label>
-    <input
-      id="persona-builder-tags"
-      class="persona-builder__input"
-      type="text"
-      bind:value={tagsInput}
-      placeholder="e.g. support, docs"
-      autocomplete="off"
-      aria-describedby="persona-builder-tags-status"
-      aria-invalid={tagsError !== null}
-    />
-    <p class="persona-builder__help">
-      Comma or space separated. 1-6 tags, lowercase letters, numbers, and hyphens.
-    </p>
-    <div id="persona-builder-tags-status">
-      {#if tagsError}
+    <label class="persona-builder__label" for="persona-builder-rules">
+      Rules (optional)
+    </label>
+    <textarea
+      id="persona-builder-rules"
+      class="persona-builder__textarea"
+      bind:value={rulesInput}
+      rows="3"
+      placeholder="One per line — things they always or never do."
+      aria-describedby="persona-builder-rules-status"
+      aria-invalid={rulesError !== null}
+    ></textarea>
+    <p class="persona-builder__help">Up to 8, one per line.</p>
+    <div id="persona-builder-rules-status">
+      {#if rulesError}
         <p class="persona-builder__status persona-builder__status--error" role="alert">
-          {tagsError}
+          {rulesError}
         </p>
       {/if}
     </div>

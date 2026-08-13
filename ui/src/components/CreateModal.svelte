@@ -404,6 +404,14 @@
           oncreated={handlePersonaCreated}
         />
       {:else}
+        <button
+          type="button"
+          class="persona-build-cta"
+          onclick={() => (builderOpen = true)}
+        >
+          Build your own persona
+        </button>
+
         <div class="create-form__field">
           <label class="create-form__label" for="persona-search">Search personas</label>
           <input
@@ -454,18 +462,6 @@
                 </span>
               </label>
             {/each}
-            <button
-              type="button"
-              class="persona-card persona-card--build"
-              onclick={() => (builderOpen = true)}
-            >
-              <span class="persona-card__body">
-                <span class="persona-card__name">Build your own</span>
-                <span class="persona-card__description">
-                  Create a new persona for this team.
-                </span>
-              </span>
-            </button>
           </div>
         {/if}
       {/if}
@@ -749,12 +745,24 @@
     cursor: pointer;
   }
 
-  .persona-card--build {
+  /* Persona builder v2 (addendum): "Build your own persona" is a primary-
+     styled action above the search results, not a text afterthought below
+     them — same accent treatment as create-form__submit, but full-width
+     since it now stands alone above the list rather than sitting inline
+     next to a cancel button. */
+  .persona-build-cta {
     width: 100%;
-    background: none;
-    color: inherit;
-    font: inherit;
-    text-align: left;
+    padding: var(--space-sm) var(--space-md);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .persona-build-cta:hover {
+    filter: brightness(1.05);
   }
 
   .persona-card:hover,

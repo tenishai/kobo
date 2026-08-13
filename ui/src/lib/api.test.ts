@@ -684,18 +684,15 @@ describe("catalog search / teams / persona builder / org status client", () => {
   it("createPersona POSTs the form body to /api/personas and returns the created CatalogEntry", async () => {
     const body = {
       name: "helper",
-      role: "assistant",
-      purpose: "helps with things",
-      tone: "warm" as const,
-      tone_note: "friendly but concise",
-      boundaries: ["no secrets"],
-      tags: ["general"],
+      who_they_are: "an unflappable network detective who's seen every outage twice",
+      what_they_do: "helps with things",
+      rules: ["no secrets"],
       team: "shared",
     };
     const created = {
       id: "helper",
       name: "helper",
-      description: "helps with things",
+      description: "an unflappable network detective who's seen every outage twice",
       team: "shared",
       tags: ["general"],
     };
@@ -723,12 +720,9 @@ describe("catalog search / teams / persona builder / org status client", () => {
     await expect(
       createPersona({
         name: "helper",
-        role: "assistant",
-        purpose: "helps",
-        tone: "warm",
-        tone_note: "",
-        boundaries: [],
-        tags: ["general"],
+        who_they_are: "a calm assistant",
+        what_they_do: "helps",
+        rules: [],
         team: "shared",
       }),
     ).rejects.toThrow("a persona with that name already exists");
@@ -745,12 +739,9 @@ describe("catalog search / teams / persona builder / org status client", () => {
     await expect(
       createPersona({
         name: "helper",
-        role: "assistant",
-        purpose: "helps",
-        tone: "warm",
-        tone_note: "",
-        boundaries: [],
-        tags: ["general"],
+        who_they_are: "a calm assistant",
+        what_they_do: "helps",
+        rules: [],
         team: "shared",
       }),
     ).rejects.toThrow("catalogs aren't set up yet");
