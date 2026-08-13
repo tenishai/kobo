@@ -389,6 +389,24 @@ def _ready_agent_or_error(
     return agent
 
 
+def _slack_operator_block(request: Request, config: Config) -> JSONResponse | None:
+    """None when the caller may use slack routes; a 403 body otherwise.
+
+    Empty list = ungated (dev parity). IAP disabled (no iap_audience) =
+    operator: the room trusts its perimeter only when it has one.
+    """
+    if not config.slack_operators:
+        return None
+    if not config.iap_audience:
+        return None
+    email = (getattr(request.state, "iap_email", None) or "").lower()
+    if email in {e.lower() for e in config.slack_operators}:
+        return None
+    return JSONResponse(
+        {"error": "Slack setup is operator-only on this room"}, status_code=403
+    )
+
+
 # --- Org status (Task 8): the room's read-only wiring visibility ------------
 #
 # Six checks, each individually try/excepted so a single unreachable backend
@@ -914,7 +932,9 @@ def create_app(
         }
 
     @app.get("/api/agents/{name}")
-    def get_agent(name: str, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+    def get_agent(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
         cfg: Config = app.state.config
         agent = session.query(Agent).filter_by(name=name).first()
         if agent is None:
@@ -951,6 +971,7 @@ def create_app(
                 "steps": steps,
                 "first_reply": agent.first_reply,
                 "slack": slack,
+                "slack_visible": _slack_operator_block(request, cfg) is None,
                 "has_avatar": agent.avatar_png is not None,
             }
         )
@@ -1492,7 +1513,14 @@ def create_app(
     # --- Slack connect (P2c): app creation + token delivery/wiring --------------
 
     @app.post("/api/agents/{name}/slack/app")
-    def create_slack_app(name: str, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+    def create_slack_app(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        cfg: Config = app.state.config
+        block = _slack_operator_block(request, cfg)
+        if block is not None:
+            return block
+
         agent = _ready_agent_or_error(
             session, name, not_ready_message="agent is not ready to connect to Slack yet"
         )
@@ -1554,8 +1582,16 @@ def create_app(
 
     @app.post("/api/agents/{name}/slack/connect")
     def connect_slack(
-        name: str, payload: SlackConnectRequest, session: Session = Depends(get_session)  # noqa: B008
+        name: str,
+        payload: SlackConnectRequest,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
+        cfg: Config = app.state.config
+        block = _slack_operator_block(request, cfg)
+        if block is not None:
+            return block
+
         agent = _ready_agent_or_error(
             session, name, not_ready_message="agent is not ready to connect to Slack yet"
         )
@@ -1586,8 +1622,6 @@ def create_app(
             return JSONResponse(
                 {"error": "that doesn't look like a Slack app-level token"}, status_code=422
             )
-
-        cfg: Config = app.state.config
 
         try:
             sha = wire_slack(

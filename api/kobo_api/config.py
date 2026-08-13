@@ -72,6 +72,13 @@ class Config(BaseModel):
     # Path to the gitignored Slack config-token pair (P2c); None means Slack
     # connect is unconfigured — Clients.real() gates on this to leave slack=None.
     slack_tokens_path: Path | None = None
+    # Emails allowed to use the Slack connect routes once IAP is enabled
+    # (Task 5) — main.py's `_slack_operator_block` 403s any other caller on
+    # both routes, before their existing checks. Empty (the default) leaves
+    # Slack connect ungated, matching today's behavior. IAP disabled (no
+    # iap_audience) treats every caller as an operator too — the room only
+    # trusts an email claim when it has a perimeter that verified it.
+    slack_operators: list[str] = []
     # Path to a built UI `dist/` directory (e.g. `ui/dist` from `npm run
     # build`) to serve alongside the API, same origin, no CORS (Task 1).
     # None (the default) means dev: no UI is mounted, matching today's setup

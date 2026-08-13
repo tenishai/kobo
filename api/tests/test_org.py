@@ -274,5 +274,27 @@ def test_org_keys_is_exactly_the_brief_set():
             "skills_publish_wif_provider",
             "skills_publish_service_account",
             "skills_publish_external",
+            "slack_operators",
         }
     )
+
+
+def test_slack_operators_list_round_trips():
+    """slack_operators (Task 5) is org-scoped like the other gating knobs
+    above — a client's kobo-config repo can name its own operator emails."""
+    local = Config(org_repo=ORG_REPO)
+    github = FakeGitHub(
+        org_yaml=(
+            "slack_operators:\n"
+            "  - ops@acme-corp.example.com\n"
+            "  - Root@Acme-Corp.example.com\n"
+        )
+    )
+
+    merged, org = load_org_config(local, github)
+
+    assert org.wired is True
+    assert merged.slack_operators == [
+        "ops@acme-corp.example.com",
+        "Root@Acme-Corp.example.com",
+    ]

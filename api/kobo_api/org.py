@@ -53,6 +53,7 @@ ORG_KEYS = frozenset(
         "skills_publish_wif_provider",
         "skills_publish_service_account",
         "skills_publish_external",
+        "slack_operators",
     }
 )
 

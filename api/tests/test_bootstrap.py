@@ -97,6 +97,7 @@ def test_render_org_yaml_golden_with_computed_defaults():
             "skills-publisher@acme-project.iam.gserviceaccount.com"
         ),
         "skills_publish_external": False,
+        "slack_operators": [],
     }
 
 

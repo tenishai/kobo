@@ -111,6 +111,12 @@ db_url: sqlite:///kobo.db
 # real token values in this (or any tracked) file.
 slack_tokens_path: null
 
+# Emails allowed to use the Slack connect routes once IAP is enabled (see
+# iap_audience below) — everyone else gets a 403. Empty (the default) leaves
+# Slack connect open to anyone who can reach this room, matching today's
+# behavior.
+# slack_operators: [ops@example.com]
+
 # Path to a built UI dist/ directory (e.g. ui/dist from `npm run build`) to
 # serve alongside the API on the same origin, no CORS. Unset (the default)
 # means dev: the API runs alone and the UI runs separately via its own dev

@@ -28,3 +28,8 @@ models: __KOBO_MODELS__
 skills_publish_wif_provider: __KOBO_SKILLS_PUBLISH_WIF_PROVIDER__
 skills_publish_service_account: __KOBO_SKILLS_PUBLISH_SERVICE_ACCOUNT__
 skills_publish_external: __KOBO_SKILLS_PUBLISH_EXTERNAL__
+
+# Emails allowed to use the Slack connect routes once IAP is enabled —
+# everyone else gets a 403. Empty (the default) leaves Slack connect open to
+# anyone who can reach this room.
+slack_operators: __KOBO_SLACK_OPERATORS__
