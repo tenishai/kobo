@@ -10,7 +10,6 @@
   import ChatPanel from "../components/ChatPanel.svelte";
   import ErrorState from "../components/ErrorState.svelte";
   import FirstReply from "../components/FirstReply.svelte";
-  import IntakePanel from "../components/IntakePanel.svelte";
   import MemoryPanel from "../components/MemoryPanel.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import SkillsPanel from "../components/SkillsPanel.svelte";
@@ -182,7 +181,6 @@
     {#if data.status === "ready"}
       <ChatPanel agentName={data.name} />
       <MemoryPanel agentName={data.name} />
-      <IntakePanel agentName={data.name} />
       <SkillsPanel agentName={data.name} />
       {#if data.slack_visible}
         <SlackPanel agentName={data.name} slack={data.slack} />

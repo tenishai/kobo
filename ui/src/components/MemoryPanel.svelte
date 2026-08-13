@@ -1,16 +1,31 @@
 <script lang="ts">
   // What a deployed agent knows from the start (`bundle/knowledge/*.md` in
-  // its repo, P2b) — rendered only once the agent is `ready` (same gate as
-  // ChatPanel, in AgentDetail). Every save/delete here is delivered through
-  // a rebuild the user never sees or names: copy speaks only of saving
-  // changes and the agent picking them up, never "commit"/"deploy"/"build"/
-  // "repo"/"sha"/"pipeline".
+  // its repo, P2b), plus — in the "Teach from a file" subsection below —
+  // one-shot uploads for the agent to learn from once (`bundle/intake/*.md`
+  // or `*.txt` in its repo): a runtime seeder ingests these into the
+  // agent's actual memory exactly once, at boot (a later task); this
+  // subsection is only the upload/list/remove plumbing, plus showing each
+  // file's pending/ingested status (derived fresh from git ancestry by the
+  // server on every list call — see `kobo_api.intake.list_intake`'s
+  // docstring). Both halves are rendered only once the agent is `ready`
+  // (same gate as ChatPanel, in AgentDetail). Every save/delete/upload here
+  // is delivered through a rebuild the user never sees or names: copy
+  // speaks only of saving/teaching changes and the agent picking them up,
+  // never "commit"/"deploy"/"build"/"repo"/"sha"/"pipeline".
   //
-  // One shared `Modal` instance drives edit, add, and delete — which of the
-  // three (and which file, for edit/delete) lives in `target`; the textarea/
-  // filename fields are separate top-level state so "Back to editing" can
-  // return to them without losing what was typed, and so the add-mode name
-  // field survives the review round trip.
+  // One shared `Modal` instance drives edit, add, and delete for knowledge
+  // files — which of the three (and which file, for edit/delete) lives in
+  // `target`; the textarea/filename fields are separate top-level state so
+  // "Back to editing" can return to them without losing what was typed, and
+  // so the add-mode name field survives the review round trip.
+  //
+  // Unlike the knowledge list, there's no edit affordance for an intake
+  // file — it's either not-yet-uploaded or already sitting in the repo
+  // waiting on the seeder, so "editing" it would just be a second upload
+  // under the same name. So the upload form is a plain inline form (closer
+  // to SlackPanel's inline steps than the knowledge modal), and the intake
+  // subsection gets its own, second `Modal` instance for exactly one thing:
+  // confirming a remove.
   //
   // Delivery-chip reactivity: `deliveryQuery(name, sha)` needs a *new* query
   // (not just new data on the same one) every time `sha` changes, so a save
@@ -26,19 +41,29 @@
   // this component and still read with the same `$name` syntax as a rune
   // would be in the markup below, it just comes from svelte/store instead
   // of `$state` so `createQuery` actually notices when it changes.
+  //
+  // There's exactly one chip in this panel, shared by every mutation below
+  // — knowledge save, knowledge delete, and intake upload alike, the same
+  // pattern SkillsPanel uses across its own three mutations: `deliveryQuery`
+  // is sha-generic, so whichever flow's mutation resolves most recently just
+  // calls `beginDelivery(result.sha)` and the chip tracks that sha exactly
+  // as if this panel only ever did one kind of thing.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { derived, writable } from "svelte/store";
   import EmptyState from "./EmptyState.svelte";
   import ErrorState from "./ErrorState.svelte";
   import Modal from "./Modal.svelte";
   import Skeleton from "./Skeleton.svelte";
-  import { errorMessage, type KnowledgeFile } from "../lib/api";
+  import { errorMessage, type IntakeFile, type KnowledgeFile } from "../lib/api";
   import { lineDiff, type DiffLine } from "../lib/diff";
   import {
+    deleteIntakeMutation,
     deleteKnowledgeMutation,
     deliveryQuery,
+    intakeQuery,
     knowledgeQuery,
     saveKnowledgeMutation,
+    uploadIntakeMutation,
   } from "../lib/queries";
 
   let { agentName }: { agentName: string } = $props();
@@ -55,8 +80,14 @@
   const saveMutation = createMutation(saveKnowledgeMutation(queryClient, agentName));
   // svelte-ignore state_referenced_locally
   const deleteMutation = createMutation(deleteKnowledgeMutation(queryClient, agentName));
+  // svelte-ignore state_referenced_locally
+  const intake = createQuery(intakeQuery(agentName));
+  // svelte-ignore state_referenced_locally
+  const uploadMutation = createMutation(uploadIntakeMutation(queryClient, agentName));
+  // svelte-ignore state_referenced_locally
+  const intakeDeleteMutation = createMutation(deleteIntakeMutation(queryClient, agentName));
 
-  // --- Delivery chip -----------------------------------------------------
+  // --- Delivery chip (shared by knowledge save/delete and intake upload) --
 
   // How long the "Changes are in place" chip stays up before it clears on
   // its own — see the module doc comment above for why this is a plain
@@ -72,10 +103,11 @@
   // below, not something the template renders.
   let clearTimer: ReturnType<typeof setTimeout> | undefined;
 
-  /** Start tracking a new save/delete's delivery, replacing whatever was
-   * being tracked before. Clears any pending "fade the chip" timer first so
-   * a save that lands while an earlier one's chip is winding down can't have
-   * its own fresh chip yanked away by a timer that belonged to the old sha. */
+  /** Start tracking a new save/delete/upload's delivery, replacing whatever
+   * was being tracked before. Clears any pending "fade the chip" timer first
+   * so a change that lands while an earlier one's chip is winding down
+   * can't have its own fresh chip yanked away by a timer that belonged to
+   * the old sha. */
   function beginDelivery(sha: string): void {
     if (clearTimer !== undefined) {
       clearTimeout(clearTimer);
@@ -132,7 +164,7 @@
     return { tone: "pending", text: "Delivering changes…" };
   });
 
-  // --- Modal: edit / add / delete ----------------------------------------
+  // --- Modal: edit / add / delete (knowledge files) -----------------------
 
   type Target =
     | { kind: "edit"; file: KnowledgeFile }
@@ -310,6 +342,163 @@
       },
     });
   }
+
+  // --- Teach from a file: upload form --------------------------------------
+
+  // Matches the server's `INTAKE_MAX_BYTES` (`kobo_api.intake`) exactly —
+  // this is a client-side guard so an oversized paste is caught before the
+  // round trip, not a separate rule of its own.
+  const INTAKE_MAX_BYTES = 262_144;
+
+  // Same shape as `kobo_api.intake.INTAKE_FILENAME_RE`: a lowercase letter,
+  // then lowercase/digit/hyphen (40 chars max), ending in .md or .txt.
+  const INTAKE_FILENAME_RE = /^[a-z][a-z0-9-]{0,39}\.(md|txt)$/;
+
+  let intakeFilename = $state("");
+  let intakeContent = $state("");
+  let uploadError = $state<string | null>(null);
+  let fileReadError = $state<string | null>(null);
+
+  const intakeContentBytes = $derived(new TextEncoder().encode(intakeContent).length);
+  const intakeContentTooLarge = $derived(intakeContentBytes > INTAKE_MAX_BYTES);
+
+  const intakeFilenameError = $derived.by((): string | null => {
+    if (intakeFilename.length === 0) {
+      return null; // nothing to say about an empty field yet
+    }
+    if (!INTAKE_FILENAME_RE.test(intakeFilename)) {
+      return "Use lowercase letters, numbers, and hyphens, ending in .md or .txt.";
+    }
+    return null;
+  });
+
+  const intakeFilenameMatch = $derived.by((): IntakeFile | null => {
+    if (intakeFilename.length === 0 || !INTAKE_FILENAME_RE.test(intakeFilename)) {
+      return null;
+    }
+    const match = $intake.data?.find((file) => file.name === intakeFilename);
+    return match ?? null;
+  });
+
+  const canUpload = $derived.by((): boolean => {
+    if ($uploadMutation.isPending) {
+      return false;
+    }
+    if (intakeFilename.length === 0 || intakeFilenameError !== null) {
+      return false;
+    }
+    if (intakeContent.trim().length === 0 || intakeContentTooLarge) {
+      return false;
+    }
+    return true;
+  });
+
+  /** Human-readable size for a row's `content_bytes` — plain "1.2 KB"/"48 B"
+   * style, no jargon, matching the plain tone of the rest of this panel's
+   * copy. */
+  function humanSize(bytes: number): string {
+    if (bytes < 1024) {
+      return `${bytes} B`;
+    }
+    const kb = bytes / 1024;
+    if (kb < 1024) {
+      return `${kb.toFixed(kb < 10 ? 1 : 0)} KB`;
+    }
+    return `${(kb / 1024).toFixed(1)} MB`;
+  }
+
+  function handleFileSelect(event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) {
+      return;
+    }
+    fileReadError = null;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const text = e.target?.result as string;
+        intakeContent = text;
+        // Extract lowercased basename without extension, then append original extension
+        const withoutExt = file.name.lastIndexOf(".")
+          ? file.name.slice(0, file.name.lastIndexOf("."))
+          : file.name;
+        const ext = file.name.slice(withoutExt.length);
+        intakeFilename = (withoutExt + ext).toLowerCase();
+      } catch {
+        fileReadError = "Couldn't read this file. Try another.";
+      }
+    };
+    reader.onerror = () => {
+      fileReadError = "Couldn't read this file. Try another.";
+    };
+    reader.readAsText(file);
+  }
+
+  function handleUpload(event: SubmitEvent): void {
+    event.preventDefault();
+    if (!canUpload) {
+      return;
+    }
+    uploadError = null;
+    $uploadMutation.mutate(
+      { filename: intakeFilename, content: intakeContent },
+      {
+        onSuccess: (result) => {
+          beginDelivery(result.sha);
+          intakeFilename = "";
+          intakeContent = "";
+        },
+        onError: (err: unknown) => {
+          uploadError = errorMessage(err, "Couldn't upload this file. Try again.");
+        },
+      },
+    );
+  }
+
+  // --- Teach from a file: remove (confirm modal + success flash) ----------
+
+  let removeTarget = $state<IntakeFile | null>(null);
+  let removeError = $state<string | null>(null);
+  let removeNote = $state<string | null>(null);
+  let removeNoteTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function openRemove(file: IntakeFile): void {
+    if (file.status !== "ingested") {
+      return; // Remove is only ever enabled once a file is ingested
+    }
+    removeTarget = file;
+    removeError = null;
+  }
+
+  function closeRemove(): void {
+    removeTarget = null;
+    removeError = null;
+  }
+
+  function handleRemove(): void {
+    if (removeTarget === null) {
+      return;
+    }
+    const targetName = removeTarget.name;
+    removeError = null;
+    $intakeDeleteMutation.mutate(targetName, {
+      onSuccess: (result) => {
+        if (removeNoteTimer !== undefined) {
+          clearTimeout(removeNoteTimer);
+        }
+        removeNote = result.note;
+        removeNoteTimer = setTimeout(() => {
+          removeNote = null;
+          removeNoteTimer = undefined;
+        }, DELIVERED_CLEAR_MS);
+        closeRemove();
+      },
+      onError: (err: unknown) => {
+        removeError = errorMessage(err, "Couldn't remove it. Try again.");
+      },
+    });
+  }
 </script>
 
 <section class="memory-panel" aria-labelledby="memory-panel-heading">
@@ -351,6 +540,136 @@
       {/each}
     </ul>
   {/if}
+
+  <section class="intake-panel" aria-labelledby="intake-panel-heading">
+    <div class="intake-panel__header">
+      <h3 id="intake-panel-heading" class="intake-panel__heading">Teach from a file</h3>
+      <p class="intake-panel__subtitle">
+        Drop in notes or docs for your agent to learn once — the file can go away afterward, the
+        learning stays.
+      </p>
+    </div>
+
+    <form class="intake-form" onsubmit={handleUpload}>
+      <div class="intake-form__field">
+        <label class="intake-form__label" for="intake-file">Choose file</label>
+        <div class="intake-form__file-row">
+          <input
+            id="intake-file"
+            class="intake-form__file-input"
+            type="file"
+            accept=".md,.txt"
+            onchange={handleFileSelect}
+            aria-describedby="intake-file-status"
+          />
+          <div id="intake-file-status">
+            {#if fileReadError}
+              <p class="intake-form__status intake-form__status--error" role="alert">
+                {fileReadError}
+              </p>
+            {/if}
+          </div>
+        </div>
+      </div>
+
+      <div class="intake-form__field">
+        <label class="intake-form__label" for="intake-filename">File name</label>
+        <input
+          id="intake-filename"
+          class="intake-form__input"
+          type="text"
+          bind:value={intakeFilename}
+          autocomplete="off"
+          spellcheck="false"
+          aria-describedby="intake-filename-status"
+          aria-invalid={intakeFilenameError !== null}
+        />
+        <p class="intake-form__help">lowercase-with-dashes, .md or .txt</p>
+        <div id="intake-filename-status">
+          {#if intakeFilenameError}
+            <p class="intake-form__status intake-form__status--error" role="alert">
+              {intakeFilenameError}
+            </p>
+          {:else if intakeFilenameMatch}
+            <p class="intake-form__help">
+              {intakeFilenameMatch.status === "ingested"
+                ? "Re-uploading under this name teaches your agent again from the new content — what it already learned stays."
+                : "This will replace the waiting file before it's learned."}
+            </p>
+          {/if}
+        </div>
+      </div>
+
+      <div class="intake-form__field">
+        <label class="intake-form__label" for="intake-content">Content</label>
+        <textarea
+          id="intake-content"
+          class="intake-form__textarea"
+          bind:value={intakeContent}
+          rows="8"
+          aria-describedby="intake-content-status"
+        ></textarea>
+        <div id="intake-content-status">
+          {#if intakeContentTooLarge}
+            <p class="intake-form__status intake-form__status--error" role="alert">
+              That's too much text — keep it under 256KB (262,144 bytes).
+            </p>
+          {:else if intakeContent.trim().length === 0}
+            <p class="intake-form__help">Add a bit of text before uploading.</p>
+          {/if}
+        </div>
+      </div>
+
+      {#if uploadError}
+        <p class="intake-form__status intake-form__status--error" role="alert">{uploadError}</p>
+      {/if}
+
+      <button type="submit" class="intake-form__submit" disabled={!canUpload}>
+        {$uploadMutation.isPending ? "Uploading…" : "Upload"}
+      </button>
+    </form>
+
+    {#if $intake.isPending}
+      <Skeleton rows={3} />
+    {:else if $intake.isError}
+      <ErrorState
+        message={errorMessage($intake.error, "Couldn't load this agent's files.")}
+        onretry={() => $intake.refetch()}
+      />
+    {:else if $intake.data.length === 0}
+      <EmptyState message="Nothing here yet — upload a file for your agent to learn from." />
+    {:else}
+      <ul class="intake-panel__list">
+        {#each $intake.data as file (file.name)}
+          <li class="intake-row">
+            <span class="intake-row__body">
+              <span class="intake-row__name">{file.name}</span>
+              <span class="intake-row__meta">{humanSize(file.content_bytes)}</span>
+            </span>
+            <span class="intake-row__status intake-row__status--{file.status}">
+              {file.status === "ingested" ? "Ingested" : "Pending"}
+            </span>
+            <button
+              type="button"
+              class="intake-row__remove"
+              disabled={file.status !== "ingested"}
+              title={file.status !== "ingested"
+                ? "Wait for this file to be ingested before removing it."
+                : undefined}
+              aria-label={`Remove ${file.name}`}
+              onclick={() => openRemove(file)}
+            >
+              Remove
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
+    {#if removeNote}
+      <p class="intake-panel__note" role="status">{removeNote}</p>
+    {/if}
+  </section>
 
   {#if $deliverySha !== null}
     <div
@@ -476,6 +795,32 @@
         </div>
       </form>
     {/if}
+  {/if}
+</Modal>
+
+<Modal
+  open={removeTarget !== null}
+  title={removeTarget ? `Remove ${removeTarget.name}` : undefined}
+  onclose={closeRemove}
+>
+  {#if removeTarget}
+    <p class="intake-modal__confirm-text">
+      The file will be removed. Everything the agent learned from it stays.
+    </p>
+    {#if removeError}
+      <p class="intake-modal__error" role="alert">{removeError}</p>
+    {/if}
+    <div class="intake-modal__actions">
+      <button type="button" class="intake-modal__cancel" onclick={closeRemove}>Cancel</button>
+      <button
+        type="button"
+        class="intake-modal__danger"
+        disabled={$intakeDeleteMutation.isPending}
+        onclick={handleRemove}
+      >
+        {$intakeDeleteMutation.isPending ? "Removing…" : "Remove"}
+      </button>
+    </div>
   {/if}
 </Modal>
 
@@ -813,6 +1158,283 @@
   }
 
   .memory-modal__danger:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .intake-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+    padding: var(--space-lg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel);
+  }
+
+  .intake-panel__header {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .intake-panel__heading {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .intake-panel__subtitle {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .intake-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+    padding: var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+  }
+
+  .intake-form__field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .intake-form__label {
+    color: var(--ink);
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+
+  .intake-form__input,
+  .intake-form__textarea {
+    padding: var(--space-xs) var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    font: inherit;
+  }
+
+  .intake-form__textarea {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    resize: vertical;
+  }
+
+  .intake-form__input:focus-visible,
+  .intake-form__textarea:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  .intake-form__help {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .intake-form__status {
+    margin: 0;
+    font-size: 0.8rem;
+  }
+
+  .intake-form__status--error {
+    color: var(--fail);
+  }
+
+  .intake-form__file-row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .intake-form__file-input {
+    padding: var(--space-2xs) var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 0.9rem;
+  }
+
+  .intake-form__file-input:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .intake-form__submit {
+    align-self: flex-start;
+    padding: var(--space-xs) var(--space-md);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .intake-form__submit:hover:not(:disabled) {
+    filter: brightness(1.05);
+  }
+
+  .intake-form__submit:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .intake-panel__list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .intake-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    padding: var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+  }
+
+  .intake-row__body {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+  }
+
+  .intake-row__name {
+    overflow-wrap: anywhere;
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+
+  .intake-row__meta {
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .intake-row__status {
+    display: inline-flex;
+    flex-shrink: 0;
+    padding: 0.15rem var(--space-xs);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .intake-row__status--pending {
+    border-color: var(--warn);
+    color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 12%, transparent);
+  }
+
+  .intake-row__status--ingested {
+    border-color: var(--ok);
+    color: var(--ok);
+    background: color-mix(in srgb, var(--ok) 12%, transparent);
+  }
+
+  .intake-row__remove {
+    flex-shrink: 0;
+    padding: var(--space-2xs) var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--muted);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .intake-row__remove:hover:not(:disabled) {
+    border-color: var(--fail);
+    color: var(--fail);
+  }
+
+  .intake-row__remove:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .intake-panel__note {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .intake-modal__confirm-text {
+    margin: 0;
+    color: var(--ink);
+  }
+
+  .intake-modal__error {
+    margin: 0;
+    color: var(--fail);
+    font-size: 0.85rem;
+  }
+
+  .intake-modal__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-sm);
+  }
+
+  .intake-modal__cancel {
+    padding: var(--space-xs) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    cursor: pointer;
+  }
+
+  .intake-modal__cancel:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .intake-modal__cancel:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .intake-modal__danger {
+    padding: var(--space-xs) var(--space-md);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--fail);
+    color: var(--accent-ink);
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .intake-modal__danger:hover:not(:disabled) {
+    filter: brightness(1.05);
+  }
+
+  .intake-modal__danger:disabled {
     opacity: 0.6;
     cursor: not-allowed;
   }
