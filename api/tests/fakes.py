@@ -937,6 +937,46 @@ class FakeImage:
         return self._image_bytes
 
 
+class FakeName:
+    """Records every (who, what) call to `suggest` (`.calls`) and returns a
+    configurable list of candidate dicts (default: a small canned set, all
+    shaped `{"name": ..., "reason": ...}`) — no real Vertex AI backend
+    involved.
+
+    `suggest_error`, when set, makes `suggest` raise `ClientError
+    (suggest_error)` instead of returning candidates — the seam for
+    exercising the name-suggestions route's fallback path (same idiom as
+    every other Fake*'s `*_error` knob in this module, e.g. FakeImage's
+    `generate_error`).
+    """
+
+    def __init__(
+        self,
+        *,
+        candidates: list[dict] | None = None,
+        suggest_error: str | None = None,
+    ):
+        self._candidates = (
+            list(candidates)
+            if candidates is not None
+            else [
+                {"name": "ember", "reason": "warm and steady"},
+                {"name": "cedar", "reason": "grounded and reliable"},
+                {"name": "flint", "reason": "quick to spark"},
+                {"name": "loom", "reason": "weaves it together"},
+                {"name": "anvil", "reason": "takes a hit and holds"},
+            ]
+        )
+        self._suggest_error = suggest_error
+        self.calls: list[tuple[str, str]] = []
+
+    def suggest(self, who: str, what: str) -> list[dict]:
+        self.calls.append((who, what))
+        if self._suggest_error is not None:
+            raise ClientError(self._suggest_error)
+        return list(self._candidates)
+
+
 class FakeStorage:
     """In-memory StorageClient double: `buckets` maps bucket name -> {key:
     (bytes, metadata dict)}, seeded via the constructor kwarg (a bucket

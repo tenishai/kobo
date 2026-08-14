@@ -39,12 +39,15 @@ from kobo_api.clients import (
     KubectlAgentClient,
     KubectlCLI,
     KubectlClient,
+    NameClient,
     SlackApiError,
     SlackClient,
     StorageClient,
     StorageNotFound,
     VertexImageClient,
+    VertexNameClient,
     _build_task_envelope,
+    _extract_json_array,
     _gcloud_print_access_token,
     _post_task,
     _wait_for_forwarded_port,
@@ -60,6 +63,7 @@ from tests.fakes import (
     FakeGojira,
     FakeImage,
     FakeKubectl,
+    FakeName,
     FakeSlack,
     FakeStorage,
 )
@@ -1947,6 +1951,246 @@ def test_gcloud_print_access_token_argv_and_pass_through():
     assert token == "ya29.fake-access-token"
 
 
+# --- Name (VertexNameClient) ----------------------------------------------------
+
+
+def _text_reply(text: str) -> dict:
+    return {"candidates": [{"content": {"parts": [{"text": text}]}}]}
+
+
+def test_vertex_name_client_request_shape_url_body_and_auth_header():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.content)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json=_text_reply('[{"name": "ember", "reason": "warm"}]'))
+
+    client = VertexNameClient(
+        "acme-project",
+        "us-central1",
+        "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    client.suggest("a calm troubleshooter", "helps with billing")
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == (
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/acme-project/"
+        "locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent"
+    )
+    assert captured["json"]["contents"][0]["role"] == "user"
+    prompt = captured["json"]["contents"][0]["parts"][0]["text"]
+    assert "a calm troubleshooter" in prompt
+    assert "helps with billing" in prompt
+    assert captured["auth"] == "Bearer fake-access-token"
+
+
+def test_vertex_name_client_parses_clean_json_array():
+    reply_text = (
+        '[{"name": "ember", "reason": "warm and steady"}, '
+        '{"name": "cedar", "reason": "grounded and reliable"}]'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_text_reply(reply_text))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    result = client.suggest("a helper", "helps out")
+
+    assert result == [
+        {"name": "ember", "reason": "warm and steady"},
+        {"name": "cedar", "reason": "grounded and reliable"},
+    ]
+
+
+def test_vertex_name_client_parses_fenced_json_block():
+    # A real reply routinely wraps the array in a ```json fence, sometimes
+    # with a chatty preamble before it — tolerant extraction must scan past
+    # both rather than assume the array starts at index 0.
+    reply_text = (
+        "Sure, here are five names:\n"
+        "```json\n"
+        '[{"name": "flint", "reason": "quick to spark"}]\n'
+        "```\n"
+        "Hope that helps!"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_text_reply(reply_text))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    result = client.suggest("a helper", "helps out")
+
+    assert result == [{"name": "flint", "reason": "quick to spark"}]
+
+
+def test_vertex_name_client_garbage_text_raises_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_text_reply("sorry, I can't help with that today"))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError):
+        client.suggest("a helper", "helps out")
+
+
+def test_vertex_name_client_malformed_json_inside_brackets_raises_client_error():
+    # A `[...]` span is found, but its contents aren't valid JSON — a
+    # different malformed-reply shape than "no array at all".
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_text_reply("[not, valid, json"))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError):
+        client.suggest("a helper", "helps out")
+
+
+def test_vertex_name_client_skips_non_dict_items_and_non_str_names():
+    # Tolerant per-item filtering: a malformed item (bare string, or a dict
+    # with a non-string name) is dropped rather than raising — only a
+    # structural failure (no array found, invalid JSON) raises ClientError.
+    reply_text = '["just a string", {"name": 42}, {"name": "cedar", "reason": "solid"}]'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_text_reply(reply_text))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    result = client.suggest("a helper", "helps out")
+
+    assert result == [{"name": "cedar", "reason": "solid"}]
+
+
+def test_vertex_name_client_non_200_raises_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="internal error")
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError):
+        client.suggest("a helper", "helps out")
+
+
+def test_vertex_name_client_malformed_envelope_raises_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"unexpected": "shape"})
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError):
+        client.suggest("a helper", "helps out")
+
+
+def test_vertex_name_client_non_json_body_raises_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="not json at all")
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError):
+        client.suggest("a helper", "helps out")
+
+
+def test_vertex_name_client_token_provider_failure_raises_client_error_without_leaking_gcloud_output():
+    def failing_token_provider() -> str:
+        raise ClientError(
+            "gcloud auth print-access-token failed (rc=1): ERROR: account details"
+        )
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=_text_reply("[]"))
+        )),
+        token_provider=failing_token_provider,
+    )
+
+    with pytest.raises(ClientError) as exc_info:
+        client.suggest("a helper", "helps out")
+
+    assert "gcloud" not in str(exc_info.value)
+    assert "account details" not in str(exc_info.value)
+
+
+def test_vertex_name_client_default_http_client_has_real_headroom():
+    client = VertexNameClient("acme-project", "us-central1", "gemini-2.5-flash")
+    timeout = client._http_client.timeout
+    assert timeout.connect == 10.0
+    assert timeout.read == 30.0
+
+
+def test_vertex_name_client_default_token_provider_is_gcloud_print_access_token():
+    client = VertexNameClient("acme-project", "us-central1", "gemini-2.5-flash")
+    assert client._token_provider is _gcloud_print_access_token
+
+
+def test_extract_json_array_no_array_found_raises_value_error():
+    with pytest.raises(ValueError):
+        _extract_json_array("no brackets here at all")
+
+
+def test_extract_json_array_finds_array_past_fence_and_preamble():
+    text = "here you go:\n```json\n[1, 2, 3]\n```\n"
+    assert _extract_json_array(text) == [1, 2, 3]
+
+
+def test_fake_name_satisfies_protocol():
+    assert isinstance(FakeName(), NameClient)
+
+
+def test_fake_name_records_calls_and_returns_canned_candidates():
+    fake = FakeName()
+    result = fake.suggest("a helper", "helps out")
+    assert fake.calls == [("a helper", "helps out")]
+    assert len(result) >= 1
+    assert all("name" in c and "reason" in c for c in result)
+
+
+def test_fake_name_suggest_error_knob_raises_client_error():
+    fake = FakeName(suggest_error="boom")
+    with pytest.raises(ClientError, match="boom"):
+        fake.suggest("a helper", "helps out")
+
+
 # --- Storage (HttpxStorageClient / GCS JSON API) --------------------------------
 
 _STORAGE_API_BASE = "https://storage.googleapis.com/storage/v1"
@@ -2812,6 +3056,25 @@ def test_clients_real_wires_image_client_from_avatar_and_vertex_config():
     assert clients.image._project == "acme-model-project"
     assert clients.image._location == "us-east4"
     assert clients.image._model == "some-model"
+
+
+def test_clients_real_wires_name_client_from_vertex_and_name_config():
+    # Same "always constructible" treatment as image above (never gated
+    # behind an "is this configured" check) — project comes from the
+    # existing vertex_project field, location/model from the new
+    # name_location/name_model.
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        vertex_project="acme-model-project",
+        name_location="us-east4",
+        name_model="some-text-model",
+    )
+    clients = Clients.real(config)
+    assert isinstance(clients.name, VertexNameClient)
+    assert clients.name._project == "acme-model-project"
+    assert clients.name._location == "us-east4"
+    assert clients.name._model == "some-text-model"
 
 
 def test_clients_real_wires_slack_none_when_tokens_path_unset():

@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from kobo_api.avatars import avatar_prompt, set_avatar
-from kobo_api.catalog import validate_name
+from kobo_api.catalog import RESERVED_NAMES, validate_name
 from kobo_api.clients import ClientError, StorageNotFound
 from kobo_api.config import Config
 from kobo_api.db import init_db, make_engine, make_session_factory
@@ -39,6 +39,7 @@ from kobo_api.knowledge import (
     save_knowledge_file,
 )
 from kobo_api.models import Agent, AgentStatus
+from kobo_api.namegen import SUGGESTION_COUNT, finalize_suggestions
 from kobo_api.org import OrgState, load_org_config
 from kobo_api.personas import PersonaError, PersonaExists, PersonaFields, create_persona
 from kobo_api.provisioner import (
@@ -97,6 +98,17 @@ class CreateAgentRequest(BaseModel):
     team: str = Field(pattern=r"^[a-z][a-z0-9-]{0,23}$")
     skills: list[SkillPick] = []
     model: str | None = None
+
+
+class NameSuggestionsRequest(BaseModel):
+    """POST /api/agents/name-suggestions body (create flow v2 addendum): the
+    same `who_they_are`/`what_they_do` field names and bounds as
+    `PersonaFields` (kobo_api.personas) — the naming station reads the same
+    persona-shape text the persona builder itself takes, just ahead of a
+    persona actually being committed."""
+
+    who_they_are: str = Field(min_length=1, max_length=200)
+    what_they_do: str = Field(min_length=1, max_length=500)
 
 
 class ChatMessagePayload(BaseModel):
@@ -810,6 +822,54 @@ def create_app(
             return {"available": False, "reason": "name taken"}
 
         return {"available": True, "reason": None}
+
+    @app.post("/api/agents/name-suggestions")
+    def name_suggestions(
+        payload: NameSuggestionsRequest, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        clients = app.state.clients
+
+        # The seed finalize_suggestions' fallback ordering derives from —
+        # both submitted fields, joined by a separator that can't itself
+        # appear in either (both are free text, so this is purely a
+        # determinism input, never parsed back apart): same persona text,
+        # same five names every time; a different persona text reliably
+        # reorders (and usually reselects) the fallback pool.
+        persona_seed = f"{payload.who_they_are}\n{payload.what_they_do}"
+
+        candidates: list[dict] = []
+        if clients is not None and clients.name is not None:
+            try:
+                candidates = clients.name.suggest(payload.who_they_are, payload.what_they_do)
+            except ClientError as exc:
+                # The room never fails to offer names (addendum) — a
+                # generator failure just means every slot comes from the
+                # curated fallback pool instead; never surfaced as an error
+                # to the caller.
+                log.warning("name suggestion generation failed: %s", exc)
+                candidates = []
+
+        taken = {row[0] for row in session.query(Agent.name).all()}
+
+        suggestions = finalize_suggestions(
+            candidates, taken=taken, reserved=RESERVED_NAMES, persona_seed=persona_seed
+        )
+
+        if len(suggestions) < SUGGESTION_COUNT:
+            # "Effectively never" (addendum): the curated pool is large
+            # enough that only a pathological amount of prior taken/reserved
+            # overlap gets here — the standard 502 body every other
+            # backend-result failure in this app uses.
+            log.warning(
+                "name suggestions came back short (%d of %d) even after fallback",
+                len(suggestions), SUGGESTION_COUNT,
+            )
+            return JSONResponse(
+                {"error": "couldn't come up with names right now — try again"},
+                status_code=502,
+            )
+
+        return JSONResponse({"suggestions": suggestions})
 
     @app.post("/api/agents", status_code=201)
     def create_agent(

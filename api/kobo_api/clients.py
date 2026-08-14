@@ -1318,6 +1318,172 @@ class VertexImageClient:
         raise ClientError(_IMAGE_GENERATION_FAILED)
 
 
+# --- Name (Vertex AI text generateContent: agent name suggestions) ----------------
+
+
+@runtime_checkable
+class NameClient(Protocol):
+    def suggest(self, who: str, what: str) -> list[dict]:
+        """Ask the generator for name+reason candidates for an agent
+        described by `who` (who_they_are) and `what` (what_they_do); raise
+        ClientError on a transport/envelope/parse failure.
+
+        Not guaranteed to return exactly five (or even any) usable
+        candidates — `kobo_api.namegen.finalize_suggestions` is what filters
+        and pads the result to exactly five; this method's only job is
+        best-effort extraction of whatever candidates the model's reply
+        actually contained.
+        """
+        ...
+
+
+# The single server-side-only failure message for every VertexNameClient.
+# suggest failure mode (non-200, malformed envelope, unparsable text) —
+# never built from the prompt or a raw response body, mirroring
+# _IMAGE_GENERATION_FAILED's convention above. Unlike the avatar route (which
+# 502s straight from this message), the name-suggestions route never shows
+# this to a caller at all — a ClientError here just means "fall through to
+# the curated pool" (kobo_api.main's name_suggestions route), so this string
+# only ever reaches a log line.
+_NAME_SUGGESTION_FAILED = "name suggestion generation failed"
+
+# Tolerant extraction: finds the first `[...]` span anywhere in a reply's
+# text (past a chatty preamble, a ```json fence, trailing commentary, ...)
+# rather than assuming the array starts at index 0 or is the whole string.
+_JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
+
+
+def _extract_json_array(text: str) -> list:
+    """Parse the first `[...]` span found in `text` as JSON.
+
+    Raises `ValueError` when no such span exists at all (a plain-prose
+    refusal, say) — `json.loads` raising `json.JSONDecodeError` (itself a
+    `ValueError` subclass) on a span that isn't valid JSON is left
+    unwrapped, since both are exactly the same "unusable reply" case to
+    every caller of this function.
+    """
+    match = _JSON_ARRAY_RE.search(text)
+    if not match:
+        raise ValueError("no JSON array found in response text")
+    return json.loads(match.group(0))
+
+
+_NAME_PROMPT_TEMPLATE = (
+    "You are naming a small software agent for a craft workshop's bench — "
+    "not a generic assistant. The agent: it is {who}; it does {what}.\n\n"
+    "Suggest exactly five short, lowercase, single-word candidate names, "
+    "real-word-flavored in the spirit of tools, materials, and quiet trades "
+    "(never a client's or company's own name). For each, give a reason of "
+    "8 words or fewer tying it to this persona.\n\n"
+    'Respond with ONLY a strict JSON array of exactly five objects shaped '
+    '{{"name": "...", "reason": "..."}} — no prose, no markdown fences, no '
+    "commentary, nothing before or after the array."
+)
+
+
+class VertexNameClient:
+    """Generates name+reason suggestion candidates via Vertex AI's Model
+    Garden text `generateContent` endpoint (`gemini-2.5-flash` by default —
+    see `Config.name_model`/`name_location`) — same gcloud-shelled bearer
+    token + auth/transport family as `VertexImageClient`
+    (`_gcloud_print_access_token`), just a plain TEXT call instead of an
+    image one (no `generationConfig.responseModalities` override needed —
+    Vertex's text default already models the desired output shape).
+
+    A 200 response doesn't guarantee a well-formed answer: the model can
+    reply with a chatty preamble, a fenced code block, or truncated JSON —
+    parsing is deliberately tolerant (`_extract_json_array` above), and
+    individual malformed items inside an otherwise-valid array are silently
+    dropped rather than failing the whole call. Only a structural failure —
+    non-200, a malformed response envelope, or no parseable JSON array at
+    all — raises `ClientError`; the caller (`kobo_api.main`'s
+    name-suggestions route) always has a curated fallback pool to fall
+    through to, so a raised `ClientError` here is never fatal to the route,
+    just to this one generator call. Response bodies are logged
+    server-side only, truncated (same convention as
+    `VertexImageClient.generate`), never as part of a raised message.
+    """
+
+    def __init__(
+        self,
+        project: str,
+        location: str,
+        model: str,
+        http_client: httpx.Client | None = None,
+        token_provider: Callable[[], str] | None = None,
+    ):
+        self._project = project
+        self._location = location
+        self._model = model
+        # A text completion is a much lighter roundtrip than image
+        # generation but still a full model call — real headroom over
+        # httpx's bare 5s default, short of VertexImageClient's generous
+        # 120s (no image payload to wait on here).
+        self._http_client = http_client or httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0))
+        self._token_provider = token_provider or _gcloud_print_access_token
+
+    def suggest(self, who: str, what: str) -> list[dict]:
+        url = (
+            f"https://{self._location}-aiplatform.googleapis.com/v1/projects/"
+            f"{self._project}/locations/{self._location}/publishers/google/"
+            f"models/{self._model}:generateContent"
+        )
+        prompt = _NAME_PROMPT_TEMPLATE.format(who=who, what=what)
+        body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
+
+        try:
+            token = self._token_provider()
+        except ClientError as exc:
+            # Same reasoning as VertexImageClient.generate: the default
+            # token_provider's ClientError message can embed the operator's
+            # own account details — never let it escape unwrapped.
+            log.warning("token provider failed for name suggestions: %r", exc)
+            raise ClientError(_NAME_SUGGESTION_FAILED) from exc
+
+        try:
+            resp = self._http_client.post(
+                url, json=body, headers={"Authorization": f"Bearer {token}"}
+            )
+        except httpx.HTTPError as exc:
+            log.warning("name suggestion request failed: %r", exc)
+            raise ClientError(_NAME_SUGGESTION_FAILED) from exc
+
+        if resp.status_code != 200:
+            log.warning(
+                "name suggestion failed (%s): %s", resp.status_code, resp.text[:200]
+            )
+            raise ClientError(_NAME_SUGGESTION_FAILED)
+
+        try:
+            text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            log.warning("malformed name suggestion reply: %r (body: %s)", exc, resp.text[:200])
+            raise ClientError(_NAME_SUGGESTION_FAILED) from exc
+
+        try:
+            parsed = _extract_json_array(text)
+        except ValueError as exc:
+            log.warning("unparsable name suggestion text: %r (text: %s)", exc, text[:200])
+            raise ClientError(_NAME_SUGGESTION_FAILED) from exc
+
+        if not isinstance(parsed, list):
+            log.warning(
+                "name suggestion JSON wasn't an array (got %s)", type(parsed).__name__
+            )
+            raise ClientError(_NAME_SUGGESTION_FAILED)
+
+        candidates: list[dict] = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if not isinstance(name, str):
+                continue
+            reason = item.get("reason")
+            candidates.append({"name": name, "reason": reason if isinstance(reason, str) else ""})
+        return candidates
+
+
 # --- Storage (GCS JSON API: bucket-backed persistence for catalogs/personas) ------
 
 
@@ -1603,6 +1769,15 @@ class Clients:
     # purely so pre-existing direct `Clients(...)` constructions in the test
     # suite keep working without passing this field.
     storage: StorageClient | None = None
+    # Same "always constructible" move as image/storage above (vertex_project
+    # already exists in Config; name_location/name_model are the only new
+    # fields, mirroring avatar_location/avatar_model) — Clients.real() below
+    # never gates this behind an "is this configured" check either. Defaults
+    # to None purely so pre-existing direct `Clients(...)` constructions in
+    # the test suite keep working without passing this field; the
+    # name-suggestions route (kobo_api.main) treats a None the same as a
+    # generator ClientError — fall through to the curated fallback pool.
+    name: NameClient | None = None
 
     @classmethod
     def real(cls, config: Config) -> Clients:
@@ -1617,6 +1792,9 @@ class Clients:
             kubectl=KubectlCLI(runner=runner),
             image=VertexImageClient(
                 config.vertex_project, config.avatar_location, config.avatar_model
+            ),
+            name=VertexNameClient(
+                config.vertex_project, config.name_location, config.name_model
             ),
             storage=HttpxStorageClient(config.gcp_project),
             slack=HttpxSlackClient(config.slack_tokens_path)

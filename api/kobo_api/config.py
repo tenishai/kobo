@@ -39,6 +39,14 @@ class Config(BaseModel):
     # (both hit the same Vertex AI publisher-model surface).
     avatar_model: str = "gemini-2.5-flash-image"
     avatar_location: str = "us-central1"
+    # Model garden text-generation model + region for agent name suggestions
+    # (create flow v2 addendum) — same auth/transport plumbing family as the
+    # avatar client above (VertexNameClient mirrors VertexImageClient's
+    # gcloud-token + generateContent idiom for a TEXT call instead of an
+    # image one); project is shared with vertex_project, location mirrors
+    # avatar_location's own "may differ from vertex_location" reasoning.
+    name_model: str = "gemini-2.5-flash"
+    name_location: str = "us-central1"
     models: list[ModelChoice] = Field(
         default=[ModelChoice(id="vertex_ai/claude-sonnet-4-5", label="Claude Sonnet 4.5")],
         min_length=1,

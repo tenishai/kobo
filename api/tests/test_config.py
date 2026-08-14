@@ -144,6 +144,43 @@ def test_avatar_model_and_location_overridable(tmp_path):
     assert config.avatar_location == "us-east4"
 
 
+# --- name_model / name_location (create flow v2 addendum: NameClient) -----
+
+
+def test_name_model_and_location_defaults():
+    config = Config()
+    assert config.name_model == "gemini-2.5-flash"
+    assert config.name_location == "us-central1"
+
+
+def test_name_model_and_location_overridable(tmp_path):
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        "name_model: some-other-text-model\nname_location: us-east4\n"
+    )
+
+    config = Config.load(yaml_path)
+
+    assert config.name_model == "some-other-text-model"
+    assert config.name_location == "us-east4"
+
+
+def test_config_example_yaml_documents_name_keys():
+    # Same round-trip check as the avatar keys above: config.example.yaml is
+    # the operator-facing template, so both new keys must be explicitly
+    # present (not merely absent-and-defaulted) and must parse into a valid
+    # Config matching the real defaults baked into Config.
+    example_path = Path(__file__).resolve().parent.parent / "config.example.yaml"
+    data = yaml.safe_load(example_path.read_text())
+
+    assert data["name_model"] == "gemini-2.5-flash"
+    assert data["name_location"] == "us-central1"
+
+    config = Config(**data)
+    assert config.name_model == "gemini-2.5-flash"
+    assert config.name_location == "us-central1"
+
+
 def test_org_config_field_defaults():
     config = Config()
     assert config.org_repo is None

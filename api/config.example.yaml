@@ -72,6 +72,14 @@ avatar_model: gemini-2.5-flash-image
 # shared with vertex_project above)
 avatar_location: us-central1
 
+# Model garden model used to generate agent name suggestions (create flow
+# v2 addendum)
+name_model: gemini-2.5-flash
+
+# Google Cloud region for the name-suggestion text endpoint (project is
+# shared with vertex_project above)
+name_location: us-central1
+
 # Available LLM models with display labels for UI selection
 models:
   - id: vertex_ai/claude-sonnet-4-5
