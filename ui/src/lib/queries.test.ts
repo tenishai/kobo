@@ -27,6 +27,7 @@ import {
   skillsSearchQuery,
   teamsQuery,
   toolingQuery,
+  toolingRefetchInterval,
   uploadIntakeMutation,
   uploadToolingMutation,
 } from "./queries";
@@ -938,6 +939,34 @@ describe("toolingQuery", () => {
     expect(fetch).toHaveBeenCalledWith("/api/agents/clio/tooling");
 
     vi.unstubAllGlobals();
+  });
+});
+
+describe("toolingRefetchInterval", () => {
+  it("is false for undefined (no data fetched yet)", () => {
+    expect(toolingRefetchInterval(undefined)).toBe(false);
+  });
+
+  it("is false once every file is delivered", () => {
+    expect(
+      toolingRefetchInterval([
+        { name: "a.py", content_bytes: 1, delivered: true },
+        { name: "b.go", content_bytes: 2, delivered: true },
+      ]),
+    ).toBe(false);
+  });
+
+  it("is false for an empty file list", () => {
+    expect(toolingRefetchInterval([])).toBe(false);
+  });
+
+  it("is 5000 while any file is still undelivered", () => {
+    expect(
+      toolingRefetchInterval([
+        { name: "a.py", content_bytes: 1, delivered: true },
+        { name: "b.go", content_bytes: 2, delivered: false },
+      ]),
+    ).toBe(5000);
   });
 });
 

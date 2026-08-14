@@ -410,17 +410,33 @@ export function deleteIntakeMutation(queryClient: QueryClient, name: string) {
   };
 }
 
+/** Poll cadence while at least one tooling file is still undelivered. */
+const TOOLING_POLL_MS = 5000;
+
+/**
+ * Refetch interval for the tooling list query. Polls while any file in the
+ * list is still `delivered: false`, and stops once every file has reached
+ * `delivered: true` — same shape as `intakeRefetchInterval`. `data` is
+ * undefined before the first fetch resolves (nothing to poll for yet), and
+ * an empty list has no undelivered file by definition — both are `false`.
+ */
+export function toolingRefetchInterval(data?: ToolingFile[]): number | false {
+  if (data === undefined) {
+    return false;
+  }
+  return data.some((file) => file.delivered === false)
+    ? TOOLING_POLL_MS
+    : false;
+}
+
 /** An agent's tooling files — the staged door for its LAW-to-be
- * (2026-08-13 addendum). No polling — same reasoning as `agentSkillsQuery`:
- * uploads/imports/removes here are all user-driven, never something that
- * changes in the background on its own (unlike `intakeQuery`, there's no
- * background seeder racing to flip a status field this query would need to
- * catch up to — `delivered` only moves on the next deploy of the pod
- * itself, and the shared delivery chip already covers that window). */
+ * (2026-08-13 addendum). Polls while any file is undelivered, stops once all
+ * are delivered — same cadence as `intakeQuery` polls pending files. */
 export function toolingQuery(name: string) {
   return queryOptions({
     queryKey: ["agents", name, "tooling"] as const,
     queryFn: () => listTooling(name),
+    refetchInterval: (query) => toolingRefetchInterval(query.state.data),
   });
 }
 
