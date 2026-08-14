@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import re
 
+from kobo_api.personas import PersonaError, persona_id
+
 # Mirrors PersonaFields' real Field bounds (kobo_api.personas) — duplicated
 # as plain constants here rather than imported, the same "mirror the bounds,
 # don't cross-import validation" convention `NameSuggestionsRequest`
@@ -51,10 +53,29 @@ def _fallback_name(job: str) -> str:
     respect and no taken/reserved collision to avoid — it only needs to be
     a valid PersonaFields.name (1-60 chars), since it lands in the SAME
     editable v2 preview a hand-typed name would.
+
+    Additionally, the name must pass persona_id() validation, which requires
+    it to start with a letter after slugification. If the job text's leading
+    words slugify to something starting with a digit (e.g. "3D print parts"
+    -> "3d-print-parts"), prefix "the-" to ensure it passes; if even that
+    fails, fall back to "new-agent".
     """
     words = _WORD_RE.findall(job.lower())[:_FALLBACK_NAME_MAX_WORDS]
     slug = "-".join(words) if words else _FALLBACK_NAME_DEFAULT
-    return slug[:_NAME_MAX]
+
+    # Validate against persona_id() — if it fails, try with "the-" prefix
+    try:
+        persona_id(slug)
+        return slug[:_NAME_MAX]
+    except PersonaError:
+        # If the slug is digit-led, prefix "the-" to make it valid
+        the_prefixed = f"the-{slug}"
+        try:
+            persona_id(the_prefixed)
+            return the_prefixed[:_NAME_MAX]
+        except PersonaError:
+            # Even the "the-" prefix failed; fall back to the default
+            return _FALLBACK_NAME_DEFAULT
 
 
 def _first_clause(job: str) -> str:
@@ -82,9 +103,17 @@ def _fallback_who(job: str) -> str:
     """Deterministic fallback who_they_are: "an agent whose whole job is
     {job's first clause}", clamped to PersonaFields.who_they_are's bound
     (a long first clause could otherwise push the templated line over 200
-    chars even though `job` itself is capped at 500)."""
+    chars even though `job` itself is capped at 500).
+
+    When the job text is all punctuation (the first clause is empty after
+    stripping), returns "an agent with one clear job" instead of leaving
+    the template dangling.
+    """
     clause = _first_clause(job)
-    who = f"an agent whose whole job is {clause}"
+    if not clause:
+        who = "an agent with one clear job"
+    else:
+        who = f"an agent whose whole job is {clause}"
     return who[:_WHO_MAX]
 
 
@@ -133,10 +162,23 @@ def finalize_draft(raw: dict | None, *, job: str) -> dict:
     unusable" full deterministic fallback the addendum describes — the same
     function serves both cases, since an empty/absent dict fails every
     field's presence check identically.
+
+    Name fields are further validated against persona_id() — a name that
+    passes PersonaFields bounds may still fail persona_id if it slugifies
+    to a digit-led string (e.g. "3D print parts"). Any such name falls back
+    to the job-derived fallback.
     """
     raw = raw if isinstance(raw, dict) else {}
 
     name = _extract_field(raw, "name", max_len=_NAME_MAX)
+    # Validate that the extracted name also passes persona_id()
+    if name is not None:
+        try:
+            persona_id(name)
+        except PersonaError:
+            # Name failed persona_id validation; treat as None to trigger fallback
+            name = None
+
     who = _extract_field(raw, "who_they_are", max_len=_WHO_MAX, reject_newline=True)
     what = _extract_field(raw, "what_they_do", max_len=_WHAT_MAX)
 

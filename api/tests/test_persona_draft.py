@@ -15,7 +15,7 @@ from kobo_api.persona_draft import (
     _first_clause,
     finalize_draft,
 )
-from kobo_api.personas import PersonaFields
+from kobo_api.personas import PersonaFields, persona_id
 
 JOB = "Help customers troubleshoot billing issues quickly and politely."
 
@@ -67,6 +67,29 @@ def test_fallback_name_is_persona_fields_valid():
     )
 
 
+def test_fallback_name_digit_led_job_passes_persona_id():
+    # "3D print parts" slugifies to "3d-print-parts", which starts with a
+    # digit and fails persona_id. _fallback_name must ensure the result
+    # passes persona_id by prefixing "the-" when needed.
+    name = _fallback_name("3D print parts")
+    persona_id(name)  # Should not raise PersonaError
+
+
+def test_fallback_name_digit_led_job_example_2():
+    # "24/7 monitor pagers" slugifies to "24-7-monitor-pagers", which starts
+    # with a digit and fails persona_id. _fallback_name must ensure the
+    # result passes persona_id.
+    name = _fallback_name("24/7 monitor pagers")
+    persona_id(name)  # Should not raise PersonaError
+
+
+def test_fallback_name_with_the_prefix_is_under_limit():
+    # When we prefix "the-" to a 5-word slug, the result must still fit
+    # within PersonaFields.name's 60-char limit.
+    name = _fallback_name("3D print parts")
+    assert len(name) <= 60
+
+
 # --- _first_clause / _fallback_who --------------------------------------------
 
 
@@ -115,6 +138,14 @@ def test_fallback_who_never_exceeds_persona_fields_bound():
 def test_fallback_who_has_no_newline():
     who = _fallback_who("first line\nsecond line")
     assert "\n" not in who
+
+
+def test_fallback_who_all_punctuation_returns_fallback_text():
+    # When job is all punctuation, _first_clause returns empty string,
+    # which would create a dangling "an agent whose whole job is ".
+    # _fallback_who must return "an agent with one clear job" instead.
+    who = _fallback_who("!!!")
+    assert who == "an agent with one clear job"
 
 
 # --- _fallback_what ------------------------------------------------------------
@@ -188,6 +219,39 @@ def test_finalize_draft_bad_name_falls_back_alone():
     assert result["name"] == _fallback_name(JOB)
     assert result["who_they_are"] == raw["who_they_are"]
     assert result["what_they_do"] == raw["what_they_do"]
+
+
+def test_finalize_draft_digit_led_name_falls_back():
+    # "3D print parts" passes PersonaFields validation (it's 14 chars),
+    # but persona_id() rejects it because it starts with a digit after
+    # slugification. finalize_draft must fall back.
+    raw = {
+        "name": "3D print parts",
+        "who_they_are": "a calm troubleshooter for billing questions",
+        "what_they_do": "Helps customers resolve billing issues quickly.",
+    }
+
+    result = finalize_draft(raw, job="Handle parts printing")
+
+    # The fallback name must pass persona_id
+    persona_id(result["name"])
+    assert result["who_they_are"] == raw["who_they_are"]
+    assert result["what_they_do"] == raw["what_they_do"]
+
+
+def test_finalize_draft_digit_led_name_example_2():
+    # "24/7 monitor pagers" should also fall back and be persona_id-valid.
+    raw = {
+        "name": "24/7 monitor pagers",
+        "who_they_are": "an always-on system monitor",
+        "what_they_do": "Monitor all pagers and alerts.",
+    }
+
+    result = finalize_draft(raw, job="Monitor systems 24/7")
+
+    # The fallback name must pass persona_id
+    persona_id(result["name"])
+    assert result["who_they_are"] == raw["who_they_are"]
 
 
 def test_finalize_draft_missing_name_falls_back_alone():
