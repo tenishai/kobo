@@ -49,6 +49,7 @@
   // persona/skills sections show real pickers or an honest "not set up yet"
   // empty state — see `personasUnwired`/`skillsUnwired` below.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
+  import { tick } from "svelte";
   import { derived, writable } from "svelte/store";
   import EmptyState from "./EmptyState.svelte";
   import ErrorState from "./ErrorState.svelte";
@@ -224,6 +225,7 @@
   // so a generator outage can make that happen; copy must not promise
   // novelty it can't deliver (see `handleReroll`).
   let rerollNote = $state(false);
+  let createNameInput: HTMLInputElement | undefined = $state();
 
   const nameSuggestionParams = writable<{ whoTheyAre: string; whatTheyDo: string }>({
     whoTheyAre: "",
@@ -259,6 +261,14 @@
   // which mode the user was in — the addendum's own error-state contract,
   // not something "name it yourself" alone should have to be clicked for.
   const showManualName = $derived(nameMode === "manual" || $nameSuggestions.isError);
+
+  // Focus the name input when entering manual mode (a11y: keyboard/SR users
+  // must land on the input, not dropped to body).
+  $effect(() => {
+    if (showManualName && nameMode === "manual" && createNameInput && open) {
+      tick().then(() => createNameInput?.focus());
+    }
+  });
 
   function selectCard(card: NameSuggestion): void {
     selectedCardName = card.name;
@@ -614,6 +624,7 @@
             class="create-form__input"
             type="text"
             bind:value={name}
+            bind:this={createNameInput}
             placeholder="e.g. weekly-digest"
             autocomplete="off"
             spellcheck="false"
@@ -625,6 +636,15 @@
             Lowercase letters, numbers, and hyphens. 2-24 characters.
           </p>
           {@render nameStatus()}
+          {#if nameMode === "manual" && $nameSuggestions.data !== undefined && !$nameSuggestions.isError}
+            <button
+              type="button"
+              class="naming-actions__back"
+              onclick={() => (nameMode = "cards")}
+            >
+              back to the suggestions
+            </button>
+          {/if}
         </div>
       {:else if $nameSuggestions.isPending}
         <div class="name-cards" aria-hidden="true">
@@ -684,7 +704,7 @@
           </button>
         </div>
         {#if rerollNote}
-          <p class="create-form__help">The workshop suggests these.</p>
+          <p class="create-form__help">Same five as before — the workshop stands by them.</p>
         {/if}
       {/if}
     </div>
@@ -1396,6 +1416,20 @@
   }
 
   .naming-actions__manual:hover {
+    color: var(--accent);
+  }
+
+  .naming-actions__back {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font-size: 0.8rem;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .naming-actions__back:hover {
     color: var(--accent);
   }
 
