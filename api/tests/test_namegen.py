@@ -221,3 +221,117 @@ def test_finalize_taken_and_reserved_together_can_still_produce_five():
     )
     assert len(result) == SUGGESTION_COUNT
     assert not (set(_names(result)) & taken)
+
+
+# --- finalize_suggestions: reason normalization -----------------------------------
+
+
+def test_finalize_short_normal_reasons_untouched():
+    candidates = [
+        {"name": "juniper", "reason": "sharp and quick"},
+        {"name": "rowan", "reason": "warm at the bench"},
+    ]
+
+    result = finalize_suggestions(
+        candidates, taken=set(), reserved=RESERVED_NAMES, persona_seed="seed-j"
+    )
+
+    assert result[0]["reason"] == "sharp and quick"
+    assert result[1]["reason"] == "warm at the bench"
+
+
+def test_finalize_long_reason_clamped_to_eighty():
+    long_reason = "a" * 100
+    candidates = [{"name": "juniper", "reason": long_reason}]
+
+    result = finalize_suggestions(
+        candidates, taken=set(), reserved=RESERVED_NAMES, persona_seed="seed-k"
+    )
+
+    assert len(result[0]["reason"]) <= 80
+
+
+def test_finalize_long_reason_cuts_at_word_boundary_if_within_last_twenty():
+    # Reason is 90 chars long; with a space at position 75 (within the last 20 chars
+    # before 80), should cut at that space.
+    reason = "word" * 20 + " boundary here but let's keep going further into the text"  # ~90 chars
+    candidates = [{"name": "juniper", "reason": reason}]
+
+    result = finalize_suggestions(
+        candidates, taken=set(), reserved=RESERVED_NAMES, persona_seed="seed-l"
+    )
+
+    truncated = result[0]["reason"]
+    assert len(truncated) <= 80
+    # Should have cut at a word boundary, not mid-word
+    assert not truncated.endswith(" ")  # trimmed after cut
+
+
+def test_finalize_long_reason_hard_cuts_at_eighty_if_no_boundary():
+    # A long string with no spaces in the last 20 chars (no word boundary to cut at)
+    reason = "word" * 20 + "nospace" * 10  # long with no boundary in last 20
+    candidates = [{"name": "juniper", "reason": reason}]
+
+    result = finalize_suggestions(
+        candidates, taken=set(), reserved=RESERVED_NAMES, persona_seed="seed-m"
+    )
+
+    truncated = result[0]["reason"]
+    assert len(truncated) == 80
+
+
+def test_finalize_whitespace_collapsed():
+    candidates = [{"name": "juniper", "reason": "sharp   and    quick  with  lots   of spaces"}]
+
+    result = finalize_suggestions(
+        candidates, taken=set(), reserved=RESERVED_NAMES, persona_seed="seed-n"
+    )
+
+    assert result[0]["reason"] == "sharp and quick with lots of spaces"
+
+
+def test_finalize_reason_stripped_of_leading_trailing_whitespace():
+    candidates = [{"name": "juniper", "reason": "  leading and trailing spaces  "}]
+
+    result = finalize_suggestions(
+        candidates, taken=set(), reserved=RESERVED_NAMES, persona_seed="seed-o"
+    )
+
+    assert result[0]["reason"] == "leading and trailing spaces"
+
+
+def test_finalize_empty_reason_after_normalize_replaced_from_fallback_cycle():
+    # A reason that becomes empty after normalization (e.g., whitespace-only)
+    # should be replaced from the fallback cycle.
+    candidates = [
+        {"name": "juniper", "reason": "   "},  # becomes empty after strip+normalize
+        {"name": "rowan", "reason": "a real reason"},
+    ]
+
+    result = finalize_suggestions(
+        candidates, taken=set(), reserved=RESERVED_NAMES, persona_seed="seed-p"
+    )
+
+    # First candidate's reason should be from fallback cycle
+    assert result[0]["reason"] in _FALLBACK_REASONS
+    # Second candidate's reason is preserved
+    assert result[1]["reason"] == "a real reason"
+
+
+def test_finalize_reason_normalization_combined():
+    # Long reason with extra whitespace and leading/trailing spaces
+    reason = "  a   long  and  rambling   reason  " + "with" * 30
+    candidates = [{"name": "juniper", "reason": reason}]
+
+    result = finalize_suggestions(
+        candidates, taken=set(), reserved=RESERVED_NAMES, persona_seed="seed-q"
+    )
+
+    normalized = result[0]["reason"]
+    # Should be <= 80 chars
+    assert len(normalized) <= 80
+    # Should not have leading/trailing spaces
+    assert not normalized.startswith(" ")
+    assert not normalized.endswith(" ")
+    # Should have single spaces only
+    assert "  " not in normalized

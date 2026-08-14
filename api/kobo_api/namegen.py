@@ -61,6 +61,36 @@ def _deterministic_order(pool: list[str], seed: str) -> list[str]:
     )
 
 
+def _normalize_reason(reason: str) -> str:
+    """Normalize a generator-supplied reason string for safe UI rendering.
+
+    - Strips leading/trailing whitespace
+    - Collapses internal whitespace runs to single spaces
+    - Truncates to 80 characters with smart word-boundary logic:
+      * If within the last 20 chars (positions 60-80) there's a space,
+        cut at that space to avoid mid-word truncation
+      * Otherwise, hard cut at exactly 80 chars
+
+    Returns the normalized string, which may be empty (if input was whitespace-only).
+    """
+    # Strip and collapse all internal whitespace runs to single spaces
+    normalized = " ".join(reason.split())
+
+    # If within acceptable length, done
+    if len(normalized) <= 80:
+        return normalized
+
+    # Need to truncate; look for a word boundary (space) in the last 20 chars
+    # Search backwards from position 80 to position 60 (the last 20 chars)
+    for i in range(80, 59, -1):  # 80 down to 60 inclusive
+        if i < len(normalized) and normalized[i] == " ":
+            # Found a space; cut here and trim any trailing space
+            return normalized[:i].rstrip()
+
+    # No word boundary found in last 20 chars; hard cut at 80
+    return normalized[:80]
+
+
 def finalize_suggestions(
     candidates: list[dict], *, taken: set[str], reserved: set[str], persona_seed: str
 ) -> list[dict]:
@@ -82,9 +112,16 @@ def finalize_suggestions(
     `_deterministic_order`) — same persona text, same five names, every
     time; a different persona text reliably reorders (and usually
     reselects) the pool.
+
+    Generator-supplied reason strings are normalized for safe UI rendering:
+    whitespace is collapsed to single spaces, leading/trailing whitespace
+    stripped, and length is clamped to 80 characters (with smart word-
+    boundary truncation). Reasons that become empty after normalization are
+    replaced with entries from the fallback reason cycle.
     """
     result: list[dict] = []
     seen: set[str] = set()
+    reasons = itertools.cycle(_FALLBACK_REASONS)
 
     for candidate in candidates:
         name = candidate.get("name")
@@ -96,12 +133,17 @@ def finalize_suggestions(
         if name in taken or name in reserved or name in seen:
             continue
         reason = candidate.get("reason")
+        if isinstance(reason, str):
+            reason = _normalize_reason(reason)
+            if not reason:  # empty after normalization
+                reason = next(reasons)
+        else:
+            reason = ""
         seen.add(name)
-        result.append({"name": name, "reason": reason if isinstance(reason, str) else ""})
+        result.append({"name": name, "reason": reason})
         if len(result) == SUGGESTION_COUNT:
             return result
 
-    reasons = itertools.cycle(_FALLBACK_REASONS)
     for name in _deterministic_order(_FALLBACK_NAMES, persona_seed):
         if name in taken or name in reserved or name in seen:
             continue
