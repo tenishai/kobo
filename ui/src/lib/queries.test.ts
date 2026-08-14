@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, readLocalSkill, type AgentSkill, type CatalogEntry, type IntakeFile, type OrgStatus, type ToolingFile } from "./api";
+import { ApiError, readLocalSkill, type AgentSkill, type CatalogEntry, type IntakeFile, type NameSuggestion, type OrgStatus, type ToolingFile } from "./api";
 import {
   addCatalogSkillMutation,
   agentSkillsQuery,
@@ -18,6 +18,7 @@ import {
   intakeQuery,
   intakeRefetchInterval,
   modelsQuery,
+  nameSuggestionsQuery,
   orgStatusQuery,
   personasSearchQuery,
   retryAgentMutation,
@@ -456,6 +457,97 @@ describe("orgStatusQuery", () => {
       status,
     );
     expect(fetch).toHaveBeenCalledWith("/api/org/status");
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("nameSuggestionsQuery", () => {
+  it("has queryKey ['names', 'suggestions', {who_they_are, what_they_do}]", () => {
+    expect(
+      nameSuggestionsQuery("a calm troubleshooter", "helps with billing").queryKey,
+    ).toEqual([
+      "names",
+      "suggestions",
+      { who_they_are: "a calm troubleshooter", what_they_do: "helps with billing" },
+    ]);
+  });
+
+  it("is disabled when either field is empty (or whitespace-only)", () => {
+    expect(nameSuggestionsQuery("", "helps with billing").enabled).toBe(false);
+    expect(nameSuggestionsQuery("a calm troubleshooter", "").enabled).toBe(false);
+    expect(nameSuggestionsQuery("  ", "helps with billing").enabled).toBe(false);
+    expect(nameSuggestionsQuery("", "").enabled).toBe(false);
+  });
+
+  it("is enabled once both fields are non-empty", () => {
+    expect(
+      nameSuggestionsQuery("a calm troubleshooter", "helps with billing").enabled,
+    ).toBe(true);
+  });
+
+  it("queryFn POSTs {who_they_are, what_they_do} to /api/agents/name-suggestions and unwraps {suggestions: [...]}", async () => {
+    const suggestions: NameSuggestion[] = [
+      { name: "ember", reason: "a steady hand" },
+      { name: "cedar", reason: "quiet and quick" },
+    ];
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ suggestions }),
+    } as Response);
+
+    await expect(
+      callQueryFn<NameSuggestion[]>(
+        nameSuggestionsQuery("a calm troubleshooter", "helps with billing"),
+      ),
+    ).resolves.toEqual(suggestions);
+    expect(fetch).toHaveBeenCalledWith("/api/agents/name-suggestions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        who_they_are: "a calm troubleshooter",
+        what_they_do: "helps with billing",
+      }),
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("propagates a 422's {error} message through parse()", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 422,
+      statusText: "Unprocessable Entity",
+      text: async () =>
+        JSON.stringify({ error: "who_they_are must not be empty" }),
+    } as Response);
+
+    await expect(
+      callQueryFn<NameSuggestion[]>(nameSuggestionsQuery(" ", "x")),
+    ).rejects.toThrow("who_they_are must not be empty");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("propagates a 502's {error} message through parse() (fallback pool exhausted)", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 502,
+      statusText: "Bad Gateway",
+      text: async () =>
+        JSON.stringify({ error: "couldn't come up with names right now — try again" }),
+    } as Response);
+
+    await expect(
+      callQueryFn<NameSuggestion[]>(
+        nameSuggestionsQuery("a calm troubleshooter", "helps with billing"),
+      ),
+    ).rejects.toThrow("couldn't come up with names right now — try again");
 
     vi.unstubAllGlobals();
   });

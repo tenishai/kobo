@@ -71,6 +71,13 @@ export type PersonaForm = {
   team: string;
 };
 
+/** One name-suggestion card (create flow v2 "naming ceremony" addendum) —
+ * the generator's best-effort candidate, or a pick from the deterministic
+ * curated-pool fallback when the generator is down/unusable. `reason` is
+ * already clamped to <=80 chars server-side (`kobo_api.namegen`'s
+ * `_normalize_reason`) — nothing further to trim on this side. */
+export type NameSuggestion = { name: string; reason: string };
+
 export type OrgCheck = { id: string; label: string; ok: boolean; detail: string };
 
 export type OrgStatus = { org: string | null; wired: boolean; checks: OrgCheck[] };
@@ -255,6 +262,32 @@ export async function createPersona(body: PersonaForm): Promise<CatalogEntry> {
     body: JSON.stringify(body),
   });
   return parse<CatalogEntry>(res);
+}
+
+/**
+ * `POST /api/agents/name-suggestions` — five name+reason candidates for
+ * the agent being created, generated from the just-committed persona's own
+ * `who_they_are`/`what_they_do` text. The server never fails to return
+ * five (a curated fallback pool stands in when its generator errors out),
+ * so this only ever rejects on a genuine transport/route failure. Wired as
+ * a query factory (queries.ts's `nameSuggestionsQuery`), not a mutation,
+ * even though the transport is POST — nothing is created or changed by
+ * calling it, the free-text fields just don't fit a query string.
+ */
+export async function fetchNameSuggestions(
+  whoTheyAre: string,
+  whatTheyDo: string,
+): Promise<NameSuggestion[]> {
+  const res = await fetch("/api/agents/name-suggestions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      who_they_are: whoTheyAre,
+      what_they_do: whatTheyDo,
+    }),
+  });
+  const data = await parse<{ suggestions: NameSuggestion[] }>(res);
+  return data.suggestions;
 }
 
 export async function fetchOrgStatus(): Promise<OrgStatus> {

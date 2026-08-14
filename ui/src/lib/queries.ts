@@ -17,6 +17,8 @@
 //   ["catalog", "skills", {q, team}]                - a skill catalog search
 //   ["catalog", "personas", {q, team}]              - a persona catalog search
 //   ["org", "status"]                               - org bootstrap/wiring status
+//   ["names", "suggestions", {who_they_are, what_they_do}]
+//                                                    - five name-suggestion cards for a committed persona
 
 import { queryOptions, type QueryClient } from "@tanstack/svelte-query";
 import {
@@ -28,6 +30,7 @@ import {
   type ChatMessage,
   type IntakeFile,
   type KnowledgeFile,
+  type NameSuggestion,
   type OrgStatus,
   type PersonaForm,
   type ToolingFile,
@@ -43,6 +46,7 @@ import {
   deleteTooling,
   fetchDeliveryState,
   fetchModels,
+  fetchNameSuggestions,
   fetchOrgStatus,
   fetchTeams,
   generateAvatar,
@@ -153,6 +157,28 @@ export function orgStatusQuery() {
     queryKey: ["org", "status"] as const,
     queryFn: fetchOrgStatus,
     staleTime: ORG_STATUS_STALE_MS,
+  });
+}
+
+/**
+ * Five name-suggestion cards for the naming station (create flow v2 "naming
+ * ceremony" addendum), derived from the just-committed persona's own
+ * `who_they_are`/`what_they_do` text. `enabled` is false until both fields
+ * are non-empty — there's nothing to suggest against before a persona is
+ * picked, same "nothing to fetch yet" gate `deliveryQuery` uses for its own
+ * sha. No polling, no extra staleTime: the naming station's "offer more"
+ * action is a plain `refetch()` on this same query, not a second query key
+ * or a timer.
+ */
+export function nameSuggestionsQuery(whoTheyAre: string, whatTheyDo: string) {
+  return queryOptions({
+    queryKey: [
+      "names",
+      "suggestions",
+      { who_they_are: whoTheyAre, what_they_do: whatTheyDo },
+    ] as const,
+    queryFn: () => fetchNameSuggestions(whoTheyAre, whatTheyDo),
+    enabled: whoTheyAre.trim().length > 0 && whatTheyDo.trim().length > 0,
   });
 }
 
@@ -551,6 +577,7 @@ export type {
   ChatMessage,
   IntakeFile,
   KnowledgeFile,
+  NameSuggestion,
   OrgStatus,
   PersonaForm,
   ToolingFile,

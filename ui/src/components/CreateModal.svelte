@@ -1,14 +1,33 @@
 <script lang="ts">
-  // The one-click moment: name it, pick a team/persona/skills/model, submit.
+  // The one-click moment, now staged as five stations at a bench (create
+  // flow v2, "the naming ceremony" addendum): Persona -> The Naming -> Team
+  // -> Skills -> Create, each one unlocking once the previous "commits".
   // Fully controlled by the caller (`open` + `onclose`), same contract as
   // Modal itself — this component owns the form's own state (name, team,
   // selections, the availability check, submit errors) but not whether
   // it's visible.
   //
+  // "Unlocking" here is a visual/motivational cue only (reduced opacity +
+  // a hollow station marker — see the `.station--locked` styling below),
+  // never a hard functional lock: nothing is `disabled`/`inert` because a
+  // later station is still muted. This is the same "pick your team above
+  // first" idiom the old PersonaBuilder hint already used (a station can be
+  // muted while its fields stay perfectly live) — generalized across all
+  // five stations instead of living in just the one hint. It also happens
+  // to be load-bearing: "Build your own persona" (station 1) still needs
+  // `team` (now station 3) to tag the persona with, so the Team field has
+  // to stay genuinely usable even while its station reads as muted.
+  // `canSubmit` below is the one thing that's actually gated — unchanged
+  // from before this addendum, just fed by fields that now render in a
+  // different order.
+  //
   // Name availability is the one field with a network round trip attached:
   // every keystroke gets instant client-side validation (validate.ts) and
   // only once that passes does a debounced (350ms) `checkAvailability` call
-  // go out, so a name that's obviously wrong never costs a request.
+  // go out, so a name that's obviously wrong never costs a request. A name
+  // can now arrive two ways — picking one of the naming station's five
+  // suggested cards, or "name it yourself" — but either way it lands in
+  // the same `name` state and runs through the same check.
   //
   // Persona and skills are catalog *searches* now (Task 10), not a whole
   // catalog fetched once: `personasSearchQuery`/`skillsSearchQuery` re-run
@@ -19,7 +38,10 @@
   // constraint), the debounced search term for each section lives in a
   // plain `writable` store, fed by an `$effect` off the `$state` the input
   // is bound to — not a `$derived` object, which the adapter would freeze
-  // at first render and never look at again.
+  // at first render and never look at again. The naming station's
+  // suggestion fetch (`nameSuggestionsQuery`) uses the exact same
+  // writable-store idiom, just set once per persona commit rather than
+  // per keystroke.
   //
   // Models and teams come from `modelsQuery()`/`teamsQuery()`, both
   // prefetched by App.svelte the same "warm modal" way the old whole-catalog
@@ -33,11 +55,18 @@
   import Modal from "./Modal.svelte";
   import PersonaBuilder from "./PersonaBuilder.svelte";
   import Skeleton from "./Skeleton.svelte";
-  import { ApiError, checkAvailability, errorMessage, type CatalogEntry } from "../lib/api";
+  import {
+    ApiError,
+    checkAvailability,
+    errorMessage,
+    type CatalogEntry,
+    type NameSuggestion,
+  } from "../lib/api";
   import { debounced } from "../lib/debounce";
   import {
     createAgentMutation,
     modelsQuery,
+    nameSuggestionsQuery,
     orgStatusQuery,
     personasSearchQuery,
     skillsSearchQuery,
@@ -153,12 +182,107 @@
 
   let builderOpen = $state(false);
 
-  function handlePersonaCreated(id: string): void {
-    personaOverride = id;
+  /** The committed persona's own text, kept alongside its id purely to seed
+   * the naming station below (`description` doubles as `who_they_are`
+   * verbatim — see `kobo_api.personas` — for every persona this room knows
+   * about, catalog-shipped or user-authored). Set at the exact moment a
+   * persona is picked (both branches below), never re-derived later by
+   * looking the id back up in `$personas.data`: that list is itself a
+   * debounced search result that can lag a beat behind a just-created
+   * persona (createPersonaMutation's own cache invalidation hasn't
+   * necessarily resolved yet), so re-deriving would risk racing it. */
+  let selectedPersonaMeta = $state<{ name: string; description: string } | null>(
+    null,
+  );
+
+  function selectPersona(persona: CatalogEntry): void {
+    personaOverride = persona.id;
+    selectedPersonaMeta = { name: persona.name, description: persona.description };
+  }
+
+  function handlePersonaCreated(persona: CatalogEntry): void {
+    selectPersona(persona);
     builderOpen = false;
     personaQ = "";
     personaSearchTerm.set("");
     toast.success("Persona ready");
+  }
+
+  // --- The Naming: five suggested cards once a persona is committed ------
+  //
+  // CatalogEntry (what both a search pick and a freshly-built persona hand
+  // back) carries only `description`/`name` — no separate "what they do"
+  // text survives into either shape. Disclosed call: `description` (==
+  // `who_they_are`) becomes the generator's `who_they_are`, and the
+  // persona's own `name` stands in for `what_they_do` — the best available
+  // signal, not a literal match for the field name.
+
+  let nameMode = $state<"cards" | "manual">("cards");
+  let selectedCardName = $state<string | null>(null);
+  // Set only by a "reroll" whose five names come back identical to the
+  // five just shown — the fallback pool is deterministic per persona text,
+  // so a generator outage can make that happen; copy must not promise
+  // novelty it can't deliver (see `handleReroll`).
+  let rerollNote = $state(false);
+
+  const nameSuggestionParams = writable<{ whoTheyAre: string; whatTheyDo: string }>({
+    whoTheyAre: "",
+    whatTheyDo: "",
+  });
+  const nameSuggestionsOptions = derived(nameSuggestionParams, ($p) =>
+    nameSuggestionsQuery($p.whoTheyAre, $p.whatTheyDo),
+  );
+  const nameSuggestions = createQuery(nameSuggestionsOptions);
+
+  // A persona commit — a first pick, a builder create, or picking a
+  // *different* persona than before — feeds the naming query its who/what
+  // text and, in the same beat, voids whatever the naming station had
+  // going for the previous persona (or for no persona at all): a card pick
+  // or a hand-typed name tied to one persona's suggestions has no business
+  // surviving a switch to a different one.
+  $effect(() => {
+    const meta = selectedPersonaMeta;
+    if (!open) {
+      return;
+    }
+    nameSuggestionParams.set({
+      whoTheyAre: meta?.description ?? "",
+      whatTheyDo: meta?.name ?? "",
+    });
+    nameMode = "cards";
+    selectedCardName = null;
+    name = "";
+    rerollNote = false;
+  });
+
+  // A generator/route failure falls back to the classic input regardless of
+  // which mode the user was in — the addendum's own error-state contract,
+  // not something "name it yourself" alone should have to be clicked for.
+  const showManualName = $derived(nameMode === "manual" || $nameSuggestions.isError);
+
+  function selectCard(card: NameSuggestion): void {
+    selectedCardName = card.name;
+    name = card.name;
+  }
+
+  /** "Offer more" (never "reroll" in the UI copy — the fallback pool is
+   * deterministic per persona text, so promising novelty would sometimes be
+   * a lie). Compares the five names before and after the refetch: if the
+   * generator is down and the deterministic fallback hands back the exact
+   * same five, `rerollNote` flips on so the station can say so plainly
+   * instead of pretending something changed. Either way, the previous pick
+   * doesn't survive a reroll — the offered set just changed out from under
+   * it. */
+  async function handleReroll(): Promise<void> {
+    const before = ($nameSuggestions.data ?? []).map((s) => s.name);
+    const result = await $nameSuggestions.refetch();
+    const after = (result.data ?? []).map((s) => s.name);
+    rerollNote =
+      before.length > 0 &&
+      after.length === before.length &&
+      after.every((candidate, i) => candidate === before[i]);
+    selectedCardName = null;
+    name = "";
   }
 
   // --- Skills search -------------------------------------------------------
@@ -185,8 +309,15 @@
     250,
   );
 
+  // Caps the results list at 6 with a "show more" (create flow v2
+  // addendum: "no wall of skills, ever") — reset to the capped view
+  // whenever the search itself changes, so a fresh query never inherits an
+  // earlier search's "show more" state.
+  let skillShowAll = $state(false);
+
   $effect(() => {
     const value = { q: skillQ, team: skillTeamFilter === "" ? null : skillTeamFilter };
+    skillShowAll = false;
     if (!open) {
       return;
     }
@@ -195,6 +326,19 @@
       commitSkillSearch.cancel();
     };
   });
+
+  const SKILLS_SHOWN_CAP = 6;
+
+  const visibleSkills = $derived(
+    $skills.data === undefined
+      ? []
+      : skillShowAll
+        ? $skills.data
+        : $skills.data.slice(0, SKILLS_SHOWN_CAP),
+  );
+  const skillsShowMoreCount = $derived(
+    Math.max(0, ($skills.data?.length ?? 0) - SKILLS_SHOWN_CAP),
+  );
 
   type SelectedSkill = { id: string; team: string; name: string };
 
@@ -245,6 +389,14 @@
 
   const UNWIRED_MESSAGE = "Catalogs aren't set up yet — ask whoever runs your room.";
 
+  // --- Stations: which of the five read as active vs. muted --------------
+  // Purely a visual cue (see the doc comment at the top of this file) —
+  // none of these gate anything functionally; `canSubmit` below is the one
+  // real gate, and it's unchanged.
+  const personaCommitted = $derived(selectedPersona !== "");
+  const namingCommitted = $derived(name.length > 0);
+  const teamCommitted = $derived(teamValid);
+
   // Fresh form every time the modal opens.
   $effect(() => {
     if (open) {
@@ -256,9 +408,15 @@
       personaQ = "";
       personaSearchTerm.set("");
       builderOpen = false;
+      selectedPersonaMeta = null;
+      nameMode = "cards";
+      selectedCardName = null;
+      rerollNote = false;
+      nameSuggestionParams.set({ whoTheyAre: "", whatTheyDo: "" });
       skillQ = "";
       skillTeamFilter = "";
       skillSearchParams.set({ q: "", team: null });
+      skillShowAll = false;
       selectedSkills = new Map();
     }
   });
@@ -314,282 +472,434 @@
   }
 </script>
 
-<Modal {open} title="Create agent" {onclose}>
-  <form class="create-form" onsubmit={handleSubmit}>
-    <div class="create-form__field">
-      <label class="create-form__label" for="create-name">Name</label>
-      <input
-        id="create-name"
-        class="create-form__input"
-        type="text"
-        bind:value={name}
-        placeholder="e.g. weekly-digest"
-        autocomplete="off"
-        spellcheck="false"
-        aria-describedby="create-name-status"
-        aria-invalid={nameError !== null ||
-          availability.status === "unavailable"}
-      />
-      <p class="create-form__help">
-        Lowercase letters, numbers, and hyphens. 2-24 characters.
-      </p>
-      <div
-        id="create-name-status"
-        role={nameError || availability.status === "unavailable"
-          ? "alert"
-          : availability.status === "checking" || availability.status === "available"
-            ? "status"
-            : undefined}
-        aria-live={availability.status === "checking" ||
-        availability.status === "available"
-          ? "polite"
-          : undefined}
-      >
-        {#if nameError}
-          <p class="create-form__status create-form__status--error">{nameError}</p>
-        {:else if availability.status === "checking"}
-          <p class="create-form__status">Checking…</p>
-        {:else if availability.status === "available"}
-          <p class="create-form__status create-form__status--ok">✓ Available</p>
-        {:else if availability.status === "unavailable"}
-          <p class="create-form__status create-form__status--error">
-            {availability.reason}
-          </p>
-        {/if}
-      </div>
-    </div>
-
-    <div class="create-form__field">
-      <label class="create-form__label" for="create-team">Team</label>
-      <input
-        id="create-team"
-        class="create-form__input"
-        type="text"
-        list="create-team-options"
-        bind:value={team}
-        placeholder="e.g. growth"
-        autocomplete="off"
-        spellcheck="false"
-        aria-describedby="create-team-status"
-        aria-invalid={teamError !== null}
-      />
-      <datalist id="create-team-options">
-        {#if $teams.data}
-          {#each $teams.data as t (t)}
-            <option value={t}></option>
-          {/each}
-        {/if}
-      </datalist>
-      <p class="create-form__help">
-        Lowercase letters, numbers, and hyphens. 1-24 characters.
-      </p>
-      <div id="create-team-status">
-        {#if teamError}
-          <p class="create-form__status create-form__status--error" role="alert">
-            {teamError}
-          </p>
-        {/if}
-      </div>
-    </div>
-
-    <fieldset class="create-form__field create-form__fieldset">
-      <legend class="create-form__label">Persona</legend>
-      {#if personasUnwired}
-        <EmptyState message={UNWIRED_MESSAGE} />
-      {:else if builderOpen}
-        <PersonaBuilder
-          {team}
-          {teamValid}
-          oncancel={() => (builderOpen = false)}
-          oncreated={handlePersonaCreated}
-        />
-      {:else}
-        <button
-          type="button"
-          class="persona-build-cta"
-          onclick={() => (builderOpen = true)}
-        >
-          Build your own persona
-        </button>
-
-        <div class="create-form__field">
-          <label class="create-form__label" for="persona-search">Search personas</label>
-          <input
-            id="persona-search"
-            class="create-form__input"
-            type="text"
-            bind:value={personaQ}
-            placeholder="Search personas"
-            autocomplete="off"
-          />
-        </div>
-
-        {#if $personas.isPending}
-          <Skeleton rows={2} />
-        {:else if $personas.isError}
-          <ErrorState
-            message={errorMessage($personas.error, "Couldn't load personas.")}
-            onretry={() => $personas.refetch()}
-          />
-        {:else}
-          <div class="persona-list">
-            {#if $personas.data.length === 0 && personaQ.length > 0}
-              <p class="create-form__help">Nothing matches your search.</p>
-            {/if}
-            {#each $personas.data as persona (persona.id)}
-              <label
-                class="persona-card"
-                class:persona-card--selected={persona.id === selectedPersona}
-              >
-                <input
-                  type="radio"
-                  name="persona"
-                  value={persona.id}
-                  checked={persona.id === selectedPersona}
-                  onchange={() => (personaOverride = persona.id)}
-                />
-                <span class="persona-card__body">
-                  <span class="persona-card__head">
-                    <span class="persona-card__name">{persona.name}</span>
-                    <span
-                      class="catalog-badge"
-                      class:catalog-badge--builtin={persona.builtin}
-                    >
-                      {persona.builtin ? "Built-in" : persona.team}
-                    </span>
-                  </span>
-                  <span class="persona-card__description">{persona.description}</span>
-                </span>
-              </label>
-            {/each}
-          </div>
-        {/if}
-      {/if}
-    </fieldset>
-
-    <fieldset class="create-form__field create-form__fieldset">
-      <legend class="create-form__label">Skills</legend>
-      {#if skillsUnwired}
-        <EmptyState message={UNWIRED_MESSAGE} />
-      {:else}
-        {#if selectedSkills.size > 0}
-          <div class="chip-row">
-            {#each [...selectedSkills.entries()] as [key, skill] (key)}
-              <span class="chip">
-                {skill.name}
-                <button
-                  type="button"
-                  class="chip__remove"
-                  aria-label={`Remove ${skill.name}`}
-                  onclick={() => removeSkill(key)}
-                >
-                  &times;
-                </button>
-              </span>
-            {/each}
-          </div>
-        {/if}
-
-        <div class="create-form__field">
-          <label class="create-form__label" for="skill-search">Search skills</label>
-          <div class="catalog-search__row">
-            <input
-              id="skill-search"
-              class="create-form__input"
-              type="text"
-              bind:value={skillQ}
-              placeholder="Search skills"
-              autocomplete="off"
-            />
-            <label class="sr-only" for="skill-team-filter">Filter skills by team</label>
-            <select
-              id="skill-team-filter"
-              class="create-form__input"
-              value={skillTeamFilter}
-              onchange={(event) =>
-                (skillTeamFilter = (event.currentTarget as HTMLSelectElement).value)}
-            >
-              <option value="">All teams</option>
-              {#if $teams.data}
-                {#each $teams.data as t (t)}
-                  <option value={t}>{t}</option>
-                {/each}
-              {/if}
-            </select>
-          </div>
-        </div>
-
-        {#if $skills.isPending}
-          <Skeleton rows={2} />
-        {:else if $skills.isError}
-          <ErrorState
-            message={errorMessage($skills.error, "Couldn't load skills.")}
-            onretry={() => $skills.refetch()}
-          />
-        {:else if $skills.data.length === 0}
-          <p class="create-form__help">
-            {skillQ.length > 0 ? "Nothing matches your search." : "No skills in the catalog yet"}
-          </p>
-        {:else}
-          <div class="skill-list">
-            {#each $skills.data as skill (skillKey(skill.id, skill.team))}
-              <label class="skill-item">
-                <input
-                  type="checkbox"
-                  checked={selectedSkills.has(skillKey(skill.id, skill.team))}
-                  onchange={() => toggleSkill(skill)}
-                />
-                <span class="skill-item__body">
-                  <span class="skill-item__head">
-                    <span class="skill-item__name">{skill.name}</span>
-                    <span class="catalog-badge">{skill.team}</span>
-                  </span>
-                  <span class="skill-item__description">{skill.description}</span>
-                </span>
-              </label>
-            {/each}
-          </div>
-        {/if}
-      {/if}
-    </fieldset>
-
-    <div class="create-form__field">
-      <label class="create-form__label" for="create-model">Model</label>
-      {#if $models.isPending}
-        <Skeleton rows={1} />
-      {:else if $models.isError}
-        <ErrorState
-          message={errorMessage($models.error, "Couldn't load models.")}
-          onretry={() => $models.refetch()}
-        />
-      {:else}
-        <select
-          id="create-model"
-          class="create-form__input"
-          value={selectedModel}
-          onchange={(event) =>
-            (modelOverride = (event.currentTarget as HTMLSelectElement).value)}
-        >
-          {#each $models.data.models as model (model.id)}
-            <option value={model.id}>{model.label}</option>
-          {/each}
-        </select>
-      {/if}
-    </div>
-
-    {#if submitError}
-      <p class="create-form__status create-form__status--error" role="alert">
-        {submitError}
+{#snippet nameStatus()}
+  <div
+    id="create-name-status"
+    role={nameError || availability.status === "unavailable"
+      ? "alert"
+      : availability.status === "checking" || availability.status === "available"
+        ? "status"
+        : undefined}
+    aria-live={availability.status === "checking" ||
+    availability.status === "available"
+      ? "polite"
+      : undefined}
+  >
+    {#if nameError}
+      <p class="create-form__status create-form__status--error">{nameError}</p>
+    {:else if availability.status === "checking"}
+      <p class="create-form__status">Checking…</p>
+    {:else if availability.status === "available"}
+      <p class="create-form__status create-form__status--ok">✓ Available</p>
+    {:else if availability.status === "unavailable"}
+      <p class="create-form__status create-form__status--error">
+        {availability.reason}
       </p>
     {/if}
+  </div>
+{/snippet}
 
-    <div class="create-form__actions">
-      <button type="button" class="create-form__cancel" onclick={onclose}>
-        Cancel
-      </button>
-      <button type="submit" class="create-form__submit" disabled={!canSubmit}>
-        {$mutation.isPending ? "Creating…" : "Create agent"}
-      </button>
+<Modal {open} title="Create agent" {onclose}>
+  <form class="create-form" onsubmit={handleSubmit}>
+    <!-- Station 1: Persona — always active, never muted; it's the start of
+         the bench. -->
+    <div class="station">
+      <div class="station__head">
+        <span class="station-marker station-marker--filled" aria-hidden="true">1</span>
+        <h3 class="station__heading">Persona</h3>
+      </div>
+
+      <fieldset class="create-form__field create-form__fieldset">
+        <legend class="sr-only">Persona</legend>
+        {#if personasUnwired}
+          <EmptyState message={UNWIRED_MESSAGE} />
+        {:else if builderOpen}
+          <PersonaBuilder
+            {team}
+            {teamValid}
+            oncancel={() => (builderOpen = false)}
+            oncreated={handlePersonaCreated}
+          />
+        {:else}
+          <button
+            type="button"
+            class="persona-build-cta"
+            onclick={() => (builderOpen = true)}
+          >
+            Build your own persona
+          </button>
+
+          <div class="create-form__field">
+            <label class="create-form__label" for="persona-search">Search personas</label>
+            <input
+              id="persona-search"
+              class="create-form__input"
+              type="text"
+              bind:value={personaQ}
+              placeholder="Search personas"
+              autocomplete="off"
+            />
+          </div>
+
+          {#if $personas.isPending}
+            <Skeleton rows={2} />
+          {:else if $personas.isError}
+            <ErrorState
+              message={errorMessage($personas.error, "Couldn't load personas.")}
+              onretry={() => $personas.refetch()}
+            />
+          {:else}
+            <div class="persona-list">
+              {#if $personas.data.length === 0 && personaQ.length > 0}
+                <p class="create-form__help">Nothing matches your search.</p>
+              {/if}
+              {#each $personas.data as persona (persona.id)}
+                <label
+                  class="persona-card"
+                  class:persona-card--selected={persona.id === selectedPersona}
+                >
+                  <input
+                    type="radio"
+                    name="persona"
+                    value={persona.id}
+                    checked={persona.id === selectedPersona}
+                    onchange={() => selectPersona(persona)}
+                  />
+                  <span class="persona-card__body">
+                    <span class="persona-card__head">
+                      <span class="persona-card__name">{persona.name}</span>
+                      <span
+                        class="catalog-badge"
+                        class:catalog-badge--builtin={persona.builtin}
+                      >
+                        {persona.builtin ? "Built-in" : persona.team}
+                      </span>
+                    </span>
+                    <span class="persona-card__description">{persona.description}</span>
+                  </span>
+                </label>
+              {/each}
+            </div>
+          {/if}
+        {/if}
+      </fieldset>
+    </div>
+
+    <!-- Station 2: The Naming — muted until a persona is picked; there's
+         nothing to suggest against before that. -->
+    <div class="station" class:station--locked={!personaCommitted}>
+      <div class="station__head">
+        <span
+          class="station-marker"
+          class:station-marker--filled={personaCommitted}
+          aria-hidden="true"
+        >
+          2
+        </span>
+        <h3 class="station__heading">The Naming</h3>
+      </div>
+
+      {#if !personaCommitted}
+        <p class="station__hint">Pick a persona first.</p>
+      {:else if showManualName}
+        {#if $nameSuggestions.isError}
+          <p class="create-form__help">
+            Couldn't come up with name ideas right now — name it yourself below.
+          </p>
+        {/if}
+        <div class="create-form__field">
+          <label class="create-form__label" for="create-name">Name</label>
+          <input
+            id="create-name"
+            class="create-form__input"
+            type="text"
+            bind:value={name}
+            placeholder="e.g. weekly-digest"
+            autocomplete="off"
+            spellcheck="false"
+            aria-describedby="create-name-status"
+            aria-invalid={nameError !== null ||
+              availability.status === "unavailable"}
+          />
+          <p class="create-form__help">
+            Lowercase letters, numbers, and hyphens. 2-24 characters.
+          </p>
+          {@render nameStatus()}
+        </div>
+      {:else if $nameSuggestions.isPending}
+        <div class="name-cards" aria-hidden="true">
+          {#each { length: 5 } as _, i (i)}
+            <div class="name-card name-card--skeleton">
+              <span class="name-card__skeleton-bar name-card__skeleton-bar--name"
+              ></span>
+              <span class="name-card__skeleton-bar name-card__skeleton-bar--reason"
+              ></span>
+            </div>
+          {/each}
+        </div>
+        <p class="sr-only" role="status">Loading name suggestions…</p>
+      {:else}
+        <div class="name-cards" role="radiogroup" aria-label="Suggested names">
+          {#each $nameSuggestions.data as card (card.name)}
+            <label
+              class="name-card"
+              class:name-card--selected={card.name === selectedCardName}
+              class:name-card--dimmed={selectedCardName !== null &&
+                card.name !== selectedCardName}
+            >
+              <input
+                type="radio"
+                name="suggested-name"
+                value={card.name}
+                checked={card.name === selectedCardName}
+                onchange={() => selectCard(card)}
+              />
+              <span class="name-card__body">
+                <span class="name-card__name">{card.name}</span>
+                <span class="name-card__reason">{card.reason}</span>
+              </span>
+            </label>
+          {/each}
+        </div>
+
+        {#if selectedCardName !== null}
+          {@render nameStatus()}
+        {/if}
+
+        <div class="naming-actions">
+          <button
+            type="button"
+            class="naming-actions__reroll"
+            onclick={handleReroll}
+            disabled={$nameSuggestions.isFetching}
+          >
+            {$nameSuggestions.isFetching ? "Asking again…" : "Offer more"}
+          </button>
+          <button
+            type="button"
+            class="naming-actions__manual"
+            onclick={() => (nameMode = "manual")}
+          >
+            name it yourself
+          </button>
+        </div>
+        {#if rerollNote}
+          <p class="create-form__help">The workshop suggests these.</p>
+        {/if}
+      {/if}
+    </div>
+
+    <!-- Station 3: Team — muted until a name has landed, but always live:
+         "Build your own persona" (station 1) reads this same field. -->
+    <div class="station" class:station--locked={!namingCommitted}>
+      <div class="station__head">
+        <span
+          class="station-marker"
+          class:station-marker--filled={namingCommitted}
+          aria-hidden="true"
+        >
+          3
+        </span>
+        <h3 class="station__heading">Team</h3>
+      </div>
+
+      <div class="create-form__field">
+        <label class="create-form__label" for="create-team">Team</label>
+        <input
+          id="create-team"
+          class="create-form__input"
+          type="text"
+          list="create-team-options"
+          bind:value={team}
+          placeholder="e.g. growth"
+          autocomplete="off"
+          spellcheck="false"
+          aria-describedby="create-team-status"
+          aria-invalid={teamError !== null}
+        />
+        <datalist id="create-team-options">
+          {#if $teams.data}
+            {#each $teams.data as t (t)}
+              <option value={t}></option>
+            {/each}
+          {/if}
+        </datalist>
+        <p class="create-form__help">
+          Lowercase letters, numbers, and hyphens. 1-24 characters.
+        </p>
+        <div id="create-team-status">
+          {#if teamError}
+            <p class="create-form__status create-form__status--error" role="alert">
+              {teamError}
+            </p>
+          {/if}
+        </div>
+      </div>
+    </div>
+
+    <!-- Station 4: Skills — search-first, capped, muted until Team's
+         filled in (but always live — nothing about searching/picking
+         skills actually needs a team). -->
+    <div class="station" class:station--locked={!teamCommitted}>
+      <div class="station__head">
+        <span
+          class="station-marker"
+          class:station-marker--filled={teamCommitted}
+          aria-hidden="true"
+        >
+          4
+        </span>
+        <h3 class="station__heading">Skills</h3>
+      </div>
+
+      <fieldset class="create-form__field create-form__fieldset">
+        <legend class="sr-only">Skills</legend>
+        {#if skillsUnwired}
+          <EmptyState message={UNWIRED_MESSAGE} />
+        {:else}
+          {#if selectedSkills.size > 0}
+            <div class="chip-row">
+              {#each [...selectedSkills.entries()] as [key, skill] (key)}
+                <span class="chip">
+                  {skill.name}
+                  <button
+                    type="button"
+                    class="chip__remove"
+                    aria-label={`Remove ${skill.name}`}
+                    onclick={() => removeSkill(key)}
+                  >
+                    &times;
+                  </button>
+                </span>
+              {/each}
+            </div>
+          {/if}
+
+          <div class="create-form__field">
+            <label class="create-form__label" for="skill-search">Search skills</label>
+            <div class="catalog-search__row">
+              <input
+                id="skill-search"
+                class="create-form__input"
+                type="text"
+                bind:value={skillQ}
+                placeholder="Search skills"
+                autocomplete="off"
+              />
+              <label class="sr-only" for="skill-team-filter">Filter skills by team</label>
+              <select
+                id="skill-team-filter"
+                class="create-form__input"
+                value={skillTeamFilter}
+                onchange={(event) =>
+                  (skillTeamFilter = (event.currentTarget as HTMLSelectElement).value)}
+              >
+                <option value="">All teams</option>
+                {#if $teams.data}
+                  {#each $teams.data as t (t)}
+                    <option value={t}>{t}</option>
+                  {/each}
+                {/if}
+              </select>
+            </div>
+          </div>
+
+          {#if $skills.isPending}
+            <Skeleton rows={2} />
+          {:else if $skills.isError}
+            <ErrorState
+              message={errorMessage($skills.error, "Couldn't load skills.")}
+              onretry={() => $skills.refetch()}
+            />
+          {:else if $skills.data.length === 0}
+            <p class="create-form__help">
+              {skillQ.length > 0 ? "Nothing matches your search." : "No skills in the catalog yet"}
+            </p>
+          {:else}
+            <div class="skill-list">
+              {#each visibleSkills as skill (skillKey(skill.id, skill.team))}
+                <label class="skill-item">
+                  <input
+                    type="checkbox"
+                    checked={selectedSkills.has(skillKey(skill.id, skill.team))}
+                    onchange={() => toggleSkill(skill)}
+                  />
+                  <span class="skill-item__body">
+                    <span class="skill-item__head">
+                      <span class="skill-item__name">{skill.name}</span>
+                      <span class="catalog-badge">{skill.team}</span>
+                    </span>
+                    <span class="skill-item__description">{skill.description}</span>
+                  </span>
+                </label>
+              {/each}
+            </div>
+            {#if skillsShowMoreCount > 0}
+              <button
+                type="button"
+                class="skills-show-more"
+                onclick={() => (skillShowAll = true)}
+              >
+                Show {skillsShowMoreCount} more
+              </button>
+            {/if}
+          {/if}
+        {/if}
+      </fieldset>
+    </div>
+
+    <!-- Station 5: Create — muted until Team's filled in; Create itself
+         stays gated by `canSubmit`, unchanged. -->
+    <div class="station" class:station--locked={!teamCommitted}>
+      <div class="station__head">
+        <span
+          class="station-marker"
+          class:station-marker--filled={teamCommitted}
+          aria-hidden="true"
+        >
+          5
+        </span>
+        <h3 class="station__heading">Create</h3>
+      </div>
+
+      <div class="create-form__field">
+        <label class="create-form__label" for="create-model">Model</label>
+        {#if $models.isPending}
+          <Skeleton rows={1} />
+        {:else if $models.isError}
+          <ErrorState
+            message={errorMessage($models.error, "Couldn't load models.")}
+            onretry={() => $models.refetch()}
+          />
+        {:else}
+          <select
+            id="create-model"
+            class="create-form__input"
+            value={selectedModel}
+            onchange={(event) =>
+              (modelOverride = (event.currentTarget as HTMLSelectElement).value)}
+          >
+            {#each $models.data.models as model (model.id)}
+              <option value={model.id}>{model.label}</option>
+            {/each}
+          </select>
+        {/if}
+      </div>
+
+      {#if submitError}
+        <p class="create-form__status create-form__status--error" role="alert">
+          {submitError}
+        </p>
+      {/if}
+
+      <div class="create-form__actions">
+        <button type="button" class="create-form__cancel" onclick={onclose}>
+          Cancel
+        </button>
+        <button type="submit" class="create-form__submit" disabled={!canSubmit}>
+          {$mutation.isPending ? "Creating…" : "Create agent"}
+        </button>
+      </div>
     </div>
   </form>
 </Modal>
@@ -599,6 +909,27 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-lg);
+    /* Paper depth, not a flat card (addendum, "Visual direction"): a
+       barely-there warm gradient plus a tiny tiled noise texture, both
+       layered as plain background-images so they always paint behind
+       every child — no pseudo-element/z-index bookkeeping needed. No
+       padding of its own, so the tint fills exactly the space Modal.svelte
+       already gives this slot (flush with its existing --space-lg inset)
+       rather than reading as a second, nested card inside the dialog. */
+    background-color: var(--bg);
+    background-repeat: no-repeat, no-repeat, repeat;
+    background-image:
+      radial-gradient(
+        140% 100% at 8% 0%,
+        color-mix(in srgb, var(--accent) 6%, transparent) 0%,
+        transparent 55%
+      ),
+      radial-gradient(
+        120% 120% at 100% 100%,
+        color-mix(in srgb, var(--accent) 4%, transparent) 0%,
+        transparent 60%
+      ),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
   }
 
   .create-form__field {
@@ -670,6 +1001,69 @@
 
   .create-form__status--error {
     color: var(--fail);
+  }
+
+  /* --- Stations: numbered woodstamp markers + display-serif headings ---- */
+
+  .station {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    transition: opacity 200ms ease-out;
+  }
+
+  .station--locked {
+    opacity: 0.5;
+  }
+
+  .station__head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .station-marker {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 1.6rem;
+    height: 1.6rem;
+    border: 1.5px solid var(--border);
+    border-radius: 50%;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+
+  .station-marker--filled {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+
+  /* The one place the display serif appears (addendum, "Visual
+     direction") — every other heading/label in this room keeps
+     --font-sans/--font-mono. */
+  .station__heading {
+    margin: 0;
+    color: var(--ink);
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 1.15rem;
+  }
+
+  .station__hint {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .station {
+      transition: none;
+    }
   }
 
   .catalog-search__row {
@@ -807,6 +1201,202 @@
   .skill-item__description {
     color: var(--muted);
     font-size: 0.8rem;
+  }
+
+  .skills-show-more {
+    align-self: flex-start;
+    padding: var(--space-2xs) var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+
+  .skills-show-more:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* --- The Naming: five cards, staggered entrance, quiet press-select --- */
+
+  .name-cards {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+
+  .name-card {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-xs);
+    padding: var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    animation: name-card-rise 260ms ease-out both;
+  }
+
+  /* 60ms per-card stagger (addendum) — five tags settling onto the bench
+     one after another. Purely nth-child so no per-card inline style/JS is
+     needed for it. */
+  .name-card:nth-child(1) {
+    animation-delay: 0ms;
+  }
+  .name-card:nth-child(2) {
+    animation-delay: 60ms;
+  }
+  .name-card:nth-child(3) {
+    animation-delay: 120ms;
+  }
+  .name-card:nth-child(4) {
+    animation-delay: 180ms;
+  }
+  .name-card:nth-child(5) {
+    animation-delay: 240ms;
+  }
+
+  .name-card:hover {
+    border-color: var(--accent);
+  }
+
+  .name-card--selected {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+    animation: name-card-press 160ms ease-out;
+  }
+
+  .name-card--dimmed {
+    opacity: 0.55;
+  }
+
+  .name-card input {
+    margin-top: 0.2rem;
+  }
+
+  .name-card__body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .name-card__name {
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 0.95rem;
+    font-weight: 600;
+  }
+
+  .name-card__reason {
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .name-card--skeleton {
+    flex-direction: column;
+    gap: var(--space-2xs);
+    cursor: default;
+  }
+
+  .name-card__skeleton-bar {
+    display: block;
+    height: 0.85rem;
+    border-radius: var(--radius-sm);
+    background: linear-gradient(
+      90deg,
+      var(--border) 25%,
+      var(--panel) 50%,
+      var(--border) 75%
+    );
+    background-size: 200% 100%;
+    animation: name-card-shimmer 1.6s ease-in-out infinite;
+  }
+
+  .name-card__skeleton-bar--name {
+    width: 40%;
+  }
+
+  .name-card__skeleton-bar--reason {
+    width: 70%;
+    height: 0.7rem;
+  }
+
+  @keyframes name-card-rise {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes name-card-press {
+    from {
+      transform: scale(0.98);
+    }
+    to {
+      transform: scale(1);
+    }
+  }
+
+  @keyframes name-card-shimmer {
+    0% {
+      background-position: 200% 0;
+    }
+    100% {
+      background-position: -200% 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .name-card,
+    .name-card--selected,
+    .name-card__skeleton-bar {
+      animation: none;
+    }
+  }
+
+  .naming-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+
+  .naming-actions__reroll {
+    padding: var(--space-2xs) var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+
+  .naming-actions__reroll:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .naming-actions__reroll:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .naming-actions__manual {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font-size: 0.85rem;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .naming-actions__manual:hover {
+    color: var(--accent);
   }
 
   .create-form__actions {

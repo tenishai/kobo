@@ -1,6 +1,20 @@
 /* Design tokens: light-first, calm/roomy/technical-warm, single accent.
    Dark overrides come from prefers-color-scheme, not a toggle. */
 
+/* Create-flow v2 "naming ceremony" (2026-08-14 addendum): one self-hosted
+   display serif, used nowhere but the create modal's five station
+   headings — everything else keeps --font-sans/--font-mono. Weight 600
+   only (the one weight the headings need); latin subset only (no CJK/
+   Cyrillic ranges) to keep the shipped file small. Self-hosted rather than
+   linked so the modal never depends on an external font host being up. */
+@font-face {
+  font-family: "Fraunces";
+  src: url("./assets/fonts/fraunces-600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light;
 
@@ -34,6 +48,9 @@
   --font-sans:
     -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-mono: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+  /* Station-heading-only display face (create flow v2) — falls back to a
+     warm system serif if the self-hosted woff2 hasn't loaded yet. */
+  --font-display: "Fraunces", Georgia, "Iowan Old Style", serif;
 }
 
 @media (prefers-color-scheme: dark) {

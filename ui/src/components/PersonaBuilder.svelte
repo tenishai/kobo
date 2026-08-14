@@ -16,8 +16,17 @@
   // this form never includes one, so there's nothing to re-enter —
   // whatever the create form's team currently says is what the new persona
   // is tagged with.
+  //
+  // `oncreated` hands back the full created CatalogEntry, not just its id
+  // (create flow v2 "naming ceremony" addendum): CreateModal needs the
+  // persona's `description` (== `who_they_are` verbatim — see
+  // `kobo_api.personas`) and `name` right away to seed the naming station's
+  // suggestion fetch, and reading them back off the persona search cache
+  // would race that cache's own debounced refetch after this mutation's
+  // `invalidateQueries` — the mutation result is already sitting right
+  // here, so CreateModal just takes it directly instead.
   import { createMutation, useQueryClient } from "@tanstack/svelte-query";
-  import { ApiError, errorMessage, type PersonaForm } from "../lib/api";
+  import { ApiError, errorMessage, type CatalogEntry, type PersonaForm } from "../lib/api";
   import { createPersonaMutation } from "../lib/queries";
   import { splitLines } from "../lib/validate";
 
@@ -30,7 +39,7 @@
     team: string;
     teamValid: boolean;
     oncancel: () => void;
-    oncreated: (id: string) => void;
+    oncreated: (persona: CatalogEntry) => void;
   } = $props();
 
   const queryClient = useQueryClient();
@@ -75,7 +84,7 @@
     };
     $mutation.mutate(body, {
       onSuccess: (created) => {
-        oncreated(created.id);
+        oncreated(created);
       },
       onError: (error: unknown) => {
         if (error instanceof ApiError && error.status === 409) {
