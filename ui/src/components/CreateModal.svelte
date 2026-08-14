@@ -1,26 +1,30 @@
 <script lang="ts">
-  // The one-click moment, now staged as five stations at a bench (create
-  // flow v2, "the naming ceremony" addendum — round 2 reorders the bench):
-  // Team -> Persona -> The Naming -> Skills -> Create, each one unlocking
-  // once the previous "commits". Fully controlled by the caller (`open` +
-  // `onclose`), same contract as Modal itself — this component owns the
-  // form's own state (name, team, selections, the availability check,
-  // submit errors) but not whether it's visible.
+  // The one-click moment, now staged as four stations at a bench (create
+  // flow v2, "the naming ceremony" addendum; Persona v3 / teamless-create
+  // addendum drops the Team station entirely and reorders what's left):
+  // Persona -> The Naming -> Skills -> Create, each one unlocking once the
+  // previous "commits". Fully controlled by the caller (`open` + `onclose`),
+  // same contract as Modal itself — this component owns the form's own
+  // state (name, selections, the availability check, submit errors) but
+  // not whether it's visible.
+  //
+  // Team is gone as a client-supplied field, full stop: agents and personas
+  // still RECORD a team underneath, but the server now defaults it to
+  // "shared" when the create payload omits it (`CreateAgentRequest.team`/
+  // `CreatePersonaRequest.team`), so there is nothing left for this room to
+  // collect or pass through. Team returns in a later phase as an
+  // IAP-derived fact, not a typed field a human fills in — see the
+  // addendum's "Team: dropped from the flow, defaulted underneath".
   //
   // "Unlocking" here is a visual/motivational cue only (reduced opacity +
   // a hollow station marker — see the `.station--locked` styling below),
   // never a hard functional lock: nothing is `disabled`/`inert` because a
-  // later station is still muted. This is the same "pick your team above
-  // first" idiom PersonaBuilder's own hint uses (a station can be muted
-  // while its fields stay perfectly live) — generalized across all five
-  // stations instead of living in just the one hint. Team genuinely leads
-  // the bench now (round 2: it used to sit third and read as muted while
-  // that hint pointed "above" it, which was backwards): "Build your own
-  // persona" (station 2) needs `team` from station 1 to tag the persona
-  // with, so Team is the one station that's never itself muted — it has
-  // to stay usable from the very first beat. `canSubmit` below is the one
-  // thing that's actually gated — unchanged from before this addendum,
-  // just fed by fields that now render in a different order.
+  // later station is still muted. Persona leads the bench now (the one
+  // station that's never itself muted — it has to stay usable from the
+  // very first beat, the same role Team used to play before it was
+  // removed). `canSubmit` below is the one thing that's actually gated —
+  // unchanged from before this addendum, just fed by fields that now
+  // render in a different order and without a team check.
   //
   // Name availability is the one field with a network round trip attached:
   // every keystroke gets instant client-side validation (validate.ts) and
@@ -75,7 +79,7 @@
     teamsQuery,
   } from "../lib/queries";
   import { toast } from "../lib/toast.svelte";
-  import { validateName, validateSlug } from "../lib/validate";
+  import { validateName } from "../lib/validate";
 
   let { open, onclose }: { open: boolean; onclose: () => void } = $props();
 
@@ -86,7 +90,6 @@
   const mutation = createMutation(createAgentMutation(queryClient));
 
   let name = $state("");
-  let team = $state("");
   // `null` means "no explicit choice yet" — the effective value falls back
   // to the catalog's default model, below (persona has no such fallback
   // any more: a search-driven list has no stable "first" item to default
@@ -151,12 +154,6 @@
       checkName.cancel();
     };
   });
-
-  // --- Team: same slug-hint idiom as name, picked from a datalist or
-  // typed fresh (honor-system until identity lands) -----------------------
-
-  const teamError = $derived(team.length > 0 ? validateSlug(team) : null);
-  const teamValid = $derived(team.length > 0 && teamError === null);
 
   // --- Persona search / builder -------------------------------------------
 
@@ -400,19 +397,17 @@
 
   const UNWIRED_MESSAGE = "Catalogs aren't set up yet — ask whoever runs your room.";
 
-  // --- Stations: which of the five read as active vs. muted --------------
+  // --- Stations: which of the four read as active vs. muted --------------
   // Purely a visual cue (see the doc comment at the top of this file) —
   // none of these gate anything functionally; `canSubmit` below is the one
   // real gate, and it's unchanged.
   const personaCommitted = $derived(selectedPersona !== "");
   const namingCommitted = $derived(name.length > 0);
-  const teamCommitted = $derived(teamValid);
 
   // Fresh form every time the modal opens.
   $effect(() => {
     if (open) {
       name = "";
-      team = "";
       personaOverride = null;
       modelOverride = null;
       submitError = null;
@@ -436,7 +431,6 @@
     $models.data !== undefined &&
       nameLocallyValid &&
       availability.status === "available" &&
-      teamValid &&
       !personasUnwired &&
       !skillsUnwired &&
       selectedPersona !== "" &&
@@ -455,7 +449,6 @@
       {
         name: createdName,
         persona: selectedPersona,
-        team: team.trim(),
         skills: [...selectedSkills.values()].map(({ id, team: skillTeam }) => ({
           id,
           team: skillTeam,
@@ -512,62 +505,12 @@
 
 <Modal {open} title="Create agent" {onclose}>
   <form class="create-form" onsubmit={handleSubmit}>
-    <!-- Station 1: Team — always active, never muted; it's the start of
-         the bench now. "Build your own persona" (station 2) reads this
-         same field, so it has to stay genuinely usable from the very
-         first station, not just once some later one unlocks it. -->
+    <!-- Station 1: Persona — always active, never muted; it's the start of
+         the bench now (Persona v3 / teamless-create addendum removed the
+         Team station that used to lead it). -->
     <div class="station">
       <div class="station__head">
         <span class="station-marker station-marker--filled" aria-hidden="true">1</span>
-        <h3 class="station__heading">Team</h3>
-      </div>
-
-      <div class="create-form__field">
-        <label class="create-form__label" for="create-team">Team</label>
-        <input
-          id="create-team"
-          class="create-form__input"
-          type="text"
-          list="create-team-options"
-          bind:value={team}
-          placeholder="e.g. growth"
-          autocomplete="off"
-          spellcheck="false"
-          aria-describedby="create-team-status"
-          aria-invalid={teamError !== null}
-        />
-        <datalist id="create-team-options">
-          {#if $teams.data}
-            {#each $teams.data as t (t)}
-              <option value={t}></option>
-            {/each}
-          {/if}
-        </datalist>
-        <p class="create-form__help">
-          Lowercase letters, numbers, and hyphens. 1-24 characters.
-        </p>
-        <div id="create-team-status">
-          {#if teamError}
-            <p class="create-form__status create-form__status--error" role="alert">
-              {teamError}
-            </p>
-          {/if}
-        </div>
-      </div>
-    </div>
-
-    <!-- Station 2: Persona — muted until Team's filled in; still fully
-         live underneath the mute (nothing here is disabled), same idiom
-         as every other station. -->
-    <div class="station" class:station--locked={!teamCommitted}>
-      <div class="station__head">
-        <span
-          class="station-marker"
-          class:station-marker--filled={teamCommitted}
-          aria-hidden="true"
-        >
-          2
-        </span>
         <h3 class="station__heading">Persona</h3>
       </div>
 
@@ -577,8 +520,6 @@
           <EmptyState message={UNWIRED_MESSAGE} />
         {:else if builderOpen}
           <PersonaBuilder
-            {team}
-            {teamValid}
             oncancel={() => (builderOpen = false)}
             oncreated={handlePersonaCreated}
           />
@@ -647,7 +588,7 @@
       </fieldset>
     </div>
 
-    <!-- Station 3: The Naming — muted until a persona is picked; there's
+    <!-- Station 2: The Naming — muted until a persona is picked; there's
          nothing to suggest against before that. -->
     <div class="station" class:station--locked={!personaCommitted}>
       <div class="station__head">
@@ -656,7 +597,7 @@
           class:station-marker--filled={personaCommitted}
           aria-hidden="true"
         >
-          3
+          2
         </span>
         <h3 class="station__heading">The Naming</h3>
       </div>
@@ -761,7 +702,7 @@
       {/if}
     </div>
 
-    <!-- Station 4: Skills — search-first, capped, muted until a name's
+    <!-- Station 3: Skills — search-first, capped, muted until a name's
          landed (but always live — nothing about searching/picking skills
          actually needs one). -->
     <div class="station" class:station--locked={!namingCommitted}>
@@ -771,7 +712,7 @@
           class:station-marker--filled={namingCommitted}
           aria-hidden="true"
         >
-          4
+          3
         </span>
         <h3 class="station__heading">Skills</h3>
       </div>
@@ -872,7 +813,7 @@
       </fieldset>
     </div>
 
-    <!-- Station 5: Create — muted until a name's landed; Create itself
+    <!-- Station 4: Create — muted until a name's landed; Create itself
          stays gated by `canSubmit`, unchanged. -->
     <div class="station" class:station--locked={!namingCommitted}>
       <div class="station__head">
@@ -881,7 +822,7 @@
           class:station-marker--filled={namingCommitted}
           aria-hidden="true"
         >
-          5
+          4
         </span>
         <h3 class="station__heading">Create</h3>
       </div>
@@ -1014,8 +955,7 @@
      same space a one-line status/error message would take — otherwise the
      field sits flush against the help text (a stray gap sliver) and then
      jumps down the moment a message appears. */
-  #create-name-status,
-  #create-team-status {
+  #create-name-status {
     min-height: 1.25rem;
   }
 

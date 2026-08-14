@@ -32,6 +32,7 @@ import {
   type KnowledgeFile,
   type NameSuggestion,
   type OrgStatus,
+  type PersonaDraft,
   type PersonaForm,
   type ToolingFile,
   addCatalogSkill,
@@ -44,6 +45,7 @@ import {
   deleteKnowledgeFile,
   deleteSkill,
   deleteTooling,
+  draftPersona,
   fetchDeliveryState,
   fetchModels,
   fetchNameSuggestions,
@@ -183,13 +185,33 @@ export function nameSuggestionsQuery(whoTheyAre: string, whatTheyDo: string) {
 }
 
 /**
+ * Drafts a persona from one plain job description (+ optional short rule
+ * hints) — the Persona v3 "describe the job, approve the soul" step
+ * (`POST /api/personas/draft`). No `onSuccess`/cache invalidation: the
+ * route never touches storage (`kobo_api.main.draft_persona_route`'s own
+ * docstring — nothing is created until the operator approves the preview
+ * and `createPersonaMutation` below actually runs), so there's nothing in
+ * the query cache for a pure generator call to invalidate. No
+ * `queryClient` param for the same reason `chatMutation` above has none.
+ */
+export function draftPersonaMutation() {
+  return {
+    mutationFn: ({ job, rules }: { job: string; rules: string[] }) =>
+      draftPersona(job, rules),
+  };
+}
+
+/**
  * Creates a persona; on success, invalidates both the persona search
- * queries (so the new persona appears in results) and the team list (a
- * persona can be created under a team slug that wasn't in the catalog
- * yet — see the `team` field on `PersonaForm`). TanStack's `invalidateQueries`
- * match is a *prefix* match, so `["catalog", "personas"]` covers every
- * `["catalog", "personas", {q, team}]` search-result cache entry, not just
- * one.
+ * queries (so the new persona appears in results) and the team list.
+ * Every persona now lands under whatever team the server defaults to
+ * (`"shared"` — `CreatePersonaRequest.team`, Persona v3 / teamless-create
+ * addendum) since the create flow no longer sends one, but the team-list
+ * invalidation is left in place: a harmless no-op today, and still correct
+ * if a persona can once again carry an explicit team. TanStack's
+ * `invalidateQueries` match is a *prefix* match, so `["catalog",
+ * "personas"]` covers every `["catalog", "personas", {q, team}]`
+ * search-result cache entry, not just one.
  */
 export function createPersonaMutation(queryClient: QueryClient) {
   return {
@@ -579,6 +601,7 @@ export type {
   KnowledgeFile,
   NameSuggestion,
   OrgStatus,
+  PersonaDraft,
   PersonaForm,
   ToolingFile,
 };

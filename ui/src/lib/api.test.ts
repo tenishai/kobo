@@ -7,6 +7,7 @@ import {
   createPersona,
   createSlackApp,
   deleteKnowledgeFile,
+  draftPersona,
   errorMessage,
   fetchDeliveryState,
   fetchModels,
@@ -107,7 +108,7 @@ describe("api.ts", () => {
     expect(fetch).toHaveBeenCalledWith("/api/catalog/models");
   });
 
-  it("createAgent POSTs the new body shape ({team, skills: [{id, team}]}) to /api/agents", async () => {
+  it("createAgent POSTs the teamless body shape ({skills: [{id, team}]}) to /api/agents", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       jsonResponse({ name: "foo", status: "provisioning" }),
     );
@@ -115,7 +116,6 @@ describe("api.ts", () => {
     const body = {
       name: "foo",
       persona: "helper",
-      team: "shared",
       skills: [{ id: "read-code", team: "shared" }],
       model: "gpt-5",
     };
@@ -144,7 +144,6 @@ describe("api.ts", () => {
       createAgent({
         name: "foo",
         persona: "helper",
-        team: "shared",
         skills: [],
         model: null,
       }),
@@ -681,13 +680,12 @@ describe("catalog search / teams / persona builder / org status client", () => {
     expect(fetch).toHaveBeenCalledWith("/api/catalog/teams");
   });
 
-  it("createPersona POSTs the form body to /api/personas and returns the created CatalogEntry", async () => {
+  it("createPersona POSTs the teamless form body to /api/personas and returns the created CatalogEntry", async () => {
     const body = {
       name: "helper",
       who_they_are: "an unflappable network detective who's seen every outage twice",
       what_they_do: "helps with things",
       rules: ["no secrets"],
-      team: "shared",
     };
     const created = {
       id: "helper",
@@ -723,7 +721,6 @@ describe("catalog search / teams / persona builder / org status client", () => {
         who_they_are: "a calm assistant",
         what_they_do: "helps",
         rules: [],
-        team: "shared",
       }),
     ).rejects.toThrow("a persona with that name already exists");
   });
@@ -742,9 +739,61 @@ describe("catalog search / teams / persona builder / org status client", () => {
         who_they_are: "a calm assistant",
         what_they_do: "helps",
         rules: [],
-        team: "shared",
       }),
     ).rejects.toThrow("catalogs aren't set up yet");
+  });
+
+  it("draftPersona POSTs {job, rules} to /api/personas/draft and returns the draft verbatim", async () => {
+    const draft = {
+      name: "billing-helper",
+      who_they_are: "a calm guide through confusing invoices",
+      what_they_do: "Answers billing questions and escalates refunds.",
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(draft));
+
+    await expect(
+      draftPersona("Help customers with billing questions.", ["never guess"]),
+    ).resolves.toEqual(draft);
+
+    expect(fetch).toHaveBeenCalledWith("/api/personas/draft", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        job: "Help customers with billing questions.",
+        rules: ["never guess"],
+      }),
+    });
+  });
+
+  it("draftPersona sends an empty rules array when none are given", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({
+        name: "new-agent",
+        who_they_are: "an agent with one clear job",
+        what_they_do: "Does the job.",
+      }),
+    );
+
+    await draftPersona("Does the job.", []);
+
+    expect(fetch).toHaveBeenCalledWith("/api/personas/draft", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job: "Does the job.", rules: [] }),
+    });
+  });
+
+  it("draftPersona surfaces a transport failure (a 502 proxy error) as an ApiError", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      textResponse("<html>502 Bad Gateway</html>", {
+        status: 502,
+        statusText: "Bad Gateway",
+      }),
+    );
+
+    await expect(draftPersona("Does the job.", [])).rejects.toBeInstanceOf(
+      ApiError,
+    );
   });
 
   it("fetchOrgStatus GETs /api/org/status and returns {org, wired, checks} verbatim", async () => {

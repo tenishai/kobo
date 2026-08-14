@@ -58,17 +58,36 @@ export type CatalogEntry = {
   builtin?: boolean;
 };
 
-/** The persona builder's form (Persona builder v2 addendum) — posted
- * verbatim as the body of `POST /api/personas`. Four fields, down from
- * seven: no `tags` (the server derives them from name/who_they_are/
- * what_they_do — `kobo_api.personas._derive_tags`), no role/purpose/tone/
- * tone_note (Rules absorbs what Boundaries used to). */
+/** The persona builder's form (Persona builder v2 addendum, then the
+ * Persona v3 / teamless-create addendum) — posted verbatim as the body of
+ * `POST /api/personas`. Four fields, matching the four fields the v3
+ * preview actually shows: no `tags` (the server derives them from
+ * name/who_they_are/what_they_do — `kobo_api.personas._derive_tags`), no
+ * role/purpose/tone/tone_note (Rules absorbs what Boundaries used to), and
+ * (as of the teamless-create addendum) no `team` — the create modal's Team
+ * station is gone, so this is never sent; the server defaults the recorded
+ * team to `"shared"` (`CreatePersonaRequest.team`) when the key is
+ * omitted. */
 export type PersonaForm = {
   name: string;
   who_they_are: string;
   what_they_do: string;
   rules: string[];
-  team: string;
+};
+
+/** The Persona v3 "describe the job, approve the soul" draft step's result
+ * (`POST /api/personas/draft`) — the same name/who_they_are/what_they_do
+ * shape as `PersonaForm`'s first three fields, prefilled into the v2
+ * preview for the operator to edit before Create. The server always
+ * returns something creatable — a generator failure (unconfigured/erroring)
+ * falls back to a deterministic, job-derived draft server-side
+ * (`kobo_api.persona_draft.finalize_draft`) rather than failing the
+ * request — so `draftPersona` below only ever rejects on a genuine
+ * transport/route failure, never on "the generator was down". */
+export type PersonaDraft = {
+  name: string;
+  who_they_are: string;
+  what_they_do: string;
 };
 
 /** One name-suggestion card (create flow v2 "naming ceremony" addendum) —
@@ -184,7 +203,6 @@ export async function getAgent(name: string): Promise<AgentDetail> {
 export async function createAgent(body: {
   name: string;
   persona: string;
-  team: string;
   skills: { id: string; team: string }[];
   model: string | null;
 }): Promise<{ name: string; status: string }> {
@@ -253,6 +271,26 @@ export async function fetchTeams(): Promise<string[]> {
   const res = await fetch("/api/catalog/teams");
   const data = await parse<{ teams: string[] }>(res);
   return data.teams;
+}
+
+/**
+ * `POST /api/personas/draft` — turns one plain job description (plus
+ * optional short "always/never" rule hints, a prompt hint only — never
+ * stored) into a drafted name/who_they_are/what_they_do for the v2 preview
+ * to edit. Always 200 from the server; nothing is created or searched
+ * here — `createPersona` below (untouched by v3) is still the only call
+ * that actually writes anything.
+ */
+export async function draftPersona(
+  job: string,
+  rules: string[],
+): Promise<PersonaDraft> {
+  const res = await fetch("/api/personas/draft", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ job, rules }),
+  });
+  return parse<PersonaDraft>(res);
 }
 
 export async function createPersona(body: PersonaForm): Promise<CatalogEntry> {

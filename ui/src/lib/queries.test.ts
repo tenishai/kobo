@@ -13,6 +13,7 @@ import {
   deleteToolingMutation,
   deliveryQuery,
   deliveryRefetchInterval,
+  draftPersonaMutation,
   generateAvatarMutation,
   importToolingMutation,
   intakeQuery,
@@ -553,6 +554,65 @@ describe("nameSuggestionsQuery", () => {
   });
 });
 
+describe("draftPersonaMutation", () => {
+  it("mutationFn delegates to draftPersona(job, rules)", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const draft = {
+      name: "billing-helper",
+      who_they_are: "a calm guide through confusing invoices",
+      what_they_do: "Answers billing questions and escalates refunds.",
+    };
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify(draft),
+    } as Response);
+
+    const mutation = draftPersonaMutation();
+
+    await expect(
+      mutation.mutationFn({
+        job: "Help customers with billing questions.",
+        rules: ["never guess"],
+      }),
+    ).resolves.toEqual(draft);
+    expect(fetch).toHaveBeenCalledWith("/api/personas/draft", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        job: "Help customers with billing questions.",
+        rules: ["never guess"],
+      }),
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("has no onSuccess/cache invalidation — drafting doesn't create anything", () => {
+    const mutation = draftPersonaMutation();
+    expect((mutation as { onSuccess?: unknown }).onSuccess).toBeUndefined();
+  });
+
+  it("propagates a transport failure (a 502 proxy error) as an ApiError", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 502,
+      statusText: "Bad Gateway",
+      text: async () => "<html>502 Bad Gateway</html>",
+    } as Response);
+
+    const mutation = draftPersonaMutation();
+
+    await expect(
+      mutation.mutationFn({ job: "Does the job.", rules: [] }),
+    ).rejects.toBeInstanceOf(ApiError);
+
+    vi.unstubAllGlobals();
+  });
+});
+
 describe("createPersonaMutation", () => {
   it("mutationFn delegates to createPersona(body)", async () => {
     vi.stubGlobal("fetch", vi.fn());
@@ -561,7 +621,6 @@ describe("createPersonaMutation", () => {
       who_they_are: "an unflappable network detective who's seen every outage twice",
       what_they_do: "helps with things",
       rules: [],
-      team: "shared",
     };
     const created = {
       id: "helper",
