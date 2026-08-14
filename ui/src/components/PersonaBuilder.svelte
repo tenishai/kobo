@@ -51,6 +51,20 @@
   let rulesInput = $state("");
   let submitError = $state<string | null>(null);
 
+  // Display-only cue (round 2 fix): the server slugifies `name` on its own
+  // (`persona_id()`, kobo_api/personas.py) rather than rejecting an
+  // unexpected-charset name outright, so this doesn't feed `canCreate` below
+  // — nothing here gates submission, same as before. It exists purely so a
+  // name like "QAer" doesn't sail through the field with zero feedback, same
+  // "every blocking-looking condition needs a visible cue" spirit as
+  // `rulesError`, just non-blocking.
+  const NAME_CHARSET_RE = /^[a-z0-9-]+$/;
+  const nameHint = $derived(
+    name.trim().length > 0 && !NAME_CHARSET_RE.test(name.trim())
+      ? "Lowercase letters, numbers, and hyphens."
+      : null,
+  );
+
   const rules = $derived(splitLines(rulesInput));
 
   // Shown only once there's something to say about it — an untouched
@@ -112,7 +126,13 @@
       type="text"
       bind:value={name}
       autocomplete="off"
+      aria-describedby="persona-builder-name-hint"
     />
+    <div id="persona-builder-name-hint">
+      {#if nameHint}
+        <p class="persona-builder__help">{nameHint}</p>
+      {/if}
+    </div>
   </div>
 
   <div class="persona-builder__field">
