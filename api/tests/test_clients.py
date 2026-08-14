@@ -48,6 +48,7 @@ from kobo_api.clients import (
     VertexNameClient,
     _build_task_envelope,
     _extract_json_array,
+    _extract_json_object,
     _gcloud_print_access_token,
     _post_task,
     _wait_for_forwarded_port,
@@ -2189,6 +2190,281 @@ def test_fake_name_suggest_error_knob_raises_client_error():
     fake = FakeName(suggest_error="boom")
     with pytest.raises(ClientError, match="boom"):
         fake.suggest("a helper", "helps out")
+
+
+# --- Name: draft (VertexNameClient.draft, Persona v3 addendum) ------------------
+
+
+def _object_reply(text: str) -> dict:
+    return {"candidates": [{"content": {"parts": [{"text": text}]}}]}
+
+
+def test_vertex_name_client_draft_request_shape_url_body_and_auth_header():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.content)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(
+            200,
+            json=_object_reply(
+                '{"name": "billing-buddy", "who_they_are": "calm", "what_they_do": "helps"}'
+            ),
+        )
+
+    client = VertexNameClient(
+        "acme-project",
+        "us-central1",
+        "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    client.draft("help customers with billing", ["never share account numbers"])
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == (
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/acme-project/"
+        "locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent"
+    )
+    assert captured["json"]["contents"][0]["role"] == "user"
+    prompt = captured["json"]["contents"][0]["parts"][0]["text"]
+    assert "help customers with billing" in prompt
+    assert "never share account numbers" in prompt
+    assert captured["auth"] == "Bearer fake-access-token"
+
+
+def test_vertex_name_client_draft_no_rules_omits_rules_block():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json=_object_reply(
+                '{"name": "n", "who_they_are": "w", "what_they_do": "d"}'
+            ),
+        )
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    client.draft("help customers with billing", [])
+
+    prompt = captured["json"]["contents"][0]["parts"][0]["text"]
+    assert "help customers with billing" in prompt
+
+
+def test_vertex_name_client_draft_parses_clean_json_object():
+    reply_text = (
+        '{"name": "billing-buddy", "who_they_are": "a calm troubleshooter", '
+        '"what_they_do": "Helps with billing."}'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_object_reply(reply_text))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    result = client.draft("help with billing", [])
+
+    assert result == {
+        "name": "billing-buddy",
+        "who_they_are": "a calm troubleshooter",
+        "what_they_do": "Helps with billing.",
+    }
+
+
+def test_vertex_name_client_draft_parses_fenced_json_block():
+    reply_text = (
+        "Sure, here you go:\n"
+        "```json\n"
+        '{"name": "flint", "who_they_are": "quick", "what_they_do": "sparks"}\n'
+        "```\n"
+        "Hope that helps!"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_object_reply(reply_text))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    result = client.draft("help with billing", [])
+
+    assert result == {"name": "flint", "who_they_are": "quick", "what_they_do": "sparks"}
+
+
+def test_vertex_name_client_draft_missing_keys_return_none_for_those_keys():
+    # Tolerant extraction: a reply object missing a key hands back None for
+    # it rather than raising — kobo_api.persona_draft.finalize_draft is what
+    # falls a missing/invalid field back, not this client.
+    reply_text = '{"name": "flint"}'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_object_reply(reply_text))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    result = client.draft("help with billing", [])
+
+    assert result == {"name": "flint", "who_they_are": None, "what_they_do": None}
+
+
+def test_vertex_name_client_draft_garbage_text_raises_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_object_reply("sorry, I can't help with that"))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError):
+        client.draft("help with billing", [])
+
+
+def test_vertex_name_client_draft_malformed_json_inside_braces_raises_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_object_reply("{not, valid, json"))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError):
+        client.draft("help with billing", [])
+
+
+def test_vertex_name_client_draft_non_200_raises_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="internal error")
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError):
+        client.draft("help with billing", [])
+
+
+def test_vertex_name_client_draft_malformed_envelope_raises_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"unexpected": "shape"})
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError):
+        client.draft("help with billing", [])
+
+
+def test_vertex_name_client_draft_non_json_body_raises_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="not json at all")
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError):
+        client.draft("help with billing", [])
+
+
+def test_vertex_name_client_draft_token_provider_failure_raises_client_error_without_leaking_gcloud_output():
+    def failing_token_provider() -> str:
+        raise ClientError(
+            "gcloud auth print-access-token failed (rc=1): ERROR: account details"
+        )
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=_object_reply("{}"))
+        )),
+        token_provider=failing_token_provider,
+    )
+
+    with pytest.raises(ClientError) as exc_info:
+        client.draft("help with billing", [])
+
+    assert "gcloud" not in str(exc_info.value)
+    assert "account details" not in str(exc_info.value)
+
+
+def test_vertex_name_client_draft_job_with_braces_does_not_break_prompt_building():
+    # The job text is free-form user input and may itself contain literal
+    # "{"/"}" characters (e.g. describing a templating task) — the prompt
+    # builder must not run it through str.format(), which would raise (or
+    # misinterpret) on those, the exact hazard render_persona's own
+    # docstring (kobo_api.personas) documents for this same reason.
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(200, json=_object_reply('{"name": "n"}'))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    client.draft("handle {curly} brace formatting requests", [])
+
+    prompt = captured["json"]["contents"][0]["parts"][0]["text"]
+    assert "handle {curly} brace formatting requests" in prompt
+
+
+def test_extract_json_object_no_object_found_raises_value_error():
+    with pytest.raises(ValueError):
+        _extract_json_object("no braces here at all")
+
+
+def test_extract_json_object_finds_object_past_fence_and_preamble():
+    text = 'here you go:\n```json\n{"a": 1, "b": 2}\n```\n'
+    assert _extract_json_object(text) == {"a": 1, "b": 2}
+
+
+def test_fake_name_draft_satisfies_protocol():
+    assert isinstance(FakeName(), NameClient)
+
+
+def test_fake_name_records_draft_calls_and_returns_canned_draft():
+    fake = FakeName()
+    result = fake.draft("help with billing", ["never share account numbers"])
+    assert fake.draft_calls == [("help with billing", ["never share account numbers"])]
+    assert set(result.keys()) == {"name", "who_they_are", "what_they_do"}
+
+
+def test_fake_name_draft_error_knob_raises_client_error():
+    fake = FakeName(draft_error="boom")
+    with pytest.raises(ClientError, match="boom"):
+        fake.draft("help with billing", [])
 
 
 # --- Storage (HttpxStorageClient / GCS JSON API) --------------------------------

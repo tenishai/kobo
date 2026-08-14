@@ -940,14 +940,17 @@ class FakeImage:
 class FakeName:
     """Records every (who, what) call to `suggest` (`.calls`) and returns a
     configurable list of candidate dicts (default: a small canned set, all
-    shaped `{"name": ..., "reason": ...}`) — no real Vertex AI backend
-    involved.
+    shaped `{"name": ..., "reason": ...}`), plus every (job, rules) call to
+    `draft` (`.draft_calls`) and returns a configurable draft dict (default:
+    a small canned `{"name", "who_they_are", "what_they_do"}`) — no real
+    Vertex AI backend involved.
 
-    `suggest_error`, when set, makes `suggest` raise `ClientError
-    (suggest_error)` instead of returning candidates — the seam for
-    exercising the name-suggestions route's fallback path (same idiom as
-    every other Fake*'s `*_error` knob in this module, e.g. FakeImage's
-    `generate_error`).
+    `suggest_error`/`draft_error`, when set, make `suggest`/`draft` raise
+    `ClientError(...)` instead of returning a result — the seam for
+    exercising a route's fallback path (same idiom as every other Fake*'s
+    `*_error` knob in this module, e.g. FakeImage's `generate_error`). The
+    two knobs are independent: a `suggest_error`-only FakeName still drafts
+    normally, and vice versa.
     """
 
     def __init__(
@@ -955,6 +958,8 @@ class FakeName:
         *,
         candidates: list[dict] | None = None,
         suggest_error: str | None = None,
+        draft: dict | None = None,
+        draft_error: str | None = None,
     ):
         self._candidates = (
             list(candidates)
@@ -969,12 +974,29 @@ class FakeName:
         )
         self._suggest_error = suggest_error
         self.calls: list[tuple[str, str]] = []
+        self._draft = (
+            dict(draft)
+            if draft is not None
+            else {
+                "name": "billing-buddy",
+                "who_they_are": "a calm troubleshooter for billing questions",
+                "what_they_do": "Helps customers resolve billing issues quickly.",
+            }
+        )
+        self._draft_error = draft_error
+        self.draft_calls: list[tuple[str, list[str]]] = []
 
     def suggest(self, who: str, what: str) -> list[dict]:
         self.calls.append((who, what))
         if self._suggest_error is not None:
             raise ClientError(self._suggest_error)
         return list(self._candidates)
+
+    def draft(self, job: str, rules: list[str]) -> dict:
+        self.draft_calls.append((job, list(rules)))
+        if self._draft_error is not None:
+            raise ClientError(self._draft_error)
+        return dict(self._draft)
 
 
 class FakeStorage:

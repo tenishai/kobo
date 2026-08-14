@@ -1336,6 +1336,27 @@ class NameClient(Protocol):
         """
         ...
 
+    def draft(self, job: str, rules: list[str]) -> dict:
+        """Ask the generator to draft a persona (Persona v3 addendum) from
+        one plain `job` description plus optional `rules` hints; raise
+        ClientError on a transport/envelope/parse failure.
+
+        Returns a `{"name", "who_they_are", "what_they_do"}` dict whose
+        values are whatever the model's reply actually contained for each
+        key (`None` for one that's missing, or whatever raw JSON type it
+        was — no type/bounds checking here). Not guaranteed that any field
+        is actually usable — `kobo_api.persona_draft.finalize_draft` is
+        what validates each field against PersonaFields' real bounds and
+        falls each one back individually; this method's only job is
+        best-effort structural extraction of whatever the model's reply
+        actually contained. Same "one client, one method per text-
+        generation shape" split as `suggest` above — a single
+        `VertexNameClient` implements both, sharing the same token seam and
+        model config, since a persona draft is just a different-shaped
+        Vertex text call, not a different backend.
+        """
+        ...
+
 
 # The single server-side-only failure message for every VertexNameClient.
 # suggest failure mode (non-200, malformed envelope, unparsable text) —
@@ -1368,6 +1389,26 @@ def _extract_json_array(text: str) -> list:
     return json.loads(match.group(0))
 
 
+# Same tolerant-extraction idiom as _JSON_ARRAY_RE/_extract_json_array above,
+# just for the persona-draft reply shape (one JSON object) rather than the
+# name-suggestions one (a JSON array of candidates).
+_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+
+
+def _extract_json_object(text: str) -> dict:
+    """Parse the first `{...}` span found in `text` as JSON.
+
+    Raises `ValueError` when no such span exists at all — same "unusable
+    reply" contract as `_extract_json_array` above (a `json.JSONDecodeError`
+    on a span that isn't valid JSON is left unwrapped for the same reason:
+    both are exactly the same case to every caller).
+    """
+    match = _JSON_OBJECT_RE.search(text)
+    if not match:
+        raise ValueError("no JSON object found in response text")
+    return json.loads(match.group(0))
+
+
 _NAME_PROMPT_TEMPLATE = (
     "You are naming a small software agent for a craft workshop's bench — "
     "not a generic assistant. The agent: it is {who}; it does {what}.\n\n"
@@ -1379,6 +1420,53 @@ _NAME_PROMPT_TEMPLATE = (
     '{{"name": "...", "reason": "..."}} — no prose, no markdown fences, no '
     "commentary, nothing before or after the array."
 )
+
+# The single server-side-only failure message for every
+# VertexNameClient.draft failure mode (Persona v3 addendum) — same
+# generic-message convention as _NAME_SUGGESTION_FAILED above: never built
+# from the job text or a raw response body, and (also like the
+# name-suggestions route) never shown to a caller at all — the persona-draft
+# route always has a deterministic fallback to fall through to
+# (`kobo_api.persona_draft.finalize_draft`), so this string only ever
+# reaches a log line.
+_PERSONA_DRAFT_FAILED = "persona draft generation failed"
+
+
+def _build_persona_draft_prompt(job: str, rules: list[str]) -> str:
+    """Build the persona-draft prompt from `job` (free-form, 1-500 chars)
+    and optional `rules` hints.
+
+    Deliberately plain string concatenation, NEVER `str.format()` against
+    `job`/`rules` — the exact same hazard `kobo_api.personas.render_persona`
+    documents avoiding: `job` is free-form user text that may itself
+    contain literal "{"/"}" (e.g. describing a templating task), and
+    running that through `.format()` would raise (or silently
+    misinterpret). Unlike `_NAME_PROMPT_TEMPLATE` above (whose `who`/`what`
+    go through `.format()`), this prompt is built without it.
+    """
+    rules_block = ""
+    if rules:
+        bullet_lines = "\n".join(f"- {rule}" for rule in rules)
+        rules_block = "\nAlways/never rules to honor:\n" + bullet_lines + "\n"
+    return (
+        "You are drafting a persona for a small software agent at a craft "
+        "workshop's bench, from one plain description of the job it should "
+        "do.\n\n"
+        "The job: " + job + "\n"
+        + rules_block + "\n"
+        "Write, in the house voice — the persona always addresses the "
+        'agent as "you", never first person — exactly:\n'
+        "- a short, lowercase, slug-valid persona name (hyphenate if more "
+        "than one word, never a client's or company's own name)\n"
+        "- ONE vivid who-they-are line, 200 characters or fewer, a single "
+        "line with no line breaks\n"
+        "- 2-4 plain sentences describing what they do, 500 characters or "
+        "fewer\n\n"
+        'Respond with ONLY a strict JSON object shaped {"name": "...", '
+        '"who_they_are": "...", "what_they_do": "..."} — no prose, no '
+        "markdown fences, no commentary, nothing before or after the "
+        "object."
+    )
 
 
 class VertexNameClient:
@@ -1482,6 +1570,70 @@ class VertexNameClient:
             reason = item.get("reason")
             candidates.append({"name": name, "reason": reason if isinstance(reason, str) else ""})
         return candidates
+
+    def draft(self, job: str, rules: list[str]) -> dict:
+        url = (
+            f"https://{self._location}-aiplatform.googleapis.com/v1/projects/"
+            f"{self._project}/locations/{self._location}/publishers/google/"
+            f"models/{self._model}:generateContent"
+        )
+        prompt = _build_persona_draft_prompt(job, rules)
+        body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
+
+        try:
+            token = self._token_provider()
+        except ClientError as exc:
+            # Same reasoning as suggest() above: the default token_provider's
+            # ClientError message can embed the operator's own account
+            # details — never let it escape unwrapped.
+            log.warning("token provider failed for persona draft: %r", exc)
+            raise ClientError(_PERSONA_DRAFT_FAILED) from exc
+
+        try:
+            resp = self._http_client.post(
+                url, json=body, headers={"Authorization": f"Bearer {token}"}
+            )
+        except httpx.HTTPError as exc:
+            log.warning("persona draft request failed: %r", exc)
+            raise ClientError(_PERSONA_DRAFT_FAILED) from exc
+
+        if resp.status_code != 200:
+            log.warning(
+                "persona draft failed (%s): %s", resp.status_code, resp.text[:200]
+            )
+            raise ClientError(_PERSONA_DRAFT_FAILED)
+
+        try:
+            text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            log.warning(
+                "malformed persona draft reply: %r (body: %s)", exc, resp.text[:200]
+            )
+            raise ClientError(_PERSONA_DRAFT_FAILED) from exc
+
+        try:
+            parsed = _extract_json_object(text)
+        except ValueError as exc:
+            log.warning(
+                "unparsable persona draft text: %r (text: %s)", exc, text[:200]
+            )
+            raise ClientError(_PERSONA_DRAFT_FAILED) from exc
+
+        if not isinstance(parsed, dict):
+            log.warning(
+                "persona draft JSON wasn't an object (got %s)", type(parsed).__name__
+            )
+            raise ClientError(_PERSONA_DRAFT_FAILED)
+
+        # No type/bounds checking here (mirrors suggest()'s own split with
+        # kobo_api.namegen.finalize_suggestions) — kobo_api.persona_draft.
+        # finalize_draft is what validates each field against PersonaFields'
+        # real bounds and falls each one back individually.
+        return {
+            "name": parsed.get("name"),
+            "who_they_are": parsed.get("who_they_are"),
+            "what_they_do": parsed.get("what_they_do"),
+        }
 
 
 # --- Storage (GCS JSON API: bucket-backed persistence for catalogs/personas) ------

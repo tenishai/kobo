@@ -324,6 +324,32 @@ def test_create_agent_bad_team_slug_returns_422(client):
     assert "error" in response.json()
 
 
+def test_create_agent_omitted_team_defaults_to_shared(client):
+    """Team-optional (Persona v3 / teamless create addendum): the create
+    modal drops the Team station entirely, so the API must accept a
+    payload with no `team` key at all and record it as "shared" — the same
+    value nearly everything in the catalogs already carries."""
+    response = client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA})
+
+    assert response.status_code == 201
+
+    detail = client.get(f"/api/agents/{AGENT_NAME}")
+    assert detail.status_code == 200
+    assert detail.json()["team"] == "shared"
+
+
+def test_create_agent_explicit_team_still_honored(client):
+    response = client.post(
+        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM}
+    )
+
+    assert response.status_code == 201
+
+    detail = client.get(f"/api/agents/{AGENT_NAME}")
+    assert detail.status_code == 200
+    assert detail.json()["team"] == TEAM
+
+
 def test_create_agent_catalogs_not_configured_returns_422(session_factory, tmp_path):
     """Controller decision #2: an unwired org (no catalog bucket named at
     all) 422s with the SAME copy the search/refresh routes' 503 uses — a

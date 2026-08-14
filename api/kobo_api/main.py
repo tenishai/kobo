@@ -15,7 +15,7 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -41,6 +41,7 @@ from kobo_api.knowledge import (
 from kobo_api.models import Agent, AgentStatus
 from kobo_api.namegen import SUGGESTION_COUNT, finalize_suggestions
 from kobo_api.org import OrgState, load_org_config
+from kobo_api.persona_draft import finalize_draft
 from kobo_api.personas import PersonaError, PersonaExists, PersonaFields, create_persona
 from kobo_api.provisioner import (
     PIPELINE,
@@ -94,8 +95,14 @@ class CreateAgentRequest(BaseModel):
     name: str
     persona: str
     # The creating team (Task 5, bucket catalogs) — same slug shape as
-    # `CreatePersonaRequest.team` below.
-    team: str = Field(pattern=r"^[a-z][a-z0-9-]{0,23}$")
+    # `CreatePersonaRequest.team` below. Optional, defaulting to "shared"
+    # (Persona v3 / teamless create addendum): the create modal drops the
+    # Team station entirely, so a client that omits this key entirely must
+    # still record something — "shared" is what nearly everything in both
+    # catalogs already carries. An explicit team is still validated and
+    # honored exactly as before; only the "must be present at all" part is
+    # gone.
+    team: str = Field(default="shared", pattern=r"^[a-z][a-z0-9-]{0,23}$")
     skills: list[SkillPick] = []
     model: str | None = None
 
@@ -188,9 +195,41 @@ class SlackConnectRequest(BaseModel):
 
 class CreatePersonaRequest(PersonaFields):
     """POST /api/personas body: every PersonaFields field plus the creating
-    team (`^[a-z][a-z0-9-]{0,23}$`, same slug shape as a persona/skill tag)."""
+    team (`^[a-z][a-z0-9-]{0,23}$`, same slug shape as a persona/skill tag).
 
-    team: str = Field(pattern=r"^[a-z][a-z0-9-]{0,23}$")
+    Optional, defaulting to "shared" (Persona v3 / teamless create
+    addendum) — same team-optional move as `CreateAgentRequest.team`
+    above, for the same reason: the create modal's Team station is gone,
+    so a client that omits this key entirely must still get a recorded
+    team, and "shared" is what nearly every persona already carries.
+    """
+
+    team: str = Field(default="shared", pattern=r"^[a-z][a-z0-9-]{0,23}$")
+
+
+class PersonaDraftRequest(BaseModel):
+    """POST /api/personas/draft body (Persona v3 addendum): one plain job
+    description, plus optional short "always/never" rule hints — the
+    generator (or, failing that, a deterministic fallback) turns this into
+    a name/who_they_are/what_they_do draft for the v2 preview to edit.
+    `rules` here is never stored; it's only ever a prompt hint for this one
+    draft — the room-authored rules a persona actually ships with are
+    whatever the operator edits into the v2 preview before Create."""
+
+    job: str = Field(min_length=1, max_length=500)
+    # Same 0-8 optional-one-liners shape as PersonaFields.rules
+    # (kobo_api.personas) — mirrored here rather than imported, same
+    # "mirror the bounds, don't cross-import validation" convention
+    # NameSuggestionsRequest above already uses.
+    rules: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("rules")
+    @classmethod
+    def _rules_shape(cls, v: list[str]) -> list[str]:
+        for item in v:
+            if not (1 <= len(item) <= 200):
+                raise ValueError(f"each rule must be 1-200 chars: {item!r}")
+        return v
 
 
 # The delivery-status route's sha path param must look like a real git
@@ -808,6 +847,31 @@ def create_app(
             },
             status_code=201,
         )
+
+    @app.post("/api/personas/draft")
+    def draft_persona_route(payload: PersonaDraftRequest) -> JSONResponse:
+        """The Persona v3 "describe the job, approve the soul" draft step:
+        turns `payload.job` (+ optional `payload.rules` hints) into a
+        `{"name", "who_they_are", "what_they_do"}` draft for the v2 preview
+        to edit. Always 200 — a generator failure (unconfigured `clients.
+        name`, or a raised ClientError) never surfaces as an error here,
+        just a full deterministic fallback instead
+        (`kobo_api.persona_draft.finalize_draft`'s job); the room always
+        drafts SOMETHING editable. Never touches storage/search/DB at
+        all — nothing is created until the operator approves the preview
+        and calls POST /api/personas, completely untouched by this route.
+        """
+        clients = app.state.clients
+
+        raw: dict | None = None
+        if clients is not None and clients.name is not None:
+            try:
+                raw = clients.name.draft(payload.job, payload.rules)
+            except ClientError as exc:
+                log.warning("persona draft generation failed: %s", exc)
+                raw = None
+
+        return JSONResponse(finalize_draft(raw, job=payload.job))
 
     @app.get("/api/availability")
     def availability(
