@@ -311,10 +311,17 @@ def test_destroy_failed_agent_is_still_destroyable(session_factory, config):
 def test_destroy_idempotent_redelete_while_destroy_failed_resumes_to_completion(
     session_factory, config
 ):
-    """Seed the agent already mid-ledger (platform done, slack failed) as a
-    prior partial run would leave it, then DELETE again ("Destroy again"):
-    202, and this time slack (now working) completes, and the run continues
-    through to full removal."""
+    """Seed the agent already mid-ledger (platform done, access done, slack
+    failed) as a prior partial run would leave it, then DELETE again
+    ("Destroy again"): 202, and this time slack (now working) completes, and
+    the run continues through to full removal.
+
+    Also the destroy-steps payload-label case: a GET taken right after
+    seeding (before the redelete) proves the "Model access" label rides the
+    payload between the platform and Slack rows, in the ledger's own order —
+    not just that DESTROY_STEP_LABELS has the right entry, but that it
+    actually reaches the wire for a real destroy-access row.
+    """
     config = config.model_copy(update={"operators": []})
     client = _make_client(session_factory, config)
     _seed_agent(
@@ -324,6 +331,7 @@ def test_destroy_idempotent_redelete_while_destroy_failed_resumes_to_completion(
     session = session_factory()
     agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
     session.add(AgentStep(agent_id=agent.id, name="destroy-platform", status=StepStatus.DONE))
+    session.add(AgentStep(agent_id=agent.id, name="destroy-access", status=StepStatus.DONE))
     session.add(
         AgentStep(
             agent_id=agent.id, name="destroy-slack", status=StepStatus.FAILED,
@@ -332,6 +340,14 @@ def test_destroy_idempotent_redelete_while_destroy_failed_resumes_to_completion(
     )
     session.commit()
     session.close()
+
+    before = client.get(f"/api/agents/{AGENT_NAME}")
+    names = [s["name"] for s in before.json()["steps"]]
+    labels = {s["name"]: s["label"] for s in before.json()["steps"]}
+    assert names == ["destroy-platform", "destroy-access", "destroy-slack"]
+    assert labels["destroy-platform"] == "Platform teardown"
+    assert labels["destroy-access"] == "Model access"
+    assert labels["destroy-slack"] == "Slack app"
 
     response = client.delete(f"/api/agents/{AGENT_NAME}")
 

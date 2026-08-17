@@ -2,7 +2,8 @@
 `kobo_api.provisioner`.
 
 Destruction is a step ledger, not a transaction (design doc,
-docs/superpowers/specs/2026-08-17-agent-destruction-design.md): four
+docs/superpowers/specs/2026-08-17-agent-destruction-design.md,
+docs/superpowers/specs/2026-08-17-destruction-completeness-design.md): five
 ordered steps, each tolerant of "already gone" (a repeat delete, or a
 resume after a prior attempt got partway), writing rows into the SAME
 `agent_steps` table provisioning uses (named per `DESTROY_STEPS`) so the
@@ -13,10 +14,13 @@ these land in `AgentStep.error`/`Agent.error`, both user-facing); a later
 whatever is already DONE.
 
 Order is load-bearing, same as `provisioner.PIPELINE`: platform teardown
-kills the running workload first (the agent visibly stops existing); Slack
-and the repo are paper; the agent's own row goes last (`destroy-forget`) so
-a failed run always leaves a resumable record — the row never disappears
-until the first three steps are each done or proven already-gone.
+kills the running workload first (the agent visibly stops existing);
+model access (`destroy-access`) comes right after, taking back the GSA's
+group membership and the GSA itself while the row is still fully
+addressable; Slack and the repo are paper; the agent's own row goes last
+(`destroy-forget`) so a failed run always leaves a resumable record — the
+row never disappears until the first four steps are each done or proven
+already-gone.
 
 Unlike provisioning, `destroy-forget`'s job (deleting the agent's step rows
 and the agent row itself) is terminal in the most literal sense: once it
@@ -48,13 +52,27 @@ log = logging.getLogger(__name__)
 # Order is load-bearing (see module docstring). Named distinctly from
 # provisioner.PIPELINE's step names ("repo", "onboard", ...) so the two
 # ledgers can never collide inside the same agent_steps table.
-DESTROY_STEPS = ("destroy-platform", "destroy-slack", "destroy-repo", "destroy-forget")
+#
+# "destroy-access" sits right after "destroy-platform": platform teardown
+# stops the workload first, then the GSA it ran as is torn back down while
+# the agent's row is still fully addressable. It runs before "destroy-slack"
+# rather than at the very end, mirroring provisioning's own ordering
+# (AccessStep runs early there too) and keeping the GCP identity cleanup
+# next to the platform step it is the mirror image of.
+DESTROY_STEPS = (
+    "destroy-platform",
+    "destroy-access",
+    "destroy-slack",
+    "destroy-repo",
+    "destroy-forget",
+)
 
 # The UI checklist vocabulary for destroy steps (mirrors provisioner.
 # STEP_LABELS) — kept here, next to DESTROY_STEPS, rather than in main.py,
 # so the two can never drift apart.
 DESTROY_STEP_LABELS: dict[str, str] = {
     "destroy-platform": "Platform teardown",
+    "destroy-access": "Model access",
     "destroy-slack": "Slack app",
     "destroy-repo": "Repository archive",
     "destroy-forget": "Room record",
@@ -103,6 +121,39 @@ def _destroy_platform(ctx: DestroyCtx) -> str:
             "; ".join(failures),
         )
     return json.dumps(result)
+
+
+def _destroy_access(ctx: DestroyCtx) -> str:
+    """Tear back down what `AccessStep` (kobo_api.steps) granted: the
+    agent's GSA's model-group membership, then the GSA itself.
+
+    Unlike the other destroy steps, there is no `agent.<field>` recorded to
+    tell "never provisioned" apart from "provisioned, now gone" - `AccessStep`
+    doesn't stamp anything back onto `Agent` the way `gojira_app_id`/
+    `slack_app_id`/`repo_full_name` do. So this step always runs, and relies
+    entirely on `remove_from_group`/`delete_gsa`'s own idempotent
+    already-gone signals (both `False`) to cover an agent that never made it
+    past this point in provisioning, or a resume after a prior teardown
+    attempt already took one or both away.
+
+    The email is derived via `CloudClient.gsa_email_for`, never recomposed
+    by hand here - the exact same `f"agent-{agent.name}"` id `AccessStep`
+    passed to `ensure_gsa`, run back through the identical `gsa_email` +
+    project composition (`gsa_email_for` delegates to it on both the real
+    `GcloudClient` and `FakeCloud`), so the two sides cannot drift apart.
+
+    Membership is removed BEFORE the GSA is deleted: once the GSA itself is
+    gone, its membership becomes a ghost entry no longer reachable by email,
+    unremovable by this step (or anything else) afterward.
+    """
+    agent = ctx.agent
+    config = ctx.config
+    cloud = ctx.clients.cloud
+
+    email = cloud.gsa_email_for(f"agent-{agent.name}")
+    removed = cloud.remove_from_group(email, config.model_group)
+    gone = cloud.delete_gsa(email)
+    return f"membership removed: {removed}, gsa deleted: {gone}"
 
 
 def _destroy_slack(ctx: DestroyCtx) -> str:
@@ -222,6 +273,7 @@ def _destroy_forget(ctx: DestroyCtx) -> str:
 
 _DESTROY_FUNCS = {
     "destroy-platform": _destroy_platform,
+    "destroy-access": _destroy_access,
     "destroy-slack": _destroy_slack,
     "destroy-repo": _destroy_repo,
     "destroy-forget": _destroy_forget,

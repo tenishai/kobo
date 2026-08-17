@@ -25,6 +25,7 @@ from kobo_api.clients import ClientError, Clients
 from kobo_api.destroy import (
     DESTROY_STEPS,
     DestroyCtx,
+    _destroy_access,
     _destroy_forget,
     _destroy_platform,
     _destroy_repo,
@@ -34,7 +35,7 @@ from kobo_api.destroy import (
     run_destroy,
 )
 from kobo_api.models import Agent, AgentStatus, AgentStep, StepStatus
-from tests.fakes import FakeGitHub, FakeGojira, FakeSlack
+from tests.fakes import FakeCloud, FakeGitHub, FakeGojira, FakeSlack
 
 AGENT_NAME = "clio"
 PERSONA = "helpful-generalist"
@@ -75,9 +76,20 @@ def _make_ctx_agent(
     return session, agent
 
 
-def _ctx(session, agent, config, *, github=None, gojira=None, slack=None) -> DestroyCtx:
+def _ctx(session, agent, config, *, github=None, gojira=None, slack=None, cloud=None) -> DestroyCtx:
+    # `cloud` defaults to a fresh, unseeded FakeCloud rather than None: since
+    # destroy-access (unlike the other steps) has no `agent.<field>` gate and
+    # so always runs, every step-level test that isn't specifically about
+    # destroy-access still needs a working cloud client to reach the step
+    # after it. Tests that care about destroy-access's own behavior pass
+    # their own FakeCloud explicitly.
     clients = Clients(
-        github=github, gojira=gojira, cloud=None, agent=None, kubectl=None, slack=slack
+        github=github,
+        gojira=gojira,
+        cloud=cloud if cloud is not None else FakeCloud(),
+        agent=None,
+        kubectl=None,
+        slack=slack,
     )
     return DestroyCtx(agent=agent, session=session, config=config, clients=clients)
 
@@ -94,9 +106,16 @@ def _seed_agent(session_factory, *, name: str = AGENT_NAME, **kwargs) -> int:
     return agent_id
 
 
-def _clients(*, github=None, gojira=None, slack=None) -> Clients:
+def _clients(*, github=None, gojira=None, slack=None, cloud=None) -> Clients:
+    # Same default-to-a-working-FakeCloud rationale as `_ctx` above, for the
+    # engine-level (run_destroy) tests.
     return Clients(
-        github=github, gojira=gojira, cloud=None, agent=None, kubectl=None, slack=slack
+        github=github,
+        gojira=gojira,
+        cloud=cloud if cloud is not None else FakeCloud(),
+        agent=None,
+        kubectl=None,
+        slack=slack,
     )
 
 
@@ -104,7 +123,13 @@ def _clients(*, github=None, gojira=None, slack=None) -> Clients:
 
 
 def test_destroy_steps_order_is_fixed():
-    assert DESTROY_STEPS == ("destroy-platform", "destroy-slack", "destroy-repo", "destroy-forget")
+    assert DESTROY_STEPS == (
+        "destroy-platform",
+        "destroy-access",
+        "destroy-slack",
+        "destroy-repo",
+        "destroy-forget",
+    )
 
 
 # --- _is_repo_not_found / _is_already_archived (pure helpers) ------------------
@@ -237,6 +262,74 @@ def test_destroy_platform_no_identity_failures_no_warning(session_factory, confi
         _destroy_platform(ctx)
 
     assert not any(r.levelname == "WARNING" for r in caplog.records)
+    session.close()
+
+
+# --- _destroy_access --------------------------------------------------------------
+
+
+def test_destroy_access_removes_membership_then_gsa_in_order(session_factory, config):
+    session, agent = _make_ctx_agent(session_factory)
+    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    cloud = FakeCloud(project=config.gcp_project)
+    cloud.gsas.add(email)
+    cloud.group_members.add((email, config.model_group))
+    ctx = _ctx(session, agent, config, cloud=cloud)
+
+    detail = _destroy_access(ctx)
+
+    assert detail == "membership removed: True, gsa deleted: True"
+    # Order pinned: membership removal happens before the GSA delete (a
+    # deleted GSA's ghost membership would be unremovable by email).
+    remove_index = cloud.calls.index(f"remove_from_group:{email}:{config.model_group}")
+    delete_index = cloud.calls.index(f"delete_gsa:{email}")
+    assert remove_index < delete_index
+    assert email not in cloud.gsas
+    assert (email, config.model_group) not in cloud.group_members
+    session.close()
+
+
+def test_destroy_access_absent_membership_proceeds_to_gsa(session_factory, config):
+    """Membership already gone (never granted, or a prior partial attempt
+    already removed it) doesn't stop the step - it proceeds straight to
+    deleting the GSA."""
+    session, agent = _make_ctx_agent(session_factory)
+    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    cloud = FakeCloud(project=config.gcp_project)
+    cloud.gsas.add(email)  # GSA still present, membership is not
+    ctx = _ctx(session, agent, config, cloud=cloud)
+
+    detail = _destroy_access(ctx)
+
+    assert detail == "membership removed: False, gsa deleted: True"
+    assert email not in cloud.gsas
+    session.close()
+
+
+def test_destroy_access_absent_gsa_is_done(session_factory, config):
+    """The GSA is already gone (a prior attempt got all the way through the
+    delete but crashed before its row committed DONE) - tolerated as done,
+    not a failure, even though membership still needed removing."""
+    session, agent = _make_ctx_agent(session_factory)
+    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    cloud = FakeCloud(project=config.gcp_project)
+    cloud.group_members.add((email, config.model_group))  # membership present, GSA already gone
+    ctx = _ctx(session, agent, config, cloud=cloud)
+
+    detail = _destroy_access(ctx)
+
+    assert detail == "membership removed: True, gsa deleted: False"
+    assert (email, config.model_group) not in cloud.group_members
+    session.close()
+
+
+def test_destroy_access_real_failure_propagates(session_factory, config):
+    session, agent = _make_ctx_agent(session_factory)
+    cloud = FakeCloud(project=config.gcp_project, remove_group_error="group service outage")
+    ctx = _ctx(session, agent, config, cloud=cloud)
+
+    with pytest.raises(ClientError, match="group service outage"):
+        _destroy_access(ctx)
     session.close()
 
 
@@ -436,9 +529,16 @@ def test_run_destroy_happy_path_deletes_agent_and_all_steps(session_factory, con
     fake_github = FakeGitHub(existing_repos={REPO})
     fake_gojira = FakeGojira()
     fake_slack = FakeSlack()
+    fake_cloud = FakeCloud(project=config.gcp_project)
+    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    fake_cloud.gsas.add(email)
+    fake_cloud.group_members.add((email, config.model_group))
 
     thread = run_destroy(
-        session_factory, agent_id, _clients(github=fake_github, gojira=fake_gojira, slack=fake_slack), config
+        session_factory,
+        agent_id,
+        _clients(github=fake_github, gojira=fake_gojira, slack=fake_slack, cloud=fake_cloud),
+        config,
     )
     thread.join(timeout=JOIN_TIMEOUT)
     assert thread.is_alive() is False
@@ -446,6 +546,9 @@ def test_run_destroy_happy_path_deletes_agent_and_all_steps(session_factory, con
     assert fake_gojira.delete_calls == [(7, True)]
     assert fake_slack.delete_calls == ["A0FAKE"]
     assert fake_github.rename_calls == [(REPO, f"archived-agent-{AGENT_NAME}-{agent_id}")]
+    # destroy-access ran too — the GSA and its group membership are both gone.
+    assert email not in fake_cloud.gsas
+    assert (email, config.model_group) not in fake_cloud.group_members
 
     session = session_factory()
     assert session.get(Agent, agent_id) is None
@@ -479,6 +582,9 @@ def test_run_destroy_step_failure_leaves_agent_destroy_failed_and_resumable(
 
     rows = {s.name: s for s in agent.steps}
     assert rows["destroy-platform"].status == StepStatus.DONE
+    # destroy-access ran too (it has no gate of its own — always attempted)
+    # and succeeded against the default FakeCloud before slack ever failed.
+    assert rows["destroy-access"].status == StepStatus.DONE
     assert rows["destroy-slack"].status == StepStatus.FAILED
     assert rows["destroy-slack"].error == "slack app deletion failed: slack outage"
     # destroy-repo/destroy-forget never actually ran (aborted) — the repo
@@ -505,12 +611,13 @@ def test_run_destroy_resume_skips_done_platform_and_retries_failed_slack(
     )
     fake_gojira = FakeGojira()
     fake_github = FakeGitHub(existing_repos={REPO})
+    fake_cloud = FakeCloud(project=config.gcp_project)
     failing_slack = FakeSlack(delete_error="slack outage")
 
     thread = run_destroy(
         session_factory,
         agent_id,
-        _clients(github=fake_github, gojira=fake_gojira, slack=failing_slack),
+        _clients(github=fake_github, gojira=fake_gojira, slack=failing_slack, cloud=fake_cloud),
         config,
     )
     thread.join(timeout=JOIN_TIMEOUT)
@@ -520,21 +627,30 @@ def test_run_destroy_resume_skips_done_platform_and_retries_failed_slack(
     session = session_factory()
     agent = session.get(Agent, agent_id)
     assert agent.status == AgentStatus.DESTROY_FAILED
+    rows = {s.name: s.status for s in agent.steps}
+    assert rows["destroy-platform"] == StepStatus.DONE
+    assert rows["destroy-access"] == StepStatus.DONE
+    assert rows["destroy-slack"] == StepStatus.FAILED
     session.close()
 
     working_slack = FakeSlack()
     thread2 = run_destroy(
         session_factory,
         agent_id,
-        _clients(github=fake_github, gojira=fake_gojira, slack=working_slack),
+        _clients(github=fake_github, gojira=fake_gojira, slack=working_slack, cloud=fake_cloud),
         config,
     )
     thread2.join(timeout=JOIN_TIMEOUT)
     assert thread2.is_alive() is False
 
-    # Platform was never retried (still exactly one delete_app call across
-    # both runs) — its row was already DONE.
+    # Platform and access were never retried (still exactly one call each
+    # across both runs) — their rows were already DONE.
     assert fake_gojira.delete_calls == [(7, True)]
+    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    assert fake_cloud.calls == [
+        f"remove_from_group:{email}:{config.model_group}",
+        f"delete_gsa:{email}",
+    ]
     assert working_slack.delete_calls == ["A0FAKE"]
 
     session = session_factory()
@@ -568,6 +684,7 @@ def test_run_destroy_forget_only_runs_once_platform_slack_repo_are_all_done(
     assert agent.status == AgentStatus.DESTROY_FAILED
     rows = {s.name: s.status for s in agent.steps}
     assert rows["destroy-platform"] == StepStatus.FAILED
+    assert rows["destroy-access"] == StepStatus.FAILED
     assert rows["destroy-slack"] == StepStatus.FAILED
     assert rows["destroy-repo"] == StepStatus.FAILED
     assert rows["destroy-forget"] == StepStatus.FAILED
@@ -579,7 +696,10 @@ def test_run_destroy_already_gone_matrix_for_a_never_fully_provisioned_agent(
 ):
     """An agent that FAILED early in provisioning (no platform app, no
     slack app, no repo at all) is still destroyable: every step is
-    trivially done, and the row disappears."""
+    trivially done, and the row disappears. destroy-access has no such
+    "never got that far" field to check (see its docstring) — it always
+    attempts the teardown, tolerating an unseeded FakeCloud's False/False as
+    already-done."""
     agent_id = _seed_agent(
         session_factory,
         status=AgentStatus.FAILED,
@@ -590,11 +710,12 @@ def test_run_destroy_already_gone_matrix_for_a_never_fully_provisioned_agent(
     fake_gojira = FakeGojira()
     fake_slack = FakeSlack()
     fake_github = FakeGitHub()
+    fake_cloud = FakeCloud(project=config.gcp_project)
 
     thread = run_destroy(
         session_factory,
         agent_id,
-        _clients(github=fake_github, gojira=fake_gojira, slack=fake_slack),
+        _clients(github=fake_github, gojira=fake_gojira, slack=fake_slack, cloud=fake_cloud),
         config,
     )
     thread.join(timeout=JOIN_TIMEOUT)
@@ -603,6 +724,11 @@ def test_run_destroy_already_gone_matrix_for_a_never_fully_provisioned_agent(
     assert fake_gojira.delete_calls == []
     assert fake_slack.delete_calls == []
     assert fake_github.rename_calls == []
+    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    assert fake_cloud.calls == [
+        f"remove_from_group:{email}:{config.model_group}",
+        f"delete_gsa:{email}",
+    ]
 
     session = session_factory()
     assert session.get(Agent, agent_id) is None
@@ -690,12 +816,13 @@ def test_run_destroy_resume_skips_done_platform_and_slack_and_retries_failed_rep
     )
     fake_gojira = FakeGojira()
     fake_slack = FakeSlack()
+    fake_cloud = FakeCloud(project=config.gcp_project)
     failing_github = FakeGitHub(existing_repos={REPO}, rename_error="repo service outage")
 
     thread = run_destroy(
         session_factory,
         agent_id,
-        _clients(github=failing_github, gojira=fake_gojira, slack=fake_slack),
+        _clients(github=failing_github, gojira=fake_gojira, slack=fake_slack, cloud=fake_cloud),
         config,
     )
     thread.join(timeout=JOIN_TIMEOUT)
@@ -708,6 +835,7 @@ def test_run_destroy_resume_skips_done_platform_and_slack_and_retries_failed_rep
     assert agent.status == AgentStatus.DESTROY_FAILED
     rows = {s.name: s.status for s in agent.steps}
     assert rows["destroy-platform"] == StepStatus.DONE
+    assert rows["destroy-access"] == StepStatus.DONE
     assert rows["destroy-slack"] == StepStatus.DONE
     assert rows["destroy-repo"] == StepStatus.FAILED
     session.close()
@@ -716,15 +844,20 @@ def test_run_destroy_resume_skips_done_platform_and_slack_and_retries_failed_rep
     thread2 = run_destroy(
         session_factory,
         agent_id,
-        _clients(github=working_github, gojira=fake_gojira, slack=fake_slack),
+        _clients(github=working_github, gojira=fake_gojira, slack=fake_slack, cloud=fake_cloud),
         config,
     )
     thread2.join(timeout=JOIN_TIMEOUT)
     assert thread2.is_alive() is False
 
-    # Platform and slack were never retried — still exactly one call each
-    # across BOTH runs — their rows were already DONE.
+    # Platform, access, and slack were never retried — still exactly one
+    # call each across BOTH runs — their rows were already DONE.
     assert fake_gojira.delete_calls == [(7, True)]
+    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    assert fake_cloud.calls == [
+        f"remove_from_group:{email}:{config.model_group}",
+        f"delete_gsa:{email}",
+    ]
     assert fake_slack.delete_calls == ["A0FAKE"]
     assert working_github.rename_calls == [(REPO, f"archived-agent-{AGENT_NAME}-{agent_id}")]
 
@@ -752,17 +885,19 @@ def test_run_destroy_resume_retries_failed_platform_and_continues_to_forget(
     failing_gojira = FakeGojira(delete_error="platform outage")
     fake_github = FakeGitHub(existing_repos={REPO})
     fake_slack = FakeSlack()
+    fake_cloud = FakeCloud(project=config.gcp_project)
 
     thread = run_destroy(
         session_factory,
         agent_id,
-        _clients(github=fake_github, gojira=failing_gojira, slack=fake_slack),
+        _clients(github=fake_github, gojira=failing_gojira, slack=fake_slack, cloud=fake_cloud),
         config,
     )
     thread.join(timeout=JOIN_TIMEOUT)
     assert thread.is_alive() is False
     assert failing_gojira.delete_calls == [(7, True)]
-    # Aborted — slack/repo's own side effects never fired.
+    # Aborted — access/slack/repo's own side effects never fired.
+    assert fake_cloud.calls == []
     assert fake_slack.delete_calls == []
     assert fake_github.rename_calls == []
 
@@ -772,6 +907,7 @@ def test_run_destroy_resume_retries_failed_platform_and_continues_to_forget(
     assert agent.status == AgentStatus.DESTROY_FAILED
     rows = {s.name: s.status for s in agent.steps}
     assert rows["destroy-platform"] == StepStatus.FAILED
+    assert rows["destroy-access"] == StepStatus.FAILED
     assert rows["destroy-slack"] == StepStatus.FAILED
     assert rows["destroy-repo"] == StepStatus.FAILED
     assert rows["destroy-forget"] == StepStatus.FAILED
@@ -781,13 +917,94 @@ def test_run_destroy_resume_retries_failed_platform_and_continues_to_forget(
     thread2 = run_destroy(
         session_factory,
         agent_id,
-        _clients(github=fake_github, gojira=working_gojira, slack=fake_slack),
+        _clients(github=fake_github, gojira=working_gojira, slack=fake_slack, cloud=fake_cloud),
         config,
     )
     thread2.join(timeout=JOIN_TIMEOUT)
     assert thread2.is_alive() is False
 
     assert working_gojira.delete_calls == [(7, True)]
+    # destroy-access is retried on resume (its row was FAILED, not DONE) and
+    # succeeds this time against the same (still-unseeded) FakeCloud.
+    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    assert fake_cloud.calls == [
+        f"remove_from_group:{email}:{config.model_group}",
+        f"delete_gsa:{email}",
+    ]
+    assert fake_slack.delete_calls == ["A0FAKE"]
+    assert fake_github.rename_calls == [(REPO, f"archived-agent-{AGENT_NAME}-{agent_id}")]
+
+    session = session_factory()
+    assert session.get(Agent, agent_id) is None
+    assert session.query(AgentStep).filter_by(agent_id=agent_id).count() == 0
+    session.close()
+
+
+def test_run_destroy_access_failure_marks_step_and_resume_retries_access_skipping_platform(
+    session_factory, config
+):
+    """CRITICAL resume case (destruction-completeness design): destroy-access
+    fails on the first run, aborting slack/repo/forget; a second run must
+    NOT re-run destroy-platform (its fake sees no second call across both
+    runs) — only destroy-access is retried, and once it works the run
+    completes all the way through to a fully forgotten agent."""
+    agent_id = _seed_agent(
+        session_factory,
+        status=AgentStatus.READY,
+        gojira_app_id=7,
+        slack_app_id="A0FAKE",
+        repo_full_name=REPO,
+    )
+    fake_gojira = FakeGojira()
+    fake_github = FakeGitHub(existing_repos={REPO})
+    fake_slack = FakeSlack()
+    failing_cloud = FakeCloud(project=config.gcp_project, remove_group_error="group service outage")
+
+    thread = run_destroy(
+        session_factory,
+        agent_id,
+        _clients(github=fake_github, gojira=fake_gojira, slack=fake_slack, cloud=failing_cloud),
+        config,
+    )
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+    assert fake_gojira.delete_calls == [(7, True)]
+    # Aborted — slack/repo's own side effects never fired.
+    assert fake_slack.delete_calls == []
+    assert fake_github.rename_calls == []
+
+    session = session_factory()
+    agent = session.get(Agent, agent_id)
+    assert agent is not None
+    assert agent.status == AgentStatus.DESTROY_FAILED
+    assert agent.error == "group service outage"
+    rows = {s.name: s.status for s in agent.steps}
+    assert rows["destroy-platform"] == StepStatus.DONE
+    assert rows["destroy-access"] == StepStatus.FAILED
+    assert rows["destroy-slack"] == StepStatus.FAILED
+    assert rows["destroy-repo"] == StepStatus.FAILED
+    assert rows["destroy-forget"] == StepStatus.FAILED
+    session.close()
+
+    working_cloud = FakeCloud(project=config.gcp_project)
+    thread2 = run_destroy(
+        session_factory,
+        agent_id,
+        _clients(github=fake_github, gojira=fake_gojira, slack=fake_slack, cloud=working_cloud),
+        config,
+    )
+    thread2.join(timeout=JOIN_TIMEOUT)
+    assert thread2.is_alive() is False
+
+    # Platform was never retried — still exactly one delete_app call across
+    # both runs — its row was already DONE. Only destroy-access retries,
+    # against the fresh working cloud client.
+    assert fake_gojira.delete_calls == [(7, True)]
+    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    assert working_cloud.calls == [
+        f"remove_from_group:{email}:{config.model_group}",
+        f"delete_gsa:{email}",
+    ]
     assert fake_slack.delete_calls == ["A0FAKE"]
     assert fake_github.rename_calls == [(REPO, f"archived-agent-{AGENT_NAME}-{agent_id}")]
 

@@ -22,6 +22,7 @@ from kobo_api.clients import (
     GojiraConflict,
     SlackApiError,
     StorageNotFound,
+    gsa_email,
 )
 
 # --- Generated-scaffolding fixture for FakeGitHub.clone ------------------------
@@ -866,7 +867,7 @@ class FakeCloud:
         self.calls: list[str] = []
 
     def ensure_gsa(self, name: str) -> str:
-        email = f"{name}@{self._project}.iam.gserviceaccount.com"
+        email = gsa_email(name, self._project)
         self.calls.append(f"ensure_gsa:{name}")
         self.gsas.add(email)
         return email
@@ -896,6 +897,12 @@ class FakeCloud:
             return False
         self.gsas.discard(email)
         return True
+
+    def gsa_email_for(self, name: str) -> str:
+        # Same composition ensure_gsa uses (gsa_email + self._project) -
+        # the real GcloudClient.gsa_email_for delegates to the identical
+        # helper, so the two clients cannot drift apart on this format.
+        return gsa_email(name, self._project)
 
 
 class FakeAgent:

@@ -976,6 +976,34 @@ def test_delete_gsa_permission_denied_raises():
     assert len(runner.calls) == 1  # never got to (or attempted) delete
 
 
+def test_gsa_email_for_composes_without_any_gcloud_call():
+    # Pure composition (destroy-access, kobo_api.destroy, needs the SAME
+    # email ensure_gsa would return, without creating anything) — never
+    # shells out at all, unlike ensure_gsa's own describe-then-maybe-create.
+    runner = RecordingRunner(results=[])
+    client = GcloudClient("example-project", runner=runner)
+
+    email = client.gsa_email_for("agent-clio")
+
+    assert email == "agent-clio@example-project.iam.gserviceaccount.com"
+    assert runner.calls == []
+
+
+def test_gsa_email_for_parity_with_ensure_gsa():
+    # Same email ensure_gsa would return (or create) for the same name —
+    # the whole point of the shared gsa_email() composition both delegate
+    # to, so destroy-access can never drift from what AccessStep granted.
+    runner = RecordingRunner(
+        results=[(0, "agent-clio@example-project.iam.gserviceaccount.com", "")]
+    )
+    client = GcloudClient("example-project", runner=runner)
+
+    ensured = client.ensure_gsa("agent-clio")
+    derived = client.gsa_email_for("agent-clio")
+
+    assert derived == ensured == "agent-clio@example-project.iam.gserviceaccount.com"
+
+
 # --- Kubectl (KubectlCLI) -----------------------------------------------------
 
 
@@ -3755,6 +3783,18 @@ def test_fake_cloud_delete_gsa_error_knob_raises_instead_of_absent_check():
     fake = FakeCloud(delete_gsa_error="boom")
     with pytest.raises(ClientError, match="boom"):
         fake.delete_gsa("clio@example-project.iam.gserviceaccount.com")
+
+
+def test_fake_cloud_gsa_email_for_matches_ensure_gsa_without_creating():
+    fake = FakeCloud()
+    ensured = fake.ensure_gsa("agent-clio")
+
+    derived = fake.gsa_email_for("agent-other")
+
+    assert derived == "agent-other@example-project.iam.gserviceaccount.com"
+    assert derived != ensured
+    # Deriving the email for a name never creates a GSA for it.
+    assert "agent-other@example-project.iam.gserviceaccount.com" not in fake.gsas
 
 
 def test_fake_agent_satisfies_protocol():

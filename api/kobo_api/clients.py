@@ -719,6 +719,14 @@ class CloudClient(Protocol):
         """Delete the GSA at email. False if it was already gone."""
         ...
 
+    def gsa_email_for(self, name: str) -> str:
+        """The email a GSA named `name` would have (or already has) in this
+        client's project - the same composition `ensure_gsa` uses
+        internally, exposed so a caller that needs the email (destroy-access
+        teardown, kobo_api.destroy) can derive it without creating anything.
+        """
+        ...
+
 
 def gsa_email(name: str, project: str) -> str:
     """The GSA email convention for a GCP service account: `{name}@{project}.iam.gserviceaccount.com`.
@@ -861,6 +869,13 @@ class GcloudClient:
             ]
         )
         return True
+
+    def gsa_email_for(self, name: str) -> str:
+        # Same composition `ensure_gsa` uses (gsa_email + self._project) -
+        # the destroy-access step (kobo_api.destroy) calls this to derive
+        # the SAME email `ensure_gsa` would have returned, without creating
+        # a GSA, so both sides can never drift apart.
+        return gsa_email(name, self._project)
 
 
 # --- Agent (a2a chat over a kubectl port-forward) -----------------------------
