@@ -275,6 +275,7 @@ def test_org_keys_is_exactly_the_brief_set():
             "skills_publish_service_account",
             "skills_publish_external",
             "slack_operators",
+            "operators",
         }
     )
 
@@ -295,6 +296,28 @@ def test_slack_operators_list_round_trips():
 
     assert org.wired is True
     assert merged.slack_operators == [
+        "ops@acme-corp.example.com",
+        "Root@Acme-Corp.example.com",
+    ]
+
+
+def test_operators_list_round_trips():
+    """operators (Task 4: agent destruction) is org-scoped exactly like
+    slack_operators above — a client's kobo-config repo can name its own
+    destroy-operator emails, independently of who may set up Slack."""
+    local = Config(org_repo=ORG_REPO)
+    github = FakeGitHub(
+        org_yaml=(
+            "operators:\n"
+            "  - ops@acme-corp.example.com\n"
+            "  - Root@Acme-Corp.example.com\n"
+        )
+    )
+
+    merged, org = load_org_config(local, github)
+
+    assert org.wired is True
+    assert merged.operators == [
         "ops@acme-corp.example.com",
         "Root@Acme-Corp.example.com",
     ]

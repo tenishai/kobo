@@ -24,6 +24,7 @@ from kobo_api.catalog import RESERVED_NAMES, validate_name
 from kobo_api.clients import ClientError, StorageNotFound
 from kobo_api.config import Config
 from kobo_api.db import init_db, make_engine, make_session_factory
+from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
 from kobo_api.iap import IapMiddleware, IapVerifier
 from kobo_api.intake import (
     IntakeError,
@@ -339,10 +340,17 @@ def _fail_launch(
     session: Session,
     agent_id: int,
     exc: Exception,
+    *,
+    status: AgentStatus = AgentStatus.FAILED,
+    verb: str = "provisioning",
 ) -> JSONResponse:
-    """Record a `run_pipeline` launch failure (e.g. `Thread.start()` itself
-    raising) as FAILED and return the 503 `JSONResponse` both launch guards
-    (`create_agent`, `retry_agent`) report for it.
+    """Record a `run_pipeline`/`run_destroy` launch failure (e.g.
+    `Thread.start()` itself raising) as `status` (`AgentStatus.FAILED` by
+    default, for `create_agent`/`retry_agent`; `AgentStatus.DESTROY_FAILED`
+    for `destroy_agent`) and return the 503 `JSONResponse` every launch
+    guard reports for it. `verb` only changes the error copy ("provisioning"
+    vs "destruction"); both keyword-only with `provisioning`-shaped
+    defaults so every pre-existing call site is unaffected.
 
     `session` (the request's own, from `Depends(get_session)`) may itself be
     poisoned by whatever raised `exc` — a dead connection mid-commit, say —
@@ -357,7 +365,7 @@ def _fail_launch(
     the 503 below — this function's return value must never depend on the
     write landing.
     """
-    error_message = f"failed to start provisioning: {exc}"
+    error_message = f"failed to start {verb}: {exc}"
 
     try:
         session.rollback()
@@ -390,7 +398,7 @@ def _fail_launch(
                 agent_id,
             )
         else:
-            agent.status = AgentStatus.FAILED
+            agent.status = status
             agent.error = error_message
             recovery_session.commit()
     except Exception:
@@ -481,6 +489,29 @@ def _slack_operator_block(request: Request, config: Config) -> JSONResponse | No
         return None
     return JSONResponse(
         {"error": "Slack setup is operator-only on this room"}, status_code=403
+    )
+
+
+def _operator_block(request: Request, config: Config) -> JSONResponse | None:
+    """None when the caller may destroy agents; a 403 body otherwise.
+
+    Same semantics family as `_slack_operator_block` above (empty list =
+    ungated, dev parity; IAP disabled = operator, the room trusts its
+    perimeter only when it has one; otherwise a case-insensitive email
+    match against `config.operators`) — kept as its own function, not
+    parameterized over the two config lists, since a future gate is free to
+    diverge (different copy already, here) without the two ever needing to
+    stay byte-identical.
+    """
+    if not config.operators:
+        return None
+    if not config.iap_audience:
+        return None
+    email = (getattr(request.state, "iap_email", None) or "").lower()
+    if email in {e.lower() for e in config.operators}:
+        return None
+    return JSONResponse(
+        {"error": "Destroying agents is operator-only on this room"}, status_code=403
     )
 
 
@@ -1093,7 +1124,7 @@ def create_app(
         steps = [
             {
                 "name": step.name,
-                "label": STEP_LABELS.get(step.name, step.name),
+                "label": STEP_LABELS.get(step.name) or DESTROY_STEP_LABELS.get(step.name, step.name),
                 "status": step.status,
                 "error": step.error,
             }
@@ -1122,6 +1153,7 @@ def create_app(
                 "first_reply": agent.first_reply,
                 "slack": slack,
                 "slack_visible": _slack_operator_block(request, cfg) is None,
+                "destroy_visible": _operator_block(request, cfg) is None,
                 "has_avatar": agent.avatar_png is not None,
             }
         )
@@ -1237,6 +1269,78 @@ def create_app(
         # state this call put the agent into (about to re-provision), never
         # a value re-read after the pipeline thread is already running.
         return JSONResponse({"name": name, "status": AgentStatus.PROVISIONING}, status_code=202)
+
+    # --- Destroy (Task 4): the resumable four-step teardown ledger --------------
+
+    # Statuses meaning "still being created" — a destroy request against one
+    # of these has nothing settled yet to tear down (no repo/app id may even
+    # be recorded); the operator is told to retry once creation lands
+    # somewhere destroy CAN act on (READY or FAILED), rather than the room
+    # trying to race its own provisioning thread.
+    _PROVISIONING_IN_FLIGHT = (AgentStatus.PENDING, AgentStatus.PROVISIONING)
+
+    @app.delete("/api/agents/{name}", status_code=202)
+    def destroy_agent(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        cfg: Config = app.state.config
+        # Gate FIRST, before the agent even exists check: info-safe, same
+        # discipline as the Slack gate (a non-operator gets an identical 403
+        # whether or not the named agent exists at all).
+        block = _operator_block(request, cfg)
+        if block is not None:
+            return block
+
+        agent = session.query(Agent).filter_by(name=name).first()
+        if agent is None:
+            return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
+
+        if agent.status in _PROVISIONING_IN_FLIGHT:
+            return JSONResponse(
+                {"error": "the agent is still being created, retry or wait"},
+                status_code=409,
+            )
+
+        # Status-before-thread discipline, same as create_agent/retry_agent:
+        # commit DESTROYING before launching the thread. This also makes a
+        # re-DELETE while already destroying (or destroy_failed) idempotent
+        # from the caller's view — it reads a status outside
+        # _PROVISIONING_IN_FLIGHT, so it falls through here and simply
+        # re-launches run_destroy, which resumes from the first incomplete
+        # step rather than redoing finished work.
+        agent.status = AgentStatus.DESTROYING
+        agent.error = None
+        session.commit()
+
+        agent_id = agent.id
+
+        try:
+            run_destroy(
+                request.app.state.session_factory,
+                agent_id,
+                app.state.clients,
+                cfg,
+            )
+        except Exception as exc:
+            # Same wedge as create_agent's/retry_agent's launch guards: the
+            # thread never started, so nothing will ever move this agent out
+            # of DESTROYING on its own — fail it back to DESTROY_FAILED so a
+            # follow-up DELETE (Destroy again) can still resume it, rather
+            # than leaving it wedged. `_fail_launch` does the actual
+            # recovery and always returns the 503 below, never a raw 500.
+            log.exception(
+                "destroy_agent: failed to start destruction for agent %s", agent_id
+            )
+            return _fail_launch(
+                request.app.state.session_factory,
+                session,
+                agent_id,
+                exc,
+                status=AgentStatus.DESTROY_FAILED,
+                verb="destruction",
+            )
+
+        return JSONResponse({"status": AgentStatus.DESTROYING}, status_code=202)
 
     # --- Knowledge (P2b): bundle/knowledge/*.md seed-memory editing -------------
 

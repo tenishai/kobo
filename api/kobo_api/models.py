@@ -19,6 +19,16 @@ class AgentStatus(enum.StrEnum):
     PROVISIONING = "provisioning"
     READY = "ready"
     FAILED = "failed"
+    # Agent destruction (Task 4): the mirror of PROVISIONING/FAILED for the
+    # destroy ledger (kobo_api.destroy.run_destroy) — DESTROYING while the
+    # four-step teardown runs, DESTROY_FAILED when a step fails (resumable:
+    # a later DELETE re-invokes run_destroy, which skips DONE steps and
+    # retries from the first incomplete one). There is no destroyed-terminal
+    # status: a fully-destroyed agent's row (and its steps) are deleted
+    # outright by the last step (destroy-forget), not left in some terminal
+    # status for a row that no longer exists to hold.
+    DESTROYING = "destroying"
+    DESTROY_FAILED = "destroy_failed"
 
 
 class StepStatus(enum.StrEnum):

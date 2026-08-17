@@ -98,6 +98,7 @@ def test_render_org_yaml_golden_with_computed_defaults():
         ),
         "skills_publish_external": False,
         "slack_operators": [],
+        "operators": [],
     }
 
 

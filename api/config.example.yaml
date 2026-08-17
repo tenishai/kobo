@@ -125,6 +125,12 @@ slack_tokens_path: null
 # behavior.
 # slack_operators: [ops@example.com]
 
+# Emails allowed to destroy an agent (DELETE /api/agents/{name}) once IAP is
+# enabled (see iap_audience below) — everyone else gets a 403. Empty (the
+# default) leaves destruction open to anyone who can reach this room,
+# matching today's behavior.
+# operators: [ops@example.com]
+
 # Path to a built UI dist/ directory (e.g. ui/dist from `npm run build`) to
 # serve alongside the API on the same origin, no CORS. Unset (the default)
 # means dev: the API runs alone and the UI runs separately via its own dev

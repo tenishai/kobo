@@ -54,6 +54,7 @@ ORG_KEYS = frozenset(
         "skills_publish_service_account",
         "skills_publish_external",
         "slack_operators",
+        "operators",
     }
 )
 

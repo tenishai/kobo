@@ -87,6 +87,14 @@ class Config(BaseModel):
     # iap_audience) treats every caller as an operator too — the room only
     # trusts an email claim when it has a perimeter that verified it.
     slack_operators: list[str] = []
+    # Emails allowed to destroy an agent (`DELETE /api/agents/{name}`) once
+    # IAP is enabled — main.py's `_operator_block` 403s any other caller on
+    # that route, before its existence/status checks, same semantics family
+    # as slack_operators above. Empty (the default) leaves destruction
+    # ungated, matching today's behavior. IAP disabled (no iap_audience)
+    # treats every caller as an operator too — the room only trusts an email
+    # claim when it has a perimeter that verified it.
+    operators: list[str] = []
     # Path to a built UI `dist/` directory (e.g. `ui/dist` from `npm run
     # build`) to serve alongside the API, same origin, no CORS (Task 1).
     # None (the default) means dev: no UI is mounted, matching today's setup
