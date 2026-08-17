@@ -183,7 +183,7 @@
         <button
           type="button"
           class="composition__avatar-button"
-          disabled={$generateAvatar.isPending}
+          disabled={isFrozen(data.status) || $generateAvatar.isPending}
           onclick={handleGenerateAvatar}
         >
           {#if $generateAvatar.isPending}

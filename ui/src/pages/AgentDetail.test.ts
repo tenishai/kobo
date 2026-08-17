@@ -132,5 +132,7 @@ describe("AgentDetail tabs", () => {
       .filter((el) => !el.classList.contains("step-checklist__sr-only"));
     expect(destroyAnnouncers).toHaveLength(1);
     expect(screen.getByRole("tab", { name: "Memory" })).not.toBeNull();
+    const avatarButton = screen.getByRole("button", { name: /give warden a face/i });
+    expect((avatarButton as HTMLButtonElement).disabled).toBe(true);
   });
 });
