@@ -571,6 +571,13 @@
     gap: var(--space-lg);
   }
 
+  /* An author-level `display` beats the UA stylesheet's `[hidden]` rule,
+     so without this the inactive panels render stacked and tab switches
+     only move the underline. */
+  .detail-tabs__panel[hidden] {
+    display: none;
+  }
+
   .agent-detail__destroy-notice {
     margin: 0;
     padding: var(--space-md);
