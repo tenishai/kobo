@@ -68,7 +68,8 @@ without clocks.
 
 ## UI
 
-A **Danger zone** card at the bottom of the agent page, rendered only for
+A **Danger zone** card at the bottom of the agent page's Overview tab
+(amended 2026-08-17 with the app-shell tab ruling), rendered only for
 operators (route enforcement is the boundary; hiding is UX, same
 discipline as the Slack gate):
 

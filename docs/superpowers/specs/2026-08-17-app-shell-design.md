@@ -47,8 +47,10 @@ tabbed, smart default.)
   destroy state while the page is open, select Overview once (the
   reversed checklist is the destruction story); the operator can still
   click away.
-- **Danger zone stays at the very bottom, outside the tabs**, rendered
-  only when `destroy_visible`, exactly as today.
+- **Danger zone lives at the bottom of the Overview tab** (amended
+  2026-08-17, operator ruling: destruction is part of the agent's story,
+  and the destroy auto-select already lands on Overview), rendered only
+  when `destroy_visible`.
 
 ## Read-only while destroying
 

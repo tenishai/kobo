@@ -301,6 +301,10 @@
             {#if data.first_reply}
               <FirstReply reply={data.first_reply} />
             {/if}
+
+            {#if data.destroy_visible}
+              <DangerZone agentName={data.name} status={data.status} error={data.error} />
+            {/if}
           {:else if tab === "chat"}
             <ChatPanel agentName={data.name} frozen={isFrozen(data.status)} />
           {:else if tab === "memory"}
@@ -316,9 +320,6 @@
       {/each}
     </div>
 
-    {#if data.destroy_visible}
-      <DangerZone agentName={data.name} status={data.status} error={data.error} />
-    {/if}
   {/if}
 </div>
 
