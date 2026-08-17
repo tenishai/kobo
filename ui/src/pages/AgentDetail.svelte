@@ -8,6 +8,7 @@
   // loading/error/populated split Dashboard already uses.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import ChatPanel from "../components/ChatPanel.svelte";
+  import DangerZone from "../components/DangerZone.svelte";
   import ErrorState from "../components/ErrorState.svelte";
   import FirstReply from "../components/FirstReply.svelte";
   import MemoryPanel from "../components/MemoryPanel.svelte";
@@ -17,9 +18,9 @@
   import StatusBadge from "../components/StatusBadge.svelte";
   import StepChecklist from "../components/StepChecklist.svelte";
   import ToolingPanel from "../components/ToolingPanel.svelte";
-  import { errorMessage } from "../lib/api";
+  import { ApiError, errorMessage } from "../lib/api";
   import { agentQuery, generateAvatarMutation, retryAgentMutation } from "../lib/queries";
-  import { formatHash, route } from "../lib/router.svelte";
+  import { formatHash, navigate, route } from "../lib/router.svelte";
   import { toast } from "../lib/toast.svelte";
 
   // Invariant: App.svelte only mounts this page when `route.page === "agent"`,
@@ -43,6 +44,44 @@
       },
     });
   }
+
+  // Statuses meaning "a destroy was in progress the last time this page had
+  // real data" (Task 5). Used only by the 404-during-destroy handling below.
+  const DESTROY_STATUSES = new Set(["destroying", "destroy_failed"]);
+
+  // The most recent status this query actually returned. Kept separately
+  // from `$agent.data` because once destroy-forget completes there is no
+  // agent row left (kobo_api.destroy's module docstring): `GET
+  // /api/agents/{name}` starts 404ing, and `$agent.data` itself goes stale
+  // rather than updating, so this is the only place that still remembers
+  // what the agent's status was right before that happened.
+  let lastKnownStatus = $state<string | null>(null);
+
+  $effect(() => {
+    const data = $agent.data;
+    if (data) {
+      lastKnownStatus = data.status;
+    }
+  });
+
+  // A 404 for this agent means one of two very different things: an
+  // unknown/mistyped name (never loaded anything, `lastKnownStatus` stays
+  // null, falls through to the plain ErrorState below), or destruction
+  // finished (this page had the agent mid-destroy, then its row vanished
+  // with the last step). Only the second case is a plain notice plus a
+  // trip back to the dashboard, not an error screen.
+  $effect(() => {
+    if (
+      $agent.isError &&
+      $agent.error instanceof ApiError &&
+      $agent.error.status === 404 &&
+      lastKnownStatus !== null &&
+      DESTROY_STATUSES.has(lastKnownStatus)
+    ) {
+      toast.success("Agent destroyed", `${name} and its records are gone.`);
+      navigate({ page: "dashboard" });
+    }
+  });
 
   // Cache-bust seam for the `<img>` that reads the avatar back: the GET
   // route serves whatever's cached on the agent row, and a browser will
@@ -187,6 +226,14 @@
       {#if data.slack_visible}
         <SlackPanel agentName={data.name} slack={data.slack} />
       {/if}
+    {:else if data.status === "destroying" || data.status === "destroy_failed"}
+      <p class="agent-detail__destroy-notice" role="status" aria-live="polite">
+        This agent is being destroyed.
+      </p>
+    {/if}
+
+    {#if data.destroy_visible}
+      <DangerZone agentName={data.name} status={data.status} error={data.error} />
     {/if}
   {/if}
 </div>
@@ -392,5 +439,15 @@
   .failed-banner__retry:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+  }
+
+  .agent-detail__destroy-notice {
+    margin: 0;
+    padding: var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel);
+    color: var(--muted);
+    font-size: 0.9rem;
   }
 </style>

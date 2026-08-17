@@ -41,6 +41,11 @@ export type AgentDetail = AgentSummary & {
    * room can have `slack_visible: false` and still carry `slack` state from
    * before the block was applied. */
   slack_visible: boolean;
+  /** Whether the Danger zone should render at all, false when an operator
+   * config block hides destruction from this room entirely (see the
+   * server's `_operator_block`). Same discipline as `slack_visible`: the
+   * route itself is the real enforcement boundary, this is UX only. */
+  destroy_visible: boolean;
 };
 
 /** One catalog search result — a skill or a persona, both served by the
@@ -219,6 +224,22 @@ export async function retryAgent(name: string): Promise<void> {
     method: "POST",
   });
   await parse(res);
+}
+
+/**
+ * `DELETE /api/agents/{name}`: starts (or resumes) the four-step destroy
+ * ledger. 202 `{"status": "destroying"}` on success; safe to call again
+ * while a prior destroy is still running or has failed a step ("Destroy
+ * again" is the same call, resume is entirely server-side). The server
+ * rejects with 403 (non-operator), 404 (unknown agent), or 409 (the agent
+ * is still being created), all surfaced as an `ApiError` through `parse`,
+ * same as every other mutation in this file.
+ */
+export async function destroyAgent(name: string): Promise<{ status: string }> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  return parse<{ status: string }>(res);
 }
 
 /** `GET /api/catalog/models` — the one catalog endpoint that survived the

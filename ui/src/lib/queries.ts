@@ -47,6 +47,7 @@ import {
   deleteKnowledgeFile,
   deleteSkill,
   deleteTooling,
+  destroyAgent,
   draftPersona,
   fetchDeliveryState,
   fetchModels,
@@ -245,6 +246,24 @@ export function createAgentMutation(queryClient: QueryClient) {
 export function retryAgentMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: () => retryAgent(name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+  };
+}
+
+/**
+ * Starts (or resumes) an agent's destroy ledger; on success, invalidates the
+ * agent list. Same broad-key reasoning as `retryAgentMutation` above (a
+ * prefix match already covers `["agents", name]`), the list needs it too,
+ * since a destroying/destroy_failed agent's status shows there as well as
+ * on its own detail page. This is the one mutation the Danger zone's
+ * "Destroy this agent" and "Destroy again" buttons both call: the same
+ * request either way, since resume is entirely server-side.
+ */
+export function destroyAgentMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: () => destroyAgent(name),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents"] });
     },

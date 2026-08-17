@@ -13,6 +13,7 @@ import {
   deleteToolingMutation,
   deliveryQuery,
   deliveryRefetchInterval,
+  destroyAgentMutation,
   draftPersonaMutation,
   generateAvatarMutation,
   importToolingMutation,
@@ -115,6 +116,122 @@ describe("retryAgentMutation", () => {
 
     expect(invalidateQueries).toHaveBeenCalledTimes(1);
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents"] });
+  });
+});
+
+describe("destroyAgentMutation", () => {
+  it("mutationFn DELETEs /api/agents/{name} and returns {status}", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 202,
+      statusText: "Accepted",
+      text: async () => JSON.stringify({ status: "destroying" }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = destroyAgentMutation(queryClient, "clio");
+
+    await expect(mutation.mutationFn()).resolves.toEqual({
+      status: "destroying",
+    });
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio", {
+      method: "DELETE",
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the broad agent-list key on success (a prefix match already covers the detail key too)", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = destroyAgentMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents"] });
+  });
+
+  it("surfaces a 403's {error} message (non-operator) through parse()", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      text: async () =>
+        JSON.stringify({
+          error: "Destroying agents is operator-only on this room",
+        }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = destroyAgentMutation(queryClient, "clio");
+
+    let caught: unknown;
+    try {
+      await mutation.mutationFn();
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(ApiError);
+    expect((caught as ApiError).status).toBe(403);
+    expect((caught as ApiError).message).toBe(
+      "Destroying agents is operator-only on this room",
+    );
+
+    vi.unstubAllGlobals();
+  });
+
+  it("surfaces a 409's {error} message (still being created) through parse()", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      statusText: "Conflict",
+      text: async () =>
+        JSON.stringify({
+          error: "the agent is still being created, retry or wait",
+        }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = destroyAgentMutation(queryClient, "clio");
+
+    await expect(mutation.mutationFn()).rejects.toThrow(
+      "the agent is still being created, retry or wait",
+    );
+
+    vi.unstubAllGlobals();
+  });
+
+  it("surfaces a 404's {error} message (unknown agent) through parse()", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      statusText: "Not Found",
+      text: async () =>
+        JSON.stringify({ error: "no such agent: 'nope'" }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = destroyAgentMutation(queryClient, "clio");
+
+    await expect(mutation.mutationFn()).rejects.toThrow(
+      "no such agent: 'nope'",
+    );
+
+    vi.unstubAllGlobals();
   });
 });
 
