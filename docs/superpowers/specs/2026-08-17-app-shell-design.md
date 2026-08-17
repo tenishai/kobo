@@ -31,12 +31,22 @@ on the choice. The winner lands in the sidebar and as the favicon.
 
 ## Agent detail page
 
-- **Chat stays pinned**, always visible, directly under the status
-  header and step checklist (both untouched).
-- Below chat, one tab bar: **Memory, Skills, Tooling, Slack**. The Slack
-  tab renders only when `slack_visible`. Active tab is component state,
-  default Memory. Panels keep their internals; only their mounting moves
-  into tab containers.
+(Amended 2026-08-17 after the operator saw the first cut live: the
+pinned-chat layout still read as one long page. Ruling: everything
+tabbed, smart default.)
+
+- The header stays: back link, avatar, name, status badge, model,
+  source link.
+- One tab bar with real visual weight: **Overview, Chat, Memory,
+  Skills, Tooling, Slack**. The Slack tab renders only when
+  `slack_visible`. Panels keep their internals.
+- **Overview** holds the persona/composition card (with the avatar
+  action), the step checklist, the failed banner, and First words.
+- **Smart default**: on mount, land on Chat when the agent is ready;
+  land on Overview in any other status. When status transitions into a
+  destroy state while the page is open, select Overview once (the
+  reversed checklist is the destruction story); the operator can still
+  click away.
 - **Danger zone stays at the very bottom, outside the tabs**, rendered
   only when `destroy_visible`, exactly as today.
 
