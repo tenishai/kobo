@@ -51,11 +51,10 @@
   import EmptyState from "./EmptyState.svelte";
   import ErrorState from "./ErrorState.svelte";
   import Skeleton from "./Skeleton.svelte";
-  import { errorMessage, type ToolingFile, type ToolingImportResult } from "../lib/api";
+  import { errorMessage, type ToolingFile } from "../lib/api";
   import {
     deleteToolingMutation,
     deliveryQuery,
-    importToolingMutation,
     toolingQuery,
     uploadToolingMutation,
   } from "../lib/queries";
@@ -73,7 +72,6 @@
   // svelte-ignore state_referenced_locally
   const uploadMutation = createMutation(uploadToolingMutation(queryClient, agentName));
   // svelte-ignore state_referenced_locally
-  const importMutation = createMutation(importToolingMutation(queryClient, agentName));
   // svelte-ignore state_referenced_locally
   const deleteMutation = createMutation(deleteToolingMutation(queryClient, agentName));
 
@@ -262,49 +260,6 @@
     );
   }
 
-  // --- Import: owner/repo + folder path, per-file results -------------------
-
-  let importRepo = $state("");
-  let importPath = $state("");
-  let importError = $state<string | null>(null);
-  let importResult = $state<ToolingImportResult | null>(null);
-
-  const canImport = $derived.by((): boolean => {
-    if ($importMutation.isPending) {
-      return false;
-    }
-    return importRepo.trim().length > 0 && importPath.trim().length > 0;
-  });
-
-  function handleImport(event: SubmitEvent): void {
-    event.preventDefault();
-    if (!canImport) {
-      return;
-    }
-    importError = null;
-    importResult = null;
-    $importMutation.mutate(
-      { repo: importRepo.trim(), path: importPath.trim() },
-      {
-        onSuccess: (result) => {
-          importResult = result;
-          // sha is null when nothing passed validation — nothing was
-          // pushed, so there's nothing for the shared chip to track.
-          if (result.sha !== null) {
-            beginDelivery(result.sha);
-          }
-          importRepo = "";
-          importPath = "";
-        },
-        onError: (err: unknown) => {
-          // Includes the server's verbatim 404 when the path doesn't exist
-          // in the source repo, alongside its plain 422s.
-          importError = errorMessage(err, "Couldn't import from that repo. Try again.");
-        },
-      },
-    );
-  }
-
   // --- Remove: files, not memories — a plain confirm, no bespoke copy -----
 
   let removeError = $state<string | null>(null);
@@ -429,77 +384,6 @@
     </button>
   </form>
 
-  <form class="tooling-form" onsubmit={handleImport}>
-    <h3 class="tooling-form__heading">Import from a repo</h3>
-
-    <div class="tooling-form__field">
-      <label class="tooling-form__label" for="tooling-import-repo">Repository</label>
-      <input
-        id="tooling-import-repo"
-        class="tooling-form__input"
-        type="text"
-        bind:value={importRepo}
-        autocomplete="off"
-        spellcheck="false"
-        placeholder="owner/repo"
-        disabled={frozen}
-      />
-    </div>
-
-    <div class="tooling-form__field">
-      <label class="tooling-form__label" for="tooling-import-path">Folder path</label>
-      <input
-        id="tooling-import-path"
-        class="tooling-form__input"
-        type="text"
-        bind:value={importPath}
-        autocomplete="off"
-        spellcheck="false"
-        placeholder="bundle/tools"
-        disabled={frozen}
-      />
-    </div>
-
-    {#if importError}
-      <p class="tooling-form__status tooling-form__status--error" role="alert">{importError}</p>
-    {/if}
-
-    <button type="submit" class="tooling-form__submit" disabled={frozen || !canImport}>
-      {$importMutation.isPending ? "Importing…" : "Import"}
-    </button>
-
-    {#if importResult}
-      <div class="tooling-import__results">
-        {#if importResult.imported.length > 0}
-          <div class="tooling-import__group">
-            <p class="tooling-import__group-label tooling-import__group-label--ok">Imported</p>
-            <ul class="tooling-import__list">
-              {#each importResult.imported as name (name)}
-                <li class="tooling-import__list-item">{name}</li>
-              {/each}
-            </ul>
-          </div>
-        {/if}
-        {#if importResult.rejected.length > 0}
-          <div class="tooling-import__group">
-            <p class="tooling-import__group-label tooling-import__group-label--fail">Rejected</p>
-            <ul class="tooling-import__list">
-              {#each importResult.rejected as entry (entry.name)}
-                <li class="tooling-import__list-item">
-                  <span class="tooling-import__rejected-name">{entry.name}</span>
-                  <span class="tooling-import__rejected-reason">{entry.reason}</span>
-                </li>
-              {/each}
-            </ul>
-          </div>
-        {/if}
-        {#if importResult.imported.length === 0 && importResult.rejected.length === 0}
-          <p class="tooling-import__empty">No .py or .go files found there.</p>
-        {/if}
-      </div>
-    {/if}
-  </form>
-
   {#if $tooling.isPending}
     <Skeleton rows={3} />
   {:else if $tooling.isError}
@@ -508,7 +392,7 @@
       onretry={() => $tooling.refetch()}
     />
   {:else if $tooling.data.files.length === 0}
-    <EmptyState message="Nothing here yet. Upload a file or import from a repo." />
+    <EmptyState message="Nothing here yet. Upload a file to govern this agent." />
   {:else}
     {#if removeError}
       <p class="tooling-panel__remove-error" role="alert">{removeError}</p>
@@ -725,72 +609,15 @@
     cursor: not-allowed;
   }
 
-  .tooling-import__results {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    padding: var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-  }
 
-  .tooling-import__group {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
 
-  .tooling-import__group-label {
-    margin: 0;
-    font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
 
-  .tooling-import__group-label--ok {
-    color: var(--ok);
-  }
 
-  .tooling-import__group-label--fail {
-    color: var(--fail);
-  }
 
-  .tooling-import__list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
 
-  .tooling-import__list-item {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-xs);
-    overflow-wrap: anywhere;
-    color: var(--ink);
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
-  }
 
-  .tooling-import__rejected-name {
-    color: var(--ink);
-    font-weight: 600;
-  }
 
-  .tooling-import__rejected-reason {
-    color: var(--muted);
-    font-family: var(--font-sans);
-  }
 
-  .tooling-import__empty {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.85rem;
-  }
 
   .tooling-panel__remove-error {
     margin: 0;
