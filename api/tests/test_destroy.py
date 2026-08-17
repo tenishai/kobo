@@ -745,3 +745,56 @@ def test_run_destroy_resume_retries_failed_platform_and_continues_to_forget(
     assert session.get(Agent, agent_id) is None
     assert session.query(AgentStep).filter_by(agent_id=agent_id).count() == 0
     session.close()
+
+
+# --- run_destroy: a failed launch releases its slot (fix round 2) -------------
+
+
+def test_run_destroy_releases_the_registry_slot_when_the_thread_fails_to_launch(
+    session_factory, config, monkeypatch
+):
+    """Before the fix, `run_destroy` added `agent_id` to `_destroying_agent_
+    ids` BEFORE constructing/starting the `threading.Thread` — if `.start()`
+    (or construction) raised, the exception propagated with the slot still
+    registered (the thread's own `finally`-release in
+    `_run_destroy_body_and_release` never ran, since the thread's body never
+    ran). Every later `run_destroy` call for that agent_id would then see it
+    already in the registry and return `None` forever — a permanent brick.
+
+    Patches `threading.Thread` in the destroy module's own namespace (the
+    real registry path, not a mock of `run_destroy` itself) so `.start()`
+    raises like a real "can't start new thread" failure would."""
+    agent_id = _seed_agent(session_factory, status=AgentStatus.READY, gojira_app_id=7)
+    fake_gojira = FakeGojira()
+
+    class _ThreadThatFailsToStart:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(destroy_module.threading, "Thread", _ThreadThatFailsToStart)
+
+    with pytest.raises(RuntimeError, match="can't start new thread"):
+        run_destroy(session_factory, agent_id, _clients(gojira=fake_gojira), config)
+
+    # The slot must not remain claimed by a launch that never actually
+    # started a thread — otherwise every later call for this agent_id is
+    # silently swallowed (returns None) forever.
+    assert agent_id not in destroy_module._destroying_agent_ids
+
+    # Un-patch and confirm a subsequent call for the SAME agent_id actually
+    # launches and completes for real.
+    monkeypatch.undo()
+
+    thread2 = run_destroy(session_factory, agent_id, _clients(gojira=fake_gojira), config)
+    assert thread2 is not None
+    thread2.join(timeout=JOIN_TIMEOUT)
+    assert thread2.is_alive() is False
+    assert agent_id not in destroy_module._destroying_agent_ids
+    assert fake_gojira.delete_calls == [(7, True)]
+
+    session = session_factory()
+    assert session.get(Agent, agent_id) is None
+    session.close()

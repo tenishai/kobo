@@ -383,10 +383,22 @@ def run_destroy(
             return None
         _destroying_agent_ids.add(agent_id)
 
-    thread = threading.Thread(
-        target=_run_destroy_body_and_release,
-        args=(session_factory, agent_id, clients, config),
-        daemon=True,
-    )
-    thread.start()
+    try:
+        thread = threading.Thread(
+            target=_run_destroy_body_and_release,
+            args=(session_factory, agent_id, clients, config),
+            daemon=True,
+        )
+        thread.start()
+    except Exception:
+        # Construction or `.start()` itself failed (e.g. the OS refused a
+        # new thread) — the slot was claimed above but the thread whose
+        # `finally` would normally release it (_run_destroy_body_and_
+        # release) never ran. Without this, the slot stays claimed forever
+        # and every later run_destroy call for this agent_id silently
+        # returns None.
+        with _destroying_lock:
+            _destroying_agent_ids.discard(agent_id)
+        raise
+
     return thread
