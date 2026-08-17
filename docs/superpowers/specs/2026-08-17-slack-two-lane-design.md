@@ -26,6 +26,8 @@ together. The two concerns split cleanly.
   Transports). Saving before tokens exist just stores the list.
 - The lane freezes with the rest of the page while the agent is
   destroying (the `frozen` idiom).
+- At most eight channels per agent for now (each channel holds one
+  Socket Mode connection and the app token allows about ten).
 
 ### Setup (slack_operators only)
 

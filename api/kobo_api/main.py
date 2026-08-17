@@ -62,6 +62,7 @@ from kobo_api.skills import (
     save_local_skill,
 )
 from kobo_api.slack_setup import render_manifest, wire_slack
+from kobo_api.slack_state import SLACK_CHANNEL_RE
 from kobo_api.static_ui import mount_ui
 from kobo_api.tooling import (
     ToolingError,
@@ -248,8 +249,9 @@ KNOWLEDGE_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 # cover both public and private channels, since modern private channels are
 # C-prefixed just like public ones. Legacy G-prefixed channel ids are not
 # supported: Slack has migrated private channels to C ids, so there's no
-# live channel this regex would need to admit.
-SLACK_CHANNEL_RE = re.compile(r"^C[A-Z0-9]{6,}$")
+# live channel this regex would need to admit. Moved to kobo_api.slack_state
+# (two-lane Slack, 2026-08-17) so the channel-list helpers can share it
+# without importing back into main.py.
 
 # Avatar generation (P2d, Global Constraint): reject a generated image bigger
 # than this BEFORE it's ever pushed to the repo or cached on the Agent row —

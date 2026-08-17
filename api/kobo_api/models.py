@@ -5,7 +5,15 @@ from __future__ import annotations
 import enum
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
@@ -65,6 +73,15 @@ class Agent(Base):
     # never persisted anywhere; see kobo_api.slack_setup.wire_slack.
     slack_app_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     slack_channel: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Two-lane Slack (2026-08-17): the saved channel list (JSON array of
+    # C ids) and whether wiring has completed at least once. Existing DBs
+    # need manual ALTERs (fresh DBs get them from create_all):
+    #   ALTER TABLE agents ADD COLUMN slack_channels VARCHAR;
+    #   ALTER TABLE agents ADD COLUMN slack_wired BOOLEAN DEFAULT 0;
+    # `slack_channel` (singular) above is dormant after this change: kept
+    # for history, no longer written.
+    slack_channels: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    slack_wired: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # Avatar (P2d): a base64-encoded copy of bundle/avatar.png (the repo is
     # the source of truth, same as first_reply's relationship to the a2a
     # endpoint) — cached here purely so list/detail views can render an
