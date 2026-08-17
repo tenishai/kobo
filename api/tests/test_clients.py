@@ -858,6 +858,124 @@ def test_add_to_group_reraises_other_errors():
         client.add_to_group("email@example-project.iam.gserviceaccount.com", "models@example.com")
 
 
+# --- Cloud teardown (remove_from_group / delete_gsa) --------------------------
+
+
+def test_remove_from_group_removes_and_returns_true():
+    runner = RecordingRunner()
+    client = GcloudClient("example-project", runner=runner)
+    removed = client.remove_from_group(
+        "agent-clio@example-project.iam.gserviceaccount.com", "models@example.com"
+    )
+    assert removed is True
+    assert runner.calls == [
+        [
+            "gcloud", "identity", "groups", "memberships", "delete",
+            "--group-email", "models@example.com",
+            "--member-email", "agent-clio@example-project.iam.gserviceaccount.com",
+            "--quiet",
+        ]
+    ]
+
+
+def test_remove_from_group_absent_membership_returns_false_without_raising():
+    # Grounded in the installed gcloud SDK source (not run live; the
+    # installed google-cloud-sdk under ~/Workspace/google-cloud-sdk has the
+    # Python source for this command tree). `gcloud identity groups
+    # memberships delete` resolves --group-email/--member-email into a
+    # membership resource name before deleting
+    # (googlecloudsdk/command_lib/identity/groups/memberships/hooks.py,
+    # SetMembershipResourceName -> ConvertEmailToMembershipResourceName).
+    # That lookup's HttpNotFoundError (absent membership) is caught and
+    # re-raised as a calliope InvalidArgumentException with this exact,
+    # fixed message: "There is no such membership associated with the
+    # specified arguments: <group-email>, <member-email>" (same function,
+    # its except clause). Calliope then renders any known exception as
+    # "ERROR: (<command.path>) <message>" (calliope/exceptions.py,
+    # _LogKnownError), giving the stderr text pinned below.
+    stderr = (
+        "ERROR: (gcloud.identity.groups.memberships.delete) Invalid value "
+        "for [--group-email, --member-email]: There is no such membership "
+        "associated with the specified arguments: models@example.com, "
+        "agent-clio@example-project.iam.gserviceaccount.com"
+    )
+    runner = RecordingRunner(results=[(1, "", stderr)])
+    client = GcloudClient("example-project", runner=runner)
+    removed = client.remove_from_group(
+        "agent-clio@example-project.iam.gserviceaccount.com", "models@example.com"
+    )
+    assert removed is False
+
+
+def test_remove_from_group_permission_denied_raises():
+    # The lookup-stage collapse above only fires before the delete request
+    # itself; a real permission problem on the actual delete call surfaces
+    # as a plain HttpException with no "There is no such membership" text,
+    # so it must still raise rather than being swallowed as absent.
+    runner = RecordingRunner(
+        results=[(1, "", "ERROR: (gcloud.identity.groups.memberships.delete) PERMISSION_DENIED")]
+    )
+    client = GcloudClient("example-project", runner=runner)
+    with pytest.raises(ClientError):
+        client.remove_from_group(
+            "agent-clio@example-project.iam.gserviceaccount.com", "models@example.com"
+        )
+
+
+def test_delete_gsa_deletes_and_returns_true():
+    runner = RecordingRunner(
+        results=[(0, "agent-clio@example-project.iam.gserviceaccount.com", ""), (0, "", "")]
+    )
+    client = GcloudClient("example-project", runner=runner)
+    deleted = client.delete_gsa("agent-clio@example-project.iam.gserviceaccount.com")
+    assert deleted is True
+    assert runner.calls == [
+        [
+            "gcloud", "iam", "service-accounts", "describe",
+            "agent-clio@example-project.iam.gserviceaccount.com",
+            "--project", "example-project",
+        ],
+        [
+            "gcloud", "iam", "service-accounts", "delete",
+            "agent-clio@example-project.iam.gserviceaccount.com",
+            "--project", "example-project", "--quiet",
+        ],
+    ]
+
+
+def test_delete_gsa_absent_returns_false():
+    # Grounded in the installed gcloud SDK source
+    # (~/Workspace/google-cloud-sdk/lib/surface/iam/service_accounts/delete.py,
+    # Delete's own docstring): "If the service account does not exist, this
+    # command returns a `PERMISSION_DENIED` error." Delete's own not-found
+    # signal is therefore NOT distinguishable from a real permission
+    # problem by stderr text alone, so delete_gsa describes first, reusing
+    # ensure_gsa's already-grounded describe-call discriminator
+    # ("not_found"/"does not exist" in stderr, same real error text used by
+    # ensure_gsa's own tests) and only issues the delete once describe
+    # confirms the GSA exists. This mirrors gojira's delete_service_account
+    # (gojira/gcp.py), which takes the identical describe-then-delete shape
+    # for the same documented reason.
+    stderr = (
+        "ERROR: (gcloud.iam.service-accounts.describe) NOT_FOUND: "
+        "Service account agent-clio@example-project.iam.gserviceaccount.com "
+        "does not exist."
+    )
+    runner = RecordingRunner(results=[(1, "", stderr)])
+    client = GcloudClient("example-project", runner=runner)
+    deleted = client.delete_gsa("agent-clio@example-project.iam.gserviceaccount.com")
+    assert deleted is False
+    assert len(runner.calls) == 1  # describe only, no delete issued
+
+
+def test_delete_gsa_permission_denied_raises():
+    runner = RecordingRunner(results=[(1, "", "ERROR: (gcloud...) PERMISSION_DENIED")])
+    client = GcloudClient("example-project", runner=runner)
+    with pytest.raises(ClientError):
+        client.delete_gsa("agent-clio@example-project.iam.gserviceaccount.com")
+    assert len(runner.calls) == 1  # never got to (or attempted) delete
+
+
 # --- Kubectl (KubectlCLI) -----------------------------------------------------
 
 
@@ -3602,6 +3720,41 @@ def test_fake_cloud_satisfies_protocol():
     fake.bind_workload_identity(email, "clio", "clio-ksa")
     fake.add_to_group(email, "models@example.com")
     assert email in fake.gsas
+
+
+def test_fake_cloud_remove_from_group_true_when_present_false_when_absent():
+    fake = FakeCloud()
+    email = fake.ensure_gsa("clio")
+    fake.add_to_group(email, "models@example.com")
+    assert fake.remove_from_group(email, "models@example.com") is True
+    assert (email, "models@example.com") not in fake.group_members
+    # Already gone (never added, or just removed above) returns False
+    # rather than raising.
+    assert fake.remove_from_group(email, "models@example.com") is False
+    assert fake.remove_from_group("nobody@example-project.iam.gserviceaccount.com", "x@example.com") is False
+
+
+def test_fake_cloud_remove_from_group_error_knob_raises_instead_of_absent_check():
+    fake = FakeCloud(remove_group_error="boom")
+    with pytest.raises(ClientError, match="boom"):
+        fake.remove_from_group("clio@example-project.iam.gserviceaccount.com", "models@example.com")
+
+
+def test_fake_cloud_delete_gsa_true_when_present_false_when_absent():
+    fake = FakeCloud()
+    email = fake.ensure_gsa("clio")
+    assert fake.delete_gsa(email) is True
+    assert email not in fake.gsas
+    # Already gone (never created, or just deleted above) returns False
+    # rather than raising.
+    assert fake.delete_gsa(email) is False
+    assert fake.delete_gsa("nobody@example-project.iam.gserviceaccount.com") is False
+
+
+def test_fake_cloud_delete_gsa_error_knob_raises_instead_of_absent_check():
+    fake = FakeCloud(delete_gsa_error="boom")
+    with pytest.raises(ClientError, match="boom"):
+        fake.delete_gsa("clio@example-project.iam.gserviceaccount.com")
 
 
 def test_fake_agent_satisfies_protocol():

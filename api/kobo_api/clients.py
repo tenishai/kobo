@@ -711,6 +711,14 @@ class CloudClient(Protocol):
         """Add gsa_email to group; tolerates it already being a member."""
         ...
 
+    def remove_from_group(self, gsa_email: str, group: str) -> bool:
+        """Remove gsa_email from group. False if it was already absent."""
+        ...
+
+    def delete_gsa(self, email: str) -> bool:
+        """Delete the GSA at email. False if it was already gone."""
+        ...
+
 
 def gsa_email(name: str, project: str) -> str:
     """The GSA email convention for a GCP service account: `{name}@{project}.iam.gserviceaccount.com`.
@@ -787,6 +795,72 @@ class GcloudClient:
             if "already exists" in stderr or "already a member" in stderr:
                 return
             raise
+
+    def remove_from_group(self, gsa_email: str, group: str) -> bool:
+        # Not-found grounding (read from the installed google-cloud-sdk's
+        # Python source, ~/Workspace/google-cloud-sdk/lib/googlecloudsdk/
+        # command_lib/identity/groups/memberships/hooks.py): before the
+        # actual delete request, `gcloud identity groups memberships
+        # delete` resolves --group-email/--member-email into a membership
+        # resource name (SetMembershipResourceName ->
+        # ConvertEmailToMembershipResourceName). That helper's lookup call
+        # (LookupMembershipName) raising HttpNotFoundError for an absent
+        # membership (or HttpForbiddenError -- the SDK collapses both) is
+        # caught there and re-raised as a calliope InvalidArgumentException
+        # with a fixed message: "There is no such membership associated
+        # with the specified arguments: <group-email>, <member-email>".
+        # Calliope renders any known exception as "ERROR: (<command.path>)
+        # <message>" (calliope/exceptions.py, _LogKnownError), so that
+        # fixed phrase is a stable substring of the real stderr. Only that
+        # exact phrase is treated as absent; a real permission problem
+        # surfacing from the delete request itself (post-lookup) carries
+        # no such text, so it still raises.
+        try:
+            self._runner.run(
+                [
+                    self._gcloud, "identity", "groups", "memberships", "delete",
+                    "--group-email", group, "--member-email", gsa_email, "--quiet",
+                ]
+            )
+        except ClientError as exc:
+            if "there is no such membership" in exc.stderr.lower():
+                return False
+            raise
+        return True
+
+    def delete_gsa(self, email: str) -> bool:
+        # Not-found grounding: the installed gcloud SDK's own docstring for
+        # this command (~/Workspace/google-cloud-sdk/lib/surface/iam/
+        # service_accounts/delete.py, class Delete) says outright: "If the
+        # service account does not exist, this command returns a
+        # `PERMISSION_DENIED` error." That means delete's own failure
+        # can't be told apart from a real permission problem by stderr
+        # text alone -- unlike describe, whose not-found rendering
+        # ensure_gsa above already discriminates ("not_found"/"does not
+        # exist"). So this describes first, reusing that same
+        # already-grounded check, and only issues the delete once
+        # describe confirms the GSA still exists -- the identical
+        # describe-then-delete shape gojira's delete_service_account
+        # (gojira/gcp.py) uses, for the same documented reason.
+        try:
+            self._runner.run(
+                [
+                    self._gcloud, "iam", "service-accounts", "describe", email,
+                    "--project", self._project,
+                ]
+            )
+        except ClientError as exc:
+            stderr = exc.stderr.lower()
+            if "not_found" not in stderr and "does not exist" not in stderr:
+                raise
+            return False
+        self._runner.run(
+            [
+                self._gcloud, "iam", "service-accounts", "delete", email,
+                "--project", self._project, "--quiet",
+            ]
+        )
+        return True
 
 
 # --- Agent (a2a chat over a kubectl port-forward) -----------------------------

@@ -834,10 +834,32 @@ class FakeCloud:
     """Records ensure_gsa/bind_workload_identity/add_to_group calls; every
     method is idempotent against its own recorded state, mirroring the real
     gcloud backend's describe-then-create / add-iam-policy-binding semantics.
+
+    Teardown (`remove_from_group`/`delete_gsa`, Task 1 destruction-
+    completeness) reuses that same recorded state rather than adding a
+    parallel "already gone" flag: `remove_from_group` returns False iff
+    the `(gsa_email, group)` pair isn't in `group_members` (whether it was
+    never added or a prior `remove_from_group` already took it out) and
+    otherwise discards it and returns True; `delete_gsa` returns False iff
+    `email` isn't in `gsas` and otherwise discards it and returns True --
+    the same shape the real `GcloudClient`'s describe-then-act verbs use.
+    `remove_group_error`/`delete_gsa_error`, when set, make the matching
+    method raise `ClientError` instead, checked before any state
+    read/mutation -- the seam for exercising the teardown steps' failure
+    handling, same convention as this file's other `*_error` knobs (e.g.
+    `FakeGojira.delete_app`'s `delete_error`).
     """
 
-    def __init__(self, *, project: str = "example-project"):
+    def __init__(
+        self,
+        *,
+        project: str = "example-project",
+        remove_group_error: str | None = None,
+        delete_gsa_error: str | None = None,
+    ):
         self._project = project
+        self._remove_group_error = remove_group_error
+        self._delete_gsa_error = delete_gsa_error
         self.gsas: set[str] = set()
         self.bindings: set[tuple[str, str, str]] = set()
         self.group_members: set[tuple[str, str]] = set()
@@ -856,6 +878,24 @@ class FakeCloud:
     def add_to_group(self, gsa_email: str, group: str) -> None:
         self.calls.append(f"add_to_group:{gsa_email}:{group}")
         self.group_members.add((gsa_email, group))
+
+    def remove_from_group(self, gsa_email: str, group: str) -> bool:
+        self.calls.append(f"remove_from_group:{gsa_email}:{group}")
+        if self._remove_group_error is not None:
+            raise ClientError(self._remove_group_error)
+        if (gsa_email, group) not in self.group_members:
+            return False
+        self.group_members.discard((gsa_email, group))
+        return True
+
+    def delete_gsa(self, email: str) -> bool:
+        self.calls.append(f"delete_gsa:{email}")
+        if self._delete_gsa_error is not None:
+            raise ClientError(self._delete_gsa_error)
+        if email not in self.gsas:
+            return False
+        self.gsas.discard(email)
+        return True
 
 
 class FakeAgent:
