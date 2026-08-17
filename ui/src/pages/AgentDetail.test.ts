@@ -71,11 +71,53 @@ describe("AgentDetail tabs", () => {
     expect(chatTab.getAttribute("aria-selected")).toBe("true");
     expect(screen.queryByRole("tab", { name: "Slack" })).toBeNull();
 
+    // Ready is the one status where every tab trigger is reachable — none
+    // of them dead-end into a 409, so none should be disabled.
+    for (const label of ["Overview", "Chat", "Memory", "Skills", "Tooling"]) {
+      expect((screen.getByRole("tab", { name: label }) as HTMLButtonElement).disabled).toBe(
+        false,
+      );
+    }
+
     const memoryTab = screen.getByRole("tab", { name: "Memory" });
     await fireEvent.click(memoryTab);
     expect(memoryTab.getAttribute("aria-selected")).toBe("true");
     expect(document.getElementById("panel-chat")?.hasAttribute("hidden")).toBe(true);
     expect(document.getElementById("panel-chat")).not.toBeNull();
+  });
+
+  it("disables the non-Overview tab triggers while provisioning, so a click can't dead-end into a 409", async () => {
+    stubFetch({
+      "/api/agents/warden/knowledge": { files: [] },
+      "/api/agents/warden/intake": { files: [] },
+      "/api/agents/warden/skills": { skills: [] },
+      "/api/agents/warden/tooling": {
+        files: [],
+        enforcement: { attested: false, locked: false, locked_file: null },
+      },
+      "/api/agents/warden": { ...READY_AGENT, status: "provisioning" },
+      "/api/": {},
+    });
+    renderWithClient(AgentDetail);
+    const overviewTab = await screen.findByRole("tab", { name: "Overview" });
+    expect(overviewTab.getAttribute("aria-selected")).toBe("true");
+    expect((overviewTab as HTMLButtonElement).disabled).toBe(false);
+
+    const chatTab = screen.getByRole("tab", { name: "Chat" }) as HTMLButtonElement;
+    const memoryTab = screen.getByRole("tab", { name: "Memory" }) as HTMLButtonElement;
+    const skillsTab = screen.getByRole("tab", { name: "Skills" }) as HTMLButtonElement;
+    const toolingTab = screen.getByRole("tab", { name: "Tooling" }) as HTMLButtonElement;
+    expect(chatTab.disabled).toBe(true);
+    expect(memoryTab.disabled).toBe(true);
+    expect(skillsTab.disabled).toBe(true);
+    expect(toolingTab.disabled).toBe(true);
+
+    // The root of review-Important-2's gap: a disabled trigger can't be
+    // selected at all, so Memory's 409-then-ErrorState path is never
+    // reached by clicking in from here — selection just stays put.
+    await fireEvent.click(memoryTab);
+    expect(overviewTab.getAttribute("aria-selected")).toBe("true");
+    expect(memoryTab.getAttribute("aria-selected")).toBe("false");
   });
 
   it("lands on Overview on mount for a non-ready status (destroying)", async () => {
@@ -178,5 +220,16 @@ describe("AgentDetail tabs", () => {
     expect(overviewTab.getAttribute("aria-selected")).toBe("true");
     const avatarButton = screen.getByRole("button", { name: /give warden a face/i });
     expect((avatarButton as HTMLButtonElement).disabled).toBe(true);
+
+    // Frozen (destroying/destroy_failed) is the one non-ready status where
+    // tabs stay fully clickable — the destruction ruling makes read-only
+    // content reachable even though it's not "ready"; only per-panel
+    // CONTROLS (like the avatar button above) freeze, never the tabs
+    // themselves.
+    for (const label of ["Overview", "Chat", "Memory", "Skills", "Tooling"]) {
+      expect((screen.getByRole("tab", { name: label }) as HTMLButtonElement).disabled).toBe(
+        false,
+      );
+    }
   });
 });

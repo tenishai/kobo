@@ -199,7 +199,17 @@
     {@const tabs = visibleTabs(data.slack_visible)}
     <div class="detail-tabs">
       <div class="detail-tabs__bar" role="tablist" aria-label="Agent sections">
+        <!-- Every panel mounts regardless of status (see the tabpanel loop
+             below), but its query still 409s server-side until the agent is
+             `ready` — so the trigger itself is disabled rather than left
+             clickable into a dead end, for every status that is neither
+             ready nor frozen (pending/provisioning/failed). Frozen statuses
+             (destroying/destroy_failed) are the one exception: destruction
+             makes read-only content reachable again, so only mutation
+             CONTROLS freeze there (each panel's own `frozen` prop below) —
+             the tabs themselves stay fully clickable. -->
         {#each tabs as tab (tab)}
+          {@const tabDisabled = tab !== "overview" && data.status !== "ready" && !isFrozen(data.status)}
           <button
             type="button"
             role="tab"
@@ -207,7 +217,12 @@
             class="detail-tabs__tab"
             aria-selected={activeTab === tab}
             aria-controls={`panel-${tab}`}
-            onclick={() => (activeTab = tab)}
+            disabled={tabDisabled}
+            onclick={() => {
+              if (!tabDisabled) {
+                activeTab = tab;
+              }
+            }}
           >
             {TAB_LABELS[tab]}
           </button>
@@ -543,6 +558,11 @@
     border-bottom-color: var(--accent);
     color: var(--ink);
     font-weight: 600;
+  }
+
+  .detail-tabs__tab:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 
   .detail-tabs__panel {

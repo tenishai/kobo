@@ -7,11 +7,17 @@
   // subsection is only the upload/list/remove plumbing, plus showing each
   // file's pending/ingested status (derived fresh from git ancestry by the
   // server on every list call — see `kobo_api.intake.list_intake`'s
-  // docstring). Both halves are rendered only once the agent is `ready`
-  // (same gate as ChatPanel, in AgentDetail). Every save/delete/upload here
-  // is delivered through a rebuild the user never sees or names: copy
-  // speaks only of saving/teaching changes and the agent picking them up,
-  // never "commit"/"deploy"/"build"/"repo"/"sha"/"pipeline".
+  // docstring). Both halves are always mounted inside their own tabpanel
+  // (AgentDetail) regardless of the agent's status — the server gates the
+  // actual mutations until `status === "ready"` (a 409 otherwise), and
+  // AgentDetail disables the Memory tab TRIGGER for every other non-frozen
+  // status so that gate is never reached by clicking in from here; the
+  // `frozen` prop (destroying/destroy_failed) disables this panel's own
+  // controls instead, since destruction leaves the tab itself clickable.
+  // Every save/delete/upload here is delivered through a rebuild the user
+  // never sees or names: copy speaks only of saving/teaching changes and
+  // the agent picking them up, never
+  // "commit"/"deploy"/"build"/"repo"/"sha"/"pipeline".
   //
   // One shared `Modal` instance drives edit, add, and delete for knowledge
   // files — which of the three (and which file, for edit/delete) lives in

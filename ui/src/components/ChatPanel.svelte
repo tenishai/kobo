@@ -1,7 +1,11 @@
 <script lang="ts">
-  // A live conversation with an already-ready agent. Rendered by the caller
-  // only once `status === "ready"` (see AgentDetail) — this component just
-  // owns the back-and-forth once that's true.
+  // A live conversation with an already-ready agent. Always mounted inside
+  // its own tabpanel (AgentDetail) regardless of the agent's status — the
+  // server gates the actual chat mutation until `status === "ready"`
+  // (a 409 otherwise), and AgentDetail disables the Chat tab TRIGGER for
+  // every other non-frozen status so that gate is never reached by
+  // clicking in from here. This component just owns the back-and-forth
+  // once the agent is ready to have one.
   //
   // The transcript is local component state, not server state: there's no
   // persistence and no cache to invalidate (see chatMutation in queries.ts),
