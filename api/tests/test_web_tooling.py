@@ -44,7 +44,10 @@ SOURCE_REPO = "acme/tools-library"
 # mutating route below returns (github.local_head).
 SHA = FAKE_LOCAL_HEAD_DEFAULT
 
-VALID_PY = "def orchestrate():\n    return True\n"
+# Carries a real entrypoint (2026-08-16 addendum: the import allowlist +
+# entrypoint check) — every fixture below that stands in for "a valid
+# tooling file" reuses this constant.
+VALID_PY = "def post_draft(draft):\n    return draft\n"
 BROKEN_PY = "x = 1\ny = 2\nz = )\n"
 
 
@@ -326,6 +329,76 @@ def test_upload_tooling_route_python_syntax_error_returns_422_with_line_number(
 
     assert response.status_code == 422
     assert response.json()["error"].startswith("tooling file has a syntax error on line 3:")
+    assert github.pushes == []
+
+
+def test_upload_tooling_route_non_stdlib_import_returns_422(session_factory, config):
+    github = _CapturingGitHub()
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/tooling",
+        json={
+            "filename": "tool.py",
+            "content": "import httpx\n\n\ndef post_draft(draft):\n    return draft\n",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"] == (
+        "tooling file imports beyond the standard library on line 1: httpx"
+    )
+    assert github.pushes == []
+
+
+def test_upload_tooling_route_relative_import_returns_422(session_factory, config):
+    github = _CapturingGitHub()
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/tooling",
+        json={
+            "filename": "tool.py",
+            "content": "from . import helper\n\n\ndef post_draft(draft):\n    return draft\n",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "tooling file uses a relative import on line 1"
+    assert github.pushes == []
+
+
+def test_upload_tooling_route_async_hook_returns_422(session_factory, config):
+    github = _CapturingGitHub()
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/tooling",
+        json={"filename": "tool.py", "content": "async def pre_task(task):\n    return task\n"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"] == (
+        "tooling file hooks must be regular functions, not async"
+    )
+    assert github.pushes == []
+
+
+def test_upload_tooling_route_missing_entrypoint_returns_422(session_factory, config):
+    github = _CapturingGitHub()
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/tooling",
+        json={"filename": "tool.py", "content": "def helper():\n    return 1\n"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "tooling file defines neither pre_task nor post_draft"
     assert github.pushes == []
 
 

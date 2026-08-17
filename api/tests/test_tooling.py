@@ -41,7 +41,11 @@ RUNTIME_IMAGE = "registry.example/agents/daedalus-runtime:new"
 # across recent Python versions (verified against 3.12).
 BROKEN_PY = "x = 1\ny = 2\nz = )\n"
 
-VALID_PY = "def orchestrate():\n    return True\n"
+# Carries a real entrypoint (2026-08-16 addendum: the import allowlist +
+# entrypoint check) — every other fixture in this module that stands in for
+# "a valid tooling file" reuses this constant, so it only needed updating in
+# one place once the contract started requiring one.
+VALID_PY = "def post_draft(draft):\n    return draft\n"
 
 
 class _CapturingGitHub(FakeGitHub):
@@ -130,10 +134,12 @@ def test_upload_tooling_file_rejects_oversize_content():
 
 def test_upload_tooling_file_accepts_content_at_exact_byte_cap():
     github = _CapturingGitHub()
-    # exact-cap content built the same oversize-avoiding way: a valid
-    # one-line module padded with a comment out to the exact byte cap.
-    padding = "a" * (TOOLING_MAX_BYTES - len("#\n"))
-    exact = "#" + padding + "\n"
+    # exact-cap content built the same oversize-avoiding way: a real
+    # entrypoint (required since the 2026-08-16 addendum) followed by a
+    # comment padded out to the exact byte cap.
+    base = "def post_draft(draft):\n    return draft\n#"
+    padding = "a" * (TOOLING_MAX_BYTES - len(base) - len("\n"))
+    exact = base + padding + "\n"
     assert len(exact.encode("utf-8")) == TOOLING_MAX_BYTES
     upload_tooling_file(github, REPO, "tool.py", exact)
     assert github.captured_tools == {"tool.py": exact}
@@ -160,6 +166,156 @@ def test_upload_tooling_file_valid_python_passes():
     github = _CapturingGitHub()
     upload_tooling_file(github, REPO, "tool.py", VALID_PY)
     assert github.captured_tools == {"tool.py": VALID_PY}
+
+
+# --- import allowlist (2026-08-16 addendum) -------------------------------------
+#
+# Reuses the SAME `ast.parse` tree `_validate_content` already built for the
+# syntax check above — no second parse. Every case below carries a real
+# `post_draft` entrypoint (except where the rejection fires first) so each
+# test isolates the import check from the entrypoint check.
+
+
+def test_upload_tooling_file_rejects_non_stdlib_import_with_line_number():
+    github = FakeGitHub()
+    content = "import os\nimport httpx\n\n\ndef post_draft(draft):\n    return draft\n"
+    with pytest.raises(ToolingError) as excinfo:
+        upload_tooling_file(github, REPO, "tool.py", content)
+    assert str(excinfo.value) == (
+        "tooling file imports beyond the standard library on line 2: httpx"
+    )
+    assert github.pushes == []
+
+
+def test_upload_tooling_file_rejects_non_stdlib_from_import():
+    github = FakeGitHub()
+    content = "from requests import get\n\n\ndef post_draft(draft):\n    return draft\n"
+    with pytest.raises(ToolingError) as excinfo:
+        upload_tooling_file(github, REPO, "tool.py", content)
+    assert str(excinfo.value) == (
+        "tooling file imports beyond the standard library on line 1: requests"
+    )
+    assert github.pushes == []
+
+
+def test_upload_tooling_file_accepts_multi_name_stdlib_import():
+    github = _CapturingGitHub()
+    content = "import os, sys\n\n\ndef post_draft(draft):\n    return draft\n"
+    upload_tooling_file(github, REPO, "tool.py", content)
+    assert github.captured_tools == {"tool.py": content}
+
+
+def test_upload_tooling_file_accepts_stdlib_from_import():
+    github = _CapturingGitHub()
+    content = (
+        "from collections import OrderedDict\n\n\n"
+        "def post_draft(draft):\n    return OrderedDict(draft)\n"
+    )
+    upload_tooling_file(github, REPO, "tool.py", content)
+    assert github.captured_tools == {"tool.py": content}
+
+
+def test_upload_tooling_file_accepts_stdlib_import_ast():
+    github = _CapturingGitHub()
+    content = "import ast\n\n\ndef post_draft(draft):\n    return draft\n"
+    upload_tooling_file(github, REPO, "tool.py", content)
+    assert github.captured_tools == {"tool.py": content}
+
+
+def test_upload_tooling_file_rejects_relative_import():
+    github = FakeGitHub()
+    content = "from . import helper\n\n\ndef post_draft(draft):\n    return draft\n"
+    with pytest.raises(ToolingError) as excinfo:
+        upload_tooling_file(github, REPO, "tool.py", content)
+    assert str(excinfo.value) == "tooling file uses a relative import on line 1"
+    assert github.pushes == []
+
+
+# --- entrypoint check (2026-08-16 addendum) -------------------------------------
+
+
+def test_upload_tooling_file_rejects_async_pre_task_with_specific_message():
+    github = FakeGitHub()
+    content = "async def pre_task(task):\n    return task\n"
+    with pytest.raises(ToolingError) as excinfo:
+        upload_tooling_file(github, REPO, "tool.py", content)
+    assert str(excinfo.value) == (
+        "tooling file hooks must be regular functions, not async"
+    )
+    assert github.pushes == []
+
+
+def test_upload_tooling_file_nested_def_does_not_satisfy_entrypoint():
+    github = FakeGitHub()
+    content = (
+        "def outer():\n"
+        "    def pre_task(task):\n"
+        "        return task\n"
+        "    return outer\n"
+    )
+    with pytest.raises(ToolingError, match="tooling file defines neither pre_task nor post_draft"):
+        upload_tooling_file(github, REPO, "tool.py", content)
+    assert github.pushes == []
+
+
+def test_upload_tooling_file_missing_entrypoint_rejected():
+    github = FakeGitHub()
+    content = "def helper():\n    return 1\n"
+    with pytest.raises(ToolingError) as excinfo:
+        upload_tooling_file(github, REPO, "tool.py", content)
+    assert str(excinfo.value) == "tooling file defines neither pre_task nor post_draft"
+    assert github.pushes == []
+
+
+def test_upload_tooling_file_only_post_draft_passes():
+    github = _CapturingGitHub()
+    content = "def post_draft(draft):\n    return draft\n"
+    upload_tooling_file(github, REPO, "tool.py", content)
+    assert github.captured_tools == {"tool.py": content}
+
+
+def test_upload_tooling_file_only_pre_task_passes():
+    github = _CapturingGitHub()
+    content = "def pre_task(task):\n    return task\n"
+    upload_tooling_file(github, REPO, "tool.py", content)
+    assert github.captured_tools == {"tool.py": content}
+
+
+def test_upload_tooling_file_reference_orchestrator_shape_passes():
+    # A plausible real orchestrator: module constants, an exception class, a
+    # dataclass, both hooks, stdlib-only imports (json/re/dataclasses) —
+    # built inline here, not read from any real client's repo.
+    github = _CapturingGitHub()
+    content = (
+        "import json\n"
+        "import re\n"
+        "from dataclasses import dataclass\n"
+        "\n"
+        "\n"
+        "MAX_RETRIES = 3\n"
+        "DEFAULT_TIMEOUT = 30\n"
+        "\n"
+        "\n"
+        "class OrchestratorError(Exception):\n"
+        '    """Raised when the orchestrator cannot do its job."""\n'
+        "\n"
+        "\n"
+        "@dataclass\n"
+        "class Context:\n"
+        "    retries: int = MAX_RETRIES\n"
+        "\n"
+        "\n"
+        "def pre_task(task):\n"
+        '    return json.dumps({"task": task})\n'
+        "\n"
+        "\n"
+        "def post_draft(draft):\n"
+        '    if re.search(r"TODO", draft):\n'
+        '        raise OrchestratorError("draft still has a TODO")\n'
+        "    return draft\n"
+    )
+    upload_tooling_file(github, REPO, "tool.py", content)
+    assert github.captured_tools == {"tool.py": content}
 
 
 # --- upload_tooling_file: writes/commits/returns sha ---------------------------

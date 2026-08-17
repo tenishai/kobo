@@ -32,9 +32,10 @@ only the ones that pass in one push — one bad file in a folder of ten must
 never sink the other nine. `_validate_content` is deliberately the ONE place
 that runs the mechanical checks (extension is checked earlier, by
 `_validate_filename`, since it's part of the filename shape, not the
-content): the enforcement contract's own entrypoint check (2026-08-03
-constraints) joins this same function when it lands, so both doors — and
-any later per-agent write path — pick it up for free.
+content): the enforcement contract's own import allowlist and entrypoint
+check (2026-08-03 constraints) join this same function, reusing the exact
+same `ast.parse` tree the syntax check already produced, so both doors — and
+any later per-agent write path — pick them up for free.
 
 Every mutating operation here clones fresh into a `tempfile.
 TemporaryDirectory` and discards it before returning, same discipline as
@@ -56,6 +57,7 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 import tempfile
 from pathlib import Path
 
@@ -87,7 +89,10 @@ _TOOLING_EXTENSIONS = (".py", ".go")
 class ToolingError(Exception):
     """A tooling filename/source-repo/source-path failed validation, a
     file's content was empty, too large, not valid UTF-8, or (for a .py
-    file) failed to `ast.parse`, or a delete named a file that isn't there.
+    file) failed to `ast.parse`, imported something beyond the standard
+    library, used a relative import, defined an async `pre_task`/
+    `post_draft` hook, defined neither hook at all, or a delete named a
+    file that isn't there.
     """
 
 
@@ -99,9 +104,72 @@ def _validate_filename(filename: str) -> None:
         raise ToolingError(f"invalid tooling filename: {filename!r}")
 
 
+# The two hook names the (not-yet-shipped) enforcement contract will call by
+# name on a tooling file — see `_check_entrypoint`.
+_ENTRYPOINT_NAMES = ("pre_task", "post_draft")
+
+
+def _check_import_allowlist(tree: ast.AST) -> None:
+    """Walk the WHOLE tree — every `import X` / `from X import ...`
+    anywhere in the file, not just top-level, so a stdlib-evading import
+    tucked inside a function body doesn't slip past. A relative import
+    (`from . import x`, `from .pkg import y` — `node.level > 0`) is rejected
+    outright: the flat `bundle/tools/` directory has no package structure
+    for a relative import to resolve against, so there is no line number of
+    code where one could ever work. Anything else is checked against
+    `sys.stdlib_module_names` by its top-level module name
+    (`name.split(".")[0]`) — the tooling file's only allowed dependency
+    surface until the enforcement contract defines a real one.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                top_level = alias.name.split(".")[0]
+                if top_level not in sys.stdlib_module_names:
+                    raise ToolingError(
+                        "tooling file imports beyond the standard library "
+                        f"on line {node.lineno}: {top_level}"
+                    )
+        elif isinstance(node, ast.ImportFrom):
+            if node.level > 0:
+                raise ToolingError(
+                    f"tooling file uses a relative import on line {node.lineno}"
+                )
+            top_level = (node.module or "").split(".")[0]
+            if top_level not in sys.stdlib_module_names:
+                raise ToolingError(
+                    "tooling file imports beyond the standard library "
+                    f"on line {node.lineno}: {top_level}"
+                )
+
+
+def _check_entrypoint(tree: ast.Module) -> None:
+    """At least one top-level `def pre_task(...)` or `def post_draft(...)`
+    is required — only `tree.body` (the module's own top-level statements)
+    counts, so a `def pre_task` nested inside another function does NOT
+    satisfy this: it isn't reachable the way the runtime would call it,
+    which is exactly the mechanical honesty this module's docstring
+    describes. A top-level hook defined `async def` is rejected outright
+    with its own message, distinct from "neither hook defined" — the
+    (also not-yet-shipped) call site is synchronous.
+    """
+    found = False
+    for node in tree.body:
+        if isinstance(node, ast.AsyncFunctionDef) and node.name in _ENTRYPOINT_NAMES:
+            raise ToolingError(
+                "tooling file hooks must be regular functions, not async"
+            )
+        if isinstance(node, ast.FunctionDef) and node.name in _ENTRYPOINT_NAMES:
+            found = True
+    if not found:
+        raise ToolingError("tooling file defines neither pre_task nor post_draft")
+
+
 def _validate_content(filename: str, raw: bytes) -> str:
     """The single mechanical validator (module docstring): size cap, UTF-8
-    decodability, non-empty, and — for a `.py` file — `ast.parse`. Returns
+    decodability, non-empty, and — for a `.py` file — `ast.parse`, an
+    import allowlist (standard library only, no relative imports), and an
+    entrypoint check (a top-level `pre_task` or `post_draft`). Returns
     the decoded text on success.
 
     Takes raw bytes rather than an already-decoded str so `import_tooling`
@@ -135,14 +203,19 @@ def _validate_content(filename: str, raw: bytes) -> str:
     if filename.endswith(".py"):
         # .go gets no syntax check at all (module docstring, and the
         # addendum: no Go toolchain in the room) — validation of a .go
-        # file's actual syntax is deferred to the enforcement contract.
+        # file's actual syntax is deferred to the enforcement contract. The
+        # SAME parsed tree is reused below for the import allowlist and
+        # entrypoint checks — one `ast.parse` call, three checks off it.
         try:
-            ast.parse(content)
+            tree = ast.parse(content)
         except SyntaxError as exc:
             line = exc.lineno if exc.lineno is not None else "unknown"
             raise ToolingError(
                 f"tooling file has a syntax error on line {line}: {exc.msg}"
             ) from exc
+
+        _check_import_allowlist(tree)
+        _check_entrypoint(tree)
 
     return content
 
