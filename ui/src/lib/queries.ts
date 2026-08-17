@@ -34,7 +34,9 @@ import {
   type OrgStatus,
   type PersonaDraft,
   type PersonaForm,
+  type ToolingEnforcement,
   type ToolingFile,
+  type ToolingListResponse,
   addCatalogSkill,
   chatWithAgent,
   connectSlack,
@@ -463,21 +465,24 @@ const TOOLING_POLL_MS = 5000;
 
 /**
  * Refetch interval for the tooling list query. Polls while any file in the
- * list is still `delivered: false`, and stops once every file has reached
- * `delivered: true` — same shape as `intakeRefetchInterval`. `data` is
- * undefined before the first fetch resolves (nothing to poll for yet), and
- * an empty list has no undelivered file by definition — both are `false`.
+ * response is still `delivered: false`, and stops once every file has
+ * reached `delivered: true` — same shape as `intakeRefetchInterval`. `data`
+ * is undefined before the first fetch resolves (nothing to poll for yet),
+ * and an empty file list has no undelivered file by definition — both are
+ * `false`. Driven purely by `files` delivery, same as before Task 4 —
+ * `enforcement` (attested/locked) never affects polling cadence.
  */
-export function toolingRefetchInterval(data?: ToolingFile[]): number | false {
+export function toolingRefetchInterval(data?: ToolingListResponse): number | false {
   if (data === undefined) {
     return false;
   }
-  return data.some((file) => file.delivered === false)
+  return data.files.some((file) => file.delivered === false)
     ? TOOLING_POLL_MS
     : false;
 }
 
-/** An agent's tooling files — the staged door for its LAW-to-be
+/** An agent's tooling files plus the runtime's enforcement envelope (Task 4:
+ * card probe + banner graduation) — the staged door for its LAW-to-be
  * (2026-08-13 addendum). Polls while any file is undelivered, stops once all
  * are delivered — same cadence as `intakeQuery` polls pending files. */
 export function toolingQuery(name: string) {
@@ -603,5 +608,7 @@ export type {
   OrgStatus,
   PersonaDraft,
   PersonaForm,
+  ToolingEnforcement,
   ToolingFile,
+  ToolingListResponse,
 };

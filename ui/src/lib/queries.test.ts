@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, readLocalSkill, type AgentSkill, type CatalogEntry, type IntakeFile, type NameSuggestion, type OrgStatus, type ToolingFile } from "./api";
+import { ApiError, readLocalSkill, type AgentSkill, type CatalogEntry, type IntakeFile, type NameSuggestion, type OrgStatus, type ToolingEnforcement, type ToolingListResponse } from "./api";
 import {
   addCatalogSkillMutation,
   agentSkillsQuery,
@@ -1062,6 +1062,11 @@ describe("deleteIntakeMutation", () => {
   });
 });
 
+// Task 4 (card probe + banner graduation): the enforcement envelope a
+// pre-enforcement (or unreachable) runtime's card reads as — the fixture
+// every test below that isn't itself exercising enforcement pins.
+const UNATTESTED: ToolingEnforcement = { attested: false, locked: false, locked_file: null };
+
 describe("toolingQuery", () => {
   it("has queryKey ['agents', name, 'tooling']", () => {
     expect(toolingQuery("clio").queryKey).toEqual([
@@ -1071,22 +1076,25 @@ describe("toolingQuery", () => {
     ]);
   });
 
-  it("queryFn GETs /api/agents/{name}/tooling and unwraps {files: [...]}", async () => {
-    const files: ToolingFile[] = [
-      { name: "guard.py", content_bytes: 128, delivered: true },
-      { name: "helper.go", content_bytes: 256, delivered: false },
-    ];
+  it("queryFn GETs /api/agents/{name}/tooling and returns {files, enforcement}", async () => {
+    const response: ToolingListResponse = {
+      files: [
+        { name: "guard.py", content_bytes: 128, delivered: true, status: "enforced" },
+        { name: "helper.go", content_bytes: 256, delivered: false },
+      ],
+      enforcement: { attested: true, locked: false, locked_file: null },
+    };
     vi.stubGlobal("fetch", vi.fn());
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,
       status: 200,
       statusText: "OK",
-      text: async () => JSON.stringify({ files }),
+      text: async () => JSON.stringify(response),
     } as Response);
 
     await expect(
-      callQueryFn<ToolingFile[]>(toolingQuery("clio")),
-    ).resolves.toEqual(files);
+      callQueryFn<ToolingListResponse>(toolingQuery("clio")),
+    ).resolves.toEqual(response);
     expect(fetch).toHaveBeenCalledWith("/api/agents/clio/tooling");
 
     vi.unstubAllGlobals();
@@ -1100,24 +1108,39 @@ describe("toolingRefetchInterval", () => {
 
   it("is false once every file is delivered", () => {
     expect(
-      toolingRefetchInterval([
-        { name: "a.py", content_bytes: 1, delivered: true },
-        { name: "b.go", content_bytes: 2, delivered: true },
-      ]),
+      toolingRefetchInterval({
+        files: [
+          { name: "a.py", content_bytes: 1, delivered: true },
+          { name: "b.go", content_bytes: 2, delivered: true },
+        ],
+        enforcement: UNATTESTED,
+      }),
     ).toBe(false);
   });
 
   it("is false for an empty file list", () => {
-    expect(toolingRefetchInterval([])).toBe(false);
+    expect(toolingRefetchInterval({ files: [], enforcement: UNATTESTED })).toBe(false);
   });
 
   it("is 5000 while any file is still undelivered", () => {
     expect(
-      toolingRefetchInterval([
-        { name: "a.py", content_bytes: 1, delivered: true },
-        { name: "b.go", content_bytes: 2, delivered: false },
-      ]),
+      toolingRefetchInterval({
+        files: [
+          { name: "a.py", content_bytes: 1, delivered: true },
+          { name: "b.go", content_bytes: 2, delivered: false },
+        ],
+        enforcement: UNATTESTED,
+      }),
     ).toBe(5000);
+  });
+
+  it("is unaffected by enforcement state — only file delivery drives polling", () => {
+    expect(
+      toolingRefetchInterval({
+        files: [{ name: "a.py", content_bytes: 1, delivered: true, status: "enforced" }],
+        enforcement: { attested: true, locked: false, locked_file: null },
+      }),
+    ).toBe(false);
   });
 });
 

@@ -50,6 +50,7 @@ from kobo_api.clients import (
     _extract_json_array,
     _extract_json_object,
     _gcloud_print_access_token,
+    _get_card,
     _post_task,
     _wait_for_forwarded_port,
     _write_slack_tokens,
@@ -1219,6 +1220,55 @@ def test_post_task_wraps_read_timeout_as_client_error():
     assert isinstance(exc_info.value.__cause__, httpx.ReadTimeout)
 
 
+def test_get_card_sends_get_to_well_known_path_and_returns_parsed_json():
+    captured = {}
+    card = {"enforcement": {"version": 1, "hooks": ["guard.py"], "locked": False}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json=card)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = _get_card(client, 54321)
+
+    assert captured["method"] == "GET"
+    assert captured["url"] == "http://127.0.0.1:54321/.well-known/agent-card.json"
+    assert result == card
+
+
+def test_get_card_raises_on_non_200():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="not found")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(ClientError):
+        _get_card(client, 54321)
+
+
+def test_get_card_raises_client_error_on_non_json_body():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="not json")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(ClientError) as exc_info:
+        _get_card(client, 54321)
+
+    assert "malformed agent card" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+def test_get_card_wraps_read_timeout_as_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("The read operation timed out", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(ClientError) as exc_info:
+        _get_card(client, 54321)
+
+    assert isinstance(exc_info.value.__cause__, httpx.ReadTimeout)
+
+
 def test_kubectl_agent_client_default_http_client_has_generous_timeout():
     # No http_client injected -> KubectlAgentClient must build its own with a
     # timeout generous enough for a full model roundtrip (routinely >5s
@@ -1432,6 +1482,67 @@ def test_agent_converse_terminates_port_forward_even_on_post_failure(monkeypatch
 
     assert fake_proc.terminated is True
     assert fake_proc.waited is True
+
+
+def test_fetch_card_gets_well_known_path_and_terminates_port_forward_on_success(monkeypatch):
+    fake_proc = _FakePopen(["Forwarding from 127.0.0.1:54321 -> 80\n"])
+    monkeypatch.setattr(
+        "kobo_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
+    )
+    captured = {}
+    card = {"enforcement": {"version": 1, "hooks": ["guard.py"], "locked": False}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json=card)
+
+    client = KubectlAgentClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    result = client.fetch_card("clio", "clio")
+
+    assert result == card
+    assert captured["method"] == "GET"
+    assert captured["url"] == "http://127.0.0.1:54321/.well-known/agent-card.json"
+    assert fake_proc.terminated is True
+    assert fake_proc.waited is True
+
+
+def test_fetch_card_terminates_port_forward_even_on_request_failure(monkeypatch):
+    # Same ClientError-wrapping/cleanup guarantee as hello's/converse's
+    # equivalent tests above, re-exercised through fetch_card's shared
+    # _over_port_forward machinery.
+    fake_proc = _FakePopen(["Forwarding from 127.0.0.1:54321 -> 80\n"])
+    monkeypatch.setattr(
+        "kobo_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    client = KubectlAgentClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    with pytest.raises(ClientError):
+        client.fetch_card("clio", "clio")
+
+    assert fake_proc.terminated is True
+    assert fake_proc.waited is True
+
+
+def test_fetch_card_wraps_popen_oserror_as_client_error(monkeypatch):
+    def raise_oserror(*args, **kwargs):
+        raise OSError("no such file or directory: kubectl")
+
+    monkeypatch.setattr("kobo_api.clients.subprocess.Popen", raise_oserror)
+
+    client = KubectlAgentClient()
+    with pytest.raises(ClientError) as exc_info:
+        client.fetch_card("clio", "clio")
+
+    assert "failed to start port-forward" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, OSError)
 
 
 # --- Slack (HttpxSlackClient) --------------------------------------------------
@@ -3089,6 +3200,28 @@ def test_fake_agent_converse_error_knob():
     fake = FakeAgent(converse_error="a2a request failed (500): boom")
     with pytest.raises(ClientError):
         fake.converse("clio", "clio", [{"role": "user", "text": "hi"}])
+
+
+def test_fake_agent_fetch_card_defaults_to_no_enforcement_block():
+    # A bare FakeAgent() models a pre-enforcement runtime (module docstring:
+    # "absent block entirely on pre-enforcement runtimes") — the conservative
+    # default, so every pre-existing test wiring a bare FakeAgent() in isn't
+    # silently opted into "attested" without asking for it.
+    fake = FakeAgent()
+    assert fake.fetch_card("clio", "clio") == {}
+    assert fake.fetch_card_calls == [("clio", "clio")]
+
+
+def test_fake_agent_fetch_card_configurable_card():
+    card = {"enforcement": {"version": 1, "hooks": ["guard.py"], "locked": False}}
+    fake = FakeAgent(card=card)
+    assert fake.fetch_card("clio", "clio") == card
+
+
+def test_fake_agent_fetch_card_error_knob():
+    fake = FakeAgent(card_error="fetch_card request failed (500): boom")
+    with pytest.raises(ClientError):
+        fake.fetch_card("clio", "clio")
 
 
 def test_fake_kubectl_satisfies_protocol():

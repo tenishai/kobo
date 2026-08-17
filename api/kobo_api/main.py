@@ -1681,9 +1681,10 @@ def create_app(
 
         clients = app.state.clients
         try:
-            files = list_tooling(
+            files, enforcement = list_tooling(
                 clients.github,
                 clients.kubectl,
+                clients.agent,
                 repo=agent.repo_full_name,
                 namespace=agent.name,
                 deploy=agent.name,
@@ -1694,7 +1695,20 @@ def create_app(
                 {"error": "couldn't reach your agent's files — try again"}, status_code=502
             )
 
-        return JSONResponse({"files": files})
+        # Task 4 (card probe + banner graduation): "enforced" is a
+        # presentation-layer fact this route composes from list_tooling's two
+        # return values, not something list_tooling itself claims — a
+        # delivered file only earns the label when the runtime both attests
+        # to enforcement (card fetch succeeded, version >= 1) AND isn't
+        # currently locked (serving refusals because a hook failed to
+        # load). A pending file's dict is left completely untouched either
+        # way — delivery truth is unchanged by enforcement status.
+        if enforcement["attested"] and not enforcement["locked"]:
+            for file in files:
+                if file["delivered"]:
+                    file["status"] = "enforced"
+
+        return JSONResponse({"files": files, "enforcement": enforcement})
 
     @app.post("/api/agents/{name}/tooling")
     def upload_tooling(

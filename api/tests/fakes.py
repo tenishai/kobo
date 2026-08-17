@@ -776,6 +776,19 @@ class FakeAgent:
     to the single canned `reply`. `converse_error` is `hello_error`'s
     counterpart for the chat path: when set, `converse()` raises
     `ClientError(converse_error)` instead of replying.
+
+    `card` (kobo card probe / banner graduation), when given, is the exact
+    dict `fetch_card()` returns — every call recorded into `fetch_card_calls`
+    as `(namespace, service)`. Defaults to `{}` (no `enforcement` key at
+    all) — a bare `FakeAgent()` models a pre-enforcement runtime, the same
+    conservative "never guess enforcement is live" default
+    `kobo_api.tooling.list_tooling`'s probe falls back to on any fetch/parse
+    failure; every pre-existing test wiring a bare `FakeAgent()` in (most of
+    them, predating this knob entirely) is unaffected. `card_error`,
+    `hello_error`'s/`converse_error`'s counterpart for the card path, makes
+    `fetch_card()` raise `ClientError(card_error)` instead of returning a
+    card — the seam for exercising the "unreachable pod" branch of the
+    enforcement probe without a real kubectl/port-forward involved.
     """
 
     def __init__(
@@ -785,13 +798,18 @@ class FakeAgent:
         hello_error: str | None = None,
         replies: list[str] | None = None,
         converse_error: str | None = None,
+        card: dict | None = None,
+        card_error: str | None = None,
     ):
         self._reply = reply
         self._hello_error = hello_error
         self._replies = list(replies) if replies is not None else None
         self._converse_error = converse_error
+        self._card = dict(card) if card is not None else {}
+        self._card_error = card_error
         self.calls: list[tuple[str, str, str]] = []
         self.converse_calls: list[tuple[str, str, list[ChatMessage]]] = []
+        self.fetch_card_calls: list[tuple[str, str]] = []
 
     def hello(self, namespace: str, service: str, text: str) -> str:
         self.calls.append((namespace, service, text))
@@ -806,6 +824,12 @@ class FakeAgent:
         if self._replies:
             return self._replies.pop(0)
         return self._reply
+
+    def fetch_card(self, namespace: str, service: str) -> dict:
+        self.fetch_card_calls.append((namespace, service))
+        if self._card_error is not None:
+            raise ClientError(self._card_error)
+        return dict(self._card)
 
 
 class FakeKubectl:

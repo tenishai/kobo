@@ -532,18 +532,46 @@ export async function deleteIntake(
 
 /** One `bundle/tools/*` file — the staged door for an agent's LAW-to-be
  * (2026-08-13 addendum): stored and delivered the same way knowledge/skills
- * are, but with no enforcement yet. `delivered` is derived fresh by the
- * server from the same git-ancestry check `IntakeFile.status` uses, never
- * kobo-side state — true once the live pod's commit descends from (or is)
- * the commit that last touched this file. There is deliberately no third
- * "enforced" state here: a stored, delivered tooling file is inert until the
- * enforcement contract (a later, separate design) ships. */
-export type ToolingFile = { name: string; content_bytes: number; delivered: boolean };
+ * are. `delivered` is derived fresh by the server from the same git-ancestry
+ * check `IntakeFile.status` uses, never kobo-side state — true once the live
+ * pod's commit descends from (or is) the commit that last touched this
+ * file. `status` (Task 4: card probe + banner graduation) is present, and
+ * always exactly `"enforced"`, only when the server's card probe attests
+ * the runtime executes tooling hooks AND isn't currently locked AND this
+ * file is delivered — see `ToolingEnforcement`. A pending file, or any file
+ * when the runtime isn't attested (or is locked), carries no `status` key
+ * at all: delivery truth is never overwritten by enforcement status. */
+export type ToolingFile = {
+  name: string;
+  content_bytes: number;
+  delivered: boolean;
+  status?: "enforced";
+};
 
-export async function listTooling(name: string): Promise<ToolingFile[]> {
+/** Whether the running pod actually enforces `bundle/tools/*` hooks around a
+ * reply — probed fresh on every list fetch from the pod's own
+ * `/.well-known/agent-card.json` (Task 4), never guessed or cached
+ * kobo-side. `attested` is true iff that fetch succeeded AND the card's
+ * `enforcement.version` is >= 1; false for a pre-enforcement runtime, an
+ * unreachable/still-booting pod, or a card kobo couldn't parse — every one
+ * of those reads identically, on purpose. `locked`/`locked_file` are
+ * independent of `attested`: a runtime can attest to enforcement and still
+ * be locked (a hook file failed to load, so it's serving refusals until
+ * fixed or removed). */
+export type ToolingEnforcement = {
+  attested: boolean;
+  locked: boolean;
+  locked_file: string | null;
+};
+
+export type ToolingListResponse = {
+  files: ToolingFile[];
+  enforcement: ToolingEnforcement;
+};
+
+export async function listTooling(name: string): Promise<ToolingListResponse> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/tooling`);
-  const data = await parse<{ files: ToolingFile[] }>(res);
-  return data.files;
+  return parse<ToolingListResponse>(res);
 }
 
 /** Uploads (creates or overwrites) one tooling file. Like `uploadIntake`,

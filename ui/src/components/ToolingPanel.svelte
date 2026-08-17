@@ -1,19 +1,27 @@
 <script lang="ts">
   // The staged door for an agent's LAW-to-be (2026-08-13 addendum): files
   // land in `bundle/tools/*.{py,go}` in the agent's own repo, validated and
-  // delivered the same way knowledge/skills are — but there is no
-  // enforcement yet, and this panel says so plainly (the standing notice
-  // below, always visible, never conditional on any query state). Two doors
-  // write into the same list: a single-file Upload (file picker + filename
-  // + content, same form family as MemoryPanel's Teach-from-a-file, just
-  // `.py`/`.go` instead of `.md`/`.txt`) and a repo Import (owner/repo +
-  // folder path; the server validates every matching file independently and
-  // reports per-file results — one bad file never sinks the rest). Remove
-  // is a plain files-not-memories delete: a browser confirm(), no bespoke
-  // copy or Modal round trip (contrast MemoryPanel's intake Remove, which
-  // gates behind a Modal because its copy has to explain that already-
-  // ingested memories survive the file's removal — tooling carries no such
-  // caveat to make).
+  // delivered the same way knowledge/skills are. Two doors write into the
+  // same list: a single-file Upload (file picker + filename + content, same
+  // form family as MemoryPanel's Teach-from-a-file, just `.py`/`.go` instead
+  // of `.md`/`.txt`) and a repo Import (owner/repo + folder path; the server
+  // validates every matching file independently and reports per-file
+  // results — one bad file never sinks the rest). Remove is a plain
+  // files-not-memories delete: a browser confirm(), no bespoke copy or Modal
+  // round trip (contrast MemoryPanel's intake Remove, which gates behind a
+  // Modal because its copy has to explain that already-ingested memories
+  // survive the file's removal — tooling carries no such caveat to make).
+  //
+  // Enforcement banner graduation (Task 4: card probe + banner graduation):
+  // the standing notice below is no longer a single fixed string — it's
+  // `bannerView`, derived from the list query's `enforcement` envelope
+  // (probed server-side from the running pod's card, never guessed
+  // kobo-side). Three states, in precedence order: `locked` (the runtime
+  // attests to enforcement but is currently serving refusals because a hook
+  // failed to load) always wins and names the broken file; otherwise
+  // `attested` swaps in the "live law" banner; otherwise (a pre-enforcement
+  // runtime, or one kobo simply couldn't reach) today's original notice
+  // still renders, unconditionally, exactly as before this addendum.
   //
   // Delivery-chip reactivity: copied verbatim pattern from
   // SkillsPanel/MemoryPanel — see MemoryPanel's doc comment for the full
@@ -34,9 +42,10 @@
   // briefly (the chip still says "Delivering…" while a row's pill hasn't
   // caught up yet) — that's expected, not a bug: the row corrects itself
   // once the list query refetches (on invalidation, or the user's next
-  // visit). Separately from both, every row also carries a fixed "stored"
-  // badge that never changes with data — the addendum's explicit
-  // honesty guarantee that there is no "active"/"enforced" state to claim.
+  // visit). Separately from both, every row also carries a badge — "stored"
+  // by default, or "enforced" (accent tone) when the server's `status` field
+  // says so (attested, not locked, and this exact file delivered) — never
+  // guessed client-side, just read straight off the row.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { derived, writable } from "svelte/store";
   import EmptyState from "./EmptyState.svelte";
@@ -67,6 +76,29 @@
   const importMutation = createMutation(importToolingMutation(queryClient, agentName));
   // svelte-ignore state_referenced_locally
   const deleteMutation = createMutation(deleteToolingMutation(queryClient, agentName));
+
+  // --- Enforcement banner (Task 4: card probe + banner graduation) --------
+  // (see the module doc comment above for the three-state precedence)
+
+  type BannerTone = "warn" | "accent" | "fail";
+  type BannerView = { tone: BannerTone; text: string };
+
+  const DEFAULT_NOTICE =
+    "Stored and delivered, not yet enforced — enforcement arrives with the runtime's next upgrade.";
+
+  const bannerView = $derived.by((): BannerView => {
+    const enforcement = $tooling.data?.enforcement;
+    if (enforcement?.locked) {
+      return {
+        tone: "fail",
+        text: `${enforcement.locked_file} failed to load. The agent is answering with a refusal until it is fixed or removed.`,
+      };
+    }
+    if (enforcement?.attested) {
+      return { tone: "accent", text: "Enforced by the runtime. Every reply passes through these." };
+    }
+    return { tone: "warn", text: DEFAULT_NOTICE };
+  });
 
   // --- Delivery chip (shared by upload, a passing import, and delete) -----
   // (see the module doc comment above for the full store-pair rationale)
@@ -315,9 +347,8 @@
     <p class="tooling-panel__subtitle">The rules this agent will be held to.</p>
   </div>
 
-  <div class="tooling-panel__notice" role="status">
-    Stored and delivered, not yet enforced — enforcement arrives with the runtime's next
-    upgrade.
+  <div class="tooling-panel__notice tooling-panel__notice--{bannerView.tone}" role="status">
+    {bannerView.text}
   </div>
 
   <form class="tooling-form" onsubmit={handleUpload}>
@@ -471,14 +502,14 @@
       message={errorMessage($tooling.error, "Couldn't load this agent's tooling files.")}
       onretry={() => $tooling.refetch()}
     />
-  {:else if $tooling.data.length === 0}
+  {:else if $tooling.data.files.length === 0}
     <EmptyState message="Nothing here yet — upload a file or import from a repo." />
   {:else}
     {#if removeError}
       <p class="tooling-panel__remove-error" role="alert">{removeError}</p>
     {/if}
     <ul class="tooling-panel__list">
-      {#each $tooling.data as file (file.name)}
+      {#each $tooling.data.files as file (file.name)}
         <li class="tooling-row">
           <span class="tooling-row__body">
             <span class="tooling-row__name">{file.name}</span>
@@ -491,7 +522,13 @@
           >
             {file.delivered ? "Delivered" : "Not yet delivered"}
           </span>
-          <span class="tooling-row__badge">stored</span>
+          <span
+            class="tooling-row__badge tooling-row__badge--{file.status === 'enforced'
+              ? 'enforced'
+              : 'stored'}"
+          >
+            {file.status === "enforced" ? "enforced" : "stored"}
+          </span>
           <button
             type="button"
             class="tooling-row__remove"
@@ -559,6 +596,20 @@
     background: color-mix(in srgb, var(--warn) 10%, transparent);
     color: var(--ink);
     font-size: 0.85rem;
+  }
+
+  /* Task 4 (card probe + banner graduation): the notice's border/background
+     tone follows the same server-derived enforcement state the copy itself
+     does — warn (today's pre-enforcement default) is the base rule above;
+     these two swap in once the runtime attests to enforcement. */
+  .tooling-panel__notice--accent {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+
+  .tooling-panel__notice--fail {
+    border-color: var(--fail);
+    background: color-mix(in srgb, var(--fail) 10%, transparent);
   }
 
   .tooling-form {
@@ -815,6 +866,15 @@
     color: var(--muted);
     font-size: 0.75rem;
     white-space: nowrap;
+  }
+
+  /* Task 4 (card probe + banner graduation): accent tone, only when the
+     server's `status` field on this row is exactly "enforced" — every other
+     row keeps the plain "stored" look above. */
+  .tooling-row__badge--enforced {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
   }
 
   .tooling-row__remove {

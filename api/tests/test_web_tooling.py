@@ -104,7 +104,7 @@ def config(tmp_path):
     return Config(workdir=tmp_path / "work")
 
 
-def _make_client(session_factory, config, *, github=None, kubectl=None):
+def _make_client(session_factory, config, *, github=None, kubectl=None, agent=None):
     return TestClient(
         create_app(
             session_factory,
@@ -113,7 +113,7 @@ def _make_client(session_factory, config, *, github=None, kubectl=None):
                 github=github if github is not None else FakeGitHub(),
                 gojira=FakeGojira(),
                 cloud=FakeCloud(),
-                agent=FakeAgent(),
+                agent=agent if agent is not None else FakeAgent(),
                 kubectl=kubectl if kubectl is not None else FakeKubectl(),
                 storage=FakeStorage(),
             ),
@@ -141,6 +141,11 @@ NON_READY_STATUSES = [AgentStatus.PENDING, AgentStatus.PROVISIONING, AgentStatus
 
 # --- GET /api/agents/{name}/tooling -------------------------------------------
 
+# Task 4 (card probe + banner graduation): the enforcement envelope a bare
+# FakeAgent() (no card configured — models a pre-enforcement runtime) reads
+# as, on every route below that doesn't care about enforcement itself.
+UNATTESTED = {"attested": False, "locked": False, "locked_file": None}
+
 
 def test_list_tooling_route_empty(session_factory, config):
     client = _make_client(session_factory, config)
@@ -149,12 +154,15 @@ def test_list_tooling_route_empty(session_factory, config):
     response = client.get(f"/api/agents/{AGENT_NAME}/tooling")
 
     assert response.status_code == 200
-    assert response.json() == {"files": []}
+    assert response.json() == {"files": [], "enforcement": UNATTESTED}
 
 
 def test_list_tooling_route_returns_files_with_delivered(session_factory, config):
     # Bare fakes wired together: an unconfigured tooling file reads
-    # "delivered" with no extra setup (same convention as list_intake).
+    # "delivered" with no extra setup (same convention as list_intake), and
+    # an unconfigured agent card reads "unattested" — no "status" key is
+    # added to a file's dict unless attested-and-not-locked (see the
+    # dedicated enforcement section below).
     github = FakeGitHub(tooling_files={"orchestrator.py": VALID_PY})
     client = _make_client(session_factory, config, github=github)
     _seed_agent(session_factory, config)
@@ -169,7 +177,8 @@ def test_list_tooling_route_returns_files_with_delivered(session_factory, config
                 "content_bytes": len(VALID_PY.encode()),
                 "delivered": True,
             }
-        ]
+        ],
+        "enforcement": UNATTESTED,
     }
 
 
@@ -212,6 +221,126 @@ def test_list_tooling_route_kubectl_error_returns_502(session_factory, config):
 
     assert response.status_code == 502
     assert response.json() == {"error": "couldn't reach your agent's files — try again"}
+
+
+# --- GET /api/agents/{name}/tooling: enforcement graduation (Task 4) ---------
+#
+# One delivered file (old.py) and one pending file (fresh.py) — mirrors
+# test_tooling.py's own mixed-delivery fixture — held FIXED across every
+# card scenario below, proving delivery truth and enforcement status are
+# independent axes that never interfere with each other.
+
+OLDER_SHA = "oldoldoldoldoldoldoldoldoldoldoldoldoldo"
+NEWER_SHA = "newnewnewnewnewnewnewnewnewnewnewnewnewn"
+
+
+def _mixed_delivery_github_and_kubectl():
+    github = FakeGitHub(
+        tooling_files={"old.py": "stale = 1\n", "fresh.py": "brand_new = 1\n"},
+        intake_commit_shas={
+            "bundle/tools/old.py": OLDER_SHA,
+            "bundle/tools/fresh.py": NEWER_SHA,
+        },
+        rev_parse_results={"oldoldoldold": OLDER_SHA},
+    )
+    kubectl = FakeKubectl(images={(AGENT_NAME, AGENT_NAME): f"gojira-app:{OLDER_SHA[:12]}"})
+    return github, kubectl
+
+
+def test_list_tooling_route_attested_not_locked_marks_only_delivered_files_enforced(
+    session_factory, config
+):
+    github, kubectl = _mixed_delivery_github_and_kubectl()
+    agent = FakeAgent(card={"enforcement": {"version": 1, "hooks": ["old.py"], "locked": False}})
+    client = _make_client(session_factory, config, github=github, kubectl=kubectl, agent=agent)
+    _seed_agent(session_factory, config)
+
+    response = client.get(f"/api/agents/{AGENT_NAME}/tooling")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["enforcement"] == {"attested": True, "locked": False, "locked_file": None}
+    files_by_name = {f["name"]: f for f in body["files"]}
+    assert files_by_name["old.py"] == {
+        "name": "old.py",
+        "content_bytes": len(b"stale = 1\n"),
+        "delivered": True,
+        "status": "enforced",
+    }
+    # Pending stays pending — delivery truth unchanged, and no "status" key
+    # at all (not even "pending") for a file that isn't delivered yet.
+    assert files_by_name["fresh.py"] == {
+        "name": "fresh.py",
+        "content_bytes": len(b"brand_new = 1\n"),
+        "delivered": False,
+    }
+
+
+def test_list_tooling_route_attested_and_locked_never_marks_enforced(session_factory, config):
+    github, kubectl = _mixed_delivery_github_and_kubectl()
+    agent = FakeAgent(
+        card={
+            "enforcement": {
+                "version": 1,
+                "hooks": ["old.py"],
+                "locked": True,
+                "locked_file": "old.py",
+            }
+        }
+    )
+    client = _make_client(session_factory, config, github=github, kubectl=kubectl, agent=agent)
+    _seed_agent(session_factory, config)
+
+    response = client.get(f"/api/agents/{AGENT_NAME}/tooling")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["enforcement"] == {"attested": True, "locked": True, "locked_file": "old.py"}
+    # Locked means serving refusals, not real enforcement — even the
+    # delivered file must NOT be labeled "enforced".
+    for file in body["files"]:
+        assert "status" not in file
+    files_by_name = {f["name"]: f["delivered"] for f in body["files"]}
+    assert files_by_name == {"old.py": True, "fresh.py": False}
+
+
+def test_list_tooling_route_unattested_never_marks_enforced_even_when_delivered(
+    session_factory, config
+):
+    github, kubectl = _mixed_delivery_github_and_kubectl()
+    agent = FakeAgent()  # bare: pre-enforcement runtime, no card enforcement block
+    client = _make_client(session_factory, config, github=github, kubectl=kubectl, agent=agent)
+    _seed_agent(session_factory, config)
+
+    response = client.get(f"/api/agents/{AGENT_NAME}/tooling")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["enforcement"] == UNATTESTED
+    for file in body["files"]:
+        assert "status" not in file
+
+
+def test_list_tooling_route_unreachable_agent_card_reads_unattested(session_factory, config):
+    github, kubectl = _mixed_delivery_github_and_kubectl()
+    agent = FakeAgent(card_error="fetch_card request failed: connection refused")
+    client = _make_client(session_factory, config, github=github, kubectl=kubectl, agent=agent)
+    _seed_agent(session_factory, config)
+
+    response = client.get(f"/api/agents/{AGENT_NAME}/tooling")
+
+    assert response.status_code == 200
+    body = response.json()
+    # Byte-identical to today's (pre-Task-4) response, modulo the added
+    # enforcement envelope — an unreachable agent card never changes a
+    # file's delivered-derived truth, and never marks anything "enforced".
+    assert body == {
+        "files": [
+            {"name": "fresh.py", "content_bytes": len(b"brand_new = 1\n"), "delivered": False},
+            {"name": "old.py", "content_bytes": len(b"stale = 1\n"), "delivered": True},
+        ],
+        "enforcement": UNATTESTED,
+    }
 
 
 # --- POST /api/agents/{name}/tooling ------------------------------------------

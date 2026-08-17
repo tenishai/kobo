@@ -6,13 +6,17 @@ and skills (informs the model), a tooling file is meant to eventually BIND
 the runtime: an orchestrator or guardrail the enforcement contract (a later,
 separate design) will always execute around a reply.
 
-That enforcement contract has not shipped yet. Until it does, a stored
-tooling file is inert — the runtime's bundle loader ignores unknown
-top-level dirs, so `bundle/tools/` sits there unexecuted. This module's job
-is honest, staged plumbing for that inertness: validate a file mechanically
-(the law it WILL be held to, checked now so nothing malformed ever lands),
-store it, and report whether it has been delivered to a running pod — never
-claim it is enforced, because it isn't. `list_tooling`'s "delivered" derives
+That enforcement contract shipped on the runtime side as of the 2026-08
+addendum (Task 2's card stamp: a running pod's `/.well-known/agent-card.json`
+now carries an `enforcement` block once it executes `bundle/tools/*` hooks
+around a reply). Before that runtime rolls out to a given agent — or when
+kobo simply can't reach the pod to ask — a stored tooling file is still
+inert, the runtime's bundle loader ignoring unknown top-level dirs the same
+as always. This module's job is honest, staged plumbing either way: validate
+a file mechanically (the law it WILL be held to, checked now so nothing
+malformed ever lands), store it, report whether it has been delivered to a
+running pod, and — Task 4 — probe that same pod's card for whether
+enforcement is actually live there. `list_tooling`'s "delivered" derives
 from the exact same ancestor-based reasoning `kobo_api.intake.list_intake`
 uses for its own "ingested" status (see that function's docstring for the
 full algorithm) — pure boot-ordering inference, no kobo-side state to keep
@@ -21,7 +25,9 @@ with `list_intake`: the two operate on different sub-trees
 (`bundle/tools/` vs `bundle/intake/`) and mean subtly different things
 ("delivered to the running pod" vs "the seeder has ingested it"), so forcing
 a shared helper across them would blur that distinction for a small amount
-of saved code.
+of saved code. The card probe (`_probe_enforcement`) keeps the same
+never-guess discipline: any fetch or parse failure reads as "not attested",
+never as a guess dressed up as a real answer.
 
 Two doors write into the same `bundle/tools/` tree, sharing one validator
 (`_validate_filename`/`_validate_content`): `upload_tooling_file` (a single
@@ -61,7 +67,13 @@ import sys
 import tempfile
 from pathlib import Path
 
-from kobo_api.clients import GitHubClient, KubectlClient, image_tag
+from kobo_api.clients import (
+    AgentClient,
+    ClientError,
+    GitHubClient,
+    KubectlClient,
+    image_tag,
+)
 from kobo_api.composer import update_dockerfile_runtime_image
 
 # 1-64 chars: a lowercase letter, then lowercase/digit/underscore/hyphen, then
@@ -392,20 +404,61 @@ def import_tooling(
     }
 
 
+def _probe_enforcement(agent: AgentClient, namespace: str, deploy: str) -> dict:
+    """Fetch the running pod's `/.well-known/agent-card.json` and derive the
+    enforcement envelope `list_tooling` reports alongside its files:
+    `{"attested": bool, "locked": bool, "locked_file": str | None}`.
+
+    `attested` is True iff the card fetch succeeded AND its `enforcement`
+    block's `version` is an int >= 1 — the runtime's own signal that it
+    actually executes `bundle/tools/*` hooks around a reply, not merely
+    stores them (Task 2's card-stamp contract). `locked`/`locked_file` are
+    read straight from that same block (defaulting to `False`/`None` when
+    absent) — a runtime can be attested (version >= 1) and still `locked`
+    (a hook file failed to load, so it's serving refusals until fixed or
+    removed), so the two are independent facts, not a single tri-state.
+
+    ANY fetch or parse failure — an unreachable/still-booting pod (already
+    `ClientError` from `AgentClient.fetch_card`), or a card whose
+    `enforcement` value isn't the dict shape the runtime is documented to
+    produce (`AttributeError`/`TypeError` from treating it as one anyway) —
+    reads as the exact same "not attested" envelope. This is the module's
+    honesty guarantee applied to the card the same way it's already applied
+    to "delivered": never guess enforcement is live from a card kobo
+    couldn't make sense of.
+    """
+    try:
+        card = agent.fetch_card(namespace, deploy)
+        enforcement_block = card.get("enforcement") or {}
+        version = enforcement_block.get("version", 0)
+        attested = isinstance(version, int) and not isinstance(version, bool) and version >= 1
+        locked = bool(enforcement_block.get("locked", False))
+        locked_file = enforcement_block.get("locked_file")
+        return {"attested": attested, "locked": locked, "locked_file": locked_file}
+    except (ClientError, AttributeError, TypeError):
+        return {"attested": False, "locked": False, "locked_file": None}
+
+
 def list_tooling(
     github: GitHubClient,
     kubectl: KubectlClient,
+    agent: AgentClient,
     *,
     repo: str,
     namespace: str,
     deploy: str,
-) -> list[dict]:
+) -> tuple[list[dict], dict]:
     """The repo's current `bundle/tools/*` files, sorted by name, each
-    `{"name", "content_bytes": int, "delivered": bool}`.
+    `{"name", "content_bytes": int, "delivered": bool}`, alongside the
+    enforcement envelope probed from the running pod's card (Task 4: card
+    probe + banner graduation) — see `_probe_enforcement` for that shape and
+    derivation.
 
     A repo with no `bundle/tools/` directory at all (no upload/import has
-    ever happened) yields `[]`, mirroring `kobo_api.intake.list_intake`'s
-    same empty-dir convention.
+    ever happened) yields `([], enforcement)`, mirroring
+    `kobo_api.intake.list_intake`'s same empty-dir convention — the
+    enforcement probe still runs even then, since it's a property of the
+    running agent, not of whether it has any tooling files at all.
 
     "delivered" is derived by the EXACT same ancestor-based reasoning as
     `list_intake`'s "ingested" (see that function's docstring for the full
@@ -417,23 +470,27 @@ def list_tooling(
     sha inside THIS clone via `github.rev_parse_prefix` (`None` if it
     doesn't resolve); a file is "delivered" iff the tag resolved AND that
     commit is the file's last-touch commit or a descendant of it
-    (`github.is_ancestor`, equality counts). There is deliberately no third
-    "enforced" state anywhere in this shape — the module docstring's honesty
-    guarantee: a "delivered" tooling file has reached a running pod, nothing
-    more.
+    (`github.is_ancestor`, equality counts).
+
+    This function never adds an "enforced" status to a file's own dict —
+    "delivered" here still means only "reached a running pod", same as
+    before Task 4. Deciding whether a delivered file is actually enforced
+    (attested and not locked) is the HTTP route's job, composing this
+    function's two return values (see `kobo_api.main`'s tooling list route).
     """
+    enforcement = _probe_enforcement(agent, namespace, deploy)
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         github.clone(repo, workdir)
         tools_dir = workdir / "bundle" / "tools"
         if not tools_dir.is_dir():
-            return []
+            return [], enforcement
 
         paths = sorted(
             (p for p in tools_dir.iterdir() if p.is_file()), key=lambda p: p.name
         )
         if not paths:
-            return []
+            return [], enforcement
 
         rel_paths = [f"bundle/tools/{p.name}" for p in paths]
         commit_shas = github.commit_shas_for_paths(workdir, rel_paths)
@@ -458,4 +515,4 @@ def list_tooling(
                     "delivered": delivered,
                 }
             )
-        return results
+        return results, enforcement

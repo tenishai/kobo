@@ -25,7 +25,13 @@ from kobo_api.tooling import (
     list_tooling,
     upload_tooling_file,
 )
-from tests.fakes import FAKE_DOCKERFILE_OLD_IMAGE, FAKE_LOCAL_HEAD_DEFAULT, FakeGitHub, FakeKubectl
+from tests.fakes import (
+    FAKE_DOCKERFILE_OLD_IMAGE,
+    FAKE_LOCAL_HEAD_DEFAULT,
+    FakeAgent,
+    FakeGitHub,
+    FakeKubectl,
+)
 
 REPO = "acme/agent-clio"
 SOURCE_REPO = "acme/tools-library"
@@ -600,17 +606,25 @@ def test_import_tooling_runtime_image_omitted_when_nothing_passes():
 
 # --- list_tooling: shape / sorting ----------------------------------------------
 
+UNATTESTED = {"attested": False, "locked": False, "locked_file": None}
+
 
 def test_list_tooling_empty_when_no_tools_dir():
     github = FakeGitHub()
     kubectl = FakeKubectl()
-    assert list_tooling(github, kubectl, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY) == []
+    agent = FakeAgent()
+    files, enforcement = list_tooling(
+        github, kubectl, agent, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY
+    )
+    assert files == []
+    assert enforcement == UNATTESTED
 
 
 def test_list_tooling_sorted_by_name_with_content_bytes():
     github = FakeGitHub(tooling_files={"b.py": "second = 2\n", "a.py": "first = 1\n"})
     kubectl = FakeKubectl()
-    files = list_tooling(github, kubectl, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
+    agent = FakeAgent()
+    files, _ = list_tooling(github, kubectl, agent, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
 
     assert [f["name"] for f in files] == ["a.py", "b.py"]
     assert files[0]["content_bytes"] == len(b"first = 1\n")
@@ -620,13 +634,20 @@ def test_list_tooling_sorted_by_name_with_content_bytes():
 
 
 # --- list_tooling: delivered derivation (reuses list_intake's mechanics) --------
+# Unaffected by the card probe (Task 4 addendum): every test below uses a bare
+# FakeAgent(), so enforcement is always the unattested envelope — see the
+# dedicated "enforcement probe" section further down for card-shape coverage.
 
 
 def test_list_tooling_defaults_wired_happy_path_all_delivered():
     github = FakeGitHub(tooling_files={"tool.py": VALID_PY})
     kubectl = FakeKubectl()
-    files = list_tooling(github, kubectl, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
+    agent = FakeAgent()
+    files, enforcement = list_tooling(
+        github, kubectl, agent, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY
+    )
     assert files == [{"name": "tool.py", "content_bytes": len(VALID_PY.encode()), "delivered": True}]
+    assert enforcement == UNATTESTED
 
 
 def test_list_tooling_file_commit_equals_live_commit_is_delivered():
@@ -636,7 +657,8 @@ def test_list_tooling_file_commit_equals_live_commit_is_delivered():
         rev_parse_results={"oldoldoldold": OLDER_SHA},
     )
     kubectl = FakeKubectl(images={(NAMESPACE, DEPLOY): f"gojira-app:{OLDER_SHA[:12]}"})
-    files = list_tooling(github, kubectl, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
+    agent = FakeAgent()
+    files, _ = list_tooling(github, kubectl, agent, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
     assert files[0]["delivered"] is True
 
 
@@ -647,7 +669,8 @@ def test_list_tooling_file_newer_than_image_is_not_delivered():
         rev_parse_results={"oldoldoldold": OLDER_SHA},
     )
     kubectl = FakeKubectl(images={(NAMESPACE, DEPLOY): f"gojira-app:{OLDER_SHA[:12]}"})
-    files = list_tooling(github, kubectl, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
+    agent = FakeAgent()
+    files, _ = list_tooling(github, kubectl, agent, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
     assert files[0]["delivered"] is False
 
 
@@ -658,7 +681,8 @@ def test_list_tooling_tag_unresolvable_is_not_delivered():
         rev_parse_results={"deadbeef0000": None},
     )
     kubectl = FakeKubectl(images={(NAMESPACE, DEPLOY): "gojira-app:deadbeef0000"})
-    files = list_tooling(github, kubectl, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
+    agent = FakeAgent()
+    files, _ = list_tooling(github, kubectl, agent, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
     assert files[0]["delivered"] is False
 
 
@@ -676,7 +700,8 @@ def test_list_tooling_digest_pinned_image_with_matching_tag_resolves_delivered()
             )
         }
     )
-    files = list_tooling(github, kubectl, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
+    agent = FakeAgent()
+    files, _ = list_tooling(github, kubectl, agent, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
     assert files[0]["delivered"] is True
 
 
@@ -690,7 +715,8 @@ def test_list_tooling_mixed_statuses_across_multiple_files():
         rev_parse_results={"oldoldoldold": OLDER_SHA},
     )
     kubectl = FakeKubectl(images={(NAMESPACE, DEPLOY): f"gojira-app:{OLDER_SHA[:12]}"})
-    files = list_tooling(github, kubectl, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
+    agent = FakeAgent()
+    files, _ = list_tooling(github, kubectl, agent, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
 
     by_name = {f["name"]: f["delivered"] for f in files}
     assert by_name == {"old.py": True, "fresh.py": False}
@@ -699,5 +725,116 @@ def test_list_tooling_mixed_statuses_across_multiple_files():
 def test_list_tooling_clones_only_once():
     github = FakeGitHub(tooling_files={"a.py": VALID_PY, "b.go": "package main\n"})
     kubectl = FakeKubectl()
-    list_tooling(github, kubectl, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
+    agent = FakeAgent()
+    list_tooling(github, kubectl, agent, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
     assert len(github.cloned) == 1
+
+
+# --- list_tooling: enforcement probe (Task 4: card probe + banner graduation) ---
+#
+# The card probe is independent of delivered/pending file state — every test
+# below pairs a FIXED file fixture (one delivered, one not: file naming
+# mirrors the delivered-derivation section above) with a varied FakeAgent
+# card, proving the two axes don't interfere. `list_tooling` never adds a
+# "status" key itself (module docstring: still no guessing) — that's the
+# route's job (see test_web_tooling.py), so every file dict here keeps
+# exactly its plain "delivered" bool regardless of enforcement.
+
+_DELIVERED_AND_PENDING_GITHUB_KWARGS = {
+    "tooling_files": {"old.py": "stale = 1\n", "fresh.py": "brand_new = 1\n"},
+    "intake_commit_shas": {
+        "bundle/tools/old.py": OLDER_SHA,
+        "bundle/tools/fresh.py": NEWER_SHA,
+    },
+    "rev_parse_results": {"oldoldoldold": OLDER_SHA},
+}
+
+
+def _mixed_delivery_github_and_kubectl():
+    github = FakeGitHub(**_DELIVERED_AND_PENDING_GITHUB_KWARGS)
+    kubectl = FakeKubectl(images={(NAMESPACE, DEPLOY): f"gojira-app:{OLDER_SHA[:12]}"})
+    return github, kubectl
+
+
+def test_list_tooling_attested_card_version_1_not_locked():
+    github, kubectl = _mixed_delivery_github_and_kubectl()
+    agent = FakeAgent(card={"enforcement": {"version": 1, "hooks": ["old.py"], "locked": False}})
+    files, enforcement = list_tooling(
+        github, kubectl, agent, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY
+    )
+    assert enforcement == {"attested": True, "locked": False, "locked_file": None}
+    by_name = {f["name"]: f["delivered"] for f in files}
+    assert by_name == {"old.py": True, "fresh.py": False}
+
+
+def test_list_tooling_attested_and_locked_reports_locked_file():
+    github, kubectl = _mixed_delivery_github_and_kubectl()
+    agent = FakeAgent(
+        card={
+            "enforcement": {
+                "version": 1,
+                "hooks": ["old.py"],
+                "locked": True,
+                "locked_file": "old.py",
+            }
+        }
+    )
+    files, enforcement = list_tooling(
+        github, kubectl, agent, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY
+    )
+    assert enforcement == {"attested": True, "locked": True, "locked_file": "old.py"}
+    # Files keep their plain delivered truth even when locked — list_tooling
+    # itself never derives "status" (the route does).
+    by_name = {f["name"]: f["delivered"] for f in files}
+    assert by_name == {"old.py": True, "fresh.py": False}
+
+
+def test_list_tooling_version_0_reads_unattested():
+    github, kubectl = _mixed_delivery_github_and_kubectl()
+    agent = FakeAgent(card={"enforcement": {"version": 0, "hooks": [], "locked": False}})
+    _, enforcement = list_tooling(
+        github, kubectl, agent, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY
+    )
+    assert enforcement == UNATTESTED
+
+
+def test_list_tooling_no_enforcement_key_reads_unattested():
+    # Absent block entirely — a pre-enforcement runtime's real card shape.
+    github, kubectl = _mixed_delivery_github_and_kubectl()
+    agent = FakeAgent(card={"hooks": ["old.py"]})
+    _, enforcement = list_tooling(
+        github, kubectl, agent, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY
+    )
+    assert enforcement == UNATTESTED
+
+
+def test_list_tooling_unreachable_agent_reads_unattested_files_unaffected():
+    github, kubectl = _mixed_delivery_github_and_kubectl()
+    agent = FakeAgent(card_error="fetch_card request failed: connection refused")
+    files, enforcement = list_tooling(
+        github, kubectl, agent, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY
+    )
+    assert enforcement == UNATTESTED
+    by_name = {f["name"]: f["delivered"] for f in files}
+    assert by_name == {"old.py": True, "fresh.py": False}
+
+
+def test_list_tooling_probes_card_with_namespace_and_deploy():
+    github = FakeGitHub()
+    kubectl = FakeKubectl()
+    agent = FakeAgent()
+    list_tooling(github, kubectl, agent, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
+    assert agent.fetch_card_calls == [(NAMESPACE, DEPLOY)]
+
+
+def test_list_tooling_probes_card_even_when_no_tools_dir():
+    # Enforcement is a property of the running agent, not of whether it has
+    # any tooling files at all — the probe still runs on an empty list.
+    github = FakeGitHub()
+    kubectl = FakeKubectl()
+    agent = FakeAgent(card={"enforcement": {"version": 1, "hooks": [], "locked": False}})
+    files, enforcement = list_tooling(
+        github, kubectl, agent, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY
+    )
+    assert files == []
+    assert enforcement == {"attested": True, "locked": False, "locked_file": None}

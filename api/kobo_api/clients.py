@@ -699,6 +699,18 @@ class AgentClient(Protocol):
         one task; return its reply text."""
         ...
 
+    def fetch_card(self, namespace: str, service: str) -> dict:
+        """GET the agent's `/.well-known/agent-card.json` through the same
+        port-forward flow as hello/converse; return the parsed JSON dict.
+
+        Raises `ClientError` on ANY failure — an unreachable/still-booting
+        pod, a non-200, or a non-JSON body all read the same way to
+        `kobo_api.tooling.list_tooling`'s enforcement probe: "couldn't
+        confirm enforcement", never a guess dressed up as one of the other
+        failure modes.
+        """
+        ...
+
 
 _FORWARDING_RE = re.compile(r"Forwarding from 127\.0\.0\.1:(\d+)")
 
@@ -797,12 +809,47 @@ def _post_task(client: httpx.Client, port: int, messages: list[ChatMessage]) -> 
         ) from exc
 
 
+def _get_card(client: httpx.Client, port: int) -> dict:
+    """GET the forwarded port's `/.well-known/agent-card.json`; return the
+    parsed JSON dict.
+
+    Factored out from `KubectlAgentClient.fetch_card` the same way
+    `_post_task` is factored out of `_send_task` — unit-testable against an
+    httpx.MockTransport-backed client, with no real network involved.
+
+    Same wrapping discipline as `_post_task`: a transport error (timeout,
+    connection failure, ...) isn't `ClientError`, so it's wrapped here rather
+    than left to escape to a caller that only expects `ClientError`. A 200
+    response doesn't guarantee a well-formed card — a non-JSON body raises
+    `json.JSONDecodeError` (a `ValueError`), also wrapped. Unlike
+    `_post_task`, there's no reply-path shape to validate beyond "valid
+    JSON": the card's own structure (an `enforcement` key, its `version`,
+    ...) is `kobo_api.tooling.list_tooling`'s concern, not this transport
+    helper's.
+    """
+    try:
+        resp = client.get(f"http://127.0.0.1:{port}/.well-known/agent-card.json")
+    except httpx.HTTPError as exc:
+        raise ClientError(f"fetch_card request failed: {exc!r}") from exc
+    if resp.status_code != 200:
+        raise ClientError(f"fetch_card request failed ({resp.status_code}): {resp.text}")
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise ClientError(
+            f"malformed agent card: {exc!r} (body: {resp.text[:200]!r})"
+        ) from exc
+
+
 class KubectlAgentClient:
-    """Reaches an in-cluster agent's a2a endpoint via a kubectl port-forward.
+    """Reaches an in-cluster agent's a2a endpoint (or its well-known card) via
+    a kubectl port-forward.
 
     Spawns `kubectl -n <namespace> port-forward svc/<service> :80`, parses the
-    ephemeral local port it reports, POSTs one a2a task to it, and always
-    terminates the port-forward afterward (success or failure).
+    ephemeral local port it reports, runs one request against it (a POSTed
+    a2a task for hello/converse, a GET of `/.well-known/agent-card.json` for
+    `fetch_card`), and always terminates the port-forward afterward (success
+    or failure) — see `_over_port_forward` for the shared machinery.
     """
 
     def __init__(
@@ -825,7 +872,22 @@ class KubectlAgentClient:
     def converse(self, namespace: str, service: str, messages: list[ChatMessage]) -> str:
         return self._send_task(namespace, service, messages)
 
+    def fetch_card(self, namespace: str, service: str) -> dict:
+        return self._over_port_forward(namespace, service, lambda port: _get_card(self._http_client, port))
+
     def _send_task(self, namespace: str, service: str, messages: list[ChatMessage]) -> str:
+        return self._over_port_forward(
+            namespace, service, lambda port: _post_task(self._http_client, port, messages)
+        )
+
+    def _over_port_forward(self, namespace: str, service: str, fn: Callable[[int], dict | str]):
+        """Spawn `kubectl -n <namespace> port-forward svc/<service> :80`,
+        wait for the ephemeral local port kubectl reports, call `fn(port)`,
+        and always terminate the port-forward afterward (success or
+        failure) — the exact Popen/wait/cleanup dance `_send_task` always
+        had, factored out once `fetch_card` needed the identical machinery
+        for a GET instead of a POST.
+        """
         # Popen itself can fail before any subprocess exists (e.g. `kubectl`
         # missing from PATH) — that's OSError, not ClientError, so it's
         # wrapped here rather than left to escape to callers that only
@@ -841,7 +903,7 @@ class KubectlAgentClient:
             raise ClientError(f"failed to start port-forward: {exc}") from exc
         try:
             port = _wait_for_forwarded_port(proc.stdout, self._timeout_s)
-            return _post_task(self._http_client, port, messages)
+            return fn(port)
         finally:
             proc.terminate()
             try:
