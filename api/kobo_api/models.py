@@ -82,6 +82,21 @@ class Agent(Base):
     # for history, no longer written.
     slack_channels: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     slack_wired: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Slack self-service (2026-08-17): whether this agent's Slack app was
+    # born self-service (a user created it directly at Slack's own app
+    # site from the rendered manifest, then pasted its id/tokens into
+    # POST .../slack/connect) rather than room-created by kobo's own
+    # retired POST .../slack/app (a config-token app). Stamped True the
+    # moment connect stores a fresh `slack_app_id`; never flipped back.
+    # This is the provenance refinement: destroy-slack reads this flag
+    # directly instead of inferring the same distinction from Slack's
+    # error codes at delete time (see the design spec's Destruction
+    # section). Existing DBs need a manual ALTER (fresh DBs get it for
+    # free via create_all):
+    #   ALTER TABLE agents ADD COLUMN slack_app_self_service BOOLEAN DEFAULT 0;
+    slack_app_self_service: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
     # Avatar (P2d): a base64-encoded copy of bundle/avatar.png (the repo is
     # the source of truth, same as first_reply's relationship to the a2a
     # endpoint) — cached here purely so list/detail views can render an

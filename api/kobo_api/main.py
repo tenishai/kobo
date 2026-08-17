@@ -63,6 +63,7 @@ from kobo_api.skills import (
 )
 from kobo_api.slack_setup import render_manifest, rewire_slack_channels, wire_slack
 from kobo_api.slack_state import (
+    SLACK_APP_ID_RE,
     clean_channels,
     decode_channels,
     derive_state,
@@ -195,14 +196,23 @@ class ToolingImportPayload(BaseModel):
 
 
 class SlackConnectRequest(BaseModel):
-    """POST .../slack/connect body: tokens only. Two-lane Slack (2026-08-17)
-    moved the channel list off this request entirely — the channels an
-    agent listens on are whatever's already saved via `PUT .../slack/
-    channels` (`decode_channels(agent.slack_channels)`), not something the
-    connect call carries. An old-shape body that still includes `channel`
-    parses fine (the extra key is ignored, pydantic's default) but the
-    route never reads it."""
+    """POST .../slack/connect body: the Slack app id plus tokens. Slack
+    self-service (2026-08-17) retired kobo's own app-creation route
+    (`POST .../slack/app`) — the app already exists by the time this call
+    lands, made by a user directly at Slack's own app site from the
+    manifest `GET .../slack/manifest` hands back, so its id arrives here
+    instead of getting minted by kobo. `app_id` is validated against
+    `SLACK_APP_ID_RE` before either token's format, same plain-copy 422
+    idiom as the tokens below.
 
+    The channel list stays off this request (Two-lane Slack, 2026-08-17)
+    — the channels an agent listens on are whatever's already saved via
+    `PUT .../slack/channels` (`decode_channels(agent.slack_channels)`),
+    not something the connect call carries. An old-shape body that still
+    includes `channel` parses fine (the extra key is ignored, pydantic's
+    default) but the route never reads it."""
+
+    app_id: str
     bot_token: str
     app_token: str
 
@@ -1179,7 +1189,6 @@ def create_app(
                 "steps": steps,
                 "first_reply": agent.first_reply,
                 "slack": slack,
-                "slack_admin_visible": _slack_operator_block(request, cfg) is None,
                 "destroy_visible": _operator_block(request, cfg) is None,
                 "has_avatar": agent.avatar_png is not None,
             }
@@ -1940,31 +1949,24 @@ def create_app(
 
         return JSONResponse({"sha": sha})
 
-    # --- Slack connect (P2c): app creation + token delivery/wiring --------------
+    # --- Slack self-service (2026-08-17): manifest + degated connect ------------
+    #
+    # The config-token API-creation route (`POST .../slack/app`) is retired:
+    # the room hands the manifest to whoever's setting Slack up, they create
+    # the app themselves at Slack's own app site, and paste its id/tokens
+    # into connect below. The config-token `SlackClient` itself stays wired
+    # (`clients.slack`) — destruction still uses it to delete legacy,
+    # room-created apps — but no route here calls `.create_app` anymore.
 
-    @app.post("/api/agents/{name}/slack/app")
-    def create_slack_app(
-        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    @app.get("/api/agents/{name}/slack/manifest")
+    def slack_manifest(
+        name: str, session: Session = Depends(get_session)  # noqa: B008
     ) -> JSONResponse:
-        cfg: Config = app.state.config
-        block = _slack_operator_block(request, cfg)
-        if block is not None:
-            return block
-
         agent = _ready_agent_or_error(
             session, name, not_ready_message="agent is not ready to connect to Slack yet"
         )
         if isinstance(agent, JSONResponse):
             return agent
-
-        clients = app.state.clients
-        if clients.slack is None:
-            return JSONResponse({"error": "Slack is not configured"}, status_code=503)
-
-        if agent.slack_app_id is not None:
-            return JSONResponse(
-                {"error": "Slack is already set up for this agent"}, status_code=409
-            )
 
         # persona_first_line source: the persona catalog's own one-line
         # `description` field (bucket catalogs, Task 5 — the FTS entry's
@@ -1973,7 +1975,8 @@ def create_app(
         # itself and NOT the persona's full templated body. Falls back to
         # an id-derived phrase only if the persona has since been removed
         # from the catalog, mirroring `_model_label`'s own retired-catalog-
-        # entry fallback above.
+        # entry fallback above. Moved here verbatim from the retired
+        # create-app route (this manifest render is its direct successor).
         engine = session.get_bind()
         _maybe_refresh_catalogs(app, engine)
         persona_entry = get_entry(engine, "persona", agent.persona, team=None)
@@ -1984,44 +1987,15 @@ def create_app(
             persona_first_line = f"A {agent.persona} agent, reachable in Slack."
 
         manifest = render_manifest(agent.name, persona_first_line)
-
-        try:
-            slack_app_id = clients.slack.create_app(manifest)
-        except ClientError as exc:
-            log.warning("slack app creation failed: %s", exc)
-            return JSONResponse(
-                {"error": "couldn't set up Slack. Try again."}, status_code=502
-            )
-
-        # Logged before persisting: if the commit below itself fails, this
-        # line is the only record left of an app Slack now knows about that
-        # kobo's own DB doesn't yet — an orphan-recovery breadcrumb for an
-        # operator to match against Slack's app list. App ids aren't secret
-        # (they're already returned in this route's own 200 response below).
-        log.info("slack app created: %s", slack_app_id)
-
-        agent.slack_app_id = slack_app_id
-        session.commit()
-
-        return JSONResponse(
-            {
-                "app_id": slack_app_id,
-                "configure_url": f"https://api.slack.com/apps/{slack_app_id}",
-            }
-        )
+        return JSONResponse({"manifest": manifest})
 
     @app.post("/api/agents/{name}/slack/connect")
     def connect_slack(
         name: str,
         payload: SlackConnectRequest,
-        request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         cfg: Config = app.state.config
-        block = _slack_operator_block(request, cfg)
-        if block is not None:
-            return block
-
         agent = _ready_agent_or_error(
             session, name, not_ready_message="agent is not ready to connect to Slack yet"
         )
@@ -2032,22 +2006,26 @@ def create_app(
         if clients.slack is None:
             return JSONResponse({"error": "Slack is not configured"}, status_code=503)
 
-        if agent.slack_app_id is None:
-            return JSONResponse(
-                {"error": "set up a Slack app for this agent first"}, status_code=409
-            )
-
         # Two-lane Slack (2026-08-17): the channel list is whatever's
         # already saved via PUT .../slack/channels, not something this
-        # request carries — connect only delivers tokens. Never echo the
-        # submitted token values back in an error body, here or anywhere
-        # below.
+        # request carries — connect only delivers tokens (plus, since
+        # self-service, the app id). Never echo the submitted token values
+        # back in an error body, here or anywhere below.
         channels = decode_channels(agent.slack_channels)
         if not channels:
             return JSONResponse(
                 {"error": "Add at least one channel first."}, status_code=409
             )
 
+        # app_id validated FIRST, ahead of either token's format: Slack
+        # self-service means the app already exists by connect time (the
+        # old "set up a Slack app for this agent first" 409 precondition
+        # is gone — connect now works starting from a null slack_app_id).
+        if not SLACK_APP_ID_RE.match(payload.app_id):
+            return JSONResponse(
+                {"error": "that doesn't look like a Slack app ID (it starts with A)"},
+                status_code=422,
+            )
         if not payload.bot_token.startswith("xoxb-"):
             return JSONResponse(
                 {"error": "that doesn't look like a Slack bot token"}, status_code=422
@@ -2076,6 +2054,14 @@ def create_app(
                 {"error": "couldn't set up Slack. Try again."}, status_code=502
             )
 
+        # Self-service provenance (Task 1): the app id comes from the
+        # request body now, not something kobo minted itself, so it's
+        # (re)stamped here every successful connect; `slack_app_self_service`
+        # records that this app was born self-service (never flipped back)
+        # so destroy-slack can read it directly rather than inferring the
+        # same distinction from Slack's error codes at delete time.
+        agent.slack_app_id = payload.app_id
+        agent.slack_app_self_service = True
         agent.slack_wired = True
         session.commit()
 
@@ -2088,10 +2074,10 @@ def create_app(
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         # Deliberately NO operator gate: the channels lane (Two-lane Slack,
-        # 2026-08-17) is for everyone in the room, unlike connect/app above,
-        # which stay operator-assisted since they carry actual Slack tokens.
-        # IAP middleware still runs app-wide either way; this route just
-        # never calls `_slack_operator_block` itself.
+        # 2026-08-17) is for everyone in the room. Connect above lost its
+        # own operator gate too (Slack self-service, 2026-08-17) — this
+        # route simply never had one to begin with. IAP middleware still
+        # runs app-wide either way.
         agent = _ready_agent_or_error(
             session, name, not_ready_message="agent is not ready for Slack changes yet"
         )

@@ -67,6 +67,12 @@ The setup section of the Slack tab, no gate:
 - Absent apps and absent ids keep their existing already-gone
   tolerances.
 
+Refinement (Task 1): the room-created/user-created distinction above is
+recorded directly, not inferred — the degated connect route stamps
+`slack_app_self_service` at connect time from how the app was actually
+born, so destroy-slack reads that flag instead of classifying Slack's
+error codes after the fact.
+
 The destruction spec's honest inventory gains the matching caveat: a
 user-created Slack app survives destruction until its creator removes
 it, and the destroy summary says so.

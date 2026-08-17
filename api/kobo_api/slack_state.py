@@ -11,6 +11,17 @@ import re
 # Slack has migrated private channels to C ids, so C-prefixed is enough.
 SLACK_CHANNEL_RE = re.compile(r"^C[A-Z0-9]{6,}$")
 
+# Single source for Slack's real App ID shape (Global Constraint):
+# A-prefixed, same uppercase-alphanumeric discipline as SLACK_CHANNEL_RE
+# above. main.py imports this for the connect route's `app_id` field —
+# Slack self-service (2026-08-17) means the app already exists by connect
+# time (created directly at Slack's app site from the manifest), so its id
+# arrives in the request body instead of getting minted by kobo's own
+# POST .../slack/app (retired alongside this task). Format-only, same as
+# every regex in this module: never a semantic check that the app id is
+# one Slack actually knows about.
+SLACK_APP_ID_RE = re.compile(r"^A[A-Z0-9]{6,}$")
+
 MAX_CHANNELS = 8
 _CAP_MESSAGE = "Eight channels at most for now."
 

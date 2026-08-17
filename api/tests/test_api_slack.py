@@ -1,5 +1,5 @@
-"""Tests for the Slack-connect HTTP routes: app creation
-(`POST .../slack/app`), the channels lane (`PUT .../slack/channels`,
+"""Tests for the Slack-connect HTTP routes: the manifest render
+(`GET .../slack/manifest`), the channels lane (`PUT .../slack/channels`,
 Two-lane Slack, 2026-08-17), and token delivery/wiring
 (`POST .../slack/connect`) — plus the always-present `"slack"` block
 `GET /api/agents/{name}` carries. Same harness shape as
@@ -14,10 +14,23 @@ module in correctly: guards in the right order, the request/response
 shapes the brief pins, and that a submitted token/channel never leaks into
 an error body or a file written to the repo clone.
 
+Slack self-service (2026-08-17) retired the config-token app-creation
+route (`POST .../slack/app`): the manifest render it used to hand
+`clients.slack.create_app` moved onto its own GET route instead, open to
+any signed-in user (no operator gate, like the channels lane below).
+Connect lost its own operator gate in the same change and gained
+`app_id` in its body (the app already exists by connect time, made
+directly at Slack's app site) — the former "set up a Slack app for this
+agent first" 409 precondition is gone along with the route it guarded.
+`clients.slack`/`FakeSlack` stay wired in this file's harness (the
+config-token client itself is not retired — destruction still uses it to
+delete legacy apps), just uncalled by any route these tests exercise.
+
 Two-lane Slack moved the channel list off `/slack/connect` entirely (it
-now only carries tokens) and onto its own `PUT /slack/channels` route,
-open to everyone in the room (no operator gate) unlike connect/app, which
-stay operator-assisted since they carry real Slack tokens.
+now only carries tokens, plus the app id) and onto its own
+`PUT /slack/channels` route, open to everyone in the room (no operator
+gate) unlike connect, which — until self-service retired the gate
+entirely — stayed operator-assisted since it carries real Slack tokens.
 """
 
 from __future__ import annotations
@@ -35,7 +48,7 @@ from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import ClientError, Clients
 from kobo_api.config import Config
-from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
+from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER, UNAUTHORIZED_BODY
 from kobo_api.main import create_app
 from kobo_api.models import Agent, AgentStatus, Base
 from kobo_api.personas import seed_default_personas
@@ -57,12 +70,13 @@ PERSONA = "helpful-generalist"
 PERSONA_DESCRIPTION = "A friendly, concise generalist assistant."
 REPO = "acme/agent-clio"
 
+APP_ID = "A0EXISTING"
 BOT_TOKEN = "xoxb-super-secret-bot-token"
 APP_TOKEN = "xapp-super-secret-app-token"
 CHANNEL = "C1234567"
 CHANNEL_2 = "C7654321"
 
-# --- IAP JWT helpers (operator-gate proof for test_put_channels_no_operator_gate) --
+# --- IAP JWT helpers (no-operator-gate proofs: channels lane, manifest route) --
 #
 # Duplicated locally rather than imported from test_web_slack_gate.py, same
 # "don't cross-import test fixtures" convention this file's own
@@ -256,23 +270,24 @@ def _onboarded_gojira(**kwargs):
 NON_READY_STATUSES = [AgentStatus.PENDING, AgentStatus.PROVISIONING, AgentStatus.FAILED]
 
 
-# --- POST /api/agents/{name}/slack/app ----------------------------------------------
+# --- GET /api/agents/{name}/slack/manifest ------------------------------------------
+#
+# Direct successor of the retired POST .../slack/app: every manifest-
+# content assertion that route's tests made now lives here (nothing
+# proven is lost), minus anything about actually calling
+# `clients.slack.create_app` or persisting an `app_id` — that flow is
+# retired along with the route, since self-service means kobo never
+# calls Slack's API to create an app at all anymore.
 
 
-def test_create_slack_app_renders_manifest_creates_app_persists_id(session_factory, config):
-    slack = FakeSlack(app_id="A0REAL")
-    client = _make_client(session_factory, config, slack=slack)
+def test_slack_manifest_renders_agent_manifest(session_factory, config):
+    client = _make_client(session_factory, config)
     _seed_agent(session_factory, config)
 
-    response = client.post(f"/api/agents/{AGENT_NAME}/slack/app")
+    response = client.get(f"/api/agents/{AGENT_NAME}/slack/manifest")
 
     assert response.status_code == 200
-    assert response.json() == {
-        "app_id": "A0REAL",
-        "configure_url": "https://api.slack.com/apps/A0REAL",
-    }
-
-    manifest = slack.manifests[-1]
+    manifest = response.json()["manifest"]
     assert manifest["display_information"]["name"] == AGENT_NAME
     assert manifest["display_information"]["description"] == PERSONA_DESCRIPTION
     assert manifest["features"]["bot_user"]["display_name"] == AGENT_NAME
@@ -285,13 +300,9 @@ def test_create_slack_app_renders_manifest_creates_app_persists_id(session_facto
         "reactions:write",
     ]
 
-    detail = client.get(f"/api/agents/{AGENT_NAME}").json()
-    assert detail["slack"] == {"app_id": "A0REAL", "channels": [], "state": "idle"}
 
-
-def test_create_slack_app_falls_back_when_persona_removed_from_catalog(session_factory, config):
-    slack = FakeSlack()
-    client = _make_client(session_factory, config, slack=slack)
+def test_slack_manifest_falls_back_when_persona_removed_from_catalog(session_factory, config):
+    client = _make_client(session_factory, config)
     _seed_agent(session_factory, config)
     # Simulate the persona having been retired from the catalog since this
     # agent was created: the route must not crash, and must say something
@@ -302,24 +313,23 @@ def test_create_slack_app_falls_back_when_persona_removed_from_catalog(session_f
     session.commit()
     session.close()
 
-    response = client.post(f"/api/agents/{AGENT_NAME}/slack/app")
+    response = client.get(f"/api/agents/{AGENT_NAME}/slack/manifest")
 
     assert response.status_code == 200
-    description = slack.manifests[-1]["display_information"]["description"]
+    description = response.json()["manifest"]["display_information"]["description"]
     assert "retired-persona" in description
 
 
-def test_create_slack_app_catalogs_unconfigured_falls_back_and_warns(session_factory, config, caplog):
-    slack = FakeSlack()
+def test_slack_manifest_catalogs_unconfigured_falls_back_and_warns(session_factory, config, caplog):
     # Storage with empty personas bucket (unconfigured)
     empty_storage = FakeStorage()
-    client = _make_client(session_factory, config, slack=slack, storage=empty_storage)
+    client = _make_client(session_factory, config, storage=empty_storage)
     _seed_agent(session_factory, config)
 
-    response = client.post(f"/api/agents/{AGENT_NAME}/slack/app")
+    response = client.get(f"/api/agents/{AGENT_NAME}/slack/manifest")
 
     assert response.status_code == 200
-    description = slack.manifests[-1]["display_information"]["description"]
+    description = response.json()["manifest"]["display_information"]["description"]
     assert f"A {PERSONA} agent" in description
     assert "caplog" in dir()  # verify caplog fixture is available
     assert any(
@@ -329,54 +339,73 @@ def test_create_slack_app_catalogs_unconfigured_falls_back_and_warns(session_fac
     )
 
 
-def test_create_slack_app_unknown_agent_returns_404(session_factory, config):
+def test_slack_manifest_unknown_agent_returns_404(session_factory, config):
     client = _make_client(session_factory, config)
 
-    response = client.post(f"/api/agents/{AGENT_NAME}/slack/app")
+    response = client.get(f"/api/agents/{AGENT_NAME}/slack/manifest")
 
     assert response.status_code == 404
     assert "error" in response.json()
 
 
 @pytest.mark.parametrize("status", NON_READY_STATUSES)
-def test_create_slack_app_non_ready_agent_returns_409(session_factory, config, status):
+def test_slack_manifest_non_ready_agent_returns_409(session_factory, config, status):
     client = _make_client(session_factory, config)
     _seed_agent(session_factory, config, status=status)
 
-    response = client.post(f"/api/agents/{AGENT_NAME}/slack/app")
+    response = client.get(f"/api/agents/{AGENT_NAME}/slack/manifest")
 
     assert response.status_code == 409
     assert response.json() == {"error": "agent is not ready to connect to Slack yet"}
 
 
-def test_create_slack_app_returns_503_when_slack_not_configured(session_factory, config):
-    client = _make_client(session_factory, config, slack=None)
-    _seed_agent(session_factory, config)
+def test_slack_manifest_no_operator_gate(session_factory, config):
+    # The manifest route is ready-gated like other agent routes, no
+    # operator gate at all: a non-operator identity still gets 200, even
+    # with slack_operators/IAP fully engaged.
+    private_key, jwk = _generate_jwk()
+    op_config = config.model_copy(
+        update={"slack_operators": [OPERATOR_EMAIL], "iap_audience": IAP_AUDIENCE}
+    )
+    client = _make_client(session_factory, op_config, iap_jwks_fetcher=_fetcher(jwk))
+    _seed_agent(session_factory, op_config)
+    token = _sign(private_key, email=NON_OPERATOR_EMAIL)
 
-    response = client.post(f"/api/agents/{AGENT_NAME}/slack/app")
+    response = client.get(
+        f"/api/agents/{AGENT_NAME}/slack/manifest", headers={ASSERTION_HEADER: token}
+    )
 
-    assert response.status_code == 503
-    assert response.json() == {"error": "Slack is not configured"}
+    assert response.status_code == 200
 
 
-def test_create_slack_app_already_set_up_returns_409(session_factory, config):
+def test_slack_manifest_anonymous_blocked_by_middleware(session_factory, config):
+    # Reuses the existing IAP matrix idiom (test_iap.py): with IAP on, a
+    # request carrying no assertion header 401s before the route ever
+    # runs — proof this new route isn't accidentally exempt.
+    op_config = config.model_copy(update={"iap_audience": IAP_AUDIENCE})
+    client = _make_client(session_factory, op_config)
+    _seed_agent(session_factory, op_config)
+
+    response = client.get(f"/api/agents/{AGENT_NAME}/slack/manifest")
+
+    assert response.status_code == 401
+    assert response.json() == UNAUTHORIZED_BODY
+
+
+def test_create_slack_app_route_is_gone(session_factory, config):
+    # Retired (Slack self-service, 2026-08-17): the config-token
+    # app-creation route no longer exists — every one of its former
+    # tests either moved to the manifest tests above (content) or was
+    # retired outright (the API-creation-flow assertions: there's no
+    # more `clients.slack.create_app` call, no more `app_id`/
+    # `configure_url` response, no more "already set up"/503/502
+    # create-flow guards to prove).
     client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, slack_app_id="A0EXISTING")
-
-    response = client.post(f"/api/agents/{AGENT_NAME}/slack/app")
-
-    assert response.status_code == 409
-    assert response.json() == {"error": "Slack is already set up for this agent"}
-
-
-def test_create_slack_app_client_error_returns_502(session_factory, config):
-    client = _make_client(session_factory, config, slack=FakeSlack(create_error="boom"))
     _seed_agent(session_factory, config)
 
     response = client.post(f"/api/agents/{AGENT_NAME}/slack/app")
 
-    assert response.status_code == 502
-    assert response.json() == {"error": "couldn't set up Slack. Try again."}
+    assert response.status_code == 404
 
 
 # --- POST /api/agents/{name}/slack/connect ------------------------------------------
@@ -390,13 +419,13 @@ def test_connect_slack_wires_secret_transport_and_secrets_from_returns_sha(
     gojira, app_id = _onboarded_gojira()
     client = _make_client(session_factory, config, github=github, kubectl=kubectl, gojira=gojira)
     _seed_agent(
-        session_factory, config, gojira_app_id=app_id, slack_app_id="A0EXISTING",
+        session_factory, config, gojira_app_id=app_id, slack_app_id=APP_ID,
         slack_channels=[CHANNEL],
     )
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
     )
 
     assert response.status_code == 200
@@ -430,8 +459,37 @@ def test_connect_slack_wires_secret_transport_and_secrets_from_returns_sha(
     # persisted: slack_wired flips True, state derives to "connected"
     detail = client.get(f"/api/agents/{AGENT_NAME}").json()
     assert detail["slack"] == {
-        "app_id": "A0EXISTING", "channels": [CHANNEL], "state": "connected"
+        "app_id": APP_ID, "channels": [CHANNEL], "state": "connected"
     }
+
+
+def test_connect_starting_from_null_app_id_stores_app_id_and_self_service_flag(
+    session_factory, config
+):
+    # Slack self-service (2026-08-17): the old "set up a Slack app for this
+    # agent first" 409 precondition is gone — connect now works starting
+    # from a null slack_app_id (the app was created directly at Slack's
+    # own app site, never through kobo). Success stores BOTH the id and
+    # the provenance flag, never flipped back, so destroy-slack can later
+    # read it directly instead of inferring the same distinction from
+    # Slack's error codes.
+    gojira, app_id = _onboarded_gojira()
+    client = _make_client(session_factory, config, github=_CapturingGitHub(), gojira=gojira)
+    _seed_agent(session_factory, config, gojira_app_id=app_id, slack_channels=[CHANNEL])
+    # slack_app_id left at its default: None
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/slack/connect",
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+    )
+
+    assert response.status_code == 200
+
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    assert agent.slack_app_id == APP_ID
+    assert agent.slack_app_self_service is True
+    session.close()
 
 
 def test_connect_slack_rewrites_dockerfile_to_configured_runtime_image(session_factory, config):
@@ -451,13 +509,13 @@ def test_connect_slack_rewrites_dockerfile_to_configured_runtime_image(session_f
     gojira, app_id = _onboarded_gojira()
     client = _make_client(session_factory, config, github=github, kubectl=kubectl, gojira=gojira)
     _seed_agent(
-        session_factory, config, gojira_app_id=app_id, slack_app_id="A0EXISTING",
+        session_factory, config, gojira_app_id=app_id, slack_app_id=APP_ID,
         slack_channels=[CHANNEL],
     )
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
     )
 
     assert response.status_code == 200
@@ -475,7 +533,7 @@ def test_connect_slack_unknown_agent_returns_404(session_factory, config):
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
     )
 
     assert response.status_code == 404
@@ -489,7 +547,7 @@ def test_connect_slack_non_ready_agent_returns_409(session_factory, config, stat
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
     )
 
     assert response.status_code == 409
@@ -498,40 +556,29 @@ def test_connect_slack_non_ready_agent_returns_409(session_factory, config, stat
 
 def test_connect_slack_returns_503_when_slack_not_configured(session_factory, config):
     client = _make_client(session_factory, config, slack=None)
-    _seed_agent(session_factory, config, slack_app_id="A0EXISTING")
+    _seed_agent(session_factory, config, slack_app_id=APP_ID)
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
     )
 
     assert response.status_code == 503
     assert response.json() == {"error": "Slack is not configured"}
 
 
-def test_connect_slack_no_app_yet_returns_409(session_factory, config):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config)  # slack_app_id still None
-
-    response = client.post(
-        f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
-    )
-
-    assert response.status_code == 409
-    assert response.json() == {"error": "set up a Slack app for this agent first"}
-
-
 def test_connect_requires_saved_channels(session_factory, config):
     # Two-lane Slack (2026-08-17): connect no longer carries a channel of
     # its own — it wires whatever's already saved via PUT .../slack/
     # channels. Nothing saved yet is a 409, not a silent empty-list wire.
+    # Preserved unchanged by Slack self-service: a well-formed app_id
+    # doesn't bypass this guard.
     client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, slack_app_id="A0EXISTING")  # no channels saved
+    _seed_agent(session_factory, config)  # no channels saved
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
     )
 
     assert response.status_code == 409
@@ -548,13 +595,16 @@ def test_connect_body_no_longer_takes_channel(session_factory, config):
     gojira, app_id = _onboarded_gojira()
     client = _make_client(session_factory, config, github=github, gojira=gojira)
     _seed_agent(
-        session_factory, config, gojira_app_id=app_id, slack_app_id="A0EXISTING",
+        session_factory, config, gojira_app_id=app_id, slack_app_id=APP_ID,
         slack_channels=[CHANNEL],
     )
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"channel": "C9999999", "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={
+            "channel": "C9999999", "app_id": APP_ID,
+            "bot_token": BOT_TOKEN, "app_token": APP_TOKEN,
+        },
     )
 
     assert response.status_code == 200
@@ -567,13 +617,13 @@ def test_connect_sets_wired_and_payload_state_connected(session_factory, config)
     gojira, app_id = _onboarded_gojira()
     client = _make_client(session_factory, config, github=_CapturingGitHub(), gojira=gojira)
     _seed_agent(
-        session_factory, config, gojira_app_id=app_id, slack_app_id="A0EXISTING",
+        session_factory, config, gojira_app_id=app_id, slack_app_id=APP_ID,
         slack_channels=[CHANNEL],
     )
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
     )
 
     assert response.status_code == 200
@@ -583,22 +633,61 @@ def test_connect_sets_wired_and_payload_state_connected(session_factory, config)
     assert detail["slack"]["channels"] == [CHANNEL]
 
 
+def test_connect_slack_app_id_validated_before_token_formats(session_factory, config):
+    # app_id is validated FIRST, ahead of either token's format: a request
+    # with a malformed app_id AND malformed tokens gets the app_id's 422,
+    # never a token one.
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config, slack_channels=[CHANNEL])
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/slack/connect",
+        json={
+            "app_id": "not-an-app-id", "bot_token": "also-bad", "app_token": "also-bad",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "error": "that doesn't look like a Slack app ID (it starts with A)"
+    }
+
+
+def test_connect_slack_bad_app_id_returns_422_and_never_echoes_tokens(session_factory, config):
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config, slack_channels=[CHANNEL])
+    bad_app_id = "C1234567"  # well-formed channel id, not an app id
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/slack/connect",
+        json={"app_id": bad_app_id, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "error": "that doesn't look like a Slack app ID (it starts with A)"
+    }
+    assert BOT_TOKEN not in response.text
+    assert APP_TOKEN not in response.text
+
+
 def test_connect_slack_missing_bot_token_returns_422_without_echoing_tokens(
     session_factory, config
 ):
     # Final-review Finding 1 (CRITICAL), retargeted: with SlackConnectRequest
-    # now carrying only tokens (channel dropped, Two-lane Slack), the field
-    # that can go missing and trip the app-wide RequestValidationError
-    # handler is a token field itself. Same proof as before: the handler
-    # must build its message from `loc` only, never from Pydantic's
-    # `input`, which would otherwise echo the submitted token verbatim.
+    # now carrying an app id plus tokens, the field that can go missing and
+    # trip the app-wide RequestValidationError handler is a token field
+    # itself (app_id is supplied here so only app_token is missing). Same
+    # proof as before: the handler must build its message from `loc` only,
+    # never from Pydantic's `input`, which would otherwise echo the
+    # submitted token verbatim.
     client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, slack_app_id="A0EXISTING", slack_channels=[CHANNEL])
+    _seed_agent(session_factory, config, slack_app_id=APP_ID, slack_channels=[CHANNEL])
     bot_sentinel = "xoxb-SENTINEL-BOT-TOKEN"
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"bot_token": bot_sentinel},
+        json={"app_id": APP_ID, "bot_token": bot_sentinel},
     )
 
     assert response.status_code == 422
@@ -610,12 +699,12 @@ def test_connect_slack_missing_bot_token_returns_422_without_echoing_tokens(
 
 def test_connect_slack_bad_bot_token_returns_422_and_never_echoes_it(session_factory, config):
     client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, slack_app_id="A0EXISTING", slack_channels=[CHANNEL])
+    _seed_agent(session_factory, config, slack_app_id=APP_ID, slack_channels=[CHANNEL])
     bad_token = "not-a-bot-token"
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"bot_token": bad_token, "app_token": APP_TOKEN},
+        json={"app_id": APP_ID, "bot_token": bad_token, "app_token": APP_TOKEN},
     )
 
     assert response.status_code == 422
@@ -627,12 +716,12 @@ def test_connect_slack_bad_bot_token_returns_422_and_never_echoes_it(session_fac
 
 def test_connect_slack_bad_app_token_returns_422_and_never_echoes_it(session_factory, config):
     client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, slack_app_id="A0EXISTING", slack_channels=[CHANNEL])
+    _seed_agent(session_factory, config, slack_app_id=APP_ID, slack_channels=[CHANNEL])
     bad_token = "not-an-app-token"
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"bot_token": BOT_TOKEN, "app_token": bad_token},
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": bad_token},
     )
 
     assert response.status_code == 422
@@ -647,13 +736,13 @@ def test_connect_slack_client_error_from_kubectl_returns_502(session_factory, co
     gojira, app_id = _onboarded_gojira()
     client = _make_client(session_factory, config, kubectl=kubectl, gojira=gojira)
     _seed_agent(
-        session_factory, config, gojira_app_id=app_id, slack_app_id="A0EXISTING",
+        session_factory, config, gojira_app_id=app_id, slack_app_id=APP_ID,
         slack_channels=[CHANNEL],
     )
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
     )
 
     assert response.status_code == 502
@@ -673,13 +762,13 @@ def test_connect_slack_gojira_failed_status_returns_502(session_factory, config)
     )
     client = _make_client(session_factory, config, github=_CapturingGitHub(), gojira=gojira)
     _seed_agent(
-        session_factory, config, gojira_app_id=app_id, slack_app_id="A0EXISTING",
+        session_factory, config, gojira_app_id=app_id, slack_app_id=APP_ID,
         slack_channels=[CHANNEL],
     )
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
     )
 
     assert response.status_code == 502
@@ -697,13 +786,13 @@ def test_connect_slack_gojira_timeout_returns_502(session_factory, config):
     gojira, app_id = _onboarded_gojira(activate_after=10_000)
     client = _make_client(session_factory, config, github=_CapturingGitHub(), gojira=gojira)
     _seed_agent(
-        session_factory, config, gojira_app_id=app_id, slack_app_id="A0EXISTING",
+        session_factory, config, gojira_app_id=app_id, slack_app_id=APP_ID,
         slack_channels=[CHANNEL],
     )
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
     )
 
     assert response.status_code == 502
@@ -716,13 +805,13 @@ def test_connect_slack_client_error_from_github_returns_502(session_factory, con
     gojira, app_id = _onboarded_gojira()
     client = _make_client(session_factory, config, github=_RaisingGitHub(), gojira=gojira)
     _seed_agent(
-        session_factory, config, gojira_app_id=app_id, slack_app_id="A0EXISTING",
+        session_factory, config, gojira_app_id=app_id, slack_app_id=APP_ID,
         slack_channels=[CHANNEL],
     )
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
     )
 
     assert response.status_code == 502
@@ -992,30 +1081,30 @@ def test_get_agent_slack_carries_app_id_and_channels_after_connect(session_facto
     github = _CapturingGitHub()
     gojira, app_id = _onboarded_gojira()
     client = _make_client(session_factory, config, github=github, gojira=gojira)
-    _seed_agent(
-        session_factory, config, gojira_app_id=app_id, slack_app_id="A0EXISTING",
-        slack_channels=[CHANNEL],
-    )
+    _seed_agent(session_factory, config, gojira_app_id=app_id, slack_channels=[CHANNEL])
+    # slack_app_id left at its default None: connect is what sets it now.
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
     )
     assert response.status_code == 200
 
     detail = client.get(f"/api/agents/{AGENT_NAME}").json()
     assert detail["slack"] == {
-        "app_id": "A0EXISTING", "channels": [CHANNEL], "state": "connected"
+        "app_id": APP_ID, "channels": [CHANNEL], "state": "connected"
     }
 
 
-def test_slack_admin_visible_replaces_slack_visible(session_factory, config):
+def test_agent_payload_no_longer_carries_slack_admin_visible(session_factory, config):
+    # Slack self-service (2026-08-17): the setup lane is no longer gated,
+    # so the UI has nothing left to hide behind this key. Its predecessor
+    # test (`slack_admin_visible` replacing an even older `slack_visible`)
+    # is fully retired along with the key itself.
     client = _make_client(session_factory, config)
     _seed_agent(session_factory, config)
 
     response = client.get(f"/api/agents/{AGENT_NAME}")
 
     assert response.status_code == 200
-    body = response.json()
-    assert "slack_admin_visible" in body
-    assert "slack_visible" not in body
+    assert "slack_admin_visible" not in response.json()

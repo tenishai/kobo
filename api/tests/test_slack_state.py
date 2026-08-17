@@ -1,5 +1,6 @@
 from kobo_api.slack_state import (
     MAX_CHANNELS,
+    SLACK_APP_ID_RE,
     SLACK_CHANNEL_RE,  # noqa: F401 (contract import: name must live here)
     clean_channels,
     decode_channels,
@@ -43,3 +44,21 @@ def test_derive_state_matrix():
     assert derive_state(["C0123456789"], wired=False) == "waiting"
     assert derive_state(["C0123456789"], wired=True) == "connected"
     assert derive_state([], wired=True) == "waiting"
+
+
+def test_slack_app_id_re_accepts_real_shape():
+    assert SLACK_APP_ID_RE.match("A0123456")
+
+
+def test_slack_app_id_re_rejects_lowercase():
+    assert SLACK_APP_ID_RE.match("a0123456") is None
+
+
+def test_slack_app_id_re_rejects_channel_id_shape():
+    assert SLACK_APP_ID_RE.match("C0123456") is None
+
+
+def test_slack_app_id_re_rejects_too_short():
+    # 6 chars after the leading A is the floor: 5 rejects, 6 accepts.
+    assert SLACK_APP_ID_RE.match("A12345") is None
+    assert SLACK_APP_ID_RE.match("A123456")
