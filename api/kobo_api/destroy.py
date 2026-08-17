@@ -209,6 +209,45 @@ _DESTROY_FUNCS = {
 }
 
 
+# In-flight registry (review Finding 1): guards against a second concurrent
+# `run_destroy` launch for the same agent_id landing on top of one already
+# running. Before this, a re-DELETE against an agent already DESTROYING fell
+# through the route's status gate and fired a second daemon thread against
+# the same AgentStep rows — "safe" only by accident, via layered exception
+# handling elsewhere (worst case a spurious DESTROY_FAILED from two threads
+# racing the same commit). `run_destroy` below registers `agent_id` here
+# before starting the thread (a non-blocking check-and-add under
+# `_destroying_lock`) and `_run_destroy_body_and_release` frees it in a
+# `finally` once the thread's body returns, however it returns.
+#
+# In-process only (a plain set + Lock, not a cross-process lock): this
+# guards against duplicate launches within a single app replica only —
+# sufficient because kobo-api is deployed single-replica today, the same
+# documented caveat `provisioner.run_pipeline` already carries for its own
+# concurrency story.
+_destroying_agent_ids: set[int] = set()
+_destroying_lock = threading.Lock()
+
+
+def _run_destroy_body_and_release(
+    session_factory: sessionmaker[Session],
+    agent_id: int,
+    clients: Clients,
+    config: Config,
+) -> None:
+    """Runs `_run_destroy_body`, then always frees `agent_id`'s in-flight
+    slot (registered by `run_destroy` just before this function's thread was
+    started) — a `finally` so the slot is released whether the run finished
+    cleanly, failed a step, or hit `_run_destroy_body`'s own engine-level
+    recovery path.
+    """
+    try:
+        _run_destroy_body(session_factory, agent_id, clients, config)
+    finally:
+        with _destroying_lock:
+            _destroying_agent_ids.discard(agent_id)
+
+
 def _run_destroy_body(
     session_factory: sessionmaker[Session],
     agent_id: int,
@@ -313,7 +352,7 @@ def run_destroy(
     agent_id: int,
     clients: Clients,
     config: Config,
-) -> threading.Thread:
+) -> threading.Thread | None:
     """Fire the destroy ledger for `agent_id` on a daemon thread and return
     it immediately — mirrors `kobo_api.provisioner.run_pipeline`'s exact
     fire-and-return shape (its own session opened fresh from
@@ -323,11 +362,29 @@ def run_destroy(
 
     Safe to call again for the same `agent_id` once a prior invocation has
     finished (running or failed): it resumes from the first incomplete
-    step, same as provisioning's own retry story. Not safe to call twice
-    *concurrently* for the same agent_id, same caveat as `run_pipeline`.
+    step, same as provisioning's own retry story.
+
+    Safe to call again *while a prior invocation is still running*, too
+    (review Finding 1) — unlike `run_pipeline`, which still carries that
+    caveat. A non-blocking check-and-add against the module-level
+    `_destroying_agent_ids` registry (under `_destroying_lock`) means a
+    second call for an `agent_id` already in flight returns `None`
+    immediately instead of starting a duplicate thread against the same
+    AgentStep rows. The route calling this never inspects the return
+    value, so its 202 response contract is unaffected either way — only
+    the duplicate launch itself disappears.
     """
+    with _destroying_lock:
+        if agent_id in _destroying_agent_ids:
+            log.info(
+                "run_destroy: agent %s already has a destroy in flight, skipping launch",
+                agent_id,
+            )
+            return None
+        _destroying_agent_ids.add(agent_id)
+
     thread = threading.Thread(
-        target=_run_destroy_body,
+        target=_run_destroy_body_and_release,
         args=(session_factory, agent_id, clients, config),
         daemon=True,
     )

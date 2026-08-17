@@ -513,3 +513,45 @@ def test_retry_rejects_destroying_agent_409(session_factory, config):
     response = client.post(f"/api/agents/{AGENT_NAME}/retry")
 
     assert response.status_code == 409
+
+
+# --- per-agent in-flight guard (review Finding 1): the duplicate-launch fix ---
+
+
+def test_redelete_while_destroy_in_flight_returns_202_without_double_launch(
+    session_factory, config
+):
+    """A re-DELETE against an agent already DESTROYING must keep returning
+    202 (the idempotent-redelete contract, unchanged) but must NOT launch a
+    second concurrent run_destroy thread. Simulated deterministically by
+    registering the agent's in-flight slot directly in kobo_api.destroy's
+    module-level registry before issuing the DELETE — no mocking of the
+    route or of run_destroy itself, just the same registry `run_destroy`
+    checks on every call."""
+    from kobo_api import destroy as destroy_module
+
+    config = config.model_copy(update={"operators": []})
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config, status=AgentStatus.DESTROYING)
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    agent_id = agent.id
+    session.close()
+
+    destroy_module._destroying_agent_ids.add(agent_id)
+    try:
+        response = client.delete(f"/api/agents/{AGENT_NAME}")
+    finally:
+        destroy_module._destroying_agent_ids.discard(agent_id)
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "destroying"}
+
+    # No duplicate thread launched — the agent is left exactly as it was
+    # (still DESTROYING; no teardown work happened from this second call,
+    # since run_destroy's own launch was a no-op skip).
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    assert agent is not None
+    assert agent.status == AgentStatus.DESTROYING
+    session.close()

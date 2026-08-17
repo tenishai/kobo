@@ -20,6 +20,7 @@ import json
 
 import pytest
 
+from kobo_api import destroy as destroy_module
 from kobo_api.clients import ClientError, Clients
 from kobo_api.destroy import (
     DESTROY_STEPS,
@@ -565,4 +566,182 @@ def test_run_destroy_unknown_agent_id_completes_without_raising(session_factory,
 
     session = session_factory()
     assert session.query(Agent).count() == 0
+    session.close()
+
+
+# --- run_destroy: per-agent in-flight guard (review Finding 1) -----------------
+
+
+def test_run_destroy_second_call_while_in_flight_does_not_spawn_a_duplicate_thread(
+    session_factory, config
+):
+    """Simulates a destroy already in flight for this agent_id by seeding
+    the module-level in-flight registry directly (no mocking of run_destroy
+    or the route itself) — a second run_destroy call for the SAME agent_id
+    must return None and must never touch the platform clients at all,
+    i.e. no duplicate thread ever launches against the same AgentStep rows."""
+    agent_id = _seed_agent(session_factory, status=AgentStatus.READY, gojira_app_id=7)
+    fake_gojira = FakeGojira()
+
+    destroy_module._destroying_agent_ids.add(agent_id)
+    try:
+        result = run_destroy(session_factory, agent_id, _clients(gojira=fake_gojira), config)
+    finally:
+        destroy_module._destroying_agent_ids.discard(agent_id)
+
+    assert result is None
+    assert fake_gojira.delete_calls == []
+
+
+def test_run_destroy_releases_the_registry_slot_when_the_run_finishes(
+    session_factory, config
+):
+    """The in-flight slot registered at launch is released (in a `finally`)
+    once the run's thread body finishes — a subsequent run_destroy call for
+    the same agent_id is then free to launch again rather than being
+    permanently blocked by a stale registry entry."""
+    agent_id = _seed_agent(session_factory, status=AgentStatus.READY, gojira_app_id=7)
+    fake_gojira = FakeGojira()
+
+    thread = run_destroy(session_factory, agent_id, _clients(gojira=fake_gojira), config)
+    assert thread is not None
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+    assert agent_id not in destroy_module._destroying_agent_ids
+
+    # A second call for the same agent_id launches again (rather than being
+    # silently skipped by a stale registry entry) — it just finds no agent
+    # row left (already forgotten by the first run) and completes cleanly,
+    # same as the existing "unknown agent id" tolerance.
+    thread2 = run_destroy(session_factory, agent_id, _clients(gojira=fake_gojira), config)
+    assert thread2 is not None
+    thread2.join(timeout=JOIN_TIMEOUT)
+    assert thread2.is_alive() is False
+    assert agent_id not in destroy_module._destroying_agent_ids
+
+
+# --- run_destroy: resume-matrix gaps (review Finding 2) ------------------------
+
+
+def test_run_destroy_resume_skips_done_platform_and_slack_and_retries_failed_repo(
+    session_factory, config
+):
+    """Mirrors test_run_destroy_resume_skips_done_platform_and_retries_failed_
+    slack's exact idiom, but the failure is at destroy-repo instead of
+    destroy-slack: platform and slack both succeed on the first run, repo
+    fails; a second run skips platform AND slack entirely (their fakes see
+    no second call across both runs) and retries only repo."""
+    agent_id = _seed_agent(
+        session_factory,
+        status=AgentStatus.READY,
+        gojira_app_id=7,
+        slack_app_id="A0FAKE",
+        repo_full_name=REPO,
+    )
+    fake_gojira = FakeGojira()
+    fake_slack = FakeSlack()
+    failing_github = FakeGitHub(existing_repos={REPO}, rename_error="repo service outage")
+
+    thread = run_destroy(
+        session_factory,
+        agent_id,
+        _clients(github=failing_github, gojira=fake_gojira, slack=fake_slack),
+        config,
+    )
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+    assert fake_gojira.delete_calls == [(7, True)]
+    assert fake_slack.delete_calls == ["A0FAKE"]
+
+    session = session_factory()
+    agent = session.get(Agent, agent_id)
+    assert agent.status == AgentStatus.DESTROY_FAILED
+    rows = {s.name: s.status for s in agent.steps}
+    assert rows["destroy-platform"] == StepStatus.DONE
+    assert rows["destroy-slack"] == StepStatus.DONE
+    assert rows["destroy-repo"] == StepStatus.FAILED
+    session.close()
+
+    working_github = FakeGitHub(existing_repos={REPO})
+    thread2 = run_destroy(
+        session_factory,
+        agent_id,
+        _clients(github=working_github, gojira=fake_gojira, slack=fake_slack),
+        config,
+    )
+    thread2.join(timeout=JOIN_TIMEOUT)
+    assert thread2.is_alive() is False
+
+    # Platform and slack were never retried — still exactly one call each
+    # across BOTH runs — their rows were already DONE.
+    assert fake_gojira.delete_calls == [(7, True)]
+    assert fake_slack.delete_calls == ["A0FAKE"]
+    assert working_github.rename_calls == [(REPO, f"archived-agent-{AGENT_NAME}-{agent_id}")]
+
+    session = session_factory()
+    assert session.get(Agent, agent_id) is None
+    assert session.query(AgentStep).filter_by(agent_id=agent_id).count() == 0
+    session.close()
+
+
+def test_run_destroy_resume_retries_failed_platform_and_continues_to_forget(
+    session_factory, config
+):
+    """Mirrors the brief's resume scenario at the OTHER end of the pipeline:
+    a failure at the very FIRST step (destroy-platform) aborts slack/repo/
+    forget on the first run; a second run with a working platform client
+    retries platform and, on success, continues through every remaining
+    step all the way to a fully forgotten agent (row gone)."""
+    agent_id = _seed_agent(
+        session_factory,
+        status=AgentStatus.READY,
+        gojira_app_id=7,
+        slack_app_id="A0FAKE",
+        repo_full_name=REPO,
+    )
+    failing_gojira = FakeGojira(delete_error="platform outage")
+    fake_github = FakeGitHub(existing_repos={REPO})
+    fake_slack = FakeSlack()
+
+    thread = run_destroy(
+        session_factory,
+        agent_id,
+        _clients(github=fake_github, gojira=failing_gojira, slack=fake_slack),
+        config,
+    )
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+    assert failing_gojira.delete_calls == [(7, True)]
+    # Aborted — slack/repo's own side effects never fired.
+    assert fake_slack.delete_calls == []
+    assert fake_github.rename_calls == []
+
+    session = session_factory()
+    agent = session.get(Agent, agent_id)
+    assert agent is not None
+    assert agent.status == AgentStatus.DESTROY_FAILED
+    rows = {s.name: s.status for s in agent.steps}
+    assert rows["destroy-platform"] == StepStatus.FAILED
+    assert rows["destroy-slack"] == StepStatus.FAILED
+    assert rows["destroy-repo"] == StepStatus.FAILED
+    assert rows["destroy-forget"] == StepStatus.FAILED
+    session.close()
+
+    working_gojira = FakeGojira()
+    thread2 = run_destroy(
+        session_factory,
+        agent_id,
+        _clients(github=fake_github, gojira=working_gojira, slack=fake_slack),
+        config,
+    )
+    thread2.join(timeout=JOIN_TIMEOUT)
+    assert thread2.is_alive() is False
+
+    assert working_gojira.delete_calls == [(7, True)]
+    assert fake_slack.delete_calls == ["A0FAKE"]
+    assert fake_github.rename_calls == [(REPO, f"archived-agent-{AGENT_NAME}-{agent_id}")]
+
+    session = session_factory()
+    assert session.get(Agent, agent_id) is None
+    assert session.query(AgentStep).filter_by(agent_id=agent_id).count() == 0
     session.close()
