@@ -36,3 +36,4 @@ api/venv/
 
 # Local harness config (never commit)
 .claude/
+uv.lock
