@@ -25,4 +25,21 @@ describe("Sidebar", () => {
     await fireEvent.click(button);
     expect(oncreate).toHaveBeenCalled();
   });
+
+  it("gives both nav links an unconditional aria-label so the icon rail keeps its accessible name", () => {
+    renderWithClient(Sidebar, { active: "dashboard", oncreate: () => {}, onprefetch: () => {} });
+    const agents = screen.getByRole("link", { name: "Agents" });
+    const getting = screen.getByRole("link", { name: "Getting started" });
+    expect(agents.getAttribute("aria-label")).toBe("Agents");
+    expect(getting.getAttribute("aria-label")).toBe("Getting started");
+    expect(agents.getAttribute("title")).toBe("Agents");
+    expect(getting.getAttribute("title")).toBe("Getting started");
+  });
+
+  it("keeps the create button's accessible name 'Create agent' via an unconditional aria-label", () => {
+    renderWithClient(Sidebar, { active: "dashboard", oncreate: () => {}, onprefetch: () => {} });
+    const button = screen.getByRole("button", { name: "Create agent" });
+    expect(button.getAttribute("aria-label")).toBe("Create agent");
+    expect(button.getAttribute("title")).toBe("Create agent");
+  });
 });

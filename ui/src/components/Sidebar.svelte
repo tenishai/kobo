@@ -23,6 +23,8 @@
         class="sidebar__link"
         href={formatHash({ page: "dashboard" })}
         aria-current={active === "dashboard" || active === "agent" ? "page" : undefined}
+        aria-label="Agents"
+        title="Agents"
       >
         <span class="sidebar__icon" aria-hidden="true">◫</span>
         <span class="sidebar__label">Agents</span>
@@ -33,6 +35,8 @@
         class="sidebar__link"
         href={formatHash({ page: "getting-started" })}
         aria-current={active === "getting-started" ? "page" : undefined}
+        aria-label="Getting started"
+        title="Getting started"
       >
         <span class="sidebar__icon" aria-hidden="true">✦</span>
         <span class="sidebar__label">Getting started</span>
@@ -46,8 +50,11 @@
     onmouseenter={onprefetch}
     onfocus={onprefetch}
     onclick={oncreate}
+    aria-label="Create agent"
+    title="Create agent"
   >
-    Create agent
+    <span class="sidebar__create-label">Create agent</span>
+    <span class="sidebar__create-glyph" aria-hidden="true">+</span>
   </button>
 </nav>
 
@@ -125,15 +132,26 @@
     outline-offset: 2px;
   }
 
+  .sidebar__create-glyph {
+    display: none;
+  }
+
   @media (max-width: 48rem) {
     .sidebar {
       width: auto;
     }
 
     .sidebar__label,
-    .sidebar__tagline,
-    .sidebar__create {
+    .sidebar__tagline {
       display: none;
+    }
+
+    .sidebar__create-label {
+      display: none;
+    }
+
+    .sidebar__create-glyph {
+      display: inline;
     }
   }
 </style>
