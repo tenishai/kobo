@@ -124,4 +124,30 @@ describe("SlackPanel", () => {
     const rows = screen.getAllByRole("textbox") as HTMLInputElement[];
     expect(rows.map((row) => row.value)).toEqual(["C123456", "C654321"]);
   });
+
+  it("admin + no app exists (idle): token fields absent, Connect to Slack button present", () => {
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: { app_id: null, channels: [], state: "idle" },
+      adminVisible: true,
+      frozen: false,
+    });
+
+    expect(screen.queryByLabelText("Bot token")).toBeNull();
+    expect(screen.queryByLabelText("App-level token")).toBeNull();
+    expect(screen.getByRole("button", { name: /connect to slack/i })).not.toBeNull();
+  });
+
+  it('waiting state (non-admin) shows exact waiting text', () => {
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: { app_id: "A123", channels: [], state: "waiting" },
+      adminVisible: false,
+      frozen: false,
+    });
+
+    expect(
+      screen.getByText("Channels saved. Waiting on an operator to finish the connection."),
+    ).not.toBeNull();
+  });
 });

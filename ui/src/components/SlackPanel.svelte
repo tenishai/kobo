@@ -333,47 +333,47 @@
             </p>
           </li>
         </ol>
+
+        <form
+          class="slack-panel__form"
+          onsubmit={(event) => {
+            event.preventDefault();
+            handleFinishSetup();
+          }}
+        >
+          <div class="slack-panel__field">
+            <label class="slack-panel__label" for="slack-panel-bot-token">Bot token</label>
+            <input
+              id="slack-panel-bot-token"
+              class="slack-panel__input"
+              type="password"
+              autocomplete="off"
+              bind:value={botToken}
+              disabled={frozen}
+            />
+          </div>
+          <div class="slack-panel__field">
+            <label class="slack-panel__label" for="slack-panel-app-token">App-level token</label>
+            <input
+              id="slack-panel-app-token"
+              class="slack-panel__input"
+              type="password"
+              autocomplete="off"
+              bind:value={appToken}
+              disabled={frozen}
+            />
+          </div>
+
+          {#if connectError}
+            <p class="slack-panel__error" role="alert">{connectError}</p>
+          {/if}
+
+          <button type="submit" class="slack-panel__finish" disabled={frozen || !canFinish}>
+            {$connect.isPending ? "Finishing…" : "Finish setup"}
+          </button>
+        </form>
+        <p class="slack-panel__note">You can add a picture for it later in Slack's settings.</p>
       {/if}
-
-      <form
-        class="slack-panel__form"
-        onsubmit={(event) => {
-          event.preventDefault();
-          handleFinishSetup();
-        }}
-      >
-        <div class="slack-panel__field">
-          <label class="slack-panel__label" for="slack-panel-bot-token">Bot token</label>
-          <input
-            id="slack-panel-bot-token"
-            class="slack-panel__input"
-            type="password"
-            autocomplete="off"
-            bind:value={botToken}
-            disabled={frozen}
-          />
-        </div>
-        <div class="slack-panel__field">
-          <label class="slack-panel__label" for="slack-panel-app-token">App-level token</label>
-          <input
-            id="slack-panel-app-token"
-            class="slack-panel__input"
-            type="password"
-            autocomplete="off"
-            bind:value={appToken}
-            disabled={frozen}
-          />
-        </div>
-
-        {#if connectError}
-          <p class="slack-panel__error" role="alert">{connectError}</p>
-        {/if}
-
-        <button type="submit" class="slack-panel__finish" disabled={frozen || !canFinish}>
-          {$connect.isPending ? "Finishing…" : "Finish setup"}
-        </button>
-      </form>
-      <p class="slack-panel__note">You can add a picture for it later in Slack's settings.</p>
     </div>
   {/if}
 
