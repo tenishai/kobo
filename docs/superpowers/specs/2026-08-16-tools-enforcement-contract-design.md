@@ -61,7 +61,7 @@ def post_draft(draft: str) -> str:
 - Each hook invocation runs via `asyncio.to_thread` with a **2-second
   budget**. Timeout, or ANY exception, blocks the task.
 - A blocked task returns a failed Task with the new
-  `ReasonCode.TOOL_BLOCKED = 702` (alongside `POLICY_VIOLATION = 701`,
+  `ReasonCode.TOOL_BLOCKED = 703` (alongside `POLICY_VIOLATION = 701`,
   task.py) and a plain reply naming the blocking file — riding the
   existing failed-Task conventions, so Slack shows its ❌-plus-text and
   a2a callers get the standard failed state with no new transport code

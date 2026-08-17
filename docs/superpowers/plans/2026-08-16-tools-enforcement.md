@@ -30,7 +30,7 @@
 **Interfaces:**
 - Consumes: nothing new (stdlib only).
 - Produces (Task 2 relies on these exactly):
-  - `ReasonCode.TOOL_BLOCKED = 702` in task.py's enum, right after `POLICY_VIOLATION = 701`.
+  - `ReasonCode.TOOL_BLOCKED = 703` in task.py's enum, right after `POLICY_VIOLATION = 701`.
   - `class Enforcement` in enforcement.py:
     - `Enforcement.load(tools_dir: Path) -> Enforcement` classmethod. Missing/empty dir → `enforcement.active is False`. Import failure → `active is True`, `load_error == (filename, one_line_message)`, `hooks == []`.
     - Properties: `active: bool`, `locked: bool` (True iff load_error), `load_error: tuple[str, str] | None`, `hook_files: list[str]` (sorted basenames that loaded).
@@ -60,12 +60,12 @@ async def test_module_missing_both_hooks_is_load_shape_error(tmp_path): ...
     # a file with neither pre_task nor post_draft locks with a plain message
     # (upstream validator prevents this, but the runtime must not trust upstream)
 async def test_card_stamp_shapes(tmp_path): ...            # normal + locked shapes
-def test_reason_code_tool_blocked_is_702(): ...
+def test_reason_code_tool_blocked_is_703(): ...
 ```
 
 - [ ] **Step 2: RED.** `python -m pytest tests/test_enforcement.py -q` → collection/attribute failures.
 
-- [ ] **Step 3: Implement.** `task.py`: add `TOOL_BLOCKED = 702` under `POLICY_VIOLATION = 701`. `enforcement.py` core (complete this skeleton without changing signatures):
+- [ ] **Step 3: Implement.** `task.py`: add `TOOL_BLOCKED = 703` under `POLICY_VIOLATION = 701`. `enforcement.py` core (complete this skeleton without changing signatures):
 
 ```python
 """Enforcement hooks: the law layer around every reply.
