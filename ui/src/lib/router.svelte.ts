@@ -8,7 +8,10 @@
 // components read from; `navigate` and the `hashchange` listener below are
 // the only things that write to it.
 
-export type Route = { page: "dashboard" } | { page: "agent"; name: string };
+export type Route =
+  | { page: "dashboard" }
+  | { page: "agent"; name: string }
+  | { page: "getting-started" };
 
 const DASHBOARD: Route = { page: "dashboard" };
 
@@ -31,6 +34,9 @@ export function parseHash(hash: string): Route {
   const path = hash.startsWith("#") ? hash.slice(1) : hash;
   const segments = path.split("/").filter((segment) => segment.length > 0);
 
+  if (segments.length === 1 && segments[0] === "getting-started") {
+    return { page: "getting-started" };
+  }
   if (segments[0] === "agents" && segments.length > 1 && segments[1].length > 0) {
     const raw = segments[1];
     let name: string;
@@ -46,9 +52,10 @@ export function parseHash(hash: string): Route {
 
 /** The inverse of parseHash: the hash to set for a given Route. */
 export function formatHash(route: Route): string {
-  return route.page === "agent"
-    ? `#/agents/${encodeURIComponent(route.name)}`
-    : "#/";
+  if (route.page === "agent") {
+    return `#/agents/${encodeURIComponent(route.name)}`;
+  }
+  return route.page === "getting-started" ? "#/getting-started" : "#/";
 }
 
 function currentHash(): string {
@@ -56,7 +63,7 @@ function currentHash(): string {
 }
 
 /** Flat, mutable shape of the live route state (see `route` below). */
-type RouteState = { page: "dashboard" | "agent"; name: string | null };
+type RouteState = { page: "dashboard" | "agent" | "getting-started"; name: string | null };
 
 function toState(parsed: Route): RouteState {
   return { page: parsed.page, name: parsed.page === "agent" ? parsed.name : null };

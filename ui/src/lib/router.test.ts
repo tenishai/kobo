@@ -77,3 +77,15 @@ describe("formatHash", () => {
     expect(parseHash(formatHash(route))).toEqual(route);
   });
 });
+
+it("parses #/getting-started", () => {
+  expect(parseHash("#/getting-started")).toEqual({ page: "getting-started" });
+});
+
+it("formats the getting-started route", () => {
+  expect(formatHash({ page: "getting-started" })).toBe("#/getting-started");
+});
+
+it("still falls back to dashboard for unknown paths", () => {
+  expect(parseHash("#/getting")).toEqual({ page: "dashboard" });
+});

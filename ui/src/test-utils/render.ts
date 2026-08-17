@@ -6,6 +6,7 @@ import { render } from "@testing-library/svelte";
 import { vi } from "vitest";
 import Harness from "./Harness.svelte";
 
+// Not auto-reset between tests: callers own `vi.unstubAllGlobals()` in their own `beforeEach`.
 export function stubFetch(routes: Record<string, unknown>): void {
   vi.stubGlobal(
     "fetch",

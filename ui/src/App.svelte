@@ -1,13 +1,15 @@
 <script lang="ts">
-  // The app shell: one QueryClient for the whole tree, the header
-  // (wordmark + Create button), the hash-route switch, and the toast
+  // The app shell: one QueryClient for the whole tree, the Sidebar
+  // (wordmark, nav, Create button), the hash-route switch, and the toast
   // stack. Everything that actually fetches lives further down (Dashboard,
   // AgentDetail); this file just wires the plumbing around them.
   import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
   import CreateModal from "./components/CreateModal.svelte";
+  import Sidebar from "./components/Sidebar.svelte";
   import Toasts from "./components/Toasts.svelte";
   import AgentDetail from "./pages/AgentDetail.svelte";
   import Dashboard from "./pages/Dashboard.svelte";
+  import GettingStarted from "./pages/GettingStarted.svelte";
   import {
     modelsQuery,
     orgStatusQuery,
@@ -46,8 +48,8 @@
     void queryClient.prefetchQuery(skillsSearchQuery("", null));
   }
 
-  // `createOpen` is fully controlled here: the header button sets it true,
-  // CreateModal's own onclose (Escape, backdrop click, Cancel, or a
+  // `createOpen` is fully controlled here: the Sidebar's Create button sets
+  // it true, CreateModal's own onclose (Escape, backdrop click, Cancel, or a
   // successful submit) sets it back to false.
   let createOpen = $state(false);
 
@@ -62,24 +64,13 @@
 
 <QueryClientProvider client={queryClient}>
   <div class="shell">
-    <header class="shell__header">
-      <h1 class="shell__wordmark">
-        kobo <span class="shell__tagline">— assembly room</span>
-      </h1>
-      <button
-        type="button"
-        class="shell__create"
-        onmouseenter={prefetchCatalogs}
-        onfocus={prefetchCatalogs}
-        onclick={onOpenCreate}
-      >
-        Create agent
-      </button>
-    </header>
+    <Sidebar active={route.page} oncreate={onOpenCreate} onprefetch={prefetchCatalogs} />
 
     <main class="shell__main">
       {#if route.page === "dashboard"}
         <Dashboard />
+      {:else if route.page === "getting-started"}
+        <GettingStarted />
       {:else}
         <!-- Keyed by name: a direct hash edit from one agent's detail page
              to another's (no trip back through the dashboard in between)
@@ -99,51 +90,15 @@
 <style>
   .shell {
     display: flex;
-    min-height: 100vh;
-    flex-direction: column;
+    flex-direction: row;
     gap: var(--space-xl);
-    padding: var(--space-xl);
-  }
-
-  .shell__header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-md);
-  }
-
-  .shell__wordmark {
-    margin: 0;
-    color: var(--ink);
-    font-weight: 600;
-  }
-
-  .shell__tagline {
-    color: var(--muted);
-    font-weight: 400;
-  }
-
-  .shell__create {
-    padding: var(--space-xs) var(--space-md);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-weight: 600;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .shell__create:hover {
-    filter: brightness(1.05);
-  }
-
-  .shell__create:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
+    padding: 0;
+    min-height: 100vh;
   }
 
   .shell__main {
     flex: 1;
+    padding: var(--space-xl);
+    min-width: 0;
   }
 </style>
