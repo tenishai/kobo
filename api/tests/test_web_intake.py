@@ -199,7 +199,7 @@ def test_list_intake_route_github_error_returns_502(session_factory, config):
     response = client.get(f"/api/agents/{AGENT_NAME}/intake")
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't reach your agent's files — try again"}
+    assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
 
 
 def test_list_intake_route_kubectl_error_returns_502(session_factory, config):
@@ -210,7 +210,7 @@ def test_list_intake_route_kubectl_error_returns_502(session_factory, config):
     response = client.get(f"/api/agents/{AGENT_NAME}/intake")
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't reach your agent's files — try again"}
+    assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
 
 
 # --- POST /api/agents/{name}/intake ------------------------------------------
@@ -358,7 +358,7 @@ def test_upload_intake_route_client_error_returns_502(session_factory, config):
     )
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't reach your agent's files — try again"}
+    assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
 
 
 # --- DELETE /api/agents/{name}/intake/{filename} -----------------------------
@@ -416,4 +416,4 @@ def test_delete_intake_route_client_error_returns_502(session_factory, config):
     response = client.delete(f"/api/agents/{AGENT_NAME}/intake/notes.md")
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't reach your agent's files — try again"}
+    assert response.json() == {"error": "couldn't reach your agent's files. Try again."}

@@ -209,7 +209,7 @@ def test_list_tooling_route_github_error_returns_502(session_factory, config):
     response = client.get(f"/api/agents/{AGENT_NAME}/tooling")
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't reach your agent's files — try again"}
+    assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
 
 
 def test_list_tooling_route_kubectl_error_returns_502(session_factory, config):
@@ -220,7 +220,7 @@ def test_list_tooling_route_kubectl_error_returns_502(session_factory, config):
     response = client.get(f"/api/agents/{AGENT_NAME}/tooling")
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't reach your agent's files — try again"}
+    assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
 
 
 # --- GET /api/agents/{name}/tooling: enforcement graduation (Task 4) ---------
@@ -567,7 +567,7 @@ def test_upload_tooling_route_client_error_returns_502(session_factory, config):
     )
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't reach your agent's files — try again"}
+    assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
 
 
 # --- POST /api/agents/{name}/tooling/import -----------------------------------
@@ -751,7 +751,7 @@ def test_import_tooling_route_client_error_returns_502(session_factory, config):
     )
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't reach your agent's files — try again"}
+    assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
 
 
 # --- DELETE /api/agents/{name}/tooling/{filename} -----------------------------
@@ -809,4 +809,4 @@ def test_delete_tooling_route_client_error_returns_502(session_factory, config):
     response = client.delete(f"/api/agents/{AGENT_NAME}/tooling/tool.py")
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't reach your agent's files — try again"}
+    assert response.json() == {"error": "couldn't reach your agent's files. Try again."}

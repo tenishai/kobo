@@ -61,8 +61,13 @@ from kobo_api.skills import (
     remove_skill,
     save_local_skill,
 )
-from kobo_api.slack_setup import render_manifest, wire_slack
-from kobo_api.slack_state import SLACK_CHANNEL_RE
+from kobo_api.slack_setup import render_manifest, rewire_slack_channels, wire_slack
+from kobo_api.slack_state import (
+    clean_channels,
+    decode_channels,
+    derive_state,
+    encode_channels,
+)
 from kobo_api.static_ui import mount_ui
 from kobo_api.tooling import (
     ToolingError,
@@ -190,9 +195,24 @@ class ToolingImportPayload(BaseModel):
 
 
 class SlackConnectRequest(BaseModel):
-    channel: str
+    """POST .../slack/connect body: tokens only. Two-lane Slack (2026-08-17)
+    moved the channel list off this request entirely — the channels an
+    agent listens on are whatever's already saved via `PUT .../slack/
+    channels` (`decode_channels(agent.slack_channels)`), not something the
+    connect call carries. An old-shape body that still includes `channel`
+    parses fine (the extra key is ignored, pydantic's default) but the
+    route never reads it."""
+
     bot_token: str
     app_token: str
+
+
+class SlackChannelsRequest(BaseModel):
+    """PUT .../slack/channels body: the full replacement channel list (not
+    a delta) — `clean_channels` validates/dedupes it, except an empty list,
+    which the route allows through deliberately as the disconnect path."""
+
+    channels: list[str]
 
 
 class CreatePersonaRequest(PersonaFields):
@@ -962,7 +982,7 @@ def create_app(
                 len(suggestions), SUGGESTION_COUNT,
             )
             return JSONResponse(
-                {"error": "couldn't come up with names right now — try again"},
+                {"error": "couldn't come up with names right now. Try again."},
                 status_code=502,
             )
 
@@ -1133,11 +1153,16 @@ def create_app(
             for step in agent.steps
         ]
 
-        slack = (
-            {"app_id": agent.slack_app_id, "channel": agent.slack_channel}
-            if agent.slack_app_id is not None
-            else None
-        )
+        # Two-lane Slack (2026-08-17): always present now (the UI tab is
+        # unconditional) — `channels`/`state` reflect the saved list and
+        # wiring status regardless of whether an app has been created yet;
+        # `app_id` alone stays None until create_slack_app runs.
+        channels = decode_channels(agent.slack_channels)
+        slack = {
+            "app_id": agent.slack_app_id,
+            "channels": channels,
+            "state": derive_state(channels, wired=agent.slack_wired),
+        }
 
         return JSONResponse(
             {
@@ -1154,7 +1179,7 @@ def create_app(
                 "steps": steps,
                 "first_reply": agent.first_reply,
                 "slack": slack,
-                "slack_visible": _slack_operator_block(request, cfg) is None,
+                "slack_admin_visible": _slack_operator_block(request, cfg) is None,
                 "destroy_visible": _operator_block(request, cfg) is None,
                 "has_avatar": agent.avatar_png is not None,
             }
@@ -1357,7 +1382,7 @@ def create_app(
         except ClientError as exc:
             log.warning("knowledge route failed: %s", exc)
             return JSONResponse(
-                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
         return JSONResponse(
@@ -1384,7 +1409,7 @@ def create_app(
         except ClientError as exc:
             log.warning("knowledge route failed: %s", exc)
             return JSONResponse(
-                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
         return JSONResponse({"sha": sha})
@@ -1421,7 +1446,7 @@ def create_app(
         except ClientError as exc:
             log.warning("knowledge route failed: %s", exc)
             return JSONResponse(
-                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
         return JSONResponse({"sha": sha})
@@ -1450,7 +1475,7 @@ def create_app(
         except ClientError as exc:
             log.warning("knowledge route failed: %s", exc)
             return JSONResponse(
-                {"error": "couldn't check on the delivery — try again"}, status_code=502
+                {"error": "couldn't check on the delivery. Try again."}, status_code=502
             )
 
         return JSONResponse(state)
@@ -1552,7 +1577,7 @@ def create_app(
         except ClientError as exc:
             log.warning("skills route failed: %s", exc)
             return JSONResponse(
-                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
         # The sha recorded on the row is the catalog's CURRENT source-sha for
@@ -1590,7 +1615,7 @@ def create_app(
         except ClientError as exc:
             log.warning("skills route failed: %s", exc)
             return JSONResponse(
-                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
         agent.skills = [entry for entry in agent.skills if entry["name"] != skill_id]
@@ -1628,7 +1653,7 @@ def create_app(
         except ClientError as exc:
             log.warning("skills route failed: %s", exc)
             return JSONResponse(
-                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
         return JSONResponse({"name": skill_id, "content": content})
@@ -1661,7 +1686,7 @@ def create_app(
         except ClientError as exc:
             log.warning("skills route failed: %s", exc)
             return JSONResponse(
-                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
         agent.skills = [e for e in agent.skills if e["name"] != skill_id] + [
@@ -1701,7 +1726,7 @@ def create_app(
         except ClientError as exc:
             log.warning("intake route failed: %s", exc)
             return JSONResponse(
-                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
         return JSONResponse({"files": files})
@@ -1730,7 +1755,7 @@ def create_app(
         except ClientError as exc:
             log.warning("intake route failed: %s", exc)
             return JSONResponse(
-                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
         return JSONResponse({"sha": sha})
@@ -1760,7 +1785,7 @@ def create_app(
         except ClientError as exc:
             log.warning("intake route failed: %s", exc)
             return JSONResponse(
-                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
         # Deleting the source upload never touches whatever the seeder
@@ -1798,7 +1823,7 @@ def create_app(
         except ClientError as exc:
             log.warning("tooling route failed: %s", exc)
             return JSONResponse(
-                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
         # Task 4 (card probe + banner graduation): "enforced" is a
@@ -1840,7 +1865,7 @@ def create_app(
         except ClientError as exc:
             log.warning("tooling route failed: %s", exc)
             return JSONResponse(
-                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
         return JSONResponse({"sha": sha})
@@ -1880,7 +1905,7 @@ def create_app(
         except ClientError as exc:
             log.warning("tooling route failed: %s", exc)
             return JSONResponse(
-                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
         return JSONResponse(result)
@@ -1910,7 +1935,7 @@ def create_app(
         except ClientError as exc:
             log.warning("tooling route failed: %s", exc)
             return JSONResponse(
-                {"error": "couldn't reach your agent's files — try again"}, status_code=502
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
         return JSONResponse({"sha": sha})
@@ -1965,7 +1990,7 @@ def create_app(
         except ClientError as exc:
             log.warning("slack app creation failed: %s", exc)
             return JSONResponse(
-                {"error": "couldn't set up Slack — try again"}, status_code=502
+                {"error": "couldn't set up Slack. Try again."}, status_code=502
             )
 
         # Logged before persisting: if the commit below itself fails, this
@@ -2012,13 +2037,17 @@ def create_app(
                 {"error": "set up a Slack app for this agent first"}, status_code=409
             )
 
-        # Format checks only — never echo the submitted values back in an
-        # error body, here or anywhere below.
-        if not SLACK_CHANNEL_RE.match(payload.channel):
+        # Two-lane Slack (2026-08-17): the channel list is whatever's
+        # already saved via PUT .../slack/channels, not something this
+        # request carries — connect only delivers tokens. Never echo the
+        # submitted token values back in an error body, here or anywhere
+        # below.
+        channels = decode_channels(agent.slack_channels)
+        if not channels:
             return JSONResponse(
-                {"error": "that doesn't look like a channel ID (it starts with C)"},
-                status_code=422,
+                {"error": "Add at least one channel first."}, status_code=409
             )
+
         if not payload.bot_token.startswith("xoxb-"):
             return JSONResponse(
                 {"error": "that doesn't look like a Slack bot token"}, status_code=422
@@ -2036,7 +2065,7 @@ def create_app(
                 repo=agent.repo_full_name,
                 name=agent.name,
                 gojira_app_id=agent.gojira_app_id,
-                channels=[payload.channel],
+                channels=channels,
                 bot_token=payload.bot_token,
                 app_token=payload.app_token,
                 runtime_image=cfg.runtime_image,
@@ -2044,13 +2073,72 @@ def create_app(
         except ClientError as exc:
             log.warning("slack connect failed: %s", exc)
             return JSONResponse(
-                {"error": "couldn't set up Slack — try again"}, status_code=502
+                {"error": "couldn't set up Slack. Try again."}, status_code=502
             )
 
-        agent.slack_channel = payload.channel
+        agent.slack_wired = True
         session.commit()
 
         return JSONResponse({"sha": sha})
+
+    @app.put("/api/agents/{name}/slack/channels")
+    def save_slack_channels(
+        name: str,
+        payload: SlackChannelsRequest,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        # Deliberately NO operator gate: the channels lane (Two-lane Slack,
+        # 2026-08-17) is for everyone in the room, unlike connect/app above,
+        # which stay operator-assisted since they carry actual Slack tokens.
+        # IAP middleware still runs app-wide either way; this route just
+        # never calls `_slack_operator_block` itself.
+        agent = _ready_agent_or_error(
+            session, name, not_ready_message="agent is not ready for Slack changes yet"
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        # An empty submitted list is the deliberate disconnect path: it
+        # skips clean_channels entirely (which would otherwise reject an
+        # empty list with "Add at least one channel.") and stores `[]`
+        # outright. Any non-empty list goes through clean_channels's
+        # dedupe/format/cap checks.
+        cleaned = clean_channels(payload.channels) if payload.channels else []
+        if isinstance(cleaned, str):
+            return JSONResponse({"error": cleaned}, status_code=422)
+
+        agent.slack_channels = encode_channels(cleaned)
+        body: dict = {
+            "channels": cleaned,
+            "state": derive_state(cleaned, wired=agent.slack_wired),
+        }
+        if agent.slack_wired:
+            # Wired and the list changed (including to `[]`, which is the
+            # disconnect-while-wired case): rewire the repo's transports to
+            # match. Commit-only — no secret delivery, no reprovision, see
+            # kobo_api.slack_setup.rewire_slack_channels's own docstring.
+            clients = app.state.clients
+            try:
+                sha = rewire_slack_channels(
+                    clients.github, repo=agent.repo_full_name, channels=cleaned
+                )
+            except ClientError as exc:
+                log.warning("slack rewire failed: %s", exc)
+                # Return before session.commit(): the request-scoped
+                # session (get_session) only ever session.close()s in its
+                # finally, no explicit rollback — but SQLAlchemy's
+                # Session.close() itself ends any transaction in progress
+                # (an implicit rollback) before releasing the connection,
+                # so the in-memory `agent.slack_channels` mutation above
+                # never reaches the DB. The stored list stays exactly what
+                # the repo's transports still say.
+                return JSONResponse(
+                    {"error": "couldn't update the channels. Try again."},
+                    status_code=502,
+                )
+            body["sha"] = sha
+        session.commit()
+        return JSONResponse(body)
 
     # --- Avatar (P2d): persona-derived face, repo-backed with a display cache ---
 
@@ -2097,7 +2185,7 @@ def create_app(
                 name, AVATAR_MAX_BYTES, len(png),
             )
             return JSONResponse(
-                {"error": "that picture came out too large — try again"}, status_code=502
+                {"error": "that picture came out too large. Try again."}, status_code=502
             )
 
         try:
@@ -2111,7 +2199,7 @@ def create_app(
             # this exception's own message.
             log.warning("avatar push failed for %s: %s", name, exc)
             return JSONResponse(
-                {"error": "couldn't save your agent's picture — try again"}, status_code=502
+                {"error": "couldn't save your agent's picture. Try again."}, status_code=502
             )
 
         agent.avatar_png = base64.b64encode(png).decode("ascii")

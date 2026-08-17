@@ -253,7 +253,7 @@ def test_generate_avatar_github_client_error_returns_502(session_factory, config
     response = client.post(f"/api/agents/{AGENT_NAME}/avatar")
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't save your agent's picture — try again"}
+    assert response.json() == {"error": "couldn't save your agent's picture. Try again."}
 
 
 def test_generate_avatar_catalogs_unconfigured_falls_back_and_warns(session_factory, config, caplog):
@@ -289,7 +289,7 @@ def test_generate_avatar_oversize_returns_fixed_502_and_stores_nothing(session_f
     response = client.post(f"/api/agents/{AGENT_NAME}/avatar")
 
     assert response.status_code == 502
-    assert response.json() == {"error": "that picture came out too large — try again"}
+    assert response.json() == {"error": "that picture came out too large. Try again."}
     # Rejected before any store: no clone/push against the repo at all, and
     # the DB cache is untouched.
     assert github.cloned == []

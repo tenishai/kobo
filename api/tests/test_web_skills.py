@@ -414,7 +414,7 @@ def test_add_catalog_skill_client_error_returns_502(session_factory, config):
     )
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't reach your agent's files — try again"}
+    assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
 
 
 # --- DELETE /api/agents/{name}/skills/{skill_id} ----------------------------
@@ -493,7 +493,7 @@ def test_delete_skill_client_error_returns_502(session_factory, config):
     response = client.delete(f"/api/agents/{AGENT_NAME}/skills/notes")
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't reach your agent's files — try again"}
+    assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
 
 
 # --- GET /api/agents/{name}/skills/local/{skill_id} -------------------------
@@ -582,7 +582,7 @@ def test_get_local_skill_client_error_returns_502(session_factory, config):
     response = client.get(f"/api/agents/{AGENT_NAME}/skills/local/notes")
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't reach your agent's files — try again"}
+    assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
 
 
 # --- PUT /api/agents/{name}/skills/local/{skill_id} -------------------------
@@ -739,4 +739,4 @@ def test_put_local_skill_client_error_returns_502(session_factory, config):
     )
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't reach your agent's files — try again"}
+    assert response.json() == {"error": "couldn't reach your agent's files. Try again."}

@@ -1,6 +1,6 @@
 """Tests for the `slack_operators` gate (Task 5): the two Slack-connect
 routes (`POST .../slack/app`, `POST .../slack/connect`) and the
-`GET /api/agents/{name}` detail's `"slack_visible"` field.
+`GET /api/agents/{name}` detail's `"slack_admin_visible"` field.
 
 Slack connect is operator-assisted by design (P2c) — this gate hides/blocks
 it from anyone else once an org names its operator emails. Two layers of
@@ -254,7 +254,7 @@ def test_empty_operators_connect_slack_still_503s_when_slack_unconfigured(
     assert response.json() == {"error": "Slack is not configured"}
 
 
-def test_empty_operators_slack_visible_true(session_factory, config):
+def test_empty_operators_slack_admin_visible_true(session_factory, config):
     config = config.model_copy(update={"slack_operators": []})
     client = _make_client(session_factory, config)
     _seed_agent(session_factory, config)
@@ -262,7 +262,7 @@ def test_empty_operators_slack_visible_true(session_factory, config):
     response = client.get(f"/api/agents/{AGENT_NAME}")
 
     assert response.status_code == 200
-    assert response.json()["slack_visible"] is True
+    assert response.json()["slack_admin_visible"] is True
 
 
 # --- non-empty operators + IAP on + non-listed email: 403 before anything ----
@@ -328,7 +328,7 @@ def test_non_operator_gets_403_from_connect_slack(session_factory, config):
     assert APP_TOKEN not in response.text
 
 
-def test_non_operator_slack_visible_false(session_factory, config):
+def test_non_operator_slack_admin_visible_false(session_factory, config):
     private_key, jwk = _generate_jwk()
     op_config = config.model_copy(
         update={"slack_operators": ["ops@example.com"], "iap_audience": AUDIENCE}
@@ -342,7 +342,7 @@ def test_non_operator_slack_visible_false(session_factory, config):
     )
 
     assert response.status_code == 200
-    assert response.json()["slack_visible"] is False
+    assert response.json()["slack_admin_visible"] is False
 
 
 # --- non-empty operators + IAP on + listed email: passes through ------------
@@ -388,7 +388,7 @@ def test_listed_email_uppercase_token_lowercase_operator_list_passes_through(
     assert response.json() == {"error": "Slack is not configured"}
 
 
-def test_listed_email_slack_visible_true(session_factory, config):
+def test_listed_email_slack_admin_visible_true(session_factory, config):
     private_key, jwk = _generate_jwk()
     op_config = config.model_copy(
         update={"slack_operators": [OPERATOR_EMAIL], "iap_audience": AUDIENCE}
@@ -402,7 +402,7 @@ def test_listed_email_slack_visible_true(session_factory, config):
     )
 
     assert response.status_code == 200
-    assert response.json()["slack_visible"] is True
+    assert response.json()["slack_admin_visible"] is True
 
 
 # --- non-empty operators + IAP OFF: dev parity, treated as operator ---------
@@ -434,7 +434,7 @@ def test_operators_set_but_iap_off_connect_slack_passes_through(session_factory,
     assert response.json() == {"error": "Slack is not configured"}
 
 
-def test_operators_set_but_iap_off_slack_visible_true(session_factory, config):
+def test_operators_set_but_iap_off_slack_admin_visible_true(session_factory, config):
     op_config = config.model_copy(update={"slack_operators": ["ops@example.com"]})
     client = _make_client(session_factory, op_config)
     _seed_agent(session_factory, op_config)
@@ -442,4 +442,4 @@ def test_operators_set_but_iap_off_slack_visible_true(session_factory, config):
     response = client.get(f"/api/agents/{AGENT_NAME}")
 
     assert response.status_code == 200
-    assert response.json()["slack_visible"] is True
+    assert response.json()["slack_admin_visible"] is True

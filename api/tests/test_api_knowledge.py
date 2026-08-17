@@ -195,7 +195,7 @@ def test_list_knowledge_client_error_returns_502(session_factory, config):
     response = client.get(f"/api/agents/{AGENT_NAME}/knowledge")
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't reach your agent's files — try again"}
+    assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
 
 
 # --- PUT /api/agents/{name}/knowledge/{filename} ------------------------------------
@@ -305,7 +305,7 @@ def test_save_knowledge_client_error_returns_502(session_factory, config):
     )
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't reach your agent's files — try again"}
+    assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
 
 
 # --- DELETE /api/agents/{name}/knowledge/{filename} ---------------------------------
@@ -379,7 +379,7 @@ def test_delete_knowledge_client_error_returns_502(session_factory, config):
     response = client.delete(f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md")
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't reach your agent's files — try again"}
+    assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
 
 
 # --- GET /api/agents/{name}/knowledge/delivery/{sha} --------------------------------
@@ -485,7 +485,7 @@ def test_delivery_client_error_from_github_returns_502(session_factory, config):
     response = client.get(f"/api/agents/{AGENT_NAME}/knowledge/delivery/{SHA}")
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't check on the delivery — try again"}
+    assert response.json() == {"error": "couldn't check on the delivery. Try again."}
 
 
 def test_delivery_client_error_from_kubectl_returns_502(session_factory, config):
@@ -498,4 +498,4 @@ def test_delivery_client_error_from_kubectl_returns_502(session_factory, config)
     response = client.get(f"/api/agents/{AGENT_NAME}/knowledge/delivery/{SHA}")
 
     assert response.status_code == 502
-    assert response.json() == {"error": "couldn't check on the delivery — try again"}
+    assert response.json() == {"error": "couldn't check on the delivery. Try again."}

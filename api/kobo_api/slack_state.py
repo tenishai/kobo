@@ -26,7 +26,15 @@ def encode_channels(channels: list[str]) -> str:
 
 
 def clean_channels(channels: list[str]) -> list[str] | str:
-    """The deduped, order-preserving list, or a plain error string."""
+    """The deduped, order-preserving list, or a plain error string.
+
+    Three error triggers, each its own plain-copy return: an empty input
+    list ("Add at least one channel."), any entry that doesn't match
+    `SLACK_CHANNEL_RE` once stripped ("that doesn't look like a channel ID
+    (it starts with C)"), or a deduped count over `MAX_CHANNELS` (the cap
+    is checked AFTER dedupe, so repeats of the same id never trip it) —
+    `_CAP_MESSAGE`.
+    """
     if not channels:
         return "Add at least one channel."
     seen: list[str] = []
