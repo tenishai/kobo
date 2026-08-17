@@ -52,7 +52,7 @@ recorded like provisioning steps:
 |---|---|---|---|
 | 1 | platform | `DELETE /api/v1/apps/{gojira_app_id}` | gojira 404 = done; row has no app id = done |
 | 2 | slack | `apps.manifest.delete` via the config-token client when `slack_app_id` set | Slack "app not found" = done; no id = done |
-| 3 | repo | rename to `archived-agent-<name>-<row_id>`, then archive (both via the room's GitHub App) | already renamed = proceed to archive; already archived = done; repo missing = done |
+| 3 | repo | rename to `archived-agent-<name>-<row_id>`, then archive (both via the room's GitHub App) | already renamed = proceed to archive; already archived = done; a bare not-found is never proof (the hosting API renders lost access identically), so the step corroborates via the archived name, and when both names are missing it fails with plain copy pointing at repo access (amended 2026-08-17, ratified) |
 | 4 | forget | delete the agent row + its step rows (kobo DB) | terminal |
 
 Order rationale: the platform step kills the running workload first (the
@@ -81,7 +81,9 @@ discipline as the Slack gate):
   repo is archived, not deleted. Memories die with the namespace."
 
 While `destroying`, the rest of the page's panels render read-only
-(chat/uploads disabled with a one-line notice).
+(chat/uploads disabled with a one-line notice). (The first shipped
+implementation unmounted panels behind the notice; the app-shell arc,
+2026-08-17, restores this requirement as written.)
 
 ## What dies and what survives (the honest inventory)
 
