@@ -113,7 +113,7 @@
     $generateAvatar.mutate(undefined, {
       onSuccess: (result) => {
         avatarVersion = result.sha;
-        avatarNote = "Saved — it'll ride along with the next update.";
+        avatarNote = "Saved. It'll ride along with the next update.";
       },
       onError: (error: unknown) => {
         avatarError = errorMessage(error, "Couldn't paint a face this time.");

@@ -148,7 +148,7 @@
           // classic four-field form empty so there's still a way forward.
           draftError = errorMessage(
             error,
-            "Couldn't draft a persona right now — fill it in yourself below.",
+            "Couldn't draft a persona right now. Fill it in yourself below.",
           );
           name = "";
           whoTheyAre = "";
@@ -194,7 +194,7 @@
           // that out beats a bare "already exists" that leaves the user
           // wondering whether to go look for it.
           submitError =
-            "A persona with that name already exists — it may already be in the list.";
+            "A persona with that name already exists. It may already be in the list.";
         } else {
           submitError = errorMessage(error, "Something went wrong. Try again.");
         }
@@ -236,7 +236,7 @@
         class="persona-builder__textarea"
         bind:value={rulesInput}
         rows="3"
-        placeholder="One per line — things they always or never do."
+        placeholder="One per line: things they always or never do."
         aria-describedby="persona-builder-rules-status"
         aria-invalid={rulesError !== null}
       ></textarea>
@@ -261,7 +261,7 @@
   </form>
 {:else}
   <form class="persona-builder" onsubmit={handleCreateSubmit}>
-    <p class="persona-builder__intro">Here's their draft — edit anything.</p>
+    <p class="persona-builder__intro">Here's their draft. Edit anything.</p>
 
     {#if draftError}
       <p class="persona-builder__status persona-builder__status--error" role="alert">
@@ -298,7 +298,7 @@
         placeholder="an unflappable network detective who's seen every outage twice"
         autocomplete="off"
       />
-      <p class="persona-builder__help">One vivid line — who is this agent?</p>
+      <p class="persona-builder__help">One vivid line: who is this agent?</p>
     </div>
 
     <div class="persona-builder__field">
@@ -323,7 +323,7 @@
         class="persona-builder__textarea"
         bind:value={rulesInput}
         rows="3"
-        placeholder="One per line — things they always or never do."
+        placeholder="One per line: things they always or never do."
         aria-describedby="persona-builder-rules-preview-status"
         aria-invalid={rulesError !== null}
       ></textarea>

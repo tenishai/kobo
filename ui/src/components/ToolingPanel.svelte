@@ -412,7 +412,7 @@
       <div id="tooling-content-status">
         {#if uploadContentTooLarge}
           <p class="tooling-form__status tooling-form__status--error" role="alert">
-            That's too much text — keep it under 512KB (524,288 bytes).
+            That's too much text. Keep it under 512KB (524,288 bytes).
           </p>
         {:else if uploadContent.trim().length === 0}
           <p class="tooling-form__help">Add a bit of code before uploading.</p>
@@ -508,7 +508,7 @@
       onretry={() => $tooling.refetch()}
     />
   {:else if $tooling.data.files.length === 0}
-    <EmptyState message="Nothing here yet — upload a file or import from a repo." />
+    <EmptyState message="Nothing here yet. Upload a file or import from a repo." />
   {:else}
     {#if removeError}
       <p class="tooling-panel__remove-error" role="alert">{removeError}</p>

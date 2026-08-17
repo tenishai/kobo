@@ -56,7 +56,7 @@
           </span>
           <span class="step-row__label">
             {step.label}
-            <span class="step-checklist__sr-only">— {toneWord(tone)}</span>
+            <span class="step-checklist__sr-only">, {toneWord(tone)}</span>
           </span>
         </span>
         {#if tone === "fail" && step.error}

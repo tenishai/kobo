@@ -450,7 +450,7 @@
       onretry={() => $skills.refetch()}
     />
   {:else if $skills.data.length === 0}
-    <EmptyState message="Nothing here yet — add a skill from the catalog or write a guardrail." />
+    <EmptyState message="Nothing here yet. Add a skill from the catalog or write a guardrail." />
   {:else}
     <ul class="skills-panel__list">
       {#each $skills.data as skill (skill.name)}
@@ -612,7 +612,7 @@
     {:else if reviewing}
       {#if diffTooLarge}
         <p class="skills-modal__diff-notice">
-          Too much changed to preview line by line — review your text, then save.
+          Too much changed to preview line by line. Review your text, then save.
         </p>
       {:else}
         <div class="skills-modal__diff">

@@ -33,7 +33,7 @@
     onretry={() => $agents.refetch()}
   />
 {:else if $agents.data.length === 0}
-  <EmptyState message="No agents yet — create your first." />
+  <EmptyState message="No agents yet. Create your first." />
 {:else}
   <div class="dashboard-grid">
     {#each $agents.data as agent (agent.name)}

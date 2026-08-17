@@ -154,7 +154,7 @@
         onError: (err: unknown) => {
           botToken = "";
           appToken = "";
-          connectError = `${errorMessage(err, "Couldn't finish setting up Slack. Try again.")} — paste the tokens again.`;
+          connectError = `${errorMessage(err, "Couldn't finish setting up Slack. Try again.")} Paste the tokens again.`;
         },
       },
     );
@@ -167,7 +167,7 @@
     {#if slack === null}
       <p class="slack-panel__subtitle">Let people talk to {agentName} in Slack.</p>
     {:else if slack.channel === null}
-      <p class="slack-panel__subtitle">Almost there — finish setup in Slack.</p>
+      <p class="slack-panel__subtitle">Almost there. Finish setup in Slack.</p>
     {:else}
       <p class="slack-panel__subtitle">In Slack</p>
     {/if}

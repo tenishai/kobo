@@ -518,7 +518,7 @@
       onretry={() => $knowledge.refetch()}
     />
   {:else if $knowledge.data.length === 0}
-    <EmptyState message="Nothing here yet — add the first thing your agent should know." />
+    <EmptyState message="Nothing here yet. Add the first thing your agent should know." />
   {:else}
     <ul class="memory-panel__list">
       {#each $knowledge.data as file (file.name)}
@@ -546,7 +546,7 @@
     <div class="intake-panel__header">
       <h3 id="intake-panel-heading" class="intake-panel__heading">Teach from a file</h3>
       <p class="intake-panel__subtitle">
-        Drop in notes or docs for your agent to learn once — the file can go away afterward, the
+        Drop in notes or docs for your agent to learn once. The file can go away afterward, the
         learning stays.
       </p>
     </div>
@@ -596,7 +596,7 @@
           {:else if intakeFilenameMatch}
             <p class="intake-form__help">
               {intakeFilenameMatch.status === "ingested"
-                ? "Re-uploading under this name teaches your agent again from the new content — what it already learned stays."
+                ? "Re-uploading under this name teaches your agent again from the new content. What it already learned stays."
                 : "This will replace the waiting file before it's learned."}
             </p>
           {/if}
@@ -616,7 +616,7 @@
         <div id="intake-content-status">
           {#if intakeContentTooLarge}
             <p class="intake-form__status intake-form__status--error" role="alert">
-              That's too much text — keep it under 256KB (262,144 bytes).
+              That's too much text. Keep it under 256KB (262,144 bytes).
             </p>
           {:else if intakeContent.trim().length === 0}
             <p class="intake-form__help">Add a bit of text before uploading.</p>
@@ -641,7 +641,7 @@
         onretry={() => $intake.refetch()}
       />
     {:else if $intake.data.length === 0}
-      <EmptyState message="Nothing here yet — upload a file for your agent to learn from." />
+      <EmptyState message="Nothing here yet. Upload a file for your agent to learn from." />
     {:else}
       <ul class="intake-panel__list">
         {#each $intake.data as file (file.name)}
@@ -713,7 +713,7 @@
     {:else if reviewing}
       {#if diffTooLarge}
         <p class="memory-modal__diff-notice">
-          Too much changed to preview line by line — review your text, then save.
+          Too much changed to preview line by line. Review your text, then save.
         </p>
       {:else}
         <div class="memory-modal__diff">

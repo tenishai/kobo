@@ -34,7 +34,7 @@
     <span class="agent-card__time">{relativeTime(agent.created_at)}</span>
   </div>
   {#if agentTone(agent.status) === "fail"}
-    <p class="agent-card__error">Something went wrong — open for details.</p>
+    <p class="agent-card__error">Something went wrong. Open for details.</p>
   {/if}
 </a>
 

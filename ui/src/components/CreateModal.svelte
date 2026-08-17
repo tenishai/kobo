@@ -395,7 +395,7 @@
       ($orgStatus.data.wired === false || checkFailed("skills-index")),
   );
 
-  const UNWIRED_MESSAGE = "Catalogs aren't set up yet — ask whoever runs your room.";
+  const UNWIRED_MESSAGE = "Catalogs aren't set up yet. Ask whoever runs your room.";
 
   // --- Stations: which of the four read as active vs. muted --------------
   // Purely a visual cue (see the doc comment at the top of this file) —
@@ -607,7 +607,7 @@
       {:else if showManualName}
         {#if $nameSuggestions.isError}
           <p class="create-form__help">
-            Couldn't come up with name ideas right now — name it yourself below.
+            Couldn't come up with name ideas right now. Name it yourself below.
           </p>
         {/if}
         <div class="create-form__field">
@@ -697,7 +697,7 @@
           </button>
         </div>
         {#if rerollNote}
-          <p class="create-form__help">Same five as before — the workshop stands by them.</p>
+          <p class="create-form__help">Same five as before. The workshop stands by them.</p>
         {/if}
       {/if}
     </div>
