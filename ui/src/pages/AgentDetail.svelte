@@ -22,6 +22,7 @@
   import { agentQuery, generateAvatarMutation, retryAgentMutation } from "../lib/queries";
   import { formatHash, navigate, route } from "../lib/router.svelte";
   import { DESTROY_STATUSES, isDestroyComplete } from "../lib/status";
+  import { TAB_LABELS, visibleTabs, type TabId } from "../lib/tabs";
   import { toast } from "../lib/toast.svelte";
 
   // Invariant: App.svelte only mounts this page when `route.page === "agent"`,
@@ -34,6 +35,13 @@
   const agent = createQuery(agentQuery(name));
   const retry = createMutation(retryAgentMutation(queryClient, name));
   const generateAvatar = createMutation(generateAvatarMutation(queryClient, name));
+
+  // Which of the ready-agent tabs (tabs.ts) is showing. Every panel stays
+  // mounted inside its own tabpanel regardless of this value — see the
+  // markup below, `hidden={activeTab !== tab}`, never `{#if}` — so
+  // switching tabs never refetches a panel's query or drops its in-progress
+  // local state (an open modal, a half-typed form).
+  let activeTab = $state<TabId>("memory");
 
   function handleRetry(): void {
     $retry.mutate(undefined, {
@@ -219,12 +227,44 @@
 
     {#if data.status === "ready"}
       <ChatPanel agentName={data.name} />
-      <MemoryPanel agentName={data.name} />
-      <SkillsPanel agentName={data.name} />
-      <ToolingPanel agentName={data.name} />
-      {#if data.slack_visible}
-        <SlackPanel agentName={data.name} slack={data.slack} />
-      {/if}
+
+      {@const tabs = visibleTabs(data.slack_visible)}
+      <div class="detail-tabs">
+        <div class="detail-tabs__bar" role="tablist" aria-label="Agent sections">
+          {#each tabs as tab (tab)}
+            <button
+              type="button"
+              role="tab"
+              id={`tab-${tab}`}
+              class="detail-tabs__tab"
+              aria-selected={activeTab === tab}
+              aria-controls={`panel-${tab}`}
+              onclick={() => (activeTab = tab)}
+            >
+              {TAB_LABELS[tab]}
+            </button>
+          {/each}
+        </div>
+
+        {#each tabs as tab (tab)}
+          <div
+            id={`panel-${tab}`}
+            role="tabpanel"
+            aria-labelledby={`tab-${tab}`}
+            hidden={activeTab !== tab}
+          >
+            {#if tab === "memory"}
+              <MemoryPanel agentName={data.name} />
+            {:else if tab === "skills"}
+              <SkillsPanel agentName={data.name} />
+            {:else if tab === "tooling"}
+              <ToolingPanel agentName={data.name} />
+            {:else}
+              <SlackPanel agentName={data.name} slack={data.slack} />
+            {/if}
+          </div>
+        {/each}
+      </div>
     {:else if DESTROY_STATUSES.has(data.status)}
       <p class="agent-detail__destroy-notice" role="status" aria-live="polite">
         This agent is being destroyed.
@@ -438,6 +478,40 @@
   .failed-banner__retry:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+  }
+
+  .detail-tabs {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
+  }
+
+  .detail-tabs__bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-md);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .detail-tabs__tab {
+    padding: var(--space-sm) var(--space-xs);
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+
+  .detail-tabs__tab:hover {
+    color: var(--ink);
+  }
+
+  .detail-tabs__tab[aria-selected="true"] {
+    border-bottom-color: var(--accent);
+    color: var(--ink);
+    font-weight: 600;
   }
 
   .agent-detail__destroy-notice {
