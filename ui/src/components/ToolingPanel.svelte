@@ -84,7 +84,7 @@
   type BannerView = { tone: BannerTone; text: string };
 
   const DEFAULT_NOTICE =
-    "Stored and delivered, not yet enforced — enforcement arrives with the runtime's next upgrade.";
+    "Stored and delivered, not yet enforced. Enforcement arrives with the runtime's next upgrade.";
 
   const bannerView = $derived.by((): BannerView => {
     const enforcement = $tooling.data?.enforcement;
