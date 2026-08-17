@@ -2,12 +2,8 @@ import { describe, expect, it } from "vitest";
 import { defaultTab, TAB_LABELS, visibleTabs } from "./tabs";
 
 describe("visibleTabs", () => {
-  it("hides slack when not visible", () => {
-    expect(visibleTabs(false)).toEqual(["overview", "chat", "memory", "skills", "tooling"]);
-  });
-
-  it("includes slack last when visible", () => {
-    expect(visibleTabs(true)).toEqual([
+  it("always includes slack last", () => {
+    expect(visibleTabs()).toEqual([
       "overview",
       "chat",
       "memory",

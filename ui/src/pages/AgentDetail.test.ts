@@ -17,8 +17,8 @@ const READY_AGENT = {
   created_at: "2026-08-17T00:00:00Z",
   steps: [],
   first_reply: null,
-  slack: null,
-  slack_visible: false,
+  slack: { app_id: null, channels: [], state: "idle" },
+  slack_admin_visible: false,
   destroy_visible: false,
   has_avatar: false,
 };
@@ -69,11 +69,13 @@ describe("AgentDetail tabs", () => {
     renderWithClient(AgentDetail);
     const chatTab = await screen.findByRole("tab", { name: "Chat" });
     expect(chatTab.getAttribute("aria-selected")).toBe("true");
-    expect(screen.queryByRole("tab", { name: "Slack" })).toBeNull();
+    // Two-lane Slack (2026-08-17): the tab is unconditional now, not gated
+    // on any visibility flag.
+    expect(screen.queryByRole("tab", { name: "Slack" })).not.toBeNull();
 
     // Ready is the one status where every tab trigger is reachable — none
     // of them dead-end into a 409, so none should be disabled.
-    for (const label of ["Overview", "Chat", "Memory", "Skills", "Tooling"]) {
+    for (const label of ["Overview", "Chat", "Memory", "Skills", "Tooling", "Slack"]) {
       expect((screen.getByRole("tab", { name: label }) as HTMLButtonElement).disabled).toBe(
         false,
       );
@@ -162,7 +164,11 @@ describe("AgentDetail tabs", () => {
     expect(within(overviewPanel).getByText("Hello there.")).not.toBeNull();
   });
 
-  it("shows the Slack tab when slack_visible", async () => {
+  it("shows the Slack tab regardless of admin visibility", async () => {
+    // Two-lane Slack (2026-08-17): the channels lane is open to everyone,
+    // so the tab shows even when `slack_admin_visible` is false (the
+    // operator-only token fields are what that flag gates, inside the
+    // panel itself — not the tab).
     stubFetch({
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
@@ -171,7 +177,7 @@ describe("AgentDetail tabs", () => {
         files: [],
         enforcement: { attested: false, locked: false, locked_file: null },
       },
-      "/api/agents/warden": { ...READY_AGENT, slack_visible: true },
+      "/api/agents/warden": { ...READY_AGENT, slack_admin_visible: false },
       "/api/": {},
     });
     renderWithClient(AgentDetail);

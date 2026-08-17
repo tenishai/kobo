@@ -196,7 +196,7 @@
       </p>
     {/if}
 
-    {@const tabs = visibleTabs(data.slack_visible)}
+    {@const tabs = visibleTabs()}
     <div class="detail-tabs">
       <div class="detail-tabs__bar" role="tablist" aria-label="Agent sections">
         <!-- Every panel mounts regardless of status (see the tabpanel loop
@@ -314,7 +314,12 @@
           {:else if tab === "tooling"}
             <ToolingPanel agentName={data.name} frozen={isFrozen(data.status)} />
           {:else}
-            <SlackPanel agentName={data.name} slack={data.slack} frozen={isFrozen(data.status)} />
+            <SlackPanel
+              agentName={data.name}
+              slack={data.slack}
+              adminVisible={data.slack_admin_visible}
+              frozen={isFrozen(data.status)}
+            />
           {/if}
         </div>
       {/each}

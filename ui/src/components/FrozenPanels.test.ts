@@ -13,7 +13,16 @@ const CASES: Array<[string, unknown, Record<string, unknown>]> = [
   ["MemoryPanel", MemoryPanel, { agentName: "warden", frozen: true }],
   ["SkillsPanel", SkillsPanel, { agentName: "warden", frozen: true }],
   ["ToolingPanel", ToolingPanel, { agentName: "warden", frozen: true }],
-  ["SlackPanel", SlackPanel, { agentName: "warden", frozen: true, slack: null }],
+  [
+    "SlackPanel",
+    SlackPanel,
+    {
+      agentName: "warden",
+      frozen: true,
+      slack: { app_id: null, channels: [], state: "idle" },
+      adminVisible: true,
+    },
+  ],
 ];
 
 describe("frozen panels disable every control", () => {

@@ -26,6 +26,7 @@ import {
   retryAgentMutation,
   saveKnowledgeMutation,
   saveLocalSkillMutation,
+  saveSlackChannelsMutation,
   shouldRetry,
   skillsSearchQuery,
   teamsQuery,
@@ -324,7 +325,6 @@ describe("connectSlackMutation", () => {
     } as unknown as QueryClient;
     const mutation = connectSlackMutation(queryClient, "clio");
     const body = {
-      channel: "C123456",
       bot_token: "xoxb-secret",
       app_token: "xapp-secret",
     };
@@ -346,6 +346,49 @@ describe("connectSlackMutation", () => {
     const queryClient = { invalidateQueries } as unknown as QueryClient;
 
     const mutation = connectSlackMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "clio"],
+    });
+  });
+});
+
+describe("saveSlackChannelsMutation", () => {
+  it("mutationFn delegates to saveSlackChannels(name, channels) via PUT", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({ channels: ["C123456"], state: "waiting" }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = saveSlackChannelsMutation(queryClient, "clio");
+
+    await expect(mutation.mutationFn(["C123456"])).resolves.toEqual({
+      channels: ["C123456"],
+      state: "waiting",
+    });
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/slack/channels", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channels: ["C123456"] }),
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the agent detail key on success — the detail carries slack state", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = saveSlackChannelsMutation(queryClient, "clio");
     mutation.onSuccess();
 
     expect(invalidateQueries).toHaveBeenCalledTimes(1);

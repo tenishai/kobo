@@ -17,6 +17,7 @@ import {
   listAgents,
   listKnowledge,
   saveKnowledgeFile,
+  saveSlackChannels,
   searchPersonas,
   searchSkills,
 } from "./api";
@@ -397,11 +398,10 @@ describe("slack client", () => {
     );
   });
 
-  it("connectSlack POSTs {channel, bot_token, app_token} to /api/agents/{name}/slack/connect and returns {sha}", async () => {
+  it("connectSlack POSTs {bot_token, app_token} to /api/agents/{name}/slack/connect and returns {sha}", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ sha: "abc123" }));
 
     const body = {
-      channel: "C123456",
       bot_token: "xoxb-secret-token",
       app_token: "xapp-secret-token",
     };
@@ -426,7 +426,6 @@ describe("slack client", () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ sha: "abc123" }));
 
     await connectSlack("a b", {
-      channel: "C123456",
       bot_token: "xoxb-secret",
       app_token: "xapp-secret",
     });
@@ -444,7 +443,6 @@ describe("slack client", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     await connectSlack("clio", {
-      channel: "C123456",
       bot_token: "xoxb-secret-token",
       app_token: "xapp-secret-token",
     });
@@ -458,21 +456,24 @@ describe("slack client", () => {
     warnSpy.mockRestore();
   });
 
-  it("connectSlack surfaces a 422's {error} message (bad channel)", async () => {
+  it("connectSlack surfaces a 409's {error} message (no channels saved yet)", async () => {
+    // Two-lane Slack (2026-08-17): connect no longer carries a channel at
+    // all — the channel-format validation moved entirely to
+    // saveSlackChannels/PUT .../slack/channels. What connect itself can
+    // still reject on is the server finding no channels saved yet.
     vi.mocked(fetch).mockResolvedValueOnce(
       jsonResponse(
-        { error: "that doesn't look like a channel ID (it starts with C)" },
-        { status: 422, statusText: "Unprocessable Entity" },
+        { error: "Add at least one channel first." },
+        { status: 409, statusText: "Conflict" },
       ),
     );
 
     await expect(
       connectSlack("clio", {
-        channel: "general",
         bot_token: "xoxb-secret",
         app_token: "xapp-secret",
       }),
-    ).rejects.toThrow("that doesn't look like a channel ID (it starts with C)");
+    ).rejects.toThrow("Add at least one channel first.");
   });
 
   it("connectSlack surfaces a 422's {error} message (bad bot token)", async () => {
@@ -485,7 +486,6 @@ describe("slack client", () => {
 
     await expect(
       connectSlack("clio", {
-        channel: "C123456",
         bot_token: "wrong-prefix",
         app_token: "xapp-secret",
       }),
@@ -502,7 +502,6 @@ describe("slack client", () => {
 
     await expect(
       connectSlack("clio", {
-        channel: "C123456",
         bot_token: "xoxb-secret",
         app_token: "wrong-prefix",
       }),
@@ -519,11 +518,89 @@ describe("slack client", () => {
 
     await expect(
       connectSlack("clio", {
-        channel: "C123456",
         bot_token: "xoxb-secret",
         app_token: "xapp-secret",
       }),
     ).rejects.toThrow("couldn't set up Slack — try again");
+  });
+
+  it("saveSlackChannels PUTs {channels} to /api/agents/{name}/slack/channels and returns {channels, state}", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({ channels: ["C123456"], state: "waiting" }),
+    );
+
+    await expect(saveSlackChannels("clio", ["C123456"])).resolves.toEqual({
+      channels: ["C123456"],
+      state: "waiting",
+    });
+
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/slack/channels", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channels: ["C123456"] }),
+    });
+  });
+
+  it("saveSlackChannels resolves a sha when the save fires a rewire", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({ channels: ["C123456"], state: "connected", sha: "abc123" }),
+    );
+
+    await expect(saveSlackChannels("clio", ["C123456"])).resolves.toEqual({
+      channels: ["C123456"],
+      state: "connected",
+      sha: "abc123",
+    });
+  });
+
+  it("saveSlackChannels encodes the agent name in the URL", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ channels: [], state: "idle" }));
+
+    await saveSlackChannels("a b", []);
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/agents/a%20b/slack/channels",
+      expect.objectContaining({ method: "PUT" }),
+    );
+  });
+
+  it("saveSlackChannels surfaces a 422's {error} message (bad channel)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "that doesn't look like a channel ID (it starts with C)" },
+        { status: 422, statusText: "Unprocessable Entity" },
+      ),
+    );
+
+    await expect(saveSlackChannels("clio", ["general"])).rejects.toThrow(
+      "that doesn't look like a channel ID (it starts with C)",
+    );
+  });
+
+  it("saveSlackChannels surfaces a 422's {error} message (too many channels)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "Eight channels at most for now." },
+        { status: 422, statusText: "Unprocessable Entity" },
+      ),
+    );
+
+    await expect(
+      saveSlackChannels("clio", ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9"]),
+    ).rejects.toThrow("Eight channels at most for now.");
+  });
+
+  it("saveSlackChannels surfaces the plain 502 {error} message (rewire failed)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "couldn't update the channels. Try again." },
+        { status: 502, statusText: "Bad Gateway" },
+      ),
+    );
+
+    await expect(saveSlackChannels("clio", ["C123456"])).rejects.toThrow(
+      "couldn't update the channels. Try again.",
+    );
   });
 });
 

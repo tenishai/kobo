@@ -25,6 +25,7 @@ import {
   ApiError,
   type AgentDetail,
   type AgentSkill,
+  type AgentSlack,
   type AgentSummary,
   type CatalogEntry,
   type ChatMessage,
@@ -65,6 +66,7 @@ import {
   retryAgent,
   saveKnowledgeFile,
   saveLocalSkill,
+  saveSlackChannels,
   searchPersonas,
   searchSkills,
   uploadIntake,
@@ -576,17 +578,33 @@ export function createSlackAppMutation(
 }
 
 /**
- * Finishes Slack connect (channel + tokens) for the agent; on success,
- * invalidates that agent's detail query so the new `slack.channel` becomes
- * visible.
+ * Finishes Slack connect (tokens only — two-lane Slack, 2026-08-17 moved
+ * the channel list off this call, see `connectSlack`'s own doc) for the
+ * agent; on success, invalidates that agent's detail query so the new
+ * `slack.state` becomes visible.
  */
 export function connectSlackMutation(queryClient: QueryClient, name: string) {
   return {
-    mutationFn: (body: {
-      channel: string;
-      bot_token: string;
-      app_token: string;
-    }) => connectSlack(name, body),
+    mutationFn: (body: { bot_token: string; app_token: string }) =>
+      connectSlack(name, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+    },
+  };
+}
+
+/**
+ * Saves the agent's full replacement Slack channel list; on success,
+ * invalidates that agent's detail query so the new `slack.channels`/
+ * `slack.state` (and, when a rewire fired, the fresh delivery sha) become
+ * visible. Same PUT-then-invalidate shape as `saveKnowledgeMutation` above.
+ */
+export function saveSlackChannelsMutation(
+  queryClient: QueryClient,
+  name: string,
+) {
+  return {
+    mutationFn: (channels: string[]) => saveSlackChannels(name, channels),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name] });
     },
@@ -618,6 +636,7 @@ export function generateAvatarMutation(queryClient: QueryClient, name: string) {
 export type {
   AgentDetail,
   AgentSkill,
+  AgentSlack,
   AgentSummary,
   CatalogEntry,
   ChatMessage,

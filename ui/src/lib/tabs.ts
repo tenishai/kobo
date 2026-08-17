@@ -11,9 +11,15 @@ export const TAB_LABELS: Record<TabId, string> = {
   slack: "Slack",
 };
 
-export function visibleTabs(slackVisible: boolean): TabId[] {
-  const tabs: TabId[] = ["overview", "chat", "memory", "skills", "tooling"];
-  return slackVisible ? [...tabs, "slack"] : tabs;
+/**
+ * The tab list, in display order. Two-lane Slack (2026-08-17): the Slack
+ * tab is unconditional now — the channels lane is open to everyone in the
+ * room, so there's no visibility flag left to gate the tab itself (token
+ * fields inside SlackPanel stay operator-gated via `adminVisible`, but
+ * that's a within-panel concern, not a tab one). No parameter.
+ */
+export function visibleTabs(): TabId[] {
+  return ["overview", "chat", "memory", "skills", "tooling", "slack"];
 }
 
 /**

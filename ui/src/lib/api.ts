@@ -22,6 +22,20 @@ export type StepView = {
   error: string | null;
 };
 
+/** An agent's Slack channel list plus wiring state (two-lane Slack,
+ * 2026-08-17) — always present on `AgentDetail`, unlike the old two-shape
+ * `slack: {...} | null`. `app_id` stays `null` until an operator creates the
+ * Slack app; `channels`/`state` reflect the saved channel list and wiring
+ * status regardless of whether an app exists yet. `state` mirrors the
+ * server's `derive_state`: `"idle"` (no channels, not wired), `"waiting"`
+ * (channels saved but not yet wired, or wired with no channels left),
+ * `"connected"` (channels saved AND wired). */
+export type AgentSlack = {
+  app_id: string | null;
+  channels: string[];
+  state: "idle" | "waiting" | "connected";
+};
+
 export type AgentDetail = AgentSummary & {
   persona: string;
   /** Raw `agent.skills` DB entries, verbatim: a catalog pick carries
@@ -34,17 +48,18 @@ export type AgentDetail = AgentSummary & {
   first_reply: string | null;
   error: string | null;
   steps: StepView[];
-  slack: { app_id: string; channel: string | null } | null;
-  /** Whether the Slack panel should render at all — false when an operator
-   * config block hides Slack connect from this room entirely (see the
-   * server's `_slack_operator_block`). Independent of `slack` itself: a
-   * room can have `slack_visible: false` and still carry `slack` state from
-   * before the block was applied. */
-  slack_visible: boolean;
+  slack: AgentSlack;
+  /** Whether the Slack panel's operator-only lane (create-app guidance,
+   * bot/app token fields) should render — false when an operator config
+   * block hides Slack connect from this room entirely (see the server's
+   * `_slack_operator_block`). Two-lane Slack (2026-08-17) replaced the old
+   * whole-tab visibility flag: the channels lane is open to everyone now, so
+   * only the token-carrying half of the panel is gated. */
+  slack_admin_visible: boolean;
   /** Whether the Danger zone should render at all, false when an operator
    * config block hides destruction from this room entirely (see the
-   * server's `_operator_block`). Same discipline as `slack_visible`: the
-   * route itself is the real enforcement boundary, this is UX only. */
+   * server's `_operator_block`). Same discipline as `slack_admin_visible`:
+   * the route itself is the real enforcement boundary, this is UX only. */
   destroy_visible: boolean;
 };
 
@@ -672,14 +687,17 @@ export async function createSlackApp(
 }
 
 /**
- * Finishes Slack connect: hands the channel and the two tokens (copied by
- * the human from Slack's app settings page) to the server, which validates
- * and stores them. The tokens pass straight through in the request body and
- * are never logged or otherwise inspected here.
+ * Finishes Slack connect: hands the two tokens (copied by the human from
+ * Slack's app settings page) to the server, which validates and stores
+ * them. Two-lane Slack (2026-08-17) moved the channel list off this call
+ * entirely — the channels an agent listens on are whatever's already saved
+ * via `saveSlackChannels` below, not something connect carries. The tokens
+ * pass straight through in the request body and are never logged or
+ * otherwise inspected here.
  */
 export async function connectSlack(
   name: string,
-  body: { channel: string; bot_token: string; app_token: string },
+  body: { bot_token: string; app_token: string },
 ): Promise<{ sha: string }> {
   const res = await fetch(
     `/api/agents/${encodeURIComponent(name)}/slack/connect`,
@@ -690,6 +708,32 @@ export async function connectSlack(
     },
   );
   return parse<{ sha: string }>(res);
+}
+
+/**
+ * Saves the full replacement channel list (not a delta — the server's
+ * `SlackChannelsRequest` doc is explicit about this). `sha` is present only
+ * when the save fired a rewire (the agent was already wired and the list
+ * changed) — see `kobo_api.main.save_slack_channels`. An empty list is the
+ * deliberate disconnect path, not an error.
+ */
+export async function saveSlackChannels(
+  name: string,
+  channels: string[],
+): Promise<{ channels: string[]; state: "idle" | "waiting" | "connected"; sha?: string }> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/slack/channels`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channels }),
+    },
+  );
+  return parse<{
+    channels: string[];
+    state: "idle" | "waiting" | "connected";
+    sha?: string;
+  }>(res);
 }
 
 /**
