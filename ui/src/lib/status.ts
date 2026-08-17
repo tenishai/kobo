@@ -90,6 +90,11 @@ export function stepTone(status: string): "ok" | "fail" | "active" {
  */
 export const DESTROY_STATUSES = new Set(["destroying", "destroy_failed"]);
 
+/** Whether the agent page renders read-only: panels visible, controls disabled. */
+export function isFrozen(status: string): boolean {
+  return DESTROY_STATUSES.has(status);
+}
+
 /**
  * True when a 404 for an agent means "destruction finished" rather than
  * "unknown/mistyped name". A 404 alone is ambiguous: it also fires for a

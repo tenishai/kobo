@@ -21,7 +21,7 @@
   import { ApiError, errorMessage } from "../lib/api";
   import { agentQuery, generateAvatarMutation, retryAgentMutation } from "../lib/queries";
   import { formatHash, navigate, route } from "../lib/router.svelte";
-  import { DESTROY_STATUSES, isDestroyComplete } from "../lib/status";
+  import { isDestroyComplete, isFrozen } from "../lib/status";
   import { TAB_LABELS, visibleTabs, type TabId } from "../lib/tabs";
   import { toast } from "../lib/toast.svelte";
 
@@ -225,8 +225,14 @@
       <FirstReply reply={data.first_reply} />
     {/if}
 
-    {#if data.status === "ready"}
-      <ChatPanel agentName={data.name} />
+    {#if data.status === "ready" || isFrozen(data.status)}
+      {#if isFrozen(data.status)}
+        <p class="agent-detail__destroy-notice" role="status" aria-live="polite">
+          This agent is being destroyed.
+        </p>
+      {/if}
+
+      <ChatPanel agentName={data.name} frozen={isFrozen(data.status)} />
 
       {@const tabs = visibleTabs(data.slack_visible)}
       <div class="detail-tabs">
@@ -252,23 +258,20 @@
             role="tabpanel"
             aria-labelledby={`tab-${tab}`}
             hidden={activeTab !== tab}
+            tabindex="0"
           >
             {#if tab === "memory"}
-              <MemoryPanel agentName={data.name} />
+              <MemoryPanel agentName={data.name} frozen={isFrozen(data.status)} />
             {:else if tab === "skills"}
-              <SkillsPanel agentName={data.name} />
+              <SkillsPanel agentName={data.name} frozen={isFrozen(data.status)} />
             {:else if tab === "tooling"}
-              <ToolingPanel agentName={data.name} />
+              <ToolingPanel agentName={data.name} frozen={isFrozen(data.status)} />
             {:else}
-              <SlackPanel agentName={data.name} slack={data.slack} />
+              <SlackPanel agentName={data.name} slack={data.slack} frozen={isFrozen(data.status)} />
             {/if}
           </div>
         {/each}
       </div>
-    {:else if DESTROY_STATUSES.has(data.status)}
-      <p class="agent-detail__destroy-notice" role="status" aria-live="polite">
-        This agent is being destroyed.
-      </p>
     {/if}
 
     {#if data.destroy_visible}

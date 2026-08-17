@@ -66,7 +66,7 @@
     uploadIntakeMutation,
   } from "../lib/queries";
 
-  let { agentName }: { agentName: string } = $props();
+  let { agentName, frozen = false }: { agentName: string; frozen?: boolean } = $props();
 
   const queryClient = useQueryClient();
   // `agentName` is read once here rather than tracked reactively: same
@@ -507,7 +507,7 @@
       <h2 id="memory-panel-heading" class="memory-panel__heading">Memory</h2>
       <p class="memory-panel__subtitle">What your agent knows from the start.</p>
     </div>
-    <button type="button" class="memory-panel__add" onclick={openAdd}>Add memory</button>
+    <button type="button" class="memory-panel__add" disabled={frozen} onclick={openAdd}>Add memory</button>
   </div>
 
   {#if $knowledge.isPending}
@@ -523,7 +523,7 @@
     <ul class="memory-panel__list">
       {#each $knowledge.data as file (file.name)}
         <li class="memory-row">
-          <button type="button" class="memory-row__open" onclick={() => openEdit(file)}>
+          <button type="button" class="memory-row__open" disabled={frozen} onclick={() => openEdit(file)}>
             <span class="memory-panel__sr-only">Edit </span>
             <span class="memory-row__name">{displayName(file.name)}</span>
             <span class="memory-row__preview">{firstLine(file.content)}</span>
@@ -531,6 +531,7 @@
           <button
             type="button"
             class="memory-row__remove"
+            disabled={frozen}
             aria-label={`Remove ${displayName(file.name)}`}
             onclick={() => openDelete(file)}
           >
@@ -561,6 +562,7 @@
             accept=".md,.txt"
             onchange={handleFileSelect}
             aria-describedby="intake-file-status"
+            disabled={frozen}
           />
           <div id="intake-file-status">
             {#if fileReadError}
@@ -583,6 +585,7 @@
           spellcheck="false"
           aria-describedby="intake-filename-status"
           aria-invalid={intakeFilenameError !== null}
+          disabled={frozen}
         />
         <p class="intake-form__help">lowercase-with-dashes, .md or .txt</p>
         <div id="intake-filename-status">
@@ -608,6 +611,7 @@
           bind:value={intakeContent}
           rows="8"
           aria-describedby="intake-content-status"
+          disabled={frozen}
         ></textarea>
         <div id="intake-content-status">
           {#if intakeContentTooLarge}
@@ -624,7 +628,7 @@
         <p class="intake-form__status intake-form__status--error" role="alert">{uploadError}</p>
       {/if}
 
-      <button type="submit" class="intake-form__submit" disabled={!canUpload}>
+      <button type="submit" class="intake-form__submit" disabled={frozen || !canUpload}>
         {$uploadMutation.isPending ? "Uploading…" : "Upload"}
       </button>
     </form>
@@ -652,7 +656,7 @@
             <button
               type="button"
               class="intake-row__remove"
-              disabled={file.status !== "ingested"}
+              disabled={frozen || file.status !== "ingested"}
               title={file.status !== "ingested"
                 ? "Wait for this file to be ingested before removing it."
                 : undefined}
@@ -696,11 +700,11 @@
         <p class="memory-modal__error" role="alert">{modalError}</p>
       {/if}
       <div class="memory-modal__actions">
-        <button type="button" class="memory-modal__cancel" onclick={closeModal}>Cancel</button>
+        <button type="button" class="memory-modal__cancel" disabled={frozen} onclick={closeModal}>Cancel</button>
         <button
           type="button"
           class="memory-modal__danger"
-          disabled={$deleteMutation.isPending}
+          disabled={frozen || $deleteMutation.isPending}
           onclick={handleDelete}
         >
           {$deleteMutation.isPending ? "Removing…" : "Remove"}
@@ -724,13 +728,13 @@
         <p class="memory-modal__error" role="alert">{modalError}</p>
       {/if}
       <div class="memory-modal__actions">
-        <button type="button" class="memory-modal__cancel" onclick={backToEditing}>
+        <button type="button" class="memory-modal__cancel" disabled={frozen} onclick={backToEditing}>
           Back to editing
         </button>
         <button
           type="button"
           class="memory-modal__primary"
-          disabled={$saveMutation.isPending}
+          disabled={frozen || $saveMutation.isPending}
           onclick={handleSave}
         >
           {$saveMutation.isPending ? "Saving…" : "Save"}
@@ -758,6 +762,7 @@
               spellcheck="false"
               aria-describedby="memory-filename-status"
               aria-invalid={filenameError !== null}
+              disabled={frozen}
             />
             <p class="memory-form__help">
               Lowercase letters, numbers, and hyphens. 1-40 characters.
@@ -781,6 +786,7 @@
             class="memory-form__textarea"
             bind:value={content}
             rows="10"
+            disabled={frozen}
           ></textarea>
           {#if content.trim().length === 0}
             <p class="memory-form__help">Add a bit of text before saving.</p>
@@ -788,8 +794,8 @@
         </div>
 
         <div class="memory-modal__actions">
-          <button type="button" class="memory-modal__cancel" onclick={closeModal}>Cancel</button>
-          <button type="submit" class="memory-modal__primary" disabled={!canReview}>
+          <button type="button" class="memory-modal__cancel" disabled={frozen} onclick={closeModal}>Cancel</button>
+          <button type="submit" class="memory-modal__primary" disabled={frozen || !canReview}>
             {contentUnchanged ? "No changes yet" : "Review changes"}
           </button>
         </div>
@@ -811,11 +817,11 @@
       <p class="intake-modal__error" role="alert">{removeError}</p>
     {/if}
     <div class="intake-modal__actions">
-      <button type="button" class="intake-modal__cancel" onclick={closeRemove}>Cancel</button>
+      <button type="button" class="intake-modal__cancel" disabled={frozen} onclick={closeRemove}>Cancel</button>
       <button
         type="button"
         class="intake-modal__danger"
-        disabled={$intakeDeleteMutation.isPending}
+        disabled={frozen || $intakeDeleteMutation.isPending}
         onclick={handleRemove}
       >
         {$intakeDeleteMutation.isPending ? "Removing…" : "Remove"}

@@ -5,6 +5,7 @@ import {
   anyAgentActive,
   detailRefetchInterval,
   isDestroyComplete,
+  isFrozen,
   isTerminal,
   listRefetchInterval,
   stepTone,
@@ -165,5 +166,18 @@ describe("agentTone", () => {
 
   it("defaults an unrecognized status to warn, not a false ok/fail claim", () => {
     expect(agentTone("something-new")).toBe("warn");
+  });
+});
+
+describe("isFrozen", () => {
+  it("freezes destroy states", () => {
+    expect(isFrozen("destroying")).toBe(true);
+    expect(isFrozen("destroy_failed")).toBe(true);
+  });
+
+  it("leaves live states alone", () => {
+    expect(isFrozen("ready")).toBe(false);
+    expect(isFrozen("failed")).toBe(false);
+    expect(isFrozen("provisioning")).toBe(false);
   });
 });

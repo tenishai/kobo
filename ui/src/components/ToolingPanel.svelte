@@ -60,7 +60,7 @@
     uploadToolingMutation,
   } from "../lib/queries";
 
-  let { agentName }: { agentName: string } = $props();
+  let { agentName, frozen = false }: { agentName: string; frozen?: boolean } = $props();
 
   const queryClient = useQueryClient();
   // `agentName` is read once here rather than tracked reactively: same
@@ -364,6 +364,7 @@
           accept=".py,.go"
           onchange={handleFileSelect}
           aria-describedby="tooling-file-status"
+          disabled={frozen}
         />
         <div id="tooling-file-status">
           {#if fileReadError}
@@ -386,6 +387,7 @@
         spellcheck="false"
         aria-describedby="tooling-filename-status"
         aria-invalid={uploadFilenameError !== null}
+        disabled={frozen}
       />
       <p class="tooling-form__help">lowercase_with_underscores-or-dashes, .py or .go</p>
       <div id="tooling-filename-status">
@@ -405,6 +407,7 @@
         bind:value={uploadContent}
         rows="8"
         aria-describedby="tooling-content-status"
+        disabled={frozen}
       ></textarea>
       <div id="tooling-content-status">
         {#if uploadContentTooLarge}
@@ -421,7 +424,7 @@
       <p class="tooling-form__status tooling-form__status--error" role="alert">{uploadError}</p>
     {/if}
 
-    <button type="submit" class="tooling-form__submit" disabled={!canUpload}>
+    <button type="submit" class="tooling-form__submit" disabled={frozen || !canUpload}>
       {$uploadMutation.isPending ? "Uploading…" : "Upload"}
     </button>
   </form>
@@ -439,6 +442,7 @@
         autocomplete="off"
         spellcheck="false"
         placeholder="owner/repo"
+        disabled={frozen}
       />
     </div>
 
@@ -452,6 +456,7 @@
         autocomplete="off"
         spellcheck="false"
         placeholder="bundle/tools"
+        disabled={frozen}
       />
     </div>
 
@@ -459,7 +464,7 @@
       <p class="tooling-form__status tooling-form__status--error" role="alert">{importError}</p>
     {/if}
 
-    <button type="submit" class="tooling-form__submit" disabled={!canImport}>
+    <button type="submit" class="tooling-form__submit" disabled={frozen || !canImport}>
       {$importMutation.isPending ? "Importing…" : "Import"}
     </button>
 
@@ -532,7 +537,7 @@
           <button
             type="button"
             class="tooling-row__remove"
-            disabled={$deleteMutation.isPending}
+            disabled={frozen || $deleteMutation.isPending}
             aria-label={`Remove ${file.name}`}
             onclick={() => handleRemove(file)}
           >

@@ -93,4 +93,44 @@ describe("AgentDetail tabs", () => {
     renderWithClient(AgentDetail);
     expect(await screen.findByRole("tab", { name: "Slack" })).not.toBeNull();
   });
+
+  it("renders frozen panels and one notice while destroying", async () => {
+    // Same ordering discipline as the beforeEach above: specific subpaths
+    // before the bare agent route, since stubFetch matches by
+    // `url.includes` — "/api/agents/warden" alone would also answer
+    // "/api/agents/warden/knowledge" etc. with this agent payload, which
+    // isn't shaped like those endpoints' real responses and leaves those
+    // panels' queries permanently pending instead of settled.
+    stubFetch({
+      "/api/agents/warden/knowledge": { files: [] },
+      "/api/agents/warden/intake": { files: [] },
+      "/api/agents/warden/skills": { skills: [] },
+      "/api/agents/warden/tooling": {
+        files: [],
+        enforcement: { attested: false, locked: false, locked_file: null },
+      },
+      "/api/agents/warden": { ...READY_AGENT, status: "destroying", destroy_visible: true },
+      "/api/": {},
+    });
+    renderWithClient(AgentDetail);
+    expect(await screen.findByText("This agent is being destroyed.")).not.toBeNull();
+    // Let MemoryPanel's own knowledge/intake queries (mounted alongside the
+    // notice, since every panel stays mounted per the tab invariant) settle
+    // past their initial Skeleton — otherwise those transient loading
+    // indicators (also role="status") would inflate the count below.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // One destroy announcer, not two: this used to be DangerZone's own
+    // "Destroying this agent…" role="status" line duplicating this notice
+    // (fixed by dropping DangerZone's live-region attributes — the visible
+    // text stays, see DangerZone.svelte). StepChecklist's own step-count
+    // announcer ("N of N steps done") is a separate, pre-existing
+    // role="status" unrelated to destroying — always present regardless of
+    // agent status — so it's excluded here rather than folded into this
+    // count.
+    const destroyAnnouncers = screen
+      .getAllByRole("status")
+      .filter((el) => !el.classList.contains("step-checklist__sr-only"));
+    expect(destroyAnnouncers).toHaveLength(1);
+    expect(screen.getByRole("tab", { name: "Memory" })).not.toBeNull();
+  });
 });

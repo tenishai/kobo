@@ -17,7 +17,7 @@
   import { ApiError, errorMessage, type ChatMessage } from "../lib/api";
   import { chatMutation } from "../lib/queries";
 
-  let { agentName }: { agentName: string } = $props();
+  let { agentName, frozen = false }: { agentName: string; frozen?: boolean } = $props();
 
   // Client-side cap: keeps the transcript (and the payload re-sent on every
   // turn) bounded. Not a protocol limit — just a quiet trim once the
@@ -156,7 +156,7 @@
         <button
           type="button"
           class="chat-panel__retry"
-          disabled={$mutation.isPending}
+          disabled={frozen || $mutation.isPending}
           onclick={handleRetry}
         >
           Try again
@@ -176,11 +176,12 @@
       placeholder="Say something…"
       rows="2"
       maxlength={MAX_MESSAGE_LEN}
+      disabled={frozen}
     ></textarea>
     <button
       type="button"
       class="chat-panel__send"
-      disabled={!canSend}
+      disabled={frozen || !canSend}
       onclick={handleSend}
     >
       {$mutation.isPending ? "Sending…" : "Send"}

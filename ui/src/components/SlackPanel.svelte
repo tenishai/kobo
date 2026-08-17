@@ -22,7 +22,11 @@
   import { errorMessage, type AgentDetail } from "../lib/api";
   import { connectSlackMutation, createSlackAppMutation, deliveryQuery } from "../lib/queries";
 
-  let { agentName, slack }: { agentName: string; slack: AgentDetail["slack"] } = $props();
+  let {
+    agentName,
+    slack,
+    frozen = false,
+  }: { agentName: string; slack: AgentDetail["slack"]; frozen?: boolean } = $props();
 
   const queryClient = useQueryClient();
   // `agentName` is read once here rather than tracked reactively: AgentDetail
@@ -173,7 +177,7 @@
     <button
       type="button"
       class="slack-panel__connect"
-      disabled={$createApp.isPending}
+      disabled={frozen || $createApp.isPending}
       onclick={handleCreateApp}
     >
       {$createApp.isPending ? "Connecting…" : "Connect to Slack"}
@@ -222,6 +226,7 @@
               type="text"
               autocomplete="off"
               bind:value={channelInput}
+              disabled={frozen}
             />
             <p class="slack-panel__step-help">
               Open the channel's details in Slack and copy its ID.
@@ -235,6 +240,7 @@
               type="password"
               autocomplete="off"
               bind:value={botToken}
+              disabled={frozen}
             />
           </div>
           <div class="slack-panel__field">
@@ -245,6 +251,7 @@
               type="password"
               autocomplete="off"
               bind:value={appToken}
+              disabled={frozen}
             />
           </div>
 
@@ -252,7 +259,7 @@
             <p class="slack-panel__error" role="alert">{connectError}</p>
           {/if}
 
-          <button type="submit" class="slack-panel__finish" disabled={!canFinish}>
+          <button type="submit" class="slack-panel__finish" disabled={frozen || !canFinish}>
             {$connect.isPending ? "Finishing…" : "Finish setup"}
           </button>
         </form>

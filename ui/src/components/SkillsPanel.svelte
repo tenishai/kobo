@@ -49,7 +49,7 @@
     teamsQuery,
   } from "../lib/queries";
 
-  let { agentName }: { agentName: string } = $props();
+  let { agentName, frozen = false }: { agentName: string; frozen?: boolean } = $props();
 
   const queryClient = useQueryClient();
   // `agentName` is read once here rather than tracked reactively: same
@@ -433,10 +433,10 @@
       <p class="skills-panel__subtitle">What your agent can do, on top of what it knows.</p>
     </div>
     <div class="skills-panel__header-actions">
-      <button type="button" class="skills-panel__secondary" onclick={toggleCatalog}>
+      <button type="button" class="skills-panel__secondary" disabled={frozen} onclick={toggleCatalog}>
         {catalogOpen ? "Hide catalog" : "Add from catalog"}
       </button>
-      <button type="button" class="skills-panel__add" onclick={openAdd}>
+      <button type="button" class="skills-panel__add" disabled={frozen} onclick={openAdd}>
         New guardrail skill
       </button>
     </div>
@@ -464,6 +464,7 @@
               <button
                 type="button"
                 class="skill-row__edit"
+                disabled={frozen}
                 onclick={() => openEdit(skill)}
               >
                 Edit
@@ -472,6 +473,7 @@
             <button
               type="button"
               class="skill-row__remove"
+              disabled={frozen}
               aria-label={`Remove ${skill.name}`}
               onclick={() => openDelete(skill)}
             >
@@ -496,12 +498,14 @@
           bind:value={catalogQ}
           placeholder="Search skills"
           autocomplete="off"
+          disabled={frozen}
         />
         <label class="skills-panel__sr-only" for="skills-catalog-team">Filter by team</label>
         <select
           id="skills-catalog-team"
           class="skills-panel__catalog-input"
           value={catalogTeamFilter}
+          disabled={frozen}
           onchange={(event) =>
             (catalogTeamFilter = (event.currentTarget as HTMLSelectElement).value)}
         >
@@ -545,7 +549,7 @@
               <button
                 type="button"
                 class="catalog-row__add"
-                disabled={already || pending}
+                disabled={frozen || already || pending}
                 onclick={() => handleAddFromCatalog(entry)}
               >
                 {#if pending}
@@ -588,11 +592,11 @@
         <p class="skills-modal__error" role="alert">{modalError}</p>
       {/if}
       <div class="skills-modal__actions">
-        <button type="button" class="skills-modal__cancel" onclick={closeModal}>Cancel</button>
+        <button type="button" class="skills-modal__cancel" disabled={frozen} onclick={closeModal}>Cancel</button>
         <button
           type="button"
           class="skills-modal__danger"
-          disabled={$deleteMutation.isPending}
+          disabled={frozen || $deleteMutation.isPending}
           onclick={handleDelete}
         >
           {$deleteMutation.isPending ? "Removing…" : "Remove"}
@@ -623,13 +627,13 @@
         <p class="skills-modal__error" role="alert">{modalError}</p>
       {/if}
       <div class="skills-modal__actions">
-        <button type="button" class="skills-modal__cancel" onclick={backToEditing}>
+        <button type="button" class="skills-modal__cancel" disabled={frozen} onclick={backToEditing}>
           Back to editing
         </button>
         <button
           type="button"
           class="skills-modal__primary"
-          disabled={$saveMutation.isPending}
+          disabled={frozen || $saveMutation.isPending}
           onclick={handleSave}
         >
           {$saveMutation.isPending ? "Saving…" : "Save"}
@@ -657,6 +661,7 @@
               spellcheck="false"
               aria-describedby="skills-filename-status"
               aria-invalid={filenameError !== null}
+              disabled={frozen}
             />
             <p class="skills-form__help">
               Lowercase letters, numbers, and hyphens. 1-40 characters.
@@ -680,6 +685,7 @@
             class="skills-form__textarea"
             bind:value={content}
             rows="10"
+            disabled={frozen}
           ></textarea>
           <p class="skills-form__help">
             Guardrail skills need frontmatter with name: and description: lines.
@@ -694,8 +700,8 @@
         {/if}
 
         <div class="skills-modal__actions">
-          <button type="button" class="skills-modal__cancel" onclick={closeModal}>Cancel</button>
-          <button type="submit" class="skills-modal__primary" disabled={!canReview}>
+          <button type="button" class="skills-modal__cancel" disabled={frozen} onclick={closeModal}>Cancel</button>
+          <button type="submit" class="skills-modal__primary" disabled={frozen || !canReview}>
             {contentUnchanged ? "No changes yet" : "Review changes"}
           </button>
         </div>

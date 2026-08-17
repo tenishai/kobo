@@ -80,7 +80,7 @@
   <h2 id="danger-zone-heading" class="danger-zone__heading">Danger zone</h2>
 
   {#if status === "destroying"}
-    <p class="danger-zone__notice" role="status" aria-live="polite">
+    <p class="danger-zone__notice">
       Destroying this agent…
     </p>
   {:else if status === "destroy_failed"}
