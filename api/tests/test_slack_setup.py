@@ -18,7 +18,13 @@ import yaml
 
 from kobo_api.clients import ClientError, KubectlCLI
 from kobo_api.composer import update_dockerfile_runtime_image
-from kobo_api.slack_setup import render_manifest, wait_active, wire_slack
+from kobo_api.slack_setup import (
+    _update_agent_yaml_transports,
+    render_manifest,
+    rewire_slack_channels,
+    wait_active,
+    wire_slack,
+)
 from tests.fakes import (
     FAKE_DOCKERFILE_OLD_IMAGE,
     FAKE_LOCAL_HEAD_DEFAULT,
@@ -258,6 +264,40 @@ def test_wait_active_raises_client_error_on_timeout():
         wait_active(gojira, app_id)
 
 
+# --- _update_agent_yaml_transports ---------------------------------------------
+
+
+def test_transports_one_entry_per_channel_preserving_others(tmp_path):
+    path = tmp_path / "agent.yaml"
+    path.write_text(yaml.safe_dump({
+        "transports": [
+            {"kind": "a2a", "port": 9200},
+            {"kind": "slack", "channel": "COLD000001"},
+        ]
+    }, sort_keys=False))
+    _update_agent_yaml_transports(path, ["CNEW0000001", "CNEW0000002"])
+    data = yaml.safe_load(path.read_text())
+    kinds = [t["kind"] for t in data["transports"]]
+    assert kinds == ["a2a", "slack", "slack"]
+    assert [t["channel"] for t in data["transports"] if t["kind"] == "slack"] == [
+        "CNEW0000001",
+        "CNEW0000002",
+    ]
+
+
+def test_transports_empty_list_removes_slack_only(tmp_path):
+    path = tmp_path / "agent.yaml"
+    path.write_text(yaml.safe_dump({
+        "transports": [
+            {"kind": "a2a", "port": 9200},
+            {"kind": "slack", "channel": "COLD000001"},
+        ]
+    }, sort_keys=False))
+    _update_agent_yaml_transports(path, [])
+    data = yaml.safe_load(path.read_text())
+    assert [t["kind"] for t in data["transports"]] == ["a2a"]
+
+
 # --- wire_slack --------------------------------------------------------------------
 
 
@@ -293,17 +333,19 @@ class _CapturingGitHub(FakeGitHub):
 
 
 def _wire(
-    github=None, kubectl=None, gojira=None, app_id=None, channel="C1234567", **overrides
+    github=None, kubectl=None, gojira=None, app_id=None, channels=None, **overrides
 ):
     github = github if github is not None else _CapturingGitHub()
     kubectl = kubectl if kubectl is not None else FakeKubectl()
     if gojira is None:
         gojira, app_id = _onboarded_gojira()
+    if channels is None:
+        channels = ["C1234567"]
     kwargs = {
         "repo": REPO,
         "name": NAME,
         "gojira_app_id": app_id,
-        "channel": channel,
+        "channels": channels,
         "bot_token": BOT_TOKEN,
         "app_token": APP_TOKEN,
         "runtime_image": RUNTIME_IMAGE,
@@ -324,7 +366,7 @@ def test_wire_slack_applies_secret_with_both_tokens():
 
 def test_wire_slack_adds_slack_transport_preserving_a2a():
     github = _CapturingGitHub()
-    _wire(github=github, channel="C1234567")
+    _wire(github=github, channels=["C1234567"])
 
     data = yaml.safe_load(github.captured_agent_yaml)
     assert data["transports"] == [
@@ -340,12 +382,24 @@ def test_wire_slack_idempotently_replaces_existing_slack_transport():
             {"kind": "slack", "channel": "COLDOLD1"},
         ]
     )
-    _wire(github=github, channel="CNEWNEW1")
+    _wire(github=github, channels=["CNEWNEW1"])
 
     data = yaml.safe_load(github.captured_agent_yaml)
     assert data["transports"] == [
         {"kind": "a2a", "host": "0.0.0.0", "port": 8080},
         {"kind": "slack", "channel": "CNEWNEW1"},
+    ]
+
+
+def test_wire_slack_two_channels_produce_two_transport_entries():
+    github = _CapturingGitHub()
+    _wire(github=github, channels=["C1111111", "C2222222"])
+
+    data = yaml.safe_load(github.captured_agent_yaml)
+    assert data["transports"] == [
+        {"kind": "a2a", "host": "0.0.0.0", "port": 8080},
+        {"kind": "slack", "channel": "C1111111"},
+        {"kind": "slack", "channel": "C2222222"},
     ]
 
 
@@ -418,6 +472,64 @@ def test_wire_slack_tokens_absent_from_every_file_written_to_the_clone():
     assert APP_TOKEN not in github.captured_agent_yaml
     assert BOT_TOKEN not in github.captured_gojira_yaml
     assert APP_TOKEN not in github.captured_gojira_yaml
+
+
+# --- rewire_slack_channels -----------------------------------------------------
+
+
+# rewire_slack_channels takes no kubectl/gojira argument at all (unlike
+# wire_slack) — there is no FakeKubectl/FakeGojira for it to touch even by
+# mistake, so that half of "commit-only" is enforced by the signature
+# itself, not by an assertion below.
+
+
+def test_rewire_slack_channels_pushes_two_transport_entries_and_returns_sha():
+    github = _CapturingGitHub()
+
+    sha = rewire_slack_channels(github, repo=REPO, channels=["CNEW0000001", "CNEW0000002"])
+
+    data = yaml.safe_load(github.captured_agent_yaml)
+    assert data["transports"] == [
+        {"kind": "a2a", "host": "0.0.0.0", "port": 8080},
+        {"kind": "slack", "channel": "CNEW0000001"},
+        {"kind": "slack", "channel": "CNEW0000002"},
+    ]
+    assert sha == FAKE_LOCAL_HEAD_DEFAULT
+    assert github.local_head_calls  # local_head was actually called
+
+
+def test_rewire_slack_channels_commit_message_exact():
+    github = _CapturingGitHub()
+
+    rewire_slack_channels(github, repo=REPO, channels=["C1234567"])
+
+    assert github.pushes[-1][1] == "kobo: slack channels updated"
+
+
+def test_rewire_slack_channels_touches_only_agent_yaml():
+    # gojira.yaml and Dockerfile come back byte-identical to what clone
+    # wrote — proof this is commit-only: no secrets_from edit, no runtime
+    # image re-pin, no kubectl/gojira mechanics of any kind.
+    github = _CapturingGitHub()
+
+    rewire_slack_channels(github, repo=REPO, channels=["C1234567"])
+
+    assert "secrets_from" not in yaml.safe_load(github.captured_gojira_yaml)
+    assert github.captured_dockerfile == _DOCKERFILE_TEXT.format(image=FAKE_DOCKERFILE_OLD_IMAGE)
+
+
+def test_rewire_slack_channels_empty_list_removes_slack_transport():
+    github = _CapturingGitHub(
+        agent_yaml_transports=[
+            {"kind": "a2a", "host": "0.0.0.0", "port": 8080},
+            {"kind": "slack", "channel": "COLD000001"},
+        ]
+    )
+
+    rewire_slack_channels(github, repo=REPO, channels=[])
+
+    data = yaml.safe_load(github.captured_agent_yaml)
+    assert data["transports"] == [{"kind": "a2a", "host": "0.0.0.0", "port": 8080}]
 
 
 # --- update_dockerfile_runtime_image (unit-level) -----------------------------------

@@ -19,7 +19,8 @@ Two independent responsibilities live here:
 - `wire_slack` mirrors `kobo_api.steps.WireStep`'s pattern verbatim (clone
   -> edit YAMLs -> commit_push -> reprovision-if-changed -> wait-active):
   it delivers the bot/app tokens to the cluster as a namespace Secret, edits
-  `bundle/agent.yaml`'s transports list and `gojira.yaml`'s `secrets_from`
+  `bundle/agent.yaml`'s transports list (one entry per channel, via
+  `_update_agent_yaml_transports`) and `gojira.yaml`'s `secrets_from`
   list in a fresh clone, pushes, and — the plan's self-review CORRECTION —
   reprovisions gojira when that push actually changed something, since
   `secrets_from` is a generator field the deploy platform reads to build the
@@ -27,6 +28,11 @@ Two independent responsibilities live here:
   returning, even on the no-change path, for the exact crash-window reason
   `WireStep` documents: a prior attempt may have crashed after calling
   `reprovision()` but before its own wait finished.
+
+  `rewire_slack_channels` is the commit-only sibling for after an agent is
+  already connected: it changes only which channels the slack transport
+  lists, reusing the same clone/edit/commit/push path minus every bit of
+  `wire_slack`'s secret and reprovision machinery.
 """
 
 from __future__ import annotations
@@ -178,12 +184,14 @@ def wait_active(gojira: GojiraClient, app_id: int) -> None:
     )
 
 
-def _update_agent_yaml_transport(agent_yaml_path: Path, channel: str) -> None:
-    """Round-trip `bundle/agent.yaml`'s `transports` list: replace an
-    existing `{kind: slack, ...}` entry in place (idempotent re-wire with a
-    new channel), or append a new one if there isn't one yet. Every other
-    transport (the `a2a` entry every bundle ships with) is left untouched,
-    in its original position — this never replaces the list wholesale.
+def _update_agent_yaml_transports(agent_yaml_path: Path, channels: list[str]) -> None:
+    """Round-trip `bundle/agent.yaml`'s `transports` list: replace every
+    existing `{kind: slack, ...}` entry with one `{"kind": "slack",
+    "channel": c}` entry per channel in `channels`, order preserved. Every
+    other transport (the `a2a` entry every bundle ships with) is left
+    untouched, in its original position — this never replaces the list
+    wholesale. An empty `channels` list disconnects: no slack entries
+    remain (an agent can be wired to zero channels, e.g. mid-rewire).
 
     `yaml.safe_load`/`safe_dump` round-tripping (not comment-preserving) is
     fine here, same reasoning as `kobo_api.steps._update_gojira_yaml`:
@@ -191,21 +199,9 @@ def _update_agent_yaml_transport(agent_yaml_path: Path, channel: str) -> None:
     contract from parsed values, not prose.
     """
     data = yaml.safe_load(agent_yaml_path.read_text()) or {}
-    transports = data.get("transports", [])
-    new_entry = {"kind": "slack", "channel": channel}
-
-    updated = []
-    replaced = False
-    for entry in transports:
-        if isinstance(entry, dict) and entry.get("kind") == "slack":
-            updated.append(new_entry)
-            replaced = True
-        else:
-            updated.append(entry)
-    if not replaced:
-        updated.append(new_entry)
-
-    data["transports"] = updated
+    transports = [t for t in data.get("transports", []) if t.get("kind") != "slack"]
+    transports.extend({"kind": "slack", "channel": channel} for channel in channels)
+    data["transports"] = transports
     agent_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
@@ -234,20 +230,20 @@ def wire_slack(
     repo: str,
     name: str,
     gojira_app_id: int,
-    channel: str,
+    channels: list[str],
     bot_token: str,
     app_token: str,
     runtime_image: str,
 ) -> str:
     """Deliver `bot_token`/`app_token` to the agent's namespace and wire its
-    repo's Slack transport, mirroring `kobo_api.steps.WireStep` end to end:
+    repo's Slack transports, mirroring `kobo_api.steps.WireStep` end to end:
 
     1. `kubectl.apply_secret` upserts `{name}-slack` in namespace `name` with
        `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN` — the only place either token
        value is ever used; neither is written to a repo file or returned.
-    2. Clone `repo` fresh; edit `bundle/agent.yaml` (transports gains/updates
-       the slack entry), `gojira.yaml` (`secrets_from` gains
-       `{name}-slack`, append-if-missing), and `Dockerfile` (its `FROM` line
+    2. Clone `repo` fresh; edit `bundle/agent.yaml` (transports gains one
+       slack entry per channel in `channels`), `gojira.yaml` (`secrets_from`
+       gains `{name}-slack`, append-if-missing), and `Dockerfile` (its `FROM` line
        is re-pinned to `runtime_image` — the CURRENT configured runtime
        image, e.g. `<registry>/daedalus-runtime:<tag>` — so the connect
        always delivers an image capable of running the transport it's
@@ -284,7 +280,7 @@ def wire_slack(
         workdir = Path(tmp)
         github.clone(repo, workdir)
 
-        _update_agent_yaml_transport(workdir / "bundle" / "agent.yaml", channel)
+        _update_agent_yaml_transports(workdir / "bundle" / "agent.yaml", channels)
         _update_gojira_secrets_from(workdir / "gojira.yaml", name)
         update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
 
@@ -295,5 +291,40 @@ def wire_slack(
         # docstring above and kobo_api.steps.WireStep's own comment for
         # why this can't be skipped just because nothing was pushed.
         wait_active(gojira, gojira_app_id)
+
+        return github.local_head(workdir)
+
+
+def rewire_slack_channels(github: GitHubClient, *, repo: str, channels: list[str]) -> str:
+    """Update which channels an already-connected agent listens on: clone
+    `repo` fresh, replace `bundle/agent.yaml`'s slack transports with one
+    entry per channel in `channels` (order preserved; `_update_agent_yaml_
+    transports` handles the round-trip), commit as `"kobo: slack channels
+    updated"`, and push.
+
+    Commit-only, deliberately smaller than `wire_slack` above: rewiring
+    channels never touches a bot/app token, `gojira.yaml`'s `secrets_from`,
+    or the Dockerfile's runtime image, so there's nothing here for
+    `kubectl` or `gojira` to do — no secret delivery, no reprovision, no
+    `wait_active` poll. This is why the signature carries neither client:
+    reusing `wire_slack`'s clone/commit/push path (`github.clone`,
+    `github.commit_push`, `github.local_head`) is exactly reuse, not
+    duplication, since those three calls are already `GitHubClient`
+    primitives rather than logic private to `wire_slack` — nothing about
+    them is tangled with the secret/reprovision mechanics that stay behind
+    in `wire_slack` alone.
+
+    Returns `github.local_head(workdir)` — the same "just-pushed local
+    clone's own HEAD" convention `wire_slack` returns (see its docstring
+    for why: a fresh GitHub API read can lag behind a push this same
+    process just made).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        workdir = Path(tmp)
+        github.clone(repo, workdir)
+
+        _update_agent_yaml_transports(workdir / "bundle" / "agent.yaml", channels)
+
+        github.commit_push(workdir, "kobo: slack channels updated")
 
         return github.local_head(workdir)

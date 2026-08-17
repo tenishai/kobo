@@ -2036,7 +2036,7 @@ def create_app(
                 repo=agent.repo_full_name,
                 name=agent.name,
                 gojira_app_id=agent.gojira_app_id,
-                channel=payload.channel,
+                channels=[payload.channel],
                 bot_token=payload.bot_token,
                 app_token=payload.app_token,
                 runtime_image=cfg.runtime_image,
