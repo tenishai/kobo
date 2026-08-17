@@ -83,6 +83,35 @@ export function stepTone(status: string): "ok" | "fail" | "active" {
 }
 
 /**
+ * Statuses meaning "a destroy was in progress the last time this page had
+ * real data" (Task 5, AgentDetail.svelte). Exported so the component reads
+ * from this single set too, rather than keeping its own copy that could
+ * drift from `isDestroyComplete`'s notion of the same thing.
+ */
+export const DESTROY_STATUSES = new Set(["destroying", "destroy_failed"]);
+
+/**
+ * True when a 404 for an agent means "destruction finished" rather than
+ * "unknown/mistyped name". A 404 alone is ambiguous: it also fires for a
+ * name that never loaded anything (`lastKnownStatus` stays `null`). This is
+ * only true when the last real data the page had already showed the agent
+ * mid-destroy, and the error in hand is actually a 404 (any other status,
+ * or no error at all, is false).
+ */
+export function isDestroyComplete(
+  lastKnownStatus: string | null,
+  isError: boolean,
+  errorStatus: number | undefined,
+): boolean {
+  return (
+    isError &&
+    errorStatus === 404 &&
+    lastKnownStatus !== null &&
+    DESTROY_STATUSES.has(lastKnownStatus)
+  );
+}
+
+/**
  * Visual tone for an agent's overall status (distinct from stepTone: an
  * agent's own vocabulary — pending/provisioning/ready/failed — isn't the
  * same as a step's):

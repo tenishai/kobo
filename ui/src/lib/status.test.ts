@@ -4,6 +4,7 @@ import {
   agentTone,
   anyAgentActive,
   detailRefetchInterval,
+  isDestroyComplete,
   isTerminal,
   listRefetchInterval,
   stepTone,
@@ -116,6 +117,32 @@ describe("stepTone", () => {
 
   it("maps pending -> active (queued work still reads as in-progress)", () => {
     expect(stepTone("pending")).toBe("active");
+  });
+});
+
+describe("isDestroyComplete", () => {
+  it("is true when destroying and a 404 arrives", () => {
+    expect(isDestroyComplete("destroying", true, 404)).toBe(true);
+  });
+
+  it("is true when destroy_failed and a 404 arrives", () => {
+    expect(isDestroyComplete("destroy_failed", true, 404)).toBe(true);
+  });
+
+  it("is false when ready and a 404 arrives (not mid-destroy)", () => {
+    expect(isDestroyComplete("ready", true, 404)).toBe(false);
+  });
+
+  it("is false when lastKnownStatus is null and a 404 arrives (unknown name, never loaded)", () => {
+    expect(isDestroyComplete(null, true, 404)).toBe(false);
+  });
+
+  it("is false when destroying but the error isn't a 404", () => {
+    expect(isDestroyComplete("destroying", true, 500)).toBe(false);
+  });
+
+  it("is false when destroying but there is no error", () => {
+    expect(isDestroyComplete("destroying", false, undefined)).toBe(false);
   });
 });
 
