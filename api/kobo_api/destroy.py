@@ -75,6 +75,15 @@ def _destroy_platform(ctx: DestroyCtx) -> str:
     collapses "the platform never heard of this app id" (a 404) into
     `{"already_gone": True}` (kobo_api.clients); anything else is the
     platform's own 202 teardown summary, JSON-dumped for the record.
+
+    Final-review Finding B: `identity.failures` in that summary is
+    gojira's own best-effort report of partial GCP teardown it could not
+    finish (a leaked GSA, binding, or AR image) - unretryable once
+    gojira's rows are gone, since there's no app id left to re-delete.
+    The step still succeeds either way (best-effort is gojira's own
+    contract, not this step's to enforce), but a non-empty list is logged
+    as a warning here so it's visible in the room's logs rather than only
+    reachable by parsing this step's JSON-dumped detail.
     """
     agent = ctx.agent
     if agent.gojira_app_id is None:
@@ -83,6 +92,16 @@ def _destroy_platform(ctx: DestroyCtx) -> str:
     result = ctx.clients.gojira.delete_app(agent.gojira_app_id)
     if result.get("already_gone"):
         return "already gone"
+
+    failures = result.get("identity", {}).get("failures")
+    if failures:
+        log.warning(
+            "destroy-platform: agent %s left %d GCP identity teardown "
+            "failure(s) behind: %s",
+            agent.name,
+            len(failures),
+            "; ".join(failures),
+        )
     return json.dumps(result)
 
 

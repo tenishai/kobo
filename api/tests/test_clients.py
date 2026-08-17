@@ -1269,6 +1269,26 @@ def test_gojira_delete_app_raises_client_error_on_unexpected_status():
         client.delete_app(7)
 
 
+def test_gojira_delete_app_overrides_client_default_with_120s_timeout():
+    # Final-review Finding A: the client's default timeout (30.0, connect
+    # 10.0 - see HttpxGojiraClient.__init__) is too tight for a real
+    # teardown (gcloud/kubectl on gojira's side, realistically 15-60s); a
+    # per-call override on this one request gives it the headroom without
+    # loosening every other Gojira call's timeout.
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(202, json={"app": "clio"})
+
+    client = HttpxGojiraClient(
+        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    client.delete_app(7)
+
+    assert captured["timeout"] == {"connect": 10.0, "read": 120.0, "write": 120.0, "pool": 120.0}
+
+
 # --- Agent (a2a chat over kubectl port-forward) --------------------------------
 
 

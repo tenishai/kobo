@@ -190,6 +190,56 @@ def test_destroy_platform_client_error_propagates(session_factory, config):
     session.close()
 
 
+def test_destroy_platform_identity_failures_are_logged_as_warning(session_factory, config, caplog):
+    # Final-review Finding B: gojira's teardown summary can report partial,
+    # unretryable GCP identity failures (a leaked GSA/binding/image) once
+    # gojira's own rows are gone. The step still succeeds (best-effort is
+    # gojira's contract), but those failures must not disappear into a
+    # log.info json.dumps with nothing calling them out.
+    session, agent = _make_ctx_agent(session_factory, name="clio", gojira_app_id=7)
+    summary = {
+        "app": AGENT_NAME,
+        "namespaces_deleted": ["dev"],
+        "namespace_failures": [],
+        "identity": {
+            "bindings_removed": 1,
+            "gsa_deleted": False,
+            "images_deleted": 0,
+            "failures": [
+                "gsa delete failed: still in use",
+                "image cleanup failed: permission denied",
+            ],
+        },
+        "rows_deleted": True,
+    }
+    fake_gojira = FakeGojira(delete_summary=summary)
+    ctx = _ctx(session, agent, config, gojira=fake_gojira)
+
+    with caplog.at_level("WARNING"):
+        detail = _destroy_platform(ctx)
+
+    # The step still succeeds, and the returned detail is unchanged.
+    assert json.loads(detail) == summary
+
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any("clio" in message for message in warnings)
+    assert any("gsa delete failed: still in use" in message for message in warnings)
+    assert any("image cleanup failed: permission denied" in message for message in warnings)
+    session.close()
+
+
+def test_destroy_platform_no_identity_failures_no_warning(session_factory, config, caplog):
+    session, agent = _make_ctx_agent(session_factory, gojira_app_id=7)
+    fake_gojira = FakeGojira()  # canned summary's identity.failures is []
+    ctx = _ctx(session, agent, config, gojira=fake_gojira)
+
+    with caplog.at_level("WARNING"):
+        _destroy_platform(ctx)
+
+    assert not any(r.levelname == "WARNING" for r in caplog.records)
+    session.close()
+
+
 # --- _destroy_slack ---------------------------------------------------------------
 
 

@@ -672,6 +672,13 @@ class HttpxGojiraClient:
             f"{self._base_url}/api/v1/apps/{app_id}",
             json={"delete_namespaces": delete_namespaces},
             headers=self._headers(),
+            # Final-review Finding A: teardown is slow by nature (gcloud/
+            # kubectl work on gojira's side, realistically 15-60s); the
+            # client's default 30s timeout would manufacture a spurious
+            # first-run failure on a slow but healthy teardown. The step
+            # ledger already tolerates a retry, it should not have to
+            # invent one.
+            timeout=httpx.Timeout(120.0, connect=10.0),
         )
         if resp.status_code == 404:
             # Only gojira's own "unknown app id" 404 — body {"error": "not
