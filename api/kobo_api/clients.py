@@ -1423,7 +1423,7 @@ class ImageClient(Protocol):
 # server response bodies, since routes build request bodies straight from
 # raised messages (see VertexImageClient.generate below for what DOES get
 # logged, prompt included, server-side only).
-_IMAGE_GENERATION_FAILED = "the picture didn't come through — try again"
+_IMAGE_GENERATION_FAILED = "the picture didn't come through. Try again."
 
 
 def _gcloud_print_access_token(runner: CommandRunner | None = None) -> str:

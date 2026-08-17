@@ -461,10 +461,10 @@ def _validation_error_message(exc: RequestValidationError) -> str:
         if loc:
             fields.append(".".join(loc))
     if not fields:
-        return "that request wasn't quite right — check the fields and try again"
+        return "that request wasn't quite right. Check the fields and try again"
     # dict.fromkeys: de-dupe while preserving first-seen order.
     names = ", ".join(dict.fromkeys(fields))
-    return f"that request wasn't quite right — check: {names}"
+    return f"that request wasn't quite right. Check: {names}"
 
 
 def _ready_agent_or_error(
@@ -1793,7 +1793,7 @@ def create_app(
         # scope for kobo, a runtime concern) — this note says so in plain
         # language rather than leaving that ambiguous.
         return JSONResponse(
-            {"sha": sha, "note": "memories are kept — only the source file was removed"}
+            {"sha": sha, "note": "memories are kept. Only the source file was removed"}
         )
 
     # --- Tooling (2026-08-13 addendum): the staged door for an agent's --------
@@ -1980,7 +1980,7 @@ def create_app(
         if persona_entry is not None:
             persona_first_line = persona_entry.description
         else:
-            log.warning("persona %r not in the catalog — using generic text for slack manifest", agent.persona)
+            log.warning("persona %r not in the catalog, using generic text for slack manifest", agent.persona)
             persona_first_line = f"A {agent.persona} agent, reachable in Slack."
 
         manifest = render_manifest(agent.name, persona_first_line)
@@ -2166,7 +2166,7 @@ def create_app(
         if persona_entry is not None:
             persona_description = persona_entry.description
         else:
-            log.warning("persona %r not in the catalog — using generic text for avatar prompt", agent.persona)
+            log.warning("persona %r not in the catalog, using generic text for avatar prompt", agent.persona)
             persona_description = f"A {agent.persona} agent."
 
         prompt = avatar_prompt(agent.name, persona_description)

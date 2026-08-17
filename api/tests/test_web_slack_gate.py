@@ -247,7 +247,7 @@ def test_empty_operators_connect_slack_still_503s_when_slack_unconfigured(
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"channel": CHANNEL, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={"bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
     )
 
     assert response.status_code == 503
@@ -318,7 +318,7 @@ def test_non_operator_gets_403_from_connect_slack(session_factory, config):
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"channel": CHANNEL, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={"bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
         headers={ASSERTION_HEADER: token},
     )
 
@@ -380,7 +380,7 @@ def test_listed_email_uppercase_token_lowercase_operator_list_passes_through(
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"channel": CHANNEL, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={"bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
         headers={ASSERTION_HEADER: token},
     )
 
@@ -427,7 +427,7 @@ def test_operators_set_but_iap_off_connect_slack_passes_through(session_factory,
 
     response = client.post(
         f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"channel": CHANNEL, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        json={"bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
     )
 
     assert response.status_code == 503

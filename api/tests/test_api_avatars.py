@@ -227,7 +227,7 @@ def test_generate_avatar_no_image_client_returns_503(session_factory, config):
 
 
 def test_generate_avatar_client_error_returns_fixed_502(session_factory, config):
-    image = FakeImage(generate_error="the picture didn't come through — try again")
+    image = FakeImage(generate_error="the picture didn't come through. Try again.")
     github = FakeGitHub()
     client = _make_client(session_factory, config, github=github, image=image)
     _seed_agent(session_factory, config)
@@ -235,7 +235,7 @@ def test_generate_avatar_client_error_returns_fixed_502(session_factory, config)
     response = client.post(f"/api/agents/{AGENT_NAME}/avatar")
 
     assert response.status_code == 502
-    assert response.json() == {"error": "the picture didn't come through — try again"}
+    assert response.json() == {"error": "the picture didn't come through. Try again."}
     assert github.cloned == []
 
     session = session_factory()

@@ -880,6 +880,59 @@ def test_put_channels_rewires_when_wired(session_factory, config):
     assert detail["slack"]["channels"] == [CHANNEL_2]
 
 
+def test_put_channels_unwired_empty_stores_and_reports_idle(session_factory, config):
+    # PUT [] on an agent that was never wired (no slack_app_id, no
+    # slack_channels): the disconnect path stores [] outright (skipping
+    # clean_channels, same as every other empty-list PUT), but since
+    # `agent.slack_wired` is False there's nothing to rewire — no GitHub
+    # call, no "sha" key in the response, state derives to "idle" (neither
+    # channels nor wired).
+    github = FakeGitHub()
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+
+    response = client.put(f"/api/agents/{AGENT_NAME}/slack/channels", json={"channels": []})
+
+    assert response.status_code == 200
+    assert response.json() == {"channels": [], "state": "idle"}
+    assert github.cloned == []
+
+    detail = client.get(f"/api/agents/{AGENT_NAME}").json()
+    assert detail["slack"]["channels"] == []
+    assert detail["slack"]["state"] == "idle"
+
+
+def test_put_channels_rewire_failure_returns_502_and_leaves_original_channels_stored(
+    session_factory, config
+):
+    # The route's load-bearing invariant (fold-in review note): when the
+    # rewire's GitHub call fails, the route returns before session.commit()
+    # so the in-memory `agent.slack_channels = encode_channels(cleaned)`
+    # mutation made earlier in the same request never reaches the DB (see
+    # the route's own comment on get_session/Session.close()'s implicit
+    # rollback). Proven end-to-end here: seed a WIRED agent with one
+    # channel stored, make GitHub's clone (the first call both wire_slack
+    # and rewire_slack_channels make) raise ClientError, PUT a DIFFERENT
+    # channel list, and check both the 502 body AND that a follow-up GET
+    # still shows the ORIGINAL stored channels — not the submitted ones.
+    client = _make_client(session_factory, config, github=_RaisingGitHub())
+    _seed_agent(
+        session_factory, config, slack_app_id="A0EXISTING",
+        slack_channels=[CHANNEL], slack_wired=True,
+    )
+
+    response = client.put(
+        f"/api/agents/{AGENT_NAME}/slack/channels", json={"channels": [CHANNEL_2]}
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"error": "couldn't update the channels. Try again."}
+
+    detail = client.get(f"/api/agents/{AGENT_NAME}").json()
+    assert detail["slack"]["channels"] == [CHANNEL]
+    assert detail["slack"]["state"] == "connected"
+
+
 def test_put_channels_empty_disconnects_when_wired(session_factory, config):
     github = _CapturingGitHub(
         agent_yaml_transports=[

@@ -44,7 +44,7 @@ REPO = "acme/agent-clio"
 # mutating route below returns (github.local_head).
 SHA = FAKE_LOCAL_HEAD_DEFAULT
 
-DELETE_NOTE = "memories are kept — only the source file was removed"
+DELETE_NOTE = "memories are kept. Only the source file was removed"
 
 
 class _CapturingGitHub(FakeGitHub):

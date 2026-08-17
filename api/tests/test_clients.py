@@ -2258,7 +2258,7 @@ def test_vertex_image_client_no_image_part_raises_client_error_without_leaking_p
     with pytest.raises(ClientError) as exc_info:
         client.generate(prompt)
 
-    assert str(exc_info.value) == "the picture didn't come through — try again"
+    assert str(exc_info.value) == "the picture didn't come through. Try again."
     assert prompt not in str(exc_info.value)
 
 
@@ -2293,7 +2293,7 @@ def test_vertex_image_client_invalid_base64_raises_client_error_without_leaking_
     with pytest.raises(ClientError) as exc_info:
         client.generate(prompt)
 
-    assert str(exc_info.value) == "the picture didn't come through — try again"
+    assert str(exc_info.value) == "the picture didn't come through. Try again."
     assert prompt not in str(exc_info.value)
 
 
@@ -2312,7 +2312,7 @@ def test_vertex_image_client_non_200_raises_client_error_without_leaking_prompt(
     with pytest.raises(ClientError) as exc_info:
         client.generate(prompt)
 
-    assert str(exc_info.value) == "the picture didn't come through — try again"
+    assert str(exc_info.value) == "the picture didn't come through. Try again."
     assert prompt not in str(exc_info.value)
 
 
@@ -2331,7 +2331,7 @@ def test_vertex_image_client_malformed_json_raises_client_error_without_leaking_
     with pytest.raises(ClientError) as exc_info:
         client.generate(prompt)
 
-    assert str(exc_info.value) == "the picture didn't come through — try again"
+    assert str(exc_info.value) == "the picture didn't come through. Try again."
     assert prompt not in str(exc_info.value)
 
 
@@ -2350,7 +2350,7 @@ def test_vertex_image_client_unexpected_json_shape_raises_client_error():
     with pytest.raises(ClientError) as exc_info:
         client.generate("a prompt")
 
-    assert str(exc_info.value) == "the picture didn't come through — try again"
+    assert str(exc_info.value) == "the picture didn't come through. Try again."
 
 
 def test_vertex_image_client_default_http_client_has_generous_timeout():
@@ -2396,7 +2396,7 @@ def test_vertex_image_client_token_provider_failure_raises_client_error_without_
     with pytest.raises(ClientError) as exc_info:
         client.generate("a prompt")
 
-    assert str(exc_info.value) == "the picture didn't come through — try again"
+    assert str(exc_info.value) == "the picture didn't come through. Try again."
     assert "gcloud" not in str(exc_info.value)
     assert "account details" not in str(exc_info.value)
 
