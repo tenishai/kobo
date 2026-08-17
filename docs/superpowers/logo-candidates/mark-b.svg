@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+  <!-- mark-b: abstracted glyph inside a rounded square -->
+  <path d="M20,8 L44,8 Q56,8 56,20 L56,44 Q56,56 44,56 L20,56 Q8,56 8,44 L8,20 Q8,8 20,8 Z"
+        fill="none" stroke="currentColor" stroke-width="6" />
+  <path d="M20,18 L44,18 L44,24 L35,24 L35,40 L44,40 L44,46 L20,46 L20,40 L29,40 L29,24 L20,24 Z"
+        fill="currentColor" />
+</svg>
