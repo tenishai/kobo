@@ -22,7 +22,7 @@
   import { agentQuery, generateAvatarMutation, retryAgentMutation } from "../lib/queries";
   import { formatHash, navigate, route } from "../lib/router.svelte";
   import { isDestroyComplete, isFrozen } from "../lib/status";
-  import { TAB_LABELS, visibleTabs, type TabId } from "../lib/tabs";
+  import { defaultTab, TAB_LABELS, visibleTabs, type TabId } from "../lib/tabs";
   import { toast } from "../lib/toast.svelte";
 
   // Invariant: App.svelte only mounts this page when `route.page === "agent"`,
@@ -36,12 +36,40 @@
   const retry = createMutation(retryAgentMutation(queryClient, name));
   const generateAvatar = createMutation(generateAvatarMutation(queryClient, name));
 
-  // Which of the ready-agent tabs (tabs.ts) is showing. Every panel stays
-  // mounted inside its own tabpanel regardless of this value — see the
-  // markup below, `hidden={activeTab !== tab}`, never `{#if}` — so
-  // switching tabs never refetches a panel's query or drops its in-progress
-  // local state (an open modal, a half-typed form).
-  let activeTab = $state<TabId>("memory");
+  // Which tab (tabs.ts) is showing. Every panel stays mounted inside its own
+  // tabpanel regardless of this value — see the markup below,
+  // `hidden={activeTab !== tab}`, never `{#if}` — so switching tabs never
+  // refetches a panel's query or drops its in-progress local state (an open
+  // modal, a half-typed form).
+  //
+  // Starts `null` (no data yet) so the effect below can tell "never chosen"
+  // apart from "chosen, and it happens to be overview" — the first real
+  // `$agent.data` picks the smart default (`defaultTab`) exactly once, and
+  // never again even as later polls bring fresher statuses.
+  let activeTab = $state<TabId | null>(null);
+
+  // Tracks the agent's frozen-ness across polls so the one-shot destroy
+  // auto-select (below) can tell "just started destroying" (false -> true)
+  // from "still destroying" (true -> true, e.g. every ~3.5s poll while
+  // `destroying`/`destroy_failed` persists) — only the former should steal
+  // focus back to Overview; the operator must be free to click away
+  // afterward without getting yanked back on the next poll.
+  let wasFrozen = $state(false);
+
+  $effect(() => {
+    const data = $agent.data;
+    if (!data) {
+      return;
+    }
+    if (activeTab === null) {
+      activeTab = defaultTab(data.status);
+    }
+    const frozenNow = isFrozen(data.status);
+    if (frozenNow && !wasFrozen) {
+      activeTab = "overview";
+    }
+    wasFrozen = frozenNow;
+  });
 
   function handleRetry(): void {
     $retry.mutate(undefined, {
@@ -162,117 +190,116 @@
       </div>
     </header>
 
-    <div class="composition">
-      <span class="composition__item">
-        <span class="composition__label">Persona</span>
-        <span class="composition__value">{data.persona}</span>
-      </span>
-      {#if data.skills.length > 0}
-        <div class="composition__skills">
-          {#each data.skills as skill (skill.name)}
-            <span class="skill-chip" title={skill.sha}>{skill.name}</span>
-          {/each}
-        </div>
-      {/if}
-      <span class="composition__item">
-        <span class="composition__label">Model</span>
-        <span class="composition__value">{data.model_label}</span>
-      </span>
-
-      <div class="composition__avatar-action">
-        <button
-          type="button"
-          class="composition__avatar-button"
-          disabled={isFrozen(data.status) || $generateAvatar.isPending}
-          onclick={handleGenerateAvatar}
-        >
-          {#if $generateAvatar.isPending}
-            <span class="composition__avatar-dot pulse" aria-hidden="true"></span>
-            Painting…
-          {:else if data.has_avatar || avatarVersion !== null}
-            New face
-          {:else}
-            Give {data.name} a face
-          {/if}
-        </button>
-        {#if avatarError}
-          <p class="composition__avatar-error" role="alert">{avatarError}</p>
-        {:else if avatarNote}
-          <p class="composition__avatar-note">{avatarNote}</p>
-        {/if}
-      </div>
-    </div>
-
-    {#if data.status === "failed"}
-      <div class="failed-banner" role="alert">
-        <p class="failed-banner__message">
-          {data.error ?? "Something went wrong during setup."}
-        </p>
-        <button
-          type="button"
-          class="failed-banner__retry"
-          disabled={$retry.isPending}
-          onclick={handleRetry}
-        >
-          {$retry.isPending ? "Retrying…" : "Retry"}
-        </button>
-      </div>
+    {#if isFrozen(data.status)}
+      <p class="agent-detail__destroy-notice" role="status" aria-live="polite">
+        This agent is being destroyed.
+      </p>
     {/if}
 
-    <StepChecklist steps={data.steps} />
-
-    {#if data.first_reply}
-      <FirstReply reply={data.first_reply} />
-    {/if}
-
-    {#if data.status === "ready" || isFrozen(data.status)}
-      {#if isFrozen(data.status)}
-        <p class="agent-detail__destroy-notice" role="status" aria-live="polite">
-          This agent is being destroyed.
-        </p>
-      {/if}
-
-      <ChatPanel agentName={data.name} frozen={isFrozen(data.status)} />
-
-      {@const tabs = visibleTabs(data.slack_visible)}
-      <div class="detail-tabs">
-        <div class="detail-tabs__bar" role="tablist" aria-label="Agent sections">
-          {#each tabs as tab (tab)}
-            <button
-              type="button"
-              role="tab"
-              id={`tab-${tab}`}
-              class="detail-tabs__tab"
-              aria-selected={activeTab === tab}
-              aria-controls={`panel-${tab}`}
-              onclick={() => (activeTab = tab)}
-            >
-              {TAB_LABELS[tab]}
-            </button>
-          {/each}
-        </div>
-
+    {@const tabs = visibleTabs(data.slack_visible)}
+    <div class="detail-tabs">
+      <div class="detail-tabs__bar" role="tablist" aria-label="Agent sections">
         {#each tabs as tab (tab)}
-          <div
-            id={`panel-${tab}`}
-            role="tabpanel"
-            aria-labelledby={`tab-${tab}`}
-            hidden={activeTab !== tab}
-            tabindex="0"
+          <button
+            type="button"
+            role="tab"
+            id={`tab-${tab}`}
+            class="detail-tabs__tab"
+            aria-selected={activeTab === tab}
+            aria-controls={`panel-${tab}`}
+            onclick={() => (activeTab = tab)}
           >
-            {#if tab === "memory"}
-              <MemoryPanel agentName={data.name} frozen={isFrozen(data.status)} />
-            {:else if tab === "skills"}
-              <SkillsPanel agentName={data.name} frozen={isFrozen(data.status)} />
-            {:else if tab === "tooling"}
-              <ToolingPanel agentName={data.name} frozen={isFrozen(data.status)} />
-            {:else}
-              <SlackPanel agentName={data.name} slack={data.slack} frozen={isFrozen(data.status)} />
-            {/if}
-          </div>
+            {TAB_LABELS[tab]}
+          </button>
         {/each}
       </div>
-    {/if}
+
+      {#each tabs as tab (tab)}
+        <div
+          id={`panel-${tab}`}
+          class="detail-tabs__panel"
+          role="tabpanel"
+          aria-labelledby={`tab-${tab}`}
+          hidden={activeTab !== tab}
+          tabindex="0"
+        >
+          {#if tab === "overview"}
+            <div class="composition">
+              <span class="composition__item">
+                <span class="composition__label">Persona</span>
+                <span class="composition__value">{data.persona}</span>
+              </span>
+              {#if data.skills.length > 0}
+                <div class="composition__skills">
+                  {#each data.skills as skill (skill.name)}
+                    <span class="skill-chip" title={skill.sha}>{skill.name}</span>
+                  {/each}
+                </div>
+              {/if}
+              <span class="composition__item">
+                <span class="composition__label">Model</span>
+                <span class="composition__value">{data.model_label}</span>
+              </span>
+
+              <div class="composition__avatar-action">
+                <button
+                  type="button"
+                  class="composition__avatar-button"
+                  disabled={isFrozen(data.status) || $generateAvatar.isPending}
+                  onclick={handleGenerateAvatar}
+                >
+                  {#if $generateAvatar.isPending}
+                    <span class="composition__avatar-dot pulse" aria-hidden="true"></span>
+                    Painting…
+                  {:else if data.has_avatar || avatarVersion !== null}
+                    New face
+                  {:else}
+                    Give {data.name} a face
+                  {/if}
+                </button>
+                {#if avatarError}
+                  <p class="composition__avatar-error" role="alert">{avatarError}</p>
+                {:else if avatarNote}
+                  <p class="composition__avatar-note">{avatarNote}</p>
+                {/if}
+              </div>
+            </div>
+
+            {#if data.status === "failed"}
+              <div class="failed-banner" role="alert">
+                <p class="failed-banner__message">
+                  {data.error ?? "Something went wrong during setup."}
+                </p>
+                <button
+                  type="button"
+                  class="failed-banner__retry"
+                  disabled={$retry.isPending}
+                  onclick={handleRetry}
+                >
+                  {$retry.isPending ? "Retrying…" : "Retry"}
+                </button>
+              </div>
+            {/if}
+
+            <StepChecklist steps={data.steps} />
+
+            {#if data.first_reply}
+              <FirstReply reply={data.first_reply} />
+            {/if}
+          {:else if tab === "chat"}
+            <ChatPanel agentName={data.name} frozen={isFrozen(data.status)} />
+          {:else if tab === "memory"}
+            <MemoryPanel agentName={data.name} frozen={isFrozen(data.status)} />
+          {:else if tab === "skills"}
+            <SkillsPanel agentName={data.name} frozen={isFrozen(data.status)} />
+          {:else if tab === "tooling"}
+            <ToolingPanel agentName={data.name} frozen={isFrozen(data.status)} />
+          {:else}
+            <SlackPanel agentName={data.name} slack={data.slack} frozen={isFrozen(data.status)} />
+          {/if}
+        </div>
+      {/each}
+    </div>
 
     {#if data.destroy_visible}
       <DangerZone agentName={data.name} status={data.status} error={data.error} />
@@ -491,13 +518,14 @@
 
   .detail-tabs__bar {
     display: flex;
-    flex-wrap: wrap;
     gap: var(--space-md);
     border-bottom: 1px solid var(--border);
+    overflow-x: auto;
   }
 
   .detail-tabs__tab {
-    padding: var(--space-sm) var(--space-xs);
+    flex-shrink: 0;
+    padding: var(--space-sm) var(--space-md);
     border: none;
     border-bottom: 2px solid transparent;
     background: none;
@@ -515,6 +543,12 @@
     border-bottom-color: var(--accent);
     color: var(--ink);
     font-weight: 600;
+  }
+
+  .detail-tabs__panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
   }
 
   .agent-detail__destroy-notice {

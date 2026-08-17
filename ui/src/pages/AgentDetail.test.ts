@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, screen } from "@testing-library/svelte";
+import { fireEvent, screen, within } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AgentDetail from "./AgentDetail.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
@@ -65,17 +65,59 @@ describe("AgentDetail tabs", () => {
     });
   });
 
-  it("defaults to Memory and switches tabs without unmounting panels", async () => {
+  it("defaults to Chat when ready and switches tabs without unmounting panels", async () => {
     renderWithClient(AgentDetail);
-    const memoryTab = await screen.findByRole("tab", { name: "Memory" });
-    expect(memoryTab.getAttribute("aria-selected")).toBe("true");
+    const chatTab = await screen.findByRole("tab", { name: "Chat" });
+    expect(chatTab.getAttribute("aria-selected")).toBe("true");
     expect(screen.queryByRole("tab", { name: "Slack" })).toBeNull();
 
-    const skillsTab = screen.getByRole("tab", { name: "Skills" });
-    await fireEvent.click(skillsTab);
-    expect(skillsTab.getAttribute("aria-selected")).toBe("true");
-    expect(document.getElementById("panel-memory")?.hasAttribute("hidden")).toBe(true);
-    expect(document.getElementById("panel-memory")).not.toBeNull();
+    const memoryTab = screen.getByRole("tab", { name: "Memory" });
+    await fireEvent.click(memoryTab);
+    expect(memoryTab.getAttribute("aria-selected")).toBe("true");
+    expect(document.getElementById("panel-chat")?.hasAttribute("hidden")).toBe(true);
+    expect(document.getElementById("panel-chat")).not.toBeNull();
+  });
+
+  it("lands on Overview on mount for a non-ready status (destroying)", async () => {
+    stubFetch({
+      "/api/agents/warden/knowledge": { files: [] },
+      "/api/agents/warden/intake": { files: [] },
+      "/api/agents/warden/skills": { skills: [] },
+      "/api/agents/warden/tooling": {
+        files: [],
+        enforcement: { attested: false, locked: false, locked_file: null },
+      },
+      "/api/agents/warden": { ...READY_AGENT, status: "destroying", destroy_visible: true },
+      "/api/": {},
+    });
+    renderWithClient(AgentDetail);
+    const overviewTab = await screen.findByRole("tab", { name: "Overview" });
+    expect(overviewTab.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Chat" }).getAttribute("aria-selected")).toBe("false");
+  });
+
+  it("renders the checklist and first words inside the Overview tabpanel", async () => {
+    stubFetch({
+      "/api/agents/warden/knowledge": { files: [] },
+      "/api/agents/warden/intake": { files: [] },
+      "/api/agents/warden/skills": { skills: [] },
+      "/api/agents/warden/tooling": {
+        files: [],
+        enforcement: { attested: false, locked: false, locked_file: null },
+      },
+      "/api/agents/warden": {
+        ...READY_AGENT,
+        steps: [{ name: "clone", label: "Clone the repo", status: "done", error: null }],
+        first_reply: "Hello there.",
+      },
+      "/api/": {},
+    });
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Chat" });
+    const overviewPanel = document.getElementById("panel-overview") as HTMLElement;
+    expect(overviewPanel).not.toBeNull();
+    expect(within(overviewPanel).getByText("Clone the repo")).not.toBeNull();
+    expect(within(overviewPanel).getByText("Hello there.")).not.toBeNull();
   });
 
   it("shows the Slack tab when slack_visible", async () => {
@@ -132,6 +174,8 @@ describe("AgentDetail tabs", () => {
       .filter((el) => !el.classList.contains("step-checklist__sr-only"));
     expect(destroyAnnouncers).toHaveLength(1);
     expect(screen.getByRole("tab", { name: "Memory" })).not.toBeNull();
+    const overviewTab = screen.getByRole("tab", { name: "Overview" });
+    expect(overviewTab.getAttribute("aria-selected")).toBe("true");
     const avatarButton = screen.getByRole("button", { name: /give warden a face/i });
     expect((avatarButton as HTMLButtonElement).disabled).toBe(true);
   });
