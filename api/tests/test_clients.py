@@ -666,6 +666,85 @@ def test_ghcli_real_runner_failing_command_error_never_contains_the_token(caplog
     assert "ghs_REALRUNNERSECRET" not in caplog.text
 
 
+# --- GitHub (GhCLI.rename_repo / archive_repo — Task 3: agent destruction) --------
+
+
+def test_rename_repo_argv():
+    runner = RecordingRunner(results=[(0, "", "")])
+    client = GhCLI(runner=runner)
+    client.rename_repo("acme/agent-clio", "archived-agent-clio-42")
+    assert runner.calls == [
+        ["gh", "api", "-X", "PATCH", "repos/acme/agent-clio", "-f", "name=archived-agent-clio-42"]
+    ]
+
+
+def test_archive_repo_argv():
+    runner = RecordingRunner(results=[(0, "", "")])
+    client = GhCLI(runner=runner)
+    client.archive_repo("acme/archived-agent-clio-42")
+    assert runner.calls == [
+        ["gh", "api", "-X", "PATCH", "repos/acme/archived-agent-clio-42", "-F", "archived=true"]
+    ]
+
+
+def test_rename_repo_404_raises_repo_not_found_prefixed_error():
+    # `gh api` on a 404 prints the API's own JSON error body to stdout and
+    # writes its own status line to stderr as "gh: <message> (HTTP
+    # <code>)" — confirmed against a real, authenticated `gh` in this
+    # sandbox: `gh api -X PATCH repos/<a-repo-that-does-not-exist>` exits
+    # 1 with stderr exactly "gh: Not Found (HTTP 404)".
+    runner = RecordingRunner(
+        results=[(1, '{"message":"Not Found","status":"404"}', "gh: Not Found (HTTP 404)")]
+    )
+    client = GhCLI(runner=runner)
+    with pytest.raises(ClientError) as exc_info:
+        client.rename_repo("acme/agent-gone", "archived-agent-gone-1")
+    assert str(exc_info.value).startswith("repo not found: acme/agent-gone")
+
+
+def test_archive_repo_404_raises_repo_not_found_prefixed_error():
+    runner = RecordingRunner(
+        results=[(1, '{"message":"Not Found","status":"404"}', "gh: Not Found (HTTP 404)")]
+    )
+    client = GhCLI(runner=runner)
+    with pytest.raises(ClientError) as exc_info:
+        client.archive_repo("acme/agent-gone")
+    assert str(exc_info.value).startswith("repo not found: acme/agent-gone")
+
+
+def test_rename_repo_non_404_failure_raises_plain_client_error_no_prefix():
+    runner = RecordingRunner(results=[(1, "", "gh: Bad credentials (HTTP 401)")])
+    client = GhCLI(runner=runner)
+    with pytest.raises(ClientError) as exc_info:
+        client.rename_repo("acme/agent-clio", "archived-agent-clio-1")
+    assert not str(exc_info.value).startswith("repo not found:")
+
+
+def test_archive_repo_non_404_failure_raises_plain_client_error_no_prefix():
+    # Deliberately NOT a 403-shaped stderr here even though the real
+    # already-archived case 403s (per the destruction design): GhCLI only
+    # special-cases the 404 status marker; recognizing the "already
+    # archived" 403 shape is the destroy step's job (Task 4), not this
+    # transport method's — this pins that archive_repo raises the plain
+    # underlying error for ANY non-404 failure, 403 included.
+    runner = RecordingRunner(
+        results=[(1, "", "gh: Repository was archived so is read-only (HTTP 403)")]
+    )
+    client = GhCLI(runner=runner)
+    with pytest.raises(ClientError) as exc_info:
+        client.archive_repo("acme/archived-agent-clio-1")
+    assert not str(exc_info.value).startswith("repo not found:")
+    assert "read-only" in str(exc_info.value)
+
+
+def test_rename_repo_and_archive_repo_pass_gh_token_env_when_provider_set():
+    runner = RecordingRunner(results=[(0, "", ""), (0, "", "")])
+    client = GhCLI(runner=runner, token_provider=lambda: "ghs_faketoken123")
+    client.rename_repo("acme/agent-clio", "archived-agent-clio-1")
+    client.archive_repo("acme/archived-agent-clio-1")
+    assert runner.envs == [{"GH_TOKEN": "ghs_faketoken123"}, {"GH_TOKEN": "ghs_faketoken123"}]
+
+
 # --- Cloud (GcloudClient) -----------------------------------------------------
 
 
@@ -1098,6 +1177,67 @@ def test_gojira_ping_never_raises_on_arbitrary_exception():
     client._headers = raising_headers
 
     assert client.ping() is False
+
+
+# --- Gojira.delete_app (Task 3: agent destruction's platform-teardown step) ------
+
+
+def test_gojira_delete_app_request_shape_default_delete_namespaces_true():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.content)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(202, json={"app": "clio", "rows_deleted": True})
+
+    client = HttpxGojiraClient(
+        "http://gojira.local", token="secret-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    result = client.delete_app(7)
+
+    assert captured["method"] == "DELETE"
+    assert captured["url"] == "http://gojira.local/api/v1/apps/7"
+    assert captured["json"] == {"delete_namespaces": True}
+    assert captured["auth"] == "Bearer secret-token"
+    assert result == {"app": "clio", "rows_deleted": True}
+
+
+def test_gojira_delete_app_delete_namespaces_false_sent_in_body():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(202, json={"app": "clio"})
+
+    client = HttpxGojiraClient(
+        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    client.delete_app(7, delete_namespaces=False)
+    assert captured["json"] == {"delete_namespaces": False}
+
+
+def test_gojira_delete_app_404_maps_to_already_gone():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": "not found"})
+
+    client = HttpxGojiraClient(
+        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    assert client.delete_app(7) == {"already_gone": True}
+
+
+def test_gojira_delete_app_raises_client_error_on_unexpected_status():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    client = HttpxGojiraClient(
+        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    with pytest.raises(ClientError):
+        client.delete_app(7)
 
 
 # --- Agent (a2a chat over kubectl port-forward) --------------------------------
@@ -1796,6 +1936,162 @@ def test_slack_malformed_tokens_file_raises_client_error_naming_path(tmp_path):
         client.create_app({"display_information": {"name": "clio"}})
 
     assert str(tokens_path) in str(exc_info.value)
+
+
+# --- Slack.delete_app (Task 3: agent destruction's Slack step) -------------------
+#
+# Already-gone error codes grounded against Slack's own documented error
+# table for apps.manifest.delete (docs.slack.dev/reference/methods/
+# apps.manifest.delete, fetched 2026-08-17): "invalid_app_id" ("The app ID
+# passed in was invalid.") and "app_not_found" ("The specified app was not
+# found.") are both listed there; every other documented error there (bad
+# auth aside, covered by the existing rotate-on-401 discipline) is a real
+# failure, never an already-gone signal.
+
+
+def test_slack_delete_app_request_shape_and_auth_header(tmp_path):
+    tokens_path = _write_slack_tokens_file(
+        tmp_path,
+        config_token="xoxe.xoxp-1-fake-config-token",
+        refresh_token="xoxe-1-fake-refresh-token",
+    )
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("authorization")
+        captured["app_id"] = parse_qs(request.content.decode())["app_id"][0]
+        return httpx.Response(200, json={"ok": True})
+
+    client = HttpxSlackClient(
+        tokens_path, http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    result = client.delete_app("A0FAKE")
+
+    assert result is True
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://slack.com/api/apps.manifest.delete"
+    assert captured["auth"] == "Bearer xoxe.xoxp-1-fake-config-token"
+    assert captured["app_id"] == "A0FAKE"
+
+
+@pytest.mark.parametrize("error", ["app_not_found", "invalid_app_id"])
+def test_slack_delete_app_already_gone_errors_return_false(tmp_path, error):
+    tokens_path = _write_slack_tokens_file(
+        tmp_path,
+        config_token="xoxe.xoxp-1-fake-config-token",
+        refresh_token="xoxe-1-fake-refresh-token",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": False, "error": error})
+
+    client = HttpxSlackClient(
+        tokens_path, http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    assert client.delete_app("A0GONE") is False
+
+
+def test_slack_delete_app_rotates_and_retries_on_token_expired(tmp_path):
+    tokens_path = _write_slack_tokens_file(
+        tmp_path, config_token="xoxe.xoxp-1-old-config", refresh_token="xoxe-1-old-refresh"
+    )
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        calls.append(path)
+        if path == "/api/apps.manifest.delete":
+            auth = request.headers.get("authorization")
+            if auth == "Bearer xoxe.xoxp-1-old-config":
+                return httpx.Response(200, json={"ok": False, "error": "token_expired"})
+            # Retry with the rotated token: the tokens file must already
+            # carry the new pair by the time this fires (persist-before-use,
+            # same property test_slack_create_app_rotates_and_retries_on_
+            # token_expired pins for create_app).
+            assert auth == "Bearer xoxe.xoxp-1-new-config"
+            return httpx.Response(200, json={"ok": True})
+        elif path == "/api/tooling.tokens.rotate":
+            body = parse_qs(request.content.decode())
+            assert body["refresh_token"][0] == "xoxe-1-old-refresh"
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "token": "xoxe.xoxp-1-new-config",
+                    "refresh_token": "xoxe-1-new-refresh",
+                },
+            )
+        raise AssertionError(f"unexpected path {path}")
+
+    client = HttpxSlackClient(
+        tokens_path, http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    assert client.delete_app("A0FAKE") is True
+    assert calls == [
+        "/api/apps.manifest.delete",
+        "/api/tooling.tokens.rotate",
+        "/api/apps.manifest.delete",
+    ]
+
+
+def test_slack_delete_app_second_auth_failure_after_rotate_raises(tmp_path):
+    tokens_path = _write_slack_tokens_file(
+        tmp_path, config_token="xoxe.xoxp-1-old-config", refresh_token="xoxe-1-old-refresh"
+    )
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        calls.append(path)
+        if path == "/api/apps.manifest.delete":
+            return httpx.Response(200, json={"ok": False, "error": "invalid_auth"})
+        elif path == "/api/tooling.tokens.rotate":
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "token": "xoxe.xoxp-1-new-config",
+                    "refresh_token": "xoxe-1-new-refresh",
+                },
+            )
+        raise AssertionError(f"unexpected path {path}")
+
+    client = HttpxSlackClient(
+        tokens_path, http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    with pytest.raises(SlackApiError):
+        client.delete_app("A0FAKE")
+
+    # Exactly one rotate-and-retry — never an infinite loop.
+    assert calls == [
+        "/api/apps.manifest.delete",
+        "/api/tooling.tokens.rotate",
+        "/api/apps.manifest.delete",
+    ]
+
+
+def test_slack_delete_app_other_error_raises_slack_api_error_without_token_material(tmp_path):
+    tokens_path = _write_slack_tokens_file(
+        tmp_path,
+        config_token="xoxe.xoxp-1-super-secret-config",
+        refresh_token="xoxe-1-super-secret-refresh",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": False, "error": "no_permission"})
+
+    client = HttpxSlackClient(
+        tokens_path, http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    with pytest.raises(SlackApiError) as exc_info:
+        client.delete_app("A0FAKE")
+
+    assert isinstance(exc_info.value, ClientError)
+    assert "no_permission" in str(exc_info.value)
+    assert "xoxe.xoxp-1-super-secret-config" not in str(exc_info.value)
+    assert "xoxe-1-super-secret-refresh" not in str(exc_info.value)
 
 
 # --- Image (VertexImageClient) -------------------------------------------------
@@ -3034,6 +3330,10 @@ def test_fake_github_satisfies_protocol(tmp_path):
             "body": "b",
         }
     ]
+    fake.rename_repo("acme/agent-clio", "archived-agent-clio-1")
+    fake.archive_repo("acme/archived-agent-clio-1")
+    assert fake.renamed == {"acme/agent-clio": "acme/archived-agent-clio-1"}
+    assert fake.archived == {"acme/archived-agent-clio-1"}
 
 
 def test_fake_gojira_satisfies_protocol():
@@ -3044,6 +3344,7 @@ def test_fake_gojira_satisfies_protocol():
     assert isinstance(status, dict)
     fake.reprovision(app_id)
     assert fake.reprovision_calls == [app_id]
+    assert isinstance(fake.delete_app(app_id), dict)
 
 
 def test_fake_gojira_walks_pending_to_active_on_nth_poll():
@@ -3086,6 +3387,47 @@ def test_fake_gojira_ping_defaults_true():
 def test_fake_gojira_ping_knob():
     fake = FakeGojira(ping_result=False)
     assert fake.ping() is False
+
+
+# --- FakeGojira.delete_app (Task 3: agent destruction) ---------------------------
+
+
+def test_fake_gojira_delete_app_default_returns_summary_shape():
+    fake = FakeGojira()
+    app_id = fake.create_app(name="clio", repo_full_name="acme/agent-clio", cluster="dev", namespace="clio")
+    result = fake.delete_app(app_id)
+    assert result["app"] == "clio"
+    assert result["rows_deleted"] is True
+    assert "identity" in result and "namespaces_deleted" in result
+    assert fake.delete_calls == [(app_id, True)]
+
+
+def test_fake_gojira_delete_app_records_delete_namespaces_flag():
+    fake = FakeGojira()
+    fake.delete_app(7, delete_namespaces=False)
+    assert fake.delete_calls == [(7, False)]
+
+
+def test_fake_gojira_delete_app_already_gone_knob():
+    fake = FakeGojira(delete_already_gone=True)
+    assert fake.delete_app(7) == {"already_gone": True}
+
+
+def test_fake_gojira_delete_app_summary_knob_returned_verbatim():
+    summary = {"app": "clio", "namespaces_deleted": ["dev", "staging"], "rows_deleted": True}
+    fake = FakeGojira(delete_summary=summary)
+    assert fake.delete_app(7) == summary
+
+
+def test_fake_gojira_delete_app_already_gone_wins_over_summary_knob():
+    fake = FakeGojira(delete_summary={"app": "clio"}, delete_already_gone=True)
+    assert fake.delete_app(7) == {"already_gone": True}
+
+
+def test_fake_gojira_delete_app_error_knob_raises_client_error():
+    fake = FakeGojira(delete_error="boom")
+    with pytest.raises(ClientError, match="boom"):
+        fake.delete_app(7)
 
 
 def test_fake_github_runs_for_commit_sequence_can_end_in_failure():
@@ -3159,6 +3501,49 @@ def test_fake_github_rerun_swaps_failed_run_to_configurable_followup():
     assert fake.rerun_calls == [("acme/agent-clio", 7)]
     followup = fake.runs_for_commit("acme/agent-clio", "deadbeef")
     assert followup == [{"id": 7, "status": "completed", "conclusion": "success"}]
+
+
+# --- FakeGitHub.rename_repo / archive_repo (Task 3: agent destruction) -----------
+
+
+def test_fake_github_rename_repo_moves_repos_entry_and_records_mapping():
+    fake = FakeGitHub(existing_repos={"acme/agent-clio"})
+    fake.rename_repo("acme/agent-clio", "archived-agent-clio-42")
+    assert fake.repo_exists("acme/agent-clio") is False
+    assert fake.repo_exists("acme/archived-agent-clio-42") is True
+    assert fake.renamed == {"acme/agent-clio": "acme/archived-agent-clio-42"}
+    assert fake.rename_calls == [("acme/agent-clio", "archived-agent-clio-42")]
+
+
+def test_fake_github_archive_repo_records_archived_state():
+    fake = FakeGitHub(existing_repos={"acme/archived-agent-clio-42"})
+    fake.archive_repo("acme/archived-agent-clio-42")
+    assert fake.archived == {"acme/archived-agent-clio-42"}
+    assert fake.archive_calls == ["acme/archived-agent-clio-42"]
+
+
+def test_fake_github_rename_repo_missing_repo_raises_repo_not_found_prefixed():
+    fake = FakeGitHub()
+    with pytest.raises(ClientError, match="^repo not found: acme/agent-gone$"):
+        fake.rename_repo("acme/agent-gone", "archived-agent-gone-1")
+
+
+def test_fake_github_archive_repo_missing_repo_raises_repo_not_found_prefixed():
+    fake = FakeGitHub()
+    with pytest.raises(ClientError, match="^repo not found: acme/agent-gone$"):
+        fake.archive_repo("acme/agent-gone")
+
+
+def test_fake_github_rename_repo_error_knob_raises_instead_of_not_found_check():
+    fake = FakeGitHub(rename_error="boom")
+    with pytest.raises(ClientError, match="boom"):
+        fake.rename_repo("acme/agent-gone", "archived-agent-gone-1")
+
+
+def test_fake_github_archive_repo_error_knob_raises_instead_of_not_found_check():
+    fake = FakeGitHub(archive_error="boom")
+    with pytest.raises(ClientError, match="boom"):
+        fake.archive_repo("acme/agent-gone")
 
 
 def test_fake_cloud_satisfies_protocol():
@@ -3273,6 +3658,7 @@ def test_fake_slack_satisfies_protocol():
     manifest = {"display_information": {"name": "clio"}}
     assert fake.create_app(manifest) == "A0FAKE"
     assert fake.manifests == [manifest]
+    assert fake.delete_app("A0FAKE") is True
 
 
 def test_fake_slack_custom_app_id():
@@ -3294,6 +3680,26 @@ def test_fake_slack_create_error_knob_raises_slack_api_error():
     fake = FakeSlack(create_error="invalid_manifest")
     with pytest.raises(SlackApiError, match="invalid_manifest"):
         fake.create_app({"display_information": {"name": "clio"}})
+
+
+# --- FakeSlack.delete_app (Task 3: agent destruction) ----------------------------
+
+
+def test_fake_slack_delete_app_default_returns_true_and_records_call():
+    fake = FakeSlack()
+    assert fake.delete_app("A0FAKE") is True
+    assert fake.delete_calls == ["A0FAKE"]
+
+
+def test_fake_slack_delete_app_result_knob_models_already_gone():
+    fake = FakeSlack(delete_result=False)
+    assert fake.delete_app("A0GONE") is False
+
+
+def test_fake_slack_delete_app_error_knob_raises_slack_api_error():
+    fake = FakeSlack(delete_error="no_permission")
+    with pytest.raises(SlackApiError, match="no_permission"):
+        fake.delete_app("A0FAKE")
 
 
 def test_fake_image_satisfies_protocol():

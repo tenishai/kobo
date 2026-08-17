@@ -299,6 +299,49 @@ class GitHubClient(Protocol):
         """
         ...
 
+    def rename_repo(self, repo: str, new_name: str) -> None:
+        """Rename `repo` (owner/name) to `new_name`, same owner (Task 3:
+        agent destruction's repo-archive step renames before archiving, so
+        the `agent-<name>` slug is free for a future agent).
+
+        Raises `ClientError` on failure; a 404 (the repo doesn't exist —
+        already renamed by a prior partial run, or never existed) raises a
+        `ClientError` whose message starts with `"repo not found: "` so
+        `kobo_api.destroy`'s step logic can branch on it as an
+        already-gone signal without string-matching gh's own wording.
+        """
+        ...
+
+    def archive_repo(self, repo: str) -> None:
+        """Archive `repo` (owner/name) — the terminal, read-only state a
+        destroyed agent's repo ends in (never deleted; see the destruction
+        design's "what survives" inventory).
+
+        Raises `ClientError` on failure; a 404 raises a `ClientError`
+        whose message starts with `"repo not found: "`, same convention as
+        `rename_repo`. An already-archived repo's PATCH 403s rather than
+        404s (GitHub's own "read-only" response) — recognizing THAT shape
+        is the destroy step's job (Task 4), not this transport method's;
+        it just raises the plain `ClientError` for any non-404 failure.
+        """
+        ...
+
+
+def _gh_returned_404(exc: ClientError) -> bool:
+    """Whether a `ClientError` raised from a `gh api` call reflects a 404
+    from GitHub's REST API.
+
+    `gh` formats any non-2xx API response as `gh: <message> (HTTP
+    <code>)` on stderr — confirmed live against a real, authenticated `gh`
+    (`gh api -X PATCH repos/<a-repo-that-does-not-exist>`: exit 1, stdout
+    the API's own `{"message":"Not Found",...,"status":"404"}` body,
+    stderr exactly `gh: Not Found (HTTP 404)`). Matching on the `(HTTP
+    404)` status marker rather than the free-text message is deliberate:
+    GitHub's API is free to reword "Not Found", but gh's own status-code
+    formatting is stable.
+    """
+    return "(HTTP 404)" in exc.stderr
+
 
 class GhCLI:
     """git + gh backed GitHubClient.
@@ -486,6 +529,28 @@ class GhCLI:
         except ClientError:
             return None
 
+    def rename_repo(self, repo: str, new_name: str) -> None:
+        try:
+            self._runner.run(
+                [self._gh, "api", "-X", "PATCH", f"repos/{repo}", "-f", f"name={new_name}"],
+                env=self._env(),
+            )
+        except ClientError as exc:
+            if _gh_returned_404(exc):
+                raise ClientError(f"repo not found: {repo}") from exc
+            raise
+
+    def archive_repo(self, repo: str) -> None:
+        try:
+            self._runner.run(
+                [self._gh, "api", "-X", "PATCH", f"repos/{repo}", "-F", "archived=true"],
+                env=self._env(),
+            )
+        except ClientError as exc:
+            if _gh_returned_404(exc):
+                raise ClientError(f"repo not found: {repo}") from exc
+            raise
+
 
 # --- Gojira ---------------------------------------------------------------------
 
@@ -514,6 +579,20 @@ class GojiraClient(Protocol):
         transport failure (unreachable host, timeout, ...) or non-200
         response is just False, the same way every other check on that
         route reports "not reachable" rather than a 500.
+        """
+        ...
+
+    def delete_app(self, app_id: int, *, delete_namespaces: bool = True) -> dict:
+        """DELETE /api/v1/apps/{app_id} (Task 3: agent destruction's
+        platform-teardown step); bearer via `_headers()`, same as every
+        other call here.
+
+        202 -> gojira's teardown summary dict, passed straight through.
+        404 -> `{"already_gone": True}` — gojira's own idempotency
+        contract (a repeat delete, or one against an app id the room never
+        finished creating) is "unknown app id is not an error"; kobo's
+        destroy step treats this the same as a genuine 202 teardown. Any
+        other status raises `ClientError`.
         """
         ...
 
@@ -583,6 +662,22 @@ class HttpxGojiraClient:
             log.debug("gojira ping failed", exc_info=True)
             return False
         return resp.status_code == 200
+
+    def delete_app(self, app_id: int, *, delete_namespaces: bool = True) -> dict:
+        # httpx.Client.delete() deliberately has no json=/content= parameter
+        # (a DELETE conventionally carries no body) — .request() is the seam
+        # that lets this DELETE carry the delete_namespaces flag as JSON.
+        resp = self._client.request(
+            "DELETE",
+            f"{self._base_url}/api/v1/apps/{app_id}",
+            json={"delete_namespaces": delete_namespaces},
+            headers=self._headers(),
+        )
+        if resp.status_code == 404:
+            return {"already_gone": True}
+        if resp.status_code != 202:
+            raise ClientError(f"delete_app({app_id}) failed ({resp.status_code}): {resp.text}")
+        return resp.json()
 
 
 # --- Cloud (GCP) ------------------------------------------------------------------
@@ -1100,11 +1195,33 @@ _SLACK_REFRESH_KEY = "slack_app_config_refresh_token"
 # blind rotate-on-any-failure should paper over.
 _SLACK_AUTH_ERRORS = frozenset({"token_expired", "invalid_auth"})
 
+# apps.manifest.delete's two "the app is already gone" error codes — both
+# grounded in Slack's own documented error table for the method
+# (docs.slack.dev/reference/methods/apps.manifest.delete, fetched 2026-08-17):
+# "invalid_app_id" ("The app ID passed in was invalid.") and "app_not_found"
+# ("The specified app was not found."). Every other documented error there
+# (bad auth aside, handled by _SLACK_AUTH_ERRORS' rotate-and-retry) is a real
+# failure, never an already-gone signal.
+_SLACK_ALREADY_GONE_ERRORS = frozenset({"app_not_found", "invalid_app_id"})
+
 
 @runtime_checkable
 class SlackClient(Protocol):
     def create_app(self, manifest: dict) -> str:
         """Create a Slack app from `manifest`; return its app_id."""
+        ...
+
+    def delete_app(self, app_id: str) -> bool:
+        """Delete the Slack app `app_id` via apps.manifest.delete (Task 3:
+        agent destruction's Slack step), same config-token + rotate-on-401
+        discipline as `create_app`.
+
+        Returns True when Slack actually deleted the app. Returns False
+        (never raises) when Slack reports it's already gone
+        (`_SLACK_ALREADY_GONE_ERRORS`) — the idempotency signal the
+        destroy step treats as done. Any other failure raises
+        `SlackApiError`.
+        """
         ...
 
 
@@ -1247,6 +1364,31 @@ class HttpxSlackClient:
         new_refresh_token = body["refresh_token"]
         _write_slack_tokens(self._tokens_path, new_config_token, new_refresh_token)
         return new_config_token
+
+    def delete_app(self, app_id: str) -> bool:
+        config_token, _ = _read_slack_tokens(self._tokens_path)
+        return self._delete_app(app_id, config_token, retried=False)
+
+    def _delete_app(self, app_id: str, config_token: str, *, retried: bool) -> bool:
+        resp = self._client.post(
+            f"{_SLACK_API_BASE}/apps.manifest.delete",
+            data={"app_id": app_id},
+            headers={"Authorization": f"Bearer {config_token}"},
+        )
+        body = resp.json()
+        if body.get("ok"):
+            return True
+
+        error = body.get("error", "unknown_error")
+        if error in _SLACK_AUTH_ERRORS and not retried:
+            new_config_token = self._rotate()
+            return self._delete_app(app_id, new_config_token, retried=True)
+        if error in _SLACK_ALREADY_GONE_ERRORS:
+            return False
+
+        # Never include `app_id` or any token material here — just Slack's
+        # own error code, same discipline as _create_app's raise.
+        raise SlackApiError(f"slack app deletion failed: {error}")
 
 
 # --- Image (Vertex AI Model Garden avatar PNGs) ------------------------------

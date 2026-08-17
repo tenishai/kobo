@@ -361,6 +361,24 @@ class FakeGitHub:
     single fake run through bootstrap twice reproduces the incident shape
     exactly: run 1's `open_pr` registers the PR, and run 2's `find_pr` sees
     it there without either being configured explicitly.
+
+    `rename_repo`/`archive_repo` (Task 3: agent destruction's repo step)
+    mirror the real `GhCLI`'s own not-found contract: calling either
+    against a `repo` not currently in `.repos` raises `ClientError("repo
+    not found: {repo}")` with no knob needed — the same shape a real 404
+    maps to. A successful `rename_repo` moves the entry in `.repos` from
+    the old owner/name to `{owner}/{new_name}` and records the mapping in
+    `.renamed` (old repo -> new repo, so a test can assert what a repo
+    was renamed TO); a successful `archive_repo` adds `repo` to
+    `.archived`. Every call (successful or not) is also recorded into
+    `.rename_calls`/`.archive_calls` (the exact arguments given).
+    `rename_error`/`archive_error`, when set, make the matching method
+    raise `ClientError(that message)` INSTEAD of the not-found check or
+    the real rename/archive — the seam for exercising a destroy step's
+    handling of a non-404 failure (e.g. the real GitHub 403 an
+    already-archived repo's PATCH returns, which this fake does not model
+    structurally since `GhCLI` itself doesn't special-case it either — see
+    `archive_repo`'s Protocol docstring).
     """
 
     def __init__(
@@ -389,8 +407,16 @@ class FakeGitHub:
         ancestor_pairs: set[tuple[str, str]] | None = None,
         tooling_files: dict[str, str] | None = None,
         tooling_source_files: dict[str, dict[str, str | bytes]] | None = None,
+        rename_error: str | None = None,
+        archive_error: str | None = None,
     ):
         self.repos: set[str] = set(existing_repos) if existing_repos else set()
+        self._rename_error = rename_error
+        self._archive_error = archive_error
+        self.renamed: dict[str, str] = {}
+        self.archived: set[str] = set()
+        self.rename_calls: list[tuple[str, str]] = []
+        self.archive_calls: list[str] = []
         self.created_from_dir: list[tuple[str, Path]] = []
         self.cloned: list[tuple[str, Path]] = []
         self.pushes: list[tuple[Path, str]] = []
@@ -636,6 +662,28 @@ class FakeGitHub:
             return self._local_head_result
         return None
 
+    def rename_repo(self, repo: str, new_name: str) -> None:
+        self.calls.append(f"rename_repo:{repo}:{new_name}")
+        self.rename_calls.append((repo, new_name))
+        if self._rename_error is not None:
+            raise ClientError(self._rename_error)
+        if repo not in self.repos:
+            raise ClientError(f"repo not found: {repo}")
+        owner = repo.rsplit("/", 1)[0]
+        new_repo = f"{owner}/{new_name}"
+        self.repos.discard(repo)
+        self.repos.add(new_repo)
+        self.renamed[repo] = new_repo
+
+    def archive_repo(self, repo: str) -> None:
+        self.calls.append(f"archive_repo:{repo}")
+        self.archive_calls.append(repo)
+        if self._archive_error is not None:
+            raise ClientError(self._archive_error)
+        if repo not in self.repos:
+            raise ClientError(f"repo not found: {repo}")
+        self.archived.add(repo)
+
 
 class FakeGojira:
     """Walks a created app from "pending" to `end_status` on the
@@ -662,6 +710,26 @@ class FakeGojira:
     mechanics can't reproduce (a freshly-`"pending"` app there is never
     `"failed"`). Defaults to `None`, so every pre-existing test (all of
     which use `activate_after`/`end_status`) is unaffected.
+
+    `delete_app` (Task 3: agent destruction's platform-teardown step)
+    records every call into `delete_calls` (`(app_id, delete_namespaces)`
+    tuples) and, by default, returns a canned teardown summary shaped like
+    the real gojira response (`{"app", "namespaces_deleted",
+    "namespace_failures", "identity": {...}, "rows_deleted"}`). Three knobs
+    control it: `delete_summary`, when given, is returned verbatim instead
+    of the canned default — the seam for a test asserting exactly what a
+    destroy step does with a specific summary shape (e.g. that it gets
+    JSON-dumped into the step detail); `delete_already_gone=True` makes it
+    return `{"already_gone": True}` instead (the real client's 404
+    mapping, for an app id the platform no longer has) — takes priority
+    over `delete_summary` since the two model mutually exclusive real
+    responses; `delete_error`, when set, raises `ClientError(delete_error)`
+    instead of returning anything — the seam for exercising the destroy
+    step's failure handling. Defaults (`delete_summary=None`,
+    `delete_already_gone=False`, `delete_error=None`) mean a bare
+    `FakeGojira()` models the plain successful-teardown case with no
+    configuration needed, same "wired happy path" convention as this
+    class's other defaults.
     """
 
     def __init__(
@@ -673,6 +741,9 @@ class FakeGojira:
         failed_steps: list[dict] | None = None,
         ping_result: bool = True,
         status_sequence: list[str] | None = None,
+        delete_summary: dict | None = None,
+        delete_already_gone: bool = False,
+        delete_error: str | None = None,
     ):
         self._activate_after = activate_after
         self._end_status = end_status
@@ -681,6 +752,10 @@ class FakeGojira:
         self._ping_result = ping_result
         self._status_sequence = list(status_sequence) if status_sequence else None
         self._status_index = 0
+        self._delete_summary = delete_summary
+        self._delete_already_gone = delete_already_gone
+        self._delete_error = delete_error
+        self.delete_calls: list[tuple[int, bool]] = []
         self._apps: dict[int, dict] = {}
         self._next_id = 1
         self.reprovision_calls: list[int] = []
@@ -731,6 +806,28 @@ class FakeGojira:
     def ping(self) -> bool:
         self.calls.append("ping")
         return self._ping_result
+
+    def delete_app(self, app_id: int, *, delete_namespaces: bool = True) -> dict:
+        self.calls.append(f"delete_app:{app_id}")
+        self.delete_calls.append((app_id, delete_namespaces))
+        if self._delete_error is not None:
+            raise ClientError(self._delete_error)
+        if self._delete_already_gone:
+            return {"already_gone": True}
+        if self._delete_summary is not None:
+            return dict(self._delete_summary)
+        return {
+            "app": self._apps.get(app_id, {}).get("name", f"app-{app_id}"),
+            "namespaces_deleted": ["dev"],
+            "namespace_failures": [],
+            "identity": {
+                "bindings_removed": 0,
+                "gsa_deleted": True,
+                "images_deleted": 0,
+                "failures": [],
+            },
+            "rows_deleted": True,
+        }
 
 
 class FakeCloud:
@@ -912,18 +1009,45 @@ class FakeSlack:
     internal to `HttpxSlackClient` (a token-expiry retry against Slack's
     tokens API), invisible at the `SlackClient` Protocol level this fake
     stands in for.
+
+    `delete_app` (Task 3: agent destruction's Slack step) records every
+    `app_id` it was called with (`delete_calls`) and returns a
+    configurable `delete_result` bool (default `True` — the plain
+    "deleted" happy path). `delete_error`, when set, makes it raise
+    `SlackApiError(delete_error)` instead — the seam for exercising the
+    destroy step's failure handling. Slack's own already-gone signal
+    (`ok: false` with `app_not_found`/`invalid_app_id`) collapses to a
+    plain `False` return at the real `HttpxSlackClient` layer, not
+    something this fake needs to model separately — a test wanting that
+    case just sets `delete_result=False`.
     """
 
-    def __init__(self, *, app_id: str = "A0FAKE", create_error: str | None = None):
+    def __init__(
+        self,
+        *,
+        app_id: str = "A0FAKE",
+        create_error: str | None = None,
+        delete_result: bool = True,
+        delete_error: str | None = None,
+    ):
         self._app_id = app_id
         self._create_error = create_error
+        self._delete_result = delete_result
+        self._delete_error = delete_error
         self.manifests: list[dict] = []
+        self.delete_calls: list[str] = []
 
     def create_app(self, manifest: dict) -> str:
         self.manifests.append(manifest)
         if self._create_error is not None:
             raise SlackApiError(f"slack app creation failed: {self._create_error}")
         return self._app_id
+
+    def delete_app(self, app_id: str) -> bool:
+        self.delete_calls.append(app_id)
+        if self._delete_error is not None:
+            raise SlackApiError(f"slack app deletion failed: {self._delete_error}")
+        return self._delete_result
 
 
 # Canonical 1x1 transparent PNG (68 bytes) — a real, valid minimal PNG (not a
