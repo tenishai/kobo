@@ -55,6 +55,7 @@ def _make_ctx_agent(
     name: str = AGENT_NAME,
     gojira_app_id: int | None = None,
     slack_app_id: str | None = None,
+    slack_app_self_service: bool = False,
     repo_full_name: str | None = None,
     status=AgentStatus.READY,
 ):
@@ -69,6 +70,7 @@ def _make_ctx_agent(
         status=status,
         gojira_app_id=gojira_app_id,
         slack_app_id=slack_app_id,
+        slack_app_self_service=slack_app_self_service,
         repo_full_name=repo_full_name,
     )
     session.add(agent)
@@ -381,6 +383,65 @@ def test_destroy_slack_client_error_propagates(session_factory, config):
     session.close()
 
 
+def test_destroy_slack_self_service_app_skips_delete_and_notes_provenance(
+    session_factory, config
+):
+    """A self-service app (Task 1's `slack_app_self_service`) was never
+    created by kobo's own config-token app — this room has no business
+    deleting something it doesn't own. The step must not call
+    `delete_app` at all; it completes with the exact provenance note
+    (Global Constraints: verbatim, period-separated, no em dash)."""
+    session, agent = _make_ctx_agent(
+        session_factory, slack_app_id="A0FAKE", slack_app_self_service=True
+    )
+    fake_slack = FakeSlack()
+    ctx = _ctx(session, agent, config, slack=fake_slack)
+
+    detail = _destroy_slack(ctx)
+
+    assert detail == "The Slack app belongs to its creator. Remove it in Slack."
+    assert fake_slack.delete_calls == []
+    session.close()
+
+
+def test_destroy_slack_legacy_app_still_deletes_when_self_service_false(
+    session_factory, config
+):
+    """Regression: a room-created (legacy, config-token) app has
+    `slack_app_self_service=False` — the byte-identical delete_app path
+    from before this change."""
+    session, agent = _make_ctx_agent(
+        session_factory, slack_app_id="A0FAKE", slack_app_self_service=False
+    )
+    fake_slack = FakeSlack(delete_result=True)
+    ctx = _ctx(session, agent, config, slack=fake_slack)
+
+    detail = _destroy_slack(ctx)
+
+    assert detail == "slack app deleted"
+    assert fake_slack.delete_calls == ["A0FAKE"]
+    session.close()
+
+
+def test_destroy_slack_self_service_no_app_id_keeps_no_id_tolerance(
+    session_factory, config
+):
+    """A self-service agent that never got as far as connecting a Slack
+    app has no `slack_app_id` either — the existing no-id-done tolerance
+    is unchanged by the self-service flag."""
+    session, agent = _make_ctx_agent(
+        session_factory, slack_app_id=None, slack_app_self_service=True
+    )
+    fake_slack = FakeSlack()
+    ctx = _ctx(session, agent, config, slack=fake_slack)
+
+    detail = _destroy_slack(ctx)
+
+    assert detail == "no slack app to remove"
+    assert fake_slack.delete_calls == []
+    session.close()
+
+
 # --- _destroy_repo -----------------------------------------------------------------
 
 
@@ -554,6 +615,49 @@ def test_run_destroy_happy_path_deletes_agent_and_all_steps(session_factory, con
     assert session.get(Agent, agent_id) is None
     assert session.query(AgentStep).filter_by(agent_id=agent_id).count() == 0
     session.close()
+
+
+def test_run_destroy_self_service_slack_records_note_and_completes_step(
+    session_factory, config, caplog
+):
+    """Engine-level: a self-service app's destroy-slack step must reach
+    DONE with zero Slack calls, and the provenance note must reach the
+    ledger's logs the exact same way every other step's detail string
+    does — `_run_destroy_body`'s own `log.info("destroy step %r done for
+    agent %s: %s", ...)`, never something `_destroy_slack` logs itself.
+    The repo step is made to fail (no repo of either name exists) so the
+    run aborts before `destroy-forget` — leaving destroy-slack's own row
+    inspectable as DONE rather than deleted along with everything else."""
+    agent_id = _seed_agent(
+        session_factory,
+        status=AgentStatus.READY,
+        gojira_app_id=None,
+        slack_app_id="A0FAKE",
+        slack_app_self_service=True,
+        repo_full_name=REPO,
+    )
+    fake_slack = FakeSlack()
+    fake_github = FakeGitHub(existing_repos=set())  # both names 404 -> real failure
+
+    with caplog.at_level("INFO"):
+        thread = run_destroy(
+            session_factory, agent_id, _clients(github=fake_github, slack=fake_slack), config
+        )
+        thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+
+    assert fake_slack.delete_calls == []
+
+    session = session_factory()
+    agent = session.get(Agent, agent_id)
+    rows = {s.name: s.status for s in agent.steps}
+    assert rows["destroy-slack"] == StepStatus.DONE
+    session.close()
+
+    assert any(
+        "The Slack app belongs to its creator. Remove it in Slack." in message
+        for message in caplog.messages
+    )
 
 
 def test_run_destroy_step_failure_leaves_agent_destroy_failed_and_resumable(

@@ -158,14 +158,28 @@ def _destroy_access(ctx: DestroyCtx) -> str:
 
 def _destroy_slack(ctx: DestroyCtx) -> str:
     """No `slack_app_id` recorded means Slack was never set up for this
-    agent. Otherwise `SlackClient.delete_app` already collapses Slack's own
-    "app not found"/"invalid app id" errors into a plain `False` — the
+    agent. Otherwise, provenance decides who is allowed to delete it
+    (`agent.slack_app_self_service`, Task 1): a self-service app was
+    created directly by its user at Slack's own app site, never by kobo's
+    own retired config-token flow — this room has no token for it and no
+    business deleting it. That case never calls `delete_app` at all; the
+    step simply completes with a fixed provenance note, returned exactly
+    like every other step's detail string so it reaches the ledger's logs
+    the same way (`_run_destroy_body`'s own `log.info` of this return
+    value — nothing logged here).
+
+    Otherwise (a legacy, room-created app) this is byte-identical to
+    before: `SlackClient.delete_app` already collapses Slack's own "app
+    not found"/"invalid app id" errors into a plain `False` — the
     already-gone signal — never raising for them (kobo_api.clients);
     `True` means Slack genuinely deleted it just now.
     """
     agent = ctx.agent
     if agent.slack_app_id is None:
         return "no slack app to remove"
+
+    if agent.slack_app_self_service:
+        return "The Slack app belongs to its creator. Remove it in Slack."
 
     deleted = ctx.clients.slack.delete_app(agent.slack_app_id)
     if deleted:

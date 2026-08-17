@@ -506,6 +506,8 @@ def _ready_agent_or_error(
     return agent
 
 
+# Uncalled by any route since Slack self-service (2026-08-17) — kept because
+# the `slack_operators` config field it reads stays live for other uses.
 def _slack_operator_block(request: Request, config: Config) -> JSONResponse | None:
     """None when the caller may use slack routes; a 403 body otherwise.
 
