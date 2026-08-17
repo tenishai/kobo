@@ -1229,6 +1229,35 @@ def test_gojira_delete_app_404_maps_to_already_gone():
     assert client.delete_app(7) == {"already_gone": True}
 
 
+def test_gojira_delete_app_404_with_html_body_raises_client_error():
+    # A route-missing or proxy/gateway 404 carries no gojira JSON body at
+    # all — it is not gojira's own "unknown app id" signal and must not be
+    # read as already-gone.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="<html><body>Not Found</body></html>")
+
+    client = HttpxGojiraClient(
+        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    with pytest.raises(ClientError):
+        client.delete_app(7)
+
+
+def test_gojira_delete_app_404_with_starlette_default_body_raises_client_error():
+    # A gojira deployed without the teardown route falls back to its web
+    # framework's default 404 body (e.g. starlette's {"detail": "Not
+    # Found"}) — a different shape than gojira's own {"error": "not
+    # found"}, so it must not be read as already-gone either.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    client = HttpxGojiraClient(
+        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    with pytest.raises(ClientError):
+        client.delete_app(7)
+
+
 def test_gojira_delete_app_raises_client_error_on_unexpected_status():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text="boom")

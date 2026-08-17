@@ -674,7 +674,16 @@ class HttpxGojiraClient:
             headers=self._headers(),
         )
         if resp.status_code == 404:
-            return {"already_gone": True}
+            # Only gojira's own "unknown app id" 404 — body {"error": "not
+            # found"}, per the platform's api_delete_app route — means
+            # already-gone; a route-missing framework default or a
+            # proxy/gateway 404 in between must not read as teardown done.
+            try:
+                body = resp.json()
+            except ValueError:
+                body = None
+            if isinstance(body, dict) and body.get("error") == "not found":
+                return {"already_gone": True}
         if resp.status_code != 202:
             raise ClientError(f"delete_app({app_id}) failed ({resp.status_code}): {resp.text}")
         return resp.json()
