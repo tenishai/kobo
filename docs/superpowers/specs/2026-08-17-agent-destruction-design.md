@@ -51,7 +51,8 @@ recorded like provisioning steps:
 | # | step | what it does | already-gone tolerance |
 |---|---|---|---|
 | 1 | platform | `DELETE /api/v1/apps/{gojira_app_id}` | gojira 404 = done; row has no app id = done |
-| 2 | slack | `apps.manifest.delete` via the config-token client when `slack_app_id` set | Slack "app not found" = done; no id = done |
+| 1b | access (added 2026-08-17, completeness fix: acceptance A found the AccessStep artifacts surviving) | remove `agent-<name>@` from the model group, then delete the GSA | membership absent = proceed; GSA absent = done |
+| 2 | slack | `apps.manifest.delete` via the config-token client when `slack_app_id` set | Slack "app not found" = done; no id = done; user-created app the config token cannot manage = done with the recorded note "The Slack app belongs to its creator. Remove it in Slack." (self-service design, same date) |
 | 3 | repo | rename to `archived-agent-<name>-<row_id>`, then archive (both via the room's GitHub App) | already renamed = proceed to archive; already archived = done; a bare not-found is never proof (the hosting API renders lost access identically), so the step corroborates via the archived name, and when both names are missing it fails with plain copy pointing at repo access (amended 2026-08-17, ratified) |
 | 4 | forget | delete the agent row + its step rows (kobo DB) | terminal |
 
@@ -89,8 +90,12 @@ implementation unmounted panels behind the notice; the app-shell arc,
 ## What dies and what survives (the honest inventory)
 
 Dies: namespace (pods, PVC, techne memories, secrets), deploy GSA and
-its bindings, WIF repo binding, registry images, Slack app, gojira rows
-(all seven tables), kobo rows.
+its bindings, WIF repo binding, registry images, the access GSA
+`agent-<name>@` with its workload-identity binding and model-group
+membership (completeness fix, 2026-08-17), Slack app when the room
+created it, gojira rows (all seven tables), kobo rows.
+Dies-with-a-note: a user-created Slack app survives until its creator
+removes it; the destroy summary says so plainly.
 Survives: the archived repo (bundle, persona, knowledge history, tools —
 read-only), catalog content (org-owned, never agent-scoped), the shared
 platform identity (pool, provider, AR repo, cluster).
