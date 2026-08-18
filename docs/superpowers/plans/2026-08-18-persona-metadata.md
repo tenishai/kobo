@@ -42,6 +42,19 @@
 - [ ] RED: ingest tolerance matrix — index entries with owner, without owner, mixed; distinct extraction; the endpoint shape; search_skills response carries team for owner-tagged skills (check whether the response already includes team — the FTS insert has it; if the route's row-shaping drops it, include it).
 - [ ] Implement; GREEN; full suite; ruff; vendor scan (own step); commit "feat(api): the catalog learns whose skills these are".
 
+### Task 1b: The marketplace dialect + the repoint (added after the operator corrected the source of truth)
+
+The room must read the canonical marketplace bucket (prod project; exact coordinates live in the org config and the untracked runbook, never here). Grounded live: its `catalog/catalog.json` is `{"skills": {<name>: {name, version, description, when_to_use, tags, profiles, content_hash, size}}, "count": N}`; skill bodies live at `catalog/<name>/SKILL.md` (head) and `catalog/<name>/versions/<version>/SKILL.md` (immutable). `owner` and release metadata arrive in this same file when the marketplace taxonomy ships upstream.
+
+**Files:** `api/kobo_api/search.py` (a second loader dialect), the skill-fetch path used at attach time (trace who reads skill content from the bucket — the assembly/attach flow with sha pins), `api/kobo_api/config.py`/org handling only if a format marker is needed (prefer sniffing: a top-level `count` + dict `skills` IS the marketplace dialect; the legacy list-shaped index stays as-is), tests.
+
+**Interfaces:**
+- Produces: `_load_catalog_entries` (or a sibling it dispatches to) reads BOTH dialects, sniffed by shape; marketplace entries map id=key, name, description, tags, team=`owner` when present (same precedence rules as Task 1, including the empty-string-owner guard from Task 1's review: a blank owner is garbage, logged, falls through), sha=`content_hash`; the attach/fetch path resolves marketplace content at `catalog/<name>/versions/<version>/SKILL.md` (immutable pin) with head fallback ONLY when the version object is absent, logged.
+- The org config flip (skills_bucket to the marketplace bucket) happens at ROLLOUT (Task 5), gated on the operator's cross-project read grant for the room's service account; the code ships dialect-ready before any flip.
+
+- [ ] RED: dialect sniffing matrix (legacy fixture untouched, marketplace fixture ingested, malformed marketplace entries tolerated per the Task 1 rules); fetch-path version pinning + head fallback logged; empty-string owner guard (closes the Task 1 review Minor).
+- [ ] Implement; GREEN; full suite; ruff; vendor scan (own step); commit "feat(api): the room learns the marketplace's tongue".
+
 ### Task 2: Storage, draft, create, payload
 
 **Files:** `api/kobo_api/models.py`, `api/kobo_api/persona_draft.py`, `api/kobo_api/main.py`, tests (`test_persona_draft.py`, the agents web tests).
