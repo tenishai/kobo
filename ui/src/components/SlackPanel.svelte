@@ -375,6 +375,7 @@
       {/if}
     </div>
 
+    <h4 class="slack-panel__section-heading">Create the app in Slack</h4>
     <ol class="slack-panel__steps">
       <li class="slack-panel__step">
         <p class="slack-panel__step-text">
@@ -413,6 +414,7 @@
       </li>
     </ol>
 
+    <h4 class="slack-panel__section-heading">Then paste back three values</h4>
     <form
       class="slack-panel__form"
       onsubmit={(event) => {
@@ -679,18 +681,45 @@
     user-select: all;
   }
 
+  .slack-panel__section-heading {
+    margin: var(--space-sm) 0 0;
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
   .slack-panel__steps {
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
     margin: 0;
-    padding-left: var(--space-lg);
+    padding: 0;
+    list-style: none;
+    counter-reset: ceremony-step;
   }
 
   .slack-panel__step {
     display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
+    align-items: baseline;
+    gap: var(--space-sm);
+    counter-increment: ceremony-step;
+  }
+
+  .slack-panel__step::before {
+    content: counter(ceremony-step);
+    display: grid;
+    flex-shrink: 0;
+    width: 1.4rem;
+    height: 1.4rem;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: var(--panel);
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 600;
+    place-items: center;
   }
 
   .slack-panel__step-text {
