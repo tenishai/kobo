@@ -75,32 +75,60 @@ def ensure_fts(engine: Engine) -> None:
         )
 
 
+def _is_marketplace_dialect(parsed: object) -> bool:
+    """Shape sniff, not a config flag: the marketplace dialect (persona-
+    metadata plan Task 1b) is a top-level JSON object with a dict-shaped
+    `skills` mapping and a `count` key. The legacy dialect (a top-level
+    `entries` list) never has either, so this is a safe, unambiguous test
+    that never consults any config or org setting -- ingestion and the
+    fetch-path dialect probe (`read_marketplace_catalog`, below) both
+    delegate to this single definition.
+    """
+    return (
+        isinstance(parsed, dict)
+        and isinstance(parsed.get("skills"), dict)
+        and "count" in parsed
+    )
+
+
 def _load_catalog_entries(
     storage: StorageClient, bucket: str, prefix: str, kind: str
 ) -> list[dict]:
     """The validated raw entry dicts for one catalog's `<prefix>index.json`.
 
     An unset bucket name or a `StorageNotFound` (no index published yet)
-    both contribute zero entries — a normal, expected state for an unwired
+    both contribute zero entries -- a normal, expected state for an unwired
     or not-yet-published catalog, only logged, never raised. Anything else
-    wrong with the object — invalid JSON, a missing `entries` list, or an
-    entry missing a required field — raises `ClientError` naming the bucket,
-    since that's a real publish-side problem the caller (the refresh route)
-    needs to surface, not silently swallow.
+    wrong with the LEGACY-dialect object -- invalid JSON, a missing
+    `entries` list, or an entry missing a required field -- raises
+    `ClientError` naming the bucket, since that's a real publish-side
+    problem the caller (the refresh route) needs to surface, not silently
+    swallow.
+
+    Dialect sniffing (persona-metadata plan Task 1b): once the bytes parse
+    as JSON, the shape decides which of two readers handles them --
+    `_is_marketplace_dialect` for the marketplace's `{"skills": {...},
+    "count": N}` object, or the legacy `{"entries": [...]}` list -- never a
+    config flag. The marketplace reader has its own, per-entry tolerance
+    (see `_load_marketplace_entries`); only a legacy-shaped index still goes
+    through the whole-ingest-fails-on-one-bad-entry path above.
     """
     if not bucket:
-        log.info("catalog ingest: no %s bucket configured — 0 entries", kind)
+        log.info("catalog ingest: no %s bucket configured -- 0 entries", kind)
         return []
 
     key = f"{prefix}index.json"
     try:
         data = storage.read_bytes(bucket, key)
     except StorageNotFound:
-        log.info("catalog ingest: no %s at %s/%s yet — 0 entries", key, bucket, key)
+        log.info("catalog ingest: no %s at %s/%s yet -- 0 entries", key, bucket, key)
         return []
 
     try:
         parsed = json.loads(data)
+        if _is_marketplace_dialect(parsed):
+            return _load_marketplace_entries(parsed["skills"], kind)
+
         raw_entries = parsed["entries"]
         if not isinstance(raw_entries, list):
             raise TypeError("'entries' must be a list")
@@ -124,6 +152,98 @@ def _load_catalog_entries(
         raise ClientError(f"malformed index.json in bucket {bucket!r}: {exc}") from exc
 
 
+def _load_marketplace_entries(skills: Mapping[str, object], kind: str) -> list[dict]:
+    """The validated raw entry dicts for one marketplace-dialect `skills`
+    mapping (persona-metadata plan Task 1b).
+
+    Unlike the legacy list-shaped dialect above -- whose per-entry
+    validation failures raise `ClientError` for the WHOLE ingest, since a
+    hand-authored index getting a required field wrong is a real
+    publish-side bug worth surfacing -- a malformed entry here (missing or
+    wrong-typed `name`/`description`, or a value that isn't even an object)
+    is skipped with a debug log naming its id, never fails the ingest: this
+    is a marketplace's own catalog, potentially carrying far more entries
+    than any team hand-authors, and one bad listing shouldn't take every
+    other skill down with it.
+
+    Mapping: id = the dict key, name/description/tags as published,
+    team = `_entry_team`'s owner-precedence rules (identical to the legacy
+    dialect, including the empty-string-owner guard), sha = `content_hash`.
+    `when_to_use`/`profiles`/`size` are read by nothing here -- ignored.
+    """
+    entries = []
+    for id_, raw in skills.items():
+        if not isinstance(raw, dict):
+            log.debug(
+                "catalog ingest: marketplace skill %r is not an object -- skipping", id_
+            )
+            continue
+
+        name = raw.get("name")
+        description = raw.get("description")
+        if not isinstance(name, str) or not isinstance(description, str):
+            log.debug(
+                "catalog ingest: marketplace skill %r missing/invalid name or "
+                "description -- skipping",
+                id_,
+            )
+            continue
+
+        try:
+            tags = list(raw.get("tags", []))
+        except TypeError:
+            log.debug(
+                "catalog ingest: marketplace skill %r has non-iterable tags -- skipping",
+                id_,
+            )
+            continue
+
+        entries.append(
+            {
+                "id": id_,
+                "name": name,
+                "description": description,
+                "team": _entry_team({**raw, "id": raw.get("id", id_)}, kind),
+                "tags": tags,
+                "sha": raw.get("content_hash", ""),
+                "builtin": bool(raw.get("builtin", False)),
+            }
+        )
+    return entries
+
+
+def read_marketplace_catalog(
+    storage: StorageClient, bucket: str, prefix: str = ""
+) -> dict[str, dict] | None:
+    """The marketplace-dialect `skills` mapping at `<prefix>index.json` in
+    `bucket`, or `None` when the bucket doesn't speak that dialect (legacy
+    list-shaped index, no index.json published yet, or unreadable JSON).
+
+    This is the attach-time fetch path's dialect probe
+    (`kobo_api.steps._stage_skills`): the FTS row shape ingestion feeds
+    (id, name, description, team, tags, kind, sha, builtin) is deliberately
+    fixed and carries no room for a per-entry `version` or a dialect
+    marker, so rather than threading either through it, the fetch path
+    re-reads and re-sniffs the exact same object `_load_catalog_entries`
+    already sniffed at ingest time, through the identical shape predicate
+    (`_is_marketplace_dialect`) -- one definition of "what marketplace
+    dialect looks like" in this codebase, asked fresh whenever attach needs
+    the answer, never two independently-maintained ones.
+    """
+    key = f"{prefix}index.json"
+    try:
+        data = storage.read_bytes(bucket, key)
+    except StorageNotFound:
+        return None
+    try:
+        parsed = json.loads(data)
+    except json.JSONDecodeError:
+        return None
+    if not _is_marketplace_dialect(parsed):
+        return None
+    return parsed["skills"]
+
+
 def _entry_team(raw: dict, kind: str) -> str:
     """The FTS `team` value for one raw catalog entry.
 
@@ -132,22 +252,24 @@ def _entry_team(raw: dict, kind: str) -> str:
     missing one still raises via the caller's `KeyError` handling).
 
     Skills have no `team` field of their own. Upstream skill publishing is
-    adding an OPTIONAL `owner` key naming the team that owns the skill —
-    when it's present and a string, it becomes the row's team, taking
-    precedence over any legacy `team` key the entry might still carry.
-    A missing `owner`, or one present but not a string (a publish-side bug,
-    never worth failing a whole ingest over — only logged), falls back to
-    that legacy `team` key if there is one, or `""` (today's norm) if not.
+    adding an OPTIONAL `owner` key naming the team that owns the skill --
+    when it's present, a string, AND non-blank, it becomes the row's team,
+    taking precedence over any legacy `team` key the entry might still
+    carry. A missing `owner`; one present but not a string; or one present
+    as a string but blank or whitespace-only (a publish-side bug either
+    way, never worth failing a whole ingest over -- only logged at debug)
+    all fall back to that legacy `team` key if there is one, or `""`
+    (today's norm) if not.
     """
     if kind != "skill":
         return raw["team"]
 
     owner = raw.get("owner")
-    if isinstance(owner, str):
+    if isinstance(owner, str) and owner.strip():
         return owner
     if owner is not None:
         log.debug(
-            "catalog ingest: skill entry %r has non-string owner %r — ignoring",
+            "catalog ingest: skill entry %r has invalid owner %r -- ignoring",
             raw.get("id"),
             owner,
         )

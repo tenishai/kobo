@@ -44,6 +44,7 @@ from kobo_api.clients import GojiraConflict, StorageClient, StorageNotFound, gsa
 from kobo_api.composer import BundleSpec, compose, validate_agent_yaml
 from kobo_api.config import Config
 from kobo_api.models import Agent
+from kobo_api.search import read_marketplace_catalog
 
 log = logging.getLogger(__name__)
 
@@ -147,16 +148,77 @@ class StagedSkill:
     dir: Path
 
 
+def _materialize_marketplace_skill(
+    storage: StorageClient, config: Config, skill_id: str, entry: dict, dest_dir: Path
+) -> str:
+    """Download one marketplace-dialect skill's `SKILL.md` into `dest_dir`
+    (persona-metadata plan Task 1b).
+
+    Prefers the immutable version-pinned path (`catalog/<id>/versions/
+    <version>/SKILL.md`) whenever the catalog entry names a `version`;
+    falls back to the mutable head copy (`catalog/<id>/SKILL.md`) only when
+    the entry carries no version at all, logging a warning naming the
+    skill -- that fallback is a signal worth an operator's attention, not a
+    silent, routine choice. Returns the entry's own `content_hash` (empty
+    string when absent) as the sha a caller records as this pick's pin --
+    the marketplace dialect has no per-object custom metadata to read the
+    way the legacy dialect's `source-sha` does. Raises RuntimeError,
+    mirroring the legacy path's vanished-skill contract, if even the
+    resolved path is gone.
+    """
+    version = entry.get("version")
+    if version:
+        key = f"catalog/{skill_id}/versions/{version}/SKILL.md"
+    else:
+        log.warning(
+            "marketplace catalog entry for skill %r carries no version -- "
+            "falling back to the mutable head copy at catalog/%s/SKILL.md",
+            skill_id,
+            skill_id,
+        )
+        key = f"catalog/{skill_id}/SKILL.md"
+
+    try:
+        content = storage.read_bytes(config.skills_bucket, key)
+    except StorageNotFound as exc:
+        raise RuntimeError(f"skill no longer in the catalog: {skill_id}") from exc
+
+    (dest_dir / "SKILL.md").write_bytes(content)
+    return entry.get("content_hash", "")
+
+
 def _materialize_catalog_skill(
-    storage: StorageClient, config: Config, team: str, skill_id: str, dest_dir: Path
+    storage: StorageClient,
+    config: Config,
+    team: str,
+    skill_id: str,
+    dest_dir: Path,
+    marketplace_catalog: dict[str, dict] | None = None,
 ) -> str:
     """Download the catalog skill `<team>/<skill_id>/` into dest_dir.
+
+    `marketplace_catalog`, when not None, is the bucket's marketplace-
+    dialect `skills` mapping (`kobo_api.search.read_marketplace_catalog`,
+    read once by the caller, `_stage_skills`, rather than re-reading it per
+    skill). A skill present there is fetched via
+    `_materialize_marketplace_skill` instead of the legacy team-prefixed
+    directory listing below -- that dialect has no team segment in its
+    storage layout at all, so `team` plays no part in resolving its
+    content. A marketplace-dialect bucket that doesn't carry this
+    particular skill_id falls through to the legacy listing below, which
+    naturally raises the same vanished-skill error an empty `list_keys`
+    already produces today.
 
     Same containment rule as before the extraction: a bucket key must not
     escape dest_dir. Returns the SKILL.md object's current source-sha
     custom metadata ("" when the publisher set none). Raises RuntimeError
     when the catalog no longer serves the skill.
     """
+    if marketplace_catalog is not None:
+        entry = marketplace_catalog.get(skill_id)
+        if entry is not None:
+            return _materialize_marketplace_skill(storage, config, skill_id, entry, dest_dir)
+
     prefix = f"{team}/{skill_id}/"
     keys = storage.list_keys(config.skills_bucket, prefix)
     if not keys:
@@ -208,10 +270,17 @@ def _stage_skills(
     so the caller's session actually sees the JSON column as dirty and
     commits the correction — mutating a dict already inside the existing
     list would not be detected by SQLAlchemy's change tracking.
+
+    Marketplace dialect (persona-metadata plan Task 1b): the skills
+    bucket's dialect probe (`kobo_api.search.read_marketplace_catalog`) is
+    read exactly once here, up front, rather than once per skill -- a
+    single small JSON read for the whole call, reused by every
+    `_materialize_catalog_skill` invocation below.
     """
     staged: list[StagedSkill] = []
     resolved_entries: list[dict] = []
     drifted = False
+    marketplace_catalog = read_marketplace_catalog(storage, config.skills_bucket)
 
     for entry in agent.skills:
         if entry.get("source") == "local":
@@ -229,7 +298,9 @@ def _stage_skills(
 
         skill_dir = staging / skill_id
         skill_dir.mkdir(parents=True, exist_ok=True)
-        current_sha = _materialize_catalog_skill(storage, config, team, skill_id, skill_dir)
+        current_sha = _materialize_catalog_skill(
+            storage, config, team, skill_id, skill_dir, marketplace_catalog
+        )
 
         if recorded_sha and current_sha and current_sha != recorded_sha:
             log.warning(

@@ -18,6 +18,7 @@ from kobo_api.search import (
     ensure_fts,
     get_entry,
     ingest_indexes,
+    read_marketplace_catalog,
     search,
     teams,
 )
@@ -644,3 +645,205 @@ def test_distinct_skill_teams_excludes_persona_teams(engine):
     )
     ingest_indexes(engine, storage, CATALOGS)
     assert distinct_skill_teams(engine) == ["growth"]
+
+
+# --- Task 1b (persona-metadata plan): the marketplace dialect ---------------
+
+
+def _marketplace_index_bytes(skills: dict) -> bytes:
+    return json.dumps({"skills": skills, "count": len(skills)}).encode()
+
+
+def _marketplace_storage(skills: dict, *, bucket: str = "skills-bucket") -> FakeStorage:
+    return FakeStorage(buckets={bucket: {"index.json": (_marketplace_index_bytes(skills), {})}})
+
+
+def test_marketplace_dialect_ingests_mapped_field_by_field(engine):
+    storage = _marketplace_storage(
+        {
+            "code-review": {
+                "name": "Code review",
+                "version": "3",
+                "description": "Reviews pull requests for quality issues",
+                "when_to_use": "when reviewing a pull request",
+                "tags": ["review", "quality"],
+                "profiles": ["default"],
+                "content_hash": "abc123",
+                "size": 512,
+                "owner": "growth",
+            }
+        }
+    )
+    counts = ingest_indexes(engine, storage, {"skill": "skills-bucket"})
+    assert counts == {"skill": 1}
+
+    entry = get_entry(engine, "skill", "code-review", "growth")
+    assert entry is not None
+    assert entry.name == "Code review"
+    assert entry.description == "Reviews pull requests for quality issues"
+    assert entry.tags == ["review", "quality"]
+    assert entry.team == "growth"
+    assert entry.sha == "abc123"
+    assert entry.builtin is False
+    # when_to_use/profiles/size are ignored -- not part of the FTS row shape.
+
+
+def test_marketplace_dialect_entry_without_owner_defaults_to_empty_team(engine):
+    storage = _marketplace_storage(
+        {
+            "no-owner-skill": {
+                "name": "No owner skill",
+                "version": "1",
+                "description": "No owner key at all",
+                "tags": [],
+                "content_hash": "shaX",
+            }
+        }
+    )
+    ingest_indexes(engine, storage, {"skill": "skills-bucket"})
+    entry = get_entry(engine, "skill", "no-owner-skill", "")
+    assert entry is not None
+    assert entry.team == ""
+
+
+def test_marketplace_malformed_entries_skipped_not_fatal(engine, caplog):
+    storage = _marketplace_storage(
+        {
+            "good-skill": {
+                "name": "Good skill",
+                "version": "1",
+                "description": "A fine skill",
+                "tags": [],
+                "content_hash": "goodsha",
+            },
+            "missing-name": {
+                "description": "No name field at all",
+                "tags": [],
+                "content_hash": "x",
+            },
+            "wrong-type-name": {
+                "name": 42,
+                "description": "name is an int, not a string",
+                "tags": [],
+                "content_hash": "y",
+            },
+            "wrong-type-description": {
+                "name": "Bad description",
+                "description": {"not": "a string"},
+                "tags": [],
+                "content_hash": "z",
+            },
+            "not-an-object": "just a bare string, not an object at all",
+        }
+    )
+    with caplog.at_level(logging.DEBUG, logger="kobo_api.search"):
+        counts = ingest_indexes(engine, storage, {"skill": "skills-bucket"})
+
+    # Only the one well-formed entry survives -- every malformed entry is
+    # skipped, never fails the whole ingest.
+    assert counts == {"skill": 1}
+    assert get_entry(engine, "skill", "good-skill", "") is not None
+    for bad_id in ("missing-name", "wrong-type-name", "wrong-type-description", "not-an-object"):
+        assert get_entry(engine, "skill", bad_id, "") is None
+        assert any(bad_id in record.message for record in caplog.records)
+
+
+def test_marketplace_dialect_does_not_disturb_legacy_ingest_in_same_call(engine, storage):
+    # `storage` (module fixture) already carries the legacy list-shaped
+    # personas-bucket index -- a marketplace-dialect skills bucket ingesting
+    # alongside it must not affect persona ingestion at all.
+    storage.write_bytes(
+        "skills-bucket",
+        "index.json",
+        _marketplace_index_bytes(
+            {
+                "mp-skill": {
+                    "name": "Marketplace skill",
+                    "version": "1",
+                    "description": "d",
+                    "tags": [],
+                    "content_hash": "mpsha",
+                }
+            }
+        ),
+    )
+    counts = ingest_indexes(engine, storage, CATALOGS)
+    assert counts == {"skill": 1, "persona": 1}
+    assert get_entry(engine, "persona", "helpful-generalist") is not None
+    assert get_entry(engine, "skill", "mp-skill", "") is not None
+
+
+# --- Task 1b: the Task 1 review gap -- empty-string owner is garbage too ----
+
+
+def test_skill_entry_empty_string_owner_falls_through_legacy_team_logged(engine, caplog):
+    storage = _skill_index(
+        [
+            {
+                "id": "blank-owner-skill",
+                "name": "Blank owner skill",
+                "description": "owner is an empty string",
+                "owner": "",
+                "team": "legacy-team",
+                "tags": [],
+                "sha": "",
+                "builtin": False,
+            }
+        ]
+    )
+    with caplog.at_level(logging.DEBUG, logger="kobo_api.search"):
+        ingest_indexes(engine, storage, {"skill": "skills-bucket"})
+
+    entry = get_entry(engine, "skill", "blank-owner-skill", "legacy-team")
+    assert entry is not None
+    assert entry.team == "legacy-team"
+    assert any("blank-owner-skill" in record.message for record in caplog.records)
+
+
+def test_skill_entry_whitespace_owner_falls_through_empty_team_logged(engine, caplog):
+    storage = _skill_index(
+        [
+            {
+                "id": "whitespace-owner-skill",
+                "name": "Whitespace owner skill",
+                "description": "owner is whitespace-only",
+                "owner": "   ",
+                "tags": [],
+                "sha": "",
+                "builtin": False,
+            }
+        ]
+    )
+    with caplog.at_level(logging.DEBUG, logger="kobo_api.search"):
+        ingest_indexes(engine, storage, {"skill": "skills-bucket"})
+
+    entry = get_entry(engine, "skill", "whitespace-owner-skill", "")
+    assert entry is not None
+    assert entry.team == ""
+    assert any("whitespace-owner-skill" in record.message for record in caplog.records)
+
+
+# --- Task 1b: read_marketplace_catalog (the fetch path's dialect probe) -----
+
+
+def test_read_marketplace_catalog_returns_skills_mapping_when_marketplace(engine):
+    storage = _marketplace_storage(
+        {"code-review": {"name": "Code review", "version": "3", "description": "d", "tags": []}}
+    )
+    catalog = read_marketplace_catalog(storage, "skills-bucket")
+    assert catalog is not None
+    assert catalog["code-review"]["version"] == "3"
+
+
+def test_read_marketplace_catalog_returns_none_for_legacy_dialect(engine, storage):
+    assert read_marketplace_catalog(storage, "skills-bucket") is None
+
+
+def test_read_marketplace_catalog_returns_none_when_index_missing(engine):
+    storage = FakeStorage(buckets={"skills-bucket": {}})
+    assert read_marketplace_catalog(storage, "skills-bucket") is None
+
+
+def test_read_marketplace_catalog_returns_none_on_malformed_json(engine):
+    storage = FakeStorage(buckets={"skills-bucket": {"index.json": (b"not json", {})}})
+    assert read_marketplace_catalog(storage, "skills-bucket") is None

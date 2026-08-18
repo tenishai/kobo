@@ -13,6 +13,8 @@ than a couple of iterations, so the whole file runs in well under a second.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from kobo_api.clients import Clients
@@ -270,6 +272,138 @@ def test_stage_skills_malicious_key_escaping_staging_dir_raises(
 
     assert not (tmp_path / "escape.txt").exists()
     assert not (staging / "escape.txt").exists()
+
+
+# --- _stage_skills: the marketplace dialect (persona-metadata plan Task 1b) -----
+
+MARKETPLACE_SKILL_ID = "word-games-mp"
+
+
+def _write_marketplace_index(storage, skill_id, entry, *, bucket="skills-bucket"):
+    storage.write_bytes(
+        bucket,
+        "index.json",
+        json.dumps({"skills": {skill_id: entry}, "count": 1}).encode(),
+        content_type="application/json",
+    )
+
+
+def test_stage_skills_marketplace_dialect_uses_version_pinned_path(
+    session_factory, config, tmp_path
+):
+    storage = FakeStorage()
+    _write_marketplace_index(
+        storage,
+        MARKETPLACE_SKILL_ID,
+        {
+            "name": "Word games (marketplace)",
+            "version": "7",
+            "description": "Plays word games with the user.",
+            "tags": ["fun"],
+            "content_hash": "mpsha1",
+        },
+    )
+    storage.write_bytes(
+        "skills-bucket",
+        f"catalog/{MARKETPLACE_SKILL_ID}/versions/7/SKILL.md",
+        b"Marketplace pinned body.\n",
+        content_type="text/markdown",
+    )
+    _session, agent = _make_agent(
+        session_factory, skills=[{"name": MARKETPLACE_SKILL_ID, "team": "", "sha": "mpsha1"}]
+    )
+    staging = tmp_path / "staging"
+
+    staged = _stage_skills(storage, config, agent, staging)
+
+    assert staged == [StagedSkill(id=MARKETPLACE_SKILL_ID, dir=staging / MARKETPLACE_SKILL_ID)]
+    assert (
+        staging / MARKETPLACE_SKILL_ID / "SKILL.md"
+    ).read_text() == "Marketplace pinned body.\n"
+    assert (
+        f"read_bytes:skills-bucket:catalog/{MARKETPLACE_SKILL_ID}/versions/7/SKILL.md"
+        in storage.calls
+    )
+    # the recorded sha came from content_hash, not object custom metadata
+    assert agent.skills[0]["sha"] == "mpsha1"
+
+
+def test_stage_skills_marketplace_head_fallback_logged_when_version_absent(
+    session_factory, config, tmp_path, caplog
+):
+    storage = FakeStorage()
+    _write_marketplace_index(
+        storage,
+        MARKETPLACE_SKILL_ID,
+        {
+            # no "version" key at all
+            "name": "Word games (marketplace)",
+            "description": "Plays word games with the user.",
+            "tags": ["fun"],
+            "content_hash": "headsha",
+        },
+    )
+    storage.write_bytes(
+        "skills-bucket",
+        f"catalog/{MARKETPLACE_SKILL_ID}/SKILL.md",
+        b"Marketplace head body.\n",
+        content_type="text/markdown",
+    )
+    _session, agent = _make_agent(
+        session_factory, skills=[{"name": MARKETPLACE_SKILL_ID, "team": "", "sha": "headsha"}]
+    )
+    staging = tmp_path / "staging"
+
+    with caplog.at_level("WARNING"):
+        staged = _stage_skills(storage, config, agent, staging)
+
+    assert staged == [StagedSkill(id=MARKETPLACE_SKILL_ID, dir=staging / MARKETPLACE_SKILL_ID)]
+    assert (
+        staging / MARKETPLACE_SKILL_ID / "SKILL.md"
+    ).read_text() == "Marketplace head body.\n"
+    assert (
+        f"read_bytes:skills-bucket:catalog/{MARKETPLACE_SKILL_ID}/SKILL.md" in storage.calls
+    )
+    assert any(MARKETPLACE_SKILL_ID in message for message in caplog.messages)
+
+
+def test_stage_skills_marketplace_vanished_content_raises(session_factory, config, tmp_path):
+    storage = FakeStorage()
+    _write_marketplace_index(
+        storage,
+        MARKETPLACE_SKILL_ID,
+        {
+            "name": "Word games (marketplace)",
+            "version": "7",
+            "description": "Plays word games with the user.",
+            "tags": ["fun"],
+            "content_hash": "mpsha1",
+        },
+    )
+    # No object written at the version-pinned path -- content has vanished.
+    _session, agent = _make_agent(
+        session_factory, skills=[{"name": MARKETPLACE_SKILL_ID, "team": "", "sha": "mpsha1"}]
+    )
+    staging = tmp_path / "staging"
+
+    with pytest.raises(RuntimeError, match=MARKETPLACE_SKILL_ID):
+        _stage_skills(storage, config, agent, staging)
+
+
+def test_stage_skills_legacy_fetch_path_byte_untouched(
+    session_factory, config, fake_storage, tmp_path
+):
+    # fake_storage's index.json is still legacy list-shaped -- the
+    # marketplace dialect probe this task adds must not change legacy
+    # fetch-path behavior at all: same team-prefixed listing, same download.
+    _session, agent = _make_agent(session_factory, skills=[dict(WORD_GAMES_SKILL)])
+    staging = tmp_path / "staging"
+
+    staged = _stage_skills(fake_storage, config, agent, staging)
+
+    assert staged == [StagedSkill(id="word-games", dir=staging / "word-games")]
+    assert (staging / "word-games" / "SKILL.md").is_file()
+    assert "list_keys:skills-bucket:shared/word-games/" in fake_storage.calls
 
 
 # --- RepoStep -----------------------------------------------------------------
