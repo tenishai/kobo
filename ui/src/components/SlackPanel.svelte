@@ -401,7 +401,9 @@
       </li>
       <li class="slack-panel__step">
         <p class="slack-panel__step-text">
-          In Basic Information, under App-Level Tokens, create a token that can connect.
+          Slack may warn that Socket Mode needs additional setup. That setup is
+          this step: in Basic Information, under App-Level Tokens, create a
+          token that can connect.
         </p>
       </li>
       <li class="slack-panel__step">
