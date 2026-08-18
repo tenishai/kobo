@@ -6,7 +6,6 @@ import {
   chatMutation,
   connectSlackMutation,
   createPersonaMutation,
-  createSlackAppMutation,
   deleteIntakeMutation,
   deleteKnowledgeMutation,
   deleteSkillMutation,
@@ -29,6 +28,7 @@ import {
   saveSlackChannelsMutation,
   shouldRetry,
   skillsSearchQuery,
+  slackManifestQuery,
   teamsQuery,
   toolingQuery,
   toolingRefetchInterval,
@@ -266,50 +266,6 @@ describe("deleteKnowledgeMutation", () => {
   });
 });
 
-describe("createSlackAppMutation", () => {
-  it("mutationFn delegates to createSlackApp(name)", async () => {
-    vi.stubGlobal("fetch", vi.fn());
-    vi.mocked(fetch).mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      statusText: "OK",
-      text: async () =>
-        JSON.stringify({
-          app_id: "A123",
-          configure_url: "https://slack.com/apps/A123",
-        }),
-    } as Response);
-
-    const queryClient = {
-      invalidateQueries: vi.fn(),
-    } as unknown as QueryClient;
-    const mutation = createSlackAppMutation(queryClient, "clio");
-
-    await expect(mutation.mutationFn()).resolves.toEqual({
-      app_id: "A123",
-      configure_url: "https://slack.com/apps/A123",
-    });
-    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/slack/app", {
-      method: "POST",
-    });
-
-    vi.unstubAllGlobals();
-  });
-
-  it("invalidates the agent detail key on success — the detail carries slack state", () => {
-    const invalidateQueries = vi.fn();
-    const queryClient = { invalidateQueries } as unknown as QueryClient;
-
-    const mutation = createSlackAppMutation(queryClient, "clio");
-    mutation.onSuccess();
-
-    expect(invalidateQueries).toHaveBeenCalledTimes(1);
-    expect(invalidateQueries).toHaveBeenCalledWith({
-      queryKey: ["agents", "clio"],
-    });
-  });
-});
-
 describe("connectSlackMutation", () => {
   it("mutationFn delegates to connectSlack(name, body)", async () => {
     vi.stubGlobal("fetch", vi.fn());
@@ -325,6 +281,7 @@ describe("connectSlackMutation", () => {
     } as unknown as QueryClient;
     const mutation = connectSlackMutation(queryClient, "clio");
     const body = {
+      app_id: "A1234567",
       bot_token: "xoxb-secret",
       app_token: "xapp-secret",
     };
@@ -352,6 +309,43 @@ describe("connectSlackMutation", () => {
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["agents", "clio"],
     });
+  });
+});
+
+describe("slackManifestQuery", () => {
+  it("has queryKey ['agents', name, 'slack', 'manifest']", () => {
+    expect(slackManifestQuery("clio", false).queryKey).toEqual([
+      "agents",
+      "clio",
+      "slack",
+      "manifest",
+    ]);
+  });
+
+  it("is disabled until opened", () => {
+    expect(slackManifestQuery("clio", false).enabled).toBe(false);
+  });
+
+  it("is enabled once opened", () => {
+    expect(slackManifestQuery("clio", true).enabled).toBe(true);
+  });
+
+  it("queryFn GETs /api/agents/{name}/slack/manifest and unwraps {manifest} into the plain dict", async () => {
+    const manifest = { display_information: { name: "clio" } };
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ manifest }),
+    } as Response);
+
+    await expect(
+      callQueryFn<Record<string, unknown>>(slackManifestQuery("clio", true)),
+    ).resolves.toEqual(manifest);
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/slack/manifest");
+
+    vi.unstubAllGlobals();
   });
 });
 
@@ -422,7 +416,7 @@ describe("generateAvatarMutation", () => {
   });
 
   it("invalidates the broad agent-list key on success — has_avatar shows on both the list and the detail", () => {
-    // Unlike createSlackAppMutation/connectSlackMutation (detail-only,
+    // Unlike connectSlackMutation/saveSlackChannelsMutation (detail-only,
     // since the list carries no slack state), has_avatar is rendered on
     // AgentCard (list) AND AgentDetail's header (detail) — so this must
     // invalidate the ["agents"] prefix, which (per TanStack's prefix-match

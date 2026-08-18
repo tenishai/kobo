@@ -317,7 +317,6 @@
             <SlackPanel
               agentName={data.name}
               slack={data.slack}
-              adminVisible={data.slack_admin_visible}
               frozen={isFrozen(data.status)}
             />
           {/if}

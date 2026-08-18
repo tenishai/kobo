@@ -12,6 +12,9 @@
 //   ["agents", name, "skills"]                      - an agent's skills (catalog + local)
 //   ["agents", name, "intake"]                      - an agent's intake files
 //   ["agents", name, "tooling"]                     - an agent's tooling files
+//   ["agents", name, "slack", "manifest"]           - an agent's rendered
+//                                                      Slack manifest (fetched
+//                                                      lazily, once opened)
 //   ["catalog", "models"]                           - the model list + default
 //   ["catalog", "teams"]                             - the team-slug list
 //   ["catalog", "skills", {q, team}]                - a skill catalog search
@@ -43,7 +46,6 @@ import {
   connectSlack,
   createAgent,
   createPersona,
-  createSlackApp,
   deleteIntake,
   deleteKnowledgeFile,
   deleteSkill,
@@ -54,6 +56,7 @@ import {
   fetchModels,
   fetchNameSuggestions,
   fetchOrgStatus,
+  fetchSlackManifest,
   fetchTeams,
   generateAvatar,
   getAgent,
@@ -561,16 +564,16 @@ export function deleteToolingMutation(queryClient: QueryClient, name: string) {
 }
 
 /**
- * Creates the agent's Slack app; on success, invalidates that agent's detail
- * query so the new `slack.app_id` (and configure_url, surfaced via the
- * mutation's own result rather than the cache) becomes visible.
+ * Finishes Slack connect (app id + tokens — Slack self-service, 2026-08-17
+ * added `app_id`; two-lane Slack, 2026-08-17 had already moved the channel
+ * list off this call, see `connectSlack`'s own doc) for the agent; on
+ * success, invalidates that agent's detail query so the new `slack.app_id`/
+ * `slack.state` become visible.
  */
-export function createSlackAppMutation(
-  queryClient: QueryClient,
-  name: string,
-) {
+export function connectSlackMutation(queryClient: QueryClient, name: string) {
   return {
-    mutationFn: () => createSlackApp(name),
+    mutationFn: (body: { app_id: string; bot_token: string; app_token: string }) =>
+      connectSlack(name, body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name] });
     },
@@ -578,19 +581,24 @@ export function createSlackAppMutation(
 }
 
 /**
- * Finishes Slack connect (tokens only — two-lane Slack, 2026-08-17 moved
- * the channel list off this call, see `connectSlack`'s own doc) for the
- * agent; on success, invalidates that agent's detail query so the new
- * `slack.state` becomes visible.
+ * An agent's rendered Slack app manifest (Slack self-service, 2026-08-17) —
+ * disabled until `opened` is true. The setup section now renders for every
+ * signed-in user (no more `adminVisible` gate), and most agent-detail visits
+ * aren't setup visits, so this stays unfetched until the human actually
+ * clicks "Show the manifest" (`SlackPanel`'s own local `opened` state, wired
+ * through a `writable`/`derived` pair the same way `deliveryQuery`'s sha
+ * argument is — see that query's doc comment, or `MemoryPanel`'s, for why a
+ * plain `$derived` options object wouldn't do under the installed
+ * @tanstack/svelte-query adapter). No polling and no `staleTime` override:
+ * a manifest render is static per agent, and once shown there's nothing
+ * background-refreshing it.
  */
-export function connectSlackMutation(queryClient: QueryClient, name: string) {
-  return {
-    mutationFn: (body: { bot_token: string; app_token: string }) =>
-      connectSlack(name, body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name] });
-    },
-  };
+export function slackManifestQuery(name: string, opened: boolean) {
+  return queryOptions({
+    queryKey: ["agents", name, "slack", "manifest"] as const,
+    queryFn: () => fetchSlackManifest(name),
+    enabled: opened,
+  });
 }
 
 /**
@@ -613,7 +621,7 @@ export function saveSlackChannelsMutation(
 
 /**
  * Generates (or regenerates) the agent's picture; on success, invalidates
- * the agent list query. Unlike `createSlackAppMutation`/`connectSlackMutation`
+ * the agent list query. Unlike `connectSlackMutation`/`saveSlackChannelsMutation`
  * above (which invalidate only the detail key, since the list carries no
  * slack state), `has_avatar` is shown on BOTH the list (AgentCard) and the
  * detail (AgentDetail header) — so both need to pick up the flip from

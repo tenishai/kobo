@@ -18,7 +18,6 @@ const READY_AGENT = {
   steps: [],
   first_reply: null,
   slack: { app_id: null, channels: [], state: "idle" },
-  slack_admin_visible: false,
   destroy_visible: false,
   has_avatar: false,
 };
@@ -164,11 +163,12 @@ describe("AgentDetail tabs", () => {
     expect(within(overviewPanel).getByText("Hello there.")).not.toBeNull();
   });
 
-  it("shows the Slack tab regardless of admin visibility", async () => {
-    // Two-lane Slack (2026-08-17): the channels lane is open to everyone,
-    // so the tab shows even when `slack_admin_visible` is false (the
-    // operator-only token fields are what that flag gates, inside the
-    // panel itself — not the tab).
+  it("shows the Slack tab, and renders the setup section unconditionally inside it", async () => {
+    // Slack self-service (2026-08-17): the setup section (manifest reveal,
+    // instructions, three paste fields) renders for every signed-in user
+    // now, no gate. The agent payload's old visibility flag for the setup
+    // lane is gone entirely, and AgentDetail no longer threads any such
+    // prop into SlackPanel.
     stubFetch({
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
@@ -177,11 +177,14 @@ describe("AgentDetail tabs", () => {
         files: [],
         enforcement: { attested: false, locked: false, locked_file: null },
       },
-      "/api/agents/warden": { ...READY_AGENT, slack_admin_visible: false },
+      "/api/agents/warden": READY_AGENT,
       "/api/": {},
     });
     renderWithClient(AgentDetail);
-    expect(await screen.findByRole("tab", { name: "Slack" })).not.toBeNull();
+    const slackTab = await screen.findByRole("tab", { name: "Slack" });
+    await fireEvent.click(slackTab);
+    expect(screen.getByRole("button", { name: "Show the manifest" })).not.toBeNull();
+    expect(screen.getByLabelText("App ID")).not.toBeNull();
   });
 
   it("renders frozen panels and one notice while destroying", async () => {

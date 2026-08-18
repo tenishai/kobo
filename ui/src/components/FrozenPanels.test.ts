@@ -20,7 +20,6 @@ const CASES: Array<[string, unknown, Record<string, unknown>]> = [
       agentName: "warden",
       frozen: true,
       slack: { app_id: null, channels: [], state: "idle" },
-      adminVisible: true,
     },
   ],
 ];
@@ -33,9 +32,10 @@ describe("frozen panels disable every control", () => {
     // tooling) — same reasoning as AgentDetail.test.ts's stub set (queries.ts
     // / api.ts): against the bare `{}` catch-all these come back shaped
     // wrong and the panel throws before it ever renders a control. ChatPanel
-    // has no query of its own; SlackPanel's only query (delivery) is
-    // disabled until a sha exists, so neither needs a dedicated stub beyond
-    // the catch-all.
+    // has no query of its own; SlackPanel's two queries (delivery, and the
+    // Slack self-service manifest reveal) are both disabled until a sha
+    // exists / the manifest control is clicked, so neither needs a dedicated
+    // stub beyond the catch-all.
     stubFetch({
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },

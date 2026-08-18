@@ -6,38 +6,39 @@ import { renderWithClient, stubFetch } from "../test-utils/render";
 
 const IDLE_SLACK = { app_id: null, channels: [], state: "idle" as const };
 
+const MANIFEST_FIXTURE = {
+  display_information: { name: "warden", description: "A keeper agent, reachable in Slack." },
+  features: { bot_user: { display_name: "warden" } },
+};
+
 describe("SlackPanel", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
-    // No dedicated query of its own is ever exercised here except the
-    // delivery chip (disabled until a sha exists) — the bare catch-all is
-    // enough, same reasoning as FrozenPanels.test.ts's SlackPanel case.
+    // No dedicated query is exercised by most cases here except the
+    // delivery chip and the manifest reveal, both disabled until something
+    // triggers them (a sha existing, the manifest control being clicked) —
+    // the bare catch-all is enough for those, same reasoning as
+    // FrozenPanels.test.ts's SlackPanel case.
     stubFetch({ "/api/": {} });
   });
 
-  it("idle state, non-admin: channels lane renders with one empty row and Add another channel; no token fields anywhere", () => {
+  it("idle state: channels lane renders with one empty row and Add another channel", () => {
     renderWithClient(SlackPanel, {
       agentName: "warden",
       slack: IDLE_SLACK,
-      adminVisible: false,
       frozen: false,
     });
 
-    const rows = screen.getAllByRole("textbox");
+    const rows = screen.getAllByLabelText(/^Channel \d+$/);
     expect(rows).toHaveLength(1);
     expect((rows[0] as HTMLInputElement).value).toBe("");
     expect(screen.getByRole("button", { name: "Add another channel" })).not.toBeNull();
-    expect(screen.queryByLabelText(/bot token/i)).toBeNull();
-    expect(screen.queryByLabelText(/app-level token/i)).toBeNull();
-    expect(screen.queryByRole("button", { name: /finish setup/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /connect to slack/i })).toBeNull();
   });
 
   it('waiting state shows "Channels saved. Waiting on an operator to finish the connection."', () => {
     renderWithClient(SlackPanel, {
       agentName: "warden",
       slack: { app_id: "A123", channels: ["C123456"], state: "waiting" },
-      adminVisible: false,
       frozen: false,
     });
 
@@ -46,24 +47,122 @@ describe("SlackPanel", () => {
     ).not.toBeNull();
   });
 
-  it("admin + waiting: setup lane renders bot/app token fields and Finish setup", () => {
+  it("setup section renders unconditionally (no gate): App ID, bot token, app-level token fields and Finish setup", () => {
+    // Slack self-service (2026-08-17): this used to require adminVisible.
+    // The prop is gone entirely now — this is a plain, non-gated mount.
     renderWithClient(SlackPanel, {
       agentName: "warden",
-      slack: { app_id: "A123", channels: ["C123456"], state: "waiting" },
-      adminVisible: true,
+      slack: IDLE_SLACK,
       frozen: false,
     });
 
+    expect(screen.getByLabelText("App ID")).not.toBeNull();
     expect(screen.getByLabelText("Bot token")).not.toBeNull();
     expect(screen.getByLabelText("App-level token")).not.toBeNull();
     expect(screen.getByRole("button", { name: "Finish setup" })).not.toBeNull();
+    expect(screen.queryByRole("button", { name: /connect to slack/i })).toBeNull();
+  });
+
+  it("App ID field is first, before Bot token and App-level token", () => {
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: IDLE_SLACK,
+      frozen: false,
+    });
+
+    const appId = screen.getByLabelText("App ID");
+    const botToken = screen.getByLabelText("Bot token");
+    const appToken = screen.getByLabelText("App-level token");
+
+    expect(
+      appId.compareDocumentPosition(botToken) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      botToken.compareDocumentPosition(appToken) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("shows a client-side App ID format hint matching the server's own copy (it starts with A)", () => {
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: IDLE_SLACK,
+      frozen: false,
+    });
+
+    expect(screen.getByText("Starts with A, like A0123456789.")).not.toBeNull();
+  });
+
+  it("renders the numbered setup instructions, asserting two lines verbatim", () => {
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: IDLE_SLACK,
+      frozen: false,
+    });
+
+    expect(screen.getByText("Install it to your workspace.")).not.toBeNull();
+    expect(
+      screen.getByText(
+        "Copy the bot token from the OAuth page and the App ID from Basic Information.",
+      ),
+    ).not.toBeNull();
+  });
+
+  it('"Show the manifest" fetches lazily via slackManifestQuery, only once opened (not on mount)', async () => {
+    // Order matters: stubFetch matches by url.includes, so the specific
+    // manifest path must come before the "/api/" catch-all.
+    stubFetch({
+      "/api/agents/warden/slack/manifest": { manifest: MANIFEST_FIXTURE },
+      "/api/": {},
+    });
+
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: IDLE_SLACK,
+      frozen: false,
+    });
+
+    // Not fetched on mount.
+    expect(
+      vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/slack/manifest")),
+    ).toBe(false);
+    expect(screen.queryByText(/keeper agent/)).toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Show the manifest" }));
+
+    expect(await screen.findByText(/keeper agent/)).not.toBeNull();
+    expect(
+      vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/slack/manifest")),
+    ).toBe(true);
+  });
+
+  it("Finish setup stays disabled until App ID, bot token, and app token are all filled", async () => {
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: { app_id: null, channels: ["C123456"], state: "idle" },
+      frozen: false,
+    });
+
+    const finish = screen.getByRole("button", { name: "Finish setup" }) as HTMLButtonElement;
+    expect(finish.disabled).toBe(true);
+
+    await fireEvent.input(screen.getByLabelText("Bot token"), {
+      target: { value: "xoxb-secret" },
+    });
+    await fireEvent.input(screen.getByLabelText("App-level token"), {
+      target: { value: "xapp-secret" },
+    });
+    expect(finish.disabled).toBe(true); // still missing the App ID
+
+    await fireEvent.input(screen.getByLabelText("App ID"), {
+      target: { value: "A1234567" },
+    });
+    expect(finish.disabled).toBe(false);
   });
 
   it("add-another adds a row; remove removes it; Save disabled while every row is empty", async () => {
     renderWithClient(SlackPanel, {
       agentName: "warden",
       slack: IDLE_SLACK,
-      adminVisible: false,
       frozen: false,
     });
 
@@ -71,29 +170,28 @@ describe("SlackPanel", () => {
     expect(saveButton.disabled).toBe(true);
 
     await fireEvent.click(screen.getByRole("button", { name: "Add another channel" }));
-    expect(screen.getAllByRole("textbox")).toHaveLength(2);
+    expect(screen.getAllByLabelText(/^Channel \d+$/)).toHaveLength(2);
     expect(saveButton.disabled).toBe(true); // both rows still empty
 
-    await fireEvent.input(screen.getAllByRole("textbox")[1], {
+    await fireEvent.input(screen.getAllByLabelText(/^Channel \d+$/)[1], {
       target: { value: "C123456" },
     });
     expect(saveButton.disabled).toBe(false);
 
     const removeButtons = screen.getAllByRole("button", { name: /remove channel/i });
     await fireEvent.click(removeButtons[1]);
-    expect(screen.getAllByRole("textbox")).toHaveLength(1);
+    expect(screen.getAllByLabelText(/^Channel \d+$/)).toHaveLength(1);
     expect(saveButton.disabled).toBe(true); // back to the one empty row
   });
 
-  it("frozen disables every control: rows, add, save, and tokens", () => {
+  it("frozen disables every control: rows, add, save, the manifest toggle, and every setup field", () => {
     renderWithClient(SlackPanel, {
       agentName: "warden",
       slack: { app_id: "A123", channels: ["C123456"], state: "waiting" },
-      adminVisible: true,
       frozen: true,
     });
 
-    for (const row of screen.getAllByRole("textbox")) {
+    for (const row of screen.getAllByLabelText(/^Channel \d+$/)) {
       expect((row as HTMLInputElement).disabled).toBe(true);
     }
     expect(
@@ -105,6 +203,10 @@ describe("SlackPanel", () => {
     for (const button of screen.getAllByRole("button", { name: /remove channel/i })) {
       expect((button as HTMLButtonElement).disabled).toBe(true);
     }
+    expect(
+      (screen.getByRole("button", { name: "Show the manifest" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect((screen.getByLabelText("App ID") as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByLabelText("Bot token") as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByLabelText("App-level token") as HTMLInputElement).disabled).toBe(true);
     expect(
@@ -116,38 +218,11 @@ describe("SlackPanel", () => {
     renderWithClient(SlackPanel, {
       agentName: "warden",
       slack: { app_id: "A123", channels: ["C123456", "C654321"], state: "connected" },
-      adminVisible: false,
       frozen: false,
     });
 
     expect(screen.getByText("Connected.")).not.toBeNull();
-    const rows = screen.getAllByRole("textbox") as HTMLInputElement[];
+    const rows = screen.getAllByLabelText(/^Channel \d+$/) as HTMLInputElement[];
     expect(rows.map((row) => row.value)).toEqual(["C123456", "C654321"]);
-  });
-
-  it("admin + no app exists (idle): token fields absent, Connect to Slack button present", () => {
-    renderWithClient(SlackPanel, {
-      agentName: "warden",
-      slack: { app_id: null, channels: [], state: "idle" },
-      adminVisible: true,
-      frozen: false,
-    });
-
-    expect(screen.queryByLabelText("Bot token")).toBeNull();
-    expect(screen.queryByLabelText("App-level token")).toBeNull();
-    expect(screen.getByRole("button", { name: /connect to slack/i })).not.toBeNull();
-  });
-
-  it('waiting state (non-admin) shows exact waiting text', () => {
-    renderWithClient(SlackPanel, {
-      agentName: "warden",
-      slack: { app_id: "A123", channels: [], state: "waiting" },
-      adminVisible: false,
-      frozen: false,
-    });
-
-    expect(
-      screen.getByText("Channels saved. Waiting on an operator to finish the connection."),
-    ).not.toBeNull();
   });
 });

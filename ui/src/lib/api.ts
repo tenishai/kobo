@@ -49,17 +49,10 @@ export type AgentDetail = AgentSummary & {
   error: string | null;
   steps: StepView[];
   slack: AgentSlack;
-  /** Whether the Slack panel's operator-only lane (create-app guidance,
-   * bot/app token fields) should render — false when an operator config
-   * block hides Slack connect from this room entirely (see the server's
-   * `_slack_operator_block`). Two-lane Slack (2026-08-17) replaced the old
-   * whole-tab visibility flag: the channels lane is open to everyone now, so
-   * only the token-carrying half of the panel is gated. */
-  slack_admin_visible: boolean;
   /** Whether the Danger zone should render at all, false when an operator
    * config block hides destruction from this room entirely (see the
-   * server's `_operator_block`). Same discipline as `slack_admin_visible`:
-   * the route itself is the real enforcement boundary, this is UX only. */
+   * server's `_operator_block`). The route itself is the real enforcement
+   * boundary, this is UX only. */
   destroy_visible: boolean;
 };
 
@@ -671,33 +664,41 @@ export async function deleteTooling(
 }
 
 /**
- * Creates the Slack app for this agent (server calls out to Slack's app
- * manifest API and returns the app id plus a configure_url for the human
- * to open and finish install). No request body — the agent name in the
- * path is all the server needs.
+ * `GET /api/agents/{name}/slack/manifest`: the agent's rendered Slack app
+ * manifest (Slack self-service, 2026-08-17) — any signed-in user, ready-
+ * gated server-side, same as `connectSlack` below. Unwraps the response's
+ * `{"manifest": {...}}` envelope into the plain dict; the caller
+ * (`SlackPanel`'s "Show the manifest" control, via `slackManifestQuery` in
+ * queries.ts) renders it verbatim, pretty-printed, in a copyable block.
+ * Fetched lazily, never on mount: most agent-detail visits aren't setup
+ * visits.
  */
-export async function createSlackApp(
+export async function fetchSlackManifest(
   name: string,
-): Promise<{ app_id: string; configure_url: string }> {
+): Promise<Record<string, unknown>> {
   const res = await fetch(
-    `/api/agents/${encodeURIComponent(name)}/slack/app`,
-    { method: "POST" },
+    `/api/agents/${encodeURIComponent(name)}/slack/manifest`,
   );
-  return parse<{ app_id: string; configure_url: string }>(res);
+  const data = await parse<{ manifest: Record<string, unknown> }>(res);
+  return data.manifest;
 }
 
 /**
- * Finishes Slack connect: hands the two tokens (copied by the human from
- * Slack's app settings page) to the server, which validates and stores
- * them. Two-lane Slack (2026-08-17) moved the channel list off this call
- * entirely — the channels an agent listens on are whatever's already saved
- * via `saveSlackChannels` below, not something connect carries. The tokens
- * pass straight through in the request body and are never logged or
- * otherwise inspected here.
+ * Finishes Slack connect: hands the app id plus the two tokens (all copied
+ * by the human from Slack's own app site, per the self-service ceremony) to
+ * the server, which validates and stores them. Slack self-service
+ * (2026-08-17) added `app_id` to this body — the app now already exists by
+ * connect time (a human created it themselves from the manifest above), so
+ * its id arrives here instead of getting minted by a retired create-app
+ * route. Two-lane Slack (2026-08-17) had already moved the channel list off
+ * this call entirely — the channels an agent listens on are whatever's
+ * already saved via `saveSlackChannels` below, not something connect
+ * carries. Every field passes straight through in the request body and is
+ * never logged or otherwise inspected here.
  */
 export async function connectSlack(
   name: string,
-  body: { bot_token: string; app_token: string },
+  body: { app_id: string; bot_token: string; app_token: string },
 ): Promise<{ sha: string }> {
   const res = await fetch(
     `/api/agents/${encodeURIComponent(name)}/slack/connect`,

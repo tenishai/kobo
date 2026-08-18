@@ -1,16 +1,16 @@
 <script lang="ts">
-  // Two-lane Slack (2026-08-17): the channels lane (bottom-up, always
-  // rendered — the tab itself is unconditional now, see tabs.ts) is open to
-  // everyone in the room; the setup lane (create-app guidance + bot/app
-  // tokens) stays behind `adminVisible`, since that's the half that carries
-  // actual Slack secrets. Both lanes read the same `slack` prop
-  // (`AgentDetail.slack`, refetched by the caller's agentQuery — see
-  // AgentDetail.svelte): `app_id` says whether an app exists yet,
-  // `channels`/`state` say what's saved and how wired-up it is. Neither lane
-  // holds a "which phase am I in" flag of its own — they just render
-  // whatever `slack` says, so a save/connect success (which invalidates the
-  // agent detail query) advances the card for free once the refetch lands,
-  // same as MemoryPanel's knowledge list advances after a save.
+  // Slack self-service (2026-08-17) retired the operator-only create-app
+  // lane outright: the setup section below (manifest + instructions + the
+  // three paste fields) now renders for every signed-in user, no gate —
+  // there's no more `adminVisible` prop. Both the channels lane and the
+  // setup section read the same `slack` prop (`AgentDetail.slack`, refetched
+  // by the caller's agentQuery — see AgentDetail.svelte): `app_id` says
+  // whether a connect has ever recorded one, `channels`/`state` say what's
+  // saved and how wired-up it is. Neither lane holds a "which phase am I
+  // in" flag of its own — they just render whatever `slack` says, so a
+  // save/connect success (which invalidates the agent detail query)
+  // advances the card for free once the refetch lands, same as MemoryPanel's
+  // knowledge list advances after a save.
   //
   // The one thing that *is* local state independent of `slack` is the
   // delivery chip's sha store (shared by both lanes: a channels save and a
@@ -21,26 +21,25 @@
   // pair rather than `$state` — same @tanstack/svelte-query version quirk
   // applies here (deliveryQuery needs a *new* query per sha, and only a real
   // Svelte store makes createQuery re-derive its options after the first
-  // one).
+  // one). The manifest query below (`slackManifestQuery`) needs the exact
+  // same treatment for its own `opened` flag.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { derived, writable } from "svelte/store";
   import { errorMessage, type AgentSlack } from "../lib/api";
   import {
     connectSlackMutation,
-    createSlackAppMutation,
     deliveryQuery,
     saveSlackChannelsMutation,
+    slackManifestQuery,
   } from "../lib/queries";
 
   let {
     agentName,
     slack,
-    adminVisible = false,
     frozen = false,
   }: {
     agentName: string;
     slack: AgentSlack;
-    adminVisible?: boolean;
     frozen?: boolean;
   } = $props();
 
@@ -49,8 +48,6 @@
   // (the only caller) remounts this component via `{#key route.name}`
   // whenever the routed agent changes, so this prop is fixed for the
   // component's entire lifetime — same reasoning as ChatPanel/MemoryPanel.
-  // svelte-ignore state_referenced_locally
-  const createApp = createMutation(createSlackAppMutation(queryClient, agentName));
   // svelte-ignore state_referenced_locally
   const connect = createMutation(connectSlackMutation(queryClient, agentName));
   // svelte-ignore state_referenced_locally
@@ -122,31 +119,29 @@
   // flight — client-side only, `slack.state` itself has no such value.
   const statusText = $derived($connect.isPending ? "Connecting..." : STATE_COPY[slack.state]);
 
-  // --- Setup lane (operator-only: create-app guidance + tokens) -----------
+  // --- Setup section (Slack self-service, 2026-08-17: open to everyone,
+  // no gate) — the manifest reveal, the numbered ceremony instructions, and
+  // the three paste fields (App ID first) that finish connect. ------------
 
-  let createError = $state<string | null>(null);
   let connectError = $state<string | null>(null);
 
+  let appId = $state("");
   let botToken = $state("");
   let appToken = $state("");
 
   const canFinish = $derived(
-    botToken.trim().length > 0 && appToken.trim().length > 0 && !$connect.isPending,
+    appId.trim().length > 0 &&
+      botToken.trim().length > 0 &&
+      appToken.trim().length > 0 &&
+      !$connect.isPending,
   );
 
-  function handleCreateApp(): void {
-    createError = null;
-    $createApp.mutate(undefined, {
-      onError: (err: unknown) => {
-        createError = errorMessage(err, "Couldn't set up Slack. Try again.");
-      },
-    });
-  }
-
-  /** Submits both tokens (two-lane Slack, 2026-08-17: no channel here — the
-   * channels lane above owns that). Tokens are always cleared from local
-   * state afterward — on success because they're spent, on failure because
-   * the human needs to re-paste them (the error text says so). */
+  /** Submits the app id plus both tokens (two-lane Slack, 2026-08-17: no
+   * channel here — the channels lane above owns that; Slack self-service,
+   * 2026-08-17 added the app id itself, pasted by the human from Slack's own
+   * app site). All three are always cleared from local state afterward — on
+   * success because they're spent, on failure because the human needs to
+   * re-paste them (the error text says so). */
   function handleFinishSetup(): void {
     if (!canFinish) {
       return;
@@ -154,22 +149,43 @@
     connectError = null;
     $connect.mutate(
       {
+        app_id: appId.trim(),
         bot_token: botToken.trim(),
         app_token: appToken.trim(),
       },
       {
         onSuccess: (result) => {
+          appId = "";
           botToken = "";
           appToken = "";
           beginDelivery(result.sha);
         },
         onError: (err: unknown) => {
+          appId = "";
           botToken = "";
           appToken = "";
-          connectError = `${errorMessage(err, "Couldn't finish setting up Slack. Try again.")} Paste the tokens again.`;
+          connectError = `${errorMessage(err, "Couldn't finish setting up Slack. Try again.")} Paste them again.`;
         },
       },
     );
+  }
+
+  // --- Manifest reveal ------------------------------------------------------
+  //
+  // "Show the manifest" is a one-way reveal (the spec's own word), not a
+  // toggle: clicking it flips `manifestOpened` true for good, which both
+  // shows the block below AND (via the writable/derived pair, same version
+  // constraint as `deliverySha` above) is the only thing that ever enables
+  // `slackManifestQuery` — the fetch never fires on mount, only once a human
+  // actually asks to see it.
+  const manifestOpened = writable(false);
+  const manifestOptions = derived(manifestOpened, ($opened) =>
+    slackManifestQuery(agentName, $opened),
+  );
+  const manifest = createQuery(manifestOptions);
+
+  function handleShowManifest(): void {
+    manifestOpened.set(true);
   }
 
   // --- Delivery chip (copied pattern from MemoryPanel; see its doc comment
@@ -294,88 +310,113 @@
     </button>
   </div>
 
-  {#if adminVisible}
-    <div class="slack-panel__admin">
-      {#if slack.app_id === null}
-        <button
-          type="button"
-          class="slack-panel__connect"
-          disabled={frozen || $createApp.isPending}
-          onclick={handleCreateApp}
-        >
-          {$createApp.isPending ? "Connecting…" : "Connect to Slack"}
-        </button>
-        {#if createError}
-          <p class="slack-panel__error" role="alert">{createError}</p>
+  <div class="slack-panel__setup">
+    <div class="slack-panel__manifest">
+      <button
+        type="button"
+        class="slack-panel__manifest-toggle"
+        disabled={frozen}
+        onclick={handleShowManifest}
+      >
+        Show the manifest
+      </button>
+      {#if $manifestOpened}
+        {#if $manifest.isPending}
+          <p class="slack-panel__manifest-status">Loading the manifest…</p>
+        {:else if $manifest.isError}
+          <p class="slack-panel__error" role="alert">
+            {errorMessage($manifest.error, "Couldn't load the manifest.")}
+          </p>
+        {:else if $manifest.data}
+          <pre class="slack-panel__manifest-block">{JSON.stringify($manifest.data, null, 2)}</pre>
         {/if}
-      {:else}
-        {@const appId = slack.app_id}
-        <ol class="slack-panel__steps">
-          <li class="slack-panel__step">
-            <a
-              class="slack-panel__step-title slack-panel__step-link"
-              href={`https://api.slack.com/apps/${appId}`}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Install it to your workspace
-              <span class="slack-panel__sr-only"> (opens Slack)</span>
-            </a>
-            <p class="slack-panel__step-help">
-              Install the app, then copy the token that starts with xoxb-.
-            </p>
-          </li>
-          <li class="slack-panel__step">
-            <p class="slack-panel__step-title">Turn on its connection</p>
-            <p class="slack-panel__step-help">
-              In Basic Information → App-Level Tokens, create a token that can connect,
-              then copy the one that starts with xapp-.
-            </p>
-          </li>
-        </ol>
-
-        <form
-          class="slack-panel__form"
-          onsubmit={(event) => {
-            event.preventDefault();
-            handleFinishSetup();
-          }}
-        >
-          <div class="slack-panel__field">
-            <label class="slack-panel__label" for="slack-panel-bot-token">Bot token</label>
-            <input
-              id="slack-panel-bot-token"
-              class="slack-panel__input"
-              type="password"
-              autocomplete="off"
-              bind:value={botToken}
-              disabled={frozen}
-            />
-          </div>
-          <div class="slack-panel__field">
-            <label class="slack-panel__label" for="slack-panel-app-token">App-level token</label>
-            <input
-              id="slack-panel-app-token"
-              class="slack-panel__input"
-              type="password"
-              autocomplete="off"
-              bind:value={appToken}
-              disabled={frozen}
-            />
-          </div>
-
-          {#if connectError}
-            <p class="slack-panel__error" role="alert">{connectError}</p>
-          {/if}
-
-          <button type="submit" class="slack-panel__finish" disabled={frozen || !canFinish}>
-            {$connect.isPending ? "Finishing…" : "Finish setup"}
-          </button>
-        </form>
-        <p class="slack-panel__note">You can add a picture for it later in Slack's settings.</p>
       {/if}
     </div>
-  {/if}
+
+    <ol class="slack-panel__steps">
+      <li class="slack-panel__step">
+        <p class="slack-panel__step-text">
+          Create a new app from the manifest above, at
+          <a
+            class="slack-panel__step-link"
+            href="https://api.slack.com/apps"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Slack's app site
+            <span class="slack-panel__sr-only"> (opens Slack)</span>
+          </a>.
+        </p>
+      </li>
+      <li class="slack-panel__step">
+        <p class="slack-panel__step-text">Install it to your workspace.</p>
+      </li>
+      <li class="slack-panel__step">
+        <p class="slack-panel__step-text">
+          In Basic Information, under App-Level Tokens, create a token that can connect.
+        </p>
+      </li>
+      <li class="slack-panel__step">
+        <p class="slack-panel__step-text">
+          Copy the bot token from the OAuth page and the App ID from Basic Information.
+        </p>
+      </li>
+    </ol>
+
+    <form
+      class="slack-panel__form"
+      onsubmit={(event) => {
+        event.preventDefault();
+        handleFinishSetup();
+      }}
+    >
+      <div class="slack-panel__field">
+        <label class="slack-panel__label" for="slack-panel-app-id">App ID</label>
+        <input
+          id="slack-panel-app-id"
+          class="slack-panel__input"
+          type="text"
+          autocomplete="off"
+          bind:value={appId}
+          disabled={frozen}
+        />
+        <p class="slack-panel__hint">Starts with A, like A0123456789.</p>
+      </div>
+      <div class="slack-panel__field">
+        <label class="slack-panel__label" for="slack-panel-bot-token">Bot token</label>
+        <input
+          id="slack-panel-bot-token"
+          class="slack-panel__input"
+          type="password"
+          autocomplete="off"
+          bind:value={botToken}
+          disabled={frozen}
+        />
+        <p class="slack-panel__hint">Starts with xoxb-.</p>
+      </div>
+      <div class="slack-panel__field">
+        <label class="slack-panel__label" for="slack-panel-app-token">App-level token</label>
+        <input
+          id="slack-panel-app-token"
+          class="slack-panel__input"
+          type="password"
+          autocomplete="off"
+          bind:value={appToken}
+          disabled={frozen}
+        />
+        <p class="slack-panel__hint">Starts with xapp-.</p>
+      </div>
+
+      {#if connectError}
+        <p class="slack-panel__error" role="alert">{connectError}</p>
+      {/if}
+
+      <button type="submit" class="slack-panel__finish" disabled={frozen || !canFinish}>
+        {$connect.isPending ? "Finishing…" : "Finish setup"}
+      </button>
+    </form>
+    <p class="slack-panel__note">You can add a picture for it later in Slack's settings.</p>
+  </div>
 
   {#if $deliverySha !== null}
     <div
@@ -495,26 +536,6 @@
     cursor: not-allowed;
   }
 
-  .slack-panel__connect {
-    align-self: flex-start;
-    padding: var(--space-xs) var(--space-md);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .slack-panel__connect:hover:not(:disabled) {
-    filter: brightness(1.05);
-  }
-
-  .slack-panel__connect:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
   .slack-panel__save {
     align-self: flex-start;
     padding: var(--space-xs) var(--space-md);
@@ -541,7 +562,7 @@
     font-size: 0.85rem;
   }
 
-  .slack-panel__admin {
+  .slack-panel__setup {
     display: flex;
     flex-direction: column;
     gap: var(--space-md);
@@ -549,10 +570,59 @@
     border-top: 1px solid var(--border);
   }
 
+  .slack-panel__manifest {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-xs);
+  }
+
+  .slack-panel__manifest-toggle {
+    align-self: flex-start;
+    padding: var(--space-2xs) var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .slack-panel__manifest-toggle:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .slack-panel__manifest-toggle:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .slack-panel__manifest-status {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .slack-panel__manifest-block {
+    max-width: 100%;
+    max-height: 16rem;
+    padding: var(--space-sm);
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    white-space: pre;
+    user-select: all;
+  }
+
   .slack-panel__steps {
     display: flex;
     flex-direction: column;
-    gap: var(--space-md);
+    gap: var(--space-sm);
     margin: 0;
     padding-left: var(--space-lg);
   }
@@ -563,16 +633,14 @@
     gap: var(--space-2xs);
   }
 
-  .slack-panel__step-title {
+  .slack-panel__step-text {
     margin: 0;
     color: var(--ink);
-    font-weight: 600;
-    font-size: 0.9rem;
+    font-size: 0.85rem;
   }
 
   .slack-panel__step-link {
     display: inline-flex;
-    align-self: flex-start;
     color: var(--accent);
     text-decoration: none;
   }
@@ -581,10 +649,10 @@
     text-decoration: underline;
   }
 
-  .slack-panel__step-help {
+  .slack-panel__hint {
     margin: 0;
     color: var(--muted);
-    font-size: 0.8rem;
+    font-size: 0.75rem;
   }
 
   .slack-panel__form {
