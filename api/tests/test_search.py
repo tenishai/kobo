@@ -773,6 +773,61 @@ def test_marketplace_dialect_does_not_disturb_legacy_ingest_in_same_call(engine,
     assert get_entry(engine, "skill", "mp-skill", "") is not None
 
 
+# --- Fix round 1 (T1b review): _load_marketplace_entries tags coercion -----
+
+
+def test_marketplace_string_typed_tags_skipped_not_exploded_into_characters(engine, caplog):
+    # `list("fun,cool")` doesn't raise TypeError -- a string is iterable, so
+    # the old `except TypeError` guard let it through as one character per
+    # "tag" instead of catching the malformed value. A string-typed `tags`
+    # must be treated the same as any other malformed entry: skipped,
+    # debug-logged, never fatal to the whole ingest.
+    storage = _marketplace_storage(
+        {
+            "string-tags-skill": {
+                "name": "String tags skill",
+                "version": "1",
+                "description": "tags is a string, not a list",
+                "tags": "fun,cool",
+                "content_hash": "strtagsha",
+            }
+        }
+    )
+    with caplog.at_level(logging.DEBUG, logger="kobo_api.search"):
+        counts = ingest_indexes(engine, storage, {"skill": "skills-bucket"})
+
+    assert counts == {"skill": 0}
+    assert get_entry(engine, "skill", "string-tags-skill", "") is None
+    assert any("string-tags-skill" in record.message for record in caplog.records)
+
+
+# --- Fix round 1 (T1b review): blank/whitespace owner via the dict-shaped --
+# --- marketplace path (the Task 1 guard exercised only via the legacy list-
+# --- shaped `_skill_index` helper below, until now) -------------------------
+
+
+def test_marketplace_dialect_blank_owner_falls_through_dict_shaped_path(engine, caplog):
+    storage = _marketplace_storage(
+        {
+            "blank-owner-mp-skill": {
+                "name": "Blank owner marketplace skill",
+                "version": "1",
+                "description": "owner is whitespace-only in the dict-shaped mapping",
+                "owner": "   ",
+                "tags": [],
+                "content_hash": "mpsha-blank",
+            }
+        }
+    )
+    with caplog.at_level(logging.DEBUG, logger="kobo_api.search"):
+        ingest_indexes(engine, storage, {"skill": "skills-bucket"})
+
+    entry = get_entry(engine, "skill", "blank-owner-mp-skill", "")
+    assert entry is not None
+    assert entry.team == ""
+    assert any("blank-owner-mp-skill" in record.message for record in caplog.records)
+
+
 # --- Task 1b: the Task 1 review gap -- empty-string owner is garbage too ----
 
 

@@ -13,7 +13,12 @@ never state of its own).
 `add_catalog_skill` reuses `kobo_api.steps._materialize_catalog_skill` — the
 exact same containment-checked bucket download `_stage_skills` runs at
 provision time — so a skill added here after a provision, and one a fresh
-provision stages from scratch, are always materialized identically.
+provision stages from scratch, are always materialized identically. That
+includes the marketplace dialect (persona-metadata plan Task 1b):
+`add_catalog_skill` hoists `kobo_api.search.read_marketplace_catalog` once,
+same as `_stage_skills` does, and passes it through, rather than defaulting
+`_materialize_catalog_skill`'s `marketplace_catalog` argument to `None` and
+always falling through to the legacy team-prefixed path.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from pathlib import Path
 
 from kobo_api.clients import GitHubClient, StorageClient
 from kobo_api.config import Config
+from kobo_api.search import read_marketplace_catalog
 from kobo_api.steps import _materialize_catalog_skill
 
 # 1-40 chars: a lowercase letter, then lowercase/digit/hyphen — no path
@@ -86,10 +92,18 @@ def add_catalog_skill(
     Reuses `kobo_api.steps._materialize_catalog_skill` — the exact same
     containment-checked bucket download a fresh provision runs
     (`_stage_skills`) — so a skill picked here later downloads identically
-    to one picked at provision time. Its `RuntimeError` (raised when the
-    catalog no longer serves `team/skill_id`) is re-raised as `SkillsError`,
-    message preserved verbatim, so every caller-facing error out of this
-    module is a `SkillsError`.
+    to one picked at provision time. That includes the marketplace dialect
+    (persona-metadata plan Task 1b): mirroring `_stage_skills`' own hoisted
+    pattern, this reads the bucket's dialect probe
+    (`kobo_api.search.read_marketplace_catalog`) once, up front, and passes
+    it through, so a marketplace-dialect bucket resolves via the
+    version-pinned path here exactly as it does at provision time — never
+    silently falling through to the legacy team-prefixed listing (which
+    would 404 for a skill the marketplace dialect never wrote under a
+    team-prefixed key at all). Its `RuntimeError` (raised when the catalog
+    no longer serves the skill) is re-raised as `SkillsError`, message
+    preserved verbatim, so every caller-facing error out of this module is
+    a `SkillsError`.
 
     Returns `(commit_sha, current_source_sha)`: the pushed commit's local
     sha (`github.local_head` — a fresh clone's own HEAD right after the
@@ -104,8 +118,11 @@ def add_catalog_skill(
         github.clone(repo, workdir)
         skill_dir = workdir / "bundle" / "skills" / skill_id
         skill_dir.mkdir(parents=True, exist_ok=True)
+        marketplace_catalog = read_marketplace_catalog(storage, config.skills_bucket)
         try:
-            source_sha = _materialize_catalog_skill(storage, config, team, skill_id, skill_dir)
+            source_sha = _materialize_catalog_skill(
+                storage, config, team, skill_id, skill_dir, marketplace_catalog
+            )
         except RuntimeError as exc:
             raise SkillsError(str(exc)) from exc
         github.commit_push(workdir, f"kobo: add skill {skill_id}")

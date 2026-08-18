@@ -160,11 +160,14 @@ def _load_marketplace_entries(skills: Mapping[str, object], kind: str) -> list[d
     validation failures raise `ClientError` for the WHOLE ingest, since a
     hand-authored index getting a required field wrong is a real
     publish-side bug worth surfacing -- a malformed entry here (missing or
-    wrong-typed `name`/`description`, or a value that isn't even an object)
-    is skipped with a debug log naming its id, never fails the ingest: this
-    is a marketplace's own catalog, potentially carrying far more entries
-    than any team hand-authors, and one bad listing shouldn't take every
-    other skill down with it.
+    wrong-typed `name`/`description`, a value that isn't even an object, or
+    a `tags` that's a string or otherwise not iterable -- a string is
+    iterable too, so it gets its own explicit check rather than silently
+    exploding into one "tag" per character) is skipped with a debug log
+    naming its id, never fails the ingest: this is a marketplace's own
+    catalog, potentially carrying far more entries than any team
+    hand-authors, and one bad listing shouldn't take every other skill down
+    with it.
 
     Mapping: id = the dict key, name/description/tags as published,
     team = `_entry_team`'s owner-precedence rules (identical to the legacy
@@ -189,8 +192,22 @@ def _load_marketplace_entries(skills: Mapping[str, object], kind: str) -> list[d
             )
             continue
 
+        raw_tags = raw.get("tags", [])
+        if isinstance(raw_tags, str):
+            # A string is iterable, so `list(raw_tags)` below would silently
+            # explode it into one "tag" per character instead of raising --
+            # a string-typed tags value is exactly as malformed as a
+            # missing/wrong-typed name or description above and gets the
+            # same skip-and-debug-log treatment, never a character list.
+            log.debug(
+                "catalog ingest: marketplace skill %r has a string-typed tags "
+                "value (%r) -- skipping",
+                id_,
+                raw_tags,
+            )
+            continue
         try:
-            tags = list(raw.get("tags", []))
+            tags = list(raw_tags)
         except TypeError:
             log.debug(
                 "catalog ingest: marketplace skill %r has non-iterable tags -- skipping",

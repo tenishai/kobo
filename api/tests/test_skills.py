@@ -6,6 +6,7 @@ tests/fakes.py), no real git/gcs involved. Mirrors test_knowledge.py's idioms.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,18 @@ def _seed_catalog_skill(
         f"---\nname: {skill_id}\ndescription: A sample skill.\n---\nBody.\n".encode(),
         metadata={"source-sha": source_sha},
         content_type="text/markdown",
+    )
+
+
+def _write_marketplace_index(storage: FakeStorage, skill_id: str, entry: dict) -> None:
+    """Seed `storage`'s skills bucket with a marketplace-dialect (persona-
+    metadata plan Task 1b) `index.json` naming exactly one skill — mirrors
+    tests/test_steps.py's helper of the same name."""
+    storage.write_bytes(
+        SKILLS_BUCKET,
+        "index.json",
+        json.dumps({"skills": {skill_id: entry}, "count": 1}).encode(),
+        content_type="application/json",
     )
 
 
@@ -101,6 +114,47 @@ def test_add_catalog_skill_materializes_and_returns_current_sha():
     assert github.pushes[-1][1] == "kobo: add skill survey-field"
     assert sha == FAKE_LOCAL_HEAD_DEFAULT
     assert source_sha == "abc123"
+
+
+def test_add_catalog_skill_marketplace_dialect_resolves_version_pinned_path():
+    # T1b review fix (Important): add_catalog_skill must resolve a
+    # marketplace-dialect bucket the same way kobo_api.steps._stage_skills
+    # does -- via the version-pinned path, recording the content_hash pin --
+    # not silently fall through to the legacy team-prefixed listing (which
+    # 404s for a marketplace-only skill, since it never wrote anything under
+    # a team-prefixed key at all).
+    storage = FakeStorage()
+    _write_marketplace_index(
+        storage,
+        "survey-field",
+        {
+            "name": "Survey field (marketplace)",
+            "version": "3",
+            "description": "Plays a survey game.",
+            "tags": ["fun"],
+            "content_hash": "mpsha1",
+        },
+    )
+    storage.write_bytes(
+        SKILLS_BUCKET,
+        "catalog/survey-field/versions/3/SKILL.md",
+        b"Marketplace pinned body.\n",
+        content_type="text/markdown",
+    )
+    github = _CapturingGitHub()
+
+    sha, source_sha = add_catalog_skill(
+        github, storage, _config(), REPO, "survey-field", "shared"
+    )
+
+    assert github.captured_skills == {"survey-field/SKILL.md": "Marketplace pinned body.\n"}
+    assert github.pushes[-1][1] == "kobo: add skill survey-field"
+    assert sha == FAKE_LOCAL_HEAD_DEFAULT
+    assert source_sha == "mpsha1"
+    assert (
+        f"read_bytes:{SKILLS_BUCKET}:catalog/survey-field/versions/3/SKILL.md"
+        in storage.calls
+    )
 
 
 def test_add_catalog_skill_gone_from_catalog_raises():
