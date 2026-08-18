@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { fireEvent, screen } from "@testing-library/svelte";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SlackPanel from "./SlackPanel.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 
@@ -20,6 +20,14 @@ describe("SlackPanel", () => {
     // the bare catch-all is enough for those, same reasoning as
     // FrozenPanels.test.ts's SlackPanel case.
     stubFetch({ "/api/": {} });
+  });
+
+  afterEach(() => {
+    // jsdom has no `clipboard` own property by default (confirmed against
+    // the installed jsdom directly) — deleting it after every test restores
+    // that pristine state regardless of which test defined it, so the
+    // clipboard-success test below can't leak into its neighbors.
+    Reflect.deleteProperty(navigator, "clipboard");
   });
 
   it("idle state: channels lane renders with one empty row and Add another channel", () => {
@@ -99,7 +107,9 @@ describe("SlackPanel", () => {
       frozen: false,
     });
 
-    expect(screen.getByText("Install it to your workspace.")).not.toBeNull();
+    expect(
+      screen.getByText('Choose "From a manifest", then select your workspace.'),
+    ).not.toBeNull();
     expect(
       screen.getByText(
         "Copy the bot token from the OAuth page and the App ID from Basic Information.",
@@ -133,6 +143,67 @@ describe("SlackPanel", () => {
     expect(
       vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/slack/manifest")),
     ).toBe(true);
+  });
+
+  it('"Copy the manifest" is disabled until the manifest has loaded, then writes the exact rendered text to the clipboard and shows "Copied."', async () => {
+    stubFetch({
+      "/api/agents/warden/slack/manifest": { manifest: MANIFEST_FIXTURE },
+      "/api/": {},
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    // jsdom (confirmed directly against the installed package) has no
+    // `navigator.clipboard` at all, own or inherited, so `defineProperty`
+    // straight onto the real `navigator` is the accurate stub here — it
+    // leaves the rest of `navigator` (userAgent, etc.) intact, unlike
+    // `vi.stubGlobal("navigator", {...})`, which would replace the whole
+    // object wholesale.
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: IDLE_SLACK,
+      frozen: false,
+    });
+
+    const copyButton = screen.getByRole("button", {
+      name: "Copy the manifest",
+    }) as HTMLButtonElement;
+    expect(copyButton.disabled).toBe(true); // manifest not loaded yet
+
+    await fireEvent.click(screen.getByRole("button", { name: "Show the manifest" }));
+    await screen.findByText(/keeper agent/);
+    expect(copyButton.disabled).toBe(false);
+
+    await fireEvent.click(copyButton);
+
+    expect(writeText).toHaveBeenCalledWith(JSON.stringify(MANIFEST_FIXTURE, null, 2));
+    expect(await screen.findByText("Copied.")).not.toBeNull();
+  });
+
+  it('"Copy the manifest" shows the fallback note when the clipboard write is unavailable', async () => {
+    stubFetch({
+      "/api/agents/warden/slack/manifest": { manifest: MANIFEST_FIXTURE },
+      "/api/": {},
+    });
+    // No stub here on purpose: jsdom's own `navigator.clipboard` is already
+    // undefined, which is the real-world failure mode this covers (a
+    // non-secure context).
+
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: IDLE_SLACK,
+      frozen: false,
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Show the manifest" }));
+    await screen.findByText(/keeper agent/);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Copy the manifest" }));
+
+    expect(await screen.findByText("Copy failed. Select the text instead.")).not.toBeNull();
   });
 
   it("Finish setup stays disabled until App ID, bot token, and app token are all filled", async () => {
@@ -205,6 +276,9 @@ describe("SlackPanel", () => {
     }
     expect(
       (screen.getByRole("button", { name: "Show the manifest" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole("button", { name: "Copy the manifest" }) as HTMLButtonElement).disabled,
     ).toBe(true);
     expect((screen.getByLabelText("App ID") as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByLabelText("Bot token") as HTMLInputElement).disabled).toBe(true);

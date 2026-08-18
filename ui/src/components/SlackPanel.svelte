@@ -188,6 +188,35 @@
     manifestOpened.set(true);
   }
 
+  // The exact pretty-printed string rendered in the `<pre>` below, kept as a
+  // single source: the copy button hands this same value to the clipboard,
+  // so there's never a second `JSON.stringify` call that could drift from
+  // what the human actually sees.
+  const manifestText = $derived(
+    $manifest.data ? JSON.stringify($manifest.data, null, 2) : undefined,
+  );
+
+  let copyState = $state<"idle" | "copied" | "failed">("idle");
+
+  /** Copies `manifestText` to the clipboard. Falls back to a plain failure
+   * note (the `<pre>` itself stays selectable via `user-select: all`) when
+   * `navigator.clipboard` isn't there (e.g. a non-secure context) or the
+   * write itself rejects. */
+  async function handleCopyManifest(): Promise<void> {
+    if (manifestText === undefined) {
+      return;
+    }
+    try {
+      if (!navigator.clipboard) {
+        throw new Error("Clipboard unavailable");
+      }
+      await navigator.clipboard.writeText(manifestText);
+      copyState = "copied";
+    } catch {
+      copyState = "failed";
+    }
+  }
+
   // --- Delivery chip (copied pattern from MemoryPanel; see its doc comment
   // and the module comment above for the full rationale) -------------------
 
@@ -312,14 +341,27 @@
 
   <div class="slack-panel__setup">
     <div class="slack-panel__manifest">
-      <button
-        type="button"
-        class="slack-panel__manifest-toggle"
-        disabled={frozen}
-        onclick={handleShowManifest}
-      >
-        Show the manifest
-      </button>
+      <div class="slack-panel__manifest-actions">
+        <button
+          type="button"
+          class="slack-panel__manifest-toggle"
+          disabled={frozen}
+          onclick={handleShowManifest}
+        >
+          Show the manifest
+        </button>
+        <button
+          type="button"
+          class="slack-panel__manifest-copy"
+          disabled={frozen || manifestText === undefined}
+          onclick={handleCopyManifest}
+        >
+          {copyState === "copied" ? "Copied." : "Copy the manifest"}
+        </button>
+      </div>
+      {#if copyState === "failed"}
+        <p class="slack-panel__error" role="alert">Copy failed. Select the text instead.</p>
+      {/if}
       {#if $manifestOpened}
         {#if $manifest.isPending}
           <p class="slack-panel__manifest-status">Loading the manifest…</p>
@@ -327,8 +369,8 @@
           <p class="slack-panel__error" role="alert">
             {errorMessage($manifest.error, "Couldn't load the manifest.")}
           </p>
-        {:else if $manifest.data}
-          <pre class="slack-panel__manifest-block">{JSON.stringify($manifest.data, null, 2)}</pre>
+        {:else if manifestText !== undefined}
+          <pre class="slack-panel__manifest-block">{manifestText}</pre>
         {/if}
       {/if}
     </div>
@@ -336,20 +378,26 @@
     <ol class="slack-panel__steps">
       <li class="slack-panel__step">
         <p class="slack-panel__step-text">
-          Create a new app from the manifest above, at
+          At
           <a
             class="slack-panel__step-link"
             href="https://api.slack.com/apps"
             target="_blank"
             rel="noopener noreferrer"
           >
-            Slack's app site
+            api.slack.com/apps
             <span class="slack-panel__sr-only"> (opens Slack)</span>
-          </a>.
+          </a>, press "Create New App".
         </p>
       </li>
       <li class="slack-panel__step">
-        <p class="slack-panel__step-text">Install it to your workspace.</p>
+        <p class="slack-panel__step-text">Choose "From a manifest", then select your workspace.</p>
+      </li>
+      <li class="slack-panel__step">
+        <p class="slack-panel__step-text">Paste the manifest above on the JSON tab, then create the app.</p>
+      </li>
+      <li class="slack-panel__step">
+        <p class="slack-panel__step-text">Install the app to your workspace.</p>
       </li>
       <li class="slack-panel__step">
         <p class="slack-panel__step-text">
@@ -577,7 +625,15 @@
     gap: var(--space-xs);
   }
 
-  .slack-panel__manifest-toggle {
+  .slack-panel__manifest-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .slack-panel__manifest-toggle,
+  .slack-panel__manifest-copy {
     align-self: flex-start;
     padding: var(--space-2xs) var(--space-sm);
     border: 1px solid var(--border);
@@ -588,12 +644,14 @@
     cursor: pointer;
   }
 
-  .slack-panel__manifest-toggle:hover:not(:disabled) {
+  .slack-panel__manifest-toggle:hover:not(:disabled),
+  .slack-panel__manifest-copy:hover:not(:disabled) {
     border-color: var(--accent);
     color: var(--accent);
   }
 
-  .slack-panel__manifest-toggle:disabled {
+  .slack-panel__manifest-toggle:disabled,
+  .slack-panel__manifest-copy:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
