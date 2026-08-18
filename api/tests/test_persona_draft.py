@@ -10,12 +10,14 @@ import pytest
 
 from kobo_api.persona_draft import (
     _fallback_name,
+    _fallback_tags,
     _fallback_what,
     _fallback_who,
     _first_clause,
     finalize_draft,
 )
 from kobo_api.personas import PersonaFields, persona_id
+from kobo_api.purpose_tags import normalize_tags
 
 JOB = "Help customers troubleshoot billing issues quickly and politely."
 
@@ -168,6 +170,7 @@ def test_finalize_draft_all_valid_fields_pass_through_unchanged():
         "name": "billing-buddy",
         "who_they_are": "a calm troubleshooter for billing questions",
         "what_they_do": "Helps customers resolve billing issues quickly.",
+        "purpose_tags": ["billing", "support"],
     }
 
     result = finalize_draft(raw, job=JOB)
@@ -184,6 +187,9 @@ def test_finalize_draft_none_raw_falls_back_on_every_field():
     assert result["name"] == _fallback_name(JOB)
     assert result["who_they_are"] == _fallback_who(JOB)
     assert result["what_they_do"] == _fallback_what(JOB)
+    assert result["purpose_tags"] == _fallback_tags(
+        _fallback_name(JOB), _fallback_who(JOB), _fallback_what(JOB)
+    )
 
 
 def test_finalize_draft_empty_dict_falls_back_on_every_field():
@@ -192,6 +198,9 @@ def test_finalize_draft_empty_dict_falls_back_on_every_field():
     assert result["name"] == _fallback_name(JOB)
     assert result["who_they_are"] == _fallback_who(JOB)
     assert result["what_they_do"] == _fallback_what(JOB)
+    assert result["purpose_tags"] == _fallback_tags(
+        _fallback_name(JOB), _fallback_who(JOB), _fallback_what(JOB)
+    )
 
 
 def test_finalize_draft_non_dict_raw_treated_as_unusable():
@@ -376,4 +385,134 @@ def test_finalize_draft_all_fields_bad_equals_full_fallback():
 def test_finalize_draft_full_fallback_is_deterministic_for_same_job(job):
     first = finalize_draft(None, job=job)
     second = finalize_draft(None, job=job)
+    assert first == second
+
+
+# --- finalize_draft: purpose_tags (persona-metadata plan, Task 2) --------------
+
+
+NAME = "billing-buddy"
+WHO = "a calm troubleshooter for billing questions"
+WHAT = "Helps customers resolve billing issues quickly."
+
+
+def test_finalize_draft_model_purpose_tags_normalized():
+    raw = {
+        "name": NAME,
+        "who_they_are": WHO,
+        "what_they_do": WHAT,
+        "purpose_tags": ["Billing", "billing", " Support ", "REFUNDS"],
+    }
+
+    result = finalize_draft(raw, job=JOB)
+
+    assert result["purpose_tags"] == ["billing", "support", "refunds"]
+
+
+def test_finalize_draft_model_purpose_tags_capped_at_five():
+    raw = {
+        "name": NAME,
+        "who_they_are": WHO,
+        "what_they_do": WHAT,
+        "purpose_tags": ["one", "two", "three", "four", "five", "six", "seven"],
+    }
+
+    result = finalize_draft(raw, job=JOB)
+
+    assert result["purpose_tags"] == ["one", "two", "three", "four", "five"]
+
+
+def test_finalize_draft_missing_purpose_tags_falls_back_to_persona_own_tags():
+    raw = {"name": NAME, "who_they_are": WHO, "what_they_do": WHAT}
+
+    result = finalize_draft(raw, job=JOB)
+
+    assert result["purpose_tags"] == _fallback_tags(NAME, WHO, WHAT)
+
+
+def test_finalize_draft_non_list_purpose_tags_falls_back():
+    raw = {
+        "name": NAME,
+        "who_they_are": WHO,
+        "what_they_do": WHAT,
+        "purpose_tags": "billing, refunds",
+    }
+
+    result = finalize_draft(raw, job=JOB)
+
+    assert result["purpose_tags"] == _fallback_tags(NAME, WHO, WHAT)
+
+
+def test_finalize_draft_empty_list_purpose_tags_falls_back():
+    raw = {"name": NAME, "who_they_are": WHO, "what_they_do": WHAT, "purpose_tags": []}
+
+    result = finalize_draft(raw, job=JOB)
+
+    assert result["purpose_tags"] == _fallback_tags(NAME, WHO, WHAT)
+
+
+def test_finalize_draft_all_non_string_purpose_tags_falls_back():
+    raw = {
+        "name": NAME,
+        "who_they_are": WHO,
+        "what_they_do": WHAT,
+        "purpose_tags": [1, None, ["nested"]],
+    }
+
+    result = finalize_draft(raw, job=JOB)
+
+    assert result["purpose_tags"] == _fallback_tags(NAME, WHO, WHAT)
+
+
+def test_finalize_draft_purpose_tags_fallback_uses_finalized_fields_not_job():
+    """The fallback tier is "the persona's own tags" — derived from the
+    FINALIZED name/who_they_are/what_they_do (whichever tier those
+    themselves came from), never re-derived from the raw job text
+    directly. Here the model supplies a valid name/who/what but no tags at
+    all, so the fallback must reflect those model-supplied fields, not
+    `_fallback_name(job)`/`_fallback_who(job)`/`_fallback_what(job)`."""
+    raw = {"name": NAME, "who_they_are": WHO, "what_they_do": WHAT}
+
+    result = finalize_draft(raw, job="Do something totally unrelated to billing.")
+
+    assert result["purpose_tags"] == _fallback_tags(NAME, WHO, WHAT)
+
+
+# --- _fallback_tags -------------------------------------------------------------
+
+
+def test_fallback_tags_derives_from_persona_own_fields_and_caps_at_five():
+    # Manually traced against personas._derive_tags' own algorithm (every
+    # lowercase word from name+who+what, minus stopwords, deduped,
+    # longest-first, stable on ties): "a"/"for" are stopwords; the
+    # remaining words rank troubleshooter(14), questions/customers(9,
+    # first-seen order), billing/resolve/quickly(7), issues(6),
+    # buddy/helps(5), calm(4) — capped at 5 here (the draft's own cap,
+    # narrower than _derive_tags' own cap of 6).
+    tags = _fallback_tags(NAME, WHO, WHAT)
+
+    assert tags == ["troubleshooter", "questions", "customers", "billing", "resolve"]
+
+
+def test_fallback_tags_matches_derive_tags_normalized_and_capped():
+    from kobo_api.personas import _derive_tags
+
+    fields = PersonaFields(name=NAME, who_they_are=WHO, what_they_do=WHAT)
+    expected = normalize_tags(_derive_tags(fields, persona_id(NAME)))[:5]
+
+    assert _fallback_tags(NAME, WHO, WHAT) == expected
+
+
+def test_fallback_tags_never_exceeds_five():
+    tags = _fallback_tags(
+        "word-mill",
+        "turns every incoming word into something useful for the team",
+        "Processes words, phrases, sentences, paragraphs, and entire documents.",
+    )
+    assert len(tags) <= 5
+
+
+def test_fallback_tags_deterministic_for_same_fields():
+    first = _fallback_tags(NAME, WHO, WHAT)
+    second = _fallback_tags(NAME, WHO, WHAT)
     assert first == second

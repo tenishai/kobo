@@ -321,7 +321,7 @@ def test_create_agent_bad_team_slug_returns_422(client):
     )
 
     assert response.status_code == 422
-    assert "error" in response.json()
+    assert response.json() == {"error": "that doesn't look like a team name"}
 
 
 def test_create_agent_omitted_team_defaults_to_shared(client):
@@ -406,6 +406,101 @@ def test_get_agent_team_is_null_for_pre_existing_rows(session_factory, config, c
 
     listing = client.get("/api/agents").json()["agents"]
     assert listing[0]["team"] is None
+
+
+# --- purpose_tags / capability (persona-metadata plan, Task 2) ---------------------
+
+
+def test_create_agent_purpose_tags_normalized_and_stored(client):
+    response = client.post(
+        "/api/agents",
+        json={
+            "name": AGENT_NAME,
+            "persona": PERSONA,
+            "team": TEAM,
+            "purpose_tags": ["Billing", "billing", " Support "],
+        },
+    )
+
+    assert response.status_code == 201
+
+    detail = client.get(f"/api/agents/{AGENT_NAME}").json()
+    assert detail["purpose_tags"] == ["billing", "support"]
+
+
+def test_create_agent_purpose_tags_defaults_to_empty_list(client):
+    response = client.post(
+        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM}
+    )
+
+    assert response.status_code == 201
+
+    detail = client.get(f"/api/agents/{AGENT_NAME}").json()
+    assert detail["purpose_tags"] == []
+
+
+def test_create_agent_purpose_tags_over_cap_rejected(client):
+    tags = [f"tag{i}" for i in range(9)]
+
+    response = client.post(
+        "/api/agents",
+        json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM, "purpose_tags": tags},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "Eight tags at most."}
+
+
+def test_create_agent_purpose_tags_dedupe_brings_under_cap_accepted(client):
+    # 9 repeats of the SAME tag de-dupe down to 1 — the cap must be
+    # checked AFTER normalization, not against the raw submitted count.
+    tags = ["billing"] * 9
+
+    response = client.post(
+        "/api/agents",
+        json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM, "purpose_tags": tags},
+    )
+
+    assert response.status_code == 201
+
+    detail = client.get(f"/api/agents/{AGENT_NAME}").json()
+    assert detail["purpose_tags"] == ["billing"]
+
+
+def test_get_agent_capability_is_null_until_earned(client):
+    response = client.post(
+        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM}
+    )
+
+    assert response.status_code == 201
+
+    detail = client.get(f"/api/agents/{AGENT_NAME}").json()
+    assert detail["capability"] is None
+    assert "capability" in detail
+
+
+def test_get_agent_purpose_tags_and_capability_null_for_pre_existing_rows(
+    session_factory, config, clients
+):
+    """A row that predates the purpose_tags/capability columns (or was
+    simply never given values) must render `[]`/`null`, not 500 — same
+    story as `test_get_agent_team_is_null_for_pre_existing_rows` above."""
+    client = TestClient(create_app(session_factory, config=config, clients=clients))
+    session = session_factory()
+    session.add(
+        Agent(
+            name=AGENT_NAME,
+            persona=PERSONA,
+            model_id=config.models[0].id,
+            status=AgentStatus.READY,
+        )
+    )
+    session.commit()
+    session.close()
+
+    detail = client.get(f"/api/agents/{AGENT_NAME}").json()
+    assert detail["purpose_tags"] == []
+    assert detail["capability"] is None
 
 
 def test_create_agent_pipeline_materializes_staged_skill_and_persona_body(client, fake_github):

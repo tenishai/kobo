@@ -16,7 +16,12 @@ from kobo_api.clients import Clients
 from kobo_api.config import Config
 from kobo_api.main import create_app
 from kobo_api.models import Base
-from kobo_api.persona_draft import _fallback_name, _fallback_what, _fallback_who
+from kobo_api.persona_draft import (
+    _fallback_name,
+    _fallback_tags,
+    _fallback_what,
+    _fallback_who,
+)
 from tests.fakes import (
     FakeAgent,
     FakeCloud,
@@ -277,6 +282,7 @@ def test_draft_persona_happy_path_returns_the_three_fields(config, tmp_path):
             "name": "billing-buddy",
             "who_they_are": "a calm troubleshooter for billing questions",
             "what_they_do": "Helps customers resolve billing issues quickly.",
+            "purpose_tags": ["billing", "support"],
         }
     )
     client = _draft_client(config, tmp_path, name=fake_name)
@@ -288,7 +294,61 @@ def test_draft_persona_happy_path_returns_the_three_fields(config, tmp_path):
         "name": "billing-buddy",
         "who_they_are": "a calm troubleshooter for billing questions",
         "what_they_do": "Helps customers resolve billing issues quickly.",
+        "purpose_tags": ["billing", "support"],
     }
+
+
+def test_draft_persona_model_purpose_tags_are_normalized(config, tmp_path):
+    fake_name = FakeName(
+        draft={
+            "name": "billing-buddy",
+            "who_they_are": "a calm troubleshooter for billing questions",
+            "what_they_do": "Helps customers resolve billing issues quickly.",
+            "purpose_tags": ["Billing", "billing", " Support ", "REFUNDS"],
+        }
+    )
+    client = _draft_client(config, tmp_path, name=fake_name)
+
+    response = client.post("/api/personas/draft", json=DRAFT_PAYLOAD)
+
+    assert response.json()["purpose_tags"] == ["billing", "support", "refunds"]
+
+
+def test_draft_persona_model_purpose_tags_capped_at_five(config, tmp_path):
+    fake_name = FakeName(
+        draft={
+            "name": "billing-buddy",
+            "who_they_are": "a calm troubleshooter for billing questions",
+            "what_they_do": "Helps customers resolve billing issues quickly.",
+            "purpose_tags": ["one", "two", "three", "four", "five", "six", "seven"],
+        }
+    )
+    client = _draft_client(config, tmp_path, name=fake_name)
+
+    response = client.post("/api/personas/draft", json=DRAFT_PAYLOAD)
+
+    assert response.json()["purpose_tags"] == ["one", "two", "three", "four", "five"]
+
+
+def test_draft_persona_falls_back_to_persona_own_tags_when_model_omits_them(
+    config, tmp_path
+):
+    fake_name = FakeName(
+        draft={
+            "name": "billing-buddy",
+            "who_they_are": "a calm troubleshooter for billing questions",
+            "what_they_do": "Helps customers resolve billing issues quickly.",
+        }
+    )
+    client = _draft_client(config, tmp_path, name=fake_name)
+
+    response = client.post("/api/personas/draft", json=DRAFT_PAYLOAD)
+
+    assert response.json()["purpose_tags"] == _fallback_tags(
+        "billing-buddy",
+        "a calm troubleshooter for billing questions",
+        "Helps customers resolve billing issues quickly.",
+    )
 
 
 def test_draft_persona_calls_generator_with_job_and_rules(config, tmp_path):
@@ -346,6 +406,9 @@ def test_draft_persona_generator_client_error_falls_back_still_200(config, tmp_p
         "name": _fallback_name(job),
         "who_they_are": _fallback_who(job),
         "what_they_do": _fallback_what(job),
+        "purpose_tags": _fallback_tags(
+            _fallback_name(job), _fallback_who(job), _fallback_what(job)
+        ),
     }
     assert any("persona draft" in record.message.lower() for record in caplog.records)
 
@@ -361,6 +424,9 @@ def test_draft_persona_no_name_client_configured_falls_back_still_200(config, tm
         "name": _fallback_name(job),
         "who_they_are": _fallback_who(job),
         "what_they_do": _fallback_what(job),
+        "purpose_tags": _fallback_tags(
+            _fallback_name(job), _fallback_who(job), _fallback_what(job)
+        ),
     }
 
 

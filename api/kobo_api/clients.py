@@ -1770,11 +1770,13 @@ def _build_persona_draft_prompt(job: str, rules: list[str]) -> str:
         "- ONE vivid who-they-are line, 200 characters or fewer, a single "
         "line with no line breaks\n"
         "- 2-4 plain sentences describing what they do, 500 characters or "
-        "fewer\n\n"
+        "fewer\n"
+        "- 1-5 short, lowercase purpose_tags (one or two words each) "
+        "capturing what this persona is for\n\n"
         'Respond with ONLY a strict JSON object shaped {"name": "...", '
-        '"who_they_are": "...", "what_they_do": "..."} — no prose, no '
-        "markdown fences, no commentary, nothing before or after the "
-        "object."
+        '"who_they_are": "...", "what_they_do": "...", "purpose_tags": '
+        '["...", ...]} — no prose, no markdown fences, no commentary, '
+        "nothing before or after the object."
     )
 
 
@@ -1937,11 +1939,16 @@ class VertexNameClient:
         # No type/bounds checking here (mirrors suggest()'s own split with
         # kobo_api.namegen.finalize_suggestions) — kobo_api.persona_draft.
         # finalize_draft is what validates each field against PersonaFields'
-        # real bounds and falls each one back individually.
+        # real bounds and falls each one back individually. purpose_tags is
+        # the same story: whatever raw JSON value (or None, if the key's
+        # missing) the reply carried, passed through untouched —
+        # finalize_draft normalizes/caps it (or falls back to the persona's
+        # own derived tags) on the way out.
         return {
             "name": parsed.get("name"),
             "who_they_are": parsed.get("who_they_are"),
             "what_they_do": parsed.get("what_they_do"),
+            "purpose_tags": parsed.get("purpose_tags"),
         }
 
 

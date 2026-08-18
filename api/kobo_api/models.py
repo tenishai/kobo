@@ -60,6 +60,20 @@ class Agent(Base):
     # it for free via create_all), and pre-existing rows simply have no team
     # recorded.
     team: Mapped[str | None] = mapped_column(String(63), nullable=True)
+    # Persona metadata (persona-metadata plan, Task 2): purpose_tags is the
+    # normalized, order-preserving tag list JSON-encoded for storage (see
+    # kobo_api.purpose_tags.encode_tags/decode_tags — same "JSON text in a
+    # VARCHAR column" idiom as slack_channels below), and capability is a
+    # plain string that stays null until it's "earned" (a later task in the
+    # same plan writes it; this task only carries the column and always
+    # serves it back null). Both nullable for the same reason team above
+    # is: this pair postdates create_all on any already-running dev DB —
+    # those need manual ALTERs (fresh DBs get them for free via
+    # create_all):
+    #   ALTER TABLE agents ADD COLUMN purpose_tags VARCHAR;
+    #   ALTER TABLE agents ADD COLUMN capability VARCHAR;
+    purpose_tags: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    capability: Mapped[str | None] = mapped_column(String(255), nullable=True)
     model_id: Mapped[str] = mapped_column(String(255), nullable=False)
     skills: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     status: Mapped[str] = mapped_column(

@@ -2881,6 +2881,7 @@ def test_vertex_name_client_draft_parses_clean_json_object():
         "name": "billing-buddy",
         "who_they_are": "a calm troubleshooter",
         "what_they_do": "Helps with billing.",
+        "purpose_tags": None,
     }
 
 
@@ -2904,7 +2905,50 @@ def test_vertex_name_client_draft_parses_fenced_json_block():
 
     result = client.draft("help with billing", [])
 
-    assert result == {"name": "flint", "who_they_are": "quick", "what_they_do": "sparks"}
+    assert result == {
+        "name": "flint",
+        "who_they_are": "quick",
+        "what_they_do": "sparks",
+        "purpose_tags": None,
+    }
+
+
+def test_vertex_name_client_draft_prompt_asks_for_purpose_tags():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(200, json=_object_reply('{"name": "n"}'))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    client.draft("help customers with billing", [])
+
+    prompt = captured["json"]["contents"][0]["parts"][0]["text"]
+    assert "purpose_tags" in prompt
+
+
+def test_vertex_name_client_draft_parses_purpose_tags_from_reply():
+    reply_text = (
+        '{"name": "billing-buddy", "who_they_are": "calm", "what_they_do": "helps", '
+        '"purpose_tags": ["billing", "support"]}'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_object_reply(reply_text))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    result = client.draft("help with billing", [])
+
+    assert result["purpose_tags"] == ["billing", "support"]
 
 
 def test_vertex_name_client_draft_missing_keys_return_none_for_those_keys():
@@ -2924,7 +2968,12 @@ def test_vertex_name_client_draft_missing_keys_return_none_for_those_keys():
 
     result = client.draft("help with billing", [])
 
-    assert result == {"name": "flint", "who_they_are": None, "what_they_do": None}
+    assert result == {
+        "name": "flint",
+        "who_they_are": None,
+        "what_they_do": None,
+        "purpose_tags": None,
+    }
 
 
 def test_vertex_name_client_draft_garbage_text_raises_client_error():

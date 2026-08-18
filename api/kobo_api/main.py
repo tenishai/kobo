@@ -51,6 +51,7 @@ from kobo_api.provisioner import (
     run_pipeline,
     sweep_interrupted,
 )
+from kobo_api.purpose_tags import clean_tags, decode_tags, encode_tags
 from kobo_api.search import (
     CATALOG_TTL_S,
     distinct_skill_teams,
@@ -93,6 +94,17 @@ if TYPE_CHECKING:
     from kobo_api.clients import Clients
 
 
+# The single source for a team slug's shape: lowercase, starts with a
+# letter, up to 24 chars total of letters/digits/hyphens after that — same
+# shape a persona/skill tag has always required. `CreatePersonaRequest.team`
+# below imports this into its own `Field(pattern=...)`; `CreateAgentRequest.
+# team` (a plain `str`, deliberately not a Field pattern — see its own
+# docstring) has `create_agent` match against this directly instead, so its
+# route can answer a shape mismatch with plain rejection copy rather than
+# the generic `RequestValidationError` message a Field pattern would trigger.
+TEAM_SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,23}$")
+
+
 class SkillPick(BaseModel):
     """One entry of `CreateAgentRequest.skills`: a skill id plus the catalog
     team it belongs to — a skill id is only unique within its own team
@@ -115,9 +127,25 @@ class CreateAgentRequest(BaseModel):
     # catalogs already carries. An explicit team is still validated and
     # honored exactly as before; only the "must be present at all" part is
     # gone.
-    team: str = Field(default="shared", pattern=r"^[a-z][a-z0-9-]{0,23}$")
+    #
+    # Deliberately a plain `str` here, NOT `Field(pattern=...)` (contrast
+    # `CreatePersonaRequest.team` below, which still is a Field pattern) —
+    # a pydantic pattern mismatch never reaches route code at all (the
+    # app-wide `RequestValidationError` handler answers it with the
+    # generic "that request wasn't quite right" copy), and the
+    # persona-metadata plan (Task 2) wants create_agent's own plain
+    # rejection copy for a bad team specifically. `create_agent` validates
+    # this against `TEAM_SLUG_RE` itself, same in-route idiom as
+    # `SLACK_APP_ID_RE`'s own manual check elsewhere in this file.
+    team: str = "shared"
     skills: list[SkillPick] = []
     model: str | None = None
+    # purpose_tags (persona-metadata plan, Task 2): normalized/capped
+    # server-side by `clean_tags` (kobo_api.purpose_tags) in the route,
+    # never at the pydantic layer — de-dupe can bring an over-cap raw list
+    # back under the cap, so the cap must be checked AFTER normalization,
+    # not against the raw submitted length a pydantic max_length would see.
+    purpose_tags: list[str] = []
 
 
 class NameSuggestionsRequest(BaseModel):
@@ -232,7 +260,7 @@ class SlackChannelsRequest(BaseModel):
 
 class CreatePersonaRequest(PersonaFields):
     """POST /api/personas body: every PersonaFields field plus the creating
-    team (`^[a-z][a-z0-9-]{0,23}$`, same slug shape as a persona/skill tag).
+    team (`TEAM_SLUG_RE` above, same slug shape as a persona/skill tag).
 
     Optional, defaulting to "shared" (Persona v3 / teamless create
     addendum) — same team-optional move as `CreateAgentRequest.team`
@@ -241,7 +269,7 @@ class CreatePersonaRequest(PersonaFields):
     team, and "shared" is what nearly every persona already carries.
     """
 
-    team: str = Field(default="shared", pattern=r"^[a-z][a-z0-9-]{0,23}$")
+    team: str = Field(default="shared", pattern=TEAM_SLUG_RE.pattern)
 
 
 class PersonaDraftRequest(BaseModel):
@@ -1029,6 +1057,20 @@ def create_app(
                 {"error": f"invalid name ({name_reason}): {payload.name!r}"}, status_code=422
             )
 
+        # Persona-metadata plan (Task 2): team is a plain `str` on
+        # CreateAgentRequest specifically so a shape mismatch lands here
+        # (plain copy) instead of the generic RequestValidationError
+        # message a `Field(pattern=...)` would trigger — see the field's
+        # own docstring.
+        if not TEAM_SLUG_RE.match(payload.team):
+            return JSONResponse(
+                {"error": "that doesn't look like a team name"}, status_code=422
+            )
+
+        cleaned_tags = clean_tags(payload.purpose_tags)
+        if isinstance(cleaned_tags, str):
+            return JSONResponse({"error": cleaned_tags}, status_code=422)
+
         # Bucket catalogs (Task 5): TTL-refresh via the same hook the search
         # routes use, then validate persona/skills against the FTS table —
         # never the old local-clone scanners. All of this must happen BEFORE
@@ -1084,6 +1126,7 @@ def create_app(
             name=payload.name,
             persona=payload.persona,
             team=payload.team,
+            purpose_tags=encode_tags(cleaned_tags),
             model_id=model_id,
             skills=[
                 {"name": pick.id, "team": pick.team, "sha": entry.sha}
@@ -1198,6 +1241,8 @@ def create_app(
                 "name": agent.name,
                 "persona": agent.persona,
                 "team": agent.team,
+                "purpose_tags": decode_tags(agent.purpose_tags),
+                "capability": agent.capability,
                 "model": agent.model_id,
                 "model_label": _model_label(cfg, agent.model_id),
                 "skills": agent.skills,

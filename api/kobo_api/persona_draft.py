@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import re
 
-from kobo_api.personas import PersonaError, persona_id
+from kobo_api.personas import PersonaError, PersonaFields, _derive_tags, persona_id
+from kobo_api.purpose_tags import normalize_tags
 
 # Mirrors PersonaFields' real Field bounds (kobo_api.personas) — duplicated
 # as plain constants here rather than imported, the same "mirror the bounds,
@@ -25,6 +26,12 @@ from kobo_api.personas import PersonaError, persona_id
 _NAME_MAX = 60
 _WHO_MAX = 200
 _WHAT_MAX = 500
+
+# purpose_tags (persona-metadata plan, Task 2): the draft's own cap, narrower
+# than the create route's MAX_CREATE_TAGS (kobo_api.purpose_tags) — a
+# best-effort model suggestion is silently trimmed to this many rather than
+# rejected, since there's no caller input to reject here at all.
+_DRAFT_TAG_CAP = 5
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
@@ -126,6 +133,29 @@ def _fallback_what(job: str) -> str:
     return job[:_WHAT_MAX]
 
 
+def _fallback_tags(name: str, who: str, what: str) -> list[str]:
+    """Fallback tier for purpose_tags (Persona v3 / persona-metadata plan):
+    "the persona's own tags" — the SAME server-side derivation
+    `create_persona` already runs for every persona
+    (`kobo_api.personas._derive_tags`), applied to THIS draft's own
+    finalized `name`/`who_they_are`/`what_they_do` (whichever tier those
+    themselves landed on — model or job-derived), never a second, separate
+    guess from the raw job text. Normalized (`kobo_api.purpose_tags.
+    normalize_tags`, defense-in-depth — `_derive_tags` already hands back
+    lowercase, deduped words) and capped at `_DRAFT_TAG_CAP`.
+
+    `name`/`who`/`what` are assumed already PersonaFields-valid (and `name`
+    already `persona_id`-valid) — true of every value `finalize_draft`
+    could hand this function, whether extracted-and-validated from the
+    model or produced by `_fallback_name`/`_fallback_who`/`_fallback_what`
+    themselves, so constructing `PersonaFields` and slugifying `name` here
+    never raises.
+    """
+    fields = PersonaFields(name=name, who_they_are=who, what_they_do=what)
+    slug = persona_id(name)
+    return normalize_tags(_derive_tags(fields, slug))[:_DRAFT_TAG_CAP]
+
+
 def _extract_field(
     raw: dict, key: str, *, max_len: int, reject_newline: bool = False
 ) -> str | None:
@@ -150,10 +180,12 @@ def _extract_field(
 def finalize_draft(raw: dict | None, *, job: str) -> dict:
     """Turn the generator's best-effort `raw` (or `None`/anything non-dict,
     when the generator is unconfigured or raised `ClientError`) into a
-    `{"name", "who_they_are", "what_they_do"}` dict that's ALWAYS
-    PersonaFields-valid.
+    `{"name", "who_they_are", "what_they_do", "purpose_tags"}` dict that's
+    ALWAYS PersonaFields-valid (`purpose_tags` isn't a PersonaFields field
+    at all — see `kobo_api.personas.PersonaFields`'s own docstring — so it
+    rides alongside, never through, that validity check).
 
-    Each of the three fields is validated independently
+    Each of the three PersonaFields fields is validated independently
     (`_extract_field`) and falls back to its own deterministic, job-derived
     value on its own — a generator that nails two fields and mangles the
     third keeps the two good ones, exactly the addendum's "invalid fields
@@ -167,6 +199,15 @@ def finalize_draft(raw: dict | None, *, job: str) -> dict:
     passes PersonaFields bounds may still fail persona_id if it slugifies
     to a digit-led string (e.g. "3D print parts"). Any such name falls back
     to the job-derived fallback.
+
+    `purpose_tags` is a different shape of field (a list, not a bounded
+    string) with a different fallback story: a model-supplied list is
+    normalized (`kobo_api.purpose_tags.normalize_tags`) and capped at
+    `_DRAFT_TAG_CAP`; when that normalizes to nothing at all (missing,
+    not a list, or every entry unusable), the fallback tier is "the
+    persona's own tags" (`_fallback_tags`) — derived from THIS draft's own
+    finalized name/who_they_are/what_they_do, not the raw job text
+    directly.
     """
     raw = raw if isinstance(raw, dict) else {}
 
@@ -182,8 +223,17 @@ def finalize_draft(raw: dict | None, *, job: str) -> dict:
     who = _extract_field(raw, "who_they_are", max_len=_WHO_MAX, reject_newline=True)
     what = _extract_field(raw, "what_they_do", max_len=_WHAT_MAX)
 
+    final_name = name if name is not None else _fallback_name(job)
+    final_who = who if who is not None else _fallback_who(job)
+    final_what = what if what is not None else _fallback_what(job)
+
+    tags = normalize_tags(raw.get("purpose_tags"))[:_DRAFT_TAG_CAP]
+    if not tags:
+        tags = _fallback_tags(final_name, final_who, final_what)
+
     return {
-        "name": name if name is not None else _fallback_name(job),
-        "who_they_are": who if who is not None else _fallback_who(job),
-        "what_they_do": what if what is not None else _fallback_what(job),
+        "name": final_name,
+        "who_they_are": final_who,
+        "what_they_do": final_what,
+        "purpose_tags": tags,
     }
