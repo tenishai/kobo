@@ -113,7 +113,7 @@ def _load_catalog_entries(
                     "id": raw["id"],
                     "name": raw["name"],
                     "description": raw["description"],
-                    "team": raw["team"],
+                    "team": _entry_team(raw, kind),
                     "tags": list(raw["tags"]),
                     "sha": raw.get("sha", ""),
                     "builtin": bool(raw.get("builtin", False)),
@@ -122,6 +122,36 @@ def _load_catalog_entries(
         return entries
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
         raise ClientError(f"malformed index.json in bucket {bucket!r}: {exc}") from exc
+
+
+def _entry_team(raw: dict, kind: str) -> str:
+    """The FTS `team` value for one raw catalog entry.
+
+    Personas keep their persona-era semantics byte-untouched: `team` is a
+    required field, read straight off the raw entry with no fallback (a
+    missing one still raises via the caller's `KeyError` handling).
+
+    Skills have no `team` field of their own. Upstream skill publishing is
+    adding an OPTIONAL `owner` key naming the team that owns the skill —
+    when it's present and a string, it becomes the row's team, taking
+    precedence over any legacy `team` key the entry might still carry.
+    A missing `owner`, or one present but not a string (a publish-side bug,
+    never worth failing a whole ingest over — only logged), falls back to
+    that legacy `team` key if there is one, or `""` (today's norm) if not.
+    """
+    if kind != "skill":
+        return raw["team"]
+
+    owner = raw.get("owner")
+    if isinstance(owner, str):
+        return owner
+    if owner is not None:
+        log.debug(
+            "catalog ingest: skill entry %r has non-string owner %r — ignoring",
+            raw.get("id"),
+            owner,
+        )
+    return raw.get("team", "")
 
 
 def ingest_indexes(
@@ -266,4 +296,25 @@ def teams(engine: Engine) -> list[str]:
     ensure_fts(engine)
     with engine.connect() as conn:
         rows = conn.execute(text("SELECT DISTINCT team FROM catalog_fts ORDER BY team")).all()
+    return [row[0] for row in rows]
+
+
+def distinct_skill_teams(engine: Engine) -> list[str]:
+    """Sorted distinct non-empty team values across `kind='skill'` rows only
+    (persona-metadata plan Task 1).
+
+    Unlike `teams()` above — which spans every kind and doesn't filter out
+    `""` — this is scoped to skills alone and excludes the still-un-owned
+    majority (`team == ""`) rather than surfacing a blank entry. This is
+    what `GET /api/teams` serves: the list of skill owners a picker can
+    show or filter by, with no persona-only team ever leaking in.
+    """
+    ensure_fts(engine)
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT DISTINCT team FROM catalog_fts "
+                "WHERE kind = 'skill' AND team != '' ORDER BY team"
+            )
+        ).all()
     return [row[0] for row in rows]

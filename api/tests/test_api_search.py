@@ -3,6 +3,9 @@ GET /api/skills/search, GET /api/personas/search, GET /api/catalog/teams, and
 POST /api/catalogs/refresh — exercised through a full TestClient/create_app
 stack with `FakeStorage` standing in for GCS, same harness shape as
 test_api_agents.py's own fixtures.
+
+Also covers `GET /api/teams` (persona-metadata plan Task 1): the skill-only,
+owner-derived counterpart to `/api/catalog/teams` above.
 """
 
 from __future__ import annotations
@@ -271,3 +274,150 @@ def test_refresh_route_502_on_storage_error(config, tmp_path):
     response = client.post("/api/catalogs/refresh")
 
     assert response.status_code == 502
+
+
+# --- GET /api/teams (persona-metadata plan Task 1) --------------------------
+
+
+def test_teams_route_default_fixture_shape(client):
+    # Default fixture's one skill entry carries no "owner" — its team falls
+    # back to the legacy "team": "shared" key already on it.
+    response = client.get("/api/teams")
+
+    assert response.status_code == 200
+    assert response.json() == {"teams": ["shared"], "default": "shared"}
+
+
+def test_teams_route_reflects_owner_derived_teams_sorted(config, tmp_path):
+    storage = FakeStorage(
+        buckets={
+            "skills-bucket": {
+                "index.json": (
+                    _index_bytes(
+                        [
+                            {
+                                "id": "s1",
+                                "name": "s1",
+                                "description": "d",
+                                "owner": "growth",
+                                "tags": [],
+                                "sha": "",
+                                "builtin": False,
+                            },
+                            {
+                                "id": "s2",
+                                "name": "s2",
+                                "description": "d",
+                                "owner": "billing",
+                                "tags": [],
+                                "sha": "",
+                                "builtin": False,
+                            },
+                        ]
+                    ),
+                    {},
+                )
+            },
+            "personas-bucket": {"index.json": (_index_bytes(PERSONA_ENTRIES), {})},
+        }
+    )
+    client = _make_client(config, _minimal_clients(storage=storage), tmp_path)
+
+    response = client.get("/api/teams")
+
+    assert response.status_code == 200
+    assert response.json() == {"teams": ["billing", "growth"], "default": "shared"}
+
+
+def test_teams_route_excludes_persona_only_teams(config, tmp_path):
+    # A persona-only team ("platform" below, no skill owned by it) must not
+    # show up here — contrast with /api/catalog/teams, which spans both
+    # kinds.
+    storage = FakeStorage(
+        buckets={
+            "skills-bucket": {"index.json": (_index_bytes(SKILL_ENTRIES), {})},
+            "personas-bucket": {
+                "index.json": (
+                    _index_bytes(
+                        [
+                            {
+                                "id": "p1",
+                                "name": "p1",
+                                "description": "d",
+                                "team": "platform",
+                                "tags": [],
+                                "builtin": True,
+                            }
+                        ]
+                    ),
+                    {},
+                )
+            },
+        }
+    )
+    client = _make_client(config, _minimal_clients(storage=storage), tmp_path)
+
+    response = client.get("/api/teams")
+
+    assert response.status_code == 200
+    assert response.json() == {"teams": ["shared"], "default": "shared"}
+
+
+def test_teams_route_never_ingested_still_returns_default(config, tmp_path):
+    client = _make_client(config, _minimal_clients(storage=FakeStorage()), tmp_path)
+
+    response = client.get("/api/teams")
+
+    assert response.status_code == 200
+    assert response.json() == {"teams": [], "default": "shared"}
+
+
+def test_teams_route_ttl_refresh_runs_once_for_two_immediate_calls(client, fake_storage):
+    client.get("/api/teams")
+    client.get("/api/teams")
+
+    assert fake_storage.calls.count("read_bytes:skills-bucket:index.json") == 1
+    assert fake_storage.calls.count("read_bytes:personas-bucket:index.json") == 1
+
+
+def test_search_skills_response_includes_owner_derived_team(config, tmp_path):
+    storage = FakeStorage(
+        buckets={
+            "skills-bucket": {
+                "index.json": (
+                    _index_bytes(
+                        [
+                            {
+                                "id": "owned-skill",
+                                "name": "Owned skill",
+                                "description": "Owned by growth",
+                                "owner": "growth",
+                                "tags": [],
+                                "sha": "abc",
+                                "builtin": False,
+                            }
+                        ]
+                    ),
+                    {},
+                )
+            },
+            "personas-bucket": {},
+        }
+    )
+    client = _make_client(config, _minimal_clients(storage=storage), tmp_path)
+
+    response = client.get("/api/skills/search", params={"q": ""})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "results": [
+            {
+                "id": "owned-skill",
+                "name": "Owned skill",
+                "description": "Owned by growth",
+                "team": "growth",
+                "tags": [],
+                "sha": "abc",
+            }
+        ]
+    }

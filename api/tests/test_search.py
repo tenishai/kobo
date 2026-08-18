@@ -6,6 +6,7 @@ or network involved anywhere.
 from __future__ import annotations
 
 import json
+import logging
 
 import pytest
 
@@ -13,6 +14,7 @@ from kobo_api.clients import ClientError
 from kobo_api.db import make_engine
 from kobo_api.search import (
     CatalogEntry,
+    distinct_skill_teams,
     ensure_fts,
     get_entry,
     ingest_indexes,
@@ -338,3 +340,307 @@ def test_ingest_with_third_kind_is_searchable_with_no_code_changes(engine, stora
     assert counts == {"skill": 2, "persona": 1, "tool": 1}
     results = search(engine, "tool", "fetch")
     assert [e.id for e in results] == ["http-fetch"]
+
+
+# --- Task 1 (persona-metadata plan): owner -> team on skill entries --------
+
+
+def _skill_index(entries: list[dict]) -> FakeStorage:
+    return FakeStorage(buckets={"skills-bucket": {"index.json": (_index_bytes(entries), {})}})
+
+
+def test_skill_entry_with_owner_sets_team(engine):
+    storage = _skill_index(
+        [
+            {
+                "id": "owned-skill",
+                "name": "Owned skill",
+                "description": "Has an owner",
+                "owner": "growth",
+                "tags": [],
+                "sha": "",
+                "builtin": False,
+            }
+        ]
+    )
+    ingest_indexes(engine, storage, {"skill": "skills-bucket"})
+    entry = get_entry(engine, "skill", "owned-skill", "growth")
+    assert entry is not None
+    assert entry.team == "growth"
+
+
+def test_skill_entry_without_owner_or_team_defaults_to_empty(engine):
+    # Upstream's actual current shape (design fact): a skill entry with
+    # neither "owner" nor "team" at all — not a KeyError, just "".
+    storage = _skill_index(
+        [
+            {
+                "id": "unowned-skill",
+                "name": "Unowned skill",
+                "description": "No owner key at all",
+                "tags": [],
+                "sha": "",
+                "builtin": False,
+            }
+        ]
+    )
+    ingest_indexes(engine, storage, {"skill": "skills-bucket"})
+    entry = get_entry(engine, "skill", "unowned-skill", "")
+    assert entry is not None
+    assert entry.team == ""
+
+
+def test_skill_entry_garbage_owner_int_ingest_succeeds_team_empty_debug_logged(engine, caplog):
+    storage = _skill_index(
+        [
+            {
+                "id": "int-owner-skill",
+                "name": "Int owner skill",
+                "description": "owner is an int, not a string",
+                "owner": 42,
+                "tags": [],
+                "sha": "",
+                "builtin": False,
+            }
+        ]
+    )
+    with caplog.at_level(logging.DEBUG, logger="kobo_api.search"):
+        counts = ingest_indexes(engine, storage, {"skill": "skills-bucket"})
+
+    assert counts == {"skill": 1}
+    entry = get_entry(engine, "skill", "int-owner-skill", "")
+    assert entry is not None
+    assert entry.team == ""
+    assert any("int-owner-skill" in record.message for record in caplog.records)
+
+
+def test_skill_entry_garbage_owner_dict_ingest_succeeds_team_empty_debug_logged(engine, caplog):
+    storage = _skill_index(
+        [
+            {
+                "id": "dict-owner-skill",
+                "name": "Dict owner skill",
+                "description": "owner is a dict, not a string",
+                "owner": {"not": "a string"},
+                "tags": [],
+                "sha": "",
+                "builtin": False,
+            }
+        ]
+    )
+    with caplog.at_level(logging.DEBUG, logger="kobo_api.search"):
+        counts = ingest_indexes(engine, storage, {"skill": "skills-bucket"})
+
+    assert counts == {"skill": 1}
+    entry = get_entry(engine, "skill", "dict-owner-skill", "")
+    assert entry is not None
+    assert entry.team == ""
+    assert any("dict-owner-skill" in record.message for record in caplog.records)
+
+
+def test_skill_entry_owner_wins_over_legacy_team_key(engine):
+    # An entry carrying both the old "team" key (today's always-"" norm,
+    # or any leftover value) and the new "owner" key: owner is the
+    # authoritative field going forward.
+    storage = _skill_index(
+        [
+            {
+                "id": "both-keys-skill",
+                "name": "Both keys skill",
+                "description": "has team and owner",
+                "team": "shared",
+                "owner": "platform",
+                "tags": [],
+                "sha": "",
+                "builtin": False,
+            }
+        ]
+    )
+    ingest_indexes(engine, storage, {"skill": "skills-bucket"})
+    entry = get_entry(engine, "skill", "both-keys-skill", "platform")
+    assert entry is not None
+    assert entry.team == "platform"
+
+
+def test_mixed_catalog_owner_matrix_ingest_succeeds(engine, caplog):
+    # With owner, without owner, and garbage owner all in the same index —
+    # a single bad `owner` value must never fail the whole ingest.
+    storage = _skill_index(
+        [
+            {
+                "id": "with-owner",
+                "name": "With owner",
+                "description": "d",
+                "owner": "growth",
+                "tags": [],
+                "sha": "",
+                "builtin": False,
+            },
+            {
+                "id": "without-owner",
+                "name": "Without owner",
+                "description": "d",
+                "tags": [],
+                "sha": "",
+                "builtin": False,
+            },
+            {
+                "id": "garbage-owner",
+                "name": "Garbage owner",
+                "description": "d",
+                "owner": ["not", "a", "string"],
+                "tags": [],
+                "sha": "",
+                "builtin": False,
+            },
+        ]
+    )
+    with caplog.at_level(logging.DEBUG, logger="kobo_api.search"):
+        counts = ingest_indexes(engine, storage, {"skill": "skills-bucket"})
+
+    assert counts == {"skill": 3}
+    results = {e.id: e.team for e in search(engine, "skill", "")}
+    assert results == {"with-owner": "growth", "without-owner": "", "garbage-owner": ""}
+
+
+def test_persona_entry_owner_key_is_ignored_team_semantics_byte_untouched(engine):
+    # Personas keep reading the required "team" key exactly as before — a
+    # stray "owner" key on a persona entry (should never happen, but must
+    # never be allowed to change persona behavior) is simply never looked
+    # at.
+    storage = FakeStorage(
+        buckets={
+            "personas-bucket": {
+                "index.json": (
+                    _index_bytes(
+                        [
+                            {
+                                "id": "helpful-generalist",
+                                "name": "Helpful Generalist",
+                                "description": "A friendly all-rounder",
+                                "team": "platform",
+                                "owner": "some-other-team",
+                                "tags": [],
+                                "builtin": True,
+                            }
+                        ]
+                    ),
+                    {},
+                )
+            }
+        }
+    )
+    ingest_indexes(engine, storage, {"persona": "personas-bucket"})
+    entry = get_entry(engine, "persona", "helpful-generalist")
+    assert entry is not None
+    assert entry.team == "platform"
+
+
+def test_ingest_existing_persona_team_fixture_rows_still_work(engine, storage):
+    # Extends the original ingest test (never weakens it): the personas
+    # fixture used everywhere else in this file keeps ingesting and
+    # round-tripping its "team" value exactly as before this task.
+    _ingest(engine, storage)
+    entry = get_entry(engine, "persona", "helpful-generalist")
+    assert entry is not None
+    assert entry.team == "shared"
+
+
+# --- distinct_skill_teams ---------------------------------------------------
+
+
+def test_distinct_skill_teams_on_never_ingested_db_returns_empty(engine):
+    assert distinct_skill_teams(engine) == []
+
+
+def test_distinct_skill_teams_sorted_deduped_excludes_empty(engine):
+    storage = _skill_index(
+        [
+            {
+                "id": "s1",
+                "name": "s1",
+                "description": "d",
+                "owner": "growth",
+                "tags": [],
+                "sha": "",
+                "builtin": False,
+            },
+            {
+                "id": "s2",
+                "name": "s2",
+                "description": "d",
+                "owner": "billing",
+                "tags": [],
+                "sha": "",
+                "builtin": False,
+            },
+            {
+                "id": "s3",
+                "name": "s3",
+                "description": "d",
+                "owner": "growth",  # duplicate — must be deduped
+                "tags": [],
+                "sha": "",
+                "builtin": False,
+            },
+            {
+                "id": "s4",
+                "name": "s4",
+                "description": "d",
+                # no owner at all — team "" must be excluded
+                "tags": [],
+                "sha": "",
+                "builtin": False,
+            },
+        ]
+    )
+    ingest_indexes(engine, storage, {"skill": "skills-bucket"})
+    assert distinct_skill_teams(engine) == ["billing", "growth"]
+
+
+def test_distinct_skill_teams_excludes_persona_teams(engine):
+    # Personas contribute team values too (e.g. "platform" below) — those
+    # must never leak into the skill-only teams list `distinct_skill_teams`
+    # exists to produce (contrast with the pre-existing `teams()`, which
+    # spans both kinds).
+    storage = FakeStorage(
+        buckets={
+            "skills-bucket": {
+                "index.json": (
+                    _index_bytes(
+                        [
+                            {
+                                "id": "s1",
+                                "name": "s1",
+                                "description": "d",
+                                "owner": "growth",
+                                "tags": [],
+                                "sha": "",
+                                "builtin": False,
+                            }
+                        ]
+                    ),
+                    {},
+                )
+            },
+            "personas-bucket": {
+                "index.json": (
+                    _index_bytes(
+                        [
+                            {
+                                "id": "p1",
+                                "name": "p1",
+                                "description": "d",
+                                "team": "platform",
+                                "tags": [],
+                                "builtin": True,
+                            }
+                        ]
+                    ),
+                    {},
+                )
+            },
+        }
+    )
+    ingest_indexes(engine, storage, CATALOGS)
+    assert distinct_skill_teams(engine) == ["growth"]

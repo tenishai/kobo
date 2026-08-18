@@ -51,7 +51,12 @@ from kobo_api.provisioner import (
     run_pipeline,
     sweep_interrupted,
 )
-from kobo_api.search import CATALOG_TTL_S, get_entry, ingest_indexes
+from kobo_api.search import (
+    CATALOG_TTL_S,
+    distinct_skill_teams,
+    get_entry,
+    ingest_indexes,
+)
 from kobo_api.search import search as catalog_search
 from kobo_api.search import teams as catalog_teams_query
 from kobo_api.skills import (
@@ -787,6 +792,18 @@ def create_app(
         }
 
     # --- Catalog search (Task 3): FTS5 over the bucket-published indexes ---
+
+    @app.get("/api/teams")
+    def get_teams(session: Session = Depends(get_session)) -> dict:  # noqa: B008
+        # Persona-metadata plan Task 1: the skill-only, owner-derived
+        # counterpart to /api/catalog/teams below (which spans both kinds).
+        # No gate beyond the app-wide IAP middleware every /api/* route
+        # already has, and the same TTL-refresh seam search_skills rides —
+        # a newly-published owner shows up here without a manual
+        # POST /api/catalogs/refresh kick.
+        engine = session.get_bind()
+        _maybe_refresh_catalogs(app, engine)
+        return {"teams": distinct_skill_teams(engine), "default": "shared"}
 
     @app.get("/api/skills/search")
     def search_skills(

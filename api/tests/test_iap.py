@@ -386,6 +386,21 @@ def test_enabled_valid_token_reaches_a_real_api_route(session_factory, iap_confi
     assert response.json() == {"agents": []}
 
 
+def test_enabled_no_header_401_teams_route(session_factory, iap_config):
+    # GET /api/teams (persona-metadata plan Task 1) gets no gate beyond the
+    # app-wide IAP middleware every other /api/* route already has — same
+    # idiom as test_enabled_no_header_401 above, against the new route.
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    response = test_client.get("/api/teams")
+
+    assert response.status_code == 401
+    assert response.json() == UNAUTHORIZED_BODY
+
+
 def test_enabled_healthz_exempt_with_no_header(session_factory, iap_config):
     _, jwk = _generate_jwk()
     test_client = _client_with_fetcher(
