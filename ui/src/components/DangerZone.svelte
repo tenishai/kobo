@@ -3,8 +3,7 @@
   // its Slack presence (the repo is archived, not deleted; memories die
   // with the namespace, per the confirm copy below, verbatim from the
   // approved spec). Rendered by AgentDetail only when `destroy_visible` is
-  // true (the caller's own gate check, see AgentDetail.svelte and
-  // `SlackPanel`'s `adminVisible` for the same discipline); the route
+  // true (the caller's own gate check, see AgentDetail.svelte); the route
   // itself is the real enforcement boundary, this is UX only.
   //
   // Three states, driven entirely by `status` (the agent's own detail,

@@ -14,9 +14,9 @@ export const TAB_LABELS: Record<TabId, string> = {
 /**
  * The tab list, in display order. Two-lane Slack (2026-08-17): the Slack
  * tab is unconditional now — the channels lane is open to everyone in the
- * room, so there's no visibility flag left to gate the tab itself (token
- * fields inside SlackPanel stay operator-gated via `adminVisible`, but
- * that's a within-panel concern, not a tab one). No parameter.
+ * room, and the setup ceremony is self-service for everyone too
+ * (slack self-service, same date) — nothing about Slack is gated in the
+ * UI anymore. No parameter.
  */
 export function visibleTabs(): TabId[] {
   return ["overview", "chat", "memory", "skills", "tooling", "slack"];
