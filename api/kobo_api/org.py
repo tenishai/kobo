@@ -55,6 +55,8 @@ ORG_KEYS = frozenset(
         "skills_publish_external",
         "slack_operators",
         "operators",
+        "cabal_url",
+        "agent_endpoint_template",
     }
 )
 

@@ -22,6 +22,8 @@ import pytest
 
 from kobo_api.clients import (
     AgentClient,
+    CabalClient,
+    CabalError,
     ChatMessage,
     ClientError,
     Clients,
@@ -54,6 +56,8 @@ from kobo_api.clients import (
     _post_task,
     _wait_for_forwarded_port,
     _write_slack_tokens,
+    cabal_enabled,
+    cabal_operator_token,
     image_tag,
     installation_token_provider,
 )
@@ -3748,6 +3752,288 @@ def test_storage_ensure_versioning_patch_failure_raises_client_error_without_lea
     with pytest.raises(ClientError) as exc_info:
         client.ensure_versioning("my-bucket")
     assert "patch operation failed" not in str(exc_info.value)
+
+
+# --- Cabal (CabalClient: switchboard admin API - graduate/absorb/relay) ---------
+
+
+def test_cabal_graduate_request_shape_body_and_auth_header():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.content)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.graduate(
+        "clio",
+        endpoint="http://agent-clio.default.svc.cluster.local",
+        audience="clio",
+        card={"name": "clio", "team": "acme"},
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "http://cabal.local/admin/persona/clio/graduate"
+    assert captured["json"] == {
+        "endpoint": "http://agent-clio.default.svc.cluster.local",
+        "audience": "clio",
+        "agent_card_json": {"name": "clio", "team": "acme"},
+    }
+    assert captured["auth"] == "Bearer op-token"
+
+
+def test_cabal_graduate_raises_client_error_on_non_2xx():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(ClientError):
+        client.graduate("clio", endpoint="http://agent-clio", audience="clio", card={})
+
+
+def test_cabal_graduate_accepts_201_as_success():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.graduate("clio", endpoint="http://agent-clio", audience="clio", card={})  # no raise
+
+
+def test_cabal_graduate_error_message_never_contains_the_token():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="internal failure detail")
+
+    client = CabalClient(
+        "http://cabal.local", "super-secret-operator-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(ClientError) as exc_info:
+        client.graduate("clio", endpoint="http://agent-clio", audience="clio", card={})
+    assert "super-secret-operator-token" not in str(exc_info.value)
+    # The stricter HttpxStorageClient convention this mirrors: never the
+    # response body either (it's logged server-side, truncated, instead).
+    assert "internal failure detail" not in str(exc_info.value)
+
+
+def test_cabal_absorb_request_shape_empty_body_and_auth_header():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.content)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.absorb("clio")
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "http://cabal.local/admin/persona/clio/absorb"
+    assert captured["json"] == {}
+    assert captured["auth"] == "Bearer op-token"
+
+
+def test_cabal_absorb_tolerates_404_as_already_delisted():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": "not found"})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.absorb("clio")  # must not raise
+
+
+def test_cabal_absorb_raises_client_error_on_non_404_non_2xx():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(ClientError):
+        client.absorb("clio")
+
+
+def test_cabal_relay_request_shape_body_and_auth_header():
+    captured = {}
+    envelope = {"kind": "task", "id": "chat-abc123", "history": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.content)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(
+            200, json={"status": {"message": {"parts": [{"text": "hi"}]}}}
+        )
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    result = client.relay("clio", envelope)
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "http://cabal.local/a2a/tasks"
+    assert captured["json"] == {"target": "clio", "task": envelope}
+    assert captured["auth"] == "Bearer op-token"
+    assert result == {"status": {"message": {"parts": [{"text": "hi"}]}}}
+
+
+def test_cabal_relay_uses_180s_timeout_regardless_of_client_default():
+    # Relay waits on a real model round trip on the far side of the
+    # switchboard (the curl -m 10 lesson) - this per-call override must win
+    # over whatever default timeout the injected httpx.Client carries.
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(200, json={})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.relay("clio", {"kind": "task"})
+
+    assert captured["timeout"] == {
+        "connect": 10.0, "read": 180.0, "write": 180.0, "pool": 180.0
+    }
+
+
+def test_cabal_relay_raises_typed_cabal_error_on_non_2xx():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text="boom")
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(CabalError):
+        client.relay("clio", {"kind": "task"})
+
+
+def test_cabal_relay_error_message_never_contains_the_token():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text="internal failure detail")
+
+    client = CabalClient(
+        "http://cabal.local", "super-secret-operator-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(CabalError) as exc_info:
+        client.relay("clio", {"kind": "task"})
+    assert "super-secret-operator-token" not in str(exc_info.value)
+    assert "internal failure detail" not in str(exc_info.value)
+
+
+def test_cabal_error_is_a_client_error_subclass():
+    # So Task 2/3 call sites that only know the general ClientError
+    # contract (the same one every other client here raises) keep working
+    # against CabalClient without needing to know its errors are typed
+    # more specifically.
+    assert issubclass(CabalError, ClientError)
+
+
+def test_cabal_client_default_http_client_has_generous_timeout():
+    client = CabalClient("http://cabal.local", "op-token")
+    timeout = client._client.timeout
+    assert timeout.connect == 10.0
+    assert timeout.read == 30.0
+
+
+def test_cabal_client_strips_trailing_slash_from_base_url():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={})
+
+    client = CabalClient(
+        "http://cabal.local/", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.absorb("clio")
+
+    assert captured["url"] == "http://cabal.local/admin/persona/clio/absorb"
+
+
+# --- cabal_enabled / cabal_operator_token (Task 1: switchboard truthiness gate) --
+
+
+def test_cabal_enabled_true_when_both_keys_and_env_token_present(monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    config = Config(
+        cabal_url="http://cabal.local",
+        agent_endpoint_template="http://agent-{name}.default.svc.cluster.local",
+    )
+    assert cabal_enabled(config) is True
+
+
+def test_cabal_enabled_false_when_cabal_url_missing(monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    config = Config(agent_endpoint_template="http://agent-{name}")
+    assert cabal_enabled(config) is False
+
+
+def test_cabal_enabled_false_when_agent_endpoint_template_missing(monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    config = Config(cabal_url="http://cabal.local")
+    assert cabal_enabled(config) is False
+
+
+def test_cabal_enabled_false_when_env_token_missing(monkeypatch):
+    monkeypatch.delenv("CABAL_OPERATOR_TOKEN", raising=False)
+    config = Config(
+        cabal_url="http://cabal.local",
+        agent_endpoint_template="http://agent-{name}",
+    )
+    assert cabal_enabled(config) is False
+
+
+def test_cabal_enabled_false_when_env_token_is_empty_string(monkeypatch):
+    # An empty string is falsy the same way an unset var is - a mounted
+    # env var that resolved to "" (a misconfigured Secret, say) must not
+    # read as "configured".
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "")
+    config = Config(
+        cabal_url="http://cabal.local",
+        agent_endpoint_template="http://agent-{name}",
+    )
+    assert cabal_enabled(config) is False
+
+
+def test_cabal_enabled_false_when_nothing_configured(monkeypatch):
+    monkeypatch.delenv("CABAL_OPERATOR_TOKEN", raising=False)
+    assert cabal_enabled(Config()) is False
+
+
+def test_cabal_operator_token_reads_env_var(monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    assert cabal_operator_token() == "op-token"
+
+
+def test_cabal_operator_token_none_when_unset(monkeypatch):
+    monkeypatch.delenv("CABAL_OPERATOR_TOKEN", raising=False)
+    assert cabal_operator_token() is None
 
 
 # --- Fakes satisfy the Protocols ----------------------------------------------

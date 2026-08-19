@@ -128,6 +128,8 @@ _ORG_YAML_TOKENS = {
     "skills_publish_external": "__KOBO_SKILLS_PUBLISH_EXTERNAL__",
     "slack_operators": "__KOBO_SLACK_OPERATORS__",
     "operators": "__KOBO_OPERATORS__",
+    "cabal_url": "__KOBO_CABAL_URL__",
+    "agent_endpoint_template": "__KOBO_AGENT_ENDPOINT_TEMPLATE__",
 }
 
 assert set(_ORG_YAML_TOKENS) == ORG_KEYS, (
@@ -161,6 +163,8 @@ def _org_yaml_context(config: Config) -> dict[str, object]:
         "skills_publish_external": config.skills_publish_external,
         "slack_operators": config.slack_operators,
         "operators": config.operators,
+        "cabal_url": config.cabal_url,
+        "agent_endpoint_template": config.agent_endpoint_template,
     }
 
 

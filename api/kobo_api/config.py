@@ -70,6 +70,20 @@ class Config(BaseModel):
     skills_publish_wif_provider: str = ""
     skills_publish_service_account: str = ""
     skills_publish_external: bool = False
+    # Base URL of the switchboard (cabal) service the room registers agents
+    # with and (once wired) relays chat through. None means the switchboard
+    # integration is off - kobo runs the legacy direct-to-agent paths
+    # unchanged, same "absent = feature off" convention as skills_bucket/
+    # personas_bucket above. See kobo_api.clients.cabal_enabled for the full
+    # "is this wired" check (both keys here plus the CABAL_OPERATOR_TOKEN
+    # env var - the operator token itself is never org-config-settable).
+    cabal_url: str | None = None
+    # Template for an agent's in-cluster a2a endpoint, with a literal
+    # "{name}" placeholder the directory sync (Task 2) fills in via
+    # `.format(name=agent.name)` - e.g.
+    # "http://agent-{name}.default.svc.cluster.local". None means
+    # unconfigured, same as cabal_url.
+    agent_endpoint_template: str | None = None
     # This kobo instance's own reachable base URL (bootstrap CLI / org
     # status consumers, Task 3+) — not org.yaml-settable (ORG_KEYS excludes
     # it), same as workdir/db_url below: it describes *this* machine, not

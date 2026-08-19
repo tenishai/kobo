@@ -276,6 +276,8 @@ def test_org_keys_is_exactly_the_brief_set():
             "skills_publish_external",
             "slack_operators",
             "operators",
+            "cabal_url",
+            "agent_endpoint_template",
         }
     )
 
@@ -299,6 +301,25 @@ def test_slack_operators_list_round_trips():
         "ops@acme-corp.example.com",
         "Root@Acme-Corp.example.com",
     ]
+
+
+def test_cabal_keys_round_trip():
+    """cabal_url/agent_endpoint_template (colleagues switchboard arc, Task 1)
+    are org-scoped exactly like the other feature-gating knobs above - a
+    client's kobo-config repo names its own switchboard coordinates."""
+    local = Config(org_repo=ORG_REPO)
+    github = FakeGitHub(
+        org_yaml=(
+            "cabal_url: http://cabal.internal\n"
+            "agent_endpoint_template: http://agent-{name}.default.svc.cluster.local\n"
+        )
+    )
+
+    merged, org = load_org_config(local, github)
+
+    assert org.wired is True
+    assert merged.cabal_url == "http://cabal.internal"
+    assert merged.agent_endpoint_template == "http://agent-{name}.default.svc.cluster.local"
 
 
 def test_operators_list_round_trips():

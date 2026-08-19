@@ -238,6 +238,40 @@ def test_config_example_yaml_documents_org_config_keys():
     assert config.api_base_url == "http://127.0.0.1:8100"
 
 
+# --- cabal_url / agent_endpoint_template (colleagues switchboard arc, Task 1) ---
+
+
+def test_cabal_config_fields_default_none():
+    config = Config()
+    assert config.cabal_url is None
+    assert config.agent_endpoint_template is None
+
+
+def test_cabal_config_fields_overridable(tmp_path):
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        "cabal_url: http://cabal.internal\n"
+        "agent_endpoint_template: http://agent-{name}.default.svc.cluster.local\n"
+    )
+
+    config = Config.load(yaml_path)
+
+    assert config.cabal_url == "http://cabal.internal"
+    assert config.agent_endpoint_template == "http://agent-{name}.default.svc.cluster.local"
+
+
+def test_config_example_yaml_documents_cabal_keys():
+    example_path = Path(__file__).resolve().parent.parent / "config.example.yaml"
+    data = yaml.safe_load(example_path.read_text())
+
+    assert data["cabal_url"] is None
+    assert data["agent_endpoint_template"] is None
+
+    config = Config(**data)
+    assert config.cabal_url is None
+    assert config.agent_endpoint_template is None
+
+
 def test_config_example_yaml_documents_avatar_keys():
     # config.example.yaml is the operator-facing template; both new keys must
     # be explicitly present (not merely absent-and-defaulted) and must parse

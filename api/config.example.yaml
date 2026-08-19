@@ -102,6 +102,16 @@ skills_publish_wif_provider: ""
 skills_publish_service_account: ""
 skills_publish_external: false
 
+# Base URL of the switchboard (cabal) service the room registers agents
+# with and (once wired) relays chat through, and the template for an
+# agent's in-cluster a2a endpoint (a literal "{name}" placeholder the
+# directory sync fills in). Both null means the switchboard integration is
+# off - kobo runs the legacy direct-to-agent paths unchanged. The operator
+# token itself comes from the CABAL_OPERATOR_TOKEN env var, never from
+# this file.
+cabal_url: null
+agent_endpoint_template: null
+
 # Base URL this kobo API instance is reachable at (bootstrap CLI / org
 # status, Task 3+) — describes this machine, not anything org-supplied.
 api_base_url: http://127.0.0.1:8100

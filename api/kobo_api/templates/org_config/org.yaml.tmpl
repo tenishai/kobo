@@ -38,3 +38,14 @@ slack_operators: __KOBO_SLACK_OPERATORS__
 # gets a 403. Empty (the default) leaves destruction open to anyone who can
 # reach this room.
 operators: __KOBO_OPERATORS__
+
+# Base URL of the switchboard (cabal) service this room registers agents
+# with and (once wired) relays chat through, and the template for an
+# agent's in-cluster a2a endpoint (the directory sync substitutes the
+# agent's name into it via Python str.format, so the name goes inside a
+# single pair of curly braces). Both null (the default) means the
+# switchboard integration is off — the room runs the legacy
+# direct-to-agent paths unchanged. The operator token itself is never set
+# here; it comes from this room's own CABAL_OPERATOR_TOKEN env var.
+cabal_url: __KOBO_CABAL_URL__
+agent_endpoint_template: __KOBO_AGENT_ENDPOINT_TEMPLATE__

@@ -77,6 +77,16 @@ class StorageNotFound(ClientError):
     """404 from object storage — callers branch on 'absent' vs 'broken'."""
 
 
+class CabalError(ClientError):
+    """The switchboard (cabal)'s admin API returned a failure `CabalClient`
+    doesn't otherwise tolerate (graduate/absorb's non-2xx, or relay's) — a
+    `ClientError` subclass, same family as `SlackApiError`/`StorageNotFound`,
+    so any call site that only knows the general `ClientError` contract
+    keeps working unchanged, while a caller that cares specifically about
+    the switchboard can still catch this by name.
+    """
+
+
 class CommandRunner:
     """Runs a subprocess command; returns stdout, raises ClientError on rc != 0."""
 
@@ -2292,6 +2302,137 @@ class HttpxStorageClient:
                 f"ensure_versioning({bucket!r}) patch failed ({patch_resp.status_code})"
             )
         return True
+
+
+# --- Cabal (switchboard: agent directory registration + a2a task relay) -----------
+
+
+# The operator token env var name — a single constant so `cabal_operator_
+# token` and every future reader agree on it, rather than the literal
+# string getting typed out again at some other call site and risking a typo
+# that silently reads as "unset". Never an org.yaml key (ORG_KEYS,
+# kobo_api.org): the operator token is a deployment secret, not something
+# a client's org config repo should ever be able to set.
+_CABAL_OPERATOR_TOKEN_ENV = "CABAL_OPERATOR_TOKEN"
+
+
+def cabal_operator_token() -> str | None:
+    """The switchboard operator token from its env var, or None when unset.
+
+    Read fresh on every call (no caching) rather than snapshotted at import
+    time, matching `installation_token_provider`'s own "always read live"
+    posture — a token delivered to the process after import (a mounted
+    Secret whose value changed under a restarted pod) is picked up the same
+    way. Never logged; the caller (`CabalClient`) never puts it anywhere but
+    the `Authorization` header either.
+    """
+    return os.environ.get(_CABAL_OPERATOR_TOKEN_ENV)
+
+
+def cabal_enabled(config: Config) -> bool:
+    """Whether the switchboard integration is wired: both org config keys
+    (`cabal_url`, `agent_endpoint_template`) set AND the operator token
+    present in the environment.
+
+    A single shared truthiness helper (Task 2's `DirectoryStep`, Task 3's
+    chat route, and any future caller) so "is the switchboard on" is
+    answered identically everywhere, rather than each call site
+    re-deriving the same three-way AND and risking one of them drifting —
+    e.g. checking the two config keys but forgetting the env var, which
+    would go on to build a `CabalClient` with no token to send.
+    """
+    return bool(
+        config.cabal_url and config.agent_endpoint_template and cabal_operator_token()
+    )
+
+
+class CabalClient:
+    """Talks to the switchboard (cabal)'s admin API: registers/delists an
+    agent in its directory (`graduate`/`absorb`) and relays a room chat's
+    a2a task envelope through it (`relay`) instead of hitting the agent
+    directly.
+
+    Every failure mode raises a message built only from the method name,
+    the target persona name, and the HTTP status code — never the response
+    body (logged server-side, truncated, for operators debugging repeated
+    failures — same convention as `HttpxStorageClient`) and never the
+    bearer token, since the whole point of this client existing is to hold
+    that token; letting it leak into a raised message would be exactly the
+    kind of thing every other client here is already careful to avoid
+    (`GhCLI`'s `GH_TOKEN` env, `KubectlCLI.apply_secret`'s literals, ...).
+    """
+
+    def __init__(
+        self, base_url: str, token: str, *, client: httpx.Client | None = None
+    ):
+        self._base_url = base_url.rstrip("/")
+        self._token = token
+        # An admin JSON-API call (graduate/absorb), not a model roundtrip —
+        # same default headroom as HttpxGojiraClient/HttpxStorageClient.
+        # relay() below overrides this per-call with a much longer timeout;
+        # it alone waits on the far side's own model roundtrip.
+        self._client = client or httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0))
+
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._token}"}
+
+    def graduate(self, name: str, *, endpoint: str, audience: str, card: dict) -> None:
+        """Register `name` in the switchboard's directory at `endpoint`,
+        with `audience` as the a2a audience it will sign calls for and
+        `card` as its full agent card. Raises `CabalError` on non-2xx.
+        """
+        resp = self._client.post(
+            f"{self._base_url}/admin/persona/{name}/graduate",
+            json={"endpoint": endpoint, "audience": audience, "agent_card_json": card},
+            headers=self._headers(),
+        )
+        if not resp.is_success:
+            log.warning(
+                "cabal graduate(%s) failed (%s): %s", name, resp.status_code, resp.text[:200]
+            )
+            raise CabalError(f"graduate({name!r}) failed ({resp.status_code})")
+
+    def absorb(self, name: str) -> None:
+        """Delist `name` from the switchboard's directory. A 404 (already
+        delisted — a repeat destroy, or a persona the switchboard never
+        had) is tolerated silently; any other non-2xx raises `CabalError`.
+        """
+        resp = self._client.post(
+            f"{self._base_url}/admin/persona/{name}/absorb",
+            json={},
+            headers=self._headers(),
+        )
+        if resp.status_code == 404:
+            return
+        if not resp.is_success:
+            log.warning(
+                "cabal absorb(%s) failed (%s): %s", name, resp.status_code, resp.text[:200]
+            )
+            raise CabalError(f"absorb({name!r}) failed ({resp.status_code})")
+
+    def relay(self, name: str, task_envelope: dict) -> dict:
+        """Relay `task_envelope` (the same a2a task shape `_build_task_
+        envelope` produces) to persona `name` through the switchboard;
+        returns the parsed JSON response (the completed task — reply
+        extraction is the caller's job, Task 3).
+
+        180s timeout (not the client's default) — this waits on a real
+        model roundtrip on the agent behind the switchboard, the same
+        "curl -m 10" lesson `KubectlAgentClient`'s own generous timeouts
+        already learned. Raises `CabalError` on non-2xx.
+        """
+        resp = self._client.post(
+            f"{self._base_url}/a2a/tasks",
+            json={"target": name, "task": task_envelope},
+            headers=self._headers(),
+            timeout=httpx.Timeout(180.0, connect=10.0),
+        )
+        if not resp.is_success:
+            log.warning(
+                "cabal relay(%s) failed (%s): %s", name, resp.status_code, resp.text[:200]
+            )
+            raise CabalError(f"relay({name!r}) failed ({resp.status_code})")
+        return resp.json()
 
 
 # --- Wiring -----------------------------------------------------------------------
