@@ -7,8 +7,6 @@ subprocess, or `httpx.post` call ever fires here.
 
 from __future__ import annotations
 
-import re
-
 import httpx
 import pytest
 import yaml
@@ -38,17 +36,20 @@ PERSONAS_BUCKET = "acme-corp-personas"
 SKILLS_REPO_BARE = "acme-corp-skills"
 SKILLS_REPO = f"{GITHUB_ORG}/{SKILLS_REPO_BARE}"
 
-# A bare `{word}` placeholder — the shape a leftover, un-substituted Python
-# `.format()`/f-string token would take. Deliberately does NOT match GitHub
-# Actions' `${{ expr }}` (space right after the brace, and doubled braces)
-# or our own rendered `models` flow-style YAML (`{id: ..., label: ...}`,
-# which has a `:` immediately after the first word, never an immediate `}`).
-_BARE_PLACEHOLDER_RE = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
-
 
 def _assert_no_leftover_placeholders(text: str) -> None:
+    """Assert that no placeholder tokens from the template remain unsubstituted.
+
+    Checks for leftover __KOBO_*__ tokens only. This is precise (checks actual
+    template tokens) rather than broad (checking all bare {word} patterns).
+
+    The rendering uses literal token replacement (str.replace), never .format()
+    or Jinja, so an unsubstituted __KOBO_* token in the output indicates a
+    rendering error. Config values legitimately contain bare {word} patterns
+    (e.g., agent_endpoint_template="http://agent-{name}.svc"), so we don't
+    flag those — only the actual substitution tokens matter.
+    """
     assert "__KOBO_" not in text
-    assert not _BARE_PLACEHOLDER_RE.search(text)
 
 
 # --- render_org_yaml (golden) --------------------------------------------------
@@ -120,6 +121,43 @@ def test_render_org_yaml_uses_explicit_names_verbatim_when_set():
     assert parsed["skills_publish_external"] is True
 
 
+def test_render_org_yaml_agent_endpoint_template_with_braced_name_does_not_trip_guard():
+    """The placeholder guard must not false-positive on legitimate {name}
+    substrings in config values. agent_endpoint_template legitimately
+    contains patterns like http://agent-{name}.svc, which should pass through
+    the guard without triggering a false "leftover placeholder" assertion.
+    """
+    config = Config(
+        github_org=GITHUB_ORG,
+        agent_endpoint_template="http://agent-{name}.default.svc.cluster.local",
+    )
+
+    rendered = render_org_yaml(config)
+    # This should not raise an assertion error
+    _assert_no_leftover_placeholders(rendered)
+
+    parsed = yaml.safe_load(rendered)
+    assert (
+        parsed["agent_endpoint_template"]
+        == "http://agent-{name}.default.svc.cluster.local"
+    )
+
+
+def test_placeholder_guard_catches_leftover_template_tokens():
+    """Verify the guard detects when an actual substitution token is left
+    unsubstituted in the output (indicating a rendering error).
+    """
+    # Simulate rendered content that still has an unsubstituted __KOBO_* token
+    bad_output = """
+github_org: acme-corp
+agent_endpoint_template: __KOBO_AGENT_ENDPOINT_TEMPLATE__
+models: [{id: vertex_ai/claude-sonnet-4-5, label: Claude Sonnet 4.5}]
+"""
+    # The guard should catch this unsubstituted token
+    with pytest.raises(AssertionError):
+        _assert_no_leftover_placeholders(bad_output)
+
+
 # --- render_publish_workflow ----------------------------------------------------
 
 
@@ -189,7 +227,14 @@ def storage():
 
 
 def _clients(github, storage) -> Clients:
-    return Clients(github=github, gojira=None, cloud=None, agent=None, kubectl=None, storage=storage)
+    return Clients(
+        github=github,
+        gojira=None,
+        cloud=None,
+        agent=None,
+        kubectl=None,
+        storage=storage,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -201,6 +246,7 @@ def no_real_network(monkeypatch):
     want the primary (refresh-endpoint) path override `bootstrap.httpx.post`
     themselves.
     """
+
     def _raise(*args, **kwargs):
         raise httpx.ConnectError("connection refused")
 
@@ -256,7 +302,9 @@ def test_fresh_org_run_every_step_done(config, github, storage, tmp_path):
     assert f"repo_exists:{SKILLS_REPO}" in github.calls
     skills_repo_clone = tmp_path / "inspect-skills-repo"
     github.clone(skills_repo, skills_repo_clone)
-    workflow_text = (skills_repo_clone / ".github" / "workflows" / "publish-skills.yml").read_text()
+    workflow_text = (
+        skills_repo_clone / ".github" / "workflows" / "publish-skills.yml"
+    ).read_text()
     _assert_no_leftover_placeholders(workflow_text)
     assert (skills_repo_clone / ".github" / "scripts" / "publish_skills.py").exists()
     assert (skills_repo_clone / "README.md").exists()
@@ -277,7 +325,9 @@ def test_fresh_org_run_every_step_done(config, github, storage, tmp_path):
     assert "personas=1" in ingest_detail
 
     # Output is column-aligned: every line's step name starts at the same index.
-    name_starts = {line.index(result.name) for line, result in zip(lines, results, strict=True)}
+    name_starts = {
+        line.index(result.name) for line, result in zip(lines, results, strict=True)
+    }
     assert len(name_starts) == 1
 
 
@@ -299,7 +349,9 @@ def test_fresh_config_no_buckets_set_ingest_still_reports_seeded_personas(
 
     results = run_bootstrap(fresh_config, clients, out=lambda _line: None)
 
-    personas_result = next(r for r in results if r.name == bootstrap.STEP_DEFAULT_PERSONAS)
+    personas_result = next(
+        r for r in results if r.name == bootstrap.STEP_DEFAULT_PERSONAS
+    )
     assert personas_result.status == "done"
 
     ingest_result = results[-1]
@@ -374,14 +426,18 @@ def test_skills_publish_owner_qualifies_an_explicit_skills_repo_name_pr_path(
     # inspected via clone() the same way the other PR-path test does.
     pr_clone = tmp_path / "inspect-pr-named-repo"
     github.clone(full_repo, pr_clone)
-    workflow_text = (pr_clone / ".github" / "workflows" / "publish-skills.yml").read_text()
+    workflow_text = (
+        pr_clone / ".github" / "workflows" / "publish-skills.yml"
+    ).read_text()
     _assert_no_leftover_placeholders(workflow_text)
 
 
 # --- idempotence: second run -----------------------------------------------------
 
 
-def test_second_run_steps_1_through_5_skipped_step_6_still_done(config, github, storage):
+def test_second_run_steps_1_through_5_skipped_step_6_still_done(
+    config, github, storage
+):
     clients = _clients(github, storage)
     run_bootstrap(config, clients, out=lambda _line: None)
 
@@ -413,7 +469,9 @@ def test_existing_skills_repo_without_workflow_opens_pr(config, storage, tmp_pat
 
     publish_result = next(r for r in results if r.name == bootstrap.STEP_SKILLS_PUBLISH)
     assert publish_result.status == "done"
-    assert publish_result.detail == "https://github.com/acme-corp/acme-corp-skills/pull/3"
+    assert (
+        publish_result.detail == "https://github.com/acme-corp/acme-corp-skills/pull/3"
+    )
 
     assert len(github.open_pr_calls) == 1
     call = github.open_pr_calls[0]
@@ -428,7 +486,9 @@ def test_existing_skills_repo_without_workflow_opens_pr(config, storage, tmp_pat
     # `call["workdir"]` directly off disk.
     pr_clone = tmp_path / "inspect-pr"
     github.clone(SKILLS_REPO, pr_clone)
-    workflow_text = (pr_clone / ".github" / "workflows" / "publish-skills.yml").read_text()
+    workflow_text = (
+        pr_clone / ".github" / "workflows" / "publish-skills.yml"
+    ).read_text()
     _assert_no_leftover_placeholders(workflow_text)
     assert (pr_clone / ".github" / "scripts" / "publish_skills.py").exists()
     # Both repos pre-existed (org-config repo included) — no
@@ -439,7 +499,9 @@ def test_existing_skills_repo_without_workflow_opens_pr(config, storage, tmp_pat
 # --- live-incident fix: PR still open on a re-run reports skipped ----------------
 
 
-def test_second_run_with_pr_still_open_reports_skipped_and_does_not_reopen_pr(config, storage):
+def test_second_run_with_pr_still_open_reports_skipped_and_does_not_reopen_pr(
+    config, storage
+):
     """The exact live-incident scenario (Phase A idempotence re-run): run 1
     opens the skills-publish-workflow PR from the fixed `PUBLISH_PR_BRANCH`.
     Run 2 fires before that PR has merged — the skills repo's default branch
@@ -460,16 +522,25 @@ def test_second_run_with_pr_still_open_reports_skipped_and_does_not_reopen_pr(co
     clients = _clients(github, storage)
 
     first_results = run_bootstrap(config, clients, out=lambda _line: None)
-    first_publish = next(r for r in first_results if r.name == bootstrap.STEP_SKILLS_PUBLISH)
+    first_publish = next(
+        r for r in first_results if r.name == bootstrap.STEP_SKILLS_PUBLISH
+    )
     assert first_publish.status == "done"
-    assert first_publish.detail == "https://github.com/acme-corp/acme-corp-skills/pull/9"
+    assert (
+        first_publish.detail == "https://github.com/acme-corp/acme-corp-skills/pull/9"
+    )
     assert len(github.open_pr_calls) == 1
 
     second_results = run_bootstrap(config, clients, out=lambda _line: None)
-    second_publish = next(r for r in second_results if r.name == bootstrap.STEP_SKILLS_PUBLISH)
+    second_publish = next(
+        r for r in second_results if r.name == bootstrap.STEP_SKILLS_PUBLISH
+    )
 
     assert second_publish.status == "skipped"
-    assert second_publish.detail == "PR already open: https://github.com/acme-corp/acme-corp-skills/pull/9"
+    assert (
+        second_publish.detail
+        == "PR already open: https://github.com/acme-corp/acme-corp-skills/pull/9"
+    )
     # open_pr was not retried on run 2 — the non-fast-forward push the
     # incident hit never had a chance to happen.
     assert len(github.open_pr_calls) == 1
@@ -511,7 +582,9 @@ def test_bucket_exists_versioning_off_done_via_ensure_versioning(config):
 # --- step isolation: a failing storage knob ---------------------------------------
 
 
-def test_failing_storage_knob_isolates_that_step_and_later_steps_still_run(config, github):
+def test_failing_storage_knob_isolates_that_step_and_later_steps_still_run(
+    config, github
+):
     storage = FakeStorage(ensure_bucket_error="boom")
     clients = _clients(github, storage)
 
@@ -554,7 +627,9 @@ def test_catalog_ingest_primary_path_used_when_refresh_endpoint_succeeds(
     assert "direct" not in ingest_result.detail
 
 
-def test_catalog_ingest_falls_back_on_non_2xx_response(config, github, storage, monkeypatch):
+def test_catalog_ingest_falls_back_on_non_2xx_response(
+    config, github, storage, monkeypatch
+):
     monkeypatch.setattr(bootstrap.httpx, "post", lambda *a, **kw: httpx.Response(503))
     clients = _clients(github, storage)
 
@@ -627,11 +702,17 @@ def test_skills_repo_with_owner_slash_rejects_and_other_steps_still_run(
     # Both steps that call _skills_repo_name fail with the exact error message.
     org_config_result = by_name[bootstrap.STEP_ORG_CONFIG_REPO]
     assert org_config_result.status == "failed"
-    assert org_config_result.detail == "skills_repo must be a bare repo name (no '/'); kobo adds the owner"
+    assert (
+        org_config_result.detail
+        == "skills_repo must be a bare repo name (no '/'); kobo adds the owner"
+    )
 
     skills_publish_result = by_name[bootstrap.STEP_SKILLS_PUBLISH]
     assert skills_publish_result.status == "failed"
-    assert skills_publish_result.detail == "skills_repo must be a bare repo name (no '/'); kobo adds the owner"
+    assert (
+        skills_publish_result.detail
+        == "skills_repo must be a bare repo name (no '/'); kobo adds the owner"
+    )
 
     # Every other step still ran despite the two failures above.
     assert by_name[bootstrap.STEP_SKILLS_BUCKET].status == "done"
