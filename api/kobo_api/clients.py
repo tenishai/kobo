@@ -30,7 +30,7 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypedDict, runtime_checkable
@@ -2366,8 +2366,12 @@ class CabalClient:
     """Talks to the switchboard (cabal)'s admin API: registers/delists an
     agent in its directory (`graduate`/`absorb`), relays a room chat's
     a2a task envelope through it (`relay`) instead of hitting the agent
-    directly, and mints a colleague-scoped token for an agent (`mint_
-    colleague`, Task 3/B3) so it can ask its own colleagues questions.
+    directly, mints a colleague-scoped token for an agent (`mint_
+    colleague`, Task 3/B3) so it can ask its own colleagues questions, and
+    reads the switchboard's own admin conversation surface (`list_
+    conversations`/`get_conversation`/`stream_events`, Task 4/B4 "the
+    watching window") so the room can show every colleague conversation as
+    it happens.
 
     Every failure mode raises a message built only from the method name,
     the target persona name, and the HTTP status code — never the response
@@ -2494,6 +2498,104 @@ class CabalClient:
             )
             raise CabalError(f"mint_colleague({name!r}) failed ({resp.status_code})")
         return resp.json()["access_token"]
+
+    def list_conversations(self, *, limit: int | None = None) -> list[dict]:
+        """List conversations recorded on the switchboard's admin surface
+        (`GET /admin/conversations`) — the room's watching window (Task
+        4/B4), one row per relayed a2a task: `task_id`, `target_agent`,
+        `target_generation`, `caller_agent`, `state`, `cabal_escalated_
+        from`, `created_at`, `updated_at`, `result_snippet` (<=120 chars).
+
+        `limit` is sent as a query param only when given; omitted entirely
+        otherwise, so the switchboard's own default applies. No `state`/
+        `target` passthrough here — this room API's own agent-only/everything
+        split (`kobo_api.main`) happens after the fact on `caller_agent`,
+        not via the switchboard's own filters.
+
+        Returns the parsed `"conversations"` list verbatim. Raises
+        `CabalError` on non-2xx, same logging convention as every other
+        method here (response body logged server-side, truncated, never
+        echoed into the raised message).
+        """
+        params: dict[str, int] = {}
+        if limit is not None:
+            params["limit"] = limit
+        resp = self._client.get(
+            f"{self._base_url}/admin/conversations",
+            params=params,
+            headers=self._headers(),
+        )
+        if not resp.is_success:
+            log.warning(
+                "cabal list_conversations failed (%s): %s",
+                resp.status_code, resp.text[:200],
+            )
+            raise CabalError(f"list_conversations failed ({resp.status_code})")
+        return resp.json()["conversations"]
+
+    def get_conversation(self, task_id: str) -> dict:
+        """One conversation's full detail plus its event log (`GET
+        /admin/conversations/{task_id}`) — the watching window's expanded
+        view (Task 4/B4). Returns the parsed body verbatim: a
+        `"conversation"` object (the full, untruncated result) and an
+        `"events"` list (each `{id, event_type, payload, created_at}`).
+
+        Raises `CabalError` on non-2xx, same logging convention as every
+        other method here.
+        """
+        resp = self._client.get(
+            f"{self._base_url}/admin/conversations/{task_id}",
+            headers=self._headers(),
+        )
+        if not resp.is_success:
+            log.warning(
+                "cabal get_conversation(%s) failed (%s): %s",
+                task_id, resp.status_code, resp.text[:200],
+            )
+            raise CabalError(f"get_conversation({task_id!r}) failed ({resp.status_code})")
+        return resp.json()
+
+    def stream_events(self) -> Iterator[bytes]:
+        """Open a streaming GET to the switchboard's live event feed
+        (`GET /admin/events/stream`) and yield raw bytes chunks exactly as
+        received — a byte-for-byte passthrough, no per-frame parsing or
+        re-encoding, since the only consumer (`GET /api/colleagues/stream`,
+        kobo_api.main) just relays the switchboard's own SSE bytes straight
+        to the browser's EventSource unchanged.
+
+        No timeout (`timeout=None`, overriding this class's own generous-
+        but-bounded default): unlike every other method here, this is a
+        long-lived connection, not a bounded admin call — it stays open for
+        as long as the browser's EventSource on the far end stays connected.
+
+        Ends the generator (no more chunks, no exception) rather than
+        raising on either kind of failure a caller must tolerate silently:
+        a non-2xx response (bad/expired operator token, switchboard
+        trouble — never forwarded, since blindly relaying an error page's
+        body as if it were legitimate event-stream content would be
+        actively misleading to the browser's EventSource) or a transport
+        failure (connection refused, dropped mid-stream). The switchboard's
+        own stream never replays missed events anyway, so a caller
+        reconnecting from scratch after either kind of drop loses nothing
+        it wouldn't already accept losing. The route
+        (`/api/colleagues/stream`) counts on this: it never wraps this
+        generator in a try/except of its own, trusting either failure mode
+        to end iteration cleanly instead of surfacing as a mid-response
+        exception.
+        """
+        try:
+            with self._client.stream(
+                "GET",
+                f"{self._base_url}/admin/events/stream",
+                headers=self._headers(),
+                timeout=None,
+            ) as resp:
+                if not resp.is_success:
+                    log.warning("cabal stream_events failed (%s)", resp.status_code)
+                    return
+                yield from resp.iter_bytes()
+        except httpx.HTTPError:
+            return
 
 
 def _relay_reply_parts_sources(task: dict) -> list[list]:

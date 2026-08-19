@@ -8,6 +8,7 @@
   // loading/error/populated split Dashboard already uses.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import ChatPanel from "../components/ChatPanel.svelte";
+  import ColleagueConversations from "../components/ColleagueConversations.svelte";
   import DangerZone from "../components/DangerZone.svelte";
   import ErrorState from "../components/ErrorState.svelte";
   import FirstReply from "../components/FirstReply.svelte";
@@ -336,6 +337,7 @@
             {/if}
           {:else if tab === "chat"}
             <ChatPanel agentName={data.name} frozen={isFrozen(data.status)} />
+            <ColleagueConversations />
           {:else if tab === "memory"}
             <MemoryPanel agentName={data.name} frozen={isFrozen(data.status)} />
           {:else if tab === "skills"}

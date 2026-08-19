@@ -4063,6 +4063,200 @@ def test_cabal_mint_colleague_returned_token_never_appears_in_a_debug_log(caplog
     assert "ultra-secret-minted-colleague-token" not in caplog.text
 
 
+# --- list_conversations / get_conversation / stream_events (Task 4/B4: the
+# watching window) ------------------------------------------------------------
+
+
+def test_cabal_list_conversations_request_shape_and_auth_header():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"conversations": [{"task_id": "t1"}]})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    result = client.list_conversations()
+
+    assert captured["method"] == "GET"
+    assert captured["url"] == "http://cabal.local/admin/conversations"
+    assert captured["auth"] == "Bearer op-token"
+    assert result == [{"task_id": "t1"}]
+
+
+def test_cabal_list_conversations_passes_limit_only_when_given():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["params"] = dict(request.url.params)
+        return httpx.Response(200, json={"conversations": []})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.list_conversations()
+    assert captured["params"] == {}
+
+    client.list_conversations(limit=5)
+    assert captured["params"] == {"limit": "5"}
+
+
+def test_cabal_list_conversations_raises_typed_cabal_error_on_non_2xx():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(CabalError):
+        client.list_conversations()
+
+
+def test_cabal_list_conversations_error_message_never_contains_the_token():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="internal failure detail")
+
+    client = CabalClient(
+        "http://cabal.local", "super-secret-operator-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(CabalError) as exc_info:
+        client.list_conversations()
+    assert "super-secret-operator-token" not in str(exc_info.value)
+    assert "internal failure detail" not in str(exc_info.value)
+
+
+def test_cabal_get_conversation_request_shape_and_auth_header():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(
+            200, json={"conversation": {"task_id": "t1"}, "events": []}
+        )
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    result = client.get_conversation("t1")
+
+    assert captured["method"] == "GET"
+    assert captured["url"] == "http://cabal.local/admin/conversations/t1"
+    assert captured["auth"] == "Bearer op-token"
+    assert result == {"conversation": {"task_id": "t1"}, "events": []}
+
+
+def test_cabal_get_conversation_raises_typed_cabal_error_on_non_2xx():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="not found")
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(CabalError):
+        client.get_conversation("missing")
+
+
+def test_cabal_get_conversation_error_message_never_contains_the_token():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="internal failure detail")
+
+    client = CabalClient(
+        "http://cabal.local", "super-secret-operator-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(CabalError) as exc_info:
+        client.get_conversation("t1")
+    assert "super-secret-operator-token" not in str(exc_info.value)
+    assert "internal failure detail" not in str(exc_info.value)
+
+
+def test_cabal_stream_events_request_shape_and_auth_header():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, content=b"event: hello\ndata: {}\n\n")
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    chunks = list(client.stream_events())
+
+    assert captured["method"] == "GET"
+    assert captured["url"] == "http://cabal.local/admin/events/stream"
+    assert captured["auth"] == "Bearer op-token"
+    assert b"".join(chunks) == b"event: hello\ndata: {}\n\n"
+
+
+def test_cabal_stream_events_yields_raw_bytes_unparsed():
+    # Multiple named frames in one body - the client forwards them
+    # byte-for-byte, no per-frame parsing/re-encoding.
+    body = b"event: hello\ndata: {}\n\nevent: dispatch_start\ndata: {\"x\": 1}\n\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert b"".join(client.stream_events()) == body
+
+
+def test_cabal_stream_events_non_2xx_ends_generator_with_no_chunks():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text="bad token")
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert list(client.stream_events()) == []
+
+
+def test_cabal_stream_events_transport_error_ends_generator_with_no_chunks():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert list(client.stream_events()) == []  # must not raise
+
+
+def test_cabal_stream_events_uses_no_timeout_regardless_of_client_default():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(200, content=b"")
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    list(client.stream_events())
+
+    assert captured["timeout"] == {
+        "connect": None, "read": None, "write": None, "pool": None
+    }
+
+
 def test_cabal_error_is_a_client_error_subclass():
     # So Task 2/3 call sites that only know the general ClientError
     # contract (the same one every other client here raises) keep working

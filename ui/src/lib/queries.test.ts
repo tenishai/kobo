@@ -4,6 +4,8 @@ import {
   addCatalogSkillMutation,
   agentSkillsQuery,
   chatMutation,
+  colleagueConversationQuery,
+  colleagueConversationsQuery,
   connectSlackMutation,
   createPersonaMutation,
   deleteIntakeMutation,
@@ -573,6 +575,90 @@ describe("deliveryRefetchInterval", () => {
     expect(
       deliveryRefetchInterval({ state: "failed", detail: "boom" }),
     ).toBe(false);
+  });
+});
+
+describe("colleagueConversationsQuery", () => {
+  it("has queryKey ['colleagues', 'conversations', 'list', {all}]", () => {
+    expect(colleagueConversationsQuery(false).queryKey).toEqual([
+      "colleagues",
+      "conversations",
+      "list",
+      { all: false },
+    ]);
+    expect(colleagueConversationsQuery(true).queryKey).toEqual([
+      "colleagues",
+      "conversations",
+      "list",
+      { all: true },
+    ]);
+  });
+
+  it("queryFn GETs /api/colleagues/conversations and unwraps {conversations: [...]}", async () => {
+    const conversations = [
+      {
+        task_id: "t-1",
+        target_agent: "clio",
+        target_generation: 1,
+        caller_agent: "agent:iris",
+        state: "completed",
+        cabal_escalated_from: null,
+        created_at: "2026-08-19T10:00:00Z",
+        updated_at: "2026-08-19T10:00:05Z",
+        result_snippet: "Sure, here's how.",
+      },
+    ];
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ conversations }),
+    } as Response);
+
+    await expect(
+      callQueryFn<typeof conversations>(colleagueConversationsQuery(false)),
+    ).resolves.toEqual(conversations);
+    expect(fetch).toHaveBeenCalledWith("/api/colleagues/conversations");
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("colleagueConversationQuery", () => {
+  it("is disabled when taskId is null (nothing to fetch yet)", () => {
+    expect(colleagueConversationQuery(null).enabled).toBe(false);
+  });
+
+  it("is enabled once a taskId is chosen", () => {
+    expect(colleagueConversationQuery("t-1").enabled).toBe(true);
+  });
+
+  it("has queryKey ['colleagues', 'conversations', 'detail', taskId]", () => {
+    expect(colleagueConversationQuery("t-1").queryKey).toEqual([
+      "colleagues",
+      "conversations",
+      "detail",
+      "t-1",
+    ]);
+  });
+
+  it("queryFn GETs /api/colleagues/conversations/{task_id} and returns the body verbatim", async () => {
+    const detail = { conversation: { task_id: "t-1" }, events: [] };
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify(detail),
+    } as Response);
+
+    await expect(
+      callQueryFn<typeof detail>(colleagueConversationQuery("t-1")),
+    ).resolves.toEqual(detail);
+    expect(fetch).toHaveBeenCalledWith("/api/colleagues/conversations/t-1");
+
+    vi.unstubAllGlobals();
   });
 });
 

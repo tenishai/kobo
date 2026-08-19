@@ -1129,20 +1129,28 @@ class FakeSlack:
 
 
 class FakeCabal:
-    """Records every `graduate`/`absorb`/`relay`/`mint_colleague` call (in
-    call order, each its own typed list) — no real switchboard admin API
+    """Records every `graduate`/`absorb`/`relay`/`mint_colleague`/
+    `list_conversations`/`get_conversation`/`stream_events` call (in call
+    order, each its own typed list) — no real switchboard admin API
     involved.
 
-    `graduate_error`/`absorb_error`/`relay_error`/`mint_colleague_error`,
-    when set, make the matching method raise `CabalError(that message)`
-    instead of succeeding — the seam for exercising a caller's failure
-    handling (`DirectoryStep`, the destroy stage, the metadata tails, the
-    sync route, `WireStep`'s colleague-pass delivery) without a real
-    backend. `relay_result`, when given, is `relay`'s canned return value
-    (default an empty dict — no caller in this task inspects it).
-    `mint_colleague_result`, when given, is `mint_colleague`'s canned
-    return value (default a fixed placeholder token string — never a real
-    secret, since this is a fake).
+    `graduate_error`/`absorb_error`/`relay_error`/`mint_colleague_error`/
+    `conversations_error`/`conversation_error`, when set, make the
+    matching method raise `CabalError(that message)` instead of
+    succeeding — the seam for exercising a caller's failure handling
+    (`DirectoryStep`, the destroy stage, the metadata tails, the sync
+    route, `WireStep`'s colleague-pass delivery, the watching window's
+    proxy routes) without a real backend. `relay_result`, when given, is
+    `relay`'s canned return value (default an empty dict — no caller in
+    this task inspects it). `mint_colleague_result`, when given, is
+    `mint_colleague`'s canned return value (default a fixed placeholder
+    token string — never a real secret, since this is a fake).
+    `conversations_result`, when given, is `list_conversations`'s canned
+    return value (default `[]`). `conversation_result`, when given, is
+    `get_conversation`'s canned return value (default an empty
+    conversation/events shape). `stream_chunks`, when given, is exactly
+    what `stream_events` yields, in order (default `[]` — an immediately
+    empty stream, no real transport involved).
     """
 
     def __init__(
@@ -1154,6 +1162,11 @@ class FakeCabal:
         relay_error: str | None = None,
         mint_colleague_result: str = "fake-colleague-token",
         mint_colleague_error: str | None = None,
+        conversations_result: list[dict] | None = None,
+        conversations_error: str | None = None,
+        conversation_result: dict | None = None,
+        conversation_error: str | None = None,
+        stream_chunks: list[bytes] | None = None,
     ):
         self._graduate_error = graduate_error
         self._absorb_error = absorb_error
@@ -1161,10 +1174,24 @@ class FakeCabal:
         self._relay_error = relay_error
         self._mint_colleague_result = mint_colleague_result
         self._mint_colleague_error = mint_colleague_error
+        self._conversations_result = (
+            conversations_result if conversations_result is not None else []
+        )
+        self._conversations_error = conversations_error
+        self._conversation_result = (
+            conversation_result
+            if conversation_result is not None
+            else {"conversation": {}, "events": []}
+        )
+        self._conversation_error = conversation_error
+        self._stream_chunks = stream_chunks if stream_chunks is not None else []
         self.graduate_calls: list[dict] = []
         self.absorb_calls: list[str] = []
         self.relay_calls: list[dict] = []
         self.mint_colleague_calls: list[str] = []
+        self.list_conversations_calls: list[dict] = []
+        self.get_conversation_calls: list[str] = []
+        self.stream_events_calls = 0
 
     def graduate(self, name: str, *, endpoint: str, audience: str, card: dict) -> None:
         self.graduate_calls.append(
@@ -1189,6 +1216,22 @@ class FakeCabal:
         if self._mint_colleague_error is not None:
             raise CabalError(f"mint_colleague failed: {self._mint_colleague_error}")
         return self._mint_colleague_result
+
+    def list_conversations(self, *, limit: int | None = None) -> list[dict]:
+        self.list_conversations_calls.append({"limit": limit})
+        if self._conversations_error is not None:
+            raise CabalError(f"list_conversations failed: {self._conversations_error}")
+        return self._conversations_result
+
+    def get_conversation(self, task_id: str) -> dict:
+        self.get_conversation_calls.append(task_id)
+        if self._conversation_error is not None:
+            raise CabalError(f"get_conversation failed: {self._conversation_error}")
+        return self._conversation_result
+
+    def stream_events(self):
+        self.stream_events_calls += 1
+        yield from self._stream_chunks
 
 
 # Canonical 1x1 transparent PNG (68 bytes) — a real, valid minimal PNG (not a

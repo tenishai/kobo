@@ -24,9 +24,24 @@ const READY_AGENT = {
   has_avatar: false,
 };
 
+// A minimal EventSource stand-in - jsdom has none, and ColleagueConversations
+// (mounted unconditionally on the Chat tab, same "every panel stays mounted"
+// invariant as every other panel here) opens one as soon as its list query
+// resolves. This file's own tests never exercise live SSE updates (that's
+// ColleagueConversations.test.ts's job, with its own richer fake); this one
+// only needs to exist so the effect doesn't throw `ReferenceError:
+// EventSource is not defined` partway through an otherwise-unrelated test.
+class NoopEventSource {
+  constructor(_url: string) {}
+  addEventListener(): void {}
+  removeEventListener(): void {}
+  close(): void {}
+}
+
 describe("AgentDetail tabs", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
+    vi.stubGlobal("EventSource", NoopEventSource);
     location.hash = "#/agents/warden";
     // `parseHash`/`route` (router.svelte.ts) only resync on a real
     // `hashchange` event (or `navigate`, which needs the module already
@@ -49,11 +64,14 @@ describe("AgentDetail tabs", () => {
     //   - SkillsPanel:  agentSkillsQuery -> listSkills  -> reads `data.skills`
     //   - ToolingPanel: toolingQuery  -> listTooling    -> the body itself is
     //                   `{ files, enforcement }` (ToolingListResponse)
+    //   - ColleagueConversations: colleagueConversationsQuery ->
+    //                   listColleagueConversations -> reads `data.length`
     // Against the bare `{}` catch-all, each of those becomes `undefined`
     // (or, for tooling, a `{}` with no `.files`) and the panel throws
     // reading `.length`/`.some` before it ever gets to render an empty
     // state — so each gets its own minimal, healthy payload here instead.
     stubFetch({
+      "/api/colleagues/conversations": { conversations: [] },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -91,6 +109,7 @@ describe("AgentDetail tabs", () => {
 
   it("disables the non-Overview tab triggers while provisioning, so a click can't dead-end into a 409", async () => {
     stubFetch({
+      "/api/colleagues/conversations": { conversations: [] },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -125,6 +144,7 @@ describe("AgentDetail tabs", () => {
 
   it("lands on Overview on mount for a non-ready status (destroying)", async () => {
     stubFetch({
+      "/api/colleagues/conversations": { conversations: [] },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -143,6 +163,7 @@ describe("AgentDetail tabs", () => {
 
   it("renders the checklist and first words inside the Overview tabpanel", async () => {
     stubFetch({
+      "/api/colleagues/conversations": { conversations: [] },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -167,6 +188,7 @@ describe("AgentDetail tabs", () => {
 
   it("composition card shows the team chip, purpose chips, and the null-capability copy verbatim", async () => {
     stubFetch({
+      "/api/colleagues/conversations": { conversations: [] },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -197,6 +219,7 @@ describe("AgentDetail tabs", () => {
 
   it("composition card shows the earned capability line verbatim when present", async () => {
     stubFetch({
+      "/api/colleagues/conversations": { conversations: [] },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -225,6 +248,7 @@ describe("AgentDetail tabs", () => {
 
   it("the Edit details affordance disables while frozen (destroying)", async () => {
     stubFetch({
+      "/api/colleagues/conversations": { conversations: [] },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -251,6 +275,7 @@ describe("AgentDetail tabs", () => {
     // lane is gone entirely, and AgentDetail no longer threads any such
     // prop into SlackPanel.
     stubFetch({
+      "/api/colleagues/conversations": { conversations: [] },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -276,6 +301,7 @@ describe("AgentDetail tabs", () => {
     // isn't shaped like those endpoints' real responses and leaves those
     // panels' queries permanently pending instead of settled.
     stubFetch({
+      "/api/colleagues/conversations": { conversations: [] },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },

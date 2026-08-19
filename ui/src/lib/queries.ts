@@ -28,6 +28,12 @@
 //   ["org", "status"]                               - org bootstrap/wiring status
 //   ["names", "suggestions", {who_they_are, what_they_do}]
 //                                                    - five name-suggestion cards for a committed persona
+//   ["colleagues", "conversations", "list", {all}]  - the watching window's
+//                                                      conversation list
+//                                                      (Task 4/B4)
+//   ["colleagues", "conversations", "detail", taskId]
+//                                                    - one conversation's
+//                                                      full detail + events
 
 import { queryOptions, type QueryClient } from "@tanstack/svelte-query";
 import {
@@ -39,6 +45,8 @@ import {
   type AgentSummary,
   type CatalogEntry,
   type ChatMessage,
+  type ColleagueConversation,
+  type ColleagueConversationDetail,
   type IntakeFile,
   type KnowledgeFile,
   type NameSuggestion,
@@ -60,6 +68,7 @@ import {
   deleteTooling,
   destroyAgent,
   draftPersona,
+  fetchColleagueConversation,
   fetchDeliveryState,
   fetchModels,
   fetchNameSuggestions,
@@ -71,6 +80,7 @@ import {
   getAgent,
   importTooling,
   listAgents,
+  listColleagueConversations,
   listIntake,
   listKnowledge,
   listSkills,
@@ -709,6 +719,39 @@ export function generateAvatarMutation(queryClient: QueryClient, name: string) {
   };
 }
 
+/**
+ * The watching window's conversation list (Task 4/B4) — agent-only by
+ * default (`all: false`), every caller (room-human chats and service
+ * callers included) when `all` is true. No polling of its own: live
+ * updates come from the SSE stream instead (`ColleagueConversations.svelte`
+ * refetches this query on any frame from `/api/colleagues/stream` — "on any
+ * SSE message refetch the list", no client-side event merging).
+ *
+ * A 409 (this room has no switchboard wired) surfaces through `$query.
+ * error` as an `ApiError` with `status === 409`; the component treats that
+ * specifically as "render nothing" rather than an error state.
+ */
+export function colleagueConversationsQuery(all: boolean) {
+  return queryOptions({
+    queryKey: ["colleagues", "conversations", "list", { all }] as const,
+    queryFn: () => listColleagueConversations(all),
+  });
+}
+
+/**
+ * One colleague conversation's full detail plus its event log (Task
+ * 4/B4), fetched lazily once a row in the watching window is expanded —
+ * disabled until a `taskId` is chosen, same "nothing to fetch yet" gate
+ * `deliveryQuery`'s sha argument uses.
+ */
+export function colleagueConversationQuery(taskId: string | null) {
+  return queryOptions({
+    queryKey: ["colleagues", "conversations", "detail", taskId] as const,
+    queryFn: () => fetchColleagueConversation(taskId as string),
+    enabled: taskId !== null,
+  });
+}
+
 // Re-exported so consumers of the query factories don't need a separate
 // import from api.ts just to type their component-level state.
 export type {
@@ -719,6 +762,8 @@ export type {
   AgentSummary,
   CatalogEntry,
   ChatMessage,
+  ColleagueConversation,
+  ColleagueConversationDetail,
   IntakeFile,
   KnowledgeFile,
   NameSuggestion,

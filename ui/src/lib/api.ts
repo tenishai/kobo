@@ -138,6 +138,47 @@ export type OrgStatus = { org: string | null; wired: boolean; checks: OrgCheck[]
 
 export type ChatMessage = { role: "user" | "agent"; text: string };
 
+/** One row of the room's colleagues switchboard admin surface (the
+ * watching window, Task 4/B4) — `GET /api/colleagues/conversations`'
+ * verified upstream shape, passed through unchanged. `caller_agent` is
+ * `"agent:<name>"` when another agent started this conversation asking a
+ * colleague for help, or `"operator:..."`/`"service:..."` for a room-human
+ * chat or a service caller (e.g. best-effort directory syncs) — the room
+ * API's own default filter keeps only the former; `all=true` returns every
+ * row. `result_snippet` is truncated to 120 chars upstream and may be
+ * `null` before a conversation completes. */
+export type ColleagueConversation = {
+  task_id: string;
+  target_agent: string;
+  target_generation: number | null;
+  caller_agent: string;
+  state: string;
+  cabal_escalated_from: string | null;
+  created_at: string;
+  updated_at: string;
+  result_snippet: string | null;
+};
+
+/** One entry of a colleague conversation's event log (part of `GET
+ * /api/colleagues/conversations/{task_id}`'s response) — the switchboard's
+ * own frame names (`dispatch_start`/`dispatch_success`/`dispatch_failure`)
+ * show up here as `event_type`. */
+export type ColleagueEvent = {
+  id: number | string;
+  event_type: string;
+  payload: unknown;
+  created_at: string;
+};
+
+/** One colleague conversation's full detail plus its event log (`GET
+ * /api/colleagues/conversations/{task_id}`) — `conversation` carries every
+ * `ColleagueConversation` field plus the full, untruncated `result` text
+ * (as opposed to the list's own 120-char `result_snippet`). */
+export type ColleagueConversationDetail = {
+  conversation: ColleagueConversation & { result?: string | null };
+  events: ColleagueEvent[];
+};
+
 export class ApiError extends Error {
   status: number;
 
@@ -418,6 +459,31 @@ export async function chatWithAgent(
     body: JSON.stringify({ messages }),
   });
   return parse<{ reply: string }>(res);
+}
+
+/** The room's colleagues watching window list (Task 4/B4) — agent-only by
+ * default, every caller (room-human chats and service callers included)
+ * when `all` is true. A 409 (the switchboard isn't wired on this room)
+ * surfaces as an `ApiError` carrying that status, same as any other route;
+ * the caller (`ColleagueConversations.svelte`) treats that status
+ * specifically as "render nothing" rather than a scary error banner. */
+export async function listColleagueConversations(
+  all: boolean,
+): Promise<ColleagueConversation[]> {
+  const res = await fetch(`/api/colleagues/conversations${all ? "?all=true" : ""}`);
+  const data = await parse<{ conversations: ColleagueConversation[] }>(res);
+  return data.conversations;
+}
+
+/** One colleague conversation's full detail plus its event log (Task
+ * 4/B4), fetched lazily when a row in the watching window is expanded. */
+export async function fetchColleagueConversation(
+  taskId: string,
+): Promise<ColleagueConversationDetail> {
+  const res = await fetch(
+    `/api/colleagues/conversations/${encodeURIComponent(taskId)}`,
+  );
+  return parse<ColleagueConversationDetail>(res);
 }
 
 export async function checkAvailability(

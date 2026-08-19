@@ -15,7 +15,7 @@ import httpx
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -595,6 +595,31 @@ def _sync_directory_best_effort(clients: Clients, config: Config, agent: Agent) 
             agent.name,
             exc_info=True,
         )
+
+
+# Same plain 409 detail `sync_directory_route` already uses (below) — kept
+# as a literal here too rather than a shared constant, so the two call
+# sites can't accidentally drift apart from a shared-string refactor no one
+# asked for.
+_SWITCHBOARD_NOT_CONFIGURED = {"error": "the switchboard is not configured"}
+
+
+def _colleagues_gate(config: Config, clients: Clients) -> JSONResponse | None:
+    """None when the three colleagues-proxy routes below (Task 4/B4 "the
+    watching window") may proceed; the shared plain 409 otherwise.
+
+    Checks BOTH `cabal_enabled(config)` AND `clients.cabal is not None` —
+    same two-part gate `chat_with_agent`'s own switchboard branch uses
+    (either alone isn't enough: an enabled-by-config-but-unwired room, or a
+    wired client on a room that isn't enabled, must both still 409 rather
+    than risk dereferencing a None `clients.cabal`), unlike
+    `sync_directory_route`'s single `cabal_enabled` check, which gets away
+    with it only because `Clients.real()` always keeps the two in lockstep
+    in production.
+    """
+    if not cabal_enabled(config) or clients.cabal is None:
+        return JSONResponse(_SWITCHBOARD_NOT_CONFIGURED, status_code=409)
+    return None
 
 
 # Uncalled by any route since Slack self-service (2026-08-17) — kept because
@@ -2453,6 +2478,90 @@ def create_app(
             )
 
         return JSONResponse({"registered": True})
+
+    # --- Colleagues: the watching window (Task 4/B4) ---------------------------
+    #
+    # Three read-only proxy routes over the switchboard's own admin
+    # conversation surface, room-wide (not per-agent) — any signed-in user,
+    # same reach as the directory-sync route above (no extra operator gate),
+    # gated only by `_colleagues_gate` (the switchboard being wired at all).
+    # A 409 here is treated by the UI as "this room has no switchboard" and
+    # renders nothing (silent absence), never a scary error banner — see
+    # ColleagueConversations.svelte.
+
+    @app.get("/api/colleagues/conversations")
+    def list_colleague_conversations(
+        all: bool = False, limit: int | None = None
+    ) -> JSONResponse:
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        gate = _colleagues_gate(cfg, clients)
+        if gate is not None:
+            return gate
+
+        try:
+            conversations = clients.cabal.list_conversations(limit=limit)
+        except (CabalError, httpx.HTTPError) as exc:
+            log.warning("colleague conversations list failed: %s", exc)
+            return JSONResponse(
+                {"error": "The switchboard did not answer. Try again shortly."},
+                status_code=502,
+            )
+
+        if not all:
+            # Default view: only the rows an agent itself started (asking a
+            # colleague for help) — a room-human chat or a service caller
+            # (e.g. `service:kobo` from best-effort directory syncs) is
+            # noise here unless the operator explicitly asks to see it via
+            # `all=true`.
+            conversations = [
+                c for c in conversations
+                if str(c.get("caller_agent", "")).startswith("agent:")
+            ]
+        return JSONResponse({"conversations": conversations})
+
+    @app.get("/api/colleagues/conversations/{task_id}")
+    def get_colleague_conversation(task_id: str) -> JSONResponse:
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        gate = _colleagues_gate(cfg, clients)
+        if gate is not None:
+            return gate
+
+        try:
+            detail = clients.cabal.get_conversation(task_id)
+        except (CabalError, httpx.HTTPError) as exc:
+            log.warning("colleague conversation detail failed for %s: %s", task_id, exc)
+            return JSONResponse(
+                {"error": "The switchboard did not answer. Try again shortly."},
+                status_code=502,
+            )
+
+        return JSONResponse(detail)
+
+    @app.get("/api/colleagues/stream", response_model=None)
+    def stream_colleague_events() -> StreamingResponse | JSONResponse:
+        """SSE passthrough of the switchboard's live event feed.
+
+        The 409 gate below (`_colleagues_gate`) covers a room with no
+        switchboard wired at all. Beyond that, `CabalClient.stream_events`
+        (kobo_api.clients) owns every other failure mode itself — a non-2xx
+        upstream response or a transport error simply ends the generator,
+        never raises — so this route never wraps the `StreamingResponse` in
+        its own try/except: the operator token this call carries under the
+        hood never has a path to end up in anything sent to the browser,
+        since the response's status/headers (fixed 200, `text/event-stream`)
+        are committed before the upstream connection is even attempted, and
+        the body is nothing but a raw byte passthrough of the switchboard's
+        own frames.
+        """
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        gate = _colleagues_gate(cfg, clients)
+        if gate is not None:
+            return gate
+
+        return StreamingResponse(clients.cabal.stream_events(), media_type="text/event-stream")
 
     # --- Avatar (P2d): persona-derived face, repo-backed with a display cache ---
 
