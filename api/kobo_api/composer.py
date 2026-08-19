@@ -205,6 +205,35 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
     )
 
 
+def _approvals_gates(spec: BundleSpec) -> list | _FlowList:
+    """The bundle's `approvals.gates` list -- composes EMPTY when the
+    colleagues tools block is emitted (`spec.cabal_url` configured, the same
+    presence-alone gate `_a2a_transport`/`_tools_block` above use), per the
+    "Amendments from live acceptance" section of `docs/superpowers/specs/
+    2026-08-19-colleagues-talk-design.md`.
+
+    Rationale (from the amendment): the runtime consults gates via
+    first-fnmatch-wins, and a deployed pod's approver is deny-all, so the
+    bundle's blanket `match: "*"` gate below blocks every tool outright --
+    including the two colleague tools the explicit `tools.allow` list alone
+    is meant to gate. Per the operator's open-discovery ruling, colleague
+    conversations need no human signature: the law lives in the explicit
+    tool allowlist (nothing outside it is even visible to the model) and the
+    untouched write ceiling. `ceiling` and `escalation` in `_agent_yaml_data`
+    below are never touched by this gate; a future write-capable tool
+    composes its own gates deliberately, never by resurrecting this one.
+
+    Byte-identical to the pre-existing shape when off (`spec.cabal_url`
+    unset, the same gate as everywhere else in this module) -- a plain `[]`
+    (rather than `_FlowList([])`) renders identically to a forced one since
+    PyYAML's own flow heuristic already picks flow style for an empty
+    collection, mirroring `_tools_block`'s own empty `allow: []`.
+    """
+    if spec.cabal_url:
+        return []
+    return _FlowList([{"match": _DoubleQuoted("*"), "require": "plan_approval"}])
+
+
 def _agent_yaml_data(spec: BundleSpec) -> dict:
     return {
         "name": spec.name,
@@ -221,7 +250,7 @@ def _agent_yaml_data(spec: BundleSpec) -> dict:
         "checkpoints": "sqlite",
         "approvals": {
             "ceiling": {"write": False},
-            "gates": _FlowList([{"match": _DoubleQuoted("*"), "require": "plan_approval"}]),
+            "gates": _approvals_gates(spec),
             "escalation": {"route": "cli"},
         },
     }
@@ -529,6 +558,101 @@ def update_agent_yaml_tools(
     updated, count = _TOOLS_LINE_RE.subn(lambda match: replacement, text, count=1)
     if count == 0:
         raise ClientError(f"agent.yaml has no tools: line to update: {agent_yaml_path}")
+    agent_yaml_path.write_text(updated)
+
+
+# Matches the `approvals:` stanza's `gates:` line anywhere in an already-
+# composed `agent.yaml` — this module's own `_render_agent_yaml` always
+# renders it on a single line (same reasoning as `_TOOLS_LINE_RE` above: the
+# nested `{match: ..., require: ...}` mapping is non-scalar, so it forces
+# flow style there too), so a single-line, regex-based surgical edit finds
+# and replaces the whole line without a full YAML round-trip that would
+# reorder/reformat every other line in the file. `gates:` is nested (under
+# `approvals:`, unlike `tools:`'s top-level key), so the pattern captures
+# its leading indentation (group 1) to reproduce it verbatim in the
+# replacement, rather than assuming a fixed column like `_TOOLS_LINE_RE`
+# does for its own top-level key.
+_APPROVALS_GATES_LINE_RE = re.compile(r"^([ \t]*)gates:[ \t]*\[.*\][ \t]*$", re.MULTILINE)
+
+
+def _render_gates_flow(gates: list[dict]) -> str:
+    """Render `gates` (a list of `{match, require}`-shaped mappings, or
+    empty) as the single-line flow-style YAML text `update_agent_yaml_
+    approvals_gates` writes onto the `gates:` line.
+
+    Every string value is forced double-quoted via `_DoubleQuoted` (matching
+    this module's own convention elsewhere — `_a2a_transport`'s `auth`
+    block, `_tools_block`'s `url`/`self`, the compose-time default gate's
+    own quoted `"*"` match pattern) so the rendered text is always valid
+    YAML regardless of the string's content (an unquoted bare `*`, as in the
+    default gate's match pattern, is itself a YAML alias marker and would
+    fail to parse). Non-string scalars (for instance a boolean) are left
+    bare. An empty list renders `[]`, identically to `_approvals_gates`'s
+    own off-path shape and `_tools_block`'s empty `allow: []`.
+    """
+    flow_items = _FlowList(
+        _FlowDict(
+            {
+                key: _DoubleQuoted(value) if isinstance(value, str) else value
+                for key, value in gate.items()
+            }
+        )
+        for gate in gates
+    )
+    rendered = yaml.dump(
+        flow_items, Dumper=_AgentYamlDumper, default_flow_style=None, width=1000
+    )
+    return rendered.strip()
+
+
+def update_agent_yaml_approvals_gates(bundle_dir: Path, *, gates: list[dict]) -> None:
+    """In-place edit of an already-composed `bundle_dir/agent.yaml`'s
+    `approvals.gates` line: replace it wholesale with `gates`, leaving
+    `ceiling`, `escalation`, and every other line in the file byte-identical.
+
+    The backfill path for the bundle's blanket `match: "*"` approval gate,
+    per the "Amendments from live acceptance" section of `docs/superpowers/
+    specs/2026-08-19-colleagues-talk-design.md`: a deployed pod's approver is
+    deny-all, so that gate blocks every tool outright, including the two
+    colleague tools the tool allowlist alone is meant to gate. Called with
+    `gates=[]` for that repair — the write ceiling and escalation route are
+    left untouched by this function, exactly as `_approvals_gates` leaves
+    them untouched at compose time.
+
+    Same file-editing idiom as `update_agent_yaml_auth`/`update_agent_yaml_
+    tools` above: read the whole file as text, apply one targeted `re.subn`
+    against a replacement function, and raise rather than silently no-op
+    when the thing being edited isn't found. Add-or-replace in one code path
+    (mirrors `update_agent_yaml_tools`): the whole `gates:` line is always
+    replaced wholesale, so there is no separate "add" branch.
+
+    Idempotent by construction: a second call with the same `gates` value
+    replaces the line with byte-identical text, so the file's contents never
+    drift on a repeat call.
+
+    Raises `ClientError` (never silently no-ops), mirroring
+    `update_agent_yaml_tools`'s own two failure modes:
+
+    - `agent.yaml` is missing entirely: `Path.read_text()` raises `OSError`.
+    - No line in the file matches `_APPROVALS_GATES_LINE_RE` (no `approvals`
+      stanza, or a hand-edited one with no `gates:` line to replace).
+    """
+    agent_yaml_path = bundle_dir / "agent.yaml"
+    try:
+        text = agent_yaml_path.read_text()
+    except OSError as exc:
+        raise ClientError(f"agent.yaml not found: {agent_yaml_path}") from exc
+
+    rendered = _render_gates_flow(gates)
+
+    def _replace(match: re.Match) -> str:
+        return f"{match.group(1)}gates: {rendered}"
+
+    updated, count = _APPROVALS_GATES_LINE_RE.subn(_replace, text, count=1)
+    if count == 0:
+        raise ClientError(
+            f"agent.yaml has no approvals gates line to update: {agent_yaml_path}"
+        )
     agent_yaml_path.write_text(updated)
 
 

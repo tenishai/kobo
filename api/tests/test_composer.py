@@ -11,6 +11,7 @@ from kobo_api.composer import (
     ComposeError,
     compose,
     update_agent_card_metadata,
+    update_agent_yaml_approvals_gates,
     update_agent_yaml_auth,
     update_agent_yaml_tools,
     validate_agent_yaml,
@@ -179,9 +180,11 @@ def test_compose_agent_yaml_byte_identical_when_cabal_url_none_both_ways(tmp_pat
 def test_compose_agent_yaml_carries_auth_block_when_cabal_url_configured(tmp_path):
     """Note: since Task 3/B3, `cabal_url` configured also swaps the `tools:`
     line to the colleagues provider's config block (see the "tools block"
-    section below) — this test's pinned text carries that too, so this
-    single byte-for-byte assertion still proves every OTHER line is
-    untouched by either feature."""
+    section below), and since the "fix round: the approval gates" amendment
+    it also composes the approvals `gates:` list empty (see the "approvals
+    gates" section further below) — this test's pinned text carries both, so
+    this single byte-for-byte assertion still proves every OTHER line is
+    untouched by any of the three features."""
     dest = tmp_path / "out"
 
     compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
@@ -206,7 +209,7 @@ def test_compose_agent_yaml_carries_auth_block_when_cabal_url_configured(tmp_pat
         "checkpoints: sqlite\n"
         "approvals:\n"
         "  ceiling: {write: false}\n"
-        '  gates: [{match: "*", require: plan_approval}]\n'
+        "  gates: []\n"
         "  escalation: {route: cli}\n"
     )
 
@@ -339,6 +342,68 @@ def test_compose_agent_yaml_tools_block_token_env_is_the_shared_constant(tmp_pat
 
 
 def test_compose_agent_yaml_with_colleagues_tools_block_still_validates(tmp_path):
+    dest = tmp_path / "out"
+
+    compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
+
+    validate_agent_yaml(dest / "bundle")  # must not raise
+
+
+# --- approvals gates (fix round: the approval gates) -----------------------------
+#
+# Live acceptance round 2: the runtime consults gates via first-fnmatch-wins,
+# and a deployed pod's approver is deny-all, so the bundle's blanket
+# `match: "*"` gate blocked every tool outright, including the two colleague
+# tools the tool allowlist alone is meant to gate. Per the "Amendments from
+# live acceptance" section of `docs/superpowers/specs/
+# 2026-08-19-colleagues-talk-design.md`: when the colleague tools are
+# composed, the gates list composes EMPTY. Ceiling and escalation stay
+# untouched — same composer gate (`spec.cabal_url` presence alone) as the
+# auth block and tools block above.
+
+
+def test_compose_agent_yaml_approvals_gates_empty_when_cabal_url_configured(tmp_path):
+    dest = tmp_path / "out"
+
+    compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
+
+    data = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())
+    assert data["approvals"] == {
+        "ceiling": {"write": False},
+        "gates": [],
+        "escalation": {"route": "cli"},
+    }
+
+
+def test_compose_agent_yaml_approvals_gates_line_is_empty_flow_list(tmp_path):
+    dest = tmp_path / "out"
+
+    compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
+
+    text = (dest / "bundle" / "agent.yaml").read_text()
+    assert "  gates: []\n" in text
+
+
+def test_compose_agent_yaml_approvals_gates_byte_identical_when_cabal_url_none_both_ways(
+    tmp_path,
+):
+    """Pin: whether `cabal_url` is left at its default or passed explicitly
+    as `None`, the composed `approvals:` stanza is byte-identical to today's
+    shape — the blanket `match: "*"` gate is untouched on the off path."""
+    default_dest = tmp_path / "default"
+    explicit_dest = tmp_path / "explicit"
+
+    compose(_make_spec(), default_dest)
+    compose(_make_spec(cabal_url=None), explicit_dest)
+
+    default_text = (default_dest / "bundle" / "agent.yaml").read_text()
+    explicit_text = (explicit_dest / "bundle" / "agent.yaml").read_text()
+
+    assert default_text == explicit_text
+    assert '  gates: [{match: "*", require: plan_approval}]\n' in default_text
+
+
+def test_compose_agent_yaml_with_empty_approvals_gates_still_validates(tmp_path):
     dest = tmp_path / "out"
 
     compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
@@ -528,6 +593,156 @@ def test_update_agent_yaml_tools_on_freshly_composed_bundle_round_trips(tmp_path
     assert data["tools"]["provider"] == "colleagues"
     assert data["tools"]["allow"] == ["colleagues.list_colleagues", "colleagues.ask_colleague"]
     assert data["tools"]["colleagues"]["self"] == "sam"
+
+
+# --- update_agent_yaml_approvals_gates (fix round: the approval gates) -----------
+#
+# The backfill path for the ceiling/gates/escalation stanza a live deployed
+# agent carries verbatim: `approvals: {ceiling: {write: false}, gates:
+# [{match: "*", require: plan_approval}], escalation: {route: cli}}`. The
+# runtime consults gates via first-fnmatch-wins, and a deployed pod's
+# approver is deny-all, so that blanket gate blocks every tool outright,
+# including the two colleague tools the tool allowlist alone is meant to
+# gate. This helper rewrites ONLY the `gates:` line, leaving `ceiling` and
+# `escalation` (and every other line) byte-faithful — same idiom as
+# `update_agent_yaml_tools` above.
+
+_FIXTURE_AGENT_YAML_WITH_LIVE_GATES = (
+    "name: sam\n"
+    "card: agent-card.json\n"
+    "persona: persona.md\n"
+    "transports:\n"
+    "  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
+    "tools: {provider: colleagues, allow: [colleagues.list_colleagues, "
+    'colleagues.ask_colleague], colleagues: {url: "http://cabal.example.com", '
+    'token_env: CABAL_COLLEAGUE_TOKEN, self: "sam"}}\n'
+    "memory: {personal: techne, home: /techne}\n"
+    "checkpoints: sqlite\n"
+    "approvals:\n"
+    "  ceiling: {write: false}\n"
+    '  gates: [{match: "*", require: plan_approval}]\n'
+    "  escalation: {route: cli}\n"
+)
+
+
+def _write_gates_fixture(bundle_dir: Path, text: str = _FIXTURE_AGENT_YAML_WITH_LIVE_GATES) -> Path:
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    agent_yaml_path = bundle_dir / "agent.yaml"
+    agent_yaml_path.write_text(text)
+    return agent_yaml_path
+
+
+def test_update_agent_yaml_approvals_gates_empties_gates_and_preserves_every_other_line(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    agent_yaml_path = _write_gates_fixture(bundle_dir)
+
+    update_agent_yaml_approvals_gates(bundle_dir, gates=[])
+
+    updated_lines = agent_yaml_path.read_text().splitlines(keepends=True)
+    original_lines = _FIXTURE_AGENT_YAML_WITH_LIVE_GATES.splitlines(keepends=True)
+    gates_index = original_lines.index('  gates: [{match: "*", require: plan_approval}]\n')
+    assert len(updated_lines) == len(original_lines)
+    for i, (original, updated) in enumerate(zip(original_lines, updated_lines)):
+        if i == gates_index:
+            continue
+        assert updated == original, f"line {i} changed unexpectedly"
+
+    assert updated_lines[gates_index] == "  gates: []\n"
+    data = yaml.safe_load(agent_yaml_path.read_text())
+    assert data["approvals"] == {
+        "ceiling": {"write": False},
+        "gates": [],
+        "escalation": {"route": "cli"},
+    }
+
+
+def test_update_agent_yaml_approvals_gates_replaces_an_existing_value(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    fixture_with_empty_gates = _FIXTURE_AGENT_YAML_WITH_LIVE_GATES.replace(
+        '  gates: [{match: "*", require: plan_approval}]\n', "  gates: []\n"
+    )
+    _write_gates_fixture(bundle_dir, fixture_with_empty_gates)
+
+    update_agent_yaml_approvals_gates(
+        bundle_dir, gates=[{"match": "*", "require": "plan_approval"}]
+    )
+
+    text = (bundle_dir / "agent.yaml").read_text()
+    assert "gates: []" not in text
+    data = yaml.safe_load(text)
+    assert data["approvals"]["gates"] == [{"match": "*", "require": "plan_approval"}]
+    assert data["approvals"]["ceiling"] == {"write": False}
+    assert data["approvals"]["escalation"] == {"route": "cli"}
+    # every other line survives untouched
+    other_lines = [
+        line
+        for line in fixture_with_empty_gates.splitlines(keepends=True)
+        if "gates:" not in line
+    ]
+    for line in other_lines:
+        assert line in text
+
+
+def test_update_agent_yaml_approvals_gates_is_idempotent(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    _write_gates_fixture(bundle_dir)
+
+    update_agent_yaml_approvals_gates(bundle_dir, gates=[])
+    once = (bundle_dir / "agent.yaml").read_text()
+
+    update_agent_yaml_approvals_gates(bundle_dir, gates=[])
+    twice = (bundle_dir / "agent.yaml").read_text()
+
+    assert once == twice
+
+
+def test_update_agent_yaml_approvals_gates_raises_when_no_approvals_stanza(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    plain_copy = (
+        "name: sam\n"
+        "card: agent-card.json\n"
+        "persona: persona.md\n"
+        "transports:\n"
+        "  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
+        "tools: {provider: none, allow: []}\n"
+        "memory: {personal: techne, home: /techne}\n"
+        "checkpoints: sqlite\n"
+    )
+    _write_gates_fixture(bundle_dir, plain_copy)
+
+    with pytest.raises(ClientError, match="approvals"):
+        update_agent_yaml_approvals_gates(bundle_dir, gates=[])
+
+    # unmodified on failure
+    assert (bundle_dir / "agent.yaml").read_text() == plain_copy
+
+
+def test_update_agent_yaml_approvals_gates_missing_file_raises_client_error(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()  # no agent.yaml written
+
+    with pytest.raises(ClientError, match="agent.yaml not found"):
+        update_agent_yaml_approvals_gates(bundle_dir, gates=[])
+
+
+def test_update_agent_yaml_approvals_gates_on_freshly_composed_bundle_round_trips(tmp_path):
+    """The backfill's real target: a bundle composed WITHOUT the switchboard
+    configured (the default, non-empty gate), later repaired once the
+    colleague tools land — mirrors `update_agent_yaml_tools`'s own round-trip
+    test."""
+    dest = tmp_path / "out"
+    compose(_make_spec(), dest)
+    bundle_dir = dest / "bundle"
+
+    update_agent_yaml_approvals_gates(bundle_dir, gates=[])
+
+    validate_agent_yaml(bundle_dir)  # must not raise
+    data = yaml.safe_load((bundle_dir / "agent.yaml").read_text())
+    assert data["approvals"] == {
+        "ceiling": {"write": False},
+        "gates": [],
+        "escalation": {"route": "cli"},
+    }
 
 
 # --- agent-card.json -----------------------------------------------------------
