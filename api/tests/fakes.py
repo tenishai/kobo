@@ -1129,15 +1129,20 @@ class FakeSlack:
 
 
 class FakeCabal:
-    """Records every `graduate`/`absorb`/`relay` call (in call order, each
-    its own typed list) — no real switchboard admin API involved.
+    """Records every `graduate`/`absorb`/`relay`/`mint_colleague` call (in
+    call order, each its own typed list) — no real switchboard admin API
+    involved.
 
-    `graduate_error`/`absorb_error`/`relay_error`, when set, make the
-    matching method raise `CabalError(that message)` instead of succeeding
-    — the seam for exercising a caller's failure handling (`DirectoryStep`,
-    the destroy stage, the metadata tails, the sync route) without a real
+    `graduate_error`/`absorb_error`/`relay_error`/`mint_colleague_error`,
+    when set, make the matching method raise `CabalError(that message)`
+    instead of succeeding — the seam for exercising a caller's failure
+    handling (`DirectoryStep`, the destroy stage, the metadata tails, the
+    sync route, `WireStep`'s colleague-pass delivery) without a real
     backend. `relay_result`, when given, is `relay`'s canned return value
     (default an empty dict — no caller in this task inspects it).
+    `mint_colleague_result`, when given, is `mint_colleague`'s canned
+    return value (default a fixed placeholder token string — never a real
+    secret, since this is a fake).
     """
 
     def __init__(
@@ -1147,14 +1152,19 @@ class FakeCabal:
         absorb_error: str | None = None,
         relay_result: dict | None = None,
         relay_error: str | None = None,
+        mint_colleague_result: str = "fake-colleague-token",
+        mint_colleague_error: str | None = None,
     ):
         self._graduate_error = graduate_error
         self._absorb_error = absorb_error
         self._relay_result = relay_result if relay_result is not None else {}
         self._relay_error = relay_error
+        self._mint_colleague_result = mint_colleague_result
+        self._mint_colleague_error = mint_colleague_error
         self.graduate_calls: list[dict] = []
         self.absorb_calls: list[str] = []
         self.relay_calls: list[dict] = []
+        self.mint_colleague_calls: list[str] = []
 
     def graduate(self, name: str, *, endpoint: str, audience: str, card: dict) -> None:
         self.graduate_calls.append(
@@ -1173,6 +1183,12 @@ class FakeCabal:
         if self._relay_error is not None:
             raise CabalError(f"relay failed: {self._relay_error}")
         return self._relay_result
+
+    def mint_colleague(self, name: str) -> str:
+        self.mint_colleague_calls.append(name)
+        if self._mint_colleague_error is not None:
+            raise CabalError(f"mint_colleague failed: {self._mint_colleague_error}")
+        return self._mint_colleague_result
 
 
 # Canonical 1x1 transparent PNG (68 bytes) — a real, valid minimal PNG (not a

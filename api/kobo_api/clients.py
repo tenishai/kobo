@@ -2364,9 +2364,10 @@ def cabal_enabled(config: Config) -> bool:
 
 class CabalClient:
     """Talks to the switchboard (cabal)'s admin API: registers/delists an
-    agent in its directory (`graduate`/`absorb`) and relays a room chat's
+    agent in its directory (`graduate`/`absorb`), relays a room chat's
     a2a task envelope through it (`relay`) instead of hitting the agent
-    directly.
+    directly, and mints a colleague-scoped token for an agent (`mint_
+    colleague`, Task 3/B3) so it can ask its own colleagues questions.
 
     Every failure mode raises a message built only from the method name,
     the target persona name, and the HTTP status code — never the response
@@ -2449,6 +2450,50 @@ class CabalClient:
             )
             raise CabalError(f"relay({name!r}) failed ({resp.status_code})")
         return resp.json()
+
+    def mint_colleague(self, name: str) -> str:
+        """Mint a colleague-scoped switchboard token for agent `name` (Task
+        3/B3: every agent is born with a colleague pass) — the operator-
+        bearer-authenticated `POST /admin/token/mint-service` call, fixed
+        request shape confirmed against the switchboard's own implementation:
+        `sub` names the agent (`agent:<name>`, matching the `sub` a colleague
+        token carries when it dispatches through the switchboard, per the
+        colleague scope's own directory/re-mint contract), `scope` is
+        `["colleague"]` (never `operator` — this mint must never hand an
+        agent admin capability), `aud` is `cabal-core`, and `ttl_days` is a
+        fixed 365 (a year-long pass; expiry is accepted as this feature's
+        only revocation story, same as `deliver_pass`'s own docstring notes).
+
+        Returns the minted `access_token` string. Raises `CabalError` on
+        non-2xx, same convention as `graduate`/`absorb`/`relay` above: the
+        response body is logged server-side (truncated) for operators
+        debugging repeated failures, never echoed into the raised message.
+
+        The minted token itself is never logged and never appears in any
+        raised message — same discipline this client already holds its own
+        bearer token to (see the class docstring): the whole point of this
+        method is minting a NEW secret, so leaking it into a log line or an
+        exception any caller might let escape to a route's response body
+        would defeat that purpose as surely as leaking the operator token
+        this client already guards.
+        """
+        resp = self._client.post(
+            f"{self._base_url}/admin/token/mint-service",
+            json={
+                "sub": f"agent:{name}",
+                "scope": ["colleague"],
+                "aud": "cabal-core",
+                "ttl_days": 365,
+            },
+            headers=self._headers(),
+        )
+        if not resp.is_success:
+            log.warning(
+                "cabal mint_colleague(%s) failed (%s): %s",
+                name, resp.status_code, resp.text[:200],
+            )
+            raise CabalError(f"mint_colleague({name!r}) failed ({resp.status_code})")
+        return resp.json()["access_token"]
 
 
 def _relay_reply_parts_sources(task: dict) -> list[list]:

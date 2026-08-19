@@ -50,6 +50,7 @@ from kobo_api.clients import (
     cabal_enabled,
     gsa_email,
 )
+from kobo_api.colleagues import deliver_pass
 from kobo_api.composer import BundleSpec, compose, validate_agent_yaml
 from kobo_api.config import Config
 from kobo_api.directory import sync_directory
@@ -623,6 +624,26 @@ def _register_resources(kustomization_path, resource_names: list[str]) -> None:
     kustomization_path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
+def _append_secrets_from(data: dict, entry: str) -> None:
+    """Append `entry` to `data`'s `secrets_from` list if it isn't already
+    there, never replacing whatever else is already in the list —
+    `secrets_from` is a generator field the deploy platform reads to build
+    the Deployment's `envFrom`.
+
+    Generic over the entry name — unlike `kobo_api.slack_setup._update_
+    gojira_secrets_from` (that module's own hardcoded-suffix sibling, for
+    its own standalone clone/edit/push flow outside this file) — so this
+    version can fold into the SAME `gojira.yaml` write `_update_gojira_yaml`
+    below already makes, for the colleague-pass secret (Task 3/B3), rather
+    than round-tripping the file a second time the way `wire_slack` does for
+    its own `{name}-slack` entry.
+    """
+    secrets_from = data.get("secrets_from", [])
+    if entry not in secrets_from:
+        secrets_from.append(entry)
+    data["secrets_from"] = secrets_from
+
+
 def _update_gojira_yaml(gojira_yaml_path, agent, config) -> None:
     """Round-trip `gojira.yaml`, setting the service_account/env/data_mount
     keys the platform needs to wire the KSA, model env, and techne PVC into
@@ -631,6 +652,14 @@ def _update_gojira_yaml(gojira_yaml_path, agent, config) -> None:
     manifests from this file on every reprovision anyway, so this file's own
     comments aren't load-bearing the way kustomization.yaml's registered
     entries are.
+
+    When the switchboard is configured (`cabal_enabled(config)`), also
+    appends `{agent.name}-cabal` to `secrets_from` (Task 3/B3: every agent
+    is born with a colleague pass) — folded into this SAME read-modify-write
+    rather than a second round trip, so `WireStep` never needs a second
+    reprovision beyond the one it already triggers for this file's other
+    edits. Disabled, this function's behavior is byte-identical to before
+    this feature existed.
     """
     data = yaml.safe_load(gojira_yaml_path.read_text()) or {}
     data["service_account"] = f"agent-{agent.name}"
@@ -643,6 +672,8 @@ def _update_gojira_yaml(gojira_yaml_path, agent, config) -> None:
         "path": "/techne",
         "fs_group": TECHNE_FS_GROUP,
     }
+    if cabal_enabled(config):
+        _append_secrets_from(data, f"{agent.name}-cabal")
     gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
@@ -663,6 +694,18 @@ class WireStep:
     there), so a crash between a prior run's `reprovision()` and its
     `_wait_active` can never leave the step marked DONE against an
     unconfirmed app.
+
+    When the switchboard is configured (`cabal_enabled(ctx.config)` AND
+    `ctx.clients.cabal` is actually wired — the same two-gate discipline
+    `HelloStep`/`DirectoryStep` already use), this step also delivers the
+    agent's colleague pass (Task 3/B3): `_update_gojira_yaml` above folds
+    the `{agent.name}-cabal` `secrets_from` entry into the SAME gojira.yaml
+    write this step already makes (no second reprovision), and
+    `kobo_api.colleagues.deliver_pass` mints and delivers the token BEFORE
+    `commit_push` below — so by the time the push (and the reprovision it
+    may trigger) lands, the Secret it names already exists in the
+    namespace. Disabled, every part of this addition is a no-op and the
+    step's behavior is byte-identical to before this feature existed.
     """
 
     name = "wire"
@@ -695,6 +738,14 @@ class WireStep:
         _register_resources(k8s_base / "kustomization.yaml", ["serviceaccount.yaml", "pvc.yaml"])
 
         _update_gojira_yaml(clone_dir / "gojira.yaml", agent, config)
+
+        # Colleague pass delivery (Task 3/B3): BEFORE the push below, so the
+        # Secret `{agent.name}-cabal`'s `secrets_from` entry (just written
+        # into gojira.yaml above) already has something to reference by the
+        # time that push lands and any reprovision it triggers regenerates
+        # the Deployment's envFrom.
+        if cabal_enabled(config) and ctx.clients.cabal is not None:
+            deliver_pass(ctx.clients.kubectl, ctx.clients.cabal, agent)
 
         changed = github.commit_push(clone_dir, "kobo: wire service account, PVC, model env")
         if not changed:

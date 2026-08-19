@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from kobo_api.clients import Clients
+from kobo_api.clients import CabalError, ClientError, Clients
 from kobo_api.models import Agent
 from kobo_api.provisioner import Ctx
 from kobo_api.steps import (
@@ -32,6 +32,7 @@ from kobo_api.steps import (
 )
 from tests.fakes import (
     GENERATED_KUSTOMIZATION_RESOURCES,
+    FakeCabal,
     FakeGitHub,
     FakeGojira,
     FakeKubectl,
@@ -86,8 +87,10 @@ def _make_ctx(session, agent, config, clients) -> Ctx:
     return Ctx(agent=agent, session=session, config=config, clients=clients, workdir=workdir)
 
 
-def _clients(*, github=None, gojira=None, kubectl=None) -> Clients:
-    return Clients(github=github, gojira=gojira, cloud=None, agent=None, kubectl=kubectl)
+def _clients(*, github=None, gojira=None, kubectl=None, cabal=None) -> Clients:
+    return Clients(
+        github=github, gojira=gojira, cloud=None, agent=None, kubectl=kubectl, cabal=cabal
+    )
 
 
 def _repo_full_name(config) -> str:
@@ -270,6 +273,231 @@ def test_wire_step_rmtrees_stale_clone_dir_before_recloning(session_factory, con
 
     assert not (stale_dir / "leftover.yaml").exists()
     assert (stale_dir / "serviceaccount.yaml").is_file()
+
+
+# --- WireStep colleague pass (colleagues switchboard plan, Task 3/B3) -----------
+#
+# Same two-gate discipline HelloStep/DirectoryStep already use for the
+# switchboard: `cabal_enabled(ctx.config)` gates the gojira.yaml `secrets_from`
+# append (folded into `_update_gojira_yaml`'s own edit — no second reprovision);
+# `cabal_enabled(ctx.config) AND ctx.clients.cabal is not None` gates the actual
+# `deliver_pass` call (needs a real client to mint against). Disabled (the
+# shared `config` fixture, which carries neither org key) must leave every part
+# of this addition a no-op — byte-identical to before this feature existed.
+
+WIRE_CABAL_ENDPOINT_TEMPLATE = "http://agent-{name}.default.svc.cluster.local"
+
+
+def _wire_cabal_enabled_config(config):
+    return config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": WIRE_CABAL_ENDPOINT_TEMPLATE,
+        }
+    )
+
+
+def test_wire_step_disabled_switchboard_leaves_gojira_yaml_secrets_from_absent(
+    session_factory, config
+):
+    """Pin: the shared `config` fixture has no switchboard org keys —
+    `secrets_from` must not even appear in gojira.yaml, exactly as before
+    this feature existed."""
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=1)
+    github = FakeGitHub()
+    gojira = FakeGojira(activate_after=1)
+    gojira.create_app(name=AGENT_NAME, repo_full_name=repo, cluster=config.gojira_cluster, namespace=AGENT_NAME)
+    ctx = _make_ctx(session, agent, config, _clients(github=github, gojira=gojira))
+
+    WireStep().run(ctx)
+
+    gojira_yaml = yaml.safe_load((ctx.workdir / "wire" / "gojira.yaml").read_text())
+    assert "secrets_from" not in gojira_yaml
+
+
+def test_wire_step_disabled_switchboard_never_touches_kubectl_or_cabal(
+    session_factory, config
+):
+    """A cabal client and kubectl fake are both present on `Clients`, but the
+    switchboard isn't configured — WireStep must not touch either."""
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=1)
+    github = FakeGitHub()
+    gojira = FakeGojira(activate_after=1)
+    gojira.create_app(name=AGENT_NAME, repo_full_name=repo, cluster=config.gojira_cluster, namespace=AGENT_NAME)
+    kubectl = FakeKubectl()
+    cabal = FakeCabal()
+    ctx = _make_ctx(
+        session, agent, config, _clients(github=github, gojira=gojira, kubectl=kubectl, cabal=cabal)
+    )
+
+    WireStep().run(ctx)
+
+    assert kubectl.secrets_applied == []
+    assert cabal.mint_colleague_calls == []
+
+
+def test_wire_step_enabled_appends_agent_cabal_to_secrets_from(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    repo = _repo_full_name(config)
+    cfg = _wire_cabal_enabled_config(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=1)
+    github = FakeGitHub()
+    gojira = FakeGojira(activate_after=1)
+    gojira.create_app(name=AGENT_NAME, repo_full_name=repo, cluster=cfg.gojira_cluster, namespace=AGENT_NAME)
+    kubectl = FakeKubectl()
+    cabal = FakeCabal()
+    ctx = _make_ctx(
+        session, agent, cfg, _clients(github=github, gojira=gojira, kubectl=kubectl, cabal=cabal)
+    )
+
+    WireStep().run(ctx)
+
+    gojira_yaml = yaml.safe_load((ctx.workdir / "wire" / "gojira.yaml").read_text())
+    assert gojira_yaml["secrets_from"] == [f"{AGENT_NAME}-cabal"]
+
+
+def test_wire_step_enabled_preserves_pre_existing_secrets_from_entries(session_factory, config, monkeypatch):
+    """The append is add-only: an already-slack-wired repo's `secrets_from`
+    entry must survive, with the colleague-pass entry appended after it —
+    never a wholesale replace."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    repo = _repo_full_name(config)
+    cfg = _wire_cabal_enabled_config(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=1)
+    github = FakeGitHub(gojira_secrets_from=[f"{AGENT_NAME}-slack"])
+    gojira = FakeGojira(activate_after=1)
+    gojira.create_app(name=AGENT_NAME, repo_full_name=repo, cluster=cfg.gojira_cluster, namespace=AGENT_NAME)
+    kubectl = FakeKubectl()
+    cabal = FakeCabal()
+    ctx = _make_ctx(
+        session, agent, cfg, _clients(github=github, gojira=gojira, kubectl=kubectl, cabal=cabal)
+    )
+
+    WireStep().run(ctx)
+
+    gojira_yaml = yaml.safe_load((ctx.workdir / "wire" / "gojira.yaml").read_text())
+    assert gojira_yaml["secrets_from"] == [f"{AGENT_NAME}-slack", f"{AGENT_NAME}-cabal"]
+
+
+def test_wire_step_enabled_delivers_the_colleague_pass_secret(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    repo = _repo_full_name(config)
+    cfg = _wire_cabal_enabled_config(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=1)
+    github = FakeGitHub()
+    gojira = FakeGojira(activate_after=1)
+    gojira.create_app(name=AGENT_NAME, repo_full_name=repo, cluster=cfg.gojira_cluster, namespace=AGENT_NAME)
+    kubectl = FakeKubectl()
+    cabal = FakeCabal(mint_colleague_result="minted-colleague-token")
+    ctx = _make_ctx(
+        session, agent, cfg, _clients(github=github, gojira=gojira, kubectl=kubectl, cabal=cabal)
+    )
+
+    WireStep().run(ctx)
+
+    assert cabal.mint_colleague_calls == [AGENT_NAME]
+    assert len(kubectl.secrets_applied) == 1
+    namespace, name, literals = kubectl.secrets_applied[0]
+    assert namespace == AGENT_NAME
+    assert name == f"{AGENT_NAME}-cabal"
+    assert literals == {"CABAL_COLLEAGUE_TOKEN": "minted-colleague-token"}
+
+
+def test_wire_step_enabled_but_cabal_client_missing_skips_delivery_without_crashing(
+    session_factory, config, monkeypatch
+):
+    """`cabal_enabled(config)` true but `ctx.clients.cabal` is None (wired
+    without a cabal client despite the org config being set) must not
+    crash — mirrors HelloStep's/DirectoryStep's own fallback discipline.
+    The gojira.yaml secrets_from entry is still appended (its gate is
+    `cabal_enabled(config)` alone), but nothing is actually delivered since
+    there's no client to mint against."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    repo = _repo_full_name(config)
+    cfg = _wire_cabal_enabled_config(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=1)
+    github = FakeGitHub()
+    gojira = FakeGojira(activate_after=1)
+    gojira.create_app(name=AGENT_NAME, repo_full_name=repo, cluster=cfg.gojira_cluster, namespace=AGENT_NAME)
+    kubectl = FakeKubectl()
+    ctx = _make_ctx(
+        session, agent, cfg, _clients(github=github, gojira=gojira, kubectl=kubectl, cabal=None)
+    )
+
+    WireStep().run(ctx)  # must not raise
+
+    assert kubectl.secrets_applied == []
+
+
+def test_wire_step_ignores_cabal_client_when_switchboard_not_enabled(session_factory, config):
+    """A cabal client present on `Clients` but `cabal_enabled(config)` false
+    (no org keys configured) must leave secrets_from untouched and never
+    deliver anything — the client's mere presence is not the signal."""
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=1)
+    github = FakeGitHub()
+    gojira = FakeGojira(activate_after=1)
+    gojira.create_app(name=AGENT_NAME, repo_full_name=repo, cluster=config.gojira_cluster, namespace=AGENT_NAME)
+    kubectl = FakeKubectl()
+    cabal = FakeCabal()
+    ctx = _make_ctx(
+        session, agent, config, _clients(github=github, gojira=gojira, kubectl=kubectl, cabal=cabal)
+    )
+
+    WireStep().run(ctx)
+
+    gojira_yaml = yaml.safe_load((ctx.workdir / "wire" / "gojira.yaml").read_text())
+    assert "secrets_from" not in gojira_yaml
+    assert cabal.mint_colleague_calls == []
+    assert kubectl.secrets_applied == []
+
+
+def test_wire_step_mint_failure_propagates_before_the_push(session_factory, config, monkeypatch):
+    """Proves the ordering the brief requires (deliver_pass BEFORE the push):
+    if minting fails, the failure must propagate before `commit_push` is
+    ever called — never a push that gets ahead of a colleague pass that
+    doesn't exist yet."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    repo = _repo_full_name(config)
+    cfg = _wire_cabal_enabled_config(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=1)
+    github = FakeGitHub()
+    gojira = FakeGojira(activate_after=1)
+    gojira.create_app(name=AGENT_NAME, repo_full_name=repo, cluster=cfg.gojira_cluster, namespace=AGENT_NAME)
+    kubectl = FakeKubectl()
+    cabal = FakeCabal(mint_colleague_error="switchboard unreachable")
+    ctx = _make_ctx(
+        session, agent, cfg, _clients(github=github, gojira=gojira, kubectl=kubectl, cabal=cabal)
+    )
+
+    with pytest.raises(CabalError):
+        WireStep().run(ctx)
+
+    assert not any(call.startswith("commit_push:") for call in github.calls)
+
+
+def test_wire_step_secret_delivery_failure_propagates_before_the_push(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    repo = _repo_full_name(config)
+    cfg = _wire_cabal_enabled_config(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=1)
+    github = FakeGitHub()
+    gojira = FakeGojira(activate_after=1)
+    gojira.create_app(name=AGENT_NAME, repo_full_name=repo, cluster=cfg.gojira_cluster, namespace=AGENT_NAME)
+    kubectl = FakeKubectl(apply_secret_error="kubectl apply failed")
+    cabal = FakeCabal()
+    ctx = _make_ctx(
+        session, agent, cfg, _clients(github=github, gojira=gojira, kubectl=kubectl, cabal=cabal)
+    )
+
+    with pytest.raises(ClientError):
+        WireStep().run(ctx)
+
+    assert not any(call.startswith("commit_push:") for call in github.calls)
 
 
 def test_register_resources_is_idempotent_when_entries_already_present(tmp_path):

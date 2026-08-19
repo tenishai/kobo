@@ -73,6 +73,49 @@
       "title": "CeilingSpec",
       "type": "object"
     },
+    "ColleaguesSpec": {
+      "additionalProperties": true,
+      "properties": {
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "token_env": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token Env"
+        },
+        "self": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Self"
+        }
+      },
+      "title": "ColleaguesSpec",
+      "type": "object"
+    },
     "EscalationSpec": {
       "additionalProperties": true,
       "properties": {
@@ -226,7 +269,8 @@
           "enum": [
             "none",
             "mcp",
-            "limenal"
+            "limenal",
+            "colleagues"
           ],
           "title": "Provider",
           "type": "string"
@@ -241,6 +285,9 @@
         },
         "limenal": {
           "$ref": "#/$defs/LimenalSpec"
+        },
+        "colleagues": {
+          "$ref": "#/$defs/ColleaguesSpec"
         },
         "builtin": {
           "additionalProperties": {

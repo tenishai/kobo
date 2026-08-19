@@ -3972,6 +3972,97 @@ def test_cabal_relay_error_message_never_contains_the_token():
     assert "internal failure detail" not in str(exc_info.value)
 
 
+# --- mint_colleague (Task 3/B3: every agent is born with a colleague pass) ------
+
+
+def test_cabal_mint_colleague_request_shape_body_and_auth_header():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.content)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"access_token": "fresh-colleague-token"})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    token = client.mint_colleague("clio")
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "http://cabal.local/admin/token/mint-service"
+    assert captured["json"] == {
+        "sub": "agent:clio",
+        "scope": ["colleague"],
+        "aud": "cabal-core",
+        "ttl_days": 365,
+    }
+    assert captured["auth"] == "Bearer op-token"
+    assert token == "fresh-colleague-token"
+
+
+def test_cabal_mint_colleague_accepts_201_as_success():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"access_token": "fresh-colleague-token"})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert client.mint_colleague("clio") == "fresh-colleague-token"
+
+
+def test_cabal_mint_colleague_raises_typed_cabal_error_on_non_2xx():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(CabalError):
+        client.mint_colleague("clio")
+
+
+def test_cabal_mint_colleague_error_message_never_contains_the_operator_token():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="internal failure detail")
+
+    client = CabalClient(
+        "http://cabal.local", "super-secret-operator-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(CabalError) as exc_info:
+        client.mint_colleague("clio")
+    assert "super-secret-operator-token" not in str(exc_info.value)
+    # Same stricter convention graduate/relay already pin: never the
+    # response body either (it's logged server-side, truncated, instead).
+    assert "internal failure detail" not in str(exc_info.value)
+
+
+def test_cabal_mint_colleague_returned_token_never_appears_in_a_debug_log(caplog):
+    """The minted token is a brand-new secret this call exists to hand back
+    — it must never end up in a log line, at any level, the same way the
+    operator token this client already holds never does."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"access_token": "ultra-secret-minted-colleague-token"}
+        )
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with caplog.at_level(logging.DEBUG, logger="kobo_api.clients"):
+        token = client.mint_colleague("clio")
+
+    assert token == "ultra-secret-minted-colleague-token"
+    assert "ultra-secret-minted-colleague-token" not in caplog.text
+
+
 def test_cabal_error_is_a_client_error_subclass():
     # So Task 2/3 call sites that only know the general ClientError
     # contract (the same one every other client here raises) keep working

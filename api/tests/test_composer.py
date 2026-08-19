@@ -6,11 +6,13 @@ import yaml
 
 from kobo_api.clients import ClientError
 from kobo_api.composer import (
+    CABAL_COLLEAGUE_TOKEN_ENV,
     BundleSpec,
     ComposeError,
     compose,
     update_agent_card_metadata,
     update_agent_yaml_auth,
+    update_agent_yaml_tools,
     validate_agent_yaml,
 )
 from kobo_api.steps import StagedSkill
@@ -175,6 +177,11 @@ def test_compose_agent_yaml_byte_identical_when_cabal_url_none_both_ways(tmp_pat
 
 
 def test_compose_agent_yaml_carries_auth_block_when_cabal_url_configured(tmp_path):
+    """Note: since Task 3/B3, `cabal_url` configured also swaps the `tools:`
+    line to the colleagues provider's config block (see the "tools block"
+    section below) — this test's pinned text carries that too, so this
+    single byte-for-byte assertion still proves every OTHER line is
+    untouched by either feature."""
     dest = tmp_path / "out"
 
     compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
@@ -192,7 +199,8 @@ def test_compose_agent_yaml_carries_auth_block_when_cabal_url_configured(tmp_pat
         '  - {kind: a2a, host: 0.0.0.0, port: 8080, auth: {jwks_url: '
         '"http://cabal.example.com/.well-known/jwks.json", issuer: "cabal-core", '
         'audience: "sam"}}\n'
-        "tools: {provider: none, allow: []}\n"
+        'tools: {provider: colleagues, colleagues: {url: "http://cabal.example.com", '
+        'token_env: CABAL_COLLEAGUE_TOKEN, self: "sam"}}\n'
         "memory: {personal: techne, home: /techne}\n"
         "checkpoints: sqlite\n"
         "approvals:\n"
@@ -255,6 +263,230 @@ def test_compose_agent_yaml_with_auth_block_still_validates(tmp_path):
     compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
 
     validate_agent_yaml(dest / "bundle")  # must not raise
+
+
+# --- tools block (colleagues switchboard plan, Task 3/B3) -----------------------
+#
+# Same composer gate as the auth block above: the presence of `cabal_url`
+# alone (a `BundleSpec` field), never the fuller `cabal_enabled` truthiness
+# check `kobo_api.clients` exposes to callers that also need the operator
+# token — compose is about the bundle's shape, not whether the room happens
+# to hold a token right now.
+
+
+def test_compose_agent_yaml_tools_block_byte_identical_when_cabal_url_none_both_ways(tmp_path):
+    """Pin: whether `cabal_url` is left at its default or passed explicitly
+    as `None`, the composed `tools:` line is byte-identical to today's
+    (pre-Task-3/B3) shape — the new field must never perturb the off path."""
+    default_dest = tmp_path / "default"
+    explicit_dest = tmp_path / "explicit"
+
+    compose(_make_spec(), default_dest)
+    compose(_make_spec(cabal_url=None), explicit_dest)
+
+    default_text = (default_dest / "bundle" / "agent.yaml").read_text()
+    explicit_text = (explicit_dest / "bundle" / "agent.yaml").read_text()
+
+    assert default_text == explicit_text
+    assert "tools: {provider: none, allow: []}\n" in default_text
+
+
+def test_compose_agent_yaml_carries_colleagues_tools_block_when_cabal_url_configured(tmp_path):
+    dest = tmp_path / "out"
+
+    compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
+
+    data = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())
+    assert data["tools"] == {
+        "provider": "colleagues",
+        "colleagues": {
+            "url": "http://cabal.example.com",
+            "token_env": "CABAL_COLLEAGUE_TOKEN",
+            "self": "sam",
+        },
+    }
+
+
+def test_compose_agent_yaml_tools_block_self_is_the_agent_name(tmp_path):
+    dest = tmp_path / "out"
+    spec = BundleSpec(
+        name="rae",
+        persona_body="You are rae, a helpful assistant.\n",
+        model_id="vertex_ai/claude-sonnet-4-5",
+        skills=[],
+        runtime_image=_RUNTIME_IMAGE,
+        vertex_project="example-model-project",
+        vertex_location="us-east5",
+        cabal_url="http://cabal.example.com",
+    )
+
+    compose(spec, dest)
+
+    data = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())
+    assert data["tools"]["colleagues"]["self"] == "rae"
+
+
+def test_compose_agent_yaml_tools_block_token_env_is_the_shared_constant(tmp_path):
+    dest = tmp_path / "out"
+
+    compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
+
+    data = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())
+    assert data["tools"]["colleagues"]["token_env"] == CABAL_COLLEAGUE_TOKEN_ENV
+    assert CABAL_COLLEAGUE_TOKEN_ENV == "CABAL_COLLEAGUE_TOKEN"
+
+
+def test_compose_agent_yaml_with_colleagues_tools_block_still_validates(tmp_path):
+    dest = tmp_path / "out"
+
+    compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
+
+    validate_agent_yaml(dest / "bundle")  # must not raise
+
+
+# --- update_agent_yaml_tools (colleagues switchboard plan, Task 3/B3) -----------
+
+
+def _write_bare_agent_yaml(tmp_path, *, extra_lines: str = "") -> Path:
+    """A minimal already-composed `bundle/agent.yaml` on disk, with the
+    default (off) `tools:` line — `update_agent_yaml_tools`'s backfill
+    target. `extra_lines`, when given, is inserted verbatim right after the
+    top-of-file comment so a test can prove those survive the edit."""
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "agent.yaml").write_text(
+        "# a hand-written comment at the top\n"
+        + extra_lines
+        + "name: sam\n"
+        "card: agent-card.json\n"
+        "persona: persona.md\n"
+        "transports:\n"
+        "  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
+        "tools: {provider: none, allow: []}\n"
+        "memory: {personal: techne, home: /techne}\n"
+        "checkpoints: sqlite\n"
+    )
+    return bundle_dir
+
+
+def test_update_agent_yaml_tools_adds_block_and_preserves_every_other_line(tmp_path):
+    bundle_dir = _write_bare_agent_yaml(tmp_path)
+    before = (bundle_dir / "agent.yaml").read_text()
+
+    update_agent_yaml_tools(
+        bundle_dir,
+        url="http://cabal.example.com",
+        token_env="CABAL_COLLEAGUE_TOKEN",
+        self_name="sam",
+    )
+
+    after = (bundle_dir / "agent.yaml").read_text()
+    before_lines = before.splitlines()
+    after_lines = after.splitlines()
+    assert len(before_lines) == len(after_lines)
+    for before_line, after_line in zip(before_lines, after_lines, strict=True):
+        if before_line.startswith("tools:"):
+            continue
+        assert before_line == after_line
+
+    data = yaml.safe_load(after)
+    assert data["tools"] == {
+        "provider": "colleagues",
+        "colleagues": {
+            "url": "http://cabal.example.com",
+            "token_env": "CABAL_COLLEAGUE_TOKEN",
+            "self": "sam",
+        },
+    }
+
+
+def test_update_agent_yaml_tools_replaces_an_existing_colleagues_block(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "agent.yaml").write_text(
+        "name: sam\n"
+        'tools: {provider: colleagues, colleagues: {url: "http://old.example.com", '
+        'token_env: CABAL_COLLEAGUE_TOKEN, self: "sam"}}\n'
+        "memory: {personal: techne, home: /techne}\n"
+    )
+
+    update_agent_yaml_tools(
+        bundle_dir,
+        url="http://new.example.com",
+        token_env="CABAL_COLLEAGUE_TOKEN",
+        self_name="sam",
+    )
+
+    text = (bundle_dir / "agent.yaml").read_text()
+    assert "http://old.example.com" not in text
+    data = yaml.safe_load(text)
+    assert data["tools"]["colleagues"]["url"] == "http://new.example.com"
+    # Every other line survives untouched.
+    assert text.splitlines()[0] == "name: sam"
+    assert text.splitlines()[-1] == "memory: {personal: techne, home: /techne}"
+
+
+def test_update_agent_yaml_tools_is_idempotent(tmp_path):
+    bundle_dir = _write_bare_agent_yaml(tmp_path)
+
+    update_agent_yaml_tools(
+        bundle_dir, url="http://cabal.example.com", token_env="CABAL_COLLEAGUE_TOKEN",
+        self_name="sam",
+    )
+    once = (bundle_dir / "agent.yaml").read_text()
+
+    update_agent_yaml_tools(
+        bundle_dir, url="http://cabal.example.com", token_env="CABAL_COLLEAGUE_TOKEN",
+        self_name="sam",
+    )
+    twice = (bundle_dir / "agent.yaml").read_text()
+
+    assert once == twice
+
+
+def test_update_agent_yaml_tools_raises_when_no_tools_line(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "agent.yaml").write_text("name: sam\nmemory: {personal: techne, home: /techne}\n")
+
+    with pytest.raises(ClientError, match="no tools"):
+        update_agent_yaml_tools(
+            bundle_dir, url="http://cabal.example.com", token_env="CABAL_COLLEAGUE_TOKEN",
+            self_name="sam",
+        )
+
+
+def test_update_agent_yaml_tools_missing_file_raises_client_error(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()  # no agent.yaml written
+
+    with pytest.raises(ClientError, match="agent.yaml not found"):
+        update_agent_yaml_tools(
+            bundle_dir, url="http://cabal.example.com", token_env="CABAL_COLLEAGUE_TOKEN",
+            self_name="sam",
+        )
+
+
+def test_update_agent_yaml_tools_on_freshly_composed_bundle_round_trips(tmp_path):
+    """The backfill path's real target: a bundle composed WITHOUT the
+    switchboard configured (the default tools block), later backfilled once
+    it becomes available — mirrors `update_agent_yaml_auth`'s own round-trip
+    test."""
+    dest = tmp_path / "out"
+    compose(_make_spec(), dest)
+    bundle_dir = dest / "bundle"
+
+    update_agent_yaml_tools(
+        bundle_dir,
+        url="http://cabal.example.com",
+        token_env="CABAL_COLLEAGUE_TOKEN",
+        self_name="sam",
+    )
+
+    validate_agent_yaml(bundle_dir)  # must not raise
+    data = yaml.safe_load((bundle_dir / "agent.yaml").read_text())
+    assert data["tools"]["provider"] == "colleagues"
+    assert data["tools"]["colleagues"]["self"] == "sam"
 
 
 # --- agent-card.json -----------------------------------------------------------
