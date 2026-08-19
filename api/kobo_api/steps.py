@@ -389,6 +389,11 @@ class RepoStep:
             # through to the baked agent-card.json's metadata block.
             team=agent.team or "shared",
             purpose_tags=decode_tags(agent.purpose_tags),
+            # Switchboard (cabal) base URL (Task 4): when configured, gates
+            # the a2a auth block at compose time — presence of cabal_url is
+            # the composer's own gate for whether the transport carries
+            # auth credentials (issuer/audience/jwks_url).
+            cabal_url=config.cabal_url,
         )
 
         compose_dir = ctx.workdir / "repo"

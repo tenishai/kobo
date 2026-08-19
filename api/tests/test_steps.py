@@ -16,9 +16,11 @@ from __future__ import annotations
 import json
 
 import pytest
+import yaml
 
 from kobo_api.clients import CabalError, ClientError, Clients
 from kobo_api.composer import BundleSpec, compose
+from kobo_api.config import Config
 from kobo_api.models import Agent
 from kobo_api.provisioner import Ctx
 from kobo_api.steps import (
@@ -591,6 +593,70 @@ def test_repo_step_rmtrees_stale_compose_dir_before_recomposing(session_factory,
     ).exists()
     assert (ctx.workdir / "repo" / "bundle" / "skills" / "word-games" / "SKILL.md").is_file()
     assert (ctx.workdir / "repo" / "bundle" / "agent.yaml").is_file()
+
+
+def test_repo_step_composes_with_cabal_auth_when_config_carries_cabal_url(
+    session_factory, fake_storage, tmp_path
+):
+    """Switchboard (cabal) auth-block gate (colleagues arc, Task 4): when
+    config.cabal_url is set, RepoStep.run threads it into BundleSpec,
+    and compose includes the auth block (jwks_url, issuer, audience) in
+    the agent.yaml transport entry."""
+    cabal_url = "https://switchboard.example.com"
+    config = Config(
+        workdir=tmp_path / "work",
+        skills_bucket="skills-bucket",
+        personas_bucket="personas-bucket",
+        cabal_url=cabal_url,
+    )
+    session, agent = _make_agent(session_factory)
+    github = FakeGitHub()
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
+
+    RepoStep().run(ctx)
+
+    agent_yaml_path = ctx.workdir / "repo" / "bundle" / "agent.yaml"
+    assert agent_yaml_path.is_file()
+    agent_yaml = yaml.safe_load(agent_yaml_path.read_text())
+
+    # Verify the transport has the auth block with correct values
+    transports = agent_yaml.get("transports", [])
+    assert len(transports) > 0, "agent.yaml should have transports"
+    a2a_transport = transports[0]
+    assert a2a_transport["kind"] == "a2a"
+
+    # Auth block must be present when cabal_url is configured
+    assert "auth" in a2a_transport, "transport should have auth block when cabal_url is set"
+    auth = a2a_transport["auth"]
+
+    # Check the auth fields match the configured cabal_url
+    expected_jwks_url = cabal_url.rstrip("/") + "/.well-known/jwks.json"
+    assert auth["jwks_url"] == expected_jwks_url
+    assert auth["issuer"] == "cabal-core"
+    assert auth["audience"] == agent.name
+
+
+def test_repo_step_composes_without_cabal_auth_when_config_has_no_cabal_url(
+    session_factory, config, fake_storage
+):
+    """Default case (no cabal integration): when config.cabal_url is None,
+    RepoStep composes a bundle with no auth block in the transport."""
+    session, agent = _make_agent(session_factory)
+    github = FakeGitHub()
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
+
+    RepoStep().run(ctx)
+
+    agent_yaml_path = ctx.workdir / "repo" / "bundle" / "agent.yaml"
+    assert agent_yaml_path.is_file()
+    agent_yaml = yaml.safe_load(agent_yaml_path.read_text())
+
+    # Verify the transport has NO auth block when cabal_url is not set
+    transports = agent_yaml.get("transports", [])
+    assert len(transports) > 0
+    a2a_transport = transports[0]
+    assert a2a_transport["kind"] == "a2a"
+    assert "auth" not in a2a_transport, "transport should not have auth when cabal_url is None"
 
 
 def test_repo_step_compose_raises_without_rmtree_on_stale_skills(tmp_path):
