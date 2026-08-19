@@ -51,6 +51,21 @@ internals and the room's secret-delivery rails.
    traffic only (caller prefix `agent:`); a toggle shows everything
    including room-human chats.
 
+## Amendments from live acceptance (2026-08-19)
+
+- The runtime's tool allowlist is fail-closed; the composed tools
+  block must name the two colleague tools in `tools.allow` or the
+  model is offered nothing (first acceptance round failed exactly
+  there, with the agent role-playing tool calls).
+- The bundle's blanket approval gate (`match: "*"`) blocks every
+  tool in a deployed pod, because headless agents run the deny-all
+  approver by design. Per the operator's open-discovery ruling,
+  colleague conversations need no human signature: when the
+  colleague tools are composed, the gates list composes empty. The
+  law lives in the explicit tool allowlist (nothing outside it is
+  even visible to the model) and the untouched write ceiling;
+  future write-capable tools compose their own gates deliberately.
+
 ## Rollout order
 
 1. Switchboard image with the colleague scope deploys (additive; the
