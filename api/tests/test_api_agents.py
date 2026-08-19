@@ -28,7 +28,14 @@ from kobo_api.clients import Clients
 from kobo_api.config import Config
 from kobo_api.main import create_app, get_session
 from kobo_api.models import Agent, AgentStatus, Base
-from tests.fakes import FakeAgent, FakeCloud, FakeGitHub, FakeGojira, FakeKubectl
+from tests.fakes import (
+    FakeAgent,
+    FakeCabal,
+    FakeCloud,
+    FakeGitHub,
+    FakeGojira,
+    FakeKubectl,
+)
 
 # fake_storage: reuses conftest.py's shared fixture (seeded with both
 # catalogs — the two packaged personas + the sample "shared/word-games"
@@ -1008,6 +1015,335 @@ def test_chat_converse_error_returns_502_with_client_error_message(
 
     assert response.status_code == 502
     assert response.json() == {"error": "agent unreachable: a2a request failed (500): boom"}
+
+
+# --- Chat via the switchboard relay (Task 3) ----------------------------------------
+#
+# Selection between the relay and the legacy direct path is `cabal_enabled(config)
+# and clients.cabal is not None` — every combination of those two independent
+# gates is pinned below, alongside envelope byte-parity with the direct path's
+# own `_build_task_envelope` (kobo_api.clients), the relayed reply's tolerant
+# extraction, and the relay-failure 502's fixed, plain copy.
+
+CABAL_ENDPOINT_TEMPLATE = "http://agent-{name}.default.svc.cluster.local"
+
+
+def _enabled_cabal_config(config):
+    return config.model_copy(
+        update={"cabal_url": "http://cabal.internal", "agent_endpoint_template": CABAL_ENDPOINT_TEMPLATE}
+    )
+
+
+def _client_with_cabal(session_factory, config, fake_github, fake_gojira, fake_agent, cabal):
+    return TestClient(
+        create_app(
+            session_factory,
+            config=config,
+            clients=Clients(
+                github=fake_github,
+                gojira=fake_gojira,
+                cloud=FakeCloud(),
+                agent=fake_agent,
+                kubectl=FakeKubectl(),
+                cabal=cabal,
+            ),
+        )
+    )
+
+
+def test_chat_relays_through_the_switchboard_when_cabal_is_enabled(
+    session_factory, config, fake_github, fake_gojira, fake_agent, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    fake_cabal = FakeCabal(
+        relay_result={"status": {"message": {"parts": [{"text": "hi from the switchboard"}]}}}
+    )
+    client = _client_with_cabal(
+        session_factory, cfg, fake_github, fake_gojira, fake_agent, fake_cabal
+    )
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat", json={"messages": [{"role": "user", "text": "hi"}]}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"reply": "hi from the switchboard"}
+    assert len(fake_cabal.relay_calls) == 1
+    assert fake_cabal.relay_calls[0]["name"] == AGENT_NAME
+    # the legacy direct path never runs when the relay handles the chat
+    assert fake_agent.converse_calls == []
+
+
+def test_chat_uses_direct_path_when_switchboard_not_configured(
+    session_factory, config, fake_github, fake_gojira, fake_agent
+):
+    """Default config/clients (no cabal org keys, no cabal client) — the
+    legacy direct path, completely unchanged."""
+    client = _client_with_cabal(
+        session_factory, config, fake_github, fake_gojira, fake_agent, None
+    )
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat", json={"messages": [{"role": "user", "text": "hi"}]}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"reply": fake_agent._reply}
+    assert len(fake_agent.converse_calls) == 1
+
+
+def test_chat_falls_back_to_direct_path_when_cabal_client_missing_even_if_config_enabled(
+    session_factory, config, fake_github, fake_gojira, fake_agent, monkeypatch
+):
+    """`cabal_enabled(config)` true but `clients.cabal` is None (e.g. wired
+    without a cabal client despite the org config being set) must not crash —
+    falls back to the direct path exactly like an unwired room."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    client = _client_with_cabal(session_factory, cfg, fake_github, fake_gojira, fake_agent, None)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat", json={"messages": [{"role": "user", "text": "hi"}]}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"reply": fake_agent._reply}
+    assert len(fake_agent.converse_calls) == 1
+
+
+def test_chat_ignores_cabal_client_when_switchboard_not_enabled(
+    session_factory, config, fake_github, fake_gojira, fake_agent
+):
+    """A cabal client present on `Clients` but `cabal_enabled(config)` false
+    (e.g. the operator token env var unset) must still take the direct
+    path — the client's mere presence is not the selection signal."""
+    fake_cabal = FakeCabal()
+    client = _client_with_cabal(
+        session_factory, config, fake_github, fake_gojira, fake_agent, fake_cabal
+    )
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat", json={"messages": [{"role": "user", "text": "hi"}]}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"reply": fake_agent._reply}
+    assert fake_cabal.relay_calls == []
+    assert len(fake_agent.converse_calls) == 1
+
+
+def test_chat_relay_envelope_matches_the_shared_builder_verbatim(
+    session_factory, config, fake_github, fake_gojira, fake_agent, monkeypatch
+):
+    """The relay path must reuse `_build_task_envelope` (kobo_api.clients)
+    verbatim rather than fork the shape. Pinned by freezing `uuid4` (the
+    envelope's only non-deterministic field) and comparing the envelope the
+    relay actually receives against calling that same builder directly with
+    the same messages.
+    """
+    import uuid
+
+    from kobo_api.clients import _build_task_envelope
+
+    monkeypatch.setattr(uuid, "uuid4", lambda: uuid.UUID(int=0))
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    fake_cabal = FakeCabal(relay_result={"status": {"message": {"parts": [{"text": "ok"}]}}})
+    client = _client_with_cabal(
+        session_factory, cfg, fake_github, fake_gojira, fake_agent, fake_cabal
+    )
+    _seed_agent(session_factory, cfg)
+    messages = [
+        {"role": "user", "text": "hi"},
+        {"role": "agent", "text": "hello yourself"},
+        {"role": "user", "text": "how are you?"},
+    ]
+
+    client.post(f"/api/agents/{AGENT_NAME}/chat", json={"messages": messages})
+
+    expected_envelope = _build_task_envelope(messages)
+    assert fake_cabal.relay_calls[0]["task_envelope"] == expected_envelope
+
+
+@pytest.mark.parametrize(
+    "relay_result, expected_reply",
+    [
+        pytest.param(
+            {"status": {"message": {"parts": [{"text": "bare task reply"}]}}},
+            "bare task reply",
+            id="bare-task-status-message",
+        ),
+        pytest.param(
+            {"task": {"status": {"message": {"parts": [{"text": "wrapped in task"}]}}}},
+            "wrapped in task",
+            id="wrapped-in-task-key",
+        ),
+        pytest.param(
+            {"result": {"status": {"message": {"parts": [{"text": "wrapped in result"}]}}}},
+            "wrapped in result",
+            id="wrapped-in-result-key",
+        ),
+        pytest.param(
+            {"status": {"message": {"parts": [{"text": "first"}, {"text": "last"}]}}},
+            "last",
+            id="multiple-parts-takes-the-last-one",
+        ),
+        pytest.param(
+            {
+                "history": [
+                    {"role": "user", "parts": [{"text": "hi"}]},
+                    {"role": "agent", "parts": [{"text": "from history"}]},
+                ]
+            },
+            "from history",
+            id="falls-back-to-historys-last-turn",
+        ),
+        pytest.param(
+            {"artifacts": [{"parts": [{"text": "from artifacts"}]}]},
+            "from artifacts",
+            id="falls-back-to-artifacts-last-entry",
+        ),
+    ],
+)
+def test_chat_relay_reply_extraction_variants(
+    session_factory,
+    config,
+    fake_github,
+    fake_gojira,
+    fake_agent,
+    monkeypatch,
+    relay_result,
+    expected_reply,
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    fake_cabal = FakeCabal(relay_result=relay_result)
+    client = _client_with_cabal(
+        session_factory, cfg, fake_github, fake_gojira, fake_agent, fake_cabal
+    )
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat", json={"messages": [{"role": "user", "text": "hi"}]}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"reply": expected_reply}
+
+
+def test_chat_relay_cabal_error_returns_502_with_fixed_plain_copy(
+    session_factory, config, fake_github, fake_gojira, fake_agent, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    fake_cabal = FakeCabal(relay_error="switchboard unreachable")
+    client = _client_with_cabal(
+        session_factory, cfg, fake_github, fake_gojira, fake_agent, fake_cabal
+    )
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat", json={"messages": [{"role": "user", "text": "hi"}]}
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"error": "The switchboard did not answer. Try again shortly."}
+
+
+def test_chat_relay_malformed_reply_returns_502_with_fixed_plain_copy(
+    session_factory, config, fake_github, fake_gojira, fake_agent, monkeypatch
+):
+    """A relay response with no text part anywhere (empty parts, no
+    status/history/artifacts at all, ...) must 502 the same fixed way a
+    genuine relay failure does, never an unhandled 500."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    fake_cabal = FakeCabal(relay_result={"status": {"message": {"parts": []}}})
+    client = _client_with_cabal(
+        session_factory, cfg, fake_github, fake_gojira, fake_agent, fake_cabal
+    )
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat", json={"messages": [{"role": "user", "text": "hi"}]}
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"error": "The switchboard did not answer. Try again shortly."}
+
+
+def test_chat_relay_connection_error_returns_502_with_fixed_plain_copy(
+    session_factory, config, fake_github, fake_gojira, fake_agent, monkeypatch
+):
+    """`CabalClient.relay` itself never wraps httpx transport errors (unlike
+    the direct path's `_post_task`) — a real `CabalClient` wired against a
+    transport that raises a connection error must still surface as this
+    same fixed 502, not an unhandled 500."""
+    import httpx
+
+    from kobo_api.clients import CabalClient
+
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+
+    def _raise_connect_error(request):
+        raise httpx.ConnectError("connection refused")
+
+    real_cabal = CabalClient(
+        "http://cabal.internal",
+        "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(_raise_connect_error)),
+    )
+    client = _client_with_cabal(
+        session_factory, cfg, fake_github, fake_gojira, fake_agent, real_cabal
+    )
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat", json={"messages": [{"role": "user", "text": "hi"}]}
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"error": "The switchboard did not answer. Try again shortly."}
+
+
+def test_chat_relay_non_json_body_returns_502_with_fixed_plain_copy(
+    session_factory, config, fake_github, fake_gojira, fake_agent, monkeypatch
+):
+    """A 2xx relay response whose body isn't JSON (`CabalClient.relay`
+    doesn't wrap the resulting `json.JSONDecodeError` either) must still
+    surface as this same fixed 502."""
+    import httpx
+
+    from kobo_api.clients import CabalClient
+
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+
+    def _non_json(request):
+        return httpx.Response(200, text="not json")
+
+    real_cabal = CabalClient(
+        "http://cabal.internal",
+        "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(_non_json)),
+    )
+    client = _client_with_cabal(
+        session_factory, cfg, fake_github, fake_gojira, fake_agent, real_cabal
+    )
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat", json={"messages": [{"role": "user", "text": "hi"}]}
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"error": "The switchboard did not answer. Try again shortly."}
 
 
 # --- model_label fold-in ------------------------------------------------------------

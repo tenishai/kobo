@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 
+import httpx
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,7 +22,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from kobo_api.avatars import avatar_prompt, set_avatar
 from kobo_api.catalog import RESERVED_NAMES, validate_name
-from kobo_api.clients import ClientError, StorageNotFound, cabal_enabled
+from kobo_api.clients import (
+    CabalError,
+    ClientError,
+    StorageNotFound,
+    _build_task_envelope,
+    cabal_enabled,
+)
 from kobo_api.config import Config
 from kobo_api.db import init_db, make_engine, make_session_factory
 from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
@@ -561,6 +568,74 @@ def _ready_agent_or_error(
     if agent.status != AgentStatus.READY:
         return JSONResponse({"error": not_ready_message}, status_code=409)
     return agent
+
+
+def _relay_reply_parts_sources(task: dict) -> list[list]:
+    """Every parts list a relayed switchboard task might carry the reply
+    text in, most-authoritative first: `status.message.parts` (the exact
+    path the direct path's `_post_task`, kobo_api.clients, reads), then the
+    last turn of `history`, then the last entry of `artifacts` — a richer
+    completed-task shape a real a2a-compliant agent behind the switchboard
+    can return that this room's own agents (which only ever exercise the
+    first path, via `KubectlAgentClient`) never have.
+    """
+    sources: list[list] = []
+
+    status = task.get("status")
+    if isinstance(status, dict):
+        message = status.get("message")
+        if isinstance(message, dict) and isinstance(message.get("parts"), list):
+            sources.append(message["parts"])
+
+    history = task.get("history")
+    if isinstance(history, list) and history:
+        last_turn = history[-1]
+        if isinstance(last_turn, dict) and isinstance(last_turn.get("parts"), list):
+            sources.append(last_turn["parts"])
+
+    artifacts = task.get("artifacts")
+    if isinstance(artifacts, list) and artifacts:
+        last_artifact = artifacts[-1]
+        if isinstance(last_artifact, dict) and isinstance(last_artifact.get("parts"), list):
+            sources.append(last_artifact["parts"])
+
+    return sources
+
+
+def _extract_relay_reply(response: dict) -> str:
+    """Pull the reply text out of a relayed switchboard response (the chat
+    route, below, calls this on whatever `CabalClient.relay` hands back).
+
+    The response JSON root may carry the completed task bare, or nested
+    under a `"task"` key (this route's own request shape, echoed back) or a
+    `"result"` key (the JSON-RPC-style envelope some a2a servers use) — both
+    wrappings are unwrapped first. From whichever parts list
+    `_relay_reply_parts_sources` finds first, the LAST part carrying a
+    `"text"` key wins: the direct path's own single-part fixtures make its
+    `parts[0]` and a list's last part identical, so this is no behavior
+    change for that common case, just tolerance for a richer, multi-part
+    reply.
+
+    Raises `CabalError` when no text part turns up anywhere — the chat
+    route maps that to the same 502 a genuine relay failure gets, since
+    either way the switchboard didn't hand back something usable.
+    """
+    task = response
+    if isinstance(response, dict):
+        if isinstance(response.get("task"), dict):
+            task = response["task"]
+        elif isinstance(response.get("result"), dict):
+            task = response["result"]
+
+    if not isinstance(task, dict):
+        raise CabalError("malformed switchboard reply: not a task object")
+
+    for parts in _relay_reply_parts_sources(task):
+        for part in reversed(parts):
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                return part["text"]
+
+    raise CabalError("malformed switchboard reply: no text part found")
 
 
 def _sync_directory_best_effort(clients: Clients, config: Config, agent: Agent) -> None:
@@ -1358,11 +1433,41 @@ def create_app(
         # Same namespace/service derivation as HelloStep (kobo_api.steps)
         # for this same agent's a2a endpoint — both are just the agent's name.
         clients = app.state.clients
+        cfg: Config = app.state.config
+        converse_messages = [{"role": m.role, "text": m.text} for m in messages]
+
+        # Switchboard relay (colleagues switchboard plan, Task 3): same
+        # `cabal_enabled` truthiness check every other switchboard-facing
+        # caller uses, AND clients.cabal actually wired — either gate alone
+        # isn't enough (an enabled-by-config-but-unwired room, or a wired
+        # client on a room that isn't enabled, must both still take the
+        # legacy direct path below, completely unchanged).
+        if cabal_enabled(cfg) and clients.cabal is not None:
+            envelope = _build_task_envelope(converse_messages)
+            try:
+                raw = clients.cabal.relay(agent.name, envelope)
+                reply = _extract_relay_reply(raw)
+            except (CabalError, httpx.HTTPError, ValueError) as exc:
+                # `CabalClient.relay` never wraps a raw httpx transport
+                # error (timeout, connection refused, ...) or a non-JSON
+                # body's `json.JSONDecodeError` the way the direct path's
+                # `_post_task` wraps its own transport/parse failures — all
+                # three, plus a typed `CabalError` (non-2xx) and a malformed-
+                # but-parseable reply (`_extract_relay_reply` above), land
+                # here and get the same fixed, plain copy; the real cause is
+                # only ever logged, never echoed to the caller.
+                log.warning("chat relay failed for agent %s: %s", name, exc)
+                return JSONResponse(
+                    {"error": "The switchboard did not answer. Try again shortly."},
+                    status_code=502,
+                )
+            return JSONResponse({"reply": reply})
+
         try:
             reply = clients.agent.converse(
                 namespace=agent.name,
                 service=agent.name,
-                messages=[{"role": m.role, "text": m.text} for m in messages],
+                messages=converse_messages,
             )
         except ClientError as exc:
             return JSONResponse({"error": f"agent unreachable: {exc}"}, status_code=502)
