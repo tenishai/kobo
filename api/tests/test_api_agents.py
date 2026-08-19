@@ -47,7 +47,7 @@ AGENT_NAME = "clio"
 PERSONA = "helpful-generalist"
 TEAM = "clio-team"
 
-ALL_STEP_NAMES = ["repo", "onboard", "access", "wire", "build", "deploy", "hello", "directory"]
+ALL_STEP_NAMES = ["repo", "onboard", "access", "wire", "build", "deploy", "directory", "hello"]
 
 POLL_DEADLINE_S = 5
 POLL_INTERVAL_S = 0.02
@@ -132,6 +132,21 @@ def _poll_until(client, name, statuses, deadline_s=POLL_DEADLINE_S):
 
 
 # --- POST /api/agents -------------------------------------------------------------
+
+
+def test_pipeline_order_joins_the_directory_before_saying_hello():
+    """Whole-arc review finding C-1 / operator ruling 2026-08-19 (colleagues
+    switchboard plan, Task 4b): agents compose LOCKED, so `HelloStep`'s
+    first contact needs the agent already registered in the switchboard's
+    directory before it can ride the relay — `DirectoryStep` must run
+    strictly before `HelloStep`, and every other step keeps its prior
+    relative order. Asserted directly against the real, assembled
+    `PIPELINE` rather than only through an end-to-end run, so this pins the
+    exact order regardless of how any single step's own outcome plays out.
+    """
+    from kobo_api.provisioner import PIPELINE
+
+    assert [step.name for step in PIPELINE] == ALL_STEP_NAMES
 
 
 def test_create_agent_returns_201_pending_then_provisions_to_ready(client):
@@ -678,10 +693,12 @@ def test_create_agent_failure_surfaces_failing_step_error_and_aborts_the_rest(
 def test_create_agent_hello_step_failure_leaves_agent_failed_with_no_reply(
     session_factory, config, fake_github, fake_gojira, fake_storage
 ):
-    """HelloStep is the pipeline's last step; a failure there should look
-    like any other step failure (agent FAILED, that step's row FAILED with
-    the error) rather than a special case — and `first_reply` must stay
-    None since `hello()` never returned successfully.
+    """HelloStep is now the pipeline's LAST step (Task 4b's reorder moved
+    DirectoryStep ahead of it) — a failure there should look like any other
+    step failure (agent FAILED, that step's row FAILED with the error)
+    rather than a special case, and `first_reply` must stay None since
+    `hello()` never returned successfully. Nothing runs after hello now, so
+    there's no later step left to mark aborted.
     """
     failing_agent = FakeAgent(hello_error="a2a hello failed (500): boom")
     client = TestClient(
@@ -707,18 +724,14 @@ def test_create_agent_hello_step_failure_leaves_agent_failed_with_no_reply(
     assert body["first_reply"] is None
 
     steps_by_name = {s["name"]: s for s in body["steps"]}
-    # every step before hello completed fine
+    # every step before hello (directory included — it now runs first,
+    # as a no-op since this fixture's config carries no switchboard org
+    # keys) completed fine.
     assert all(
-        steps_by_name[n]["status"] == "done"
-        for n in ALL_STEP_NAMES
-        if n not in ("hello", "directory")
+        steps_by_name[n]["status"] == "done" for n in ALL_STEP_NAMES if n != "hello"
     )
     assert steps_by_name["hello"]["status"] == "failed"
     assert "boom" in steps_by_name["hello"]["error"]
-    # directory (after hello) never ran — aborted, same as any step after a
-    # failure
-    assert steps_by_name["directory"]["status"] == "failed"
-    assert "aborted" in steps_by_name["directory"]["error"]
 
 
 def test_retry_when_not_failed_returns_409(client):

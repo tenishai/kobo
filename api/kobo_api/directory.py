@@ -27,7 +27,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kobo_api.clients import CabalClient, GitHubClient
+from kobo_api.clients import CabalClient, ClientError, GitHubClient
 from kobo_api.config import Config
 
 if TYPE_CHECKING:
@@ -49,13 +49,26 @@ def sync_directory(github: GitHubClient, cabal: CabalClient, cfg: Config, agent:
     itself: callers decide whether a failure here is retryable
     (`DirectoryStep` lets it fail the step) or best-effort (the metadata
     PATCH/regenerate tails, the destroy stage's disabled/unreachable note).
+
+    A malformed `cfg.agent_endpoint_template` (missing its `{name}`
+    placeholder, or carrying a positional `{0}`-style one) makes `str.format`
+    raise `KeyError`/`IndexError` — neither is a `ClientError`, so left
+    unwrapped it would 500 the on-demand sync route instead of the plain 502
+    every other failure here gets. Wrapped into `ClientError` here so every
+    caller's existing `ClientError` handling (the route's 502, DirectoryStep's
+    retryable failure) covers this case too, with no separate branch needed.
     """
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         github.clone(agent.repo_full_name, workdir)
         card = json.loads((workdir / "bundle" / "agent-card.json").read_text())
 
-    endpoint = cfg.agent_endpoint_template.format(name=agent.name)
+    try:
+        endpoint = cfg.agent_endpoint_template.format(name=agent.name)
+    except (KeyError, IndexError) as exc:
+        raise ClientError(
+            f"agent endpoint template is malformed: {cfg.agent_endpoint_template!r}"
+        ) from exc
     cabal.graduate(agent.name, endpoint=endpoint, audience=agent.name, card=card)
 
 

@@ -1001,7 +1001,16 @@ def test_access_step_calls_fakes_in_order_with_short_gsa_name(session_factory, c
 HELLO_REPO = "acme/agent-clio"
 
 
-def _hello_ctx(session_factory, config, fake_storage, *, github=None, name=None, agent_client=None):
+def _hello_ctx(
+    session_factory,
+    config,
+    fake_storage,
+    *,
+    github=None,
+    name=None,
+    agent_client=None,
+    cabal=None,
+):
     session, agent = _make_agent(session_factory, repo_full_name=HELLO_REPO)
     clients = _clients(
         github=github if github is not None else FakeGitHub(),
@@ -1009,6 +1018,7 @@ def _hello_ctx(session_factory, config, fake_storage, *, github=None, name=None,
         agent=agent_client if agent_client is not None else FakeAgent(),
         kubectl=FakeKubectl(),
         name=name,
+        cabal=cabal,
     )
     return _make_ctx(session, agent, config, clients), agent
 
@@ -1135,6 +1145,264 @@ def test_hello_step_tooling_listing_failure_does_not_block_generation(
 
     assert agent.capability == "Helps."
     assert fake_name.capability_calls[0][2] == []  # tooling_filenames came back empty
+
+
+# --- HelloStep contact path (colleagues switchboard plan, Task 4b): the relay ride --
+#
+# Whole-arc review finding C-1 / operator ruling 2026-08-19: agents compose
+# LOCKED, so first contact must ride the switchboard's relay once one is
+# configured, using the exact same envelope builder and reply-extraction
+# helper the chat route uses. Selection is the same two-gate discipline as
+# the chat route: `cabal_enabled(config)` AND `ctx.clients.cabal is not
+# None`. Disabled (either gate false) leaves the legacy direct path
+# completely unchanged (Global Constraints: org keys optional = feature off
+# = legacy behavior).
+
+HELLO_CABAL_ENDPOINT_TEMPLATE = "http://agent-{name}.default.svc.cluster.local"
+
+
+def _hello_cabal_enabled_config(config):
+    return config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": HELLO_CABAL_ENDPOINT_TEMPLATE,
+        }
+    )
+
+
+def test_hello_step_direct_path_unchanged_when_switchboard_disabled(
+    session_factory, config, fake_storage
+):
+    """The shared `config` fixture carries neither switchboard org key —
+    HelloStep's contact path must be the same direct `ctx.clients.agent.
+    hello` call it always was, byte-untouched, even with a cabal client
+    sitting unused on `Clients`."""
+    fake_agent_client = FakeAgent(reply="hello yourself")
+    fake_cabal = FakeCabal()
+    ctx, agent = _hello_ctx(
+        session_factory, config, fake_storage, agent_client=fake_agent_client, cabal=fake_cabal
+    )
+
+    HelloStep().run(ctx)
+
+    assert agent.first_reply == "hello yourself"
+    assert fake_agent_client.calls == [(agent.name, agent.name, "hello! how did you get here?")]
+    assert fake_cabal.relay_calls == []
+
+
+def test_hello_step_relays_through_the_switchboard_when_enabled(
+    session_factory, config, fake_storage, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _hello_cabal_enabled_config(config)
+    fake_agent_client = FakeAgent(reply="never used")
+    fake_cabal = FakeCabal(
+        relay_result={"status": {"message": {"parts": [{"text": "hi from the switchboard"}]}}}
+    )
+    ctx, agent = _hello_ctx(
+        session_factory, cfg, fake_storage, agent_client=fake_agent_client, cabal=fake_cabal
+    )
+
+    HelloStep().run(ctx)
+
+    assert agent.first_reply == "hi from the switchboard"
+    assert len(fake_cabal.relay_calls) == 1
+    assert fake_cabal.relay_calls[0]["name"] == agent.name
+    # the legacy direct path never runs when the relay handles first contact
+    assert fake_agent_client.calls == []
+
+
+def test_hello_step_falls_back_to_direct_path_when_cabal_client_missing(
+    session_factory, config, fake_storage, monkeypatch
+):
+    """`cabal_enabled(config)` true but `ctx.clients.cabal` is None (wired
+    without a cabal client despite the org config being set) must not
+    crash — falls back to the direct path exactly like an unwired room."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _hello_cabal_enabled_config(config)
+    fake_agent_client = FakeAgent(reply="hello yourself")
+    ctx, agent = _hello_ctx(
+        session_factory, cfg, fake_storage, agent_client=fake_agent_client, cabal=None
+    )
+
+    HelloStep().run(ctx)
+
+    assert agent.first_reply == "hello yourself"
+    assert len(fake_agent_client.calls) == 1
+
+
+def test_hello_step_ignores_cabal_client_when_switchboard_not_enabled(
+    session_factory, config, fake_storage
+):
+    """A cabal client present on `Clients` but `cabal_enabled(config)` false
+    (no org keys configured) must still take the direct path — the
+    client's mere presence is not the selection signal."""
+    fake_cabal = FakeCabal()
+    fake_agent_client = FakeAgent(reply="hello yourself")
+    ctx, agent = _hello_ctx(
+        session_factory, config, fake_storage, agent_client=fake_agent_client, cabal=fake_cabal
+    )
+
+    HelloStep().run(ctx)
+
+    assert agent.first_reply == "hello yourself"
+    assert fake_cabal.relay_calls == []
+    assert len(fake_agent_client.calls) == 1
+
+
+def test_hello_step_relay_envelope_matches_the_shared_builder_verbatim(
+    session_factory, config, fake_storage, monkeypatch
+):
+    """The relay path must reuse `_build_task_envelope` (kobo_api.clients)
+    verbatim rather than fork the shape — pinned by freezing `uuid4` (the
+    envelope's only non-deterministic field) and comparing the envelope the
+    relay actually receives against calling that same builder directly."""
+    import uuid
+
+    from kobo_api.clients import _build_task_envelope
+
+    monkeypatch.setattr(uuid, "uuid4", lambda: uuid.UUID(int=0))
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _hello_cabal_enabled_config(config)
+    fake_cabal = FakeCabal(relay_result={"status": {"message": {"parts": [{"text": "ok"}]}}})
+    ctx, _agent = _hello_ctx(session_factory, cfg, fake_storage, cabal=fake_cabal)
+
+    HelloStep().run(ctx)
+
+    expected_envelope = _build_task_envelope(
+        [{"role": "user", "text": "hello! how did you get here?"}]
+    )
+    assert fake_cabal.relay_calls[0]["task_envelope"] == expected_envelope
+
+
+def test_hello_step_relay_failure_fails_the_step_retryable(
+    session_factory, config, fake_storage, monkeypatch
+):
+    """Relay failure = the hello step FAILS (retryable) exactly like a
+    direct-path failure — same failure semantics, plain copy: it raises
+    rather than being swallowed, and `first_reply` stays unset since the
+    reply never came back."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _hello_cabal_enabled_config(config)
+    fake_cabal = FakeCabal(relay_error="switchboard unreachable")
+    ctx, agent = _hello_ctx(session_factory, cfg, fake_storage, cabal=fake_cabal)
+
+    with pytest.raises(CabalError):
+        HelloStep().run(ctx)
+
+    assert agent.first_reply is None
+
+
+def test_hello_step_relay_malformed_reply_fails_the_step_retryable(
+    session_factory, config, fake_storage, monkeypatch
+):
+    """A relay response with no usable text part (`_extract_relay_reply`
+    finding nothing to return) is exactly as much a failure as a transport
+    error — same retryable semantics as the transport-failure case above."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _hello_cabal_enabled_config(config)
+    fake_cabal = FakeCabal(relay_result={"status": {}})
+    ctx, agent = _hello_ctx(session_factory, cfg, fake_storage, cabal=fake_cabal)
+
+    with pytest.raises(CabalError):
+        HelloStep().run(ctx)
+
+    assert agent.first_reply is None
+
+
+# --- HelloStep capability tail: directory resync (colleagues switchboard plan, ----
+# Task 4b) --------------------------------------------------------------------------
+#
+# DirectoryStep now runs BEFORE HelloStep, so the card it registers
+# legitimately lacks a capability line yet — this tail backfills the
+# directory's own copy once the capability is earned and committed.
+
+
+def test_hello_step_tail_resyncs_directory_after_successful_card_commit(
+    session_factory, config, fake_storage, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _hello_cabal_enabled_config(config)
+    github = FakeGitHub()
+    fake_name = FakeName(capability="Helps with word games and small talk.")
+    fake_cabal = FakeCabal(
+        relay_result={"status": {"message": {"parts": [{"text": "hello yourself"}]}}}
+    )
+    ctx, agent = _hello_ctx(
+        session_factory, cfg, fake_storage, github=github, name=fake_name, cabal=fake_cabal
+    )
+
+    HelloStep().run(ctx)
+
+    assert agent.capability == "Helps with word games and small talk."
+    assert github.pushes[-1][1] == "kobo: directory details updated"
+    # the resync re-registers with the switchboard after the card commit
+    assert len(fake_cabal.graduate_calls) == 1
+    assert fake_cabal.graduate_calls[0]["name"] == agent.name
+
+
+def test_hello_step_tail_resync_disabled_switchboard_never_touches_cabal(
+    session_factory, config, fake_storage
+):
+    """`cabal_enabled` false (the shared `config` fixture carries neither
+    org key) — the tail must never even attempt a resync."""
+    fake_cabal = FakeCabal()
+    fake_name = FakeName(capability="Helps.")
+    ctx, agent = _hello_ctx(session_factory, config, fake_storage, name=fake_name, cabal=fake_cabal)
+
+    HelloStep().run(ctx)
+
+    assert agent.capability == "Helps."
+    assert fake_cabal.graduate_calls == []
+    assert fake_cabal.relay_calls == []
+
+
+def test_hello_step_tail_resync_skipped_when_card_commit_fails(
+    session_factory, config, fake_storage, monkeypatch
+):
+    """The resync only fires after a SUCCESSFUL card commit — a raising
+    GitHub client (card commit failure) must leave the resync untried."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _hello_cabal_enabled_config(config)
+    raising_github = FakeGitHub(clone_error="gh: rate limited")
+    fake_cabal = FakeCabal(
+        relay_result={"status": {"message": {"parts": [{"text": "hello yourself"}]}}}
+    )
+    ctx, agent = _hello_ctx(
+        session_factory, cfg, fake_storage, github=raising_github, cabal=fake_cabal
+    )
+
+    HelloStep().run(ctx)  # must not raise
+
+    assert agent.capability is not None
+    assert fake_cabal.graduate_calls == []
+
+
+def test_hello_step_tail_resync_raising_cabal_never_fails_hello_or_alters_capability(
+    session_factory, config, fake_storage, monkeypatch, caplog
+):
+    """Log-and-swallow: a raising cabal client must never fail the hello
+    step nor alter capability storage (Global Constraints)."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _hello_cabal_enabled_config(config)
+    github = FakeGitHub()
+    fake_name = FakeName(capability="Helps with word games and small talk.")
+    fake_cabal = FakeCabal(
+        relay_result={"status": {"message": {"parts": [{"text": "hello yourself"}]}}},
+        graduate_error="switchboard unreachable",
+    )
+    ctx, agent = _hello_ctx(
+        session_factory, cfg, fake_storage, github=github, name=fake_name, cabal=fake_cabal
+    )
+
+    with caplog.at_level("WARNING"):
+        detail = HelloStep().run(ctx)  # must not raise
+
+    assert "hello yourself" in detail
+    assert agent.first_reply == "hello yourself"
+    assert agent.capability == "Helps with word games and small talk."
+    assert github.pushes[-1][1] == "kobo: directory details updated"
+    assert "directory resync failed" in caplog.text
 
 
 # --- DirectoryStep (colleagues switchboard plan, Task 2: the directory seam) ------

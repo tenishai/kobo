@@ -124,6 +124,39 @@ def test_sync_directory_graduate_failure_propagates():
         sync_directory(github, cabal, _config(), _agent())
 
 
+def test_sync_directory_malformed_template_raises_client_error_not_key_error():
+    """A template missing the `{name}` placeholder (or carrying an
+    unrelated one, like `{oops}`) makes `str.format` raise `KeyError` —
+    neither `KeyError` nor `IndexError` is a `ClientError`, so left
+    unwrapped it would 500 the on-demand sync route (Task 4b) instead of
+    the plain 502 every other failure here gets. Wrapped into
+    `ClientError` here, with a plain message (no em dash)."""
+    github = FakeGitHub()
+    cabal = FakeCabal()
+    cfg = _config(agent_endpoint_template="http://agent-{oops}.svc.cluster.local")
+
+    with pytest.raises(ClientError) as excinfo:
+        sync_directory(github, cabal, cfg, _agent())
+
+    assert not isinstance(excinfo.value, (KeyError, IndexError))
+    assert "—" not in str(excinfo.value)
+    assert cabal.graduate_calls == []
+
+
+def test_sync_directory_positional_template_placeholder_raises_client_error():
+    """The other `str.format` failure mode a malformed template can hit:
+    a positional placeholder (`{0}`) with no positional argument supplied
+    raises `IndexError`, not `KeyError` — wrapped the same way."""
+    github = FakeGitHub()
+    cabal = FakeCabal()
+    cfg = _config(agent_endpoint_template="http://agent-{0}.svc.cluster.local")
+
+    with pytest.raises(ClientError):
+        sync_directory(github, cabal, cfg, _agent())
+
+    assert cabal.graduate_calls == []
+
+
 # --- retire_directory --------------------------------------------------------------
 
 

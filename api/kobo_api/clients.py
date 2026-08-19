@@ -2435,6 +2435,81 @@ class CabalClient:
         return resp.json()
 
 
+def _relay_reply_parts_sources(task: dict) -> list[list]:
+    """Every parts list a relayed switchboard task might carry the reply
+    text in, most-authoritative first: `status.message.parts` (the exact
+    path the direct path's `_post_task`, above, reads), then the last turn
+    of `history`, then the last entry of `artifacts` — a richer
+    completed-task shape a real a2a-compliant agent behind the switchboard
+    can return that this room's own agents (which only ever exercise the
+    first path, via `KubectlAgentClient`) never have.
+    """
+    sources: list[list] = []
+
+    status = task.get("status")
+    if isinstance(status, dict):
+        message = status.get("message")
+        if isinstance(message, dict) and isinstance(message.get("parts"), list):
+            sources.append(message["parts"])
+
+    history = task.get("history")
+    if isinstance(history, list) and history:
+        last_turn = history[-1]
+        if isinstance(last_turn, dict) and isinstance(last_turn.get("parts"), list):
+            sources.append(last_turn["parts"])
+
+    artifacts = task.get("artifacts")
+    if isinstance(artifacts, list) and artifacts:
+        last_artifact = artifacts[-1]
+        if isinstance(last_artifact, dict) and isinstance(last_artifact.get("parts"), list):
+            sources.append(last_artifact["parts"])
+
+    return sources
+
+
+def _extract_relay_reply(response: dict) -> str:
+    """Pull the reply text out of a relayed switchboard response.
+
+    Shared by every caller that relays an a2a task through `CabalClient.
+    relay` and needs to read the completed task back out (`kobo_api.main`'s
+    chat route, `kobo_api.steps`' `HelloStep` first-contact path,
+    colleagues switchboard plan Task 4b) — kept here, next to `CabalClient`
+    and `_build_task_envelope`, rather than duplicated in each caller's own
+    module, so the two never drift apart. Neither caller module imports the
+    other; both already import this one.
+
+    The response JSON root may carry the completed task bare, or nested
+    under a `"task"` key (a request shape some caller echoes back) or a
+    `"result"` key (the JSON-RPC-style envelope some a2a servers use) — both
+    wrappings are unwrapped first. For each parts list `_relay_reply_parts_sources`
+    returns (most-authoritative first), the extraction looks ONLY at `parts[0]`:
+    if it carries a `"text"` key (and the value is a string), that text is
+    returned; if the list is empty or `parts[0]` lacks a `"text"` key, that
+    source is skipped and extraction moves to the next source. This matches
+    the direct path's own semantics, where it does `parts[0]["text"]`
+    unconditionally on the authoritative source.
+
+    Raises `CabalError` when no text part turns up in any source — callers
+    map that to the same failure handling a genuine relay failure gets,
+    since either way the switchboard didn't hand back something usable.
+    """
+    task = response
+    if isinstance(response, dict):
+        if isinstance(response.get("task"), dict):
+            task = response["task"]
+        elif isinstance(response.get("result"), dict):
+            task = response["result"]
+
+    if not isinstance(task, dict):
+        raise CabalError("malformed switchboard reply: not a task object")
+
+    for parts in _relay_reply_parts_sources(task):
+        if parts and isinstance(parts[0], dict) and isinstance(parts[0].get("text"), str):
+            return parts[0]["text"]
+
+    raise CabalError("malformed switchboard reply: no text part found")
+
+
 # --- Wiring -----------------------------------------------------------------------
 
 

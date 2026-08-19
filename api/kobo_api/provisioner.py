@@ -278,12 +278,23 @@ def reset_failed_steps(session: Session, agent_id: int) -> None:
 
 # The assembled, one-click pipeline: compose+push a repo, onboard it onto
 # gojira, grant model access, wire the app-authored manifests, wait for the
-# image build and rollout, say hello, then join the switchboard's directory.
+# image build and rollout, join the switchboard's directory, then say hello.
 # Order is load-bearing — each step depends on state a prior one recorded on
-# the agent (repo_full_name, gojira_app_id, ...). DirectoryStep is last,
-# right after HelloStep (colleagues switchboard plan, Task 2): a no-op on a
-# room with no switchboard configured, so its addition changes nothing for
-# rooms that don't opt in.
+# the agent (repo_full_name, gojira_app_id, ...).
+#
+# DirectoryStep now runs BEFORE HelloStep (colleagues switchboard plan, Task
+# 4b — whole-arc review finding C-1, operator ruling 2026-08-19): agents
+# compose LOCKED (only switchboard-signed calls accepted), so HelloStep's
+# first contact needs the agent already registered in the directory before
+# it can ride the switchboard's relay. This reverses Task 2's original
+# placement (DirectoryStep last, right after HelloStep) — the card
+# DirectoryStep graduates at this point legitimately lacks a capability
+# line yet (HelloStep's own tail is what earns it, moments later), which is
+# fine: a second, best-effort resync after that tail's card commit is what
+# backfills the directory's copy with the capability once it exists.
+# DirectoryStep is still a no-op on a room with no switchboard configured,
+# so a room that doesn't opt in sees no behavior change from either its
+# placement or HelloStep's own contact path (still the legacy direct one).
 PIPELINE: list[Step] = [
     RepoStep(),
     OnboardStep(),
@@ -291,8 +302,8 @@ PIPELINE: list[Step] = [
     WireStep(),
     BuildStep(),
     DeployStep(),
-    HelloStep(),
     DirectoryStep(),
+    HelloStep(),
 ]
 
 # The UI's checklist vocabulary: step name -> human-readable label, sourced

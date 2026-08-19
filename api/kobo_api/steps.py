@@ -45,6 +45,8 @@ from kobo_api.clients import (
     GojiraConflict,
     StorageClient,
     StorageNotFound,
+    _build_task_envelope,
+    _extract_relay_reply,
     cabal_enabled,
     gsa_email,
 )
@@ -1002,24 +1004,35 @@ def _earn_capability(ctx: Ctx) -> None:
 
     Global Constraints: capability generation must NEVER block readiness —
     every failure here (persona/skill/tooling lookups, the model call
-    itself, the card commit) is caught, logged, and swallowed; HelloStep's
-    own reply is already recorded on `ctx.agent` by the time this runs and
-    nothing this function does can undo that.
+    itself, the card commit, the directory resync below) is caught, logged,
+    and swallowed; HelloStep's own reply is already recorded on `ctx.agent`
+    by the time this runs and nothing this function does can undo that.
 
-    Two independent try/except boundaries, deliberately: generation
-    (persona body + skill descriptions + tooling filenames -> one
-    capability string) is one unit — any failure there leaves
-    `agent.capability` untouched (null, unless a prior earn/PATCH/Regenerate
-    already set it). Once generation succeeds, `agent.capability` is stored
-    on the row immediately — the row is the room's own truth — and ONLY
-    THEN is the card commit attempted, in its own boundary: a failure there
-    leaves the just-stored capability in place but the card uncommitted
-    (logged), since delivery is best-effort and a later Regenerate can
-    always retry it. This ordering is why `tooling_filenames_for` swallows
-    its own github-side failures internally (never propagating into the
-    generation boundary) — otherwise a broken GitHub client would prevent
-    generation (and the row store) from ever happening at all, when the
-    only thing it should actually block is the card commit.
+    Three independent boundaries, deliberately: generation (persona body +
+    skill descriptions + tooling filenames -> one capability string) is one
+    unit — any failure there leaves `agent.capability` untouched (null,
+    unless a prior earn/PATCH/Regenerate already set it). Once generation
+    succeeds, `agent.capability` is stored on the row immediately — the row
+    is the room's own truth — and ONLY THEN is the card commit attempted,
+    in its own boundary: a failure there leaves the just-stored capability
+    in place but the card uncommitted (logged), since delivery is
+    best-effort and a later Regenerate can always retry it. This ordering
+    is why `tooling_filenames_for` swallows its own github-side failures
+    internally (never propagating into the generation boundary) —
+    otherwise a broken GitHub client would prevent generation (and the row
+    store) from ever happening at all, when the only thing it should
+    actually block is the card commit.
+
+    A third, best-effort tail (colleagues switchboard plan, Task 4b): only
+    after that card commit actually SUCCEEDS, and only when the switchboard
+    is configured, re-run `kobo_api.directory.sync_directory` so the
+    directory's own copy of the card picks up the capability line
+    `DirectoryStep` (which ran earlier in the pipeline now, before HelloStep)
+    legitimately couldn't have seen yet. A raising cabal client here is
+    caught and logged, same discipline as the card-commit boundary above —
+    it must never fail HelloStep, and by construction can't touch
+    `agent.capability` (already stored) or the just-committed card (already
+    committed) either way.
     """
     agent = ctx.agent
     try:
@@ -1062,19 +1075,55 @@ def _earn_capability(ctx: Ctx) -> None:
             agent.name,
             exc_info=True,
         )
+    else:
+        if cabal_enabled(ctx.config):
+            try:
+                sync_directory(ctx.clients.github, ctx.clients.cabal, ctx.config, agent)
+            except Exception:
+                log.warning(
+                    "directory resync failed for agent %s after the capability "
+                    "card commit — the directory's copy stays without the "
+                    "capability line until the next successful resync",
+                    agent.name,
+                    exc_info=True,
+                )
 
 
 class HelloStep:
-    """First contact: says hello to the freshly-deployed agent over its a2a
-    endpoint (via `ctx.clients.agent.hello`) and records its reply on the
-    agent row so the UI can show it — the "one-click" pipeline's last step.
+    """First contact: says hello to the freshly-deployed agent, either
+    directly over its a2a endpoint (via `ctx.clients.agent.hello`, the
+    legacy path) or, when the switchboard is wired, by relaying the same
+    a2a task envelope through it (`ctx.clients.cabal.relay`) — the "one-
+    click" pipeline's last step.
 
-    Its tail (`_earn_capability`, persona-metadata plan Task 3) generates
-    this agent's capability sentence and pushes it to its card. Wrapped in
-    its own defensive try/except here too (belt-and-suspenders on top of
-    `_earn_capability`'s own two internal boundaries) so that even a bug in
-    that code path could never turn a successful first contact into a
-    failed HelloStep — capability generation must never block readiness.
+    Contact path selection (colleagues switchboard plan, Task 4b): when
+    `cabal_enabled(ctx.config)` is true AND `ctx.clients.cabal` is actually
+    wired (either gate alone isn't enough — same two-gate discipline the
+    chat route already uses), the relay path builds the exact same task
+    envelope shape `_build_task_envelope` produces (never a forked shape)
+    and reads the reply back through `_extract_relay_reply` — the identical
+    helper the chat route uses (`kobo_api.clients`), so the two callers can
+    never drift on how a relayed reply is read. A relay failure (a
+    `CabalError` from `relay` itself, or from `_extract_relay_reply` on a
+    malformed reply) is not caught here: it propagates up to the engine's
+    own per-step try/except, failing this step exactly the way a direct-
+    path `ClientError` from `hello()` already does — same retryable
+    semantics, no special case for the relay path. This ordering only works
+    because `DirectoryStep` now runs BEFORE this step (Task 4b's reorder):
+    the agent is already registered in the switchboard's directory by the
+    time first contact needs to ride its relay.
+
+    When the switchboard isn't wired, the direct path runs completely
+    unchanged — byte-identical to before this task, Global Constraints'
+    "org keys optional = feature off = legacy behavior".
+
+    Its tail (`_earn_capability`, persona-metadata plan Task 3, extended by
+    Task 4b's directory resync) generates this agent's capability sentence
+    and pushes it to its card. Wrapped in its own defensive try/except here
+    too (belt-and-suspenders on top of `_earn_capability`'s own internal
+    boundaries) so that even a bug in that code path could never turn a
+    successful first contact into a failed HelloStep — capability
+    generation must never block readiness.
     """
 
     name = "hello"
@@ -1082,9 +1131,16 @@ class HelloStep:
 
     def run(self, ctx: Ctx) -> str:
         agent = ctx.agent
-        reply = ctx.clients.agent.hello(
-            namespace=agent.name, service=agent.name, text="hello! how did you get here?"
-        )
+        hello_text = "hello! how did you get here?"
+
+        if cabal_enabled(ctx.config) and ctx.clients.cabal is not None:
+            envelope = _build_task_envelope([{"role": "user", "text": hello_text}])
+            raw = ctx.clients.cabal.relay(agent.name, envelope)
+            reply = _extract_relay_reply(raw)
+        else:
+            reply = ctx.clients.agent.hello(
+                namespace=agent.name, service=agent.name, text=hello_text
+            )
         agent.first_reply = reply
 
         try:
@@ -1105,8 +1161,14 @@ class HelloStep:
 
 class DirectoryStep:
     """Registers the freshly-deployed agent in the switchboard's directory
-    (`kobo_api.directory.sync_directory`) — the last checklist step, right
-    after `HelloStep`.
+    (`kobo_api.directory.sync_directory`) — runs right BEFORE `HelloStep`
+    (colleagues switchboard plan, Task 4b's reorder: agents compose LOCKED,
+    only switchboard-signed calls accepted, so first contact needs the
+    agent already registered before it can ride the relay). The card
+    registered here legitimately lacks a capability line yet — that's
+    earned moments later, on HelloStep's own tail, whose best-effort
+    resync backfills the directory's copy once it exists; this step makes
+    no attempt to generate or wait for one itself.
 
     Global Constraints: org config is boot-time only, and an absent
     switchboard means the feature is off everywhere — `cabal_enabled` being

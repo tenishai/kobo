@@ -172,3 +172,26 @@ def test_sync_directory_graduate_failure_returns_502(session_factory, config, mo
 
     assert response.status_code == 502
     assert response.json() == {"error": "couldn't sync the directory. Try again."}
+
+
+def test_sync_directory_malformed_endpoint_template_returns_502(session_factory, config, monkeypatch):
+    """A malformed `agent_endpoint_template` (Task 4b hardening) makes
+    `sync_directory` raise `ClientError` instead of a bare `KeyError` —
+    the route's existing `except ClientError` 502 handler covers it with
+    no new branch, rather than the request 500ing."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": "http://agent-{oops}.default.svc.cluster.local",
+        }
+    )
+    fake_cabal = FakeCabal()
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+    _seed_agent(session_factory)
+
+    response = client.post(f"/api/agents/{AGENT_NAME}/directory/sync")
+
+    assert response.status_code == 502
+    assert response.json() == {"error": "couldn't sync the directory. Try again."}
+    assert fake_cabal.graduate_calls == []
