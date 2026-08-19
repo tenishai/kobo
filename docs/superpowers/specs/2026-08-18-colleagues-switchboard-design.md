@@ -23,11 +23,18 @@ current source, not notes.
    the existing secrets path. That token lets the room register
    agents, relay chat (operator scope gets per-target tokens minted
    automatically at dispatch), and read conversations in spec B.
-3. **Membership.** New checklist step after first contact: **"Joins
-   the agent directory"** — the room calls the switchboard's graduate
-   endpoint with the agent's in-cluster address, its name as the
-   audience, and its full card (including the team/purpose_tags/
-   capability metadata block, which the runtime serves untouched).
+3. **Membership.** New checklist step between deploy and first
+   contact: **"Joins the agent directory"** — the room calls the
+   switchboard's graduate endpoint with the agent's in-cluster
+   address, its name as the audience, and its full card (including
+   the team/purpose_tags/capability metadata block, which the
+   runtime serves untouched). *(Amended 2026-08-19, operator ruling:
+   the step originally sat after first contact, but a locked-at-boot
+   agent can only be greeted through the switchboard, and the
+   switchboard can only reach agents it lists. So: join first, then
+   hello rides the relay like every other conversation, and the
+   hello step's capability tail re-registers the card so the
+   directory copy gains the earned capability line.)*
    Destroy gains a matching stage that retires the listing, skipping
    with a note when the switchboard is unreachable. Edit details and
    Regenerate re-register after their card commit so the directory
@@ -43,9 +50,11 @@ current source, not notes.
 5. **Chat reroutes.** When the switchboard is configured, room chat
    posts the task envelope to the switchboard with a target name and
    the operator token; the switchboard relays to the agent and the
-   exchange lands in its conversation records. Without configuration
-   the legacy direct path still works, which is what makes the
-   rollout gradual.
+   exchange lands in its conversation records. The hello step's
+   first contact travels the same way (it is just the room's first
+   chat with the agent). Without configuration the legacy direct
+   path still works everywhere, which is what makes the rollout
+   gradual.
 
 ## New seams
 

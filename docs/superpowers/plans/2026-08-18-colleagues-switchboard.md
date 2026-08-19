@@ -83,6 +83,17 @@
 - [ ] RED: compose matrix (with/without keys, byte-identical when off), update helper preserves unknown content, replaces existing block idempotently.
 - [ ] Implement; GREEN; full suite; ruff; vendor scan (own step); commit "feat(api): composed agents expect signed callers".
 
+### Task 4b: The birth ritual reorders (whole-arc review C-1; operator ruling 2026-08-19)
+
+**Files:** `api/kobo_api/provisioner.py` (pipeline order), `api/kobo_api/steps.py` (`DirectoryStep` placement semantics, `HelloStep` contact path + tail), `api/kobo_api/directory.py` (format-error hardening), tests.
+
+**Interfaces:**
+- Consumes: everything Tasks 1-4 built, unchanged signatures.
+- Produces: `DirectoryStep` runs BEFORE `HelloStep` (join first; the card graduated at this point legitimately lacks a capability line). `HelloStep` sends first contact through `clients.cabal.relay` when `cabal_enabled` (same envelope builder, same parts[0] extraction as the chat route; extract via the same helper, do not fork it), legacy direct path when disabled. `HelloStep`'s capability tail, after `commit_card_metadata` succeeds, best-effort re-runs `sync_directory` so the directory card gains the capability (log-and-swallow, hello semantics untouched). `sync_directory` wraps `agent_endpoint_template.format(...)` errors (`KeyError`/`IndexError`) into `ClientError` so the sync route 502s instead of 500ing on a bad template.
+
+- [ ] RED: pipeline order pinned; hello relay selection matrix (enabled relays, disabled unchanged direct); hello-tail resync isolation (raising cabal never fails hello, never alters capability storage); bad-template 502 on the sync route.
+- [ ] Implement; GREEN; full suite; ruff; vendor scan (own step); commit "fix(api): join the directory first, then say hello through the switchboard".
+
 ### Task 5: Deploy the switchboard (controller-driven)
 
 - [ ] Build the image: cabal repo, clean tree; techne sibling at the tag the runtime uses; `docker buildx build --platform linux/amd64 --build-context techne=../techne -t <registry>/cabal:<sha7> --push .` (registry = the same one the runtime lives in; read from live coordinates, never typed into tracked files).
@@ -94,8 +105,7 @@
 ### Task 6: Rollout, backfill, locks (controller-driven)
 
 - [ ] Roll the room to the image carrying Tasks 1-4 (build from local source, set image, explicit context). Org config still lacks the keys: verify chat still works on the legacy path (feature off).
-- [ ] Write-then-restart: App-token PUT adds `cabal_url` + `agent_endpoint_template` to org.yaml; restart the room; verify chat now relays (switchboard conversation record appears for a room chat).
-- [ ] Backfill: `POST /api/agents/{name}/directory/sync` for both live agents; verify both listed via the switchboard's admin agents endpoint with their metadata blocks intact.
+- [ ] Write-then-restart: App-token PUT adds `cabal_url` + `agent_endpoint_template` to org.yaml; restart the room; IMMEDIATELY backfill both live agents via `POST /api/agents/{name}/directory/sync` (chat has no direct fallback once the keys flip, so registration must precede the relay check); verify both listed via the switchboard's admin agents endpoint with their metadata blocks intact; THEN verify chat relays (switchboard conversation record appears for a room chat).
 - [ ] Gate: `python -c "import joserfc"` inside the live runtime image. If missing: rebuild the runtime image with the auth extra, push a new tag, and fold the FROM bump into the next step's re-pin commits.
 - [ ] Relay timeout gate: one long-prompt chat through the relay to a real agent; confirm no switchboard-side timeout. If it times out, STOP and fix upstream before proceeding.
 - [ ] Locks: one commit per agent repo via `update_agent_yaml_auth` (App-token script, composer helper); CI builds and rolls; verify relay chat still round-trips and a raw unsigned in-cluster POST to an agent's `/a2a/tasks` returns 401.
