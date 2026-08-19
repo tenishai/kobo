@@ -21,10 +21,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from kobo_api.avatars import avatar_prompt, set_avatar
 from kobo_api.catalog import RESERVED_NAMES, validate_name
-from kobo_api.clients import ClientError, StorageNotFound
+from kobo_api.clients import ClientError, StorageNotFound, cabal_enabled
 from kobo_api.config import Config
 from kobo_api.db import init_db, make_engine, make_session_factory
 from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
+from kobo_api.directory import sync_directory
 from kobo_api.iap import IapMiddleware, IapVerifier
 from kobo_api.intake import (
     IntakeError,
@@ -560,6 +561,32 @@ def _ready_agent_or_error(
     if agent.status != AgentStatus.READY:
         return JSONResponse({"error": not_ready_message}, status_code=409)
     return agent
+
+
+def _sync_directory_best_effort(clients: Clients, config: Config, agent: Agent) -> None:
+    """Best-effort switchboard resync after a directory-metadata edit (the
+    PATCH and Regenerate routes below, right after their own
+    `commit_card_metadata` call succeeds) — colleagues switchboard plan,
+    Task 2.
+
+    A no-op when the switchboard isn't wired (`cabal_enabled` false), same
+    gate every other switchboard-facing caller uses. When it IS wired, any
+    `sync_directory` failure (switchboard unreachable, a stale card, ...) is
+    logged and swallowed here, never raised: the metadata edit itself
+    already committed by the time either caller reaches this call, and a
+    directory hiccup must not turn an otherwise-successful PATCH/regenerate
+    into an error response, nor roll back what was already saved.
+    """
+    if not cabal_enabled(config):
+        return
+    try:
+        sync_directory(clients.github, clients.cabal, config, agent)
+    except Exception:
+        log.warning(
+            "directory sync failed for agent %s after a metadata update",
+            agent.name,
+            exc_info=True,
+        )
 
 
 # Uncalled by any route since Slack self-service (2026-08-17) — kept because
@@ -2287,6 +2314,11 @@ def create_app(
             )
 
         session.commit()
+        # Best-effort switchboard resync (colleagues switchboard plan, Task
+        # 2): the card just committed above is now the source of truth, so a
+        # failure here is logged and swallowed, never turned into a failure
+        # response (see _sync_directory_best_effort's own docstring).
+        _sync_directory_best_effort(app.state.clients, app.state.config, agent)
         return JSONResponse(
             {"team": team, "purpose_tags": tags, "capability": capability, "sha": sha}
         )
@@ -2346,9 +2378,43 @@ def create_app(
             )
 
         session.commit()
+        # Best-effort switchboard resync, same call/reasoning as the PATCH
+        # route above.
+        _sync_directory_best_effort(clients, cfg, agent)
         return JSONResponse(
             {"team": team, "purpose_tags": tags, "capability": capability, "sha": sha}
         )
+
+    # --- Directory sync (colleagues switchboard plan, Task 2): on-demand ------
+    # re-registration/backfill route, ready-gated, any signed-in user (same
+    # reach as the metadata routes above).
+
+    @app.post("/api/agents/{name}/directory/sync")
+    def sync_directory_route(
+        name: str, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(
+            session, name, not_ready_message="agent is not ready to join the directory yet"
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        cfg: Config = app.state.config
+        if not cabal_enabled(cfg):
+            return JSONResponse(
+                {"error": "the switchboard is not configured"}, status_code=409
+            )
+
+        clients = app.state.clients
+        try:
+            sync_directory(clients.github, clients.cabal, cfg, agent)
+        except ClientError as exc:
+            log.warning("directory sync route failed for %s: %s", name, exc)
+            return JSONResponse(
+                {"error": "couldn't sync the directory. Try again."}, status_code=502
+            )
+
+        return JSONResponse({"registered": True})
 
     # --- Avatar (P2d): persona-derived face, repo-backed with a display cache ---
 

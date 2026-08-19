@@ -4711,6 +4711,31 @@ def test_clients_real_wires_storage_client_unconditionally():
     assert clients.storage._project == "example-project"
 
 
+def test_clients_real_wires_cabal_none_when_disabled(monkeypatch):
+    # Same "is this configured" gate as slack, but via cabal_enabled (all
+    # three of cabal_url/agent_endpoint_template/the operator token env var)
+    # rather than a single field. Nothing set -> stays None, same "absent =
+    # feature off" convention as slack.
+    monkeypatch.delenv("CABAL_OPERATOR_TOKEN", raising=False)
+    config = Config(gojira_url="http://gojira.local", gcp_project="example-project")
+    clients = Clients.real(config)
+    assert clients.cabal is None
+
+
+def test_clients_real_wires_cabal_when_enabled(monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        cabal_url="http://cabal.internal",
+        agent_endpoint_template="http://agent-{name}.default.svc.cluster.local",
+    )
+    clients = Clients.real(config)
+    assert isinstance(clients.cabal, CabalClient)
+    assert clients.cabal._base_url == "http://cabal.internal"
+    assert clients.cabal._token == "op-token"
+
+
 # --- Clients.real() GitHub App wiring (Task 3) -------------------------------
 
 

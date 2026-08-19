@@ -45,10 +45,12 @@ from kobo_api.clients import (
     GojiraConflict,
     StorageClient,
     StorageNotFound,
+    cabal_enabled,
     gsa_email,
 )
 from kobo_api.composer import BundleSpec, compose, validate_agent_yaml
 from kobo_api.config import Config
+from kobo_api.directory import sync_directory
 from kobo_api.metadata import (
     commit_card_metadata,
     generate_capability,
@@ -1091,3 +1093,35 @@ class HelloStep:
             )
 
         return f"agent replied: {reply!r}"
+
+
+# --- DirectoryStep (colleagues switchboard plan, Task 2: the directory seam) ------
+
+
+class DirectoryStep:
+    """Registers the freshly-deployed agent in the switchboard's directory
+    (`kobo_api.directory.sync_directory`) — the last checklist step, right
+    after `HelloStep`.
+
+    Global Constraints: org config is boot-time only, and an absent
+    switchboard means the feature is off everywhere — `cabal_enabled` being
+    false makes this step a plain no-op that returns normally (DONE), so a
+    room with no switchboard configured stays exactly as green on this step
+    as it was before the step existed. When the switchboard IS configured,
+    any `sync_directory` failure (a card-fetch problem, a non-2xx
+    `graduate`) is left to propagate — the engine's own per-step try/except
+    (`kobo_api.provisioner._run_pipeline_body`) turns that into a FAILED row
+    the product's existing Retry already knows how to re-run, same as every
+    other step here. Either way this step never blocks or reruns anything
+    earlier in the chain — its own outcome is the only thing it can affect.
+    """
+
+    name = "directory"
+    label = "Joins the agent directory"
+
+    def run(self, ctx: Ctx) -> str:
+        if not cabal_enabled(ctx.config):
+            return "switchboard not configured; nothing to register"
+
+        sync_directory(ctx.clients.github, ctx.clients.cabal, ctx.config, ctx.agent)
+        return f"registered {ctx.agent.name} in the directory"

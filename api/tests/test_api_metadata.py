@@ -33,6 +33,7 @@ from kobo_api.purpose_tags import encode_tags
 from kobo_api.search import ingest_indexes
 from tests.fakes import (
     FakeAgent,
+    FakeCabal,
     FakeCloud,
     FakeGitHub,
     FakeGojira,
@@ -73,7 +74,7 @@ def config(tmp_path):
     )
 
 
-def _make_client(session_factory, config, *, github=None, name=None, storage=None):
+def _make_client(session_factory, config, *, github=None, name=None, storage=None, cabal=None):
     if storage is None:
         storage = FakeStorage()
         seed_default_personas(storage, bucket=PERSONAS_BUCKET)
@@ -89,8 +90,22 @@ def _make_client(session_factory, config, *, github=None, name=None, storage=Non
                 kubectl=FakeKubectl(),
                 storage=storage,
                 name=name,
+                cabal=cabal,
             ),
         )
+    )
+
+
+def _enabled_config(config):
+    """`config` plus the two org keys `cabal_enabled` needs — the caller
+    must also monkeypatch CABAL_OPERATOR_TOKEN, the third leg, before this
+    reads as enabled (colleagues switchboard plan, Task 2's metadata
+    tails)."""
+    return config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": "http://agent-{name}.default.svc.cluster.local",
+        }
     )
 
 
@@ -298,6 +313,74 @@ def test_patch_metadata_card_commit_failure_returns_502_and_db_not_committed(
     assert detail["capability"] == "Original sentence."
 
 
+# --- PATCH .../metadata: best-effort directory tail (colleagues switchboard plan, Task 2) --
+
+
+def test_patch_metadata_disabled_switchboard_never_attempts_a_sync(session_factory, config):
+    """The default `config` fixture carries neither cabal org key — the
+    PATCH route's own response/DB behavior must be byte-identical to before
+    this tail existed, and no cabal client is ever touched (there isn't
+    one: `_make_client` doesn't pass `cabal=`, so a wired attempt would
+    AttributeError on a None client)."""
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config)
+
+    response = client.patch(f"/api/agents/{AGENT_NAME}/metadata", json={"team": "acme-team"})
+
+    assert response.status_code == 200
+    assert response.json()["team"] == "acme-team"
+
+
+def test_patch_metadata_success_best_effort_syncs_the_directory(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    fake_cabal = FakeCabal()
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg, team="acme-team", purpose_tags=["billing"])
+
+    response = client.patch(
+        f"/api/agents/{AGENT_NAME}/metadata", json={"capability": "Helps with billing."}
+    )
+
+    assert response.status_code == 200
+    assert len(fake_cabal.graduate_calls) == 1
+    assert fake_cabal.graduate_calls[0]["name"] == AGENT_NAME
+
+
+def test_patch_metadata_directory_sync_failure_does_not_change_response_or_status(
+    session_factory, config, monkeypatch, caplog
+):
+    """A raising cabal client (switchboard down) must not alter the PATCH's
+    own success response in any way — the card commit already succeeded by
+    the time the best-effort tail runs, so the resync failure is only ever
+    logged."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    fake_cabal = FakeCabal(graduate_error="switchboard unreachable")
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg, team="acme-team", purpose_tags=["billing"])
+
+    with caplog.at_level("WARNING"):
+        response = client.patch(
+            f"/api/agents/{AGENT_NAME}/metadata", json={"capability": "Helps with billing."}
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "team": "acme-team",
+        "purpose_tags": ["billing"],
+        "capability": "Helps with billing.",
+        "sha": response.json()["sha"],
+    }
+    assert "directory sync failed" in caplog.text
+
+    # The metadata edit itself is durably stored regardless of the sync failure.
+    detail = client.get(f"/api/agents/{AGENT_NAME}").json()
+    assert detail["capability"] == "Helps with billing."
+
+
 # --- POST /api/agents/{name}/metadata/regenerate ----------------------------------
 
 
@@ -409,6 +492,44 @@ def test_regenerate_metadata_card_commit_failure_returns_502_and_db_not_committe
 
     detail = client.get(f"/api/agents/{AGENT_NAME}").json()
     assert detail["capability"] == "Stale sentence."
+
+
+# --- Regenerate: best-effort directory tail (colleagues switchboard plan, Task 2) --
+
+
+def test_regenerate_metadata_success_best_effort_syncs_the_directory(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    fake_cabal = FakeCabal()
+    fake_name = FakeName(capability="Freshly regenerated sentence.")
+    client = _make_client(session_factory, cfg, name=fake_name, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg, capability="Stale sentence.")
+
+    response = client.post(f"/api/agents/{AGENT_NAME}/metadata/regenerate")
+
+    assert response.status_code == 200
+    assert len(fake_cabal.graduate_calls) == 1
+    assert fake_cabal.graduate_calls[0]["name"] == AGENT_NAME
+
+
+def test_regenerate_metadata_directory_sync_failure_does_not_change_response_or_status(
+    session_factory, config, monkeypatch, caplog
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    fake_cabal = FakeCabal(graduate_error="switchboard unreachable")
+    fake_name = FakeName(capability="Freshly regenerated sentence.")
+    client = _make_client(session_factory, cfg, name=fake_name, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg, capability="Stale sentence.")
+
+    with caplog.at_level("WARNING"):
+        response = client.post(f"/api/agents/{AGENT_NAME}/metadata/regenerate")
+
+    assert response.status_code == 200
+    assert response.json()["capability"] == "Freshly regenerated sentence."
+    assert "directory sync failed" in caplog.text
 
 
 def test_regenerate_metadata_persona_lookup_failure_returns_502(session_factory, config):

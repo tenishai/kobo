@@ -18,6 +18,7 @@ from pathlib import Path
 import yaml
 
 from kobo_api.clients import (
+    CabalError,
     ChatMessage,
     ClientError,
     GojiraConflict,
@@ -1125,6 +1126,53 @@ class FakeSlack:
         if self._delete_error is not None:
             raise SlackApiError(f"slack app deletion failed: {self._delete_error}")
         return self._delete_result
+
+
+class FakeCabal:
+    """Records every `graduate`/`absorb`/`relay` call (in call order, each
+    its own typed list) — no real switchboard admin API involved.
+
+    `graduate_error`/`absorb_error`/`relay_error`, when set, make the
+    matching method raise `CabalError(that message)` instead of succeeding
+    — the seam for exercising a caller's failure handling (`DirectoryStep`,
+    the destroy stage, the metadata tails, the sync route) without a real
+    backend. `relay_result`, when given, is `relay`'s canned return value
+    (default an empty dict — no caller in this task inspects it).
+    """
+
+    def __init__(
+        self,
+        *,
+        graduate_error: str | None = None,
+        absorb_error: str | None = None,
+        relay_result: dict | None = None,
+        relay_error: str | None = None,
+    ):
+        self._graduate_error = graduate_error
+        self._absorb_error = absorb_error
+        self._relay_result = relay_result if relay_result is not None else {}
+        self._relay_error = relay_error
+        self.graduate_calls: list[dict] = []
+        self.absorb_calls: list[str] = []
+        self.relay_calls: list[dict] = []
+
+    def graduate(self, name: str, *, endpoint: str, audience: str, card: dict) -> None:
+        self.graduate_calls.append(
+            {"name": name, "endpoint": endpoint, "audience": audience, "card": card}
+        )
+        if self._graduate_error is not None:
+            raise CabalError(f"graduate failed: {self._graduate_error}")
+
+    def absorb(self, name: str) -> None:
+        self.absorb_calls.append(name)
+        if self._absorb_error is not None:
+            raise CabalError(f"absorb failed: {self._absorb_error}")
+
+    def relay(self, name: str, task_envelope: dict) -> dict:
+        self.relay_calls.append({"name": name, "task_envelope": task_envelope})
+        if self._relay_error is not None:
+            raise CabalError(f"relay failed: {self._relay_error}")
+        return self._relay_result
 
 
 # Canonical 1x1 transparent PNG (68 bytes) — a real, valid minimal PNG (not a

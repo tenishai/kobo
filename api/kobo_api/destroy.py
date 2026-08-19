@@ -3,7 +3,8 @@
 
 Destruction is a step ledger, not a transaction (design doc,
 docs/superpowers/specs/2026-08-17-agent-destruction-design.md,
-docs/superpowers/specs/2026-08-17-destruction-completeness-design.md): five
+docs/superpowers/specs/2026-08-17-destruction-completeness-design.md,
+docs/superpowers/specs/2026-08-18-colleagues-switchboard-design.md): six
 ordered steps, each tolerant of "already gone" (a repeat delete, or a
 resume after a prior attempt got partway), writing rows into the SAME
 `agent_steps` table provisioning uses (named per `DESTROY_STEPS`) so the
@@ -17,10 +18,14 @@ Order is load-bearing, same as `provisioner.PIPELINE`: platform teardown
 kills the running workload first (the agent visibly stops existing);
 model access (`destroy-access`) comes right after, taking back the GSA's
 group membership and the GSA itself while the row is still fully
-addressable; Slack and the repo are paper; the agent's own row goes last
-(`destroy-forget`) so a failed run always leaves a resumable record — the
-row never disappears until the first four steps are each done or proven
-already-gone.
+addressable; Slack, the repo, and the directory listing are paper; the
+agent's own row goes last (`destroy-forget`) so a failed run always leaves
+a resumable record — the row never disappears until every step before it
+is each done or proven already-gone. `destroy-directory` (colleagues
+switchboard plan, Task 2) is the one exception to "failure marks the run
+failed": an unconfigured or unreachable switchboard completes that step
+with a note instead (see its own docstring) rather than blocking the rest
+of the ledger.
 
 Unlike provisioning, `destroy-forget`'s job (deleting the agent's step rows
 and the agent row itself) is terminal in the most literal sense: once it
@@ -39,8 +44,9 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from kobo_api.clients import ClientError
+from kobo_api.clients import ClientError, cabal_enabled
 from kobo_api.config import Config
+from kobo_api.directory import retire_directory
 from kobo_api.models import Agent, AgentStatus, AgentStep, StepStatus
 from kobo_api.provisioner import _get_or_create_step
 
@@ -59,11 +65,18 @@ log = logging.getLogger(__name__)
 # rather than at the very end, mirroring provisioning's own ordering
 # (AccessStep runs early there too) and keeping the GCP identity cleanup
 # next to the platform step it is the mirror image of.
+# "destroy-directory" (colleagues switchboard plan, Task 2) sits right
+# before "destroy-forget": every other step above still addresses a fully
+# live agent row, and delisting is cheap/idempotent (CabalClient.absorb
+# already tolerates "already delisted"), so there's no reason to rush it
+# earlier — but it must run before destroy-forget deletes the row this
+# step still reads (agent.name).
 DESTROY_STEPS = (
     "destroy-platform",
     "destroy-access",
     "destroy-slack",
     "destroy-repo",
+    "destroy-directory",
     "destroy-forget",
 )
 
@@ -75,6 +88,7 @@ DESTROY_STEP_LABELS: dict[str, str] = {
     "destroy-access": "Model access",
     "destroy-slack": "Slack app",
     "destroy-repo": "Repository archive",
+    "destroy-directory": "Directory listing",
     "destroy-forget": "Room record",
 }
 
@@ -270,6 +284,43 @@ def _destroy_repo(ctx: DestroyCtx) -> str:
     return f"archived as {target_repo}"
 
 
+def _destroy_directory(ctx: DestroyCtx) -> str:
+    """Delist the agent from the switchboard's directory
+    (`kobo_api.directory.retire_directory`, absorb, 404-tolerant).
+
+    Modeled on `_destroy_slack`'s shape, including its done-with-note
+    pattern: there's no `agent.<field>` recorded to tell "never registered"
+    apart from "registered, now gone" (directory membership, like
+    `destroy-access`'s GSA group membership, isn't something kobo's own row
+    tracks), so this always attempts the retire when the switchboard is
+    configured. Unlike every step above, though, a failure here does NOT
+    propagate to FAILED: an unconfigured OR unreachable switchboard both
+    complete this step with the exact same plain note instead — the
+    directory listing is a nice-to-have, and holding an otherwise-clean
+    destroy run hostage to it would leave a fully-teardown-able agent
+    permanently stuck for something the operator has no way to fix
+    mid-destroy. A later re-registration (`POST .../directory/sync`, or the
+    switchboard's own recovery) resolves it independently of this ledger.
+    """
+    if not cabal_enabled(ctx.config):
+        return "The directory entry stays until the switchboard returns."
+
+    try:
+        # Broad on purpose ("unreachable" covers more than ClientError: a
+        # raw connection failure never reaches CabalClient's own
+        # CabalError, which only ever wraps a response that DID come back).
+        retire_directory(ctx.clients.cabal, ctx.agent)
+    except Exception:
+        log.warning(
+            "destroy-directory: could not reach the switchboard for agent %s",
+            ctx.agent.name,
+            exc_info=True,
+        )
+        return "The directory entry stays until the switchboard returns."
+
+    return "removed from the directory"
+
+
 def _destroy_forget(ctx: DestroyCtx) -> str:
     """Delete every one of this agent's step rows (including this very
     step's own, already committed as RUNNING by the caller) and the agent
@@ -290,6 +341,7 @@ _DESTROY_FUNCS = {
     "destroy-access": _destroy_access,
     "destroy-slack": _destroy_slack,
     "destroy-repo": _destroy_repo,
+    "destroy-directory": _destroy_directory,
     "destroy-forget": _destroy_forget,
 }
 

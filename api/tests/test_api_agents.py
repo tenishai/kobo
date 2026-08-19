@@ -40,7 +40,7 @@ AGENT_NAME = "clio"
 PERSONA = "helpful-generalist"
 TEAM = "clio-team"
 
-ALL_STEP_NAMES = ["repo", "onboard", "access", "wire", "build", "deploy", "hello"]
+ALL_STEP_NAMES = ["repo", "onboard", "access", "wire", "build", "deploy", "hello", "directory"]
 
 POLL_DEADLINE_S = 5
 POLL_INTERVAL_S = 0.02
@@ -158,6 +158,7 @@ def test_create_agent_step_labels_match_ui_checklist_vocabulary(client):
         "build": "Image build",
         "deploy": "Deploy",
         "hello": "First contact",
+        "directory": "Joins the agent directory",
     }
 
 
@@ -699,10 +700,18 @@ def test_create_agent_hello_step_failure_leaves_agent_failed_with_no_reply(
     assert body["first_reply"] is None
 
     steps_by_name = {s["name"]: s for s in body["steps"]}
-    # every step before hello (the last one) completed fine
-    assert all(steps_by_name[n]["status"] == "done" for n in ALL_STEP_NAMES if n != "hello")
+    # every step before hello completed fine
+    assert all(
+        steps_by_name[n]["status"] == "done"
+        for n in ALL_STEP_NAMES
+        if n not in ("hello", "directory")
+    )
     assert steps_by_name["hello"]["status"] == "failed"
     assert "boom" in steps_by_name["hello"]["error"]
+    # directory (after hello) never ran — aborted, same as any step after a
+    # failure
+    assert steps_by_name["directory"]["status"] == "failed"
+    assert "aborted" in steps_by_name["directory"]["error"]
 
 
 def test_retry_when_not_failed_returns_409(client):

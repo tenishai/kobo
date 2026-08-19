@@ -1,4 +1,4 @@
-"""Tests for kobo_api.destroy: the four-step teardown ledger, the mirror of
+"""Tests for kobo_api.destroy: the six-step teardown ledger, the mirror of
 kobo_api.provisioner's PIPELINE/run_pipeline.
 
 Two layers, same split as test_steps.py/test_engine.py:
@@ -26,6 +26,7 @@ from kobo_api.destroy import (
     DESTROY_STEPS,
     DestroyCtx,
     _destroy_access,
+    _destroy_directory,
     _destroy_forget,
     _destroy_platform,
     _destroy_repo,
@@ -35,7 +36,7 @@ from kobo_api.destroy import (
     run_destroy,
 )
 from kobo_api.models import Agent, AgentStatus, AgentStep, StepStatus
-from tests.fakes import FakeCloud, FakeGitHub, FakeGojira, FakeSlack
+from tests.fakes import FakeCabal, FakeCloud, FakeGitHub, FakeGojira, FakeSlack
 
 AGENT_NAME = "clio"
 PERSONA = "helpful-generalist"
@@ -78,7 +79,9 @@ def _make_ctx_agent(
     return session, agent
 
 
-def _ctx(session, agent, config, *, github=None, gojira=None, slack=None, cloud=None) -> DestroyCtx:
+def _ctx(
+    session, agent, config, *, github=None, gojira=None, slack=None, cloud=None, cabal=None
+) -> DestroyCtx:
     # `cloud` defaults to a fresh, unseeded FakeCloud rather than None: since
     # destroy-access (unlike the other steps) has no `agent.<field>` gate and
     # so always runs, every step-level test that isn't specifically about
@@ -92,6 +95,7 @@ def _ctx(session, agent, config, *, github=None, gojira=None, slack=None, cloud=
         agent=None,
         kubectl=None,
         slack=slack,
+        cabal=cabal,
     )
     return DestroyCtx(agent=agent, session=session, config=config, clients=clients)
 
@@ -108,7 +112,7 @@ def _seed_agent(session_factory, *, name: str = AGENT_NAME, **kwargs) -> int:
     return agent_id
 
 
-def _clients(*, github=None, gojira=None, slack=None, cloud=None) -> Clients:
+def _clients(*, github=None, gojira=None, slack=None, cloud=None, cabal=None) -> Clients:
     # Same default-to-a-working-FakeCloud rationale as `_ctx` above, for the
     # engine-level (run_destroy) tests.
     return Clients(
@@ -118,6 +122,7 @@ def _clients(*, github=None, gojira=None, slack=None, cloud=None) -> Clients:
         agent=None,
         kubectl=None,
         slack=slack,
+        cabal=cabal,
     )
 
 
@@ -130,6 +135,7 @@ def test_destroy_steps_order_is_fixed():
         "destroy-access",
         "destroy-slack",
         "destroy-repo",
+        "destroy-directory",
         "destroy-forget",
     )
 
@@ -557,6 +563,95 @@ def test_destroy_repo_non_403_archive_failure_propagates(session_factory, config
     session.close()
 
 
+# --- _destroy_directory (colleagues switchboard plan, Task 2) ---------------------
+
+
+def _cabal_enabled_config(config):
+    """`config` plus the two org keys `cabal_enabled` needs — the caller
+    must also monkeypatch CABAL_OPERATOR_TOKEN, the third leg, before this
+    reads as enabled."""
+    return config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": "http://agent-{name}.default.svc.cluster.local",
+        }
+    )
+
+
+def test_destroy_directory_disabled_is_done_with_note_and_never_calls_cabal(
+    session_factory, config
+):
+    """No switchboard configured (the shared `config` fixture carries
+    neither org key) — completes with the fixed note rather than raising,
+    and never touches the cabal client at all."""
+    session, agent = _make_ctx_agent(session_factory)
+    fake_cabal = FakeCabal()
+    ctx = _ctx(session, agent, config, cabal=fake_cabal)
+
+    detail = _destroy_directory(ctx)
+
+    assert detail == "The directory entry stays until the switchboard returns."
+    assert fake_cabal.absorb_calls == []
+    session.close()
+
+
+def test_destroy_directory_enabled_absorbs_the_agent_by_name(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    session, agent = _make_ctx_agent(session_factory)
+    fake_cabal = FakeCabal()
+    ctx = _ctx(session, agent, cfg, cabal=fake_cabal)
+
+    detail = _destroy_directory(ctx)
+
+    assert detail == "removed from the directory"
+    assert fake_cabal.absorb_calls == [agent.name]
+    session.close()
+
+
+def test_destroy_directory_unreachable_is_done_with_note_not_failed(
+    session_factory, config, monkeypatch
+):
+    """Configured but failing (a CabalError from the switchboard itself) —
+    still completes with the same note rather than propagating, unlike
+    every other destroy step: a directory hiccup must never hold an
+    otherwise-clean teardown hostage."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    session, agent = _make_ctx_agent(session_factory)
+    fake_cabal = FakeCabal(absorb_error="switchboard unreachable")
+    ctx = _ctx(session, agent, cfg, cabal=fake_cabal)
+
+    detail = _destroy_directory(ctx)
+
+    assert detail == "The directory entry stays until the switchboard returns."
+    session.close()
+
+
+def test_destroy_directory_any_failure_reads_as_unreachable(session_factory, config, monkeypatch):
+    """Not only CabalError - a raw connection failure (never wrapped by
+    CabalClient's own graduate/absorb, which only ever inspect a response
+    that DID come back) must read the same "unreachable" way, never as a
+    step failure."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    session, agent = _make_ctx_agent(session_factory)
+    fake_cabal = FakeCabal()
+
+    def _raise_connection_error(name):
+        raise ConnectionError("connection refused")
+
+    fake_cabal.absorb = _raise_connection_error
+    ctx = _ctx(session, agent, cfg, cabal=fake_cabal)
+
+    detail = _destroy_directory(ctx)
+
+    assert detail == "The directory entry stays until the switchboard returns."
+    session.close()
+
+
 # --- _destroy_forget ---------------------------------------------------------------
 
 
@@ -614,6 +709,28 @@ def test_run_destroy_happy_path_deletes_agent_and_all_steps(session_factory, con
     session = session_factory()
     assert session.get(Agent, agent_id) is None
     assert session.query(AgentStep).filter_by(agent_id=agent_id).count() == 0
+    session.close()
+
+
+def test_run_destroy_happy_path_retires_the_directory_listing_when_cabal_enabled(
+    session_factory, config, monkeypatch
+):
+    """Engine-level: when the switchboard is configured, a full destroy run
+    absorbs the agent from the directory too, right before destroy-forget
+    deletes the row this stage still reads from."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    agent_id = _seed_agent(session_factory, status=AgentStatus.READY)
+    fake_cabal = FakeCabal()
+
+    thread = run_destroy(session_factory, agent_id, _clients(cabal=fake_cabal), cfg)
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+
+    assert fake_cabal.absorb_calls == [AGENT_NAME]
+
+    session = session_factory()
+    assert session.get(Agent, agent_id) is None
     session.close()
 
 

@@ -2499,6 +2499,12 @@ class Clients:
     # name-suggestions route (kobo_api.main) treats a None the same as a
     # generator ClientError — fall through to the curated fallback pool.
     name: NameClient | None = None
+    # None whenever `cabal_enabled(config)` is false (same "absent = feature
+    # off" convention as slack above) — every switchboard-facing caller
+    # (DirectoryStep, the destroy stage, the metadata tails, the sync route)
+    # checks `cabal_enabled` itself before ever touching this field, so a
+    # None here is never dereferenced on an unwired room.
+    cabal: CabalClient | None = None
 
     @classmethod
     def real(cls, config: Config) -> Clients:
@@ -2520,5 +2526,15 @@ class Clients:
             storage=HttpxStorageClient(config.gcp_project),
             slack=HttpxSlackClient(config.slack_tokens_path)
             if config.slack_tokens_path
+            else None,
+            # Same "is this configured" gate as slack above, but via the
+            # shared `cabal_enabled` truthiness check (kobo_api.clients)
+            # rather than a single field, since being wired needs all three
+            # of cabal_url/agent_endpoint_template/the operator token env
+            # var — cabal_operator_token() is only ever called here (never
+            # cached, so a token delivered after import is still picked up)
+            # and inside CabalClient itself never anywhere it could leak.
+            cabal=CabalClient(config.cabal_url, cabal_operator_token())
+            if cabal_enabled(config)
             else None,
         )

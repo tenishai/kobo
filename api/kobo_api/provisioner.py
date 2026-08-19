@@ -38,6 +38,7 @@ from kobo_api.steps import (
     AccessStep,
     BuildStep,
     DeployStep,
+    DirectoryStep,
     HelloStep,
     OnboardStep,
     RepoStep,
@@ -277,9 +278,12 @@ def reset_failed_steps(session: Session, agent_id: int) -> None:
 
 # The assembled, one-click pipeline: compose+push a repo, onboard it onto
 # gojira, grant model access, wire the app-authored manifests, wait for the
-# image build and rollout, then say hello. Order is load-bearing — each step
-# depends on state a prior one recorded on the agent (repo_full_name,
-# gojira_app_id, ...).
+# image build and rollout, say hello, then join the switchboard's directory.
+# Order is load-bearing — each step depends on state a prior one recorded on
+# the agent (repo_full_name, gojira_app_id, ...). DirectoryStep is last,
+# right after HelloStep (colleagues switchboard plan, Task 2): a no-op on a
+# room with no switchboard configured, so its addition changes nothing for
+# rooms that don't opt in.
 PIPELINE: list[Step] = [
     RepoStep(),
     OnboardStep(),
@@ -288,6 +292,7 @@ PIPELINE: list[Step] = [
     BuildStep(),
     DeployStep(),
     HelloStep(),
+    DirectoryStep(),
 ]
 
 # The UI's checklist vocabulary: step name -> human-readable label, sourced

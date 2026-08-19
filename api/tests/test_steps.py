@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-from kobo_api.clients import Clients
+from kobo_api.clients import CabalError, ClientError, Clients
 from kobo_api.composer import BundleSpec, compose
 from kobo_api.models import Agent
 from kobo_api.provisioner import Ctx
@@ -26,6 +26,7 @@ from kobo_api.steps import (
     POLL_INTERVAL_S,
     POLL_TIMEOUT_S,
     AccessStep,
+    DirectoryStep,
     HelloStep,
     OnboardStep,
     RepoStep,
@@ -35,6 +36,7 @@ from kobo_api.steps import (
 )
 from tests.fakes import (
     FakeAgent,
+    FakeCabal,
     FakeCloud,
     FakeGitHub,
     FakeGojira,
@@ -99,7 +101,15 @@ def _make_ctx(session, agent, config, clients) -> Ctx:
 
 
 def _clients(
-    *, github=None, gojira=None, cloud=None, storage=None, agent=None, kubectl=None, name=None
+    *,
+    github=None,
+    gojira=None,
+    cloud=None,
+    storage=None,
+    agent=None,
+    kubectl=None,
+    name=None,
+    cabal=None,
 ) -> Clients:
     return Clients(
         github=github,
@@ -109,6 +119,7 @@ def _clients(
         kubectl=kubectl,
         storage=storage,
         name=name,
+        cabal=cabal,
     )
 
 
@@ -1058,3 +1069,84 @@ def test_hello_step_tooling_listing_failure_does_not_block_generation(
 
     assert agent.capability == "Helps."
     assert fake_name.capability_calls[0][2] == []  # tooling_filenames came back empty
+
+
+# --- DirectoryStep (colleagues switchboard plan, Task 2: the directory seam) ------
+
+DIRECTORY_REPO = "acme/agent-clio"
+DIRECTORY_ENDPOINT_TEMPLATE = "http://agent-{name}.default.svc.cluster.local"
+
+
+def _directory_ctx(session_factory, config, *, github=None, cabal=None):
+    session, agent = _make_agent(session_factory, repo_full_name=DIRECTORY_REPO)
+    clients = _clients(
+        github=github if github is not None else FakeGitHub(),
+        cabal=cabal if cabal is not None else FakeCabal(),
+    )
+    return _make_ctx(session, agent, config, clients), agent
+
+
+def _cabal_enabled_config(config):
+    """`config` (the shared fixture) plus the two org keys DirectoryStep's
+    `cabal_enabled` check needs — the caller must also monkeypatch
+    CABAL_OPERATOR_TOKEN, the third leg, before this reads as enabled."""
+    return config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": DIRECTORY_ENDPOINT_TEMPLATE,
+        }
+    )
+
+
+def test_directory_step_disabled_is_a_no_op_done(session_factory, config):
+    """`cabal_enabled` false (the shared `config` fixture carries neither
+    org key) — the step must complete without raising and without ever
+    touching cabal, so a room with no switchboard configured stays exactly
+    as green on this step as it was before the step existed."""
+    fake_cabal = FakeCabal()
+    ctx, _agent = _directory_ctx(session_factory, config, cabal=fake_cabal)
+
+    DirectoryStep().run(ctx)  # must not raise
+
+    assert fake_cabal.graduate_calls == []
+
+
+def test_directory_step_registers_when_switchboard_enabled(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    fake_cabal = FakeCabal()
+    ctx, agent = _directory_ctx(session_factory, cfg, cabal=fake_cabal)
+
+    DirectoryStep().run(ctx)
+
+    assert len(fake_cabal.graduate_calls) == 1
+    call = fake_cabal.graduate_calls[0]
+    assert call["name"] == agent.name
+    assert call["endpoint"] == f"http://agent-{agent.name}.default.svc.cluster.local"
+    assert call["audience"] == agent.name
+
+
+def test_directory_step_card_fetch_failure_raises_for_retry(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    github = FakeGitHub(clone_error="gh: rate limited")
+    ctx, _agent = _directory_ctx(session_factory, cfg, github=github)
+
+    with pytest.raises(ClientError):
+        DirectoryStep().run(ctx)
+
+
+def test_directory_step_graduate_failure_raises_for_retry(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    fake_cabal = FakeCabal(graduate_error="switchboard unreachable")
+    ctx, _agent = _directory_ctx(session_factory, cfg, cabal=fake_cabal)
+
+    with pytest.raises(CabalError):
+        DirectoryStep().run(ctx)
