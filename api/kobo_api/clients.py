@@ -30,7 +30,7 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypedDict, runtime_checkable
@@ -2384,7 +2384,12 @@ class CabalClient:
     """
 
     def __init__(
-        self, base_url: str, token: str, *, client: httpx.Client | None = None
+        self,
+        base_url: str,
+        token: str,
+        *,
+        client: httpx.Client | None = None,
+        async_client: httpx.AsyncClient | None = None,
     ):
         self._base_url = base_url.rstrip("/")
         self._token = token
@@ -2393,6 +2398,16 @@ class CabalClient:
         # relay() below overrides this per-call with a much longer timeout;
         # it alone waits on the far side's own model roundtrip.
         self._client = client or httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0))
+        # Only `stream_events` (below) ever touches this one — a genuinely
+        # async client, not the sync one above, so that route's cancellation
+        # on client disconnect actually propagates (fix round 1: the sync
+        # generator this replaced blocked a worker thread past disconnect).
+        # The default timeout here is irrelevant in practice: every call
+        # site passes its own explicit `timeout=` override, same convention
+        # as `relay`'s 180s override of `self._client`'s own 30s default.
+        self._async_client = async_client or httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, connect=10.0)
+        )
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}"}
@@ -2555,18 +2570,41 @@ class CabalClient:
             raise CabalError(f"get_conversation({task_id!r}) failed ({resp.status_code})")
         return resp.json()
 
-    def stream_events(self) -> Iterator[bytes]:
+    # A long-lived connection needs SOME bound, or a silent upstream (no
+    # bytes, connection never drops) hangs a caller forever with no way
+    # out; 300s comfortably outlasts the switchboard's own keepalive
+    # comments (it sends at least one `: ...\n\n` well inside that window)
+    # while still being finite. connect/write/pool stay at the class's own
+    # everyday 10s — only the read side needs the SSE-shaped headroom.
+    _STREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0)
+
+    async def stream_events(self) -> AsyncIterator[bytes]:
         """Open a streaming GET to the switchboard's live event feed
-        (`GET /admin/events/stream`) and yield raw bytes chunks exactly as
+        (`GET /admin/events/stream`) and yield raw byte chunks exactly as
         received — a byte-for-byte passthrough, no per-frame parsing or
         re-encoding, since the only consumer (`GET /api/colleagues/stream`,
         kobo_api.main) just relays the switchboard's own SSE bytes straight
         to the browser's EventSource unchanged.
 
-        No timeout (`timeout=None`, overriding this class's own generous-
-        but-bounded default): unlike every other method here, this is a
-        long-lived connection, not a bounded admin call — it stays open for
-        as long as the browser's EventSource on the far end stays connected.
+        Fix round 1 (fixing an Important review finding on Task 4/B4): this
+        is an ASYNC generator over `self._async_client` (a real
+        `httpx.AsyncClient`, never the sync `self._client` every other
+        method here uses), not a sync one. The original sync version was
+        consumed by Starlette via `iterate_in_threadpool` (since the route
+        handed it straight to `StreamingResponse`), and a blocking
+        synchronous read can't be interrupted by asyncio task
+        cancellation — a client disconnecting mid-stream left the
+        switchboard connection AND a worker thread hung until upstream
+        happened to send more bytes. An async generator, awaited directly
+        on the event loop (the route below now consumes it with no
+        threadpool involved), lets cancellation propagate the moment the
+        client goes away.
+
+        `_STREAM_TIMEOUT` bounds the read side at 300s (generous — SSE
+        keepalives arrive well inside that window — but finite, unlike the
+        old `timeout=None`) so a silently-stalled upstream still eventually
+        frees this call rather than hanging forever; connect/write/pool
+        stay at this class's everyday 10s.
 
         Ends the generator (no more chunks, no exception) rather than
         raising on either kind of failure a caller must tolerate silently:
@@ -2574,26 +2612,27 @@ class CabalClient:
         trouble — never forwarded, since blindly relaying an error page's
         body as if it were legitimate event-stream content would be
         actively misleading to the browser's EventSource) or a transport
-        failure (connection refused, dropped mid-stream). The switchboard's
-        own stream never replays missed events anyway, so a caller
-        reconnecting from scratch after either kind of drop loses nothing
-        it wouldn't already accept losing. The route
-        (`/api/colleagues/stream`) counts on this: it never wraps this
-        generator in a try/except of its own, trusting either failure mode
-        to end iteration cleanly instead of surfacing as a mid-response
-        exception.
+        failure (connection refused, dropped mid-stream, or a read timeout
+        past the bound above). The switchboard's own stream never replays
+        missed events anyway, so a caller reconnecting from scratch after
+        any kind of drop loses nothing it wouldn't already accept losing.
+        The route (`/api/colleagues/stream`) counts on this: it never
+        wraps this generator in a try/except of its own, trusting every
+        failure mode to end iteration cleanly instead of surfacing as a
+        mid-response exception.
         """
         try:
-            with self._client.stream(
+            async with self._async_client.stream(
                 "GET",
                 f"{self._base_url}/admin/events/stream",
                 headers=self._headers(),
-                timeout=None,
+                timeout=self._STREAM_TIMEOUT,
             ) as resp:
                 if not resp.is_success:
                     log.warning("cabal stream_events failed (%s)", resp.status_code)
                     return
-                yield from resp.iter_bytes()
+                async for chunk in resp.aiter_bytes():
+                    yield chunk
         except httpx.HTTPError:
             return
 

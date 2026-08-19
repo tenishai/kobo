@@ -2540,7 +2540,7 @@ def create_app(
         return JSONResponse(detail)
 
     @app.get("/api/colleagues/stream", response_model=None)
-    def stream_colleague_events() -> StreamingResponse | JSONResponse:
+    async def stream_colleague_events() -> StreamingResponse | JSONResponse:
         """SSE passthrough of the switchboard's live event feed.
 
         The 409 gate below (`_colleagues_gate`) covers a room with no
@@ -2554,6 +2554,15 @@ def create_app(
         are committed before the upstream connection is even attempted, and
         the body is nothing but a raw byte passthrough of the switchboard's
         own frames.
+
+        Fix round 1: this route function is now `async def` and
+        `CabalClient.stream_events` is an async generator, so Starlette's
+        `StreamingResponse` consumes it directly on the event loop
+        (`isinstance(content, AsyncIterable)`), never via
+        `iterate_in_threadpool`. That's the whole point of the change: a
+        client disconnect now cancels the awaited read promptly instead of
+        leaving a worker thread blocked on a sync socket read until
+        upstream happens to send more bytes.
         """
         cfg: Config = app.state.config
         clients = app.state.clients

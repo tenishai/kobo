@@ -264,9 +264,15 @@ def test_stream_content_type_and_frame_passthrough(session_factory, config, monk
 
 
 def _real_cabal_client(handler, token: str) -> CabalClient:
+    # Same handler wired to both the sync and async transports - `stream_events`
+    # (fix round 1) now goes through `async_client`, while every other method
+    # here still goes through the plain sync `client`. `MockTransport` accepts
+    # either a sync or async handler function and answers both `handle_request`
+    # and `handle_async_request` from it, so one plain handler covers both.
     return CabalClient(
         "http://cabal.internal", token,
         client=httpx.Client(transport=httpx.MockTransport(handler)),
+        async_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
 

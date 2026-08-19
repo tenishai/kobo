@@ -186,6 +186,49 @@ describe("ColleagueConversations", () => {
     });
   });
 
+  it("a refetch that brings materially new data does not reopen the EventSource", async () => {
+    // Review finding: the effect that opens the stream must not be keyed on
+    // the query's result object. If it is, invalidateQueries's own refetch
+    // (triggered by the SSE handler itself, right below) tears the old
+    // EventSource down and opens a new one - and since the switchboard never
+    // replays, any frame arriving in that gap is lost for good.
+    let conversationsCallCount = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/colleagues/conversations")) {
+          conversationsCallCount += 1;
+          // First load: one row. Every refetch after: a second, genuinely
+          // new row - not the same object, not the same JSON text.
+          const conversations =
+            conversationsCallCount === 1
+              ? [AGENT_CONVERSATION]
+              : [AGENT_CONVERSATION, OPERATOR_CONVERSATION];
+          return new Response(JSON.stringify({ conversations }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      }),
+    );
+
+    renderWithClient(ColleagueConversations);
+    await screen.findByText("iris");
+    expect(FakeEventSource.instances).toHaveLength(1);
+    const firstSource = FakeEventSource.instances[0];
+
+    firstSource.emit("dispatch_success");
+
+    await waitFor(() => {
+      expect(screen.queryByText("kgreiner@example.com")).not.toBeNull();
+    });
+
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(firstSource.closed).toBe(false);
+  });
+
   it('shows the empty state "No colleague conversations yet. They start talking once an agent asks for help."', async () => {
     stubFetch({ "/api/colleagues/conversations": { conversations: [] } });
 

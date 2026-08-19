@@ -21,6 +21,15 @@
   // the switchboard is actually wired here), so a room with none never
   // opens a doomed EventSource that would otherwise retry forever against
   // a 409.
+  //
+  // Fix round 1 (Important review finding): opening the stream must NOT be
+  // keyed on the query's result object. `streamActive` is a plain local
+  // `$state` flag flipped once, on the first successful load, and never
+  // re-derived after that - so the SSE handler's own invalidateQueries
+  // refetching NEW data can't cause the stream-opening effect to see a
+  // changed dependency and tear the connection down. A second EventSource
+  // would mean a gap where frames get silently dropped, since the
+  // switchboard never replays.
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { derived, writable } from "svelte/store";
   import { ApiError, errorMessage } from "../lib/api";
@@ -64,8 +73,22 @@
 
   const EVENT_NAMES = ["hello", "dispatch_start", "dispatch_success", "dispatch_failure"];
 
+  // Flips true exactly once, on the first successful load, and stays true -
+  // never reset, never re-derived from `$conversations` itself. This is
+  // the ONLY thing the stream-opening effect below depends on, so a later
+  // refetch (of any kind, including the one the stream's own frames
+  // trigger) can never make that effect see a "changed dependency" and
+  // reopen the connection.
+  let streamActive = $state(false);
+
   $effect(() => {
-    if ($conversations.data === undefined) {
+    if (!streamActive && $conversations.data !== undefined) {
+      streamActive = true;
+    }
+  });
+
+  $effect(() => {
+    if (!streamActive) {
       return;
     }
     const source = new EventSource("/api/colleagues/stream");

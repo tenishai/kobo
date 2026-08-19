@@ -1229,9 +1229,14 @@ class FakeCabal:
             raise CabalError(f"get_conversation failed: {self._conversation_error}")
         return self._conversation_result
 
-    def stream_events(self):
+    async def stream_events(self):
+        # Async generator, matching the real `CabalClient.stream_events`
+        # (fix round 1: an async generator over `httpx.AsyncClient`, so
+        # Starlette's `StreamingResponse` never needs `iterate_in_threadpool`
+        # for it) — no real transport involved, just the canned chunks.
         self.stream_events_calls += 1
-        yield from self._stream_chunks
+        for chunk in self._stream_chunks:
+            yield chunk
 
 
 # Canonical 1x1 transparent PNG (68 bytes) — a real, valid minimal PNG (not a

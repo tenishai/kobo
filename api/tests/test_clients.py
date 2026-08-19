@@ -5,7 +5,9 @@ plus structural checks that the fakes satisfy the Protocols.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import collections.abc
 import json
 import logging
 import os
@@ -4181,6 +4183,17 @@ def test_cabal_get_conversation_error_message_never_contains_the_token():
     assert "internal failure detail" not in str(exc_info.value)
 
 
+# Fix round 1 (Important review finding on Task 4/B4): `stream_events` is
+# now an ASYNC generator over `httpx.AsyncClient`, not a sync one over
+# `httpx.Client` - so a plain `list(...)` no longer works. `_collect` drains
+# it inside a real event loop via stdlib `asyncio.run`, no new test
+# dependency needed (no pytest-asyncio in this repo). Every test below
+# wires `async_client=` (not `client=`) to `CabalClient`, since that's the
+# one field `stream_events` now reads.
+async def _collect(agen: collections.abc.AsyncIterator[bytes]) -> list[bytes]:
+    return [chunk async for chunk in agen]
+
+
 def test_cabal_stream_events_request_shape_and_auth_header():
     captured = {}
 
@@ -4192,9 +4205,9 @@ def test_cabal_stream_events_request_shape_and_auth_header():
 
     client = CabalClient(
         "http://cabal.local", "op-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        async_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
-    chunks = list(client.stream_events())
+    chunks = asyncio.run(_collect(client.stream_events()))
 
     assert captured["method"] == "GET"
     assert captured["url"] == "http://cabal.local/admin/events/stream"
@@ -4212,9 +4225,10 @@ def test_cabal_stream_events_yields_raw_bytes_unparsed():
 
     client = CabalClient(
         "http://cabal.local", "op-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        async_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
-    assert b"".join(client.stream_events()) == body
+    chunks = asyncio.run(_collect(client.stream_events()))
+    assert b"".join(chunks) == body
 
 
 def test_cabal_stream_events_non_2xx_ends_generator_with_no_chunks():
@@ -4223,9 +4237,9 @@ def test_cabal_stream_events_non_2xx_ends_generator_with_no_chunks():
 
     client = CabalClient(
         "http://cabal.local", "op-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        async_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
-    assert list(client.stream_events()) == []
+    assert asyncio.run(_collect(client.stream_events())) == []
 
 
 def test_cabal_stream_events_transport_error_ends_generator_with_no_chunks():
@@ -4234,12 +4248,17 @@ def test_cabal_stream_events_transport_error_ends_generator_with_no_chunks():
 
     client = CabalClient(
         "http://cabal.local", "op-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        async_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
-    assert list(client.stream_events()) == []  # must not raise
+    assert asyncio.run(_collect(client.stream_events())) == []  # must not raise
 
 
-def test_cabal_stream_events_uses_no_timeout_regardless_of_client_default():
+def test_cabal_stream_events_uses_a_bounded_read_timeout():
+    # Fix round 1's whole point: no more `timeout=None`. A bounded read
+    # timeout (generous for SSE gaps, still finite) means a silently-stalled
+    # upstream eventually frees the call instead of hanging forever - and,
+    # combined with the async client, lets a client disconnect actually
+    # cancel this promptly rather than blocking a worker thread past it.
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -4248,13 +4267,59 @@ def test_cabal_stream_events_uses_no_timeout_regardless_of_client_default():
 
     client = CabalClient(
         "http://cabal.local", "op-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        async_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
-    list(client.stream_events())
+    asyncio.run(_collect(client.stream_events()))
 
     assert captured["timeout"] == {
-        "connect": None, "read": None, "write": None, "pool": None
+        "connect": 10.0, "read": 300.0, "write": 10.0, "pool": 10.0
     }
+
+
+def test_cabal_stream_events_returns_an_async_iterator_not_a_sync_one():
+    # The route (kobo_api.main) hands this straight to Starlette's
+    # `StreamingResponse`, which only skips `iterate_in_threadpool` (the
+    # thing that made the old sync generator's blocking read immune to
+    # cancellation) when the object satisfies `AsyncIterable`. This is the
+    # structural proof that the fix actually gets that fast path, not just
+    # that it happens to return the right bytes.
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        async_client=httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200, content=b""))
+        ),
+    )
+    result = client.stream_events()
+    try:
+        assert isinstance(result, collections.abc.AsyncIterator)
+        assert not isinstance(result, collections.abc.Iterator)
+    finally:
+        asyncio.run(result.aclose())
+
+
+def test_cabal_stream_events_closes_promptly_on_early_cancellation():
+    # Simulates a client disconnecting mid-stream: only one chunk is ever
+    # consumed, then the generator is torn down via `aclose()` (what an
+    # awaited async generator gets on task cancellation) instead of being
+    # drained to the end. Must return promptly with no exception - proof
+    # the async `with` block's cleanup isn't itself stuck on anything
+    # blocking.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"event: hello\ndata: {}\n\nevent: more\ndata: {}\n\n")
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        async_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    async def _partial_then_close():
+        agen = client.stream_events()
+        first = await agen.__anext__()
+        await agen.aclose()
+        return first
+
+    first_chunk = asyncio.run(asyncio.wait_for(_partial_then_close(), timeout=5))
+    assert first_chunk
 
 
 def test_cabal_error_is_a_client_error_subclass():
