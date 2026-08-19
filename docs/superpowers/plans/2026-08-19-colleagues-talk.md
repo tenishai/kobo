@@ -89,8 +89,9 @@
 ### Task 5: Rollout + acceptance (controller-driven)
 
 - [ ] Switchboard image: local integration state = main + the two deployed patches + `feat/colleague-scope`; build/push `cabal:<sha7>-c1`; roll the deployment; verify directory 200 with a freshly minted colleague token and 403 on an admin route with the same token.
-- [ ] Room: build/push/roll `kobo:<sha7>`; inert-path verification (chat + UI unaffected).
 - [ ] Runtime image: `feat/colleagues-tools` + techne v0.14.0 -> `daedalus-runtime:<sha7>-t0140`; push; pull-verify.
+- [ ] Org `runtime_image` bump BEFORE the room rolls (whole-arc review blocking finding: the new composer emits a provider literal the old runtime rejects at boot; the new runtime accepts every old config, so bumping first closes the new-agent window at zero risk). Org config is boot-time, so the room picks up the bump at the roll itself, atomically.
+- [ ] Room: build/push/roll `kobo:<sha7>`; inert-path verification (chat + UI unaffected).
 - [ ] Backfill per live agent, ONE commit each (pod-exec script per the locks pattern): mint + apply secret FIRST, then commit FROM bump + tools block (`update_agent_yaml_tools`) + `secrets_from` append; reprovision (secrets_from changed); CI + reprovision roll; wait ready.
 - [ ] Org `runtime_image` bump (App-token PUT) so future scaffolds are born current; room restart NOT required (compose reads the merged config at request time via RepoStep; verify by tracing, else restart).
 - [ ] Acceptance: room-chat one agent into `list_colleagues` (the reply names the other agent with team/purpose/capability); room-chat it into `ask_colleague` with a real question; the answer arrives in chat; the exchange shows in the conversations panel attributed `agent:<asker>` with live update observed; colleague token 403 on `/admin/agents` re-verified against the live service.
