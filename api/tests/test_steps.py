@@ -26,13 +26,22 @@ from kobo_api.steps import (
     POLL_INTERVAL_S,
     POLL_TIMEOUT_S,
     AccessStep,
+    HelloStep,
     OnboardStep,
     RepoStep,
     StagedSkill,
     _resolve_persona_body,
     _stage_skills,
 )
-from tests.fakes import FakeCloud, FakeGitHub, FakeGojira, FakeStorage
+from tests.fakes import (
+    FakeAgent,
+    FakeCloud,
+    FakeGitHub,
+    FakeGojira,
+    FakeKubectl,
+    FakeName,
+    FakeStorage,
+)
 
 AGENT_NAME = "clio"
 PERSONA = "helpful-generalist"
@@ -64,6 +73,8 @@ def _make_agent(
     skills: list | None = None,
     repo_full_name: str | None = None,
     gojira_app_id: int | None = None,
+    team: str | None = None,
+    purpose_tags: str | None = None,
 ):
     session = session_factory()
     agent = Agent(
@@ -73,6 +84,8 @@ def _make_agent(
         skills=skills or [],
         repo_full_name=repo_full_name,
         gojira_app_id=gojira_app_id,
+        team=team,
+        purpose_tags=purpose_tags,
     )
     session.add(agent)
     session.commit()
@@ -85,9 +98,17 @@ def _make_ctx(session, agent, config, clients) -> Ctx:
     return Ctx(agent=agent, session=session, config=config, clients=clients, workdir=workdir)
 
 
-def _clients(*, github=None, gojira=None, cloud=None, storage=None) -> Clients:
+def _clients(
+    *, github=None, gojira=None, cloud=None, storage=None, agent=None, kubectl=None, name=None
+) -> Clients:
     return Clients(
-        github=github, gojira=gojira, cloud=cloud, agent=None, kubectl=None, storage=storage
+        github=github,
+        gojira=gojira,
+        cloud=cloud,
+        agent=agent,
+        kubectl=kubectl,
+        storage=storage,
+        name=name,
     )
 
 
@@ -423,6 +444,43 @@ def test_repo_step_happy_path_creates_and_records_repo(session_factory, config, 
     created_repo, created_src = github.created_from_dir[0]
     assert created_repo == expected_repo
     assert (created_src / "bundle" / "agent.yaml").is_file()
+
+
+def test_repo_step_threads_team_and_purpose_tags_into_baked_card(
+    session_factory, config, fake_storage
+):
+    """Persona metadata (Task 3): the agent row's own team/purpose_tags
+    reach the composed bundle's agent-card.json metadata block — never
+    hardcoded/defaulted away at compose time."""
+    session, agent = _make_agent(
+        session_factory, team="acme-team", purpose_tags=json.dumps(["billing", "support"])
+    )
+    github = FakeGitHub()
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
+
+    RepoStep().run(ctx)
+
+    _, created_src = github.created_from_dir[0]
+    card = json.loads((created_src / "bundle" / "agent-card.json").read_text())
+    assert card["metadata"] == {
+        "team": "acme-team",
+        "purpose_tags": ["billing", "support"],
+        "capability": "",
+    }
+
+
+def test_repo_step_defaults_team_to_shared_when_row_team_is_none(
+    session_factory, config, fake_storage
+):
+    session, agent = _make_agent(session_factory, team=None)
+    github = FakeGitHub()
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
+
+    RepoStep().run(ctx)
+
+    _, created_src = github.created_from_dir[0]
+    card = json.loads((created_src / "bundle" / "agent-card.json").read_text())
+    assert card["metadata"]["team"] == "shared"
 
 
 def test_repo_step_substitutes_persona_name_placeholder(session_factory, config, fake_storage):
@@ -859,3 +917,144 @@ def test_access_step_calls_fakes_in_order_with_short_gsa_name(session_factory, c
     ]
     assert cloud.gsas == {expected_email}
     assert (expected_email, config.model_group) in cloud.group_members
+
+
+# --- HelloStep (persona-metadata plan, Task 3: capability earned + card lockstep) --
+
+HELLO_REPO = "acme/agent-clio"
+
+
+def _hello_ctx(session_factory, config, fake_storage, *, github=None, name=None, agent_client=None):
+    session, agent = _make_agent(session_factory, repo_full_name=HELLO_REPO)
+    clients = _clients(
+        github=github if github is not None else FakeGitHub(),
+        storage=fake_storage,
+        agent=agent_client if agent_client is not None else FakeAgent(),
+        kubectl=FakeKubectl(),
+        name=name,
+    )
+    return _make_ctx(session, agent, config, clients), agent
+
+
+def test_hello_step_records_reply_stores_capability_and_commits_card(
+    session_factory, config, fake_storage
+):
+    github = FakeGitHub()
+    fake_name = FakeName(capability="Helps with word games and small talk.")
+    ctx, agent = _hello_ctx(session_factory, config, fake_storage, github=github, name=fake_name)
+
+    detail = HelloStep().run(ctx)
+
+    assert agent.first_reply == "hello yourself"
+    assert "hello yourself" in detail
+    assert agent.capability == "Helps with word games and small talk."
+    assert github.pushes[-1][1] == "kobo: directory details updated"
+
+
+def test_hello_step_capability_generation_uses_persona_body_and_skills(
+    session_factory, config, fake_storage
+):
+    from kobo_api.search import ingest_indexes
+
+    fake_name = FakeName(capability="Helps.")
+    ctx, agent = _hello_ctx(
+        session_factory, config, fake_storage, name=fake_name
+    )
+    agent.skills = [dict(WORD_GAMES_SKILL)]
+    ingest_indexes(ctx.session.get_bind(), fake_storage, {"skill": config.skills_bucket})
+
+    HelloStep().run(ctx)
+
+    assert len(fake_name.capability_calls) == 1
+    persona_body, skill_descriptions, _tooling_filenames = fake_name.capability_calls[0]
+    assert "clio" in persona_body
+    assert skill_descriptions == ["Plays word games with the user."]
+
+
+def test_hello_step_model_client_raising_still_succeeds_and_falls_back(
+    session_factory, config, fake_storage
+):
+    """Global Constraints: capability generation must never block readiness —
+    a raising model client must not fail the hello step at all."""
+    github = FakeGitHub()
+    raising_name = FakeName(capability_error="model unavailable")
+    ctx, agent = _hello_ctx(session_factory, config, fake_storage, github=github, name=raising_name)
+
+    detail = HelloStep().run(ctx)  # must not raise
+
+    assert agent.first_reply == "hello yourself"
+    assert "hello yourself" in detail
+    # Fallback tier fired: capability is non-null (never left unset merely
+    # because the model client raised).
+    assert agent.capability is not None
+    assert agent.capability != ""
+    # The card still got committed normally — only the model call failed.
+    assert github.pushes[-1][1] == "kobo: directory details updated"
+
+
+def test_hello_step_no_model_client_configured_falls_back(session_factory, config, fake_storage):
+    ctx, agent = _hello_ctx(session_factory, config, fake_storage, name=None)
+
+    HelloStep().run(ctx)
+
+    assert agent.capability is not None
+
+
+def test_hello_step_github_raising_stores_capability_but_skips_card_commit(
+    session_factory, config, fake_storage, caplog
+):
+    """Store-vs-skip: the row is the room's own truth, the card commit is
+    best-effort delivery a later Regenerate can retry — a broken GitHub
+    client must still let generation succeed and the row get stored, only
+    the card commit is skipped (and logged)."""
+    raising_github = FakeGitHub(clone_error="gh: rate limited")
+    ctx, agent = _hello_ctx(session_factory, config, fake_storage, github=raising_github)
+
+    with caplog.at_level("WARNING"):
+        detail = HelloStep().run(ctx)  # must not raise
+
+    assert agent.first_reply == "hello yourself"
+    assert "hello yourself" in detail
+    assert agent.capability is not None
+    assert agent.capability != ""
+    # No commit ever happened — clone raised before commit_push could run.
+    assert raising_github.pushes == []
+    assert "card commit failed" in caplog.text
+
+
+def test_hello_step_persona_lookup_failure_leaves_capability_null(
+    session_factory, config, fake_storage
+):
+    """The other named outcome: when generation itself can't run at all
+    (here, the persona vanished from the catalog), capability stays null —
+    there's no input to generate anything from, fallback or otherwise."""
+    session, agent = _make_agent(
+        session_factory, persona="ghost-persona", repo_full_name=HELLO_REPO
+    )
+    clients = _clients(
+        github=FakeGitHub(), storage=fake_storage, agent=FakeAgent(), kubectl=FakeKubectl()
+    )
+    ctx = _make_ctx(session, agent, config, clients)
+
+    detail = HelloStep().run(ctx)  # must not raise
+
+    assert agent.first_reply == "hello yourself"
+    assert "hello yourself" in detail
+    assert agent.capability is None
+
+
+def test_hello_step_tooling_listing_failure_does_not_block_generation(
+    session_factory, config, fake_storage
+):
+    """tooling_filenames_for's own github-side failures are swallowed
+    internally (best-effort input) — generation must still succeed and the
+    row must still get stored, distinct from the "github raising" case
+    above where the FOLLOW-ON card commit is what fails."""
+    github = FakeGitHub(clone_error="gh: rate limited")
+    fake_name = FakeName(capability="Helps.")
+    ctx, agent = _hello_ctx(session_factory, config, fake_storage, github=github, name=fake_name)
+
+    HelloStep().run(ctx)
+
+    assert agent.capability == "Helps."
+    assert fake_name.capability_calls[0][2] == []  # tooling_filenames came back empty

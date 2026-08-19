@@ -4,13 +4,24 @@ from pathlib import Path
 import pytest
 import yaml
 
-from kobo_api.composer import BundleSpec, ComposeError, compose, validate_agent_yaml
+from kobo_api.composer import (
+    BundleSpec,
+    ComposeError,
+    compose,
+    update_agent_card_metadata,
+    validate_agent_yaml,
+)
 from kobo_api.steps import StagedSkill
 
 _RUNTIME_IMAGE = "registry.example/agents/daedalus-runtime:latest"
 
 
-def _make_spec(skills: list[StagedSkill] | None = None) -> BundleSpec:
+def _make_spec(
+    skills: list[StagedSkill] | None = None,
+    *,
+    team: str = "shared",
+    purpose_tags: list[str] | None = None,
+) -> BundleSpec:
     return BundleSpec(
         name="sam",
         persona_body="You are sam, a helpful assistant.\n",
@@ -19,6 +30,8 @@ def _make_spec(skills: list[StagedSkill] | None = None) -> BundleSpec:
         runtime_image=_RUNTIME_IMAGE,
         vertex_project="example-model-project",
         vertex_location="us-east5",
+        team=team,
+        purpose_tags=purpose_tags if purpose_tags is not None else [],
     )
 
 
@@ -131,6 +144,7 @@ def test_compose_agent_card_lists_picked_skills(tmp_path):
         "version": "0.1.0",
         "capabilities": [],
         "skills": [{"id": "echo"}],
+        "metadata": {"team": "shared", "purpose_tags": [], "capability": ""},
     }
 
 
@@ -141,6 +155,35 @@ def test_compose_agent_card_empty_skills_list(tmp_path):
 
     card = json.loads((dest / "bundle" / "agent-card.json").read_text())
     assert card["skills"] == []
+
+
+# --- agent-card.json metadata block (persona-metadata plan, Task 3) -------------
+
+
+def test_compose_agent_card_metadata_block_present_capability_empty(tmp_path):
+    """The card bake at compose time (Global Constraints: capability is
+    earned later, never at compose) — the metadata block is always present,
+    `capability` always starts `""`, `team`/`purpose_tags` come straight
+    from the spec."""
+    dest = tmp_path / "out"
+
+    compose(_make_spec(team="acme-team", purpose_tags=["billing", "support"]), dest)
+
+    card = json.loads((dest / "bundle" / "agent-card.json").read_text())
+    assert card["metadata"] == {
+        "team": "acme-team",
+        "purpose_tags": ["billing", "support"],
+        "capability": "",
+    }
+
+
+def test_compose_agent_card_metadata_defaults_to_shared_no_tags(tmp_path):
+    dest = tmp_path / "out"
+
+    compose(_make_spec(), dest)
+
+    card = json.loads((dest / "bundle" / "agent-card.json").read_text())
+    assert card["metadata"] == {"team": "shared", "purpose_tags": [], "capability": ""}
 
 
 # --- persona + knowledge --------------------------------------------------------
@@ -284,6 +327,115 @@ def test_validate_agent_yaml_error_is_not_a_bare_parse_failure(tmp_path):
 
     with pytest.raises(ComposeError):
         validate_agent_yaml(dest / "bundle")
+
+
+# --- update_agent_card_metadata (persona-metadata plan, Task 3) -----------------
+
+
+def test_update_agent_card_metadata_writes_all_three_fields(tmp_path):
+    dest = tmp_path / "out"
+    compose(_make_spec(), dest)
+
+    update_agent_card_metadata(
+        dest / "bundle",
+        team="acme-team",
+        purpose_tags=["billing", "support"],
+        capability="Helps customers resolve billing issues quickly.",
+    )
+
+    card = json.loads((dest / "bundle" / "agent-card.json").read_text())
+    assert card["metadata"] == {
+        "team": "acme-team",
+        "purpose_tags": ["billing", "support"],
+        "capability": "Helps customers resolve billing issues quickly.",
+    }
+
+
+def test_update_agent_card_metadata_preserves_every_other_top_level_field(tmp_path):
+    """The load-bearing invariant: every field OTHER than `metadata` survives
+    byte-faithfully, including a field this module has never heard of."""
+    dest = tmp_path / "out"
+    compose(_make_spec(), dest)
+    card_path = dest / "bundle" / "agent-card.json"
+    original = json.loads(card_path.read_text())
+    original["a_field_kobo_does_not_know_about"] = {"nested": ["stuff", 1, True]}
+    card_path.write_text(json.dumps(original, indent=2) + "\n")
+
+    update_agent_card_metadata(
+        dest / "bundle", team="acme-team", purpose_tags=["x"], capability="Does a thing."
+    )
+
+    card = json.loads(card_path.read_text())
+    assert card["name"] == original["name"]
+    assert card["description"] == original["description"]
+    assert card["version"] == original["version"]
+    assert card["capabilities"] == original["capabilities"]
+    assert card["skills"] == original["skills"]
+    assert card["a_field_kobo_does_not_know_about"] == {"nested": ["stuff", 1, True]}
+    assert card["metadata"] == {
+        "team": "acme-team",
+        "purpose_tags": ["x"],
+        "capability": "Does a thing.",
+    }
+
+
+def test_update_agent_card_metadata_preserves_unknown_metadata_subfield(tmp_path):
+    """An unknown key already inside `metadata` itself (a hand-edited or
+    future-versioned card) survives too — only the three known keys are ever
+    replaced."""
+    dest = tmp_path / "out"
+    compose(_make_spec(), dest)
+    card_path = dest / "bundle" / "agent-card.json"
+    card = json.loads(card_path.read_text())
+    card["metadata"]["future_field"] = "kept"
+    card_path.write_text(json.dumps(card, indent=2) + "\n")
+
+    update_agent_card_metadata(
+        dest / "bundle", team="acme-team", purpose_tags=[], capability="Does a thing."
+    )
+
+    updated = json.loads(card_path.read_text())
+    assert updated["metadata"]["future_field"] == "kept"
+    assert updated["metadata"]["team"] == "acme-team"
+
+
+def test_update_agent_card_metadata_uses_compose_style_json_dump(tmp_path):
+    """Round-trip formatting must match compose()'s own `json.dumps(...,
+    indent=2) + "\\n"` style exactly, so a compose-then-update cycle never
+    drifts the file's own formatting."""
+    dest = tmp_path / "out"
+    compose(_make_spec(), dest)
+    card_path = dest / "bundle" / "agent-card.json"
+
+    update_agent_card_metadata(
+        dest / "bundle", team="acme-team", purpose_tags=[], capability="Does a thing."
+    )
+
+    text = card_path.read_text()
+    reserialized = json.dumps(json.loads(text), indent=2) + "\n"
+    assert text == reserialized
+
+
+def test_update_agent_card_metadata_overwrites_prior_metadata_values(tmp_path):
+    """A second call fully replaces the three known keys' values (not a
+    merge/append of purpose_tags, say) — the caller always passes the
+    complete current set."""
+    dest = tmp_path / "out"
+    compose(_make_spec(team="old-team", purpose_tags=["old-tag"]), dest)
+
+    update_agent_card_metadata(
+        dest / "bundle",
+        team="new-team",
+        purpose_tags=["new-tag"],
+        capability="A fresh sentence.",
+    )
+
+    card = json.loads((dest / "bundle" / "agent-card.json").read_text())
+    assert card["metadata"] == {
+        "team": "new-team",
+        "purpose_tags": ["new-tag"],
+        "capability": "A fresh sentence.",
+    }
 
 
 # --- optional: validate against the real daedalus runtime, if available -----------

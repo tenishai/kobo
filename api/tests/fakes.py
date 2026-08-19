@@ -12,6 +12,7 @@ tests can assert on side effects without touching a real subprocess or network.
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 
 import yaml
@@ -363,6 +364,18 @@ class FakeGitHub:
     exactly: run 1's `open_pr` registers the PR, and run 2's `find_pr` sees
     it there without either being configured explicitly.
 
+    `agent_card` (persona-metadata plan, Task 3), when given, is the exact
+    dict `clone` writes (JSON-dumped, `indent=2`) to `bundle/agent-card.json`
+    — always written (like `dockerfile_image` above, unlike every
+    knob-gated file below it), since every real agent repo has had one
+    since it was first composed (`kobo_api.composer.compose` always writes
+    it). Defaults to `None`, in which case `clone` writes a card shaped
+    exactly like `kobo_api.composer._agent_card`'s own baked default (empty
+    skills, `metadata: {"team": None, "purpose_tags": [], "capability":
+    ""}`) — this is what `kobo_api.metadata.commit_card_metadata`'s tests
+    (and every step/route test whose HelloStep tail or PATCH/Regenerate
+    call reaches `update_agent_card_metadata`) clone and edit in place.
+
     `rename_repo`/`archive_repo` (Task 3: agent destruction's repo step)
     mirror the real `GhCLI`'s own not-found contract: calling either
     against a `repo` not currently in `.repos` raises `ClientError("repo
@@ -410,6 +423,7 @@ class FakeGitHub:
         tooling_source_files: dict[str, dict[str, str | bytes]] | None = None,
         rename_error: str | None = None,
         archive_error: str | None = None,
+        agent_card: dict | None = None,
     ):
         self.repos: set[str] = set(existing_repos) if existing_repos else set()
         self._rename_error = rename_error
@@ -451,6 +465,7 @@ class FakeGitHub:
             if tooling_source_files
             else {}
         )
+        self._agent_card = dict(agent_card) if agent_card is not None else None
 
         self._head_sha = head_sha
         self._head_sha_sequence = list(head_sha_sequence) if head_sha_sequence else None
@@ -534,6 +549,21 @@ class FakeGitHub:
             (dest / "org.yaml").write_text(self._org_yaml)
 
         bundle_dir = dest / "bundle"
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        card_data = (
+            dict(self._agent_card)
+            if self._agent_card is not None
+            else {
+                "name": name,
+                "description": "Assembled by kobo.",
+                "version": "0.1.0",
+                "capabilities": [],
+                "skills": [],
+                "metadata": {"team": None, "purpose_tags": [], "capability": ""},
+            }
+        )
+        (bundle_dir / "agent-card.json").write_text(json.dumps(card_data, indent=2) + "\n")
+
         if self._agent_yaml_transports is not None:
             bundle_dir.mkdir(parents=True, exist_ok=True)
             agent_yaml_data = {"name": name, "transports": list(self._agent_yaml_transports)}
@@ -1146,6 +1176,13 @@ class FakeName:
     `*_error` knob in this module, e.g. FakeImage's `generate_error`). The
     two knobs are independent: a `suggest_error`-only FakeName still drafts
     normally, and vice versa.
+
+    `capability`/`capability_error` (persona-metadata plan, Task 3) are the
+    same pair for `capability()`: records every (persona_body,
+    skill_descriptions, tooling_filenames) call to `.capability_calls` and
+    returns a configurable plain-text string (default: a small canned
+    sentence), or raises `ClientError(capability_error)` instead when set —
+    independent of the other two knobs, same as they are of each other.
     """
 
     def __init__(
@@ -1155,6 +1192,8 @@ class FakeName:
         suggest_error: str | None = None,
         draft: dict | None = None,
         draft_error: str | None = None,
+        capability: str = "Helps with billing questions and small talk.",
+        capability_error: str | None = None,
     ):
         self._candidates = (
             list(candidates)
@@ -1180,6 +1219,9 @@ class FakeName:
         )
         self._draft_error = draft_error
         self.draft_calls: list[tuple[str, list[str]]] = []
+        self._capability = capability
+        self._capability_error = capability_error
+        self.capability_calls: list[tuple[str, list[str], list[str]]] = []
 
     def suggest(self, who: str, what: str) -> list[dict]:
         self.calls.append((who, what))
@@ -1192,6 +1234,16 @@ class FakeName:
         if self._draft_error is not None:
             raise ClientError(self._draft_error)
         return dict(self._draft)
+
+    def capability(
+        self, persona_body: str, skill_descriptions: list[str], tooling_filenames: list[str]
+    ) -> str:
+        self.capability_calls.append(
+            (persona_body, list(skill_descriptions), list(tooling_filenames))
+        )
+        if self._capability_error is not None:
+            raise ClientError(self._capability_error)
+        return self._capability
 
 
 class FakeStorage:

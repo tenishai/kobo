@@ -3118,6 +3118,211 @@ def test_fake_name_draft_error_knob_raises_client_error():
         fake.draft("help with billing", [])
 
 
+# --- Name: capability (VertexNameClient.capability, persona-metadata plan Task 3) -
+
+
+def _text_reply(text: str) -> dict:
+    return {"candidates": [{"content": {"parts": [{"text": text}]}}]}
+
+
+def test_vertex_name_client_capability_request_shape_url_body_and_auth_header():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.content)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json=_text_reply("Helps with billing questions."))
+
+    client = VertexNameClient(
+        "acme-project",
+        "us-central1",
+        "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    result = client.capability("You are a billing helper.", [], [])
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == (
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/acme-project/"
+        "locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent"
+    )
+    assert captured["json"]["contents"][0]["role"] == "user"
+    assert captured["auth"] == "Bearer fake-access-token"
+    assert result == "Helps with billing questions."
+
+
+def test_vertex_name_client_capability_prompt_includes_persona_skills_tooling():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(200, json=_text_reply("Does things."))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    client.capability(
+        "You are a billing helper.", ["Plays word games."], ["notifier.py"]
+    )
+
+    prompt = captured["json"]["contents"][0]["parts"][0]["text"]
+    assert "You are a billing helper." in prompt
+    assert "Plays word games." in prompt
+    assert "notifier.py" in prompt
+
+
+def test_vertex_name_client_capability_no_skills_or_tooling_omits_blocks():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(200, json=_text_reply("Does things."))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+    client.capability("You are a billing helper.", [], [])
+
+    prompt = captured["json"]["contents"][0]["parts"][0]["text"]
+    assert "skills" not in prompt.lower()
+    assert "tools available" not in prompt.lower()
+
+
+def test_vertex_name_client_capability_strips_surrounding_whitespace():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_text_reply("  Helps with billing.  \n"))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    result = client.capability("persona", [], [])
+
+    assert result == "Helps with billing."
+
+
+def test_vertex_name_client_capability_non_200_raises_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="internal error")
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError):
+        client.capability("persona", [], [])
+
+
+def test_vertex_name_client_capability_malformed_envelope_raises_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"unexpected": "shape"})
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError):
+        client.capability("persona", [], [])
+
+
+def test_vertex_name_client_capability_non_json_body_raises_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="not json at all")
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError):
+        client.capability("persona", [], [])
+
+
+def test_vertex_name_client_capability_blank_text_raises_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_text_reply("   "))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    with pytest.raises(ClientError):
+        client.capability("persona", [], [])
+
+
+def test_vertex_name_client_capability_token_provider_failure_raises_client_error_without_leaking_gcloud_output():
+    def failing_token_provider() -> str:
+        raise ClientError(
+            "gcloud auth print-access-token failed (rc=1): ERROR: account details"
+        )
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=_text_reply("fine"))
+        )),
+        token_provider=failing_token_provider,
+    )
+
+    with pytest.raises(ClientError) as exc_info:
+        client.capability("persona", [], [])
+
+    assert "gcloud" not in str(exc_info.value)
+    assert "account details" not in str(exc_info.value)
+
+
+def test_vertex_name_client_capability_persona_body_with_braces_does_not_break_prompt_building():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(200, json=_text_reply("fine"))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    client.capability("Handles {curly} brace formatting requests.", [], [])
+
+    prompt = captured["json"]["contents"][0]["parts"][0]["text"]
+    assert "Handles {curly} brace formatting requests." in prompt
+
+
+def test_fake_name_capability_satisfies_protocol():
+    assert isinstance(FakeName(), NameClient)
+
+
+def test_fake_name_records_capability_calls_and_returns_canned_text():
+    fake = FakeName()
+    result = fake.capability("persona body", ["desc"], ["tool.py"])
+    assert fake.capability_calls == [("persona body", ["desc"], ["tool.py"])]
+    assert isinstance(result, str) and result
+
+
+def test_fake_name_capability_error_knob_raises_client_error():
+    fake = FakeName(capability_error="boom")
+    with pytest.raises(ClientError, match="boom"):
+        fake.capability("persona body", [], [])
+
+
 # --- Storage (HttpxStorageClient / GCS JSON API) --------------------------------
 
 _STORAGE_API_BASE = "https://storage.googleapis.com/storage/v1"
@@ -3700,12 +3905,16 @@ def test_fake_github_runs_for_commit_empty_for_unregistered_sha():
 
 def test_fake_github_clone_default_writes_no_knowledge_files(tmp_path):
     # knowledge_files defaults to None — clone must leave the generated
-    # scaffolding as the only thing on disk, so every pre-existing test that
-    # constructs a bare FakeGitHub() is unaffected by this knob's addition.
+    # scaffolding as the only thing on disk, except for `bundle/agent-card.
+    # json` (persona-metadata plan, Task 3: always written, like the
+    # Dockerfile — every real agent repo has had one since it was first
+    # composed), so every pre-existing test that constructs a bare
+    # FakeGitHub() is unaffected by this knob's addition.
     fake = FakeGitHub()
     dest = tmp_path / "clone"
     fake.clone("acme/agent-clio", dest)
-    assert not (dest / "bundle").exists()
+    assert not (dest / "bundle" / "knowledge").exists()
+    assert (dest / "bundle" / "agent-card.json").is_file()
 
 
 def test_fake_github_clone_materializes_knowledge_files(tmp_path):

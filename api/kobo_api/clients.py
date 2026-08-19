@@ -1666,6 +1666,26 @@ class NameClient(Protocol):
         """
         ...
 
+    def capability(
+        self, persona_body: str, skill_descriptions: list[str], tooling_filenames: list[str]
+    ) -> str:
+        """Ask the generator for one plain sentence describing what an
+        agent with this persona (plus its attached skills/tooling) can
+        actually do, for its directory card (persona-metadata plan, Task 3);
+        raise ClientError on a transport/envelope/parse failure.
+
+        Returns whatever plain-text reply the model actually gave — no
+        length/punctuation enforcement here (mirrors `suggest`/`draft`'s own
+        "no type/bounds checking" split): `kobo_api.metadata.
+        generate_capability` is what clamps the reply to
+        `CAPABILITY_MAX_LEN` chars and strips em/en dashes defensively, and
+        what falls back to a deterministic tier on ANY failure here — a
+        raised ClientError from this method must never block an agent's
+        readiness. Same "one client, one method per text-generation shape"
+        split as `suggest`/`draft` above.
+        """
+        ...
+
 
 # The single server-side-only failure message for every VertexNameClient.
 # suggest failure mode (non-200, malformed envelope, unparsable text) —
@@ -1777,6 +1797,46 @@ def _build_persona_draft_prompt(job: str, rules: list[str]) -> str:
         '"who_they_are": "...", "what_they_do": "...", "purpose_tags": '
         '["...", ...]} — no prose, no markdown fences, no commentary, '
         "nothing before or after the object."
+    )
+
+
+# The single server-side-only failure message for every
+# VertexNameClient.capability failure mode (persona-metadata plan, Task 3) —
+# same generic-message convention as _PERSONA_DRAFT_FAILED above: never built
+# from the persona body or a raw response body, and never shown to a caller
+# at all — kobo_api.metadata.generate_capability always has a deterministic
+# fallback to fall through to, so this string only ever reaches a log line.
+_CAPABILITY_FAILED = "capability generation failed"
+
+
+def _build_capability_prompt(
+    persona_body: str, skill_descriptions: list[str], tooling_filenames: list[str]
+) -> str:
+    """Build the capability-generation prompt from a persona body plus its
+    attached skills' descriptions and tooling filenames.
+
+    Deliberately plain string concatenation, never `str.format()` against
+    `persona_body` — same brace hazard `_build_persona_draft_prompt` already
+    documents avoiding: a persona body is free-form text that may itself
+    contain literal `{`/`}`.
+    """
+    skills_block = ""
+    if skill_descriptions:
+        bullet_lines = "\n".join(f"- {d}" for d in skill_descriptions)
+        skills_block = "\nIt has these skills:\n" + bullet_lines + "\n"
+    tooling_block = ""
+    if tooling_filenames:
+        bullet_lines = "\n".join(f"- {f}" for f in tooling_filenames)
+        tooling_block = "\nIt has these tools available:\n" + bullet_lines + "\n"
+    return (
+        "You are describing, in ONE plain sentence, what a small software "
+        "agent at a craft workshop's bench can actually do — for a "
+        "directory card a visitor reads to decide whether to talk to it.\n\n"
+        "Its persona:\n" + persona_body + "\n"
+        + skills_block + tooling_block + "\n"
+        "Respond with ONLY that one sentence — plain prose, 160 characters "
+        "or fewer, no markdown, no quotes, no dashes of any kind, no "
+        "preamble, nothing before or after the sentence."
     )
 
 
@@ -1950,6 +2010,58 @@ class VertexNameClient:
             "what_they_do": parsed.get("what_they_do"),
             "purpose_tags": parsed.get("purpose_tags"),
         }
+
+    def capability(
+        self, persona_body: str, skill_descriptions: list[str], tooling_filenames: list[str]
+    ) -> str:
+        url = (
+            f"https://{self._location}-aiplatform.googleapis.com/v1/projects/"
+            f"{self._project}/locations/{self._location}/publishers/google/"
+            f"models/{self._model}:generateContent"
+        )
+        prompt = _build_capability_prompt(persona_body, skill_descriptions, tooling_filenames)
+        body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
+
+        try:
+            token = self._token_provider()
+        except ClientError as exc:
+            # Same reasoning as suggest()/draft() above: the default
+            # token_provider's ClientError message can embed the operator's
+            # own account details — never let it escape unwrapped.
+            log.warning("token provider failed for capability generation: %r", exc)
+            raise ClientError(_CAPABILITY_FAILED) from exc
+
+        try:
+            resp = self._http_client.post(
+                url, json=body, headers={"Authorization": f"Bearer {token}"}
+            )
+        except httpx.HTTPError as exc:
+            log.warning("capability generation request failed: %r", exc)
+            raise ClientError(_CAPABILITY_FAILED) from exc
+
+        if resp.status_code != 200:
+            log.warning(
+                "capability generation failed (%s): %s", resp.status_code, resp.text[:200]
+            )
+            raise ClientError(_CAPABILITY_FAILED)
+
+        try:
+            text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            log.warning(
+                "malformed capability generation reply: %r (body: %s)", exc, resp.text[:200]
+            )
+            raise ClientError(_CAPABILITY_FAILED) from exc
+
+        if not isinstance(text, str) or not text.strip():
+            log.warning("capability generation reply had no usable text")
+            raise ClientError(_CAPABILITY_FAILED)
+
+        # No length/punctuation enforcement here (mirrors suggest()/draft()'s
+        # own "no type/bounds checking" split) — kobo_api.metadata.
+        # generate_capability is what clamps to CAPABILITY_MAX_LEN and strips
+        # em/en dashes defensively.
+        return text.strip()
 
 
 # --- Storage (GCS JSON API: bucket-backed persistence for catalogs/personas) ------

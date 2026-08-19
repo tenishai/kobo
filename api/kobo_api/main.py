@@ -39,6 +39,13 @@ from kobo_api.knowledge import (
     read_knowledge,
     save_knowledge_file,
 )
+from kobo_api.metadata import (
+    clean_capability_text,
+    commit_card_metadata,
+    generate_capability,
+    skill_descriptions_for_agent,
+    tooling_filenames_for,
+)
 from kobo_api.models import Agent, AgentStatus
 from kobo_api.namegen import SUGGESTION_COUNT, finalize_suggestions
 from kobo_api.org import OrgState, load_org_config
@@ -76,6 +83,7 @@ from kobo_api.slack_state import (
     encode_channels,
 )
 from kobo_api.static_ui import mount_ui
+from kobo_api.steps import _resolve_persona_body
 from kobo_api.tooling import (
     ToolingError,
     delete_tooling_file,
@@ -295,6 +303,20 @@ class PersonaDraftRequest(BaseModel):
             if not (1 <= len(item) <= 200):
                 raise ValueError(f"each rule must be 1-200 chars: {item!r}")
         return v
+
+
+class AgentMetadataPatch(BaseModel):
+    """PATCH .../metadata body (persona-metadata plan, Task 3): every field
+    optional — the route only touches what's actually submitted, leaving
+    every omitted field at its current stored value. Plain `str`/`list[str]`
+    (no `Field(pattern=...)`/cap here) deliberately, same reasoning as
+    `CreateAgentRequest.team`: a shape mismatch should land in the route as
+    plain rejection copy, not the generic RequestValidationError message a
+    pydantic-level constraint would trigger instead."""
+
+    team: str | None = None
+    purpose_tags: list[str] | None = None
+    capability: str | None = None
 
 
 # The delivery-status route's sha path param must look like a real git
@@ -2189,6 +2211,135 @@ def create_app(
             body["sha"] = sha
         session.commit()
         return JSONResponse(body)
+
+    # --- Metadata (persona-metadata plan, Task 3): capability earned + card lockstep --
+
+    @app.patch("/api/agents/{name}/metadata")
+    def update_agent_metadata(
+        name: str,
+        payload: AgentMetadataPatch,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        # Ready-gated, any signed-in user (no operator gate) — same "everyone
+        # in the room" reach as the Slack channels lane above.
+        agent = _ready_agent_or_error(
+            session, name, not_ready_message="agent is not ready for directory changes yet"
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        team = agent.team
+        if payload.team is not None:
+            if not TEAM_SLUG_RE.match(payload.team):
+                return JSONResponse(
+                    {"error": "that doesn't look like a team name"}, status_code=422
+                )
+            team = payload.team
+
+        tags = decode_tags(agent.purpose_tags)
+        if payload.purpose_tags is not None:
+            cleaned_tags = clean_tags(payload.purpose_tags)
+            if isinstance(cleaned_tags, str):
+                return JSONResponse({"error": cleaned_tags}, status_code=422)
+            tags = cleaned_tags
+
+        capability = agent.capability
+        if payload.capability is not None:
+            cleaned_capability = clean_capability_text(payload.capability)
+            if cleaned_capability is None:
+                return JSONResponse(
+                    {"error": "capability must be plain text, 160 characters or fewer"},
+                    status_code=422,
+                )
+            capability = cleaned_capability
+
+        agent.team = team
+        agent.purpose_tags = encode_tags(tags)
+        agent.capability = capability
+
+        try:
+            sha = commit_card_metadata(
+                app.state.clients.github,
+                agent.repo_full_name,
+                team=team,
+                purpose_tags=tags,
+                capability=capability,
+            )
+        except ClientError as exc:
+            log.warning("metadata card commit failed: %s", exc)
+            # Return before session.commit() — same 502-consistency idiom as
+            # save_slack_channels above: the in-memory team/purpose_tags/
+            # capability mutations made above never reach the DB (get_session's
+            # implicit rollback-on-close), so a follow-up GET still shows
+            # whatever was stored before this PATCH.
+            return JSONResponse(
+                {"error": "couldn't update the directory details. Try again."},
+                status_code=502,
+            )
+
+        session.commit()
+        return JSONResponse(
+            {"team": team, "purpose_tags": tags, "capability": capability, "sha": sha}
+        )
+
+    @app.post("/api/agents/{name}/metadata/regenerate")
+    def regenerate_agent_metadata(
+        name: str, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(
+            session, name, not_ready_message="agent is not ready for directory changes yet"
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        clients = app.state.clients
+        cfg: Config = app.state.config
+        engine = session.get_bind()
+
+        try:
+            persona_body = _resolve_persona_body(cfg, clients.storage, engine, agent)
+        except RuntimeError as exc:
+            log.warning("metadata regenerate persona lookup failed for %s: %s", name, exc)
+            return JSONResponse(
+                {"error": "couldn't read this agent's persona. Try again."}, status_code=502
+            )
+
+        skill_descriptions = skill_descriptions_for_agent(engine, agent)
+        tooling_filenames = tooling_filenames_for(
+            clients.github,
+            clients.kubectl,
+            clients.agent,
+            repo=agent.repo_full_name,
+            namespace=agent.name,
+            deploy=agent.name,
+        )
+        capability = generate_capability(
+            clients.name, persona_body, skill_descriptions, tooling_filenames
+        )
+
+        team = agent.team
+        tags = decode_tags(agent.purpose_tags)
+        agent.capability = capability
+
+        try:
+            sha = commit_card_metadata(
+                clients.github, agent.repo_full_name, team=team, purpose_tags=tags,
+                capability=capability,
+            )
+        except ClientError as exc:
+            log.warning("metadata regenerate card commit failed: %s", exc)
+            # Same 502-consistency idiom as the PATCH route above: return
+            # before session.commit() so the in-memory `agent.capability`
+            # regeneration never reaches the DB.
+            return JSONResponse(
+                {"error": "couldn't update the directory details. Try again."},
+                status_code=502,
+            )
+
+        session.commit()
+        return JSONResponse(
+            {"team": team, "purpose_tags": tags, "capability": capability, "sha": sha}
+        )
 
     # --- Avatar (P2d): persona-derived face, repo-backed with a display cache ---
 

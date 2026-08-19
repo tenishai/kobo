@@ -40,10 +40,23 @@ from typing import TYPE_CHECKING
 import yaml
 
 from kobo_api.catalog import _DESCRIPTION_HEADER_RE
-from kobo_api.clients import GojiraConflict, StorageClient, StorageNotFound, gsa_email
+from kobo_api.clients import (
+    ClientError,
+    GojiraConflict,
+    StorageClient,
+    StorageNotFound,
+    gsa_email,
+)
 from kobo_api.composer import BundleSpec, compose, validate_agent_yaml
 from kobo_api.config import Config
+from kobo_api.metadata import (
+    commit_card_metadata,
+    generate_capability,
+    skill_descriptions_for_agent,
+    tooling_filenames_for,
+)
 from kobo_api.models import Agent
+from kobo_api.purpose_tags import decode_tags
 from kobo_api.search import read_marketplace_catalog
 
 log = logging.getLogger(__name__)
@@ -368,6 +381,12 @@ class RepoStep:
             runtime_image=config.runtime_image,
             vertex_project=config.vertex_project,
             vertex_location=config.vertex_location,
+            # Persona metadata (Task 3): thread the agent row's own team
+            # (Task 2's own value, "shared" being the same default
+            # CreateAgentRequest.team already falls back to) and purpose_tags
+            # through to the baked agent-card.json's metadata block.
+            team=agent.team or "shared",
+            purpose_tags=decode_tags(agent.purpose_tags),
         )
 
         compose_dir = ctx.workdir / "repo"
@@ -969,10 +988,87 @@ class DeployStep:
 # --- HelloStep --------------------------------------------------------------------
 
 
+def _earn_capability(ctx: Ctx) -> None:
+    """Generate this agent's capability sentence and push it to its card —
+    the "capability is earned" moment (persona-metadata plan, Task 3),
+    hooked onto HelloStep's tail, right after first contact succeeds.
+
+    Global Constraints: capability generation must NEVER block readiness —
+    every failure here (persona/skill/tooling lookups, the model call
+    itself, the card commit) is caught, logged, and swallowed; HelloStep's
+    own reply is already recorded on `ctx.agent` by the time this runs and
+    nothing this function does can undo that.
+
+    Two independent try/except boundaries, deliberately: generation
+    (persona body + skill descriptions + tooling filenames -> one
+    capability string) is one unit — any failure there leaves
+    `agent.capability` untouched (null, unless a prior earn/PATCH/Regenerate
+    already set it). Once generation succeeds, `agent.capability` is stored
+    on the row immediately — the row is the room's own truth — and ONLY
+    THEN is the card commit attempted, in its own boundary: a failure there
+    leaves the just-stored capability in place but the card uncommitted
+    (logged), since delivery is best-effort and a later Regenerate can
+    always retry it. This ordering is why `tooling_filenames_for` swallows
+    its own github-side failures internally (never propagating into the
+    generation boundary) — otherwise a broken GitHub client would prevent
+    generation (and the row store) from ever happening at all, when the
+    only thing it should actually block is the card commit.
+    """
+    agent = ctx.agent
+    try:
+        engine = ctx.session.get_bind()
+        persona_body = _resolve_persona_body(ctx.config, ctx.clients.storage, engine, agent)
+        skill_descriptions = skill_descriptions_for_agent(engine, agent)
+        tooling_filenames = tooling_filenames_for(
+            ctx.clients.github,
+            ctx.clients.kubectl,
+            ctx.clients.agent,
+            repo=agent.repo_full_name,
+            namespace=agent.name,
+            deploy=agent.name,
+        )
+        capability = generate_capability(
+            ctx.clients.name, persona_body, skill_descriptions, tooling_filenames
+        )
+    except Exception:
+        log.warning(
+            "capability generation failed for agent %s — leaving capability unset",
+            agent.name,
+            exc_info=True,
+        )
+        return
+
+    agent.capability = capability
+
+    try:
+        commit_card_metadata(
+            ctx.clients.github,
+            agent.repo_full_name,
+            team=agent.team,
+            purpose_tags=decode_tags(agent.purpose_tags),
+            capability=capability,
+        )
+    except ClientError:
+        log.warning(
+            "card commit failed for agent %s — capability stored, card left "
+            "uncommitted (Regenerate can retry)",
+            agent.name,
+            exc_info=True,
+        )
+
+
 class HelloStep:
     """First contact: says hello to the freshly-deployed agent over its a2a
     endpoint (via `ctx.clients.agent.hello`) and records its reply on the
-    agent row so the UI can show it — the "one-click" pipeline's last step."""
+    agent row so the UI can show it — the "one-click" pipeline's last step.
+
+    Its tail (`_earn_capability`, persona-metadata plan Task 3) generates
+    this agent's capability sentence and pushes it to its card. Wrapped in
+    its own defensive try/except here too (belt-and-suspenders on top of
+    `_earn_capability`'s own two internal boundaries) so that even a bug in
+    that code path could never turn a successful first contact into a
+    failed HelloStep — capability generation must never block readiness.
+    """
 
     name = "hello"
     label = "First contact"
@@ -983,4 +1079,15 @@ class HelloStep:
             namespace=agent.name, service=agent.name, text="hello! how did you get here?"
         )
         agent.first_reply = reply
+
+        try:
+            _earn_capability(ctx)
+        except Exception:
+            log.warning(
+                "capability generation/card commit crashed unexpectedly for "
+                "agent %s",
+                agent.name,
+                exc_info=True,
+            )
+
         return f"agent replied: {reply!r}"

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -55,6 +55,16 @@ class BundleSpec:
     runtime_image: str
     vertex_project: str
     vertex_location: str
+    # Persona metadata (persona-metadata plan, Task 3): the agent's own
+    # creating team and purpose tags (already recorded on the Agent row by
+    # Task 2), threaded through so the baked agent-card.json's `metadata`
+    # block (see `_agent_card` below) carries them from the moment a bundle
+    # is first composed — never something bolted on after the fact.
+    # Defaulted (rather than required) so every pre-existing `BundleSpec(...)`
+    # construction across the test suite that predates this pair keeps
+    # working unchanged.
+    team: str = "shared"
+    purpose_tags: list[str] = field(default_factory=list)
 
 
 # --- agent.yaml rendering ----------------------------------------------------
@@ -149,6 +159,17 @@ def _agent_card(spec: BundleSpec) -> dict:
         "version": "0.1.0",
         "capabilities": [],
         "skills": [{"id": skill.id} for skill in spec.skills],
+        # Persona metadata (Task 3): baked in at compose time so every agent
+        # card carries this block from birth — `capability` starts empty
+        # (never earned yet; HelloStep's tail is what first fills it in),
+        # `team`/`purpose_tags` come straight from the spec (Task 2's own
+        # values, threaded here by whoever builds the spec —
+        # `kobo_api.steps.RepoStep`).
+        "metadata": {
+            "team": spec.team,
+            "purpose_tags": list(spec.purpose_tags),
+            "capability": "",
+        },
     }
 
 
@@ -226,6 +247,34 @@ def update_dockerfile_runtime_image(dockerfile_path: Path, runtime_image: str) -
             f"Dockerfile has no recognizable FROM line to re-pin: {dockerfile_path}"
         )
     dockerfile_path.write_text(updated)
+
+
+def update_agent_card_metadata(
+    bundle_dir: Path, *, team: str | None, purpose_tags: list[str], capability: str
+) -> None:
+    """In-place edit of `bundle_dir/agent-card.json`'s `metadata` block
+    (persona-metadata plan, Task 3): the card delivery lifecycle is bake at
+    compose time (`_agent_card` above, `capability` starting `""`), then
+    update after every earn/PATCH/Regenerate — this function is that update.
+
+    Reads the whole card as a dict, replaces exactly `metadata.team`/
+    `metadata.purpose_tags`/`metadata.capability`, and re-dumps with the
+    exact same `json.dumps(..., indent=2) + "\\n"` style `compose()` itself
+    writes the file with — every OTHER top-level field (`name`,
+    `description`, `version`, `capabilities`, `skills`, or any field a future
+    caller adds that this module doesn't know about yet) survives
+    byte-faithfully, and any OTHER key already inside `metadata` itself
+    (there are none today, but a hand-edited or future-versioned card might
+    carry one) survives too — only the three known keys are ever replaced.
+    """
+    card_path = bundle_dir / "agent-card.json"
+    card = json.loads(card_path.read_text())
+    metadata = dict(card.get("metadata") or {})
+    metadata["team"] = team
+    metadata["purpose_tags"] = list(purpose_tags)
+    metadata["capability"] = capability
+    card["metadata"] = metadata
+    card_path.write_text(json.dumps(card, indent=2) + "\n")
 
 
 def _materialize_skill(skill: StagedSkill, dest: Path) -> None:
