@@ -4,11 +4,13 @@ from pathlib import Path
 import pytest
 import yaml
 
+from kobo_api.clients import ClientError
 from kobo_api.composer import (
     BundleSpec,
     ComposeError,
     compose,
     update_agent_card_metadata,
+    update_agent_yaml_auth,
     validate_agent_yaml,
 )
 from kobo_api.steps import StagedSkill
@@ -21,6 +23,7 @@ def _make_spec(
     *,
     team: str = "shared",
     purpose_tags: list[str] | None = None,
+    cabal_url: str | None = None,
 ) -> BundleSpec:
     return BundleSpec(
         name="sam",
@@ -32,6 +35,7 @@ def _make_spec(
         vertex_location="us-east5",
         team=team,
         purpose_tags=purpose_tags if purpose_tags is not None else [],
+        cabal_url=cabal_url,
     )
 
 
@@ -126,6 +130,131 @@ def test_compose_agent_yaml_parses_with_expected_transport_and_gate(tmp_path):
     assert data["approvals"]["gates"] == [{"match": "*", "require": "plan_approval"}]
     # the placeholder is a literal string pre-validation: not yet substituted
     assert data["model"]["id"] == "${AGENT_MODEL:-vertex_ai/claude-sonnet-4-5}"
+
+
+# --- a2a auth block (colleagues switchboard arc, Task 4) ------------------------
+#
+# The composer's own gate is the presence of `cabal_url` alone (a `BundleSpec`
+# field), never the fuller `cabal_enabled` truthiness check `kobo_api.clients`
+# exposes to callers that also need the operator token — compose is about the
+# bundle's shape, not whether the room happens to hold a token right now.
+
+
+def test_compose_agent_yaml_byte_identical_when_cabal_url_none_both_ways(tmp_path):
+    """Pin: whether `cabal_url` is left at its default or passed explicitly as
+    `None`, composed output is byte-identical to today's (pre-Task-4) shape —
+    the new field must never perturb the off path."""
+    default_dest = tmp_path / "default"
+    explicit_dest = tmp_path / "explicit"
+
+    compose(_make_spec(), default_dest)
+    compose(_make_spec(cabal_url=None), explicit_dest)
+
+    default_text = (default_dest / "bundle" / "agent.yaml").read_text()
+    explicit_text = (explicit_dest / "bundle" / "agent.yaml").read_text()
+
+    assert default_text == explicit_text
+    assert default_text == (
+        "name: sam\n"
+        "card: agent-card.json\n"
+        "persona: persona.md\n"
+        "model:\n"
+        "  id: ${AGENT_MODEL:-vertex_ai/claude-sonnet-4-5}\n"
+        "  max_tokens: 1024\n"
+        "  budget: {per_task_tokens: 50000}\n"
+        "transports:\n"
+        "  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
+        "tools: {provider: none, allow: []}\n"
+        "memory: {personal: techne, home: /techne}\n"
+        "checkpoints: sqlite\n"
+        "approvals:\n"
+        "  ceiling: {write: false}\n"
+        '  gates: [{match: "*", require: plan_approval}]\n'
+        "  escalation: {route: cli}\n"
+    )
+
+
+def test_compose_agent_yaml_carries_auth_block_when_cabal_url_configured(tmp_path):
+    dest = tmp_path / "out"
+
+    compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
+
+    text = (dest / "bundle" / "agent.yaml").read_text()
+    assert text == (
+        "name: sam\n"
+        "card: agent-card.json\n"
+        "persona: persona.md\n"
+        "model:\n"
+        "  id: ${AGENT_MODEL:-vertex_ai/claude-sonnet-4-5}\n"
+        "  max_tokens: 1024\n"
+        "  budget: {per_task_tokens: 50000}\n"
+        "transports:\n"
+        '  - {kind: a2a, host: 0.0.0.0, port: 8080, auth: {jwks_url: '
+        '"http://cabal.example.com/.well-known/jwks.json", issuer: "cabal-core", '
+        'audience: "sam"}}\n'
+        "tools: {provider: none, allow: []}\n"
+        "memory: {personal: techne, home: /techne}\n"
+        "checkpoints: sqlite\n"
+        "approvals:\n"
+        "  ceiling: {write: false}\n"
+        '  gates: [{match: "*", require: plan_approval}]\n'
+        "  escalation: {route: cli}\n"
+    )
+
+
+def test_compose_agent_yaml_auth_jwks_url_strips_single_trailing_slash(tmp_path):
+    """A single `rstrip("/")` on `cabal_url` before appending the well-known
+    path — a trailing-slash-or-not configured base URL must never yield a
+    doubled (or missing) slash in the built jwks_url."""
+    dest = tmp_path / "out"
+
+    compose(_make_spec(cabal_url="http://cabal.example.com/"), dest)
+
+    data = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())
+    auth = data["transports"][0]["auth"]
+    assert auth["jwks_url"] == "http://cabal.example.com/.well-known/jwks.json"
+
+
+def test_compose_agent_yaml_auth_audience_is_the_agent_name(tmp_path):
+    dest = tmp_path / "out"
+    spec = BundleSpec(
+        name="rae",
+        persona_body="You are rae, a helpful assistant.\n",
+        model_id="vertex_ai/claude-sonnet-4-5",
+        skills=[],
+        runtime_image=_RUNTIME_IMAGE,
+        vertex_project="example-model-project",
+        vertex_location="us-east5",
+        cabal_url="http://cabal.example.com",
+    )
+
+    compose(spec, dest)
+
+    data = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())
+    auth = data["transports"][0]["auth"]
+    assert auth["audience"] == "rae"
+    assert auth["issuer"] == "cabal-core"
+
+
+def test_compose_agent_yaml_auth_block_parses_with_exactly_three_keys(tmp_path):
+    dest = tmp_path / "out"
+
+    compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
+
+    data = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())
+    transport = data["transports"][0]
+    assert transport["kind"] == "a2a"
+    assert set(transport["auth"].keys()) == {"jwks_url", "issuer", "audience"}
+
+
+def test_compose_agent_yaml_with_auth_block_still_validates(tmp_path):
+    """The vendored schema's TransportSpec allows additional properties, so
+    the new `auth` key doesn't trip schema validation."""
+    dest = tmp_path / "out"
+
+    compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
+
+    validate_agent_yaml(dest / "bundle")  # must not raise
 
 
 # --- agent-card.json -----------------------------------------------------------
@@ -435,6 +564,187 @@ def test_update_agent_card_metadata_overwrites_prior_metadata_values(tmp_path):
         "team": "new-team",
         "purpose_tags": ["new-tag"],
         "capability": "A fresh sentence.",
+    }
+
+
+# --- update_agent_yaml_auth (colleagues switchboard arc, Task 4) ----------------
+#
+# The in-place backfill helper for the two live agents (and any future
+# already-composed bundle) whose `agent.yaml` predates the switchboard: adds
+# or replaces the `auth` block on the existing a2a transport entry, touching
+# nothing else in the file — a surgical text edit (matching
+# `update_dockerfile_runtime_image`'s own idiom), never a full YAML
+# round-trip, since a generic `yaml.safe_load`/`yaml.safe_dump` cycle would
+# reorder/reformat every other line this module's custom flow-style dumper
+# deliberately controls.
+
+_FIXTURE_AGENT_YAML_NO_AUTH = (
+    "# agent.yaml -- generated by kobo, do not hand-edit lightly\n"
+    "name: sam\n"
+    "card: agent-card.json\n"
+    "persona: persona.md\n"
+    "model:\n"
+    "  id: ${AGENT_MODEL:-vertex_ai/claude-sonnet-4-5}\n"
+    "  max_tokens: 1024\n"
+    "  budget: {per_task_tokens: 50000}\n"
+    "transports:\n"
+    "  # the room's own a2a endpoint\n"
+    "  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
+    "tools: {provider: none, allow: []}\n"
+    "memory: {personal: techne, home: /techne}\n"
+    "checkpoints: sqlite\n"
+    "approvals:\n"
+    "  ceiling: {write: false}\n"
+    '  gates: [{match: "*", require: plan_approval}]\n'
+    "  escalation: {route: cli}\n"
+)
+
+_JWKS_URL = "http://cabal.example.com/.well-known/jwks.json"
+_ISSUER = "cabal-core"
+_AUDIENCE = "sam"
+
+
+def _write_fixture(bundle_dir: Path, text: str = _FIXTURE_AGENT_YAML_NO_AUTH) -> Path:
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    agent_yaml_path = bundle_dir / "agent.yaml"
+    agent_yaml_path.write_text(text)
+    return agent_yaml_path
+
+
+def test_update_agent_yaml_auth_adds_block_and_preserves_every_other_line(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    agent_yaml_path = _write_fixture(bundle_dir)
+
+    update_agent_yaml_auth(
+        bundle_dir, jwks_url=_JWKS_URL, issuer=_ISSUER, audience=_AUDIENCE
+    )
+
+    updated_lines = agent_yaml_path.read_text().splitlines(keepends=True)
+    original_lines = _FIXTURE_AGENT_YAML_NO_AUTH.splitlines(keepends=True)
+    assert len(updated_lines) == len(original_lines)
+    for i, (original, updated) in enumerate(zip(original_lines, updated_lines)):
+        if i == original_lines.index("  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"):
+            continue
+        assert updated == original, f"line {i} changed unexpectedly"
+
+    assert updated_lines[original_lines.index("  - {kind: a2a, host: 0.0.0.0, port: 8080}\n")] == (
+        '  - {kind: a2a, host: 0.0.0.0, port: 8080, auth: {jwks_url: '
+        '"http://cabal.example.com/.well-known/jwks.json", issuer: "cabal-core", '
+        'audience: "sam"}}\n'
+    )
+
+
+def test_update_agent_yaml_auth_replaces_existing_block(tmp_path):
+    fixture_with_old_auth = _FIXTURE_AGENT_YAML_NO_AUTH.replace(
+        "  - {kind: a2a, host: 0.0.0.0, port: 8080}\n",
+        '  - {kind: a2a, host: 0.0.0.0, port: 8080, auth: {jwks_url: '
+        '"http://old-cabal.example.com/.well-known/jwks.json", issuer: '
+        '"old-issuer", audience: "old-audience"}}\n',
+    )
+    bundle_dir = tmp_path / "bundle"
+    _write_fixture(bundle_dir, fixture_with_old_auth)
+
+    update_agent_yaml_auth(
+        bundle_dir, jwks_url=_JWKS_URL, issuer=_ISSUER, audience=_AUDIENCE
+    )
+
+    text = (bundle_dir / "agent.yaml").read_text()
+    assert "old-cabal.example.com" not in text
+    assert "old-issuer" not in text
+    assert "old-audience" not in text
+    data = yaml.safe_load(text)
+    auth = data["transports"][0]["auth"]
+    assert auth == {"jwks_url": _JWKS_URL, "issuer": _ISSUER, "audience": _AUDIENCE}
+    # every other line is untouched
+    other_lines = [
+        line
+        for line in fixture_with_old_auth.splitlines(keepends=True)
+        if "kind: a2a" not in line
+    ]
+    for line in other_lines:
+        assert line in text
+
+
+def test_update_agent_yaml_auth_is_idempotent(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    _write_fixture(bundle_dir)
+
+    update_agent_yaml_auth(
+        bundle_dir, jwks_url=_JWKS_URL, issuer=_ISSUER, audience=_AUDIENCE
+    )
+    once = (bundle_dir / "agent.yaml").read_text()
+
+    update_agent_yaml_auth(
+        bundle_dir, jwks_url=_JWKS_URL, issuer=_ISSUER, audience=_AUDIENCE
+    )
+    twice = (bundle_dir / "agent.yaml").read_text()
+
+    assert once == twice
+
+
+def test_update_agent_yaml_auth_raises_when_no_a2a_transport(tmp_path):
+    fixture_no_a2a = _FIXTURE_AGENT_YAML_NO_AUTH.replace(
+        "  # the room's own a2a endpoint\n  - {kind: a2a, host: 0.0.0.0, port: 8080}\n",
+        "  - {kind: slack, channel: general}\n",
+    )
+    bundle_dir = tmp_path / "bundle"
+    _write_fixture(bundle_dir, fixture_no_a2a)
+
+    with pytest.raises(ClientError) as exc_info:
+        update_agent_yaml_auth(
+            bundle_dir, jwks_url=_JWKS_URL, issuer=_ISSUER, audience=_AUDIENCE
+        )
+
+    assert "a2a" in str(exc_info.value)
+    # unmodified on failure
+    assert (bundle_dir / "agent.yaml").read_text() == fixture_no_a2a
+
+
+def test_update_agent_yaml_auth_leaves_other_transport_kinds_untouched(tmp_path):
+    fixture_with_slack = _FIXTURE_AGENT_YAML_NO_AUTH.replace(
+        "transports:\n  # the room's own a2a endpoint\n  - {kind: a2a, host: 0.0.0.0, port: 8080}\n",
+        "transports:\n"
+        "  # the room's own a2a endpoint\n"
+        "  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
+        "  - {kind: slack, channel: general}\n",
+    )
+    bundle_dir = tmp_path / "bundle"
+    _write_fixture(bundle_dir, fixture_with_slack)
+
+    update_agent_yaml_auth(
+        bundle_dir, jwks_url=_JWKS_URL, issuer=_ISSUER, audience=_AUDIENCE
+    )
+
+    text = (bundle_dir / "agent.yaml").read_text()
+    assert "  - {kind: slack, channel: general}\n" in text
+
+
+def test_update_agent_yaml_auth_missing_file_raises_client_error(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir(parents=True)
+
+    with pytest.raises(ClientError):
+        update_agent_yaml_auth(
+            bundle_dir, jwks_url=_JWKS_URL, issuer=_ISSUER, audience=_AUDIENCE
+        )
+
+
+def test_update_agent_yaml_auth_on_freshly_composed_bundle_round_trips(tmp_path):
+    """Integration: compose() without cabal_url, then backfill via the update
+    helper (the two live agents' real path) — the result still validates."""
+    dest = tmp_path / "out"
+    compose(_make_spec(), dest)
+
+    update_agent_yaml_auth(
+        dest / "bundle", jwks_url=_JWKS_URL, issuer=_ISSUER, audience=_AUDIENCE
+    )
+
+    validate_agent_yaml(dest / "bundle")  # must not raise
+    data = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())
+    assert data["transports"][0]["auth"] == {
+        "jwks_url": _JWKS_URL,
+        "issuer": _ISSUER,
+        "audience": _AUDIENCE,
     }
 
 

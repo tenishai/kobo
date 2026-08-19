@@ -65,6 +65,16 @@ class BundleSpec:
     # working unchanged.
     team: str = "shared"
     purpose_tags: list[str] = field(default_factory=list)
+    # Switchboard (cabal) base URL, threaded straight from `Config.cabal_url`
+    # (colleagues switchboard arc, Task 4). Presence alone is the composer's
+    # own gate for whether the a2a transport carries an `auth` block below —
+    # never the fuller `cabal_enabled` truthiness check `kobo_api.clients`
+    # exposes to callers that also need the operator token to be present:
+    # compose is about the bundle's shape, not whether the room happens to
+    # hold a token right now. None (the default) means every pre-existing
+    # `BundleSpec(...)` construction (and every call site that never learns
+    # about this field) keeps composing byte-identical output.
+    cabal_url: str | None = None
 
 
 # --- agent.yaml rendering ----------------------------------------------------
@@ -119,6 +129,47 @@ _AgentYamlDumper.add_representer(_FlowDict, _represent_flow_dict)
 _AgentYamlDumper.add_representer(_DoubleQuoted, _represent_double_quoted)
 
 
+# Switchboard (cabal) auth-block constants (colleagues switchboard arc, Task
+# 4): the issuer is fixed across every agent (it names the switchboard
+# itself, never the individual agent), and the JWKS path is the switchboard's
+# own well-known discovery endpoint.
+_CABAL_ISSUER = "cabal-core"
+_CABAL_JWKS_PATH = "/.well-known/jwks.json"
+
+
+def _cabal_jwks_url(cabal_url: str) -> str:
+    """Build the switchboard's JWKS discovery URL from its configured base.
+
+    A single `rstrip("/")` before appending the well-known path, so a
+    configured base URL with (or without) a trailing slash never yields a
+    doubled (or missing) slash.
+    """
+    return cabal_url.rstrip("/") + _CABAL_JWKS_PATH
+
+
+def _a2a_transport(spec: BundleSpec) -> _FlowDict:
+    """The bundle's sole a2a transport entry — carries an `auth` block iff
+    `spec.cabal_url` is configured (presence alone is the gate; see
+    `BundleSpec.cabal_url`'s own docstring for why).
+
+    Always returned as a `_FlowDict` (even in the no-auth case, where a plain
+    dict would already render identically under PyYAML's own scalars-only
+    flow heuristic) so that adding the nested `auth` mapping — itself
+    non-scalar — never flips PyYAML's heuristic to block style: forcing flow
+    style here keeps the byte-identical-when-off guarantee and the
+    single-line-when-on shape (which `update_agent_yaml_auth` below depends
+    on to find and edit this entry) true regardless of that heuristic.
+    """
+    transport: dict = {"kind": "a2a", "host": "0.0.0.0", "port": 8080}
+    if spec.cabal_url:
+        transport["auth"] = _FlowDict(
+            jwks_url=_DoubleQuoted(_cabal_jwks_url(spec.cabal_url)),
+            issuer=_DoubleQuoted(_CABAL_ISSUER),
+            audience=_DoubleQuoted(spec.name),
+        )
+    return _FlowDict(transport)
+
+
 def _agent_yaml_data(spec: BundleSpec) -> dict:
     return {
         "name": spec.name,
@@ -129,9 +180,7 @@ def _agent_yaml_data(spec: BundleSpec) -> dict:
             "max_tokens": 1024,
             "budget": {"per_task_tokens": 50000},
         },
-        "transports": [
-            {"kind": "a2a", "host": "0.0.0.0", "port": 8080},
-        ],
+        "transports": [_a2a_transport(spec)],
         "tools": _FlowDict(provider="none", allow=[]),
         "memory": {"personal": "techne", "home": "/techne"},
         "checkpoints": "sqlite",
@@ -149,6 +198,13 @@ def _render_agent_yaml(spec: BundleSpec) -> str:
         Dumper=_AgentYamlDumper,
         sort_keys=False,
         default_flow_style=None,
+        # Wide enough that the a2a transport entry (including its optional
+        # `auth` block) never wraps onto a continuation line: every other
+        # emitted line is already well under PyYAML's 80-column default, so
+        # this can't change their output, but it keeps the transport entry
+        # on one line — the shape `update_agent_yaml_auth`'s single-line
+        # regex-based edit depends on.
+        width=1000,
     )
 
 
@@ -275,6 +331,98 @@ def update_agent_card_metadata(
     metadata["capability"] = capability
     card["metadata"] = metadata
     card_path.write_text(json.dumps(card, indent=2) + "\n")
+
+
+# Matches the a2a transport's flow-mapping entry anywhere in an already-
+# composed `agent.yaml` — this module's own `_render_agent_yaml` (via the
+# `width=1000` passed to `yaml.dump`) always renders it on a single line, and
+# so does every bundle this function itself ever produces, which is what
+# lets a single-line, regex-based surgical edit (matching
+# `update_dockerfile_runtime_image`'s own idiom above) find and replace it
+# without a full YAML round-trip that would reorder/reformat every other
+# line in the file.
+#
+# `rest` allows any run of non-brace characters interleaved with at most one
+# balanced `{...}` group (the entry's own optional `auth: {...}` block,
+# whose three values are always plain/quoted strings with no further nested
+# braces) — sufficient for every shape this module ever emits or edits, and
+# the reason a general-purpose (unbounded-nesting) brace matcher isn't
+# needed here.
+_A2A_TRANSPORT_LINE_RE = re.compile(
+    r"^(?P<prefix>[ \t]*-[ \t]*\{kind:[ \t]*a2a\b)"
+    r"(?P<rest>(?:[^{}]|\{[^{}]*\})*)"
+    r"\}[ \t]*$",
+    re.MULTILINE,
+)
+
+# Strips an already-present `, auth: {...}` suffix out of a matched entry's
+# `rest` group before a fresh one is appended — the reason a second call
+# with the same coordinates reproduces the exact same bytes (idempotence),
+# and the reason a call with DIFFERENT coordinates replaces rather than
+# appends a second auth block.
+_EXISTING_AUTH_BLOCK_RE = re.compile(r",[ \t]*auth:[ \t]*\{[^{}]*\}")
+
+
+def update_agent_yaml_auth(
+    bundle_dir: Path, *, jwks_url: str, issuer: str, audience: str
+) -> None:
+    """In-place edit of an already-composed `bundle_dir/agent.yaml`'s a2a
+    transport entry: add (or replace) its `auth` block, leaving every other
+    line in the file byte-identical.
+
+    The backfill path for the two agents composed before the switchboard
+    existed (colleagues switchboard arc, Task 6) — and, more generally, for
+    any already-composed bundle a caller wants to re-point at a (new) set of
+    switchboard coordinates without recomposing the whole bundle (which
+    would also require re-downloading every staged skill).
+
+    Same file-editing idiom as `update_dockerfile_runtime_image` above: read
+    the whole file as text, apply one targeted `re.subn` (never a generic
+    YAML parse/re-dump, which would reorder or reformat lines this module's
+    own custom flow-style dumper deliberately controls elsewhere in the
+    file), and raise rather than silently no-op when the thing being edited
+    isn't found.
+
+    Idempotent by construction: a second call with the same `jwks_url`/
+    `issuer`/`audience` first strips the auth block the previous call wrote
+    (via `_EXISTING_AUTH_BLOCK_RE`) and then re-adds the identical block, so
+    the file's bytes never drift on a repeat call. A call with DIFFERENT
+    coordinates replaces the block rather than appending a second one, for
+    the same reason.
+
+    Only the a2a transport's own entry is ever touched — any other
+    transport kind (slack, cli, ...) elsewhere in the same `transports:`
+    list is left byte-for-byte alone, since `_A2A_TRANSPORT_LINE_RE` only
+    matches a line whose flow mapping starts `{kind: a2a`.
+
+    Raises `ClientError` (never silently no-ops), mirroring
+    `update_dockerfile_runtime_image`'s own two failure modes:
+
+    - `agent.yaml` is missing entirely: `Path.read_text()` raises `OSError`.
+    - No line in the file matches `_A2A_TRANSPORT_LINE_RE` (no a2a transport
+      entry to update): `re.subn`'s match count is 0.
+    """
+    agent_yaml_path = bundle_dir / "agent.yaml"
+    try:
+        text = agent_yaml_path.read_text()
+    except OSError as exc:
+        raise ClientError(f"agent.yaml not found: {agent_yaml_path}") from exc
+
+    def _replace(match: re.Match) -> str:
+        prefix = match.group("prefix")
+        rest = _EXISTING_AUTH_BLOCK_RE.sub("", match.group("rest"))
+        auth_block = (
+            f', auth: {{jwks_url: "{jwks_url}", issuer: "{issuer}", '
+            f'audience: "{audience}"}}'
+        )
+        return f"{prefix}{rest}{auth_block}}}"
+
+    updated, count = _A2A_TRANSPORT_LINE_RE.subn(_replace, text, count=1)
+    if count == 0:
+        raise ClientError(
+            f"agent.yaml has no a2a transport entry to update: {agent_yaml_path}"
+        )
+    agent_yaml_path.write_text(updated)
 
 
 def _materialize_skill(skill: StagedSkill, dest: Path) -> None:
