@@ -12,6 +12,7 @@
   import ErrorState from "../components/ErrorState.svelte";
   import FirstReply from "../components/FirstReply.svelte";
   import MemoryPanel from "../components/MemoryPanel.svelte";
+  import MetadataDetails from "../components/MetadataDetails.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import SkillsPanel from "../components/SkillsPanel.svelte";
   import SlackPanel from "../components/SlackPanel.svelte";
@@ -242,7 +243,10 @@
             <div class="composition">
               <span class="composition__item">
                 <span class="composition__label">Persona</span>
-                <span class="composition__value">{data.persona}</span>
+                <span class="composition__value">
+                  {data.persona}
+                  <span class="composition__team-chip">{data.team}</span>
+                </span>
               </span>
               {#if data.skills.length > 0}
                 <div class="composition__skills">
@@ -254,6 +258,21 @@
               <span class="composition__item">
                 <span class="composition__label">Model</span>
                 <span class="composition__value">{data.model_label}</span>
+              </span>
+
+              {#if data.purpose_tags.length > 0}
+                <div class="composition__tags">
+                  {#each data.purpose_tags as tag (tag)}
+                    <span class="tag-chip">{tag}</span>
+                  {/each}
+                </div>
+              {/if}
+
+              <span class="composition__item composition__item--capability">
+                <span class="composition__label">Capability</span>
+                <span class="composition__value composition__value--capability">
+                  {data.capability ?? "Not written yet. It arrives after first contact."}
+                </span>
               </span>
 
               <div class="composition__avatar-action">
@@ -277,6 +296,16 @@
                 {:else if avatarNote}
                   <p class="composition__avatar-note">{avatarNote}</p>
                 {/if}
+              </div>
+
+              <div class="composition__edit-action">
+                <MetadataDetails
+                  agentName={data.name}
+                  team={data.team}
+                  purposeTags={data.purpose_tags}
+                  capability={data.capability}
+                  frozen={isFrozen(data.status)}
+                />
               </div>
             </div>
 
@@ -424,18 +453,33 @@
   }
 
   .composition__value {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
     color: var(--ink);
     font-family: var(--font-mono);
     font-size: 0.85rem;
   }
 
-  .composition__skills {
+  .composition__team-chip {
+    display: inline-flex;
+    padding: 0.1rem var(--space-2xs);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted);
+    font-size: 0.7rem;
+    white-space: nowrap;
+  }
+
+  .composition__skills,
+  .composition__tags {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-2xs);
   }
 
-  .skill-chip {
+  .skill-chip,
+  .tag-chip {
     padding: 0.2rem var(--space-xs);
     border: 1px solid var(--border);
     border-radius: 999px;
@@ -444,12 +488,25 @@
     font-size: 0.75rem;
   }
 
+  .composition__item--capability {
+    flex-basis: 100%;
+  }
+
+  .composition__value--capability {
+    font-family: inherit;
+  }
+
   .composition__avatar-action {
     display: flex;
     flex-basis: 100%;
     flex-direction: column;
     align-items: flex-start;
     gap: var(--space-xs);
+  }
+
+  .composition__edit-action {
+    display: flex;
+    flex-basis: 100%;
   }
 
   .composition__avatar-button {

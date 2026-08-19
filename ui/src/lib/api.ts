@@ -38,6 +38,20 @@ export type AgentSlack = {
 
 export type AgentDetail = AgentSummary & {
   persona: string;
+  /** The agent's directory team (persona-metadata plan, 2026-08-18) — set
+   * at create time from the create station's team picker, editable
+   * afterward through Edit details/`patchAgentMetadata`. Always a slug
+   * (`TEAM_SLUG_RE` server-side), defaulting to "shared". */
+  team: string;
+  /** Free-form purpose chips (persona-metadata plan), persona-drafted at
+   * create time with a deterministic fallback, editable afterward. Always
+   * present, `[]` when none. */
+  purpose_tags: string[];
+  /** One plain sentence describing what this agent can actually do
+   * (persona-metadata plan) — earned room-side once the agent first
+   * reaches ready (after its hello step), `null` until then. Editable
+   * afterward, plus Regenerate. */
+  capability: string | null;
   /** Raw `agent.skills` DB entries, verbatim: a catalog pick carries
    * `team`/`sha`; a locally-authored guardrail skill carries neither (just
    * `source: "local"`) — see `AgentSkill` (the richer, server-normalized
@@ -101,6 +115,14 @@ export type PersonaDraft = {
   name: string;
   who_they_are: string;
   what_they_do: string;
+  /** Persona-drafted purpose chips (persona-metadata plan), ≤5, lowercased
+   * and deduped server-side (`kobo_api.persona_draft.finalize_draft`) —
+   * falls back to the persona's own derived tags when the model omits
+   * them. The create station (CreateModal) pre-fills its chips editor from
+   * this when the draft came from a persona actually built here; a
+   * search-picked existing persona has no draft at all, so its chips start
+   * empty instead. */
+  purpose_tags: string[];
 };
 
 /** One name-suggestion card (create flow v2 "naming ceremony" addendum) —
@@ -216,8 +238,17 @@ export async function getAgent(name: string): Promise<AgentDetail> {
 export async function createAgent(body: {
   name: string;
   persona: string;
+  /** The creating team (persona-metadata plan, 2026-08-18 revival of the
+   * create station's team picker) — a slug, server-validated against
+   * `TEAM_SLUG_RE`, rejected with the plain copy "that doesn't look like a
+   * team name" on mismatch. */
+  team: string;
   skills: { id: string; team: string }[];
   model: string | null;
+  /** Purpose chips (persona-metadata plan) — normalized/capped (8)
+   * server-side; an over-cap list (after de-dupe) 422s with "Eight tags at
+   * most." */
+  purpose_tags: string[];
 }): Promise<{ name: string; status: string }> {
   const res = await fetch("/api/agents", {
     method: "POST",
@@ -300,6 +331,21 @@ export async function fetchTeams(): Promise<string[]> {
   const res = await fetch("/api/catalog/teams");
   const data = await parse<{ teams: string[] }>(res);
   return data.teams;
+}
+
+/** The distinct skill-owner teams plus the server's own default
+ * (`GET /api/teams`, persona-metadata plan Task 1) — a DIFFERENT endpoint
+ * from `fetchTeams`/`/api/catalog/teams` above, which spans every catalog
+ * kind (skills and personas) for filtering a catalog search. This one is
+ * skill-owner-only, meant for "which team does this agent belong to": the
+ * create station's team picker and the Edit details modal both read it. A
+ * newly-published owner appears here without a room change, same
+ * TTL-refresh hook every other catalog route shares. */
+export type TeamOptions = { teams: string[]; default: string };
+
+export async function fetchTeamOptions(): Promise<TeamOptions> {
+  const res = await fetch("/api/teams");
+  return parse<TeamOptions>(res);
 }
 
 /**
@@ -735,6 +781,54 @@ export async function saveSlackChannels(
     state: "idle" | "waiting" | "connected";
     sha?: string;
   }>(res);
+}
+
+/** The three directory fields an Edit details save/Regenerate hands back,
+ * always alongside the pushed commit's sha (persona-metadata plan Task 3) —
+ * `PATCH .../metadata` and `POST .../metadata/regenerate` share this exact
+ * response shape. */
+export type AgentMetadata = {
+  team: string;
+  purpose_tags: string[];
+  capability: string | null;
+};
+
+/**
+ * Edit details' save: every field optional, the server leaves whatever's
+ * omitted at its current stored value (`kobo_api.main.AgentMetadataPatch`).
+ * `capability` is only ever sent non-empty here — the server has no way to
+ * distinguish "clear this field" from "field omitted", so the caller
+ * (`MetadataDetails`) simply never sends an empty string. 422 on a bad team
+ * slug ("that doesn't look like a team name"), an over-cap tag list ("Eight
+ * tags at most."), or an over-160/unusable capability string; 502 if the
+ * card commit itself fails (delivery is the caller's to retry).
+ */
+export async function patchAgentMetadata(
+  name: string,
+  body: { team?: string; purpose_tags?: string[]; capability?: string },
+): Promise<AgentMetadata & { sha: string }> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/metadata`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parse<AgentMetadata & { sha: string }>(res);
+}
+
+/**
+ * Regenerates the agent's capability line against its CURRENT skills and
+ * tooling (persona-metadata plan Task 3) — `team`/`purpose_tags` are
+ * untouched by this call and simply echoed back at their existing stored
+ * value, same response shape as the PATCH above.
+ */
+export async function regenerateAgentMetadata(
+  name: string,
+): Promise<AgentMetadata & { sha: string }> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/metadata/regenerate`,
+    { method: "POST" },
+  );
+  return parse<AgentMetadata & { sha: string }>(res);
 }
 
 /**

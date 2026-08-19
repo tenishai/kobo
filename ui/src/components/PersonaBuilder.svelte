@@ -47,6 +47,14 @@
   // would race that cache's own debounced refetch after this mutation's
   // `invalidateQueries` — the mutation result is already sitting right
   // here, so CreateModal just takes it directly instead.
+  //
+  // `oncreated`'s second argument (persona-metadata plan, 2026-08-18) is
+  // whatever purpose tags the draft step came up with (`draft.purpose_tags`,
+  // step 1's `POST /api/personas/draft` response) — captured at draft time
+  // and carried through step 2 untouched, so CreateModal can pre-fill the
+  // Create station's chips editor the moment this persona is actually
+  // created. `[]` when the draft failed (the classic empty fallback form)
+  // or never happened at all.
   import { createMutation, useQueryClient } from "@tanstack/svelte-query";
   import {
     ApiError,
@@ -62,7 +70,7 @@
     oncreated,
   }: {
     oncancel: () => void;
-    oncreated: (persona: CatalogEntry) => void;
+    oncreated: (persona: CatalogEntry, purposeTags: string[]) => void;
   } = $props();
 
   const queryClient = useQueryClient();
@@ -105,6 +113,11 @@
   let whatTheyDo = $state("");
   let submitError = $state<string | null>(null);
 
+  // Persona-metadata plan: whatever the draft step's model call (or its
+  // deterministic fallback) came up with for purpose tags, carried through
+  // step 2 untouched and handed to `oncreated` once Create persona lands.
+  let draftedPurposeTags = $state<string[]>([]);
+
   // Display-only cue (round 2 fix, carried over from v2): the server
   // slugifies `name` on its own (`persona_id()`, kobo_api/personas.py)
   // rather than rejecting an unexpected-charset name outright, so this
@@ -139,6 +152,7 @@
           name = draft.name;
           whoTheyAre = draft.who_they_are;
           whatTheyDo = draft.what_they_do;
+          draftedPurposeTags = draft.purpose_tags;
           step = "preview";
         },
         onError: (error: unknown) => {
@@ -153,6 +167,7 @@
           name = "";
           whoTheyAre = "";
           whatTheyDo = "";
+          draftedPurposeTags = [];
           step = "preview";
         },
       },
@@ -166,6 +181,7 @@
     name = "";
     whoTheyAre = "";
     whatTheyDo = "";
+    draftedPurposeTags = [];
     draftError = null;
     submitError = null;
   }
@@ -184,7 +200,7 @@
     };
     $mutation.mutate(body, {
       onSuccess: (created) => {
-        oncreated(created);
+        oncreated(created, draftedPurposeTags);
       },
       onError: (error: unknown) => {
         if (error instanceof ApiError && error.status === 409) {

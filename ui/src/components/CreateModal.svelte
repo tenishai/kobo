@@ -8,13 +8,17 @@
   // state (name, selections, the availability check, submit errors) but
   // not whether it's visible.
   //
-  // Team is gone as a client-supplied field, full stop: agents and personas
-  // still RECORD a team underneath, but the server now defaults it to
-  // "shared" when the create payload omits it (`CreateAgentRequest.team`/
-  // `CreatePersonaRequest.team`), so there is nothing left for this room to
-  // collect or pass through. Team returns in a later phase as an
-  // IAP-derived fact, not a typed field a human fills in — see the
-  // addendum's "Team: dropped from the flow, defaulted underneath".
+  // Persona v3 / teamless-create addendum dropped Team as a client-supplied
+  // field entirely. The persona-metadata plan (2026-08-18) supersedes that
+  // for AGENTS specifically: Team returns to the Create station as a real
+  // picker (station 4, alongside Model) — the design's own ruling is that
+  // team is instance truth an agent carries, born at create time, not
+  // something to defer to a later IAP-derived phase. The persona itself
+  // still has no team field of its own (`PersonaBuilder` unchanged, still
+  // no `team` prop) — personas stay shared templates; only the AGENT being
+  // created here now records an explicit team, chosen from the picker or a
+  // typed escape, and the server still defaults to "shared" if this room
+  // ever omitted the key (it no longer does).
   //
   // "Unlocking" here is a visual/motivational cue only (reduced opacity +
   // a hollow station marker — see the `.station--locked` styling below),
@@ -53,6 +57,17 @@
   // fetch was. Org wiring status (`orgStatusQuery()`) decides whether the
   // persona/skills sections show real pickers or an honest "not set up yet"
   // empty state — see `personasUnwired`/`skillsUnwired` below.
+  //
+  // The Create station's own team PICKER (persona-metadata plan) reads a
+  // DIFFERENT query, `teamOptionsQuery()` (`/api/teams`, the distinct
+  // skill-owner pool + a server-named default) — not `teamsQuery()` above,
+  // which spans both catalog kinds and only ever feeds the Skills section's
+  // search-by-team filter. Also prefetched by App.svelte's warm-modal set.
+  // Purpose chips are a plain local list, pre-filled once from the persona
+  // draft step's own `purpose_tags` (`PersonaBuilder`'s `oncreated`) when
+  // this agent's persona was actually drafted here; a search-picked existing
+  // persona has no draft, so its chips start empty. No capability field at
+  // create — that's earned after first contact (Overview/Edit details).
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { tick } from "svelte";
   import { derived, writable } from "svelte/store";
@@ -76,6 +91,7 @@
     orgStatusQuery,
     personasSearchQuery,
     skillsSearchQuery,
+    teamOptionsQuery,
     teamsQuery,
   } from "../lib/queries";
   import { toast } from "../lib/toast.svelte";
@@ -86,6 +102,7 @@
   const queryClient = useQueryClient();
   const models = createQuery(modelsQuery());
   const teams = createQuery(teamsQuery());
+  const teamOptions = createQuery(teamOptionsQuery());
   const orgStatus = createQuery(orgStatusQuery());
   const mutation = createMutation(createAgentMutation(queryClient));
 
@@ -189,18 +206,27 @@
    * looking the id back up in `$personas.data`: that list is itself a
    * debounced search result that can lag a beat behind a just-created
    * persona (createPersonaMutation's own cache invalidation hasn't
-   * necessarily resolved yet), so re-deriving would risk racing it. */
-  let selectedPersonaMeta = $state<{ name: string; description: string } | null>(
-    null,
-  );
+   * necessarily resolved yet), so re-deriving would risk racing it.
+   *
+   * `purposeTags` (persona-metadata plan) rides alongside for the same
+   * reason: the moment a persona commits is also the moment the Create
+   * station's chips editor should (re-)seed, so it travels in the same
+   * state update rather than a second, separately-timed effect. */
+  let selectedPersonaMeta = $state<
+    { name: string; description: string; purposeTags: string[] } | null
+  >(null);
 
-  function selectPersona(persona: CatalogEntry): void {
+  function selectPersona(persona: CatalogEntry, purposeTags: string[] = []): void {
     personaOverride = persona.id;
-    selectedPersonaMeta = { name: persona.name, description: persona.description };
+    selectedPersonaMeta = {
+      name: persona.name,
+      description: persona.description,
+      purposeTags,
+    };
   }
 
-  function handlePersonaCreated(persona: CatalogEntry): void {
-    selectPersona(persona);
+  function handlePersonaCreated(persona: CatalogEntry, purposeTags: string[]): void {
+    selectPersona(persona, purposeTags);
     builderOpen = false;
     personaQ = "";
     personaSearchTerm.set("");
@@ -239,7 +265,10 @@
   // text and, in the same beat, voids whatever the naming station had
   // going for the previous persona (or for no persona at all): a card pick
   // or a hand-typed name tied to one persona's suggestions has no business
-  // surviving a switch to a different one.
+  // surviving a switch to a different one. Purpose tags (persona-metadata
+  // plan) re-seed here too, from the SAME commit's `purposeTags` — a
+  // builder create carries its draft's tags, a search pick carries `[]`
+  // (see `selectPersona`'s own default).
   $effect(() => {
     const meta = selectedPersonaMeta;
     if (!open) {
@@ -253,6 +282,8 @@
     selectedCardName = null;
     name = "";
     rerollNote = false;
+    purposeTags = meta?.purposeTags ?? [];
+    purposeTagInput = "";
   });
 
   // A generator/route failure falls back to the classic input regardless of
@@ -376,6 +407,65 @@
     selectedSkills = next;
   }
 
+  // --- Team + purpose tags (persona-metadata plan, Create station) --------
+  //
+  // Team: a plain `<select>` (options = `teamOptionsQuery`'s distinct
+  // skill-owner pool + its server-named default, "shared" today) plus a
+  // typed escape ("Other...") for a team that hasn't published a skill yet.
+  // Purpose tags: free chips, pre-filled once per persona commit (see the
+  // effect above), otherwise a plain add/remove list capped at 8 — same
+  // normalize-on-add discipline `MetadataDetails`'s own chips editor uses.
+
+  const TEAM_OTHER = "__other__";
+  let teamMode = $state<"select" | "other">("select");
+  let teamValue = $state("shared");
+  let teamOtherInput = $state("");
+
+  function handleTeamSelectChange(value: string): void {
+    if (value === TEAM_OTHER) {
+      teamMode = "other";
+      teamOtherInput = "";
+    } else {
+      teamMode = "select";
+      teamValue = value;
+    }
+  }
+
+  const effectiveTeam = $derived(
+    teamMode === "other" ? teamOtherInput.trim().toLowerCase() : teamValue,
+  );
+
+  // Always includes "shared" (the safe default while the query is still
+  // loading) and whatever `teamValue` currently holds, so the select never
+  // shows a mismatched selection.
+  const teamPickerOptions = $derived.by((): string[] => {
+    const data = $teamOptions.data;
+    const pool = new Set<string>(data ? [data.default, ...data.teams] : ["shared"]);
+    pool.add(teamValue);
+    return [...pool];
+  });
+
+  let purposeTags = $state<string[]>([]);
+  let purposeTagInput = $state("");
+  const PURPOSE_TAGS_CAP = 8;
+
+  function addPurposeTag(): void {
+    const value = purposeTagInput.trim().toLowerCase();
+    if (value.length === 0) {
+      return;
+    }
+    if (purposeTags.includes(value) || purposeTags.length >= PURPOSE_TAGS_CAP) {
+      purposeTagInput = "";
+      return;
+    }
+    purposeTags = [...purposeTags, value];
+    purposeTagInput = "";
+  }
+
+  function removePurposeTag(value: string): void {
+    purposeTags = purposeTags.filter((t) => t !== value);
+  }
+
   // --- Unwired / empty catalogs --------------------------------------------
 
   function checkFailed(checkId: string): boolean {
@@ -424,6 +514,11 @@
       skillSearchParams.set({ q: "", team: null });
       skillShowAll = false;
       selectedSkills = new Map();
+      teamMode = "select";
+      teamValue = "shared";
+      teamOtherInput = "";
+      purposeTags = [];
+      purposeTagInput = "";
     }
   });
 
@@ -435,6 +530,7 @@
       !skillsUnwired &&
       selectedPersona !== "" &&
       selectedModel !== "" &&
+      effectiveTeam.length > 0 &&
       !$mutation.isPending,
   );
 
@@ -449,11 +545,13 @@
       {
         name: createdName,
         persona: selectedPersona,
+        team: effectiveTeam,
         skills: [...selectedSkills.values()].map(({ id, team: skillTeam }) => ({
           id,
           team: skillTeam,
         })),
         model: selectedModel,
+        purpose_tags: purposeTags,
       },
       {
         onSuccess: () => {
@@ -825,6 +923,82 @@
           4
         </span>
         <h3 class="station__heading">Create</h3>
+      </div>
+
+      <div class="create-form__field">
+        <label class="create-form__label" for="create-team">Team</label>
+        <select
+          id="create-team"
+          class="create-form__input"
+          value={teamMode === "other" ? TEAM_OTHER : teamValue}
+          onchange={(event) =>
+            handleTeamSelectChange((event.currentTarget as HTMLSelectElement).value)}
+        >
+          {#each teamPickerOptions as t (t)}
+            <option value={t}>{t}</option>
+          {/each}
+          <option value={TEAM_OTHER}>Other...</option>
+        </select>
+        {#if teamMode === "other"}
+          <label class="sr-only" for="create-team-other">Team name</label>
+          <input
+            id="create-team-other"
+            class="create-form__input"
+            type="text"
+            bind:value={teamOtherInput}
+            placeholder="team-name"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <p class="create-form__help">lowercase-with-dashes</p>
+        {/if}
+      </div>
+
+      <div class="create-form__field">
+        <label class="create-form__label" for="create-purpose-tag-input">Purpose tags</label>
+        {#if purposeTags.length > 0}
+          <div class="chip-row">
+            {#each purposeTags as tag (tag)}
+              <span class="chip">
+                {tag}
+                <button
+                  type="button"
+                  class="chip__remove"
+                  aria-label={`Remove ${tag}`}
+                  onclick={() => removePurposeTag(tag)}
+                >
+                  &times;
+                </button>
+              </span>
+            {/each}
+          </div>
+        {/if}
+        <div class="catalog-search__row">
+          <input
+            id="create-purpose-tag-input"
+            class="create-form__input"
+            type="text"
+            bind:value={purposeTagInput}
+            placeholder="Add a tag"
+            autocomplete="off"
+            onkeydown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                addPurposeTag();
+              }
+            }}
+          />
+          <button
+            type="button"
+            class="skills-show-more"
+            disabled={purposeTagInput.trim().length === 0 ||
+              purposeTags.length >= PURPOSE_TAGS_CAP}
+            onclick={addPurposeTag}
+          >
+            Add
+          </button>
+        </div>
+        <p class="create-form__help">Up to 8 tags.</p>
       </div>
 
       <div class="create-form__field">

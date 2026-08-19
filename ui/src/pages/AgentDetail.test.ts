@@ -8,6 +8,8 @@ const READY_AGENT = {
   name: "warden",
   persona: "keeper",
   team: "shared",
+  purpose_tags: [],
+  capability: null,
   model: "m",
   model_label: "M",
   skills: [],
@@ -161,6 +163,85 @@ describe("AgentDetail tabs", () => {
     expect(overviewPanel).not.toBeNull();
     expect(within(overviewPanel).getByText("Clone the repo")).not.toBeNull();
     expect(within(overviewPanel).getByText("Hello there.")).not.toBeNull();
+  });
+
+  it("composition card shows the team chip, purpose chips, and the null-capability copy verbatim", async () => {
+    stubFetch({
+      "/api/agents/warden/knowledge": { files: [] },
+      "/api/agents/warden/intake": { files: [] },
+      "/api/agents/warden/skills": { skills: [] },
+      "/api/agents/warden/tooling": {
+        files: [],
+        enforcement: { attested: false, locked: false, locked_file: null },
+      },
+      "/api/agents/warden": {
+        ...READY_AGENT,
+        team: "growth",
+        purpose_tags: ["billing", "support"],
+        capability: null,
+      },
+      "/api/": {},
+    });
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Chat" });
+    const overviewPanel = document.getElementById("panel-overview") as HTMLElement;
+    expect(within(overviewPanel).getByText("growth")).not.toBeNull();
+    expect(within(overviewPanel).getByText("billing")).not.toBeNull();
+    expect(within(overviewPanel).getByText("support")).not.toBeNull();
+    expect(
+      within(overviewPanel).getByText(
+        "Not written yet. It arrives after first contact.",
+      ),
+    ).not.toBeNull();
+  });
+
+  it("composition card shows the earned capability line verbatim when present", async () => {
+    stubFetch({
+      "/api/agents/warden/knowledge": { files: [] },
+      "/api/agents/warden/intake": { files: [] },
+      "/api/agents/warden/skills": { skills: [] },
+      "/api/agents/warden/tooling": {
+        files: [],
+        enforcement: { attested: false, locked: false, locked_file: null },
+      },
+      "/api/agents/warden": {
+        ...READY_AGENT,
+        capability: "Answers billing questions and escalates refunds.",
+      },
+      "/api/": {},
+    });
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Chat" });
+    const overviewPanel = document.getElementById("panel-overview") as HTMLElement;
+    expect(
+      within(overviewPanel).getByText(
+        "Answers billing questions and escalates refunds.",
+      ),
+    ).not.toBeNull();
+    expect(
+      within(overviewPanel).queryByText(/Not written yet/),
+    ).toBeNull();
+  });
+
+  it("the Edit details affordance disables while frozen (destroying)", async () => {
+    stubFetch({
+      "/api/agents/warden/knowledge": { files: [] },
+      "/api/agents/warden/intake": { files: [] },
+      "/api/agents/warden/skills": { skills: [] },
+      "/api/agents/warden/tooling": {
+        files: [],
+        enforcement: { attested: false, locked: false, locked_file: null },
+      },
+      "/api/agents/warden": {
+        ...READY_AGENT,
+        status: "destroying",
+        destroy_visible: true,
+      },
+      "/api/": {},
+    });
+    renderWithClient(AgentDetail);
+    const editButton = await screen.findByRole("button", { name: "Edit details" });
+    expect((editButton as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("shows the Slack tab, and renders the setup section unconditionally inside it", async () => {

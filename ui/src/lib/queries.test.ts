@@ -21,7 +21,9 @@ import {
   modelsQuery,
   nameSuggestionsQuery,
   orgStatusQuery,
+  patchMetadataMutation,
   personasSearchQuery,
+  regenerateMetadataMutation,
   retryAgentMutation,
   saveKnowledgeMutation,
   saveLocalSkillMutation,
@@ -29,6 +31,7 @@ import {
   shouldRetry,
   skillsSearchQuery,
   slackManifestQuery,
+  teamOptionsQuery,
   teamsQuery,
   toolingQuery,
   toolingRefetchInterval,
@@ -392,6 +395,106 @@ describe("saveSlackChannelsMutation", () => {
   });
 });
 
+describe("patchMetadataMutation", () => {
+  it("mutationFn delegates to patchAgentMetadata(name, body) via PATCH", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          team: "growth",
+          purpose_tags: ["billing"],
+          capability: "Answers billing questions.",
+          sha: "abc123",
+        }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = patchMetadataMutation(queryClient, "clio");
+    const body = { team: "growth", purpose_tags: ["billing"] };
+
+    await expect(mutation.mutationFn(body)).resolves.toEqual({
+      team: "growth",
+      purpose_tags: ["billing"],
+      capability: "Answers billing questions.",
+      sha: "abc123",
+    });
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/metadata", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the agent detail key on success", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = patchMetadataMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "clio"],
+    });
+  });
+});
+
+describe("regenerateMetadataMutation", () => {
+  it("mutationFn delegates to regenerateAgentMetadata(name) via POST, no body", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          team: "shared",
+          purpose_tags: [],
+          capability: "Regenerated capability line.",
+          sha: "def456",
+        }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = regenerateMetadataMutation(queryClient, "clio");
+
+    await expect(mutation.mutationFn()).resolves.toEqual({
+      team: "shared",
+      purpose_tags: [],
+      capability: "Regenerated capability line.",
+      sha: "def456",
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/agents/clio/metadata/regenerate",
+      { method: "POST" },
+    );
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the agent detail key on success", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = regenerateMetadataMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "clio"],
+    });
+  });
+});
+
 describe("generateAvatarMutation", () => {
   it("mutationFn delegates to generateAvatar(name)", async () => {
     vi.stubGlobal("fetch", vi.fn());
@@ -520,6 +623,30 @@ describe("teamsQuery", () => {
       "shared",
     ]);
     expect(fetch).toHaveBeenCalledWith("/api/catalog/teams");
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("teamOptionsQuery", () => {
+  it("has queryKey ['teams'] — distinct from teamsQuery's ['catalog', 'teams']", () => {
+    expect(teamOptionsQuery().queryKey).toEqual(["teams"]);
+  });
+
+  it("queryFn GETs /api/teams and resolves {teams, default} verbatim", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({ teams: ["growth", "platform"], default: "shared" }),
+    } as Response);
+
+    await expect(
+      callQueryFn<{ teams: string[]; default: string }>(teamOptionsQuery()),
+    ).resolves.toEqual({ teams: ["growth", "platform"], default: "shared" });
+    expect(fetch).toHaveBeenCalledWith("/api/teams");
 
     vi.unstubAllGlobals();
   });

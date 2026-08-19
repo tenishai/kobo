@@ -12,10 +12,13 @@ import {
   fetchModels,
   fetchOrgStatus,
   fetchSlackManifest,
+  fetchTeamOptions,
   fetchTeams,
   generateAvatar,
   listAgents,
   listKnowledge,
+  patchAgentMetadata,
+  regenerateAgentMetadata,
   saveKnowledgeFile,
   saveSlackChannels,
   searchPersonas,
@@ -109,7 +112,7 @@ describe("api.ts", () => {
     expect(fetch).toHaveBeenCalledWith("/api/catalog/models");
   });
 
-  it("createAgent POSTs the teamless body shape ({skills: [{id, team}]}) to /api/agents", async () => {
+  it("createAgent POSTs the body shape ({team, skills: [{id, team}], purpose_tags}) to /api/agents", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       jsonResponse({ name: "foo", status: "provisioning" }),
     );
@@ -117,8 +120,10 @@ describe("api.ts", () => {
     const body = {
       name: "foo",
       persona: "helper",
+      team: "growth",
       skills: [{ id: "read-code", team: "shared" }],
       model: "gpt-5",
+      purpose_tags: ["billing", "support"],
     };
 
     await expect(createAgent(body)).resolves.toEqual({
@@ -145,8 +150,10 @@ describe("api.ts", () => {
       createAgent({
         name: "foo",
         persona: "helper",
+        team: "shared",
         skills: [],
         model: null,
+        purpose_tags: [],
       }),
     ).rejects.toThrow("name taken: 'foo'");
   });
@@ -759,6 +766,93 @@ describe("catalog search / teams / persona builder / org status client", () => {
     expect(fetch).toHaveBeenCalledWith("/api/catalog/teams");
   });
 
+  it("fetchTeamOptions GETs /api/teams and returns {teams, default} verbatim", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({ teams: ["growth", "platform"], default: "shared" }),
+    );
+
+    await expect(fetchTeamOptions()).resolves.toEqual({
+      teams: ["growth", "platform"],
+      default: "shared",
+    });
+
+    expect(fetch).toHaveBeenCalledWith("/api/teams");
+  });
+
+  it("patchAgentMetadata PATCHes the submitted fields to /api/agents/{name}/metadata and returns {team, purpose_tags, capability, sha}", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({
+        team: "growth",
+        purpose_tags: ["billing"],
+        capability: "Answers billing questions.",
+        sha: "abc123",
+      }),
+    );
+
+    const body = { team: "growth", purpose_tags: ["billing"] };
+    await expect(patchAgentMetadata("clio", body)).resolves.toEqual({
+      team: "growth",
+      purpose_tags: ["billing"],
+      capability: "Answers billing questions.",
+      sha: "abc123",
+    });
+
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/metadata", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  });
+
+  it("patchAgentMetadata surfaces a 422's {error} message (bad team slug)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "that doesn't look like a team name" },
+        { status: 422, statusText: "Unprocessable Entity" },
+      ),
+    );
+
+    await expect(
+      patchAgentMetadata("clio", { team: "Not A Slug" }),
+    ).rejects.toThrow("that doesn't look like a team name");
+  });
+
+  it("regenerateAgentMetadata POSTs to /api/agents/{name}/metadata/regenerate with no body and returns {team, purpose_tags, capability, sha}", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({
+        team: "shared",
+        purpose_tags: [],
+        capability: "Regenerated capability line.",
+        sha: "def456",
+      }),
+    );
+
+    await expect(regenerateAgentMetadata("clio")).resolves.toEqual({
+      team: "shared",
+      purpose_tags: [],
+      capability: "Regenerated capability line.",
+      sha: "def456",
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/agents/clio/metadata/regenerate",
+      { method: "POST" },
+    );
+  });
+
+  it("regenerateAgentMetadata surfaces a 502's {error} message (card commit failure)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "couldn't update the directory details. Try again." },
+        { status: 502, statusText: "Bad Gateway" },
+      ),
+    );
+
+    await expect(regenerateAgentMetadata("clio")).rejects.toThrow(
+      "couldn't update the directory details. Try again.",
+    );
+  });
+
   it("createPersona POSTs the teamless form body to /api/personas and returns the created CatalogEntry", async () => {
     const body = {
       name: "helper",
@@ -822,11 +916,12 @@ describe("catalog search / teams / persona builder / org status client", () => {
     ).rejects.toThrow("catalogs aren't set up yet");
   });
 
-  it("draftPersona POSTs {job, rules} to /api/personas/draft and returns the draft verbatim", async () => {
+  it("draftPersona POSTs {job, rules} to /api/personas/draft and returns the draft verbatim, purpose_tags included", async () => {
     const draft = {
       name: "billing-helper",
       who_they_are: "a calm guide through confusing invoices",
       what_they_do: "Answers billing questions and escalates refunds.",
+      purpose_tags: ["billing", "support"],
     };
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(draft));
 

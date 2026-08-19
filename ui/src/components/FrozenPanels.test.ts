@@ -3,6 +3,7 @@ import { screen } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ChatPanel from "./ChatPanel.svelte";
 import MemoryPanel from "./MemoryPanel.svelte";
+import MetadataDetails from "./MetadataDetails.svelte";
 import SkillsPanel from "./SkillsPanel.svelte";
 import SlackPanel from "./SlackPanel.svelte";
 import ToolingPanel from "./ToolingPanel.svelte";
@@ -20,6 +21,17 @@ const CASES: Array<[string, unknown, Record<string, unknown>]> = [
       agentName: "warden",
       frozen: true,
       slack: { app_id: null, channels: [], state: "idle" },
+    },
+  ],
+  [
+    "MetadataDetails",
+    MetadataDetails,
+    {
+      agentName: "warden",
+      frozen: true,
+      team: "shared",
+      purposeTags: [],
+      capability: null,
     },
   ],
 ];

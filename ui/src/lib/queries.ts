@@ -17,6 +17,12 @@
 //                                                      lazily, once opened)
 //   ["catalog", "models"]                           - the model list + default
 //   ["catalog", "teams"]                             - the team-slug list
+//                                                      (all catalog kinds,
+//                                                      for search filtering)
+//   ["teams"]                                        - the skill-owner team
+//                                                      pool + default, for
+//                                                      the create/Edit
+//                                                      details team pickers
 //   ["catalog", "skills", {q, team}]                - a skill catalog search
 //   ["catalog", "personas", {q, team}]              - a persona catalog search
 //   ["org", "status"]                               - org bootstrap/wiring status
@@ -27,6 +33,7 @@ import { queryOptions, type QueryClient } from "@tanstack/svelte-query";
 import {
   ApiError,
   type AgentDetail,
+  type AgentMetadata,
   type AgentSkill,
   type AgentSlack,
   type AgentSummary,
@@ -38,6 +45,7 @@ import {
   type OrgStatus,
   type PersonaDraft,
   type PersonaForm,
+  type TeamOptions,
   type ToolingEnforcement,
   type ToolingFile,
   type ToolingListResponse,
@@ -57,6 +65,7 @@ import {
   fetchNameSuggestions,
   fetchOrgStatus,
   fetchSlackManifest,
+  fetchTeamOptions,
   fetchTeams,
   generateAvatar,
   getAgent,
@@ -66,6 +75,8 @@ import {
   listKnowledge,
   listSkills,
   listTooling,
+  patchAgentMetadata,
+  regenerateAgentMetadata,
   retryAgent,
   saveKnowledgeFile,
   saveLocalSkill,
@@ -138,6 +149,26 @@ export function teamsQuery() {
   return queryOptions({
     queryKey: ["catalog", "teams"] as const,
     queryFn: fetchTeams,
+  });
+}
+
+/**
+ * The skill-owner team pool + default (persona-metadata plan), for the
+ * create station's team picker and the Edit details modal's team field —
+ * a DIFFERENT query from `teamsQuery` above (which reads `/api/catalog/teams`,
+ * spanning both catalog kinds for search filtering). No polling/staleTime
+ * override: same "doesn't change on its own in the background" reasoning
+ * as `modelsQuery`. CreateModal fetches this unconditionally, warmed by
+ * `prefetchCatalogs` (App.svelte) same as `modelsQuery`/`teamsQuery`; the
+ * Edit details modal (`MetadataDetails`) instead gates it on its own `open`
+ * state via a local writable/derived pair (same "only fetch once actually
+ * needed" idiom `slackManifestQuery` documents), since most agent-detail
+ * visits never open that modal.
+ */
+export function teamOptionsQuery() {
+  return queryOptions({
+    queryKey: ["teams"] as const,
+    queryFn: fetchTeamOptions,
   });
 }
 
@@ -620,6 +651,45 @@ export function saveSlackChannelsMutation(
 }
 
 /**
+ * Edit details' save (persona-metadata plan Task 3/4): PATCHes whichever of
+ * team/purpose_tags/capability are submitted; on success, invalidates the
+ * agent detail query so the saved values (and the card's fresh delivery
+ * sha) become visible. The response itself already carries the saved
+ * values plus `sha`, so `MetadataDetails` re-seeds its own draft state from
+ * the result directly rather than waiting on the invalidated refetch.
+ */
+export function patchMetadataMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (body: {
+      team?: string;
+      purpose_tags?: string[];
+      capability?: string;
+    }) => patchAgentMetadata(name, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+    },
+  };
+}
+
+/**
+ * Regenerates the agent's capability line against its current skills/
+ * tooling; on success, invalidates the agent detail query, same shape as
+ * `patchMetadataMutation` above. No arguments beyond the agent name itself —
+ * `team`/`purpose_tags` are untouched by regenerate.
+ */
+export function regenerateMetadataMutation(
+  queryClient: QueryClient,
+  name: string,
+) {
+  return {
+    mutationFn: () => regenerateAgentMetadata(name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+    },
+  };
+}
+
+/**
  * Generates (or regenerates) the agent's picture; on success, invalidates
  * the agent list query. Unlike `connectSlackMutation`/`saveSlackChannelsMutation`
  * above (which invalidate only the detail key, since the list carries no
@@ -643,6 +713,7 @@ export function generateAvatarMutation(queryClient: QueryClient, name: string) {
 // import from api.ts just to type their component-level state.
 export type {
   AgentDetail,
+  AgentMetadata,
   AgentSkill,
   AgentSlack,
   AgentSummary,
@@ -654,6 +725,7 @@ export type {
   OrgStatus,
   PersonaDraft,
   PersonaForm,
+  TeamOptions,
   ToolingEnforcement,
   ToolingFile,
   ToolingListResponse,
