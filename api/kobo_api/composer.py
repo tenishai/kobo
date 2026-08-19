@@ -196,6 +196,7 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
         return _FlowDict(provider="none", allow=[])
     return _FlowDict(
         provider="colleagues",
+        allow=_FlowList(["colleagues.list_colleagues", "colleagues.ask_colleague"]),
         colleagues=_FlowDict(
             url=_DoubleQuoted(spec.cabal_url),
             token_env=CABAL_COLLEAGUE_TOKEN_ENV,
@@ -520,7 +521,8 @@ def update_agent_yaml_tools(
         raise ClientError(f"agent.yaml not found: {agent_yaml_path}") from exc
 
     replacement = (
-        "tools: {provider: colleagues, colleagues: "
+        "tools: {provider: colleagues, allow: [colleagues.list_colleagues, "
+        "colleagues.ask_colleague], colleagues: "
         f'{{url: "{url}", token_env: {token_env}, self: "{self_name}"}}}}'
     )
 
