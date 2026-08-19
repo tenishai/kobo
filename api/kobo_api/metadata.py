@@ -214,12 +214,23 @@ def commit_card_metadata(
     the caller's to handle (HelloStep's tail logs and leaves the card
     uncommitted; the PATCH/regenerate routes answer 502), never swallowed
     here the way `generate_capability`'s own model failures are.
+
+    `capability or ""` (fix round 2, whole-arc review residual): the DB
+    column this flows from (`Agent.capability`) is nullable and stays
+    `None` until earned, and a team-only PATCH on an unearned agent passes
+    that `None` straight through as `capability` here — without
+    normalizing, the card would end up with a literal `null` where compose
+    itself always bakes `""` (`kobo_api.composer._agent_card`). Normalizing
+    at this seam, the one place every caller's capability value converges
+    before it's written into the card payload, keeps an unearned agent's
+    card byte-identical to what compose produced, regardless of which
+    caller (PATCH, regenerate, HelloStep's tail) passed it through.
     """
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         github.clone(repo, workdir)
         update_agent_card_metadata(
-            workdir / "bundle", team=team, purpose_tags=purpose_tags, capability=capability
+            workdir / "bundle", team=team, purpose_tags=purpose_tags, capability=capability or ""
         )
         github.commit_push(workdir, "kobo: directory details updated")
         return github.local_head(workdir)

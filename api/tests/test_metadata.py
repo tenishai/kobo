@@ -387,3 +387,27 @@ def test_commit_card_metadata_raises_client_error_on_clone_failure():
 
     with pytest.raises(ClientError):
         commit_card_metadata(github, REPO, team="acme-team", purpose_tags=[], capability="Helps.")
+
+
+def test_commit_card_metadata_normalizes_none_capability_to_empty_string(tmp_path):
+    # Fix round 2 (whole-arc review) residual: a team-only PATCH on an
+    # unearned agent passes `agent.capability` (nullable, still None until
+    # earned) straight through as `capability`. Without normalizing, that
+    # writes a literal `null` into the card's `metadata.capability` — out of
+    # step with compose's own baked default (`""`, kobo_api.composer.
+    # _agent_card). commit_card_metadata's card-commit seam must normalize
+    # `capability or ""` so an unearned agent's card always reads "", never
+    # null, matching compose parity exactly.
+    captured = {}
+
+    class _CapturingGitHub(FakeGitHub):
+        def commit_push(self, workdir, message):
+            card = json.loads((workdir / "bundle" / "agent-card.json").read_text())
+            captured["metadata"] = card["metadata"]
+            return super().commit_push(workdir, message)
+
+    github = _CapturingGitHub()
+
+    commit_card_metadata(github, REPO, team="acme-team", purpose_tags=[], capability=None)
+
+    assert captured["metadata"]["capability"] == ""

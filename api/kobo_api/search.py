@@ -75,6 +75,71 @@ def ensure_fts(engine: Engine) -> None:
         )
 
 
+# Catalog-index path precedence (fix round 2, whole-arc review): a real
+# marketplace bucket ships its catalog at `catalog/catalog.json`, NOT
+# `index.json` — Task 1b's dialect sniffing (`_is_marketplace_dialect`
+# below) correctly recognized the marketplace SHAPE but was applied only at
+# the legacy PATH. `index.json` is tried first and wins whenever both exist
+# — legacy wins because every bucket kobo has ever ingested from already
+# speaks that contract, so this order is a strict zero-behavior-change
+# guarantee for all of them; only a bucket that has never carried
+# `index.json` at all (a bare marketplace layout) falls through to
+# `catalog/catalog.json`. Shared by every catalog-index reader in this
+# codebase — `_read_catalog_json`/`catalog_index_metadata` below, both of
+# which `kobo_api.main._skills_index_check` and the ingest/fetch-path
+# readers resolve a catalog's index through — so none of them can drift
+# into disagreeing about which path a catalog's "something is published"
+# means.
+_LEGACY_CATALOG_KEY = "index.json"
+_MARKETPLACE_CATALOG_KEY = "catalog/catalog.json"
+
+
+def _read_catalog_json(
+    storage: StorageClient, bucket: str, prefix: str = ""
+) -> tuple[str, dict | list]:
+    """The parsed JSON body of one catalog's index: `<prefix>index.json` if
+    present, else `<prefix>catalog/catalog.json` (fix round 2's marketplace
+    layout). Returns `(key, parsed)` — which of the two paths won, and its
+    parsed JSON body — the single definition `_load_catalog_entries` and
+    `read_marketplace_catalog` both resolve a catalog's index through, so
+    the two can never independently drift on path order.
+
+    Raises `StorageNotFound` when NEITHER path exists — the second
+    attempt's own `StorageNotFound` propagates unchanged, same "nothing
+    published yet" signal a single-path reader always raised. A
+    `json.JSONDecodeError` from either read is never caught here — each of
+    this module's two callers has its own decode-failure semantics (loud
+    for the legacy ingest path, soft/None for the fetch-path probe),
+    preserved by simply letting the exception propagate to whichever call
+    site is waiting for it.
+    """
+    key = f"{prefix}{_LEGACY_CATALOG_KEY}"
+    try:
+        data = storage.read_bytes(bucket, key)
+    except StorageNotFound:
+        key = f"{prefix}{_MARKETPLACE_CATALOG_KEY}"
+        data = storage.read_bytes(bucket, key)
+    return key, json.loads(data)
+
+
+def catalog_index_metadata(storage: StorageClient, bucket: str, prefix: str = "") -> dict:
+    """`object_metadata` for whichever catalog-index key `bucket` actually
+    carries — the same `<prefix>index.json`-then-`<prefix>catalog/
+    catalog.json` precedence `_read_catalog_json` uses (fix round 2),
+    factored apart from it only because this caller (`kobo_api.main.
+    _skills_index_check`'s existence probe) needs no JSON body at all, just
+    presence plus the object's own server-set `updated` field — reusing the
+    identical two-key order guarantees this can never disagree with the
+    ingest/fetch-path readers above about what "this catalog has something
+    published" means. Raises `StorageNotFound` when neither key exists,
+    same as `_read_catalog_json`.
+    """
+    try:
+        return storage.object_metadata(bucket, f"{prefix}{_LEGACY_CATALOG_KEY}")
+    except StorageNotFound:
+        return storage.object_metadata(bucket, f"{prefix}{_MARKETPLACE_CATALOG_KEY}")
+
+
 def _is_marketplace_dialect(parsed: object) -> bool:
     """Shape sniff, not a config flag: the marketplace dialect (persona-
     metadata plan Task 1b) is a top-level JSON object with a dict-shaped
@@ -96,14 +161,22 @@ def _load_catalog_entries(
 ) -> list[dict]:
     """The validated raw entry dicts for one catalog's `<prefix>index.json`.
 
-    An unset bucket name or a `StorageNotFound` (no index published yet)
-    both contribute zero entries -- a normal, expected state for an unwired
-    or not-yet-published catalog, only logged, never raised. Anything else
+    An unset bucket name or a `StorageNotFound` (no index published yet at
+    EITHER of the two catalog-index paths `_read_catalog_json` tries) both
+    contribute zero entries -- a normal, expected state for an unwired or
+    not-yet-published catalog, only logged, never raised. Anything else
     wrong with the LEGACY-dialect object -- invalid JSON, a missing
     `entries` list, or an entry missing a required field -- raises
     `ClientError` naming the bucket, since that's a real publish-side
     problem the caller (the refresh route) needs to surface, not silently
     swallow.
+
+    Catalog-index path (fix round 2, whole-arc review): `_read_catalog_json`
+    tries `<prefix>index.json` first, falling through to `<prefix>catalog/
+    catalog.json` (the marketplace bucket's real layout) only when the
+    former isn't there at all -- see that function's own docstring for the
+    full precedence rationale. Whichever path wins, the shape sniffing below
+    is unchanged.
 
     Dialect sniffing (persona-metadata plan Task 1b): once the bytes parse
     as JSON, the shape decides which of two readers handles them --
@@ -117,15 +190,9 @@ def _load_catalog_entries(
         log.info("catalog ingest: no %s bucket configured -- 0 entries", kind)
         return []
 
-    key = f"{prefix}index.json"
     try:
-        data = storage.read_bytes(bucket, key)
-    except StorageNotFound:
-        log.info("catalog ingest: no %s at %s/%s yet -- 0 entries", key, bucket, key)
-        return []
+        _key, parsed = _read_catalog_json(storage, bucket, prefix)
 
-    try:
-        parsed = json.loads(data)
         if _is_marketplace_dialect(parsed):
             return _load_marketplace_entries(parsed["skills"], kind)
 
@@ -148,8 +215,11 @@ def _load_catalog_entries(
                 }
             )
         return entries
+    except StorageNotFound:
+        log.info("catalog ingest: no %s index published in %s yet -- 0 entries", kind, bucket)
+        return []
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
-        raise ClientError(f"malformed index.json in bucket {bucket!r}: {exc}") from exc
+        raise ClientError(f"malformed catalog index in bucket {bucket!r}: {exc}") from exc
 
 
 def _load_marketplace_entries(skills: Mapping[str, object], kind: str) -> list[dict]:
@@ -232,28 +302,30 @@ def _load_marketplace_entries(skills: Mapping[str, object], kind: str) -> list[d
 def read_marketplace_catalog(
     storage: StorageClient, bucket: str, prefix: str = ""
 ) -> dict[str, dict] | None:
-    """The marketplace-dialect `skills` mapping at `<prefix>index.json` in
-    `bucket`, or `None` when the bucket doesn't speak that dialect (legacy
-    list-shaped index, no index.json published yet, or unreadable JSON).
+    """The marketplace-dialect `skills` mapping at `bucket`'s catalog index,
+    or `None` when the bucket doesn't speak that dialect (legacy
+    list-shaped index, no index published at either catalog-index path, or
+    unreadable JSON).
 
-    This is the attach-time fetch path's dialect probe
-    (`kobo_api.steps._stage_skills`): the FTS row shape ingestion feeds
-    (id, name, description, team, tags, kind, sha, builtin) is deliberately
-    fixed and carries no room for a per-entry `version` or a dialect
-    marker, so rather than threading either through it, the fetch path
-    re-reads and re-sniffs the exact same object `_load_catalog_entries`
-    already sniffed at ingest time, through the identical shape predicate
-    (`_is_marketplace_dialect`) -- one definition of "what marketplace
-    dialect looks like" in this codebase, asked fresh whenever attach needs
-    the answer, never two independently-maintained ones.
+    Catalog-index path (fix round 2, whole-arc review): resolved via
+    `_read_catalog_json` -- `<prefix>index.json` tried first, falling
+    through to `<prefix>catalog/catalog.json` (the marketplace bucket's real
+    layout) only when the former isn't there at all. This is the attach-time
+    fetch path's dialect probe (`kobo_api.steps._stage_skills`): the FTS row
+    shape ingestion feeds (id, name, description, team, tags, kind, sha,
+    builtin) is deliberately fixed and carries no room for a per-entry
+    `version` or a dialect marker, so rather than threading either through
+    it, the fetch path re-reads and re-sniffs the exact same object
+    `_load_catalog_entries` already sniffed at ingest time, through the
+    identical shape predicate (`_is_marketplace_dialect`) -- one definition
+    of "what marketplace dialect looks like" in this codebase, asked fresh
+    whenever attach needs the answer, never two independently-maintained
+    ones.
     """
-    key = f"{prefix}index.json"
     try:
-        data = storage.read_bytes(bucket, key)
+        _key, parsed = _read_catalog_json(storage, bucket, prefix)
     except StorageNotFound:
         return None
-    try:
-        parsed = json.loads(data)
     except json.JSONDecodeError:
         return None
     if not _is_marketplace_dialect(parsed):

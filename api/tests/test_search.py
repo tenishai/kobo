@@ -902,3 +902,77 @@ def test_read_marketplace_catalog_returns_none_when_index_missing(engine):
 def test_read_marketplace_catalog_returns_none_on_malformed_json(engine):
     storage = FakeStorage(buckets={"skills-bucket": {"index.json": (b"not json", {})}})
     assert read_marketplace_catalog(storage, "skills-bucket") is None
+
+
+# --- Fix round 2 (whole-arc review): the marketplace bucket's REAL catalog --
+# --- path is `catalog/catalog.json`, not `index.json` -----------------------
+#
+# Task 1b's dialect sniffing (above) was applied to the right shape at the
+# wrong object path — a real marketplace bucket never carries `index.json`
+# at all, it ships `catalog/catalog.json`. `index.json` is tried FIRST and
+# wins whenever both exist (legacy wins because existing room buckets must
+# never change behavior — every bucket kobo has ever ingested from already
+# speaks that contract); only a bucket that has never carried `index.json`
+# falls through to `catalog/catalog.json`.
+
+
+def _catalog_json_only_storage(skills: dict, *, bucket: str = "skills-bucket") -> FakeStorage:
+    """A bucket carrying ONLY `catalog/catalog.json` — no `index.json` key
+    at all — the real marketplace layout this fix round makes ingestible.
+    """
+    return FakeStorage(buckets={bucket: {"catalog/catalog.json": (_marketplace_index_bytes(skills), {})}})
+
+
+def test_ingest_resolves_catalog_json_when_index_json_absent(engine):
+    storage = _catalog_json_only_storage(
+        {
+            "code-review": {
+                "name": "Code review",
+                "version": "3",
+                "description": "Reviews pull requests for quality issues",
+                "tags": ["review", "quality"],
+                "content_hash": "abc123",
+                "owner": "growth",
+            }
+        }
+    )
+    counts = ingest_indexes(engine, storage, {"skill": "skills-bucket"})
+    assert counts == {"skill": 1}
+    entry = get_entry(engine, "skill", "code-review", "growth")
+    assert entry is not None
+    assert entry.name == "Code review"
+
+
+def test_read_marketplace_catalog_resolves_catalog_json_when_index_json_absent(engine):
+    storage = _catalog_json_only_storage(
+        {"code-review": {"name": "Code review", "version": "3", "description": "d", "tags": []}}
+    )
+    catalog = read_marketplace_catalog(storage, "skills-bucket")
+    assert catalog is not None
+    assert catalog["code-review"]["version"] == "3"
+
+
+def test_both_present_index_json_wins(engine):
+    # index.json here is the LEGACY list-shaped dialect, carrying an entry
+    # `catalog/catalog.json` (a marketplace-shaped dict) does not — proof
+    # that when both are present, `index.json` is read and `catalog/
+    # catalog.json` is never even consulted, exactly today's byte-untouched
+    # behavior for every bucket that has always carried `index.json`.
+    storage = FakeStorage(
+        buckets={
+            "skills-bucket": {
+                "index.json": (_index_bytes(SKILL_ENTRIES), {}),
+                "catalog/catalog.json": (
+                    _marketplace_index_bytes(
+                        {"marketplace-only-skill": {"name": "x", "description": "d", "tags": []}}
+                    ),
+                    {},
+                ),
+            }
+        }
+    )
+    counts = ingest_indexes(engine, storage, {"skill": "skills-bucket"})
+    assert counts == {"skill": 2}
+    assert [e.id for e in search(engine, "skill", "")] == ["code-review", "commit-helper"]
+    assert get_entry(engine, "skill", "marketplace-only-skill", "") is None
+    assert "read_bytes:skills-bucket:catalog/catalog.json" not in storage.calls

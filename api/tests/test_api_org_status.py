@@ -286,6 +286,33 @@ def test_missing_skills_index_flips_only_that_check(wired_config, tmp_path, wire
     assert _other_checks_ok(body, "skills-index")
 
 
+def test_skills_index_healthy_via_catalog_json_when_index_json_absent(
+    wired_config, tmp_path, wired_org
+):
+    # Fix round 2 (whole-arc review): the marketplace bucket's real catalog
+    # path is `catalog/catalog.json`, not `index.json` — a bucket carrying
+    # ONLY the former (the real post-flip marketplace layout) must still
+    # report the skills-index check healthy, not "no skills published yet".
+    storage = FakeStorage(
+        buckets={
+            wired_config.skills_bucket: {
+                "catalog/catalog.json": (b'{"skills": {"a": {"name": "a", "description": "d"}}, "count": 1}', {}),
+            },
+            wired_config.personas_bucket: {"index.json": (b'{"entries": [{"id": "a"}]}', {})},
+        }
+    )
+    client = _client(wired_config, _clients(storage=storage), tmp_path, org=wired_org)
+
+    body = client.get("/api/org/status").json()
+
+    check = _check(body, "skills-index")
+    assert check["ok"] is True
+    # Path-agnostic: the healthy detail never names which filename resolved.
+    assert "index.json" not in check["detail"]
+    assert "catalog.json" not in check["detail"]
+    assert _other_checks_ok(body, "skills-index")
+
+
 # --- personas-seeded ---------------------------------------------------------
 
 

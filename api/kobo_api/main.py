@@ -61,6 +61,7 @@ from kobo_api.provisioner import (
 from kobo_api.purpose_tags import clean_tags, decode_tags, encode_tags
 from kobo_api.search import (
     CATALOG_TTL_S,
+    catalog_index_metadata,
     distinct_skill_teams,
     get_entry,
     ingest_indexes,
@@ -656,11 +657,19 @@ def _bucket_check(check_id: str, label: str, clients: Clients | None, bucket: st
 
 
 def _skills_index_check(clients: Clients | None, bucket: str) -> dict:
+    """ok = the skills bucket has a catalog index at either of the two
+    paths `kobo_api.search.catalog_index_metadata` tries (`index.json`,
+    then `catalog/catalog.json` — fix round 2, whole-arc review: the
+    marketplace bucket's real layout). The healthy detail is deliberately
+    path-agnostic (just the object's server-set `updated` timestamp) — this
+    reports wired/unwired, never which filename resolved, so a bucket that
+    flips from one layout to the other reads identically here.
+    """
     check_id, label = "skills-index", "Skills index"
     if not bucket or clients is None or clients.storage is None:
         return {"id": check_id, "label": label, "ok": False, "detail": "not configured"}
     try:
-        meta = clients.storage.object_metadata(bucket, "index.json")
+        meta = catalog_index_metadata(clients.storage, bucket)
     except StorageNotFound:
         return {"id": check_id, "label": label, "ok": False, "detail": "no skills published yet"}
     except ClientError:
