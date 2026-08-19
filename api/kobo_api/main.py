@@ -609,14 +609,15 @@ def _extract_relay_reply(response: dict) -> str:
     The response JSON root may carry the completed task bare, or nested
     under a `"task"` key (this route's own request shape, echoed back) or a
     `"result"` key (the JSON-RPC-style envelope some a2a servers use) — both
-    wrappings are unwrapped first. From whichever parts list
-    `_relay_reply_parts_sources` finds first, the LAST part carrying a
-    `"text"` key wins: the direct path's own single-part fixtures make its
-    `parts[0]` and a list's last part identical, so this is no behavior
-    change for that common case, just tolerance for a richer, multi-part
-    reply.
+    wrappings are unwrapped first. For each parts list `_relay_reply_parts_sources`
+    returns (most-authoritative first), the extraction looks ONLY at `parts[0]`:
+    if it carries a `"text"` key (and the value is a string), that text is
+    returned; if the list is empty or `parts[0]` lacks a `"text"` key, that
+    source is skipped and extraction moves to the next source. This matches
+    the direct path's own semantics, where it does `parts[0]["text"]`
+    unconditionally on the authoritative source.
 
-    Raises `CabalError` when no text part turns up anywhere — the chat
+    Raises `CabalError` when no text part turns up in any source — the chat
     route maps that to the same 502 a genuine relay failure gets, since
     either way the switchboard didn't hand back something usable.
     """
@@ -631,9 +632,8 @@ def _extract_relay_reply(response: dict) -> str:
         raise CabalError("malformed switchboard reply: not a task object")
 
     for parts in _relay_reply_parts_sources(task):
-        for part in reversed(parts):
-            if isinstance(part, dict) and isinstance(part.get("text"), str):
-                return part["text"]
+        if parts and isinstance(parts[0], dict) and isinstance(parts[0].get("text"), str):
+            return parts[0]["text"]
 
     raise CabalError("malformed switchboard reply: no text part found")
 

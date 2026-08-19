@@ -1190,8 +1190,18 @@ def test_chat_relay_envelope_matches_the_shared_builder_verbatim(
         ),
         pytest.param(
             {"status": {"message": {"parts": [{"text": "first"}, {"text": "last"}]}}},
-            "last",
-            id="multiple-parts-takes-the-last-one",
+            "first",
+            id="multiple-parts-takes-the-first-one",
+        ),
+        pytest.param(
+            {
+                "status": {"message": {"parts": [{"other_key": "value"}]}},
+                "history": [
+                    {"role": "agent", "parts": [{"text": "from history"}]},
+                ],
+            },
+            "from history",
+            id="skips-source-when-first-part-lacks-text",
         ),
         pytest.param(
             {
