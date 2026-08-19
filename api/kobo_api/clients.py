@@ -972,18 +972,34 @@ def _wait_for_forwarded_port(reader, timeout_s: float = 10.0) -> int:
             return int(match.group(1))
 
 
+def _to_a2a_message(message: ChatMessage) -> dict:
+    return {
+        "kind": "message",
+        "role": message["role"],
+        "parts": [{"kind": "text", "text": message["text"]}],
+    }
+
+
 def _build_task_envelope(messages: list[ChatMessage]) -> dict:
+    """Build the a2a task envelope for `messages`, in the switchboard's own
+    dialect (live-verified against the deployed switchboard): the Task
+    model requires a `status` field, and its convention is that
+    `status.message` carries the CURRENT (last) turn while `history` holds
+    only the turns that came before it, never the current one.
+
+    A single message (the common case, e.g. `HelloStep`'s first-contact
+    turn) has no prior turns, so `history` comes back `[]`; the message
+    itself lands entirely in `status.message`.
+    """
+    *prior, current = messages
     return {
         "kind": "task",
         "id": f"chat-{uuid.uuid4().hex}",
-        "history": [
-            {
-                "kind": "message",
-                "role": message["role"],
-                "parts": [{"kind": "text", "text": message["text"]}],
-            }
-            for message in messages
-        ],
+        "status": {
+            "state": "submitted",
+            "message": _to_a2a_message(current),
+        },
+        "history": [_to_a2a_message(message) for message in prior],
     }
 
 

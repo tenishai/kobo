@@ -1464,28 +1464,46 @@ def test_wait_for_forwarded_port_times_out_without_the_line():
 
 
 def test_build_task_envelope_shape_single_turn():
+    # A single message is the CURRENT turn -> status.message, not history.
+    # The switchboard's Task model requires `status`; its convention is
+    # that `status.message` carries the latest turn while `history` holds
+    # only what came before it.
     envelope = _build_task_envelope([{"role": "user", "text": "are you there?"}])
     assert envelope["kind"] == "task"
     assert envelope["id"].startswith("chat-")
     assert len(envelope["id"]) == len("chat-") + 32  # uuid4().hex
-    assert envelope["history"] == [
-        {"kind": "message", "role": "user", "parts": [{"kind": "text", "text": "are you there?"}]}
-    ]
+    assert envelope["status"] == {
+        "state": "submitted",
+        "message": {
+            "kind": "message",
+            "role": "user",
+            "parts": [{"kind": "text", "text": "are you there?"}],
+        },
+    }
+    assert envelope["history"] == []
 
 
 def test_build_task_envelope_shape_multi_turn():
-    # Two user turns plus one agent reply in between -> three history
-    # entries in the same order, each mapped to the verified message shape.
+    # Two user turns plus one agent reply in between -> the LAST message
+    # (the current turn) lands in status.message; the two PRIOR turns land
+    # in history, same order, each mapped to the verified message shape.
     messages: list[ChatMessage] = [
         {"role": "user", "text": "hi"},
         {"role": "agent", "text": "hello yourself"},
         {"role": "user", "text": "how are you?"},
     ]
     envelope = _build_task_envelope(messages)
+    assert envelope["status"] == {
+        "state": "submitted",
+        "message": {
+            "kind": "message",
+            "role": "user",
+            "parts": [{"kind": "text", "text": "how are you?"}],
+        },
+    }
     assert envelope["history"] == [
         {"kind": "message", "role": "user", "parts": [{"kind": "text", "text": "hi"}]},
         {"kind": "message", "role": "agent", "parts": [{"kind": "text", "text": "hello yourself"}]},
-        {"kind": "message", "role": "user", "parts": [{"kind": "text", "text": "how are you?"}]},
     ]
 
 
@@ -1503,7 +1521,10 @@ def test_post_task_sends_envelope_and_extracts_reply():
     reply = _post_task(client, 54321, [{"role": "user", "text": "hello?"}])
 
     assert captured["url"] == "http://127.0.0.1:54321/a2a/tasks"
-    assert captured["body"]["history"][0]["parts"][0]["text"] == "hello?"
+    # single message -> the current turn, so it rides status.message; history
+    # (only prior turns) is empty.
+    assert captured["body"]["status"]["message"]["parts"][0]["text"] == "hello?"
+    assert captured["body"]["history"] == []
     assert reply == "hi there"
 
 
@@ -1740,11 +1761,13 @@ def test_agent_hello_terminates_port_forward_on_success(monkeypatch):
 
     assert reply == "hi there"
     # hello() now shares converse()'s _send_task path, so its envelope also
-    # carries the chat- id prefix and a single-turn user history entry.
+    # carries the chat- id prefix; a single turn is the CURRENT turn, so it
+    # rides status.message and history is empty.
     assert captured["body"]["id"].startswith("chat-")
-    assert captured["body"]["history"] == [
-        {"kind": "message", "role": "user", "parts": [{"kind": "text", "text": "hello?"}]}
-    ]
+    assert captured["body"]["status"]["message"] == {
+        "kind": "message", "role": "user", "parts": [{"kind": "text", "text": "hello?"}]
+    }
+    assert captured["body"]["history"] == []
     assert fake_proc.terminated is True
     assert fake_proc.waited is True
 
@@ -1793,10 +1816,14 @@ def test_agent_converse_sends_multi_turn_history_and_terminates_port_forward(mon
 
     assert reply == "still here"
     assert captured["body"]["id"].startswith("chat-")
+    # the LAST message is the current turn -> status.message; the two prior
+    # turns land in history, same order.
+    assert captured["body"]["status"]["message"] == {
+        "kind": "message", "role": "user", "parts": [{"kind": "text", "text": "how are you?"}]
+    }
     assert captured["body"]["history"] == [
         {"kind": "message", "role": "user", "parts": [{"kind": "text", "text": "hi"}]},
         {"kind": "message", "role": "agent", "parts": [{"kind": "text", "text": "hello yourself"}]},
-        {"kind": "message", "role": "user", "parts": [{"kind": "text", "text": "how are you?"}]},
     ]
     assert fake_proc.terminated is True
     assert fake_proc.waited is True
