@@ -19,6 +19,7 @@ import pytest
 import yaml
 
 from kobo_api.clients import CabalError, ClientError, Clients
+from kobo_api.config import Config, ModelChoice
 from kobo_api.models import Agent
 from kobo_api.provisioner import Ctx
 from kobo_api.steps import (
@@ -179,6 +180,64 @@ def test_wire_step_edits_gojira_yaml_contract_with_exact_fs_group(session_factor
     assert gojira_yaml["app"] == AGENT_NAME
     assert gojira_yaml["class"] == "agent"
     assert gojira_yaml["environments"][0]["namespace"] == AGENT_NAME
+
+
+def test_wire_step_gojira_yaml_uses_model_specific_vertex_location(session_factory, tmp_path):
+    """Gemini-3.1-Pro-Preview arc: the VERTEXAI_LOCATION env `_update_gojira_
+    yaml` writes is what actually reaches the deployed pod, so it must honor
+    a model's own `location` override the same way RepoStep's BundleSpec
+    does — a regional-only env var here would still 404 against a
+    global-only preview even though the composed bundle carries the right
+    value."""
+    gemini_model_id = "vertex_ai/gemini-3.1-pro-preview"
+    config = Config(
+        workdir=tmp_path / "work",
+        vertex_location="us-east5",
+        models=[
+            ModelChoice(id=MODEL_ID, label="Claude Sonnet 4.5"),
+            ModelChoice(id=gemini_model_id, label="Gemini 3.1 Pro Preview", location="global"),
+        ],
+    )
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(
+        session_factory, model_id=gemini_model_id, repo_full_name=repo, gojira_app_id=1
+    )
+    github = FakeGitHub()
+    gojira = FakeGojira(activate_after=1)
+    gojira.create_app(
+        name=AGENT_NAME, repo_full_name=repo, cluster=config.gojira_cluster, namespace=AGENT_NAME
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github, gojira=gojira))
+
+    WireStep().run(ctx)
+
+    gojira_yaml = yaml.safe_load((ctx.workdir / "wire" / "gojira.yaml").read_text())
+    assert gojira_yaml["env"] == {
+        "VERTEXAI_PROJECT": config.vertex_project,
+        "VERTEXAI_LOCATION": "global",
+    }
+
+
+def test_wire_step_gojira_yaml_keeps_org_default_for_model_without_location(
+    session_factory, config
+):
+    """Companion default case: a model with no `location` override (the
+    fixture's default MODEL_ID, and every Claude partner model) still wires
+    `config.vertex_location` into gojira.yaml, unchanged from before this
+    field existed."""
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=1)
+    github = FakeGitHub()
+    gojira = FakeGojira(activate_after=1)
+    gojira.create_app(
+        name=AGENT_NAME, repo_full_name=repo, cluster=config.gojira_cluster, namespace=AGENT_NAME
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github, gojira=gojira))
+
+    WireStep().run(ctx)
+
+    gojira_yaml = yaml.safe_load((ctx.workdir / "wire" / "gojira.yaml").read_text())
+    assert gojira_yaml["env"]["VERTEXAI_LOCATION"] == config.vertex_location
 
 
 def test_wire_step_reprovisions_and_waits_active_when_push_changed_something(session_factory, config):

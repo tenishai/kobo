@@ -665,7 +665,13 @@ def _update_gojira_yaml(gojira_yaml_path, agent, config) -> None:
     data["service_account"] = f"agent-{agent.name}"
     data["env"] = {
         "VERTEXAI_PROJECT": config.vertex_project,
-        "VERTEXAI_LOCATION": config.vertex_location,
+        # Model-specific Vertex location (Gemini-3.1-Pro-Preview arc): this
+        # is the env var the deployed pod's own LiteLLM client actually
+        # reads, so it must resolve through the same vertex_location_for
+        # lookup RepoStep's BundleSpec.vertex_location uses at compose time
+        # — never config.vertex_location directly, or a global-only preview
+        # would still 404 against the org's regional default at runtime.
+        "VERTEXAI_LOCATION": vertex_location_for(config, agent.model_id),
     }
     data["data_mount"] = {
         "pvc": f"agent-{agent.name}-techne",
