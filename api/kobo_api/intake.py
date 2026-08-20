@@ -79,6 +79,7 @@ def upload_intake_file(
     content: str,
     *,
     runtime_image: str | None = None,
+    archive_only: bool = False,
 ) -> str:
     """Write (or overwrite) `bundle/intake/<filename>` and push it.
 
@@ -105,6 +106,39 @@ def upload_intake_file(
     wire_slack` already makes for the sibling runtime-bump incident there.
     `None` (the default) skips the edit entirely, unchanged from before this
     parameter existed — every pre-existing caller is unaffected.
+
+    `archive_only` (the rebuild-per-memory fix): every agent repo's
+    generated CI runs build-and-deploy on EVERY push, and the Deployment
+    uses the Recreate strategy — a bare `Recreate` tears the old pod down
+    before the new one comes up, so any push here that triggers CI hard-
+    rotates the agent's pod minutes later. That's the right price for a
+    push that actually changes what boots (a new intake file for the
+    seeder to ingest, or a re-pinned runtime image), but `kobo_api.main.
+    _archive_teach_note` calls this function AFTER the note has already
+    been relayed straight into the agent's live memory — the commit here is
+    purely a repo-side mirror of content the pod already has. Rebuilding
+    for it would just be downtime bought for nothing: the memory was
+    already stored and is already sha-ledgered in the runtime's own
+    records, so the pod that would replace it needs nothing from this push
+    to serve the very note it's supposedly delivering.
+    `archive_only=True` marks that commit with a trailing `[skip ci]`,
+    which GitHub Actions honors natively on push events (no workflow-side
+    change needed) — UNLESS a real Dockerfile re-pin rides along in the
+    same push. A pin change is read directly off the clone (compare the
+    Dockerfile's bytes before and after `update_dockerfile_runtime_image`
+    runs — that edit is idempotent by construction, so "before == after"
+    means nothing on disk actually changed), not inferred from
+    `runtime_image is not None`, because the false-ingested-window fix
+    means an already-current repo passes a non-None `runtime_image` on
+    every call without ever changing a byte. A pin that DID change is a
+    delivery no lane gets to suppress: the old image predates the runtime's
+    intake-seeder support, so its rebuild is exactly the "code-shaped
+    change" the fast-memory-lane spec still wants CI for, even on a commit
+    `archive_only` would otherwise mark skippable. `archive_only=False`
+    (the default) never emits `[skip ci]` — every pre-existing caller
+    (the plain intake upload route, and the teach route's own
+    synchronous archive-lane fallback, whose upload IS the delivery
+    because no relay ever reached the agent) is unaffected.
     """
     _validate_filename(filename)
     _validate_content(content)
@@ -114,9 +148,20 @@ def upload_intake_file(
         intake_dir = workdir / "bundle" / "intake"
         intake_dir.mkdir(parents=True, exist_ok=True)
         (intake_dir / filename).write_text(content, encoding="utf-8")
+
+        pin_changed = False
         if runtime_image is not None:
-            update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
-        github.commit_push(workdir, f"kobo: add intake/{filename}")
+            dockerfile_path = workdir / "Dockerfile"
+            before = dockerfile_path.read_text()
+            update_dockerfile_runtime_image(dockerfile_path, runtime_image)
+            pin_changed = dockerfile_path.read_text() != before
+
+        if archive_only and not pin_changed:
+            message = f"kobo: archive intake/{filename} [skip ci]"
+        else:
+            message = f"kobo: add intake/{filename}"
+
+        github.commit_push(workdir, message)
         return github.local_head(workdir)
 
 

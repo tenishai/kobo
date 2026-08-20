@@ -2086,7 +2086,18 @@ def create_app(
         """The background archive lane. Failure is logged, never surfaced:
         the memory is already stored in the agent; only the repo copy is
         missing, and the intake panel simply won't list the file until a
-        later commit lands it."""
+        later commit lands it.
+
+        `archive_only=True`: this only ever runs after the relay above
+        already reported the note "completed" -- the agent has the memory
+        in hand, so this commit is purely a repo-side mirror of it. The
+        agent repo's generated CI rebuilds and (Recreate strategy)
+        hard-rotates the pod on every push; doing that here would just be
+        downtime bought for a memory the pod already has. `upload_intake_
+        file` still keeps the normal, CI-triggering message if a real
+        Dockerfile re-pin rides along in this same push -- that rebuild is
+        wanted regardless of which lane asked for the commit.
+        """
         try:
             upload_intake_file(
                 app.state.clients.github,
@@ -2094,6 +2105,7 @@ def create_app(
                 filename,
                 note,
                 runtime_image=app.state.config.runtime_image,
+                archive_only=True,
             )
         except Exception as exc:
             log.warning(
@@ -2171,6 +2183,13 @@ def create_app(
                 )
                 return JSONResponse({"filename": filename, "mode": "instant"})
 
+        # This is the synchronous archive-lane fallback: it only runs when
+        # the relay above missed entirely, which means the memory was
+        # NEVER stored in the agent -- this upload IS the delivery, not a
+        # mirror of one that already landed. archive_only stays at its
+        # default (False) so the commit keeps its normal, CI-triggering
+        # message: the rebuild it kicks off is the only way this note
+        # actually reaches the agent.
         try:
             sha = upload_intake_file(
                 app.state.clients.github,

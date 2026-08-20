@@ -536,6 +536,93 @@ def test_teach_falls_back_when_reply_state_is_input_required(session_factory, co
     assert list(github.captured_intake.keys()) == [body["filename"]]
 
 
+def test_teach_instant_lane_background_archive_skips_ci_when_pin_current(
+    session_factory, config, monkeypatch
+):
+    # Task (fast-memory-lane skip-ci fix): the background archive commit
+    # after a SUCCESSFUL instant-lane relay must not trigger the agent
+    # repo's generated build-and-deploy CI -- the memory is already live in
+    # the runtime, so the rebuild-and-Recreate-redeploy that CI run would
+    # trigger is pure downtime for content the pod already has. GitHub
+    # Actions honors "[skip ci]" natively on push events.
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub(dockerfile_image=cfg.runtime_image)
+    relay_result = {
+        "status": {
+            "state": "completed",
+            "message": {"parts": [{"text": "noted, thanks"}]},
+        }
+    }
+    fake_cabal = FakeCabal(relay_result=relay_result)
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/teach", json={"text": "always answer in one paragraph"}
+    )
+
+    assert response.status_code == 200
+    filename = response.json()["filename"]
+    assert github.pushes[-1][1] == f"kobo: archive intake/{filename} [skip ci]"
+
+
+def test_teach_instant_lane_background_archive_keeps_ci_when_pin_is_stale(
+    session_factory, config, monkeypatch
+):
+    # Same instant-lane background archive, but the repo's Dockerfile is
+    # still pinned to the OLD runtime image (the false-ingested-window
+    # fixture default): the re-pin that upload_intake_file makes in this
+    # same push actually changes the Dockerfile, so this rebuild is a
+    # wanted delivery and the commit message must stay the normal one, not
+    # [skip ci].
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()  # defaults to FAKE_DOCKERFILE_OLD_IMAGE != cfg.runtime_image
+    relay_result = {
+        "status": {
+            "state": "completed",
+            "message": {"parts": [{"text": "noted, thanks"}]},
+        }
+    }
+    fake_cabal = FakeCabal(relay_result=relay_result)
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/teach", json={"text": "always answer in one paragraph"}
+    )
+
+    assert response.status_code == 200
+    filename = response.json()["filename"]
+    assert github.pushes[-1][1] == f"kobo: add intake/{filename}"
+
+
+def test_teach_archive_lane_fallback_never_skips_ci_even_when_pin_current(
+    session_factory, config, monkeypatch
+):
+    # The archive-lane fallback only runs when the relay missed -- the
+    # memory was NEVER stored in the agent, so this upload_intake_file call
+    # IS the delivery, and its rebuild is wanted. It must keep the normal
+    # commit message even in the one case that could be confused for the
+    # instant lane's archive commit: the Dockerfile already pinned to the
+    # configured runtime image.
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub(dockerfile_image=cfg.runtime_image)
+    fake_cabal = FakeCabal(relay_error="switchboard unreachable")
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/teach", json={"text": "always answer briefly"}
+    )
+
+    assert response.status_code == 200
+    filename = response.json()["filename"]
+    assert github.pushes[-1][1] == f"kobo: add intake/{filename}"
+
+
 def test_teach_without_cabal_is_archive_mode(session_factory, config):
     # No cabal client wired and no switchboard org config set -- today's
     # behavior, plus the added mode field.

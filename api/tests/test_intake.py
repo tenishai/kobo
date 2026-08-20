@@ -213,6 +213,61 @@ def test_upload_intake_file_identical_content_and_already_pinned_from_is_noop():
     assert result == FAKE_LOCAL_HEAD_DEFAULT
 
 
+# --- upload_intake_file: archive_only (skip-ci archive commits) -------------
+#
+# An intake commit that only archives a note already stored in-process
+# (kobo_api.main._archive_teach_note, run as a background task strictly AFTER
+# a successful instant-lane relay) must not trigger the agent repo's
+# generated CI: the memory is already live in the runtime, so a
+# rebuild-and-Recreate-redeploy would be pure downtime for content the pod
+# already has. `archive_only=True` marks exactly that commit -- UNLESS a
+# real Dockerfile re-pin rides along in the same push, which is a wanted
+# delivery no matter which lane asked for the commit.
+
+
+def test_upload_intake_file_archive_only_with_no_runtime_image_skips_ci():
+    github = _CapturingGitHub()
+    upload_intake_file(github, REPO, "notes.md", "content", archive_only=True)
+    assert github.pushes[-1][1] == "kobo: archive intake/notes.md [skip ci]"
+
+
+def test_upload_intake_file_archive_only_false_never_emits_skip_ci():
+    github = _CapturingGitHub()
+    upload_intake_file(github, REPO, "notes.md", "content", archive_only=False)
+    assert github.pushes[-1][1] == "kobo: add intake/notes.md"
+    assert "[skip ci]" not in github.pushes[-1][1]
+
+
+def test_upload_intake_file_archive_only_with_dockerfile_already_pinned_skips_ci():
+    github = _CapturingGitHub(dockerfile_image=RUNTIME_IMAGE)
+    upload_intake_file(
+        github,
+        REPO,
+        "notes.md",
+        "content",
+        runtime_image=RUNTIME_IMAGE,
+        archive_only=True,
+    )
+    assert github.pushes[-1][1] == "kobo: archive intake/notes.md [skip ci]"
+
+
+def test_upload_intake_file_archive_only_with_stale_dockerfile_pin_keeps_ci():
+    # The pin actually changed in this same push -- that's a wanted
+    # delivery, so the commit message stays the normal one even though the
+    # caller asked for archive_only.
+    github = _CapturingGitHub()  # defaults to FAKE_DOCKERFILE_OLD_IMAGE
+    assert FAKE_DOCKERFILE_OLD_IMAGE != RUNTIME_IMAGE
+    upload_intake_file(
+        github,
+        REPO,
+        "notes.md",
+        "content",
+        runtime_image=RUNTIME_IMAGE,
+        archive_only=True,
+    )
+    assert github.pushes[-1][1] == "kobo: add intake/notes.md"
+
+
 # --- delete_intake_file -----------------------------------------------------
 
 
