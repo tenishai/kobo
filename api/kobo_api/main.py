@@ -9,6 +9,7 @@ import re
 import threading
 import time
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import httpx
@@ -36,6 +37,7 @@ from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
 from kobo_api.directory import sync_directory
 from kobo_api.iap import IapMiddleware, IapVerifier
 from kobo_api.intake import (
+    INTAKE_MAX_BYTES,
     IntakeError,
     delete_intake_file,
     list_intake,
@@ -94,6 +96,7 @@ from kobo_api.slack_state import (
 )
 from kobo_api.static_ui import mount_ui
 from kobo_api.steps import _resolve_persona_body
+from kobo_api.teach import format_note, note_filename
 from kobo_api.tooling import (
     ToolingError,
     delete_tooling_file,
@@ -225,6 +228,16 @@ class IntakeUploadPayload(BaseModel):
 
     filename: str
     content: str
+
+
+class TeachPayload(BaseModel):
+    """POST .../teach body: the operator's distilled note straight from a
+    chat exchange. The route formats it (kobo_api.teach.format_note) and
+    names it (kobo_api.teach.note_filename) before handing both to the
+    same intake seam IntakeUploadPayload above already uses; there's no
+    filename here for the caller to pick, unlike that upload."""
+
+    text: str
 
 
 class ToolingUploadPayload(BaseModel):
@@ -1989,6 +2002,80 @@ def create_app(
         return JSONResponse(
             {"sha": sha, "note": "memories are kept. Only the source file was removed"}
         )
+
+    # --- Teach (Task 1: "a chat moment becomes a taught memory") ----------------
+    #
+    # A thin route over the same intake seam above: format the operator's
+    # distilled chat note (kobo_api.teach.format_note), name it
+    # (kobo_api.teach.note_filename), and hand both to upload_intake_file
+    # verbatim, same runtime_image re-pin as the plain upload route (this is
+    # just another way to write into bundle/intake/, so it needs the exact
+    # same false-ingested-window fix). Ready-gated, any signed-in user (no
+    # operator gate) — same reach as the metadata routes above.
+
+    @app.post("/api/agents/{name}/teach")
+    def teach_agent(
+        name: str,
+        payload: TeachPayload,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        text = payload.text
+        if not text.strip():
+            return JSONResponse(
+                {"error": "teach note text must not be empty"}, status_code=422
+            )
+
+        size = len(text.encode("utf-8"))
+        if size > INTAKE_MAX_BYTES:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"teach note text is {size} bytes, exceeds the "
+                        f"{INTAKE_MAX_BYTES}-byte limit"
+                    )
+                },
+                status_code=422,
+            )
+
+        # One canonical "now" for this request, UTC, passed as the same
+        # on_date to both format_note and note_filename below — never two
+        # independently-computed reads that could drift apart across a
+        # midnight rollover.
+        on_date = datetime.now(UTC).date().isoformat()
+        # request.state.iap_email is only ever set by IapMiddleware (active
+        # only when config.iap_audience is non-empty), and even then only
+        # when the verified assertion actually carried an email claim —
+        # getattr's default covers both "IAP disabled entirely" and "IAP on,
+        # claim absent", so the attribution line below is simply omitted
+        # rather than raising or faking a placeholder identity.
+        taught_by = getattr(request.state, "iap_email", None)
+
+        note = format_note(text, taught_by=taught_by, on_date=on_date)
+        filename = note_filename(text, on_date=on_date)
+
+        cfg: Config = app.state.config
+        try:
+            sha = upload_intake_file(
+                app.state.clients.github,
+                agent.repo_full_name,
+                filename,
+                note,
+                runtime_image=cfg.runtime_image,
+            )
+        except IntakeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        except ClientError as exc:
+            log.warning("teach route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
+            )
+
+        return JSONResponse({"filename": filename, "sha": sha})
 
     # --- Tooling (2026-08-13 addendum): the staged door for an agent's --------
     # LAW-to-be — `bundle/tools/*.{py,go}`, validated and delivered, but with
