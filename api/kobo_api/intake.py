@@ -34,7 +34,7 @@ import re
 import tempfile
 from pathlib import Path
 
-from kobo_api.clients import GitHubClient, KubectlClient, image_tag
+from kobo_api.clients import ClientError, GitHubClient, KubectlClient, image_tag
 from kobo_api.composer import update_dockerfile_runtime_image
 
 # 1-40 chars: a lowercase letter, then lowercase/digit/hyphen, then ".md" or
@@ -152,7 +152,10 @@ def upload_intake_file(
         pin_changed = False
         if runtime_image is not None:
             dockerfile_path = workdir / "Dockerfile"
-            before = dockerfile_path.read_text()
+            try:
+                before = dockerfile_path.read_text()
+            except OSError as exc:
+                raise ClientError(f"Dockerfile not found: {dockerfile_path}") from exc
             update_dockerfile_runtime_image(dockerfile_path, runtime_image)
             pin_changed = dockerfile_path.read_text() != before
 

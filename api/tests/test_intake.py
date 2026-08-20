@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from kobo_api.clients import ClientError
 from kobo_api.intake import (
     INTAKE_MAX_BYTES,
     IntakeError,
@@ -211,6 +212,32 @@ def test_upload_intake_file_identical_content_and_already_pinned_from_is_noop():
         "COPY bundle/ /bundle\n"
     )
     assert result == FAKE_LOCAL_HEAD_DEFAULT
+
+
+# --- upload_intake_file: missing Dockerfile (guard against bare exceptions) -----
+#
+# When runtime_image is passed, upload_intake_file reads the Dockerfile to
+# check if the FROM pin actually changed. A missing Dockerfile raises OSError
+# before the ClientError boundary can catch it, so this guard wraps the read
+# and converts OSError to ClientError.
+
+
+def test_upload_intake_file_missing_dockerfile_with_runtime_image_raises_client_error():
+    # A minimal fake GitHub that doesn't write a Dockerfile (unlike the default).
+    class NoDockerfileFakeGitHub(_CapturingGitHub):
+        def clone(self, repo: str, workdir: Path) -> None:
+            # Call the parent to write the standard scaffolding...
+            super().clone(repo, workdir)
+            # ...then delete the Dockerfile so runtime_image read fails.
+            (workdir / "Dockerfile").unlink()
+
+    github = NoDockerfileFakeGitHub()
+    # Attempting to upload with runtime_image should raise ClientError, not FileNotFoundError.
+    with pytest.raises(ClientError):
+        upload_intake_file(
+            github, REPO, "notes.md", "new content", runtime_image=RUNTIME_IMAGE
+        )
+    assert github.pushes == []  # No commit made; error occurred during processing.
 
 
 # --- upload_intake_file: archive_only (skip-ci archive commits) -------------
