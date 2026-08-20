@@ -440,6 +440,13 @@
           paste that channel's ID above.
         </p>
       </li>
+      <li class="slack-panel__step">
+        <p class="slack-panel__step-text">
+          Slack cannot receive the portrait automatically. Download it from the
+          Overview tab, then in Slack open Basic Information, scroll to Display
+          Information, and upload it as the app icon.
+        </p>
+      </li>
     </ol>
 
     <h4 class="slack-panel__section-heading">Then paste back three values</h4>

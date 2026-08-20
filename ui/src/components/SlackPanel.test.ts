@@ -117,12 +117,14 @@ describe("SlackPanel", () => {
     ).not.toBeNull();
   });
 
-  it('adds a final numbered step telling the human to /invite the agent\'s own bot, by name, into each channel', () => {
+  it('adds a numbered step telling the human to /invite the agent\'s own bot, by name, into each channel', () => {
     // The runtime's slack transport never auto-joins channels: a human has
-    // to run /invite themselves. This is the last step in the ceremony,
-    // after the app is installed and both tokens are in hand, and it uses
-    // this agent's actual name (same personalization discipline as the
-    // manifest itself, which is rendered per-agent).
+    // to run /invite themselves. This step comes after the app is installed
+    // and both tokens are in hand, and it uses this agent's actual name
+    // (same personalization discipline as the manifest itself, which is
+    // rendered per-agent). It is no longer the LAST step in the ceremony
+    // (the portrait step below follows it) but it stays the last step that
+    // needs anything pasted back into this form.
     renderWithClient(SlackPanel, {
       agentName: "warden",
       slack: IDLE_SLACK,
@@ -134,6 +136,38 @@ describe("SlackPanel", () => {
         "In each Slack channel you want the agent in, type /invite @warden, then paste that channel's ID above.",
       ),
     ).not.toBeNull();
+  });
+
+  it("adds a final numbered step explaining that Slack has no API for app icons, so the portrait goes on by hand", () => {
+    // Honesty requirement: Slack offers no way to push an app icon
+    // programmatically, so this step tells the human exactly what to do
+    // instead, plain copy, no infra jargon, no em dashes. Pinned verbatim so
+    // a future edit can't accidentally soften this into something
+    // misleading ("it'll sync automatically" or similar).
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: IDLE_SLACK,
+      frozen: false,
+    });
+
+    expect(
+      screen.getByText(
+        "Slack cannot receive the portrait automatically. Download it from the Overview tab, then in Slack open Basic Information, scroll to Display Information, and upload it as the app icon.",
+      ),
+    ).not.toBeNull();
+  });
+
+  it("the portrait step is the last step in the ceremony, after the /invite step", () => {
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: IDLE_SLACK,
+      frozen: false,
+    });
+
+    const steps = document.querySelectorAll(".slack-panel__step");
+    expect(steps.length).toBeGreaterThan(0);
+    const lastStepText = steps[steps.length - 1].textContent ?? "";
+    expect(lastStepText).toContain("Slack cannot receive the portrait automatically");
   });
 
   it('"Show the manifest" fetches lazily via slackManifestQuery, only once opened (not on mount)', async () => {

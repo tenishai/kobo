@@ -21,7 +21,12 @@
   import StepChecklist from "../components/StepChecklist.svelte";
   import ToolingPanel from "../components/ToolingPanel.svelte";
   import { ApiError, errorMessage } from "../lib/api";
-  import { agentQuery, generateAvatarMutation, retryAgentMutation } from "../lib/queries";
+  import {
+    agentQuery,
+    generateAvatarMutation,
+    retryAgentMutation,
+    uploadAvatarMutation,
+  } from "../lib/queries";
   import { formatHash, navigate, route } from "../lib/router.svelte";
   import { isDestroyComplete, isFrozen } from "../lib/status";
   import { defaultTab, TAB_LABELS, visibleTabs, type TabId } from "../lib/tabs";
@@ -37,6 +42,7 @@
   const agent = createQuery(agentQuery(name));
   const retry = createMutation(retryAgentMutation(queryClient, name));
   const generateAvatar = createMutation(generateAvatarMutation(queryClient, name));
+  const uploadAvatar = createMutation(uploadAvatarMutation(queryClient, name));
 
   // Which tab (tabs.ts) is showing. Every panel stays mounted inside its own
   // tabpanel regardless of this value — see the markup below,
@@ -149,6 +155,56 @@
         avatarError = errorMessage(error, "Couldn't paint a face this time.");
       },
     });
+  }
+
+  // Mirrors the server's own upload cap (kobo_api.main.AVATAR_UPLOAD_MAX_BYTES)
+  // and its exact copy, checked here BEFORE anything is read off disk or
+  // posted, so an oversized file never even makes the round trip. A file
+  // that clears this check can still come back a 422 from the server (wrong
+  // content type, or bytes that aren't actually PNG-shaped) — that error
+  // passes through verbatim via `errorMessage` below, same as every other
+  // server-side rejection this page surfaces.
+  const AVATAR_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
+  const AVATAR_TOO_LARGE_MESSAGE = "That image is too large. Two megabytes at most.";
+
+  /** Reads the chosen file's bytes (FileReader, same idiom MemoryPanel/
+   * ToolingPanel use for their own file inputs, `readAsArrayBuffer` rather
+   * than `readAsText` since a PNG isn't text) and PUTs them once read. The
+   * input's own value is cleared right away so picking the exact same file
+   * again (e.g. after shrinking it) still fires a fresh `change` event. */
+  function handleAvatarFileSelect(event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) {
+      return;
+    }
+
+    avatarError = null;
+    avatarNote = null;
+
+    if (file.size > AVATAR_UPLOAD_MAX_BYTES) {
+      avatarError = AVATAR_TOO_LARGE_MESSAGE;
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const bytes = reader.result as ArrayBuffer;
+      $uploadAvatar.mutate(bytes, {
+        onSuccess: (result) => {
+          avatarVersion = result.sha;
+          avatarNote = "Saved. It'll ride along with the next update.";
+        },
+        onError: (error: unknown) => {
+          avatarError = errorMessage(error, "Couldn't save that picture. Try again.");
+        },
+      });
+    };
+    reader.onerror = () => {
+      avatarError = "Couldn't read this file. Try another.";
+    };
+    reader.readAsArrayBuffer(file);
   }
 </script>
 
@@ -277,21 +333,48 @@
               </span>
 
               <div class="composition__avatar-action">
-                <button
-                  type="button"
-                  class="composition__avatar-button"
-                  disabled={isFrozen(data.status) || $generateAvatar.isPending}
-                  onclick={handleGenerateAvatar}
-                >
-                  {#if $generateAvatar.isPending}
-                    <span class="composition__avatar-dot pulse" aria-hidden="true"></span>
-                    Painting…
-                  {:else if data.has_avatar || avatarVersion !== null}
-                    New face
-                  {:else}
-                    Give {data.name} a face
+                <div class="composition__avatar-buttons">
+                  <button
+                    type="button"
+                    class="composition__avatar-button"
+                    disabled={isFrozen(data.status) || $generateAvatar.isPending}
+                    onclick={handleGenerateAvatar}
+                  >
+                    {#if $generateAvatar.isPending}
+                      <span class="composition__avatar-dot pulse" aria-hidden="true"></span>
+                      Painting…
+                    {:else if data.has_avatar || avatarVersion !== null}
+                      New face
+                    {:else}
+                      Give {data.name} a face
+                    {/if}
+                  </button>
+
+                  <label
+                    class="composition__avatar-upload"
+                    class:composition__avatar-upload--disabled={isFrozen(data.status) ||
+                      $uploadAvatar.isPending}
+                  >
+                    {$uploadAvatar.isPending ? "Uploading…" : "Upload a portrait"}
+                    <input
+                      class="composition__avatar-upload-input"
+                      type="file"
+                      accept=".png,image/png"
+                      disabled={isFrozen(data.status) || $uploadAvatar.isPending}
+                      onchange={handleAvatarFileSelect}
+                    />
+                  </label>
+
+                  {#if data.has_avatar || avatarVersion !== null}
+                    <a
+                      class="composition__avatar-download"
+                      href={avatarSrc}
+                      download={`${data.name}-portrait.png`}
+                    >
+                      Download the portrait
+                    </a>
                   {/if}
-                </button>
+                </div>
                 {#if avatarError}
                   <p class="composition__avatar-error" role="alert">{avatarError}</p>
                 {:else if avatarNote}
@@ -511,6 +594,13 @@
     flex-basis: 100%;
   }
 
+  .composition__avatar-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
   .composition__avatar-button {
     padding: var(--space-xs) var(--space-md);
     border: none;
@@ -528,6 +618,59 @@
   .composition__avatar-button:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+  }
+
+  .composition__avatar-upload {
+    display: inline-flex;
+    align-items: center;
+    padding: var(--space-xs) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .composition__avatar-upload:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .composition__avatar-upload--disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .composition__avatar-upload-input {
+    /* Visually hidden, not `display: none` — a `display: none` input never
+       fires focus/keyboard events, which would make the label-wrapped
+       control unreachable by keyboard. */
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    opacity: 0;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+
+  .composition__avatar-download {
+    display: inline-flex;
+    align-items: center;
+    padding: var(--space-xs) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    font-weight: 600;
+    text-decoration: none;
+    cursor: pointer;
+  }
+
+  .composition__avatar-download:hover {
+    border-color: var(--accent);
+    color: var(--accent);
   }
 
   .composition__avatar-dot {

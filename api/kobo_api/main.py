@@ -367,6 +367,17 @@ KNOWLEDGE_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 # not a user-input problem, hence the 502 rather than a 422.
 AVATAR_MAX_BYTES = 4 * 1024 * 1024
 
+# Avatar upload (portrait upload/download): a human-supplied PNG is capped
+# tighter than a generated one (AVATAR_MAX_BYTES above) — this IS a
+# user-input problem, hence the 422 (not 502) below when it's exceeded. Small
+# square icon, 2 MiB is generous.
+AVATAR_UPLOAD_MAX_BYTES = 2 * 1024 * 1024
+
+# The 8-byte PNG file signature ("magic bytes") every real PNG starts with —
+# used to reject anything that isn't at least PNG-shaped (including an empty
+# body) before it's ever pushed to the repo or cached on the Agent row.
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
 
 def _model_label(cfg: Config, model_id: str) -> str:
     """The catalog label for `model_id`, or the raw id itself when it isn't
@@ -2717,6 +2728,61 @@ def create_app(
             # use for this exact class of GitHub-side failure, rather than
             # this exception's own message.
             log.warning("avatar push failed for %s: %s", name, exc)
+            return JSONResponse(
+                {"error": "couldn't save your agent's picture. Try again."}, status_code=502
+            )
+
+        agent.avatar_png = base64.b64encode(png).decode("ascii")
+        session.commit()
+
+        return JSONResponse({"sha": sha})
+
+    @app.put("/api/agents/{name}/avatar")
+    async def upload_avatar(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Human-provided counterpart to `generate_avatar` above: the human
+        supplies the PNG bytes directly (a raw body, Content-Type image/png
+        — no JSON envelope, the whole body IS the picture) rather than one
+        being generated from the persona. No image client involved at all,
+        so this route works even in a room with `clients.image is None`.
+
+        Same ready gate and not-ready copy as generate_avatar, same store
+        (repo push via `set_avatar` + the `avatar_png` DB cache), and the
+        same `{"sha": ...}` response shape — every difference from
+        generate_avatar is in validating what came over the wire, since
+        (unlike generate_avatar's model-produced bytes) this body is
+        untrusted input: wrong Content-Type, not actually PNG-shaped
+        (magic-bytes check, which an empty body also fails), or too big all
+        get a plain-copy 422 rather than generate_avatar's backend-result
+        502 for its own size cap.
+        """
+        agent = _ready_agent_or_error(
+            session, name, not_ready_message="agent is not ready for an avatar yet"
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+        if content_type != "image/png":
+            return JSONResponse({"error": "PNG only for now."}, status_code=422)
+
+        png = await request.body()
+        if not png.startswith(PNG_SIGNATURE):
+            return JSONResponse({"error": "PNG only for now."}, status_code=422)
+
+        if len(png) > AVATAR_UPLOAD_MAX_BYTES:
+            return JSONResponse(
+                {"error": "That image is too large. Two megabytes at most."}, status_code=422
+            )
+
+        clients = app.state.clients
+        try:
+            sha = set_avatar(clients.github, repo=agent.repo_full_name, png=png)
+        except ClientError as exc:
+            # Same push-side failure family (and same copy) as
+            # generate_avatar's own 502 above.
+            log.warning("avatar upload push failed for %s: %s", name, exc)
             return JSONResponse(
                 {"error": "couldn't save your agent's picture. Try again."}, status_code=502
             )

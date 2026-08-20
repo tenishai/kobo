@@ -94,6 +94,7 @@ import {
   searchPersonas,
   searchSkills,
   teachAgent,
+  uploadAvatar,
   uploadIntake,
   uploadTooling,
 } from "./api";
@@ -735,6 +736,21 @@ export function regenerateMetadataMutation(
 export function generateAvatarMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: () => generateAvatar(name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+  };
+}
+
+/**
+ * Uploads a human-provided picture (raw PNG bytes, read client-side from a
+ * file input). Same invalidation as `generateAvatarMutation` above and for
+ * the same reason: `has_avatar` is rendered on both the list (AgentCard) and
+ * the detail (AgentDetail header), so the broad `["agents"]` key covers both.
+ */
+export function uploadAvatarMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (png: ArrayBuffer) => uploadAvatar(name, png),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents"] });
     },

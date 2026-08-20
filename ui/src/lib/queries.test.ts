@@ -37,6 +37,7 @@ import {
   teamsQuery,
   toolingQuery,
   toolingRefetchInterval,
+  uploadAvatarMutation,
   uploadIntakeMutation,
   uploadToolingMutation,
 } from "./queries";
@@ -531,6 +532,44 @@ describe("generateAvatarMutation", () => {
     const queryClient = { invalidateQueries } as unknown as QueryClient;
 
     const mutation = generateAvatarMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents"] });
+  });
+});
+
+describe("uploadAvatarMutation", () => {
+  it("mutationFn delegates to uploadAvatar(name, png)", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ sha: "def456" }),
+    } as Response);
+
+    const queryClient = {
+      invalidateQueries: vi.fn(),
+    } as unknown as QueryClient;
+    const mutation = uploadAvatarMutation(queryClient, "clio");
+    const bytes = new Uint8Array([1, 2, 3]).buffer;
+
+    await expect(mutation.mutationFn(bytes)).resolves.toEqual({ sha: "def456" });
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/avatar", {
+      method: "PUT",
+      headers: { "Content-Type": "image/png" },
+      body: bytes,
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the broad agent-list key on success, same as generateAvatarMutation", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = uploadAvatarMutation(queryClient, "clio");
     mutation.onSuccess();
 
     expect(invalidateQueries).toHaveBeenCalledTimes(1);

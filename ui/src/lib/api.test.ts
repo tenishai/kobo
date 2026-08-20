@@ -25,6 +25,7 @@ import {
   saveSlackChannels,
   searchPersonas,
   searchSkills,
+  uploadAvatar,
 } from "./api";
 
 function jsonResponse(
@@ -671,6 +672,69 @@ describe("avatar client", () => {
 
     await expect(generateAvatar("clio")).rejects.toThrow(
       "the picture didn't come through — try again",
+    );
+  });
+
+  it("uploadAvatar PUTs the raw bytes with an image/png content type and returns {sha}", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ sha: "def456" }));
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]).buffer;
+
+    await expect(uploadAvatar("clio", bytes)).resolves.toEqual({ sha: "def456" });
+
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/avatar", {
+      method: "PUT",
+      headers: { "Content-Type": "image/png" },
+      body: bytes,
+    });
+  });
+
+  it("uploadAvatar encodes the agent name in the URL", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ sha: "def456" }));
+
+    await uploadAvatar("a b", new Uint8Array([1]).buffer);
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/agents/a%20b/avatar",
+      expect.objectContaining({ method: "PUT" }),
+    );
+  });
+
+  it("uploadAvatar surfaces a 422's {error} message verbatim (e.g. PNG only for now.)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "PNG only for now." },
+        { status: 422, statusText: "Unprocessable Entity" },
+      ),
+    );
+
+    await expect(uploadAvatar("clio", new Uint8Array([1]).buffer)).rejects.toThrow(
+      "PNG only for now.",
+    );
+  });
+
+  it("uploadAvatar surfaces the oversize 422's {error} message verbatim", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "That image is too large. Two megabytes at most." },
+        { status: 422, statusText: "Unprocessable Entity" },
+      ),
+    );
+
+    await expect(uploadAvatar("clio", new Uint8Array([1]).buffer)).rejects.toThrow(
+      "That image is too large. Two megabytes at most.",
+    );
+  });
+
+  it("uploadAvatar surfaces a 409's {error} message (agent not ready)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "agent is not ready for an avatar yet" },
+        { status: 409, statusText: "Conflict" },
+      ),
+    );
+
+    await expect(uploadAvatar("clio", new Uint8Array([1]).buffer)).rejects.toThrow(
+      "agent is not ready for an avatar yet",
     );
   });
 });

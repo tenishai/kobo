@@ -933,3 +933,19 @@ export async function generateAvatar(name: string): Promise<{ sha: string }> {
   });
   return parse<{ sha: string }>(res);
 }
+
+/**
+ * Human-provided counterpart to `generateAvatar` above: PUTs the raw PNG
+ * bytes as the entire request body (no JSON envelope, no multipart form) —
+ * matching `PUT /api/agents/{name}/avatar`'s own contract. Same return shape
+ * (`{sha}`) and same cache-busting use (the caller re-derives the `<img
+ * src>` from the returned sha, same as after a generate).
+ */
+export async function uploadAvatar(name: string, png: ArrayBuffer): Promise<{ sha: string }> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/avatar`, {
+    method: "PUT",
+    headers: { "Content-Type": "image/png" },
+    body: png,
+  });
+  return parse<{ sha: string }>(res);
+}

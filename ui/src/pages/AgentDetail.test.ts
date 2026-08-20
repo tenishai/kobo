@@ -348,4 +348,129 @@ describe("AgentDetail tabs", () => {
       );
     }
   });
+
+  it('shows a "Download the portrait" link, with the per-agent filename, when has_avatar is true', async () => {
+    stubFetch({
+      "/api/colleagues/conversations": { conversations: [] },
+      "/api/agents/warden/knowledge": { files: [] },
+      "/api/agents/warden/intake": { files: [] },
+      "/api/agents/warden/skills": { skills: [] },
+      "/api/agents/warden/tooling": {
+        files: [],
+        enforcement: { attested: false, locked: false, locked_file: null },
+      },
+      "/api/agents/warden": { ...READY_AGENT, has_avatar: true },
+      "/api/": {},
+    });
+    renderWithClient(AgentDetail);
+    // A ready agent defaults to the Chat tab (defaultTab, tabs.ts) — every
+    // panel stays mounted but the Overview tabpanel is `hidden` until
+    // switched to, and role queries (unlike getByText) respect that.
+    await fireEvent.click(await screen.findByRole("tab", { name: "Overview" }));
+
+    const link = (await screen.findByRole("link", {
+      name: "Download the portrait",
+    })) as HTMLAnchorElement;
+    expect(link.getAttribute("download")).toBe("warden-portrait.png");
+    expect(link.getAttribute("href")).toContain("/api/agents/warden/avatar");
+  });
+
+  it('hides "Download the portrait" when has_avatar is false (nothing to download yet)', async () => {
+    renderWithClient(AgentDetail);
+    await fireEvent.click(await screen.findByRole("tab", { name: "Overview" }));
+
+    expect(screen.queryByRole("link", { name: "Download the portrait" })).toBeNull();
+  });
+
+  it('a file over the 2 MiB cap shows the plain client-side copy and never PUTs', async () => {
+    renderWithClient(AgentDetail);
+    await fireEvent.click(await screen.findByRole("tab", { name: "Overview" }));
+
+    const oversized = new Uint8Array(2 * 1024 * 1024 + 1);
+    const file = new File([oversized], "too-big.png", { type: "image/png" });
+
+    const input = screen.getByLabelText("Upload a portrait") as HTMLInputElement;
+    await fireEvent.change(input, { target: { files: [file] } });
+
+    expect(
+      await screen.findByText("That image is too large. Two megabytes at most."),
+    ).not.toBeNull();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(
+          ([url, init]) =>
+            String(url).includes("/avatar") && (init as RequestInit | undefined)?.method === "PUT",
+        ),
+    ).toBe(false);
+  });
+
+  it('uploading a valid file shows "Uploading…" while pending, PUTs the exact raw bytes, and lands the saved note on success', async () => {
+    let resolvePut!: (value: Response) => void;
+    const putResponse = new Promise<Response>((resolve) => {
+      resolvePut = resolve;
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/api/agents/warden/avatar") && init?.method === "PUT") {
+          return putResponse;
+        }
+        const routes: Record<string, unknown> = {
+          "/api/colleagues/conversations": { conversations: [] },
+          "/api/agents/warden/knowledge": { files: [] },
+          "/api/agents/warden/intake": { files: [] },
+          "/api/agents/warden/skills": { skills: [] },
+          "/api/agents/warden/tooling": {
+            files: [],
+            enforcement: { attested: false, locked: false, locked_file: null },
+          },
+          "/api/agents/warden": READY_AGENT,
+        };
+        for (const [needle, payload] of Object.entries(routes)) {
+          if (url.includes(needle)) {
+            return new Response(JSON.stringify(payload), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      }),
+    );
+
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Chat" });
+
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    const file = new File([pngBytes], "face.png", { type: "image/png" });
+
+    const input = screen.getByLabelText("Upload a portrait") as HTMLInputElement;
+    await fireEvent.change(input, { target: { files: [file] } });
+
+    expect(await screen.findByText("Uploading…")).not.toBeNull();
+
+    resolvePut(
+      new Response(JSON.stringify({ sha: "cafefeed" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    expect(
+      await screen.findByText("Saved. It'll ride along with the next update."),
+    ).not.toBeNull();
+
+    const putCall = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([url, init]) =>
+          String(url).includes("/avatar") && (init as RequestInit | undefined)?.method === "PUT",
+      );
+    expect(putCall).toBeDefined();
+    const sentBody = (putCall as [RequestInfo | URL, RequestInit])[1].body as ArrayBuffer;
+    expect(new Uint8Array(sentBody)).toEqual(pngBytes);
+  });
 });

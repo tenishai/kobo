@@ -18,7 +18,7 @@ from sqlalchemy.orm import sessionmaker
 from kobo_api.avatars import avatar_prompt
 from kobo_api.clients import ClientError, Clients
 from kobo_api.config import Config
-from kobo_api.main import AVATAR_MAX_BYTES, create_app
+from kobo_api.main import AVATAR_MAX_BYTES, AVATAR_UPLOAD_MAX_BYTES, PNG_SIGNATURE, create_app
 from kobo_api.models import Agent, AgentStatus, Base
 from kobo_api.personas import seed_default_personas
 from tests.fakes import (
@@ -312,6 +312,183 @@ def test_generate_avatar_at_exact_size_cap_is_accepted(session_factory, config):
 
     assert response.status_code == 200
     assert github.captured_avatar_bytes == exact_bytes
+
+
+# --- PUT /api/agents/{name}/avatar (human-provided upload) ------------------------
+
+
+def _put_avatar(client, name, png, *, content_type="image/png"):
+    return client.put(
+        f"/api/agents/{name}/avatar",
+        content=png,
+        headers={"Content-Type": content_type},
+    )
+
+
+def test_upload_avatar_happy_path_pushes_caches_and_returns_sha_same_shape_as_generate(
+    session_factory, config
+):
+    github = _CapturingGitHub()
+    image = FakeImage()
+    client = _make_client(session_factory, config, github=github, image=image)
+    _seed_agent(session_factory, config)
+
+    response = _put_avatar(client, AGENT_NAME, FAKE_IMAGE_PNG_BYTES)
+
+    assert response.status_code == 200
+    assert response.json() == {"sha": FAKE_LOCAL_HEAD_DEFAULT}
+    assert github.captured_avatar_bytes == FAKE_IMAGE_PNG_BYTES
+    assert github.pushes[-1][1] == "kobo: set avatar"
+    # No image client involvement at all on the upload path.
+    assert image.prompts == []
+
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    assert agent.avatar_png == base64.b64encode(FAKE_IMAGE_PNG_BYTES).decode("ascii")
+    session.close()
+
+
+def test_upload_avatar_overwrites_a_previously_generated_picture(session_factory, config):
+    github = _CapturingGitHub()
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(
+        session_factory,
+        config,
+        avatar_png=base64.b64encode(b"\x89PNG\r\n\x1a\nold-generated-bytes").decode("ascii"),
+    )
+
+    response = _put_avatar(client, AGENT_NAME, FAKE_IMAGE_PNG_BYTES)
+
+    assert response.status_code == 200
+    assert github.captured_avatar_bytes == FAKE_IMAGE_PNG_BYTES
+
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    assert agent.avatar_png == base64.b64encode(FAKE_IMAGE_PNG_BYTES).decode("ascii")
+    session.close()
+
+
+def test_upload_avatar_unknown_agent_returns_404(session_factory, config):
+    client = _make_client(session_factory, config)
+
+    response = _put_avatar(client, AGENT_NAME, FAKE_IMAGE_PNG_BYTES)
+
+    assert response.status_code == 404
+    assert "error" in response.json()
+
+
+@pytest.mark.parametrize("status", NON_READY_STATUSES)
+def test_upload_avatar_non_ready_agent_returns_409(session_factory, config, status):
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config, status=status)
+
+    response = _put_avatar(client, AGENT_NAME, FAKE_IMAGE_PNG_BYTES)
+
+    assert response.status_code == 409
+    assert "error" in response.json()
+
+
+def test_upload_avatar_wrong_content_type_returns_422_plain_copy(session_factory, config):
+    github = FakeGitHub()
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+
+    response = _put_avatar(client, AGENT_NAME, FAKE_IMAGE_PNG_BYTES, content_type="image/jpeg")
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "PNG only for now."}
+    assert github.cloned == []
+
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    assert agent.avatar_png is None
+    session.close()
+
+
+def test_upload_avatar_bad_magic_bytes_returns_422_plain_copy(session_factory, config):
+    github = FakeGitHub()
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+
+    response = _put_avatar(client, AGENT_NAME, b"not really a png, just text pretending")
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "PNG only for now."}
+    assert github.cloned == []
+
+
+def test_upload_avatar_empty_body_returns_422_plain_copy(session_factory, config):
+    github = FakeGitHub()
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+
+    response = _put_avatar(client, AGENT_NAME, b"")
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "PNG only for now."}
+    assert github.cloned == []
+
+
+def test_upload_avatar_oversized_returns_422_and_stores_nothing(session_factory, config):
+    oversized = PNG_SIGNATURE + b"x" * AVATAR_UPLOAD_MAX_BYTES
+    github = FakeGitHub()
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+
+    response = _put_avatar(client, AGENT_NAME, oversized)
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "That image is too large. Two megabytes at most."}
+    assert github.cloned == []
+    assert github.pushes == []
+
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    assert agent.avatar_png is None
+    session.close()
+
+
+def test_upload_avatar_at_exact_size_cap_is_accepted(session_factory, config):
+    exact_bytes = PNG_SIGNATURE + b"x" * (AVATAR_UPLOAD_MAX_BYTES - len(PNG_SIGNATURE))
+    assert len(exact_bytes) == AVATAR_UPLOAD_MAX_BYTES
+    github = _CapturingGitHub()
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+
+    response = _put_avatar(client, AGENT_NAME, exact_bytes)
+
+    assert response.status_code == 200
+    assert github.captured_avatar_bytes == exact_bytes
+
+
+def test_upload_avatar_github_client_error_returns_502(session_factory, config):
+    """Same push-side failure family as generate_avatar's own 502 test."""
+    client = _make_client(session_factory, config, github=_RaisingGitHub())
+    _seed_agent(session_factory, config)
+
+    response = _put_avatar(client, AGENT_NAME, FAKE_IMAGE_PNG_BYTES)
+
+    assert response.status_code == 502
+    assert response.json() == {"error": "couldn't save your agent's picture. Try again."}
+
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    assert agent.avatar_png is None
+    session.close()
+
+
+def test_upload_avatar_no_image_client_still_works(session_factory, config):
+    """Unlike generate_avatar, upload never touches `clients.image` — a room
+    with no image backend configured at all can still accept a
+    human-provided picture."""
+    github = _CapturingGitHub()
+    client = _make_client(session_factory, config, github=github, image=None)
+    _seed_agent(session_factory, config)
+
+    response = _put_avatar(client, AGENT_NAME, FAKE_IMAGE_PNG_BYTES)
+
+    assert response.status_code == 200
+    assert github.captured_avatar_bytes == FAKE_IMAGE_PNG_BYTES
 
 
 # --- GET /api/agents/{name}/avatar --------------------------------------------------
