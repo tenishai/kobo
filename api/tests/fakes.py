@@ -1330,6 +1330,14 @@ class FakeName:
     returns a configurable plain-text string (default: a small canned
     sentence), or raises `ClientError(capability_error)` instead when set —
     independent of the other two knobs, same as they are of each other.
+
+    `distill`/`distill_error` (persona-first station addendum) are the same
+    pair for `distill()`: records every `body` call to `.distill_calls` and
+    returns a configurable draft dict (default: a small canned
+    `{"name", "who_they_are", "purpose_tags"}` — no `what_they_do`, unlike
+    `draft`'s own default, since a distill reply never carries one),
+    or raises `ClientError(distill_error)` instead when set — independent
+    of every other knob here, same as they are of each other.
     """
 
     def __init__(
@@ -1341,6 +1349,8 @@ class FakeName:
         draft_error: str | None = None,
         capability: str = "Helps with billing questions and small talk.",
         capability_error: str | None = None,
+        distill: dict | None = None,
+        distill_error: str | None = None,
     ):
         self._candidates = (
             list(candidates)
@@ -1369,6 +1379,17 @@ class FakeName:
         self._capability = capability
         self._capability_error = capability_error
         self.capability_calls: list[tuple[str, list[str], list[str]]] = []
+        self._distill = (
+            dict(distill)
+            if distill is not None
+            else {
+                "name": "billing-buddy",
+                "who_they_are": "a calm troubleshooter for billing questions",
+                "purpose_tags": ["billing", "support"],
+            }
+        )
+        self._distill_error = distill_error
+        self.distill_calls: list[str] = []
 
     def suggest(self, who: str, what: str) -> list[dict]:
         self.calls.append((who, what))
@@ -1391,6 +1412,12 @@ class FakeName:
         if self._capability_error is not None:
             raise ClientError(self._capability_error)
         return self._capability
+
+    def distill(self, body: str) -> dict:
+        self.distill_calls.append(body)
+        if self._distill_error is not None:
+            raise ClientError(self._distill_error)
+        return dict(self._distill)
 
 
 class FakeStorage:

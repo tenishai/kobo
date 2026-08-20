@@ -60,24 +60,17 @@ _FALLBACK_NAME_MAX_WORDS = 5
 _CLAUSE_END_RE = re.compile(r"[.!?;\n]")
 
 
-def _fallback_name(job: str) -> str:
-    """Deterministic fallback persona name: the leading words of `job`,
-    lowercased and hyphen-joined (e.g. "Help customers with billing." ->
-    "help-customers-with-billing"), clamped to PersonaFields.name's bound.
-
-    Unlike an agent name (`kobo_api.namegen`'s `_FALLBACK_NAMES`/
-    `validate_name`), a drafted persona name has no 2-24-char slug shape to
-    respect and no taken/reserved collision to avoid — it only needs to be
-    a valid PersonaFields.name (1-60 chars), since it lands in the SAME
-    editable v2 preview a hand-typed name would.
-
-    Additionally, the name must pass persona_id() validation, which requires
-    it to start with a letter after slugification. If the job text's leading
-    words slugify to something starting with a digit (e.g. "3D print parts"
-    -> "3d-print-parts"), prefix "the-" to ensure it passes; if even that
-    fails, fall back to "new-agent".
+def _slugify_name_candidate(words: list[str]) -> str:
+    """Shared tail of every deterministic name fallback in this module
+    (`_fallback_name` below, `_fallback_distilled_name` further down):
+    hyphen-join `words` (already lowercase alphanumeric — both callers
+    extract via `_WORD_RE`) into a slug, validate it against `persona_id()`
+    — retrying with a "the-" prefix when the plain slug is digit-led
+    (`persona_id()` rejects that) — and fall back to
+    `_FALLBACK_NAME_DEFAULT` when neither passes. The accepted slug is
+    clamped to PersonaFields.name's bound (`_NAME_MAX`) before it's
+    returned.
     """
-    words = _WORD_RE.findall(job.lower())[:_FALLBACK_NAME_MAX_WORDS]
     slug = "-".join(words) if words else _FALLBACK_NAME_DEFAULT
 
     # Validate against persona_id() — if it fails, try with "the-" prefix
@@ -93,6 +86,28 @@ def _fallback_name(job: str) -> str:
         except PersonaError:
             # Even the "the-" prefix failed; fall back to the default
             return _FALLBACK_NAME_DEFAULT
+
+
+def _fallback_name(job: str) -> str:
+    """Deterministic fallback persona name: the leading words of `job`,
+    lowercased and hyphen-joined (e.g. "Help customers with billing." ->
+    "help-customers-with-billing"), clamped to PersonaFields.name's bound.
+
+    Unlike an agent name (`kobo_api.namegen`'s `_FALLBACK_NAMES`/
+    `validate_name`), a drafted persona name has no 2-24-char slug shape to
+    respect and no taken/reserved collision to avoid — it only needs to be
+    a valid PersonaFields.name (1-60 chars), since it lands in the SAME
+    editable v2 preview a hand-typed name would.
+
+    Additionally, the name must pass persona_id() validation, which requires
+    it to start with a letter after slugification. If the job text's leading
+    words slugify to something starting with a digit (e.g. "3D print parts"
+    -> "3d-print-parts"), prefix "the-" to ensure it passes; if even that
+    fails, fall back to "new-agent". See `_slugify_name_candidate` for that
+    shared slugify-validate-clamp pipeline.
+    """
+    words = _WORD_RE.findall(job.lower())[:_FALLBACK_NAME_MAX_WORDS]
+    return _slugify_name_candidate(words)
 
 
 def _first_clause(job: str) -> str:
@@ -245,5 +260,133 @@ def finalize_draft(raw: dict | None, *, job: str) -> dict:
         "name": final_name,
         "who_they_are": final_who,
         "what_they_do": final_what,
+        "purpose_tags": tags,
+    }
+
+
+# --- distill (persona-first station addendum) --------------------------------
+#
+# The station's OTHER entry point: the operator arrives with a persona
+# DOCUMENT already written (uploaded or pasted) rather than a one-line job
+# description. `finalize_distill` is `finalize_draft`'s counterpart for that
+# case — it produces discovery metadata (name/who_they_are/purpose_tags) from
+# the document itself, following the exact same "each field validates and
+# falls back on its own, the room never blocks" idiom `finalize_draft` uses.
+# There is no `what_they_do` here at all: the document the operator handed
+# over already IS the persona body, so there's nothing to draft for that
+# field — the generator (`kobo_api.clients.VertexNameClient.distill`) is
+# only ever asked to pull discovery metadata OUT of it.
+
+# A markdown ATX heading line ("#" through "######", a space/tab, then the
+# heading text) — used by `_fallback_distilled_name` to find the document's
+# own title anywhere in the body (`re.search`, not anchored to line one: a
+# short preamble before the first heading is common enough in a
+# hand-written persona document that this shouldn't miss it).
+_MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}[ \t]+(.+)$", re.MULTILINE)
+
+# Same shape as _MARKDOWN_HEADING_RE above, but matched against a single
+# stripped line (`.match`, not `.search`) — used by `_fallback_distilled_who`
+# to skip past heading lines while scanning for the document's first real
+# line of prose. Also matches a heading marker with no text after it at all
+# (e.g. a bare "#"), which `_MARKDOWN_HEADING_RE` above does not (that one
+# requires `(.+)$`), since a heading with nothing to say still isn't a line
+# of prose worth using as who_they_are.
+_MARKDOWN_HEADING_LINE_RE = re.compile(r"^#{1,6}(?:[ \t]|$)")
+
+# How many leading words of the whole document `_fallback_distilled_name`
+# slugifies when there's no heading to use instead — short on purpose (a
+# document's opening words are prose, not already name-shaped, unlike a
+# heading's own text).
+_DISTILL_NO_HEADING_WORDS = 2
+
+# The plain fallback who_they_are text (persona-first station addendum) when
+# `body` has no non-blank, non-heading line at all — mirrors
+# `_fallback_who`'s own dangling-template rescue text for a job description
+# that's all punctuation.
+_DISTILL_WHO_FALLBACK_TEXT = "an agent with one clear job"
+
+
+def _fallback_distilled_name(body: str) -> str:
+    """Deterministic fallback persona name for a distilled persona document:
+    the document's first markdown heading (found anywhere in `body`, not
+    just its first line), or — when there's no heading at all, or a heading
+    marker with no text after it — the document's own first two words
+    instead. Either source runs through the same slugify-validate-clamp
+    pipeline `_fallback_name` uses (`_slugify_name_candidate`).
+    """
+    heading_match = _MARKDOWN_HEADING_RE.search(body)
+    if heading_match:
+        words = _WORD_RE.findall(heading_match.group(1).lower())[:_FALLBACK_NAME_MAX_WORDS]
+        if words:
+            return _slugify_name_candidate(words)
+    words = _WORD_RE.findall(body.lower())[:_DISTILL_NO_HEADING_WORDS]
+    return _slugify_name_candidate(words)
+
+
+def _fallback_distilled_who(body: str) -> str:
+    """Deterministic fallback who_they_are for a distilled persona document:
+    the first non-blank, non-heading line of `body`, clamped to
+    PersonaFields.who_they_are's bound (`_WHO_MAX`) — already a single line
+    by construction (one line of the body, taken as-is), so there's no
+    clause-boundary search here the way `_fallback_who`'s job-description
+    fallback needs.
+
+    Falls back to `_DISTILL_WHO_FALLBACK_TEXT` when `body` has no such line
+    at all (every line is blank or itself a heading).
+    """
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _MARKDOWN_HEADING_LINE_RE.match(stripped):
+            continue
+        return stripped[:_WHO_MAX]
+    return _DISTILL_WHO_FALLBACK_TEXT
+
+
+def finalize_distill(raw: dict | None, *, body: str) -> dict:
+    """Turn the generator's best-effort `raw` (or `None`/anything non-dict,
+    when the generator is unconfigured or raised `ClientError`) into a
+    `{"name", "who_they_are", "purpose_tags"}` dict — the persona-first
+    station's discovery-metadata counterpart to `finalize_draft` above, for
+    when the operator hands over a persona document rather than a one-line
+    job description. Deliberately no `what_they_do` key at all: the
+    document itself already IS the persona body, so there's nothing to
+    draft or fall back for that field here.
+
+    `name`/`who_they_are` each validate and fall back independently, same
+    "one field's trouble doesn't take the others down with it" idiom
+    `finalize_draft` uses — see `_extract_field`'s docstring for exactly
+    which malformed shapes fall back (missing, non-string, empty after
+    stripping, over bound, or — `who_they_are` only — containing a
+    newline). A name that passes PersonaFields' own bound but fails
+    `persona_id()` (e.g. it slugifies to a digit-led string) falls back the
+    same way.
+
+    `purpose_tags` fallback tier is a plain empty list, full stop — UNLIKE
+    `finalize_draft`'s own fallback tier (the persona's own tags, derived
+    from its finalized name/who_they_are/what_they_do): a distill has no
+    what_they_do to derive anything from, so there's no second tier to fall
+    through to here.
+    """
+    raw = raw if isinstance(raw, dict) else {}
+
+    name = _extract_field(raw, "name", max_len=_NAME_MAX)
+    if name is not None:
+        try:
+            persona_id(name)
+        except PersonaError:
+            name = None
+
+    who = _extract_field(raw, "who_they_are", max_len=_WHO_MAX, reject_newline=True)
+
+    final_name = name if name is not None else _fallback_distilled_name(body)
+    final_who = who if who is not None else _fallback_distilled_who(body)
+
+    tags = normalize_tags(raw.get("purpose_tags"))[:_DRAFT_TAG_CAP]
+
+    return {
+        "name": final_name,
+        "who_they_are": final_who,
         "purpose_tags": tags,
     }

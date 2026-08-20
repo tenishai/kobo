@@ -17,6 +17,8 @@ from kobo_api.config import Config
 from kobo_api.main import create_app
 from kobo_api.models import Base
 from kobo_api.persona_draft import (
+    _fallback_distilled_name,
+    _fallback_distilled_who,
     _fallback_name,
     _fallback_tags,
     _fallback_what,
@@ -532,3 +534,199 @@ def test_draft_persona_result_feeds_create_persona_unchanged(config, tmp_path):
 
     assert create_response.status_code == 201
     assert create_response.json()["name"] == "billing-buddy"
+
+
+# --- POST /api/personas/distill (persona-first station addendum) -------------------
+#
+# The station's OTHER entry point: the operator arrives with a persona
+# document already written (uploaded or pasted), and this route pulls
+# discovery metadata (name/who_they_are/purpose_tags) out of it in the
+# background - never `what_they_do` (the document itself already IS the
+# body; nothing to draft there). Same "always 200, deterministic fallback
+# on any generator trouble" contract as /api/personas/draft above.
+
+
+DISTILL_PAYLOAD = {
+    "body": "# Billing Buddy\n\nA calm troubleshooter for billing questions.\n",
+}
+
+
+def _distill_client(config, tmp_path, *, name=None) -> TestClient:
+    clients = _minimal_clients(storage=FakeStorage(), name=name)
+    return _make_client(config, clients, tmp_path)
+
+
+def test_distill_persona_happy_path_returns_the_fields(config, tmp_path):
+    fake_name = FakeName(
+        distill={
+            "name": "billing-buddy",
+            "who_they_are": "a calm troubleshooter for billing questions",
+            "purpose_tags": ["billing", "support"],
+        }
+    )
+    client = _distill_client(config, tmp_path, name=fake_name)
+
+    response = client.post("/api/personas/distill", json=DISTILL_PAYLOAD)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "name": "billing-buddy",
+        "who_they_are": "a calm troubleshooter for billing questions",
+        "purpose_tags": ["billing", "support"],
+    }
+
+
+def test_distill_persona_response_has_no_what_they_do_key(config, tmp_path):
+    client = _distill_client(config, tmp_path)
+
+    response = client.post("/api/personas/distill", json=DISTILL_PAYLOAD)
+
+    assert "what_they_do" not in response.json()
+
+
+def test_distill_persona_model_purpose_tags_are_normalized(config, tmp_path):
+    fake_name = FakeName(
+        distill={
+            "name": "billing-buddy",
+            "who_they_are": "a calm troubleshooter for billing questions",
+            "purpose_tags": ["Billing", "billing", " Support ", "REFUNDS"],
+        }
+    )
+    client = _distill_client(config, tmp_path, name=fake_name)
+
+    response = client.post("/api/personas/distill", json=DISTILL_PAYLOAD)
+
+    assert response.json()["purpose_tags"] == ["billing", "support", "refunds"]
+
+
+def test_distill_persona_model_purpose_tags_capped_at_five(config, tmp_path):
+    fake_name = FakeName(
+        distill={
+            "name": "billing-buddy",
+            "who_they_are": "a calm troubleshooter for billing questions",
+            "purpose_tags": ["one", "two", "three", "four", "five", "six", "seven"],
+        }
+    )
+    client = _distill_client(config, tmp_path, name=fake_name)
+
+    response = client.post("/api/personas/distill", json=DISTILL_PAYLOAD)
+
+    assert response.json()["purpose_tags"] == ["one", "two", "three", "four", "five"]
+
+
+def test_distill_persona_missing_model_tags_default_to_empty_list(config, tmp_path):
+    """Unlike /api/personas/draft (which falls back to the persona's own
+    derived tags), a distill has no what_they_do to derive tags from at
+    all - a generator reply that omits purpose_tags just gets an empty
+    list, full stop."""
+    fake_name = FakeName(
+        distill={
+            "name": "billing-buddy",
+            "who_they_are": "a calm troubleshooter for billing questions",
+        }
+    )
+    client = _distill_client(config, tmp_path, name=fake_name)
+
+    response = client.post("/api/personas/distill", json=DISTILL_PAYLOAD)
+
+    assert response.json()["purpose_tags"] == []
+
+
+def test_distill_persona_calls_generator_with_body(config, tmp_path):
+    fake_name = FakeName()
+    client = _distill_client(config, tmp_path, name=fake_name)
+
+    client.post("/api/personas/distill", json=DISTILL_PAYLOAD)
+
+    assert fake_name.distill_calls == [DISTILL_PAYLOAD["body"]]
+
+
+def test_distill_persona_per_field_fallback_on_invalid_generator_name(config, tmp_path):
+    fake_name = FakeName(
+        distill={
+            "name": "x" * 61,  # over PersonaFields.name's 60-char bound
+            "who_they_are": "a calm troubleshooter for billing questions",
+        }
+    )
+    client = _distill_client(config, tmp_path, name=fake_name)
+
+    response = client.post("/api/personas/distill", json=DISTILL_PAYLOAD)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == _fallback_distilled_name(DISTILL_PAYLOAD["body"])
+    assert body["who_they_are"] == "a calm troubleshooter for billing questions"
+
+
+def test_distill_persona_generator_client_error_falls_back_still_200(
+    config, tmp_path, caplog
+):
+    client = _distill_client(
+        config, tmp_path, name=FakeName(distill_error="model unavailable")
+    )
+
+    response = client.post("/api/personas/distill", json=DISTILL_PAYLOAD)
+
+    assert response.status_code == 200
+    doc = DISTILL_PAYLOAD["body"]
+    assert response.json() == {
+        "name": _fallback_distilled_name(doc),
+        "who_they_are": _fallback_distilled_who(doc),
+        "purpose_tags": [],
+    }
+    assert any("persona distill" in record.message.lower() for record in caplog.records)
+
+
+def test_distill_persona_no_name_client_configured_falls_back_still_200(config, tmp_path):
+    client = _distill_client(config, tmp_path, name=None)
+
+    response = client.post("/api/personas/distill", json=DISTILL_PAYLOAD)
+
+    assert response.status_code == 200
+    doc = DISTILL_PAYLOAD["body"]
+    assert response.json() == {
+        "name": _fallback_distilled_name(doc),
+        "who_they_are": _fallback_distilled_who(doc),
+        "purpose_tags": [],
+    }
+
+
+def test_distill_persona_422_empty_body(config, tmp_path):
+    client = _distill_client(config, tmp_path)
+
+    response = client.post("/api/personas/distill", json={"body": ""})
+
+    assert response.status_code == 422
+
+
+def test_distill_persona_422_missing_body(config, tmp_path):
+    client = _distill_client(config, tmp_path)
+
+    response = client.post("/api/personas/distill", json={})
+
+    assert response.status_code == 422
+
+
+def test_distill_persona_422_body_too_long(config, tmp_path):
+    client = _distill_client(config, tmp_path)
+
+    response = client.post("/api/personas/distill", json={"body": "a" * 32769})
+
+    assert response.status_code == 422
+
+
+def test_distill_persona_200_at_max_length_body(config, tmp_path):
+    client = _distill_client(config, tmp_path)
+
+    response = client.post("/api/personas/distill", json={"body": "a" * 32768})
+
+    assert response.status_code == 200
+
+
+def test_distill_persona_invalid_payload_never_reaches_the_generator(config, tmp_path):
+    fake_name = FakeName()
+    client = _distill_client(config, tmp_path, name=fake_name)
+
+    client.post("/api/personas/distill", json={"body": ""})
+
+    assert fake_name.distill_calls == []

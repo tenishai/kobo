@@ -1741,6 +1741,29 @@ class NameClient(Protocol):
         """
         ...
 
+    def distill(self, body: str) -> dict:
+        """Ask the generator to read a ready-made persona document (`body`,
+        the operator's own upload/paste) and pull out discovery metadata for
+        the colleague directory (persona-first station addendum): a name,
+        a one-line who-they-are, and purpose tags. Raise ClientError on a
+        transport/envelope/parse failure.
+
+        Returns a `{"name", "who_they_are", "purpose_tags"}` dict whose
+        values are whatever the model's reply actually contained for each
+        key (`None` for one that's missing, or whatever raw JSON type it
+        was — no type/bounds checking here). Deliberately no
+        `what_they_do` key at all: `body` itself already IS the persona,
+        so there's nothing to draft for that field — this method only ever
+        pulls metadata OUT of it. Not guaranteed that any field is
+        actually usable — `kobo_api.persona_draft.finalize_distill` is what
+        validates each field against PersonaFields' real bounds and falls
+        each one back individually; this method's only job is best-effort
+        structural extraction of whatever the model's reply actually
+        contained. Same "one client, one method per text-generation shape"
+        split as `suggest`/`draft`/`capability` above.
+        """
+        ...
+
 
 # The single server-side-only failure message for every VertexNameClient.
 # suggest failure mode (non-200, malformed envelope, unparsable text) —
@@ -1892,6 +1915,46 @@ def _build_capability_prompt(
         "Respond with ONLY that one sentence — plain prose, 160 characters "
         "or fewer, no markdown, no quotes, no dashes of any kind, no "
         "preamble, nothing before or after the sentence."
+    )
+
+
+# The single server-side-only failure message for every
+# VertexNameClient.distill failure mode (persona-first station addendum) —
+# same generic-message convention as _PERSONA_DRAFT_FAILED/_CAPABILITY_FAILED
+# above: never built from the persona document or a raw response body, and
+# never shown to a caller at all — the distill route always has a
+# deterministic fallback to fall through to
+# (`kobo_api.persona_draft.finalize_distill`), so this string only ever
+# reaches a log line.
+_PERSONA_DISTILL_FAILED = "persona distill generation failed"
+
+
+def _build_persona_distill_prompt(body: str) -> str:
+    """Build the persona-distill prompt from `body` (the operator's own
+    ready-made persona document, 1-32768 chars).
+
+    Deliberately plain string concatenation, never `str.format()` against
+    `body` — same brace hazard `_build_persona_draft_prompt` already
+    documents avoiding: `body` is free-form operator text that may itself
+    contain literal "{"/"}".
+    """
+    return (
+        "You are reading a persona document already written for a small "
+        "software agent at a craft workshop's bench, and pulling out "
+        "discovery metadata other colleagues will use to find this agent "
+        "in a directory.\n\n"
+        "The persona document:\n" + body + "\n\n"
+        "From it, write exactly:\n"
+        "- a short, lowercase, slug-valid persona name (hyphenate if more "
+        "than one word, never a client's or company's own name)\n"
+        "- ONE plain who-they-are sentence, 200 characters or fewer, a "
+        "single line with no line breaks\n"
+        "- 1-5 short, lowercase purpose_tags (one or two words each) "
+        "capturing what this persona is for\n\n"
+        'Respond with ONLY a strict JSON object shaped {"name": "...", '
+        '"who_they_are": "...", "purpose_tags": ["...", ...]}, no prose, '
+        "no markdown fences, no commentary, nothing before or after the "
+        "object."
     )
 
 
@@ -2117,6 +2180,77 @@ class VertexNameClient:
         # generate_capability is what clamps to CAPABILITY_MAX_LEN and strips
         # em/en dashes defensively.
         return text.strip()
+
+    def distill(self, body: str) -> dict:
+        url = (
+            f"https://{self._location}-aiplatform.googleapis.com/v1/projects/"
+            f"{self._project}/locations/{self._location}/publishers/google/"
+            f"models/{self._model}:generateContent"
+        )
+        prompt = _build_persona_distill_prompt(body)
+        # Named `request_body` (not `body`, unlike suggest()/draft()/
+        # capability()'s own local payload var) — this method's own
+        # parameter is already named `body` (the persona document), so
+        # reusing that name for the request envelope here would shadow it.
+        request_body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
+
+        try:
+            token = self._token_provider()
+        except ClientError as exc:
+            # Same reasoning as suggest()/draft()/capability() above: the
+            # default token_provider's ClientError message can embed the
+            # operator's own account details — never let it escape
+            # unwrapped.
+            log.warning("token provider failed for persona distill: %r", exc)
+            raise ClientError(_PERSONA_DISTILL_FAILED) from exc
+
+        try:
+            resp = self._http_client.post(
+                url, json=request_body, headers={"Authorization": f"Bearer {token}"}
+            )
+        except httpx.HTTPError as exc:
+            log.warning("persona distill request failed: %r", exc)
+            raise ClientError(_PERSONA_DISTILL_FAILED) from exc
+
+        if resp.status_code != 200:
+            log.warning(
+                "persona distill failed (%s): %s", resp.status_code, resp.text[:200]
+            )
+            raise ClientError(_PERSONA_DISTILL_FAILED)
+
+        try:
+            text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            log.warning(
+                "malformed persona distill reply: %r (body: %s)", exc, resp.text[:200]
+            )
+            raise ClientError(_PERSONA_DISTILL_FAILED) from exc
+
+        try:
+            parsed = _extract_json_object(text)
+        except ValueError as exc:
+            log.warning(
+                "unparsable persona distill text: %r (text: %s)", exc, text[:200]
+            )
+            raise ClientError(_PERSONA_DISTILL_FAILED) from exc
+
+        if not isinstance(parsed, dict):
+            log.warning(
+                "persona distill JSON wasn't an object (got %s)", type(parsed).__name__
+            )
+            raise ClientError(_PERSONA_DISTILL_FAILED)
+
+        # No type/bounds checking here (mirrors draft()'s own split with
+        # kobo_api.persona_draft.finalize_draft) — kobo_api.persona_draft.
+        # finalize_distill is what validates each field against
+        # PersonaFields' real bounds and falls each one back individually.
+        # Deliberately no `what_they_do` key: `body` itself already IS the
+        # persona, so there's nothing to draft for that field.
+        return {
+            "name": parsed.get("name"),
+            "who_they_are": parsed.get("who_they_are"),
+            "purpose_tags": parsed.get("purpose_tags"),
+        }
 
 
 # --- Storage (GCS JSON API: bucket-backed persistence for catalogs/personas) ------

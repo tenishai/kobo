@@ -62,7 +62,7 @@ from kobo_api.metadata import (
 from kobo_api.models import Agent, AgentStatus
 from kobo_api.namegen import SUGGESTION_COUNT, finalize_suggestions
 from kobo_api.org import OrgState, load_org_config
-from kobo_api.persona_draft import finalize_draft
+from kobo_api.persona_draft import finalize_distill, finalize_draft
 from kobo_api.personas import PersonaError, PersonaExists, PersonaFields, create_persona
 from kobo_api.provisioner import (
     PIPELINE,
@@ -335,6 +335,20 @@ class PersonaDraftRequest(BaseModel):
             if "\n" in item:
                 raise ValueError(f"each rule must be a single line (no newlines): {item!r}")
         return v
+
+
+class PersonaDistillRequest(BaseModel):
+    """POST /api/personas/distill body (persona-first station addendum): the
+    operator's own ready-made persona document (uploaded or pasted), from
+    which the generator (or, failing that, a deterministic fallback) pulls
+    discovery metadata for the colleague directory — a name, a one-line
+    who-they-are, and purpose tags. Mirrors PersonaFields.what_they_do's own
+    1-32768 bound (kobo_api.personas, upload/limits addendum) — same
+    "mirror the bounds, don't cross-import validation" convention
+    PersonaDraftRequest.job above already uses, since this IS that same
+    persona-body text, just arriving before a job description would."""
+
+    body: str = Field(min_length=1, max_length=32768)
 
 
 class AgentMetadataPatch(BaseModel):
@@ -1106,6 +1120,35 @@ def create_app(
                 raw = None
 
         return JSONResponse(finalize_draft(raw, job=payload.job))
+
+    @app.post("/api/personas/distill")
+    def distill_persona_route(payload: PersonaDistillRequest) -> JSONResponse:
+        """The persona-first station's other entry point (persona-first
+        station addendum): the operator has already written (or uploaded)
+        the FULL persona document, so this route reads it and pulls
+        discovery metadata out in the background — a
+        `{"name", "who_they_are", "purpose_tags"}` dict, deliberately no
+        `what_they_do` (the submitted document already IS the persona
+        body; the operator's own preview textarea holds it verbatim, never
+        round-tripped through this route). Same "always 200, a generator
+        failure just means a deterministic fallback instead" contract as
+        `draft_persona_route` above
+        (`kobo_api.persona_draft.finalize_distill`'s job) — the station
+        never blocks on this call. Storage/search/DB untouched, same as
+        the draft route: nothing is created until the operator approves
+        the preview and calls POST /api/personas.
+        """
+        clients = app.state.clients
+
+        raw: dict | None = None
+        if clients is not None and clients.name is not None:
+            try:
+                raw = clients.name.distill(payload.body)
+            except ClientError as exc:
+                log.warning("persona distill generation failed: %s", exc)
+                raw = None
+
+        return JSONResponse(finalize_distill(raw, body=payload.body))
 
     @app.get("/api/availability")
     def availability(

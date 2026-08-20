@@ -9,11 +9,14 @@ from __future__ import annotations
 import pytest
 
 from kobo_api.persona_draft import (
+    _fallback_distilled_name,
+    _fallback_distilled_who,
     _fallback_name,
     _fallback_tags,
     _fallback_what,
     _fallback_who,
     _first_clause,
+    finalize_distill,
     finalize_draft,
 )
 from kobo_api.personas import PersonaFields, persona_id
@@ -516,3 +519,330 @@ def test_fallback_tags_deterministic_for_same_fields():
     first = _fallback_tags(NAME, WHO, WHAT)
     second = _fallback_tags(NAME, WHO, WHAT)
     assert first == second
+
+
+# --- distill (persona-first station addendum): fallback + finalize -----------
+#
+# `finalize_distill` is finalize_draft's counterpart for a ready-made persona
+# DOCUMENT rather than a one-line job description: it produces discovery
+# metadata (name/who_they_are/purpose_tags, no what_they_do - the document
+# itself already IS the persona body) from `body`, falling each field back
+# individually on the same "never block the station" contract.
+
+
+DISTILL_BODY = "# Billing Buddy\n\nA calm troubleshooter for billing questions.\n"
+
+
+# --- _fallback_distilled_name --------------------------------------------------
+
+
+def test_fallback_distilled_name_uses_first_markdown_heading():
+    assert _fallback_distilled_name(DISTILL_BODY) == "billing-buddy"
+
+
+def test_fallback_distilled_name_lowercases_the_heading():
+    body = "# BILLING BUDDY\n\nMore text."
+    assert _fallback_distilled_name(body) == "billing-buddy"
+
+
+def test_fallback_distilled_name_falls_back_to_first_two_words_when_no_heading():
+    body = "A calm troubleshooter for billing questions, no heading here."
+    assert _fallback_distilled_name(body) == "a-calm"
+
+
+def test_fallback_distilled_name_no_alnum_words_uses_default():
+    assert _fallback_distilled_name("!!! ??? ...") == "new-agent"
+
+
+def test_fallback_distilled_name_never_exceeds_persona_fields_bound():
+    body = "# " + ("supercalifragilisticexpialidocious " * 10)
+    name = _fallback_distilled_name(body)
+    assert len(name) <= 60
+
+
+def test_fallback_distilled_name_digit_led_heading_gets_the_prefix():
+    # "3D print parts" slugifies to "3d-print-parts", which starts with a
+    # digit and fails persona_id - the same "the-" prefix rescue
+    # _fallback_name's own digit-led case uses.
+    body = "# 3D print parts\n\nBody text."
+    name = _fallback_distilled_name(body)
+    persona_id(name)  # must not raise
+
+
+def test_fallback_distilled_name_is_persona_id_valid():
+    persona_id(_fallback_distilled_name(DISTILL_BODY))  # must not raise
+
+
+def test_fallback_distilled_name_ignores_a_bare_hash_with_no_heading_text():
+    # A line that's just "#" (no text after the marker) isn't a usable
+    # heading at all - falls through to the first-two-words tier instead.
+    body = "#\nA calm troubleshooter for billing questions."
+    assert _fallback_distilled_name(body) == "a-calm"
+
+
+def test_fallback_distilled_name_uses_the_first_heading_anywhere_in_the_body():
+    # "the first markdown heading" means the first one found anywhere in
+    # the document, not just on line 1 - a preamble line before it is fine.
+    body = "Some preamble line.\n\n## Billing Buddy\n\nMore text."
+    assert _fallback_distilled_name(body) == "billing-buddy"
+
+
+# --- _fallback_distilled_who ----------------------------------------------------
+
+
+def test_fallback_distilled_who_uses_first_non_heading_line():
+    assert (
+        _fallback_distilled_who(DISTILL_BODY)
+        == "A calm troubleshooter for billing questions."
+    )
+
+
+def test_fallback_distilled_who_skips_multiple_headings():
+    body = "# Billing Buddy\n## A subheading\nThe real first line of prose."
+    assert _fallback_distilled_who(body) == "The real first line of prose."
+
+
+def test_fallback_distilled_who_skips_blank_lines():
+    body = "\n\n   \nActual content here."
+    assert _fallback_distilled_who(body) == "Actual content here."
+
+
+def test_fallback_distilled_who_truncates_to_two_hundred_chars():
+    long_line = "x" * 250
+    body = f"# Heading\n{long_line}"
+    who = _fallback_distilled_who(body)
+    assert len(who) <= 200
+
+
+def test_fallback_distilled_who_all_headings_or_blank_returns_fallback_text():
+    body = "# Just a heading\n\n## Another heading\n\n"
+    assert _fallback_distilled_who(body) == "an agent with one clear job"
+
+
+# --- finalize_distill: shape (no what_they_do) ---------------------------------
+
+
+def test_finalize_distill_result_has_no_what_they_do_key():
+    result = finalize_distill(None, body=DISTILL_BODY)
+    assert set(result.keys()) == {"name", "who_they_are", "purpose_tags"}
+
+
+# --- finalize_distill: all-valid passthrough ------------------------------------
+
+
+def test_finalize_distill_all_valid_fields_pass_through_unchanged():
+    raw = {
+        "name": "billing-buddy",
+        "who_they_are": "a calm troubleshooter for billing questions",
+        "purpose_tags": ["billing", "support"],
+    }
+
+    result = finalize_distill(raw, body=DISTILL_BODY)
+
+    assert result == raw
+
+
+# --- finalize_distill: full deterministic fallback ------------------------------
+
+
+def test_finalize_distill_none_raw_falls_back_on_every_field():
+    result = finalize_distill(None, body=DISTILL_BODY)
+
+    assert result["name"] == _fallback_distilled_name(DISTILL_BODY)
+    assert result["who_they_are"] == _fallback_distilled_who(DISTILL_BODY)
+    assert result["purpose_tags"] == []
+
+
+def test_finalize_distill_empty_dict_falls_back_on_every_field():
+    result = finalize_distill({}, body=DISTILL_BODY)
+
+    assert result["name"] == _fallback_distilled_name(DISTILL_BODY)
+    assert result["who_they_are"] == _fallback_distilled_who(DISTILL_BODY)
+    assert result["purpose_tags"] == []
+
+
+def test_finalize_distill_non_dict_raw_treated_as_unusable():
+    result = finalize_distill("not a dict", body=DISTILL_BODY)  # type: ignore[arg-type]
+
+    assert result["name"] == _fallback_distilled_name(DISTILL_BODY)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "# Refund Runner\n\nHandles refunds for premium customers.",
+        "Write weekly release notes from the merged PR list.",
+        "## On-call Helper\nKeeps the on-call runbook up to date.",
+    ],
+)
+def test_finalize_distill_full_fallback_is_deterministic_for_same_body(body):
+    first = finalize_distill(None, body=body)
+    second = finalize_distill(None, body=body)
+    assert first == second
+
+
+# --- finalize_distill: per-field fallback matrix --------------------------------
+
+
+def test_finalize_distill_bad_name_falls_back_alone():
+    raw = {
+        "name": "x" * 61,  # over PersonaFields.name's 60-char bound
+        "who_they_are": "a calm troubleshooter for billing questions",
+    }
+
+    result = finalize_distill(raw, body=DISTILL_BODY)
+
+    assert result["name"] == _fallback_distilled_name(DISTILL_BODY)
+    assert result["who_they_are"] == raw["who_they_are"]
+
+
+def test_finalize_distill_digit_led_name_falls_back():
+    raw = {"name": "3D print parts", "who_they_are": "an always-on system monitor"}
+
+    result = finalize_distill(raw, body="Monitor systems 24/7 without ever sleeping.")
+
+    persona_id(result["name"])  # must not raise
+    assert result["who_they_are"] == raw["who_they_are"]
+
+
+def test_finalize_distill_missing_name_falls_back_alone():
+    raw = {"who_they_are": "a calm troubleshooter for billing questions"}
+
+    result = finalize_distill(raw, body=DISTILL_BODY)
+
+    assert result["name"] == _fallback_distilled_name(DISTILL_BODY)
+    assert result["who_they_are"] == raw["who_they_are"]
+
+
+def test_finalize_distill_non_string_name_falls_back_alone():
+    raw = {"name": 12345, "who_they_are": "a calm troubleshooter for billing questions"}
+
+    result = finalize_distill(raw, body=DISTILL_BODY)
+
+    assert result["name"] == _fallback_distilled_name(DISTILL_BODY)
+
+
+def test_finalize_distill_bad_who_they_are_falls_back_alone():
+    raw = {
+        "name": "billing-buddy",
+        "who_they_are": "x" * 201,  # over PersonaFields.who_they_are's 200-char bound
+    }
+
+    result = finalize_distill(raw, body=DISTILL_BODY)
+
+    assert result["name"] == raw["name"]
+    assert result["who_they_are"] == _fallback_distilled_who(DISTILL_BODY)
+
+
+def test_finalize_distill_who_they_are_with_newline_falls_back():
+    raw = {"name": "billing-buddy", "who_they_are": "first line\nsecond line"}
+
+    result = finalize_distill(raw, body=DISTILL_BODY)
+
+    assert result["who_they_are"] == _fallback_distilled_who(DISTILL_BODY)
+
+
+def test_finalize_distill_empty_string_field_falls_back():
+    raw = {"name": "", "who_they_are": "a calm troubleshooter for billing questions"}
+
+    result = finalize_distill(raw, body=DISTILL_BODY)
+
+    assert result["name"] == _fallback_distilled_name(DISTILL_BODY)
+
+
+def test_finalize_distill_whitespace_only_field_falls_back():
+    raw = {"name": "   ", "who_they_are": "a calm troubleshooter for billing questions"}
+
+    result = finalize_distill(raw, body=DISTILL_BODY)
+
+    assert result["name"] == _fallback_distilled_name(DISTILL_BODY)
+
+
+def test_finalize_distill_strips_surrounding_whitespace_from_valid_fields():
+    raw = {"name": "  billing-buddy  ", "who_they_are": "a calm troubleshooter"}
+
+    result = finalize_distill(raw, body=DISTILL_BODY)
+
+    assert result["name"] == "billing-buddy"
+
+
+def test_finalize_distill_all_fields_bad_equals_full_fallback():
+    raw = {"name": 1, "who_they_are": None}
+
+    result = finalize_distill(raw, body=DISTILL_BODY)
+
+    assert result == finalize_distill(None, body=DISTILL_BODY)
+
+
+# --- finalize_distill: purpose_tags ---------------------------------------------
+
+
+def test_finalize_distill_model_purpose_tags_normalized():
+    raw = {
+        "name": "billing-buddy",
+        "who_they_are": "a calm troubleshooter",
+        "purpose_tags": ["Billing", "billing", " Support ", "REFUNDS"],
+    }
+
+    result = finalize_distill(raw, body=DISTILL_BODY)
+
+    assert result["purpose_tags"] == ["billing", "support", "refunds"]
+
+
+def test_finalize_distill_model_purpose_tags_capped_at_five():
+    raw = {
+        "name": "billing-buddy",
+        "who_they_are": "a calm troubleshooter",
+        "purpose_tags": ["one", "two", "three", "four", "five", "six", "seven"],
+    }
+
+    result = finalize_distill(raw, body=DISTILL_BODY)
+
+    assert result["purpose_tags"] == ["one", "two", "three", "four", "five"]
+
+
+def test_finalize_distill_missing_purpose_tags_is_empty_list_not_derived():
+    """Unlike finalize_draft's fallback tier (the persona's own derived
+    tags, via _fallback_tags), a distill has no what_they_do to derive tags
+    from at all - the fallback here is a plain empty list, full stop."""
+    raw = {"name": "billing-buddy", "who_they_are": "a calm troubleshooter"}
+
+    result = finalize_distill(raw, body=DISTILL_BODY)
+
+    assert result["purpose_tags"] == []
+
+
+def test_finalize_distill_non_list_purpose_tags_falls_back_to_empty():
+    raw = {
+        "name": "billing-buddy",
+        "who_they_are": "a calm troubleshooter",
+        "purpose_tags": "billing, refunds",
+    }
+
+    result = finalize_distill(raw, body=DISTILL_BODY)
+
+    assert result["purpose_tags"] == []
+
+
+def test_finalize_distill_empty_list_purpose_tags_stays_empty():
+    raw = {
+        "name": "billing-buddy",
+        "who_they_are": "a calm troubleshooter",
+        "purpose_tags": [],
+    }
+
+    result = finalize_distill(raw, body=DISTILL_BODY)
+
+    assert result["purpose_tags"] == []
+
+
+def test_finalize_distill_all_non_string_purpose_tags_falls_back_to_empty():
+    raw = {
+        "name": "billing-buddy",
+        "who_they_are": "a calm troubleshooter",
+        "purpose_tags": [1, None, ["nested"]],
+    }
+
+    result = finalize_distill(raw, body=DISTILL_BODY)
+
+    assert result["purpose_tags"] == []
