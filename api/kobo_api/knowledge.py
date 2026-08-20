@@ -180,3 +180,26 @@ def delivery_state(
     if tag is not None and tag == sha[:12]:
         return {"state": "delivered", "detail": None}
     return {"state": "rolling", "detail": None}
+
+
+def rollout_in_progress(kubectl: KubectlClient, *, namespace: str, deploy: str) -> bool:
+    """True when the agent's Deployment is genuinely mid-rollout: the
+    controller hasn't observed the latest spec yet, or the updated or
+    available replica count is short of spec. Conservative on purpose --
+    any probe failure reads as False, so the chat route's delivery-aware
+    copy can never mask a real switchboard failure behind a friendlier
+    message."""
+    try:
+        dep = kubectl.deployment_status_json(namespace, deploy)
+    except Exception:
+        return False
+    status = dep.get("status") or {}
+    spec = dep.get("spec") or {}
+    generation = (dep.get("metadata") or {}).get("generation", 0)
+    if status.get("observedGeneration", 0) < generation:
+        return True
+    replicas = spec.get("replicas", 1)
+    return (
+        status.get("updatedReplicas", 0) < replicas
+        or status.get("availableReplicas", 0) < replicas
+    )

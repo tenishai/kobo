@@ -49,6 +49,7 @@ from kobo_api.knowledge import (
     delete_knowledge_file,
     delivery_state,
     read_knowledge,
+    rollout_in_progress,
     save_knowledge_file,
 )
 from kobo_api.metadata import (
@@ -1440,6 +1441,18 @@ def create_app(
                 # here and get the same fixed, plain copy; the real cause is
                 # only ever logged, never echoed to the caller.
                 log.warning("chat relay failed for agent %s: %s", name, exc)
+                if rollout_in_progress(
+                    clients.kubectl, namespace=agent.name, deploy=agent.name
+                ):
+                    return JSONResponse(
+                        {
+                            "error": (
+                                "Your agent is receiving a delivery right now. "
+                                "Try again in a minute."
+                            )
+                        },
+                        status_code=503,
+                    )
                 return JSONResponse(
                     {"error": "The switchboard did not answer. Try again shortly."},
                     status_code=502,

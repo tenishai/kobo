@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from kobo_api.clients import ClientError
 from kobo_api.knowledge import (
     KNOWLEDGE_MAX_BYTES,
     KnowledgeError,
@@ -17,6 +18,7 @@ from kobo_api.knowledge import (
     delete_knowledge_file,
     delivery_state,
     read_knowledge,
+    rollout_in_progress,
     save_knowledge_file,
 )
 from tests.fakes import FAKE_LOCAL_HEAD_DEFAULT, FakeGitHub, FakeKubectl
@@ -347,3 +349,44 @@ def test_delivery_state_defaults_wired_happy_path_reads_delivered():
         sha=FAKE_LOCAL_HEAD_DEFAULT,
     )
     assert state == {"state": "delivered", "detail": None}
+
+
+# --- rollout_in_progress -----------------------------------------------------
+
+
+def test_rollout_in_progress_truth_table():
+    def dep(generation=2, observed=2, replicas=1, updated=1, available=1):
+        return {
+            "metadata": {"generation": generation},
+            "spec": {"replicas": replicas},
+            "status": {
+                "observedGeneration": observed,
+                "updatedReplicas": updated,
+                "availableReplicas": available,
+            },
+        }
+
+    class Kubectl:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def deployment_status_json(self, namespace, deploy):
+            if isinstance(self.payload, Exception):
+                raise self.payload
+            return self.payload
+
+    assert rollout_in_progress(Kubectl(dep()), namespace="w", deploy="w") is False
+    assert rollout_in_progress(Kubectl(dep(observed=1)), namespace="w", deploy="w") is True
+    assert rollout_in_progress(Kubectl(dep(updated=0)), namespace="w", deploy="w") is True
+    assert rollout_in_progress(Kubectl(dep(available=0)), namespace="w", deploy="w") is True
+    assert (
+        rollout_in_progress(
+            Kubectl(dep(replicas=0, updated=0, available=0)), namespace="w", deploy="w"
+        )
+        is False
+    )
+    # A probe error must NEVER mask the switchboard copy:
+    assert (
+        rollout_in_progress(Kubectl(ClientError("kubectl down")), namespace="w", deploy="w")
+        is False
+    )

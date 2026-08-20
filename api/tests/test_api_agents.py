@@ -1047,7 +1047,9 @@ def _enabled_cabal_config(config):
     )
 
 
-def _client_with_cabal(session_factory, config, fake_github, fake_gojira, fake_agent, cabal):
+def _client_with_cabal(
+    session_factory, config, fake_github, fake_gojira, fake_agent, cabal, *, kubectl=None
+):
     return TestClient(
         create_app(
             session_factory,
@@ -1057,7 +1059,7 @@ def _client_with_cabal(session_factory, config, fake_github, fake_gojira, fake_a
                 gojira=fake_gojira,
                 cloud=FakeCloud(),
                 agent=fake_agent,
-                kubectl=FakeKubectl(),
+                kubectl=kubectl if kubectl is not None else FakeKubectl(),
                 cabal=cabal,
             ),
         )
@@ -1358,6 +1360,89 @@ def test_chat_relay_non_json_body_returns_502_with_fixed_plain_copy(
     )
     client = _client_with_cabal(
         session_factory, cfg, fake_github, fake_gojira, fake_agent, real_cabal
+    )
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat", json={"messages": [{"role": "user", "text": "hi"}]}
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"error": "The switchboard did not answer. Try again shortly."}
+
+
+# --- chat relay failure + delivery-aware copy (Task 6) -----------------------
+
+
+def _mid_rollout_status():
+    # observedGeneration behind metadata.generation -> the controller
+    # hasn't seen the latest spec yet, the clearest "mid-rollout" signal.
+    return {
+        "metadata": {"generation": 2},
+        "spec": {"replicas": 1},
+        "status": {"observedGeneration": 1, "updatedReplicas": 1, "availableReplicas": 1},
+    }
+
+
+def test_chat_relay_failure_during_rollout_says_delivery(
+    session_factory, config, fake_github, fake_gojira, fake_agent, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    fake_cabal = FakeCabal(relay_error="switchboard unreachable")
+    fake_kubectl = FakeKubectl(
+        deployment_status={(AGENT_NAME, AGENT_NAME): _mid_rollout_status()}
+    )
+    client = _client_with_cabal(
+        session_factory, cfg, fake_github, fake_gojira, fake_agent, fake_cabal,
+        kubectl=fake_kubectl,
+    )
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat", json={"messages": [{"role": "user", "text": "hi"}]}
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": "Your agent is receiving a delivery right now. Try again in a minute."
+    }
+
+
+def test_chat_relay_failure_when_settled_keeps_switchboard_copy(
+    session_factory, config, fake_github, fake_gojira, fake_agent, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    fake_cabal = FakeCabal(relay_error="switchboard unreachable")
+    # FakeKubectl()'s default deployment_status_json is already a fully
+    # settled rollout (tests/fakes.py FAKE_DEPLOYMENT_STATUS_SETTLED) — no
+    # configuration needed to model "not mid-rollout" here.
+    fake_kubectl = FakeKubectl()
+    client = _client_with_cabal(
+        session_factory, cfg, fake_github, fake_gojira, fake_agent, fake_cabal,
+        kubectl=fake_kubectl,
+    )
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat", json={"messages": [{"role": "user", "text": "hi"}]}
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"error": "The switchboard did not answer. Try again shortly."}
+
+
+def test_chat_relay_failure_with_probe_error_keeps_switchboard_copy(
+    session_factory, config, fake_github, fake_gojira, fake_agent, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    fake_cabal = FakeCabal(relay_error="switchboard unreachable")
+    fake_kubectl = FakeKubectl(deployment_status_error="kubectl down")
+    client = _client_with_cabal(
+        session_factory, cfg, fake_github, fake_gojira, fake_agent, fake_cabal,
+        kubectl=fake_kubectl,
     )
     _seed_agent(session_factory, cfg)
 

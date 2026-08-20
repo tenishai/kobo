@@ -1215,6 +1215,18 @@ class KubectlClient(Protocol):
         """
         ...
 
+    def deployment_status_json(self, namespace: str, deploy: str) -> dict:
+        """The live Deployment's full status as a decoded JSON dict
+        (`kubectl get deploy ... -o json`).
+
+        Used by `kobo_api.knowledge.rollout_in_progress` (the chat route's
+        delivery-aware-copy probe, Task 6) to tell whether the Deployment is
+        genuinely mid-rollout right now — distinct from `deploy_image`'s
+        stale-apply defense above, which only reads the live pod template's
+        image, not rollout progress.
+        """
+        ...
+
 
 def image_tag(image: str) -> str | None:
     """The tag of a container image reference, or None when it has none.
@@ -1281,6 +1293,12 @@ class KubectlCLI:
                 "-o", "jsonpath={.spec.template.spec.containers[0].image}",
             ]
         )
+
+    def deployment_status_json(self, namespace: str, deploy: str) -> dict:
+        out = self._runner.run(
+            [self._kubectl, "-n", namespace, "get", "deploy", deploy, "-o", "json"]
+        )
+        return json.loads(out)
 
     def apply_secret(self, namespace: str, name: str, literals: dict[str, str]) -> None:
         literal_args = [f"--from-literal={key}={value}" for key, value in literals.items()]
