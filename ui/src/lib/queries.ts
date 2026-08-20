@@ -93,6 +93,7 @@ import {
   saveSlackChannels,
   searchPersonas,
   searchSkills,
+  teachAgent,
   uploadIntake,
   uploadTooling,
 } from "./api";
@@ -325,6 +326,27 @@ export function destroyAgentMutation(queryClient: QueryClient, name: string) {
 export function chatMutation(name: string) {
   return {
     mutationFn: (messages: ChatMessage[]) => chatWithAgent(name, messages),
+  };
+}
+
+/**
+ * Turns one distilled chat exchange into a taught memory: the "Teach this"
+ * gesture (Task 2) over Task 1's route, `POST /api/agents/{name}/teach`.
+ * `TeachModal` posts the operator's EDITED textarea content verbatim (not
+ * necessarily the original prefill) as `text`. On success, invalidates that
+ * agent's intake query so the fresh one-shot upload (and its "pending"
+ * status) shows up if the Memory tab happens to already be mounted —
+ * AgentDetail keeps every tab's panel mounted, hidden rather than destroyed,
+ * per its own tablist doc comment — same invalidate-the-list shape
+ * `uploadIntakeMutation` uses for a plain intake upload, since this is just
+ * another door into the same `bundle/intake/` files.
+ */
+export function teachMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (text: string) => teachAgent(name, text),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "intake"] });
+    },
   };
 }
 

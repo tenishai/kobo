@@ -461,6 +461,28 @@ export async function chatWithAgent(
   return parse<{ reply: string }>(res);
 }
 
+/**
+ * `POST /api/agents/{name}/teach` (Task 1's "a chat moment becomes a taught
+ * memory" route, fronted by Task 2's per-bubble "Teach this" gesture): posts
+ * the operator's distilled/edited note text verbatim as `{text}`. The route
+ * formats and names it server-side before pushing it as a one-shot
+ * `bundle/intake/*` upload, same as `uploadIntake` below, and returns that
+ * upload's filename plus the pushed commit's sha. 422 on empty/oversized
+ * text, 409 when the agent isn't ready, both surfaced as an `ApiError`
+ * through `parse`, same as every other mutation in this file.
+ */
+export async function teachAgent(
+  name: string,
+  text: string,
+): Promise<{ filename: string; sha: string }> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/teach`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  return parse<{ filename: string; sha: string }>(res);
+}
+
 /** The room's colleagues watching window list (Task 4/B4) — agent-only by
  * default, every caller (room-human chats and service callers included)
  * when `all` is true. A 409 (the switchboard isn't wired on this room)

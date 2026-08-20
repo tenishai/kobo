@@ -20,6 +20,7 @@
   import { createMutation } from "@tanstack/svelte-query";
   import { ApiError, errorMessage, type ChatMessage } from "../lib/api";
   import { chatMutation } from "../lib/queries";
+  import TeachModal from "./TeachModal.svelte";
 
   let { agentName, frozen = false }: { agentName: string; frozen?: boolean } = $props();
 
@@ -68,6 +69,45 @@
 
   function focusInput(): void {
     inputEl?.focus();
+  }
+
+  // --- Teach this (Task 2): a quiet per-bubble action opens TeachModal -----
+  // pre-filled with the clicked exchange PAIR. One modal instance is shared
+  // across every bubble (not one per bubble) — `teachPrefill` is computed at
+  // click time and handed to TeachModal, which reseeds its own draft from it
+  // on every open (see TeachModal's own doc comment).
+
+  let teachOpen = $state(false);
+  let teachPrefill = $state("");
+
+  /** The editable text TeachModal opens with for the bubble at `index`:
+   * clicked user message + the agent reply right after it; clicked agent
+   * reply + the user message right before it; a lone message (no adjacent
+   * counterpart of the opposite role, e.g. a just-sent message still
+   * awaiting its reply) just itself, unlabeled. */
+  function pairText(index: number): string {
+    const message = transcript[index];
+    if (message.role === "user") {
+      const next = transcript[index + 1];
+      if (next && next.role === "agent") {
+        return `You said: ${message.text}\n\n${agentName} replied: ${next.text}`;
+      }
+      return message.text;
+    }
+    const prev = transcript[index - 1];
+    if (prev && prev.role === "user") {
+      return `You said: ${prev.text}\n\n${agentName} replied: ${message.text}`;
+    }
+    return message.text;
+  }
+
+  function openTeach(index: number): void {
+    teachPrefill = pairText(index);
+    teachOpen = true;
+  }
+
+  function closeTeach(): void {
+    teachOpen = false;
   }
 
   /** Sends `messages` (a full transcript snapshot) to the agent. Shared by
@@ -140,6 +180,15 @@
           >{message.role === "user" ? "You" : agentName}:</span
         >
         <p class="chat-bubble__text">{message.text}</p>
+        {#if !frozen}
+          <button
+            type="button"
+            class="chat-bubble__teach"
+            onclick={() => openTeach(i)}
+          >
+            Teach this
+          </button>
+        {/if}
       </div>
     {/each}
     {#if $mutation.isPending}
@@ -192,6 +241,8 @@
     </button>
   </div>
 </section>
+
+<TeachModal {agentName} open={teachOpen} prefill={teachPrefill} onclose={closeTeach} />
 
 <style>
   .chat-panel {
@@ -259,6 +310,29 @@
     font-size: 0.95rem;
     line-height: 1.6;
     white-space: pre-wrap;
+  }
+
+  /* Quiet by design: no border, no background, small and muted — the
+   * bubbles stay clean, this never competes with the message itself. */
+  .chat-bubble__teach {
+    display: block;
+    margin-top: var(--space-2xs);
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+
+  .chat-bubble__teach:hover {
+    color: var(--accent);
+    text-decoration: underline;
+  }
+
+  .chat-bubble__teach:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
 
   .chat-panel__thinking-dot {
