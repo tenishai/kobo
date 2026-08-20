@@ -1003,6 +1003,17 @@ def _build_task_envelope(messages: list[ChatMessage]) -> dict:
     }
 
 
+def _build_teach_envelope(note: str, filename: str) -> dict:
+    """The teach system task (fast-memory-lane spec): a normal
+    single-message task envelope whose metadata carries the marker the
+    daedalus runtime intercepts pre-model. `note` is byte-for-byte the
+    content the background archive commits to bundle/intake/<filename>,
+    so both lanes agree on the content sha."""
+    envelope = _build_task_envelope([{"role": "user", "text": note}])
+    envelope["metadata"] = {"system_task": "teach", "filename": filename}
+    return envelope
+
+
 def _post_task(client: httpx.Client, port: int, messages: list[ChatMessage]) -> str:
     """POST the a2a task envelope for `messages` to the forwarded port; return
     the reply text.

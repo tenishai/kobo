@@ -51,6 +51,7 @@ from kobo_api.clients import (
     VertexImageClient,
     VertexNameClient,
     _build_task_envelope,
+    _build_teach_envelope,
     _extract_json_array,
     _extract_json_object,
     _gcloud_print_access_token,
@@ -1507,6 +1508,18 @@ def test_build_task_envelope_shape_multi_turn():
         {"kind": "message", "role": "user", "parts": [{"kind": "text", "text": "hi"}]},
         {"kind": "message", "role": "agent", "parts": [{"kind": "text", "text": "hello yourself"}]},
     ]
+
+
+def test_build_teach_envelope_is_a_marked_single_message_task():
+    envelope = _build_teach_envelope("Taught in chat.\n\nA fact.\n", "chat-20260820-a.md")
+    assert envelope["kind"] == "task"
+    assert envelope["status"]["state"] == "submitted"
+    assert envelope["status"]["message"]["parts"][0]["text"] == "Taught in chat.\n\nA fact.\n"
+    assert envelope["history"] == []
+    assert envelope["metadata"] == {
+        "system_task": "teach",
+        "filename": "chat-20260820-a.md",
+    }
 
 
 def test_post_task_sends_envelope_and_extracts_reply():
