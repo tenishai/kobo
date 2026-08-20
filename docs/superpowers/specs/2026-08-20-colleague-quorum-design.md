@@ -43,11 +43,18 @@ to someone different today.
 
 ## Policy summary (one table in prose)
 
-Operator-taught survivor: promote immediately (spec A, unchanged).
-Colleague-sourced survivor vs colleague/seed-sourced stale fact:
-promote at quorum, else pending. Any survivor vs operator-taught
-stale fact: pending forever (the shield). Everything else: pending,
-untouched, visible.
+Operator-taught survivor: promote immediately (spec A, unchanged,
+INCLUDING when the stale fact is also operator-taught; the
+operator's newer word retires the operator's older word). A
+COLLEAGUE-sourced survivor vs colleague/seed-sourced stale fact:
+promote at quorum, else pending. A colleague-sourced survivor vs an
+operator-taught stale fact: pending forever (the shield; precisely:
+the shield fires when the retiree is operator-taught AND the
+survivor is not). Everything else: pending, untouched, visible.
+(Amended 2026-08-20 during implementation: the original table
+sentence read literally contradicted spec A's own
+operator-corrects-operator behavior; this wording is what the code
+pins with dedicated tests.)
 
 ## Non-goals
 
