@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import httpx
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -28,6 +28,7 @@ from kobo_api.clients import (
     ClientError,
     StorageNotFound,
     _build_task_envelope,
+    _build_teach_envelope,
     _extract_relay_reply,
     cabal_enabled,
 )
@@ -2024,11 +2025,38 @@ def create_app(
     # same false-ingested-window fix). Ready-gated, any signed-in user (no
     # operator gate) — same reach as the metadata routes above.
 
+    def _teach_task_failed(raw: dict) -> bool:
+        """True when the relayed reply is a FAILED task (the runtime refused
+        or errored): kobo must not claim the instant lane for a note the
+        agent did not actually keep."""
+        task = raw.get("task") or raw.get("result") or raw
+        status = task.get("status") or {}
+        return status.get("state") == "failed"
+
+    def _archive_teach_note(repo: str, filename: str, note: str) -> None:
+        """The background archive lane. Failure is logged, never surfaced:
+        the memory is already stored in the agent; only the repo copy is
+        missing, and the intake panel simply won't list the file until a
+        later commit lands it."""
+        try:
+            upload_intake_file(
+                app.state.clients.github,
+                repo,
+                filename,
+                note,
+                runtime_image=app.state.config.runtime_image,
+            )
+        except Exception as exc:
+            log.warning(
+                "teach archive commit failed for %s (%s): %s", repo, filename, exc
+            )
+
     @app.post("/api/agents/{name}/teach")
     def teach_agent(
         name: str,
         payload: TeachPayload,
         request: Request,
+        background_tasks: BackgroundTasks,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(session, name)
@@ -2070,6 +2098,30 @@ def create_app(
         filename = note_filename(text, on_date=on_date)
 
         cfg: Config = app.state.config
+        clients = app.state.clients
+        if cabal_enabled(cfg) and clients.cabal is not None:
+            envelope = _build_teach_envelope(note, filename)
+            try:
+                raw = clients.cabal.relay(agent.name, envelope)
+                if _teach_task_failed(raw):
+                    raise CabalError("agent replied with a failed task")
+                _extract_relay_reply(raw)
+            except (CabalError, httpx.HTTPError, ValueError) as exc:
+                # Same catch set as the chat relay above, plus the failed-
+                # task check: ANY instant-lane miss degrades to the archive
+                # lane below, so teaching never 502s during a delivery
+                # window. The cause is logged, never echoed.
+                log.warning(
+                    "teach relay failed for agent %s, archive lane instead: %s",
+                    name,
+                    exc,
+                )
+            else:
+                background_tasks.add_task(
+                    _archive_teach_note, agent.repo_full_name, filename, note
+                )
+                return JSONResponse({"filename": filename, "mode": "instant"})
+
         try:
             sha = upload_intake_file(
                 app.state.clients.github,
@@ -2086,7 +2138,7 @@ def create_app(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
-        return JSONResponse({"filename": filename, "sha": sha})
+        return JSONResponse({"filename": filename, "mode": "archive", "sha": sha})
 
     # --- Tooling (2026-08-13 addendum): the staged door for an agent's --------
     # LAW-to-be — `bundle/tools/*.{py,go}`, validated and delivered, but with

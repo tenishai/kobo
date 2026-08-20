@@ -37,6 +37,7 @@ from kobo_api.teach import format_note, note_filename
 from tests.fakes import (
     FAKE_LOCAL_HEAD_DEFAULT,
     FakeAgent,
+    FakeCabal,
     FakeCloud,
     FakeGitHub,
     FakeGojira,
@@ -52,6 +53,21 @@ SHA = FAKE_LOCAL_HEAD_DEFAULT
 
 AUDIENCE = "test-audience"
 KID = "test-key-1"
+
+ENDPOINT_TEMPLATE = "http://agent-{name}.default.svc.cluster.local"
+
+
+def _enabled_config(config):
+    """Same switchboard-on config shape as test_api_colleagues.py's own
+    `_enabled_config`: both org config keys set. Combined with the
+    `CABAL_OPERATOR_TOKEN` env var (set per-test via monkeypatch) and a
+    wired `clients.cabal`, this is what flips `cabal_enabled(cfg)` true."""
+    return config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": ENDPOINT_TEMPLATE,
+        }
+    )
 
 
 class _CapturingGitHub(FakeGitHub):
@@ -100,7 +116,7 @@ def config(tmp_path):
     return Config(workdir=tmp_path / "work")
 
 
-def _make_client(session_factory, config, *, github=None, iap_jwks_fetcher=None):
+def _make_client(session_factory, config, *, github=None, iap_jwks_fetcher=None, cabal=None):
     return TestClient(
         create_app(
             session_factory,
@@ -112,6 +128,7 @@ def _make_client(session_factory, config, *, github=None, iap_jwks_fetcher=None)
                 agent=FakeAgent(),
                 kubectl=FakeKubectl(),
                 storage=FakeStorage(),
+                cabal=cabal,
             ),
             iap_jwks_fetcher=iap_jwks_fetcher,
         )
@@ -159,7 +176,8 @@ def test_teach_route_returns_filename_and_sha(session_factory, config):
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body.keys()) == {"filename", "sha"}
+    assert set(body.keys()) == {"filename", "sha", "mode"}
+    assert body["mode"] == "archive"
     assert body["sha"] == SHA
     assert body["filename"].startswith("chat-")
     assert body["filename"].endswith(".md")
@@ -325,6 +343,149 @@ def test_teach_route_github_error_returns_502(session_factory, config):
 
     assert response.status_code == 502
     assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
+
+
+# --- POST /api/agents/{name}/teach: switchboard relay, instant lane ---------
+#
+# Task 5 (fast-memory-lane): the teach system task relays through the
+# switchboard first (instant lane, archive demoted to a FastAPI background
+# task) and falls back to today's synchronous archive lane whenever the
+# relay misses -- a `CabalError`, an httpx transport error, a malformed
+# reply, or a reply that IS well-formed but carries a FAILED task status
+# (the runtime refused or errored on the note). Same
+# `cabal_enabled(config) and clients.cabal is not None` gate as the chat
+# relay (test_api_agents.py), same fixed/plain-copy-on-failure posture,
+# except a relay miss here degrades to the archive lane instead of a 502 --
+# teaching must never fail outright just because the switchboard is briefly
+# unavailable.
+
+
+def test_teach_instant_lane_relays_and_archives_in_background(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    relay_result = {
+        "status": {
+            "state": "completed",
+            "message": {"parts": [{"text": "noted, thanks"}]},
+        }
+    }
+    fake_cabal = FakeCabal(relay_result=relay_result)
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    text = "always answer in one paragraph"
+    response = client.post(f"/api/agents/{AGENT_NAME}/teach", json={"text": text})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body.keys()) == {"filename", "mode"}
+    assert body["mode"] == "instant"
+    filename = body["filename"]
+
+    # BackgroundTasks run after the response completes but before
+    # TestClient.post() returns control here -- the archive commit has
+    # already happened by this point.
+    assert list(github.captured_intake.keys()) == [filename]
+    committed_note = github.captured_intake[filename]
+
+    assert len(fake_cabal.relay_calls) == 1
+    envelope = fake_cabal.relay_calls[0]["task_envelope"]
+    assert envelope["metadata"] == {"system_task": "teach", "filename": filename}
+    # Both lanes agree on content: the relayed note is byte-for-byte what
+    # the background archive committed.
+    assert envelope["status"]["message"]["parts"][0]["text"] == committed_note
+
+
+def test_teach_falls_back_to_archive_when_relay_fails(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    fake_cabal = FakeCabal(relay_error="switchboard unreachable")
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/teach", json={"text": "always answer briefly"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body.keys()) == {"filename", "sha", "mode"}
+    assert body["mode"] == "archive"
+    assert body["sha"] == SHA
+    assert len(fake_cabal.relay_calls) == 1
+    assert list(github.captured_intake.keys()) == [body["filename"]]
+
+
+def test_teach_falls_back_when_agent_reply_is_failed_task(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    # A well-formed relay reply, but the runtime refused/errored on the
+    # note -- kobo must not claim the instant lane for a note the agent
+    # did not actually keep.
+    fake_cabal = FakeCabal(relay_result={"status": {"state": "failed"}})
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/teach", json={"text": "always answer briefly"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body.keys()) == {"filename", "sha", "mode"}
+    assert body["mode"] == "archive"
+    assert body["sha"] == SHA
+    assert list(github.captured_intake.keys()) == [body["filename"]]
+
+
+def test_teach_without_cabal_is_archive_mode(session_factory, config):
+    # No cabal client wired and no switchboard org config set -- today's
+    # behavior, plus the added mode field.
+    github = _CapturingGitHub()
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/teach", json={"text": "always answer briefly"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body.keys()) == {"filename", "sha", "mode"}
+    assert body["mode"] == "archive"
+    assert body["sha"] == SHA
+    assert list(github.captured_intake.keys()) == [body["filename"]]
+
+
+def test_teach_background_archive_failure_is_logged_not_surfaced(
+    session_factory, config, monkeypatch, caplog
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    relay_result = {
+        "status": {
+            "state": "completed",
+            "message": {"parts": [{"text": "noted, thanks"}]},
+        }
+    }
+    fake_cabal = FakeCabal(relay_result=relay_result)
+    # _RaisingGitHub's clone() raises ClientError -- upload_intake_file
+    # (called from the background task) fails, but the instant-lane
+    # response has already gone out as 200 by the time it runs.
+    client = _make_client(session_factory, cfg, github=_RaisingGitHub(), cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    with caplog.at_level("WARNING"):
+        response = client.post(
+            f"/api/agents/{AGENT_NAME}/teach", json={"text": "always answer briefly"}
+        )
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "instant"
+    assert "teach archive commit failed" in caplog.text
 
 
 # --- POST /api/agents/{name}/teach: identity attribution (real IAP JWT) ------
