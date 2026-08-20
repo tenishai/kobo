@@ -178,6 +178,12 @@ def _a2a_transport(spec: BundleSpec) -> _FlowDict:
 # same name) can never drift apart.
 CABAL_COLLEAGUE_TOKEN_ENV = "CABAL_COLLEAGUE_TOKEN"
 
+# The colleagues tools allow-list: the set of colleagues-provider tools
+# every agent can call (when the switchboard is configured). Shared by both
+# the compose-time emission (`_tools_block`) and the backfill helper
+# (`update_agent_yaml_tools`) so they stay synchronized.
+_COLLEAGUES_TOOLS_ALLOW = ["colleagues.list_colleagues", "colleagues.ask_colleague", "colleagues.remember"]
+
 
 def _tools_block(spec: BundleSpec) -> _FlowDict:
     """The bundle's `tools` block — byte-identical to the pre-existing
@@ -196,7 +202,7 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
         return _FlowDict(provider="none", allow=[])
     return _FlowDict(
         provider="colleagues",
-        allow=_FlowList(["colleagues.list_colleagues", "colleagues.ask_colleague"]),
+        allow=_FlowList(_COLLEAGUES_TOOLS_ALLOW),
         colleagues=_FlowDict(
             url=_DoubleQuoted(spec.cabal_url),
             token_env=CABAL_COLLEAGUE_TOKEN_ENV,
@@ -563,10 +569,12 @@ def update_agent_yaml_tools(
     except OSError as exc:
         raise ClientError(f"agent.yaml not found: {agent_yaml_path}") from exc
 
+    # Build the allow list from the shared constant, rendered as comma-separated tool names.
+    allow_list_str = ", ".join(_COLLEAGUES_TOOLS_ALLOW)
     replacement = (
-        "tools: {provider: colleagues, allow: [colleagues.list_colleagues, "
-        "colleagues.ask_colleague], colleagues: "
-        f'{{url: "{url}", token_env: {token_env}, self: "{self_name}"}}}}'
+        "tools: {provider: colleagues, allow: ["
+        + allow_list_str
+        + f'], colleagues: {{url: "{url}", token_env: {token_env}, self: "{self_name}"}}}}'
     )
 
     updated, count = _TOOLS_LINE_RE.subn(lambda match: replacement, text, count=1)

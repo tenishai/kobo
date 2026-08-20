@@ -253,7 +253,7 @@ def test_compose_agent_yaml_carries_auth_block_when_cabal_url_configured(tmp_pat
         '"http://cabal.example.com/.well-known/jwks.json", issuer: "cabal-core", '
         'audience: "sam"}}\n'
         'tools: {provider: colleagues, allow: [colleagues.list_colleagues, '
-        'colleagues.ask_colleague], colleagues: {url: "http://cabal.example.com", '
+        'colleagues.ask_colleague, colleagues.remember], colleagues: {url: "http://cabal.example.com", '
         'token_env: CABAL_COLLEAGUE_TOKEN, self: "sam"}}\n'
         "memory: {personal: techne, home: /techne, revision: operator}\n"
         "checkpoints: sqlite\n"
@@ -353,7 +353,7 @@ def test_compose_agent_yaml_carries_colleagues_tools_block_when_cabal_url_config
     data = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())
     assert data["tools"] == {
         "provider": "colleagues",
-        "allow": ["colleagues.list_colleagues", "colleagues.ask_colleague"],
+        "allow": ["colleagues.list_colleagues", "colleagues.ask_colleague", "colleagues.remember"],
         "colleagues": {
             "url": "http://cabal.example.com",
             "token_env": "CABAL_COLLEAGUE_TOKEN",
@@ -509,7 +509,7 @@ def test_update_agent_yaml_tools_adds_block_and_preserves_every_other_line(tmp_p
     data = yaml.safe_load(after)
     assert data["tools"] == {
         "provider": "colleagues",
-        "allow": ["colleagues.list_colleagues", "colleagues.ask_colleague"],
+        "allow": ["colleagues.list_colleagues", "colleagues.ask_colleague", "colleagues.remember"],
         "colleagues": {
             "url": "http://cabal.example.com",
             "token_env": "CABAL_COLLEAGUE_TOKEN",
@@ -539,7 +539,7 @@ def test_update_agent_yaml_tools_replaces_an_existing_colleagues_block(tmp_path)
     assert "http://old.example.com" not in text
     data = yaml.safe_load(text)
     assert data["tools"]["colleagues"]["url"] == "http://new.example.com"
-    assert data["tools"]["allow"] == ["colleagues.list_colleagues", "colleagues.ask_colleague"]
+    assert data["tools"]["allow"] == ["colleagues.list_colleagues", "colleagues.ask_colleague", "colleagues.remember"]
     # Every other line survives untouched.
     assert text.splitlines()[0] == "name: sam"
     assert text.splitlines()[-1] == "memory: {personal: techne, home: /techne}"
@@ -594,7 +594,7 @@ def test_update_agent_yaml_tools_upgrades_allow_less_colleagues_line_idempotentl
 
     assert once == twice
     data = yaml.safe_load(once)
-    assert data["tools"]["allow"] == ["colleagues.list_colleagues", "colleagues.ask_colleague"]
+    assert data["tools"]["allow"] == ["colleagues.list_colleagues", "colleagues.ask_colleague", "colleagues.remember"]
     assert data["tools"]["provider"] == "colleagues"
     assert data["tools"]["colleagues"]["url"] == "http://old.example.com"
 
@@ -641,7 +641,7 @@ def test_update_agent_yaml_tools_on_freshly_composed_bundle_round_trips(tmp_path
     validate_agent_yaml(bundle_dir)  # must not raise
     data = yaml.safe_load((bundle_dir / "agent.yaml").read_text())
     assert data["tools"]["provider"] == "colleagues"
-    assert data["tools"]["allow"] == ["colleagues.list_colleagues", "colleagues.ask_colleague"]
+    assert data["tools"]["allow"] == ["colleagues.list_colleagues", "colleagues.ask_colleague", "colleagues.remember"]
     assert data["tools"]["colleagues"]["self"] == "sam"
 
 
@@ -664,7 +664,7 @@ _FIXTURE_AGENT_YAML_WITH_LIVE_GATES = (
     "transports:\n"
     "  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
     "tools: {provider: colleagues, allow: [colleagues.list_colleagues, "
-    'colleagues.ask_colleague], colleagues: {url: "http://cabal.example.com", '
+    'colleagues.ask_colleague, colleagues.remember], colleagues: {url: "http://cabal.example.com", '
     'token_env: CABAL_COLLEAGUE_TOKEN, self: "sam"}}\n'
     "memory: {personal: techne, home: /techne}\n"
     "checkpoints: sqlite\n"
