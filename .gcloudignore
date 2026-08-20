@@ -1,0 +1,16 @@
+# Keep the cloud-build upload lean and deterministic. The Dockerfile
+# installs its own dependencies (npm ci / pip install); none of these
+# belong in the source tarball, and the packer has choked on
+# node_modules churn before.
+.git
+.gcloudignore
+.superpowers/
+ui/node_modules/
+ui/dist/
+api/venv/
+api/.venv/
+api/*.db
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+docs/
