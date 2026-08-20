@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { splitLines, splitTags, validateName, validateSlug } from "./validate";
+import {
+  mergeDraftFields,
+  splitLines,
+  splitTags,
+  validateName,
+  validateSlug,
+} from "./validate";
 
 describe("validateName", () => {
   it("accepts a plain lowercase name", () => {
@@ -148,5 +154,67 @@ describe("splitLines", () => {
   it("returns an empty array for blank input", () => {
     expect(splitLines("")).toEqual([]);
     expect(splitLines("\n\n  \n")).toEqual([]);
+  });
+});
+
+describe("mergeDraftFields", () => {
+  const draft = {
+    name: "billing-buddy",
+    who_they_are: "a calm troubleshooter for billing questions",
+    what_they_do: "Helps customers resolve billing issues quickly.",
+  };
+
+  it("fills every field when all three are empty", () => {
+    const result = mergeDraftFields(
+      { name: "", whoTheyAre: "", whatTheyDo: "" },
+      draft,
+    );
+
+    expect(result).toEqual({
+      name: draft.name,
+      whoTheyAre: draft.who_they_are,
+      whatTheyDo: draft.what_they_do,
+    });
+  });
+
+  it("keeps a pre-filled what-they-do instead of overwriting it with the draft", () => {
+    const result = mergeDraftFields(
+      { name: "", whoTheyAre: "", whatTheyDo: "Operator-typed body, keep this." },
+      draft,
+    );
+
+    expect(result.whatTheyDo).toBe("Operator-typed body, keep this.");
+    expect(result.name).toBe(draft.name);
+    expect(result.whoTheyAre).toBe(draft.who_they_are);
+  });
+
+  it("judges each field independently - one filled field doesn't block the others", () => {
+    const result = mergeDraftFields(
+      { name: "my-own-name", whoTheyAre: "", whatTheyDo: "" },
+      draft,
+    );
+
+    expect(result.name).toBe("my-own-name");
+    expect(result.whoTheyAre).toBe(draft.who_they_are);
+    expect(result.whatTheyDo).toBe(draft.what_they_do);
+  });
+
+  it("treats a whitespace-only field as empty, still fillable by the draft", () => {
+    const result = mergeDraftFields(
+      { name: "", whoTheyAre: "", whatTheyDo: "   " },
+      draft,
+    );
+
+    expect(result.whatTheyDo).toBe(draft.what_they_do);
+  });
+
+  it("keeps every field when all three already have operator content", () => {
+    const current = {
+      name: "kept-name",
+      whoTheyAre: "kept who they are",
+      whatTheyDo: "kept what they do",
+    };
+
+    expect(mergeDraftFields(current, draft)).toEqual(current);
   });
 });

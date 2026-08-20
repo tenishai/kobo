@@ -63,7 +63,7 @@
     type PersonaForm,
   } from "../lib/api";
   import { createPersonaMutation, draftPersonaMutation } from "../lib/queries";
-  import { splitLines } from "../lib/validate";
+  import { mergeDraftFields, splitLines } from "../lib/validate";
 
   let {
     oncancel,
@@ -79,11 +79,20 @@
 
   let step = $state<"draft" | "preview">("draft");
 
+  // Rules count cap (upload/limits addendum): mirrors PersonaFields.rules'
+  // own Field(max_length=150) (kobo_api/personas.py) — the per-rule length
+  // cap that used to live beside it is gone (the merged persona.md's own
+  // 150-line/32768-byte gate is the real ceiling now, checked server-side
+  // against the actual rendered file, not a per-field lookalike), so this
+  // is the only client-side rules number left worth mirroring.
+  const RULES_MAX = 150;
+
   // --- Step 1: one plain question -----------------------------------------
 
   let job = $state("");
   let rulesInput = $state("");
   let draftError = $state<string | null>(null);
+  let rulesFileError = $state<string | null>(null);
 
   const trimmedJob = $derived(job.trim());
 
@@ -96,15 +105,40 @@
   const rules = $derived(splitLines(rulesInput));
 
   const rulesError = $derived(
-    rules.length > 8 ? "Use up to 8, one per line." : null,
+    rules.length > RULES_MAX ? `Use up to ${RULES_MAX}, one per line.` : null,
   );
 
   const canDraft = $derived(
     trimmedJob.length > 0 &&
       trimmedJob.length <= 500 &&
-      rules.length <= 8 &&
+      rules.length <= RULES_MAX &&
       !$draftMutation.isPending,
   );
+
+  /** Mirrors MemoryPanel.svelte's own `handleFileSelect` idiom exactly: read
+   * the chosen file as text, drop it straight into `rulesInput` (an upload
+   * is an explicit act - replacing whatever was typed there is expected),
+   * and surface the same plain failure copy on a read error. */
+  function handleRulesFileSelect(event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) {
+      return;
+    }
+    rulesFileError = null;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        rulesInput = e.target?.result as string;
+      } catch {
+        rulesFileError = "Couldn't read this file. Try another.";
+      }
+    };
+    reader.onerror = () => {
+      rulesFileError = "Couldn't read this file. Try another.";
+    };
+    reader.readAsText(file);
+  }
 
   // --- Step 2: the editable preview ----------------------------------------
 
@@ -112,6 +146,30 @@
   let whoTheyAre = $state("");
   let whatTheyDo = $state("");
   let submitError = $state<string | null>(null);
+  let whatTheyDoFileError = $state<string | null>(null);
+
+  /** Same read-as-text idiom as `handleRulesFileSelect` above, for the
+   * persona body textarea. */
+  function handleWhatTheyDoFileSelect(event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) {
+      return;
+    }
+    whatTheyDoFileError = null;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        whatTheyDo = e.target?.result as string;
+      } catch {
+        whatTheyDoFileError = "Couldn't read this file. Try another.";
+      }
+    };
+    reader.onerror = () => {
+      whatTheyDoFileError = "Couldn't read this file. Try another.";
+    };
+    reader.readAsText(file);
+  }
 
   // Persona-metadata plan: whatever the draft step's model call (or its
   // deterministic fallback) came up with for purpose tags, carried through
@@ -135,7 +193,7 @@
     name.trim().length > 0 &&
       whoTheyAre.trim().length > 0 &&
       whatTheyDo.trim().length > 0 &&
-      rules.length <= 8 &&
+      rules.length <= RULES_MAX &&
       !$mutation.isPending,
   );
 
@@ -149,9 +207,14 @@
       { job: trimmedJob, rules },
       {
         onSuccess: (draft) => {
-          name = draft.name;
-          whoTheyAre = draft.who_they_are;
-          whatTheyDo = draft.what_they_do;
+          // No-clobber: operator text - typed, pasted, or uploaded - is
+          // never overwritten by a draft; a draft only ever fills in
+          // whatever field is still empty (mergeDraftFields, ../lib/validate,
+          // judges each field on its own).
+          const merged = mergeDraftFields({ name, whoTheyAre, whatTheyDo }, draft);
+          name = merged.name;
+          whoTheyAre = merged.whoTheyAre;
+          whatTheyDo = merged.whatTheyDo;
           draftedPurposeTags = draft.purpose_tags;
           step = "preview";
         },
@@ -159,14 +222,13 @@
           // The draft endpoint itself always 200s — a rejection here means
           // a genuine network/5xx failure, not "the generator was down"
           // (that's handled server-side with its own fallback). Reveal the
-          // classic four-field form empty so there's still a way forward.
+          // classic four-field form so there's still a way forward - but
+          // never blank out anything the operator already typed, pasted,
+          // or uploaded, same no-clobber rule as the success path above.
           draftError = errorMessage(
             error,
             "Couldn't draft a persona right now. Fill it in yourself below.",
           );
-          name = "";
-          whoTheyAre = "";
-          whatTheyDo = "";
           draftedPurposeTags = [];
           step = "preview";
         },
@@ -256,7 +318,26 @@
         aria-describedby="persona-builder-rules-status"
         aria-invalid={rulesError !== null}
       ></textarea>
-      <p class="persona-builder__help">Up to 8, one per line.</p>
+      <div class="persona-builder__upload">
+        <label class="persona-builder__upload-label" for="persona-builder-rules-file">
+          Upload rules file
+        </label>
+        <input
+          id="persona-builder-rules-file"
+          type="file"
+          accept=".md,.txt"
+          onchange={handleRulesFileSelect}
+          aria-describedby="persona-builder-rules-file-status"
+        />
+        <div id="persona-builder-rules-file-status">
+          {#if rulesFileError}
+            <p class="persona-builder__status persona-builder__status--error" role="alert">
+              {rulesFileError}
+            </p>
+          {/if}
+        </div>
+      </div>
+      <p class="persona-builder__help">Up to {RULES_MAX}, one per line.</p>
       <div id="persona-builder-rules-status">
         {#if rulesError}
           <p class="persona-builder__status persona-builder__status--error" role="alert">
@@ -327,6 +408,25 @@
         bind:value={whatTheyDo}
         rows="3"
       ></textarea>
+      <div class="persona-builder__upload">
+        <label class="persona-builder__upload-label" for="persona-builder-what-they-do-file">
+          Upload body file
+        </label>
+        <input
+          id="persona-builder-what-they-do-file"
+          type="file"
+          accept=".md,.txt"
+          onchange={handleWhatTheyDoFileSelect}
+          aria-describedby="persona-builder-what-they-do-file-status"
+        />
+        <div id="persona-builder-what-they-do-file-status">
+          {#if whatTheyDoFileError}
+            <p class="persona-builder__status persona-builder__status--error" role="alert">
+              {whatTheyDoFileError}
+            </p>
+          {/if}
+        </div>
+      </div>
       <p class="persona-builder__help">2-4 sentences, plain prose.</p>
     </div>
 
@@ -343,7 +443,26 @@
         aria-describedby="persona-builder-rules-preview-status"
         aria-invalid={rulesError !== null}
       ></textarea>
-      <p class="persona-builder__help">Up to 8, one per line.</p>
+      <div class="persona-builder__upload">
+        <label class="persona-builder__upload-label" for="persona-builder-rules-preview-file">
+          Upload rules file
+        </label>
+        <input
+          id="persona-builder-rules-preview-file"
+          type="file"
+          accept=".md,.txt"
+          onchange={handleRulesFileSelect}
+          aria-describedby="persona-builder-rules-preview-file-status"
+        />
+        <div id="persona-builder-rules-preview-file-status">
+          {#if rulesFileError}
+            <p class="persona-builder__status persona-builder__status--error" role="alert">
+              {rulesFileError}
+            </p>
+          {/if}
+        </div>
+      </div>
+      <p class="persona-builder__help">Up to {RULES_MAX}, one per line.</p>
       <div id="persona-builder-rules-preview-status">
         {#if rulesError}
           <p class="persona-builder__status persona-builder__status--error" role="alert">
@@ -411,6 +530,17 @@
 
   .persona-builder__textarea {
     resize: vertical;
+  }
+
+  .persona-builder__upload {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .persona-builder__upload-label {
+    color: var(--muted);
+    font-size: 0.8rem;
   }
 
   .persona-builder__input:focus-visible,

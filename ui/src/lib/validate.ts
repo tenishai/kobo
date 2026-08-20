@@ -81,3 +81,28 @@ export function splitLines(input: string): string[] {
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
 }
+
+/**
+ * The persona builder's no-clobber rule (Persona v3 upload/limits
+ * addendum): a drafted name/who-they-are/what-they-do only ever fills in a
+ * field that's still empty. Operator text - typed, pasted, or uploaded -
+ * is never overwritten by a draft, no matter which field it landed in.
+ *
+ * Pulled out of PersonaBuilder.svelte as its own pure function (same
+ * "logic here, wiring there" split the API's `kobo_api.persona_draft`
+ * module uses) so the fill-vs-keep decision for each field is directly
+ * testable without going through a mutation, a mocked fetch, or the
+ * component's two-step form at all.
+ */
+export function mergeDraftFields(
+  current: { name: string; whoTheyAre: string; whatTheyDo: string },
+  draft: { name: string; who_they_are: string; what_they_do: string },
+): { name: string; whoTheyAre: string; whatTheyDo: string } {
+  return {
+    name: current.name.trim().length > 0 ? current.name : draft.name,
+    whoTheyAre:
+      current.whoTheyAre.trim().length > 0 ? current.whoTheyAre : draft.who_they_are,
+    whatTheyDo:
+      current.whatTheyDo.trim().length > 0 ? current.whatTheyDo : draft.what_they_do,
+  };
+}
