@@ -43,7 +43,7 @@ describe("SlackPanel", () => {
     expect(screen.getByRole("button", { name: "Add another channel" })).not.toBeNull();
   });
 
-  it('waiting state shows "Channels saved. Waiting on an operator to finish the connection."', () => {
+  it('waiting state shows "Channels saved. Finish the Slack setup below to connect."', () => {
     renderWithClient(SlackPanel, {
       agentName: "warden",
       slack: { app_id: "A123", channels: ["C123456"], state: "waiting" },
@@ -51,7 +51,7 @@ describe("SlackPanel", () => {
     });
 
     expect(
-      screen.getByText("Channels saved. Waiting on an operator to finish the connection."),
+      screen.getByText("Channels saved. Finish the Slack setup below to connect."),
     ).not.toBeNull();
   });
 

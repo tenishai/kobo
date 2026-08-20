@@ -111,7 +111,7 @@
   // The spec's state-table copy, verbatim — no em dashes, nothing paraphrased.
   const STATE_COPY: Record<AgentSlack["state"], string> = {
     idle: "Not connected. Add the channels this agent should join.",
-    waiting: "Channels saved. Waiting on an operator to finish the connection.",
+    waiting: "Channels saved. Finish the Slack setup below to connect.",
     connected: "Connected.",
   };
 
@@ -494,6 +494,8 @@
         <p class="slack-panel__hint">Starts with xapp-.</p>
       </div>
 
+      <p class="slack-panel__safety-note">For safety, kobo never keeps these values. They go to the cluster when you press Finish setup.</p>
+
       {#if connectError}
         <p class="slack-panel__error" role="alert">{connectError}</p>
       {/if}
@@ -774,6 +776,12 @@
   }
 
   .slack-panel__hint {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.75rem;
+  }
+
+  .slack-panel__safety-note {
     margin: 0;
     color: var(--muted);
     font-size: 0.75rem;
