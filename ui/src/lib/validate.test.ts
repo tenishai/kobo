@@ -218,6 +218,37 @@ describe("mergeDraftFields", () => {
 
     expect(mergeDraftFields(current, draft)).toEqual(current);
   });
+
+  // Fix round 1 (FINDING 2): a draft route that "always 200s" can still
+  // hand back a body that doesn't match `PersonaDraft` at runtime - an
+  // empty object, or fields of the wrong type. Before this fix, an absent
+  // field fell through to `draft.name`/etc directly, so the merge wrote
+  // `undefined` straight into form state; PersonaBuilder's `nameHint`
+  // `$derived` then called `.trim()` on that `undefined` and threw the
+  // uncaught TypeError the reviewer hit while waiting out the legacy
+  // step-1 upload test's `{}` mock.
+  it("keeps every current value and never throws when the response is an empty object", () => {
+    const current = {
+      name: "",
+      whoTheyAre: "",
+      whatTheyDo: "kept body",
+    };
+
+    expect(() => mergeDraftFields(current, {})).not.toThrow();
+    expect(mergeDraftFields(current, {})).toEqual(current);
+  });
+
+  it("keeps every current value and never throws when fields are the wrong type", () => {
+    const current = {
+      name: "kept-name",
+      whoTheyAre: "",
+      whatTheyDo: "kept body",
+    };
+    const malformed = { name: 42, who_they_are: null, purpose_tags: "x" };
+
+    expect(() => mergeDraftFields(current, malformed)).not.toThrow();
+    expect(mergeDraftFields(current, malformed)).toEqual(current);
+  });
 });
 
 describe("mergeDistillFields", () => {
@@ -270,5 +301,25 @@ describe("mergeDistillFields", () => {
     const current = { name: "kept-name", whoTheyAre: "kept who they are" };
 
     expect(mergeDistillFields(current, distilled)).toEqual(current);
+  });
+
+  // Fix round 1 (FINDING 2): same exposure as mergeDraftFields above - a
+  // distill route that "always 200s" can still hand back a body that
+  // doesn't match `PersonaDistillResult` at runtime. See that describe
+  // block's matching tests for the exact crash this reproduces
+  // (`nameHint`'s `$derived .trim()` on an `undefined` name).
+  it("keeps both current values and never throws when the response is an empty object", () => {
+    const current = { name: "", whoTheyAre: "" };
+
+    expect(() => mergeDistillFields(current, {})).not.toThrow();
+    expect(mergeDistillFields(current, {})).toEqual(current);
+  });
+
+  it("keeps both current values and never throws when fields are the wrong type", () => {
+    const current = { name: "kept-name", whoTheyAre: "" };
+    const malformed = { name: 42, who_they_are: null, purpose_tags: "x" };
+
+    expect(() => mergeDistillFields(current, malformed)).not.toThrow();
+    expect(mergeDistillFields(current, malformed)).toEqual(current);
   });
 });

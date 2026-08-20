@@ -83,6 +83,39 @@ export function splitLines(input: string): string[] {
 }
 
 /**
+ * Coerces one field off an API response into a usable string, or `null`
+ * when it's missing or came back some other type entirely (`undefined`,
+ * `null`, a number, ...). The declared response types (`PersonaDraft`,
+ * `PersonaDistillResult`) say these fields are always strings, but that's
+ * only a compile-time promise about the client's own code - a live 200
+ * whose body doesn't honor its own shape (an empty `{}`, a field of the
+ * wrong type) is still valid JSON as far as `fetch`/`JSON.parse` are
+ * concerned, and shows up here at runtime exactly like a well-formed one
+ * would.
+ */
+function fillableString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+/**
+ * The shared no-clobber decision for one field, used by both merge
+ * functions below: keep the current (operator) value unless it's empty AND
+ * the incoming value is a usable string. `incoming === null` means the
+ * field was missing or malformed (see `fillableString`) - "nothing to
+ * fill" either way, same treatment an incoming empty string would get, so
+ * a malformed response degrades to "leave the field exactly as it was"
+ * rather than writing `undefined`/`null`/a number into form state that
+ * every caller (bindings, `$derived`s like `nameHint`) assumes is always a
+ * string.
+ */
+function pickField(current: string, incoming: string | null): string {
+  if (incoming === null) {
+    return current;
+  }
+  return current.trim().length > 0 ? current : incoming;
+}
+
+/**
  * The persona builder's no-clobber rule (Persona v3 upload/limits
  * addendum): a drafted name/who-they-are/what-they-do only ever fills in a
  * field that's still empty. Operator text - typed, pasted, or uploaded -
@@ -93,17 +126,30 @@ export function splitLines(input: string): string[] {
  * module uses) so the fill-vs-keep decision for each field is directly
  * testable without going through a mutation, a mocked fetch, or the
  * component's two-step form at all.
+ *
+ * `draft`'s fields are typed `unknown` on purpose (fix round 1): a route
+ * that "always 200s" (see `draftPersona`'s doc in ../lib/api) can still
+ * hand back a body that doesn't match `PersonaDraft` - an empty `{}`, or a
+ * field of the wrong type - and this used to write that value straight
+ * into form state unchecked, so a name/who_they_are of `undefined` would
+ * survive all the way to `nameHint`'s `$derived .trim()` in
+ * PersonaBuilder.svelte and throw. `purpose_tags` is accepted but never
+ * read - callers pass the full response object through, and this function
+ * only ever judges the three fields it owns.
  */
 export function mergeDraftFields(
   current: { name: string; whoTheyAre: string; whatTheyDo: string },
-  draft: { name: string; who_they_are: string; what_they_do: string },
+  draft: {
+    name?: unknown;
+    who_they_are?: unknown;
+    what_they_do?: unknown;
+    purpose_tags?: unknown;
+  },
 ): { name: string; whoTheyAre: string; whatTheyDo: string } {
   return {
-    name: current.name.trim().length > 0 ? current.name : draft.name,
-    whoTheyAre:
-      current.whoTheyAre.trim().length > 0 ? current.whoTheyAre : draft.who_they_are,
-    whatTheyDo:
-      current.whatTheyDo.trim().length > 0 ? current.whatTheyDo : draft.what_they_do,
+    name: pickField(current.name, fillableString(draft.name)),
+    whoTheyAre: pickField(current.whoTheyAre, fillableString(draft.who_they_are)),
+    whatTheyDo: pickField(current.whatTheyDo, fillableString(draft.what_they_do)),
   };
 }
 
@@ -115,14 +161,18 @@ export function mergeDraftFields(
  * already fills that field directly, the moment it arrives - long before
  * this merge ever runs). Only Name/Who they are can still be empty when a
  * distill lands, so only those two are judged.
+ *
+ * Same defensive typing as `mergeDraftFields` above, and for the same
+ * reason: `distillPersona`'s route always 200s too, and a malformed body
+ * (missing keys, wrong types) is "nothing to fill" here rather than a
+ * value that ends up written into `name`/`whoTheyAre` unchecked.
  */
 export function mergeDistillFields(
   current: { name: string; whoTheyAre: string },
-  distilled: { name: string; who_they_are: string },
+  distilled: { name?: unknown; who_they_are?: unknown; purpose_tags?: unknown },
 ): { name: string; whoTheyAre: string } {
   return {
-    name: current.name.trim().length > 0 ? current.name : distilled.name,
-    whoTheyAre:
-      current.whoTheyAre.trim().length > 0 ? current.whoTheyAre : distilled.who_they_are,
+    name: pickField(current.name, fillableString(distilled.name)),
+    whoTheyAre: pickField(current.whoTheyAre, fillableString(distilled.who_they_are)),
   };
 }

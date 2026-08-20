@@ -23,6 +23,34 @@ function textFile(content: string, name = "notes.txt"): File {
   return new File([content], name, { type: "text/plain" });
 }
 
+/** A fetch mock the test resolves (or rejects) on its own schedule, for
+ * exercising the window between "Continue" advancing to the preview and
+ * the background distill actually landing (persona-first station's whole
+ * reason for existing: the advance never waits on the network). */
+function deferredResponse(): {
+  promise: Promise<Response>;
+  resolve: (body: unknown) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolveFn!: (value: Response) => void;
+  let rejectFn!: (reason?: unknown) => void;
+  const promise = new Promise<Response>((resolve, reject) => {
+    resolveFn = resolve;
+    rejectFn = reject;
+  });
+  return {
+    promise,
+    resolve: (body: unknown) =>
+      resolveFn(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    reject: (reason?: unknown) => rejectFn(reason),
+  };
+}
+
 async function reachStep2(): Promise<void> {
   const jobField = screen.getByLabelText("What should this agent do for you?");
   await fireEvent.input(jobField, {
@@ -155,9 +183,22 @@ describe("PersonaBuilder - bring your own persona (step 1)", () => {
   });
 
   it("uploading a persona file at step 1 fills what-they-do and reaches preview without drafting", async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL) =>
-      new Response(JSON.stringify({}), { status: 200 }),
-    );
+    // The persona-body upload also fires the background distill (same
+    // primary path a paste + Continue takes) - a bare `{}` mock for every
+    // route used to make this test racy: whether the distill happened to
+    // land before the assertions ran depended on microtask timing, and on
+    // the old (pre fix-round-1) merge helpers, an actually-landed `{}`
+    // would write `undefined` into Name/Who they are and throw. A deferred
+    // mock this test resolves itself, plus waiting for the in-flight note
+    // to clear, makes "settled" deterministic instead of timing luck.
+    const distill = deferredResponse();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/personas/distill")) {
+        return distill.promise;
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
     vi.stubGlobal("fetch", fetchMock);
     renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
 
@@ -172,6 +213,12 @@ describe("PersonaBuilder - bring your own persona (step 1)", () => {
     expect((screen.getByLabelText("What they do") as HTMLTextAreaElement).value).toBe(
       "A full persona document, ready to go.",
     );
+
+    distill.resolve({ name: "", who_they_are: "", purpose_tags: [] });
+    await waitFor(() => {
+      expect(screen.queryByText("Reading their persona…")).toBeNull();
+    });
+
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("");
     expect((screen.getByLabelText("Who they are") as HTMLInputElement).value).toBe("");
     expect(
@@ -323,5 +370,177 @@ describe("PersonaBuilder - draft no-clobber (component wiring)", () => {
       await screen.findByText("Couldn't draft a persona right now. Fill it in yourself below."),
     ).not.toBeNull();
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("");
+  });
+});
+
+describe("PersonaBuilder - paste their persona + Continue (primary path, component)", () => {
+  // Fix round 1 (FINDING 1): the primary path had zero component-level
+  // coverage - everything below exercises the paste textarea + Continue
+  // button directly, the way an operator who already has a persona
+  // document actually uses this form.
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubDistillRoute(fetchImpl: (input: RequestInfo | URL) => Promise<Response>): void {
+    vi.stubGlobal("fetch", vi.fn(fetchImpl));
+  }
+
+  it("shows the preview immediately - before the distill resolves - then fills only the empty fields once it lands", async () => {
+    const distill = deferredResponse();
+    stubDistillRoute(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/personas/distill")) {
+        return distill.promise;
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    await fireEvent.input(screen.getByLabelText("Paste their persona"), {
+      target: { value: "Their full persona document, ready to go." },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    // The preview is already up - the distill fetch is still pending.
+    expect(screen.getByRole("button", { name: "Create persona" })).not.toBeNull();
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Who they are") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("What they do") as HTMLTextAreaElement).value).toBe(
+      "Their full persona document, ready to go.",
+    );
+
+    distill.resolve({
+      name: "billing-buddy",
+      who_they_are: "a calm troubleshooter for billing questions",
+      purpose_tags: ["billing"],
+    });
+
+    await waitFor(() => {
+      expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("billing-buddy");
+    });
+    expect((screen.getByLabelText("Who they are") as HTMLInputElement).value).toBe(
+      "a calm troubleshooter for billing questions",
+    );
+    // The pasted body is untouched - a distill reply carries no
+    // what_they_do at all (mergeDistillFields never judges that field).
+    expect((screen.getByLabelText("What they do") as HTMLTextAreaElement).value).toBe(
+      "Their full persona document, ready to go.",
+    );
+  });
+
+  it("a name typed before the distill resolves survives - only who-they-are fills in", async () => {
+    const distill = deferredResponse();
+    stubDistillRoute(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/personas/distill")) {
+        return distill.promise;
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    await fireEvent.input(screen.getByLabelText("Paste their persona"), {
+      target: { value: "Their full persona document." },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    await fireEvent.input(screen.getByLabelText("Name") as HTMLInputElement, {
+      target: { value: "my-own-name" },
+    });
+
+    distill.resolve({
+      name: "billing-buddy",
+      who_they_are: "a calm troubleshooter for billing questions",
+      purpose_tags: [],
+    });
+
+    await waitFor(() => {
+      expect((screen.getByLabelText("Who they are") as HTMLInputElement).value).toBe(
+        "a calm troubleshooter for billing questions",
+      );
+    });
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("my-own-name");
+  });
+
+  it("shows the in-flight note while the distill is pending and clears it once it lands", async () => {
+    const distill = deferredResponse();
+    stubDistillRoute(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/personas/distill")) {
+        return distill.promise;
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    await fireEvent.input(screen.getByLabelText("Paste their persona"), {
+      target: { value: "Their full persona document." },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Reading their persona…")).not.toBeNull();
+    });
+
+    distill.resolve({ name: "", who_they_are: "", purpose_tags: [] });
+
+    await waitFor(() => {
+      expect(screen.queryByText("Reading their persona…")).toBeNull();
+    });
+  });
+
+  it("a distill failure shows the quiet note and leaves the fields empty and editable", async () => {
+    stubDistillRoute(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/personas/distill")) {
+        return Promise.reject("network down");
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    await fireEvent.input(screen.getByLabelText("Paste their persona"), {
+      target: { value: "Their full persona document." },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(
+      await screen.findByText("Could not read the persona. Fill these in yourself."),
+    ).not.toBeNull();
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Who they are") as HTMLInputElement).value).toBe("");
+
+    // No thrown error, and the fields are still ordinary editable inputs.
+    const nameField = screen.getByLabelText("Name") as HTMLInputElement;
+    await fireEvent.input(nameField, { target: { value: "typed by hand" } });
+    expect(nameField.value).toBe("typed by hand");
+  });
+
+  it("rules typed at step 1 survive the paste + Continue path", async () => {
+    stubDistillRoute(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/personas/distill")) {
+        return new Response(
+          JSON.stringify({ name: "", who_they_are: "", purpose_tags: [] }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    await fireEvent.input(screen.getByLabelText("Rules (optional)"), {
+      target: { value: "Always confirm the account before making changes." },
+    });
+    await fireEvent.input(screen.getByLabelText("Paste their persona"), {
+      target: { value: "Their full persona document." },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    await screen.findByRole("button", { name: "Create persona" });
+    expect(
+      (screen.getByLabelText("Rules (optional)") as HTMLTextAreaElement).value,
+    ).toBe("Always confirm the account before making changes.");
   });
 });
