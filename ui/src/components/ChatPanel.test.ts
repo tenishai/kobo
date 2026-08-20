@@ -10,6 +10,7 @@ import ChatPanel from "./ChatPanel.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 
 const SAVED_COPY = "Saved to memory. It arrives with the next delivery.";
+const INSTANT_COPY = "Learned. Filed to the repo in the background.";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -196,6 +197,69 @@ describe("ChatPanel — Teach this gesture (Task 2)", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(screen.queryByText(SAVED_COPY)).toBeNull();
+  });
+
+  it("shows the instant copy when the teach response mode is instant", async () => {
+    stubFetch({
+      "/api/agents/ward/chat": { reply: "Sure thing." },
+      "/api/agents/ward/teach": { filename: "chat-x.md", mode: "instant" },
+      "/api/": {},
+    });
+    renderWithClient(ChatPanel, { agentName: "ward" });
+    await sendMessage("hello there");
+    await waitFor(() => {
+      expect(screen.getByText("Sure thing.")).not.toBeNull();
+    });
+
+    await fireEvent.click(screen.getAllByRole("button", { name: "Teach this" })[0]);
+    await screen.findByLabelText("Teach ward");
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(INSTANT_COPY)).not.toBeNull();
+    });
+  });
+
+  it("keeps the archive copy when the teach response mode is archive", async () => {
+    stubFetch({
+      "/api/agents/ward/chat": { reply: "Sure thing." },
+      "/api/agents/ward/teach": { filename: "chat-x.md", mode: "archive", sha: "abc" },
+      "/api/": {},
+    });
+    renderWithClient(ChatPanel, { agentName: "ward" });
+    await sendMessage("hello there");
+    await waitFor(() => {
+      expect(screen.getByText("Sure thing.")).not.toBeNull();
+    });
+
+    await fireEvent.click(screen.getAllByRole("button", { name: "Teach this" })[0]);
+    await screen.findByLabelText("Teach ward");
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(SAVED_COPY)).not.toBeNull();
+    });
+  });
+
+  it("treats a missing mode as archive", async () => {
+    stubFetch({
+      "/api/agents/ward/chat": { reply: "Sure thing." },
+      "/api/agents/ward/teach": { filename: "chat-x.md", sha: "abc" },
+      "/api/": {},
+    });
+    renderWithClient(ChatPanel, { agentName: "ward" });
+    await sendMessage("hello there");
+    await waitFor(() => {
+      expect(screen.getByText("Sure thing.")).not.toBeNull();
+    });
+
+    await fireEvent.click(screen.getAllByRole("button", { name: "Teach this" })[0]);
+    await screen.findByLabelText("Teach ward");
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(SAVED_COPY)).not.toBeNull();
+    });
   });
 
   it("failure surfaces the server's own detail verbatim, and it stays retryable", async () => {

@@ -46,6 +46,7 @@
   let text = $state("");
   let error = $state<string | null>(null);
   let saved = $state(false);
+  let mode = $state<"instant" | "archive">("archive");
 
   let wasOpen = false;
 
@@ -54,6 +55,7 @@
       text = prefill;
       error = null;
       saved = false;
+      mode = "archive";
     }
     wasOpen = open;
   });
@@ -66,7 +68,8 @@
     }
     error = null;
     $mutation.mutate(text, {
-      onSuccess: () => {
+      onSuccess: (data) => {
+        mode = data?.mode === "instant" ? "instant" : "archive";
         saved = true;
       },
       onError: (err: unknown) => {
@@ -84,7 +87,9 @@
   {#if saved}
     <div class="teach-modal__success">
       <p class="teach-modal__success-text">
-        Saved to memory. It arrives with the next delivery.
+        {mode === "instant"
+          ? "Learned. Filed to the repo in the background."
+          : "Saved to memory. It arrives with the next delivery."}
       </p>
       <button type="button" class="teach-modal__done" onclick={handleClose}>
         Done
