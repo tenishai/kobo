@@ -51,6 +51,7 @@ import {
   type KnowledgeFile,
   type NameSuggestion,
   type OrgStatus,
+  type PersonaDistillResult,
   type PersonaDraft,
   type PersonaForm,
   type TeamOptions,
@@ -67,6 +68,7 @@ import {
   deleteSkill,
   deleteTooling,
   destroyAgent,
+  distillPersona,
   draftPersona,
   fetchColleagueConversation,
   fetchDeliveryState,
@@ -249,6 +251,20 @@ export function draftPersonaMutation() {
   return {
     mutationFn: ({ job, rules }: { job: string; rules: string[] }) =>
       draftPersona(job, rules),
+  };
+}
+
+/**
+ * Distills discovery metadata from an operator-supplied persona document
+ * (persona-first station addendum) — `POST /api/personas/distill`. Same
+ * "no onSuccess/cache invalidation" shape as `draftPersonaMutation` above,
+ * for the same reason: the route never touches storage
+ * (`kobo_api.main.distill_persona_route`'s own docstring), so there's
+ * nothing in the query cache for a pure generator call to invalidate.
+ */
+export function distillPersonaMutation() {
+  return {
+    mutationFn: (body: string) => distillPersona(body),
   };
 }
 
@@ -806,6 +822,7 @@ export type {
   KnowledgeFile,
   NameSuggestion,
   OrgStatus,
+  PersonaDistillResult,
   PersonaDraft,
   PersonaForm,
   TeamOptions,

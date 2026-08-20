@@ -200,14 +200,14 @@ describe("PersonaBuilder - bring your own persona (step 1)", () => {
     expect(screen.queryByRole("button", { name: "Create persona" })).toBeNull();
   });
 
-  it("'Start from your own text' advances to preview with every field empty", async () => {
+  it("'Start with a blank form' advances to preview with every field empty", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL) =>
       new Response(JSON.stringify({}), { status: 200 }),
     );
     vi.stubGlobal("fetch", fetchMock);
     renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
 
-    await fireEvent.click(screen.getByRole("button", { name: "Start from your own text" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Start with a blank form" }));
 
     expect(await screen.findByRole("button", { name: "Create persona" })).not.toBeNull();
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("");
@@ -236,14 +236,14 @@ describe("PersonaBuilder - bring your own persona (step 1)", () => {
     ).toBe("Always be concise.");
   });
 
-  it("rules typed at step 1 survive the 'Start from your own text' path", async () => {
+  it("rules typed at step 1 survive the 'Start with a blank form' path", async () => {
     stubFetch({ "/api/": {} });
     renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
 
     const rulesTextarea = screen.getByLabelText("Rules (optional)") as HTMLTextAreaElement;
     await fireEvent.input(rulesTextarea, { target: { value: "Never guess at pricing." } });
 
-    await fireEvent.click(screen.getByRole("button", { name: "Start from your own text" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Start with a blank form" }));
 
     await screen.findByRole("button", { name: "Create persona" });
     expect(
@@ -255,7 +255,7 @@ describe("PersonaBuilder - bring your own persona (step 1)", () => {
     stubFetch({ "/api/": {} });
     renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
 
-    await fireEvent.click(screen.getByRole("button", { name: "Start from your own text" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Start with a blank form" }));
 
     await screen.findByRole("button", { name: "Create persona" });
     expect(screen.queryByText("Here's their draft. Edit anything.")).toBeNull();

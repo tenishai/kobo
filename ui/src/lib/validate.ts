@@ -106,3 +106,23 @@ export function mergeDraftFields(
       current.whatTheyDo.trim().length > 0 ? current.whatTheyDo : draft.what_they_do,
   };
 }
+
+/**
+ * `mergeDraftFields`'s counterpart for a distilled persona document
+ * (persona-first station addendum): the same no-clobber rule, just a
+ * two-field shape - no `whatTheyDo` here at all, since a distill reply
+ * never carries one (the operator's pasted/uploaded persona document
+ * already fills that field directly, the moment it arrives - long before
+ * this merge ever runs). Only Name/Who they are can still be empty when a
+ * distill lands, so only those two are judged.
+ */
+export function mergeDistillFields(
+  current: { name: string; whoTheyAre: string },
+  distilled: { name: string; who_they_are: string },
+): { name: string; whoTheyAre: string } {
+  return {
+    name: current.name.trim().length > 0 ? current.name : distilled.name,
+    whoTheyAre:
+      current.whoTheyAre.trim().length > 0 ? current.whoTheyAre : distilled.who_they_are,
+  };
+}

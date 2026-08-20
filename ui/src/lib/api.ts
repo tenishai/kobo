@@ -409,6 +409,42 @@ export async function draftPersona(
   return parse<PersonaDraft>(res);
 }
 
+/** The persona-first station's other entry point (persona-first station
+ * addendum): given the operator's own ready-made persona document
+ * (`POST /api/personas/distill`), the room reads it and pulls out discovery
+ * metadata for the colleague directory. Deliberately no `what_they_do` -
+ * unlike `PersonaDraft` above, the submitted document already IS the
+ * persona body, so there's nothing to draft for that field; the caller
+ * (`PersonaBuilder`) keeps its own `whatTheyDo` state untouched by this
+ * response. Same "always 200, a generator failure just means a
+ * deterministic fallback" contract as `draftPersona` — `distillPersona`
+ * below only ever rejects on a genuine transport/route failure. */
+export type PersonaDistillResult = {
+  name: string;
+  who_they_are: string;
+  /** Distilled purpose chips, ≤5, lowercased/deduped server-side
+   * (`kobo_api.persona_draft.finalize_distill`) — `[]` when the generator
+   * omitted them or was unusable (a distill has no what_they_do to derive
+   * a fallback tag set from the way `draftPersona`'s own fallback tier
+   * does, so this is a plain empty list on any trouble, full stop). */
+  purpose_tags: string[];
+};
+
+/**
+ * `POST /api/personas/distill` — reads a persona document the operator
+ * already wrote (pasted or uploaded) and pulls out discovery metadata:
+ * name, one-line who_they_are, purpose tags. Always 200 from the server;
+ * nothing is created or searched here, same as `draftPersona`.
+ */
+export async function distillPersona(body: string): Promise<PersonaDistillResult> {
+  const res = await fetch("/api/personas/distill", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ body }),
+  });
+  return parse<PersonaDistillResult>(res);
+}
+
 export async function createPersona(body: PersonaForm): Promise<CatalogEntry> {
   const res = await fetch("/api/personas", {
     method: "POST",

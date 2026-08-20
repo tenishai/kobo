@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  mergeDistillFields,
   mergeDraftFields,
   splitLines,
   splitTags,
@@ -216,5 +217,58 @@ describe("mergeDraftFields", () => {
     };
 
     expect(mergeDraftFields(current, draft)).toEqual(current);
+  });
+});
+
+describe("mergeDistillFields", () => {
+  // Persona-first station addendum: the same no-clobber contract as
+  // mergeDraftFields above, just a two-field shape (no whatTheyDo - the
+  // operator's pasted/uploaded persona document already fills that field
+  // directly, never through this merge) since a distill reply carries no
+  // what_they_do at all.
+  const distilled = {
+    name: "billing-buddy",
+    who_they_are: "a calm troubleshooter for billing questions",
+  };
+
+  it("fills both fields when they're empty", () => {
+    const result = mergeDistillFields({ name: "", whoTheyAre: "" }, distilled);
+
+    expect(result).toEqual({
+      name: distilled.name,
+      whoTheyAre: distilled.who_they_are,
+    });
+  });
+
+  it("keeps a pre-typed name instead of overwriting it with the distilled one", () => {
+    const result = mergeDistillFields(
+      { name: "my-own-name", whoTheyAre: "" },
+      distilled,
+    );
+
+    expect(result.name).toBe("my-own-name");
+    expect(result.whoTheyAre).toBe(distilled.who_they_are);
+  });
+
+  it("judges each field independently - one filled field doesn't block the other", () => {
+    const result = mergeDistillFields(
+      { name: "", whoTheyAre: "kept who they are" },
+      distilled,
+    );
+
+    expect(result.name).toBe(distilled.name);
+    expect(result.whoTheyAre).toBe("kept who they are");
+  });
+
+  it("treats a whitespace-only field as empty, still fillable by the distill", () => {
+    const result = mergeDistillFields({ name: "   ", whoTheyAre: "" }, distilled);
+
+    expect(result.name).toBe(distilled.name);
+  });
+
+  it("keeps both fields when they already have operator content", () => {
+    const current = { name: "kept-name", whoTheyAre: "kept who they are" };
+
+    expect(mergeDistillFields(current, distilled)).toEqual(current);
   });
 });
