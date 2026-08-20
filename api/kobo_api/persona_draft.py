@@ -19,10 +19,20 @@ import re
 from kobo_api.personas import PersonaError, PersonaFields, _derive_tags, persona_id
 from kobo_api.purpose_tags import normalize_tags
 
-# Mirrors PersonaFields' real Field bounds (kobo_api.personas) — duplicated
-# as plain constants here rather than imported, the same "mirror the bounds,
-# don't cross-import validation" convention `NameSuggestionsRequest`
-# (kobo_api.main) already uses for who_they_are/what_they_do.
+# _NAME_MAX/_WHO_MAX mirror PersonaFields' real Field bounds (kobo_api.
+# personas) — duplicated as plain constants here rather than imported, the
+# same "mirror the bounds, don't cross-import validation" convention
+# `NameSuggestionsRequest` (kobo_api.main) already uses for who_they_are/
+# what_they_do.
+#
+# _WHAT_MAX is deliberately NOT mirrored to PersonaFields.what_they_do's own
+# bound any more (upload/limits addendum raised that to 32768, to accept
+# long operator-authored text typed/pasted/uploaded straight into the v2
+# preview). This constant governs a different question: how much of the
+# GENERATOR's own draft output gets accepted verbatim before falling back
+# to the job-derived text (`_fallback_what`) — the drafted what_they_do is
+# meant to stay a concise, model-written paragraph, not grow to the room's
+# full persona.md ceiling. Kept at its original value on purpose.
 _NAME_MAX = 60
 _WHO_MAX = 200
 _WHAT_MAX = 500

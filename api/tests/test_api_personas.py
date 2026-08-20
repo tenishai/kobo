@@ -137,7 +137,7 @@ def test_create_persona_201(client, fake_storage):
 
 
 def test_create_persona_201_with_rules(client):
-    """Rules (optional, up to 8) render into the body's Rules section — a
+    """Rules (optional, up to 150) render into the body's Rules section — a
     regression pin that the route passes `rules` through to `create_persona`
     like every other field, not just the three required ones."""
     payload = {**VALID_PAYLOAD, "rules": ["Never share account numbers.", "Be concise."]}
@@ -200,11 +200,27 @@ def test_create_persona_422_missing_who_they_are(client):
 
 
 def test_create_persona_422_too_many_rules(client):
-    payload = {**VALID_PAYLOAD, "rules": ["ok"] * 9}
+    payload = {**VALID_PAYLOAD, "rules": ["ok"] * 151}
 
     response = client.post("/api/personas", json=payload)
 
     assert response.status_code == 422
+
+
+def test_create_persona_422_merged_render_too_many_lines(client):
+    """The route surfaces the merged-render gate's own message verbatim
+    (kobo_api.personas._check_rendered_size, raised as PersonaError from
+    create_persona and turned into a 422 by the existing
+    `except PersonaError` handler) — not the generic field-name-only
+    RequestValidationError copy."""
+    payload = {**VALID_PAYLOAD, "rules": ["ok"] * 140}
+
+    response = client.post("/api/personas", json=payload)
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "error": "persona renders to 151 lines; the limit is 150"
+    }
 
 
 def test_create_persona_422_name_does_not_slugify(client):
@@ -458,10 +474,22 @@ def test_draft_persona_422_too_many_rules(config, tmp_path):
     client = _draft_client(config, tmp_path)
 
     response = client.post(
-        "/api/personas/draft", json={**DRAFT_PAYLOAD, "rules": ["ok"] * 9}
+        "/api/personas/draft", json={**DRAFT_PAYLOAD, "rules": ["ok"] * 151}
     )
 
     assert response.status_code == 422
+
+
+def test_draft_persona_200_with_150_rule_hints(config, tmp_path):
+    """Upload/limits addendum: PersonaDraftRequest.rules mirrors
+    PersonaFields.rules' cap move from 8 to 150 items."""
+    client = _draft_client(config, tmp_path)
+
+    response = client.post(
+        "/api/personas/draft", json={**DRAFT_PAYLOAD, "rules": ["ok"] * 150}
+    )
+
+    assert response.status_code == 200
 
 
 def test_draft_persona_422_bad_rule_item_length(config, tmp_path):

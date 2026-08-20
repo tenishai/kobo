@@ -315,18 +315,25 @@ class PersonaDraftRequest(BaseModel):
     whatever the operator edits into the v2 preview before Create."""
 
     job: str = Field(min_length=1, max_length=500)
-    # Same 0-8 optional-one-liners shape as PersonaFields.rules
-    # (kobo_api.personas) — mirrored here rather than imported, same
-    # "mirror the bounds, don't cross-import validation" convention
-    # NameSuggestionsRequest above already uses.
-    rules: list[str] = Field(default_factory=list, max_length=8)
+    # Same 0-150 optional-one-liners shape as PersonaFields.rules
+    # (kobo_api.personas, upload/limits addendum) — mirrored here rather
+    # than imported, same "mirror the bounds, don't cross-import
+    # validation" convention NameSuggestionsRequest above already uses.
+    rules: list[str] = Field(default_factory=list, max_length=150)
 
     @field_validator("rules")
     @classmethod
     def _rules_shape(cls, v: list[str]) -> list[str]:
+        # No numeric per-rule length cap any more, mirroring
+        # PersonaFields._rules_shape's own drop of its old 200-char
+        # ceiling — a rule hint this long is bounded by the merged
+        # persona.md's real render gate once it's actually created, not a
+        # per-field lookalike of it here.
         for item in v:
-            if not (1 <= len(item) <= 200):
-                raise ValueError(f"each rule must be 1-200 chars: {item!r}")
+            if not item:
+                raise ValueError(f"each rule must not be empty: {item!r}")
+            if "\n" in item:
+                raise ValueError(f"each rule must be a single line (no newlines): {item!r}")
         return v
 
 
