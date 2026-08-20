@@ -15,6 +15,27 @@ from pydantic import BaseModel, Field, field_validator
 class ModelChoice(BaseModel):
     id: str  # LiteLLM route, e.g. vertex_ai/claude-sonnet-4-5
     label: str
+    # Per-model Vertex location override (Gemini-3.1-Pro-Preview arc):
+    # Gemini previews serve ONLY on Vertex's global endpoint (a regional
+    # endpoint 404s), while the Claude partner models stay on the org's
+    # regional default. None (the default) means "no override — use
+    # Config.vertex_location", same as every other model in the list today.
+    # See vertex_location_for below for the resolution.
+    location: str | None = None
+
+
+def vertex_location_for(config: Config, model_id: str) -> str:
+    """The Vertex location `model_id` should run against: its own
+    `ModelChoice.location` when the catalog sets one, else
+    `config.vertex_location` (the org-wide default). Mirrors main.py's
+    `_model_label` iteration idiom, including its "still render, not 500"
+    stance — an unknown model_id (an agent created under an older `models`
+    list) also falls back to `config.vertex_location` rather than raising.
+    """
+    for model in config.models:
+        if model.id == model_id:
+            return model.location or config.vertex_location
+    return config.vertex_location
 
 
 class Config(BaseModel):

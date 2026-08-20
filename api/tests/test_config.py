@@ -5,7 +5,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from kobo_api.config import Config
+from kobo_api.config import Config, ModelChoice, vertex_location_for
 
 
 def test_load_none_returns_defaults_without_touching_disk(tmp_path, monkeypatch):
@@ -270,6 +270,64 @@ def test_config_example_yaml_documents_cabal_keys():
     config = Config(**data)
     assert config.cabal_url is None
     assert config.agent_endpoint_template is None
+
+
+# --- ModelChoice.location / vertex_location_for (Gemini-3.1-Pro-Preview arc) --
+#
+# Gemini previews serve ONLY on Vertex's global endpoint (a regional endpoint
+# 404s), while the Claude partner models stay on the org's regional default
+# (vertex_location). ModelChoice.location is the per-model override that
+# lets a single models list carry both kinds; vertex_location_for is the
+# lookup that resolves it at compose time (tests/test_steps.py exercises the
+# compose-level wiring, RepoStep threading it into BundleSpec).
+
+
+def test_model_choice_location_defaults_to_none():
+    model = ModelChoice(id="vertex_ai/claude-sonnet-4-5", label="Claude Sonnet 4.5")
+    assert model.location is None
+
+
+def test_model_choice_parses_explicit_location():
+    model = ModelChoice(
+        id="vertex_ai/gemini-3.1-pro-preview",
+        label="Gemini 3.1 Pro Preview",
+        location="global",
+    )
+    assert model.location == "global"
+
+
+def test_vertex_location_for_returns_model_location_when_set():
+    config = Config(
+        vertex_location="us-east5",
+        models=[
+            ModelChoice(id="vertex_ai/claude-sonnet-4-5", label="Claude Sonnet 4.5"),
+            ModelChoice(
+                id="vertex_ai/gemini-3.1-pro-preview",
+                label="Gemini 3.1 Pro Preview",
+                location="global",
+            ),
+        ],
+    )
+
+    assert vertex_location_for(config, "vertex_ai/gemini-3.1-pro-preview") == "global"
+
+
+def test_vertex_location_for_falls_back_to_org_default_when_model_has_no_location():
+    config = Config(
+        vertex_location="us-east5",
+        models=[ModelChoice(id="vertex_ai/claude-sonnet-4-5", label="Claude Sonnet 4.5")],
+    )
+
+    assert vertex_location_for(config, "vertex_ai/claude-sonnet-4-5") == "us-east5"
+
+
+def test_vertex_location_for_unknown_model_id_falls_back_to_org_default():
+    """An agent created under an older `models` list whose model has since
+    been retired from the catalog must still resolve a location, not
+    raise — same 'still render, not 500' stance as main.py's _model_label."""
+    config = Config(vertex_location="us-east5")
+
+    assert vertex_location_for(config, "vertex_ai/retired-model") == "us-east5"
 
 
 def test_config_example_yaml_documents_avatar_keys():

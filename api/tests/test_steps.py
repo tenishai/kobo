@@ -20,7 +20,7 @@ import yaml
 
 from kobo_api.clients import CabalError, ClientError, Clients
 from kobo_api.composer import BundleSpec, compose
-from kobo_api.config import Config
+from kobo_api.config import Config, ModelChoice
 from kobo_api.models import Agent
 from kobo_api.provisioner import Ctx
 from kobo_api.steps import (
@@ -657,6 +657,72 @@ def test_repo_step_composes_without_cabal_auth_when_config_has_no_cabal_url(
     a2a_transport = transports[0]
     assert a2a_transport["kind"] == "a2a"
     assert "auth" not in a2a_transport, "transport should not have auth when cabal_url is None"
+
+
+def _spy_compose(monkeypatch, captured: dict) -> None:
+    """Wraps `kobo_api.steps.compose` (the module-level name RepoStep.run
+    calls) so a test can inspect the `BundleSpec` a run actually composed
+    with, while still letting the real compose() do its work — same seam
+    `_no_real_sleep` above patches for `_sleep`, just recording instead of
+    no-opping."""
+    import kobo_api.steps as steps_module
+
+    real_compose = steps_module.compose
+
+    def fake_compose(spec, dest):
+        captured["spec"] = spec
+        return real_compose(spec, dest)
+
+    monkeypatch.setattr(steps_module, "compose", fake_compose)
+
+
+def test_repo_step_uses_model_specific_vertex_location_when_configured(
+    session_factory, fake_storage, tmp_path, monkeypatch
+):
+    """Gemini-3.1-Pro-Preview arc: a `models` entry carrying a `location`
+    override threads through RepoStep into the composed BundleSpec — Gemini
+    previews serve only on Vertex's global endpoint, not the org's regional
+    default."""
+    gemini_model_id = "vertex_ai/gemini-3.1-pro-preview"
+    config = Config(
+        workdir=tmp_path / "work",
+        skills_bucket="skills-bucket",
+        personas_bucket="personas-bucket",
+        vertex_location="us-east5",
+        models=[
+            ModelChoice(id=MODEL_ID, label="Claude Sonnet 4.5"),
+            ModelChoice(id=gemini_model_id, label="Gemini 3.1 Pro Preview", location="global"),
+        ],
+    )
+    session, agent = _make_agent(session_factory, model_id=gemini_model_id)
+    github = FakeGitHub()
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
+
+    captured: dict = {}
+    _spy_compose(monkeypatch, captured)
+
+    RepoStep().run(ctx)
+
+    assert captured["spec"].vertex_location == "global"
+
+
+def test_repo_step_keeps_org_default_vertex_location_for_model_without_override(
+    session_factory, config, fake_storage, monkeypatch
+):
+    """The companion default case: a model with no `location` override (the
+    Claude partner models, and the fixture's default MODEL_ID) still
+    composes with `config.vertex_location`, unchanged from before this
+    field existed."""
+    session, agent = _make_agent(session_factory)
+    github = FakeGitHub()
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
+
+    captured: dict = {}
+    _spy_compose(monkeypatch, captured)
+
+    RepoStep().run(ctx)
+
+    assert captured["spec"].vertex_location == config.vertex_location
 
 
 def test_repo_step_compose_raises_without_rmtree_on_stale_skills(tmp_path):

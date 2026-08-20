@@ -52,7 +52,7 @@ from kobo_api.clients import (
 )
 from kobo_api.colleagues import deliver_pass
 from kobo_api.composer import BundleSpec, compose, validate_agent_yaml
-from kobo_api.config import Config
+from kobo_api.config import Config, vertex_location_for
 from kobo_api.directory import sync_directory
 from kobo_api.metadata import (
     commit_card_metadata,
@@ -385,7 +385,7 @@ class RepoStep:
             skills=staged_skills,
             runtime_image=config.runtime_image,
             vertex_project=config.vertex_project,
-            vertex_location=config.vertex_location,
+            vertex_location=vertex_location_for(config, agent.model_id),
             # Persona metadata (Task 3): thread the agent row's own team
             # (Task 2's own value, "shared" being the same default
             # CreateAgentRequest.team already falls back to) and purpose_tags
