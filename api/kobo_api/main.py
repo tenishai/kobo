@@ -2038,13 +2038,49 @@ def create_app(
     # same false-ingested-window fix). Ready-gated, any signed-in user (no
     # operator gate) — same reach as the metadata routes above.
 
-    def _teach_task_failed(raw: dict) -> bool:
-        """True when the relayed reply is a FAILED task (the runtime refused
-        or errored): kobo must not claim the instant lane for a note the
-        agent did not actually keep."""
-        task = raw.get("task") or raw.get("result") or raw
-        status = task.get("status") or {}
-        return status.get("state") == "failed"
+    def _teach_task_not_completed(raw: object) -> bool:
+        """True unless `raw` is a well-formed relayed task whose status
+        state is exactly "completed": kobo must not claim the instant lane
+        for a note the agent did not actually keep.
+
+        Same unwrap-then-isinstance-guard style as `_extract_relay_reply`
+        (kobo_api.clients) below, deliberately duplicated rather than
+        shared: that helper raises on a malformed reply (its caller wants
+        the exception), this one only ever needs a bool and must never
+        raise, since the whole point is answering the question BEFORE it's
+        safe to call `_extract_relay_reply(raw)` at all. A 2xx relay body
+        that's valid JSON but not a dict (a bare list, or a `task`/`result`
+        wrapper whose value isn't a dict either) counts as not-completed
+        rather than raising AttributeError -- that would otherwise escape
+        the route's own `except (CabalError, httpx.HTTPError, ValueError)`
+        and turn an instant-lane miss into a 500 instead of the archive
+        fallback the spec promises.
+
+        The state check is deliberately an equality against "completed",
+        not an inequality against "failed": the daedalus runtime's every
+        success reply (including the already-known reply) is always state
+        "completed", so anything else -- "canceled" (TaskAborted still
+        carries a text part), "input-required" (a clarifying question is
+        not the agent confirming it kept anything), "failed", or missing
+        entirely -- means the note was not actually kept, even though a
+        text part may still be sitting right there ready for
+        `_extract_relay_reply` to happily return it.
+        """
+        task: object = raw
+        if isinstance(raw, dict):
+            if isinstance(raw.get("task"), dict):
+                task = raw["task"]
+            elif isinstance(raw.get("result"), dict):
+                task = raw["result"]
+
+        if not isinstance(task, dict):
+            return True
+
+        status = task.get("status")
+        if not isinstance(status, dict):
+            return True
+
+        return status.get("state") != "completed"
 
     def _archive_teach_note(repo: str, filename: str, note: str) -> None:
         """The background archive lane. Failure is logged, never surfaced:
@@ -2116,14 +2152,14 @@ def create_app(
             envelope = _build_teach_envelope(note, filename)
             try:
                 raw = clients.cabal.relay(agent.name, envelope)
-                if _teach_task_failed(raw):
-                    raise CabalError("agent replied with a failed task")
+                if _teach_task_not_completed(raw):
+                    raise CabalError("agent reply was not a completed task")
                 _extract_relay_reply(raw)
             except (CabalError, httpx.HTTPError, ValueError) as exc:
-                # Same catch set as the chat relay above, plus the failed-
-                # task check: ANY instant-lane miss degrades to the archive
-                # lane below, so teaching never 502s during a delivery
-                # window. The cause is logged, never echoed.
+                # Same catch set as the chat relay above, plus the
+                # not-completed check: ANY instant-lane miss degrades to
+                # the archive lane below, so teaching never 502s during a
+                # delivery window. The cause is logged, never echoed.
                 log.warning(
                     "teach relay failed for agent %s, archive lane instead: %s",
                     name,

@@ -441,6 +441,101 @@ def test_teach_falls_back_when_agent_reply_is_failed_task(session_factory, confi
     assert list(github.captured_intake.keys()) == [body["filename"]]
 
 
+@pytest.mark.parametrize(
+    "relay_result",
+    [
+        ["not", "a", "task"],
+        {"task": "a string"},
+    ],
+    ids=["top_level_list", "task_field_is_a_string"],
+)
+def test_teach_falls_back_when_relay_body_is_not_a_dict(
+    session_factory, config, monkeypatch, relay_result
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    # A 2xx relay body that's valid JSON but not a well-formed task object
+    # (a bare list, or a "task" wrapper whose value isn't a dict either)
+    # must not raise AttributeError trying to call .get() on something
+    # that isn't a dict -- it degrades to the synchronous archive lane
+    # exactly like any other relay miss, never a 500.
+    fake_cabal = FakeCabal(relay_result=relay_result)
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/teach", json={"text": "always answer briefly"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body.keys()) == {"filename", "sha", "mode"}
+    assert body["mode"] == "archive"
+    assert body["sha"] == SHA
+    assert list(github.captured_intake.keys()) == [body["filename"]]
+
+
+def test_teach_falls_back_when_reply_state_is_canceled(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    # TaskAborted carries a text part, so extraction alone would succeed --
+    # but a canceled task was never actually kept by the agent, so the
+    # instant lane must not claim it either.
+    fake_cabal = FakeCabal(
+        relay_result={
+            "status": {
+                "state": "canceled",
+                "message": {"parts": [{"text": "task was canceled"}]},
+            }
+        }
+    )
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/teach", json={"text": "always answer briefly"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body.keys()) == {"filename", "sha", "mode"}
+    assert body["mode"] == "archive"
+    assert body["sha"] == SHA
+    assert list(github.captured_intake.keys()) == [body["filename"]]
+
+
+def test_teach_falls_back_when_reply_state_is_input_required(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    # "input-required" carries a text part too (the agent's clarifying
+    # question) but that is not the agent confirming it kept the note --
+    # the instant lane must not claim it either.
+    fake_cabal = FakeCabal(
+        relay_result={
+            "status": {
+                "state": "input-required",
+                "message": {"parts": [{"text": "what should the note say?"}]},
+            }
+        }
+    )
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/teach", json={"text": "always answer briefly"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body.keys()) == {"filename", "sha", "mode"}
+    assert body["mode"] == "archive"
+    assert body["sha"] == SHA
+    assert list(github.captured_intake.keys()) == [body["filename"]]
+
+
 def test_teach_without_cabal_is_archive_mode(session_factory, config):
     # No cabal client wired and no switchboard org config set -- today's
     # behavior, plus the added mode field.
