@@ -234,6 +234,20 @@ def _approvals_gates(spec: BundleSpec) -> list | _FlowList:
     return _FlowList([{"match": _DoubleQuoted("*"), "require": "plan_approval"}])
 
 
+# The revision-pass mode this room composes for every agent (belief-revision
+# plan, Task 2): daedalus's `MemorySpec.revision` gates a post-boot
+# belief-revision pass that auto-promotes operator-attested corrections, per
+# `docs/superpowers/specs/2026-08-20-belief-revision-design.md`. Used
+# unconditionally in `_agent_yaml_data` below (never gated on a check of the
+# memory provider) because `BundleSpec` exposes no field that selects
+# anything other than techne memory -- every bundle this room composes
+# already IS a techne bundle (`tests/test_composer.py`'s own
+# `test_bundle_spec_has_no_memory_provider_selector` pins this). If a future
+# `BundleSpec` grows a real memory-provider selector, this constant's use
+# below should grow a matching conditional.
+_ROOM_MEMORY_REVISION = "operator"
+
+
 def _agent_yaml_data(spec: BundleSpec) -> dict:
     return {
         "name": spec.name,
@@ -246,7 +260,7 @@ def _agent_yaml_data(spec: BundleSpec) -> dict:
         },
         "transports": [_a2a_transport(spec)],
         "tools": _tools_block(spec),
-        "memory": {"personal": "techne", "home": "/techne"},
+        "memory": {"personal": "techne", "home": "/techne", "revision": _ROOM_MEMORY_REVISION},
         "checkpoints": "sqlite",
         "approvals": {
             "ceiling": {"write": False},
@@ -653,6 +667,86 @@ def update_agent_yaml_approvals_gates(bundle_dir: Path, *, gates: list[dict]) ->
         raise ClientError(
             f"agent.yaml has no approvals gates line to update: {agent_yaml_path}"
         )
+    agent_yaml_path.write_text(updated)
+
+
+# Matches the whole `memory:` top-level line anywhere in an already-composed
+# `agent.yaml` -- this module's own `_render_agent_yaml` (via the same
+# `width=1000` that keeps every other flow-style entry on one line) always
+# renders `memory:` on a single line too, and every value on it (`personal`,
+# `home`, `revision`) is a plain scalar, never anything with a nested
+# `{...}` the way the a2a transport's own `auth` sub-block is -- so unlike
+# `_A2A_TRANSPORT_LINE_RE` above, this pattern doesn't need the "at most one
+# balanced brace group" allowance, a plain `[^{}]*` for the inner content
+# suffices. `memory:` is a top-level key (column 0, same as `tools:`),
+# unlike the a2a transport entry (a list item under `transports:`) or the
+# nested `approvals.gates:` line, so no leading-indentation group is
+# captured here either (mirroring `_TOOLS_LINE_RE`).
+_MEMORY_LINE_RE = re.compile(
+    r"^(?P<prefix>memory:[ \t]*\{)(?P<inner>[^{}]*)\}[ \t]*$",
+    re.MULTILINE,
+)
+
+# Strips an already-present `, revision: <value>` suffix out of a matched
+# line's `inner` group before a fresh one is appended -- the reason a second
+# call with the same `revision` reproduces the exact same bytes
+# (idempotence), and the reason a call with a DIFFERENT `revision` replaces
+# rather than appends a second key. Mirrors `_EXISTING_AUTH_BLOCK_RE`'s own
+# role for `update_agent_yaml_auth`'s `auth` block.
+_EXISTING_MEMORY_REVISION_RE = re.compile(r",[ \t]*revision:[ \t]*[^,}]+")
+
+
+def update_agent_yaml_memory_revision(bundle_dir: Path, *, revision: str) -> None:
+    """In-place edit of an already-composed `bundle_dir/agent.yaml`'s
+    `memory:` line: add (or replace) its `revision` key, leaving every other
+    line in the file -- and every other key already on the `memory:` line
+    itself (`personal`, `home`, or anything else a future caller adds) --
+    byte-identical.
+
+    The backfill path for agents composed before the belief-revision feature
+    existed (belief-revision plan, Task 2) -- and, more generally, for any
+    already-composed bundle a caller wants to point at a (new) revision mode
+    without recomposing the whole bundle (which would also require
+    re-downloading every staged skill).
+
+    Same file-editing idiom as `update_agent_yaml_auth` above: read the
+    whole file as text, apply one targeted `re.subn` against a replacement
+    function, and raise rather than silently no-op when the thing being
+    edited isn't found. Add-or-replace via the same "strip the old value,
+    then append the new one" trick `update_agent_yaml_auth` uses for its
+    `auth` block, rather than the wholesale-line-replace `update_agent_yaml_
+    tools`/`update_agent_yaml_approvals_gates` use above -- unlike `tools:`/
+    `gates:`, the `memory:` line already carries other keys (`personal`,
+    `home`) this function does not own and must preserve.
+
+    Idempotent by construction: a second call with the same `revision` value
+    first strips the `revision` key the previous call wrote (via
+    `_EXISTING_MEMORY_REVISION_RE`) and then re-adds the identical key, so
+    the file's bytes never drift on a repeat call. A call with a DIFFERENT
+    `revision` replaces the key rather than appending a second one, for the
+    same reason.
+
+    Raises `ClientError` (never silently no-ops), mirroring
+    `update_agent_yaml_auth`'s own two failure modes:
+
+    - `agent.yaml` is missing entirely: `Path.read_text()` raises `OSError`.
+    - No line in the file matches `_MEMORY_LINE_RE` (no `memory:` stanza to
+      update): `re.subn`'s match count is 0.
+    """
+    agent_yaml_path = bundle_dir / "agent.yaml"
+    try:
+        text = agent_yaml_path.read_text()
+    except OSError as exc:
+        raise ClientError(f"agent.yaml not found: {agent_yaml_path}") from exc
+
+    def _replace(match: re.Match) -> str:
+        prefix = match.group("prefix")
+        inner = _EXISTING_MEMORY_REVISION_RE.sub("", match.group("inner"))
+        return f"{prefix}{inner}, revision: {revision}}}"
+
+    updated, count = _MEMORY_LINE_RE.subn(_replace, text, count=1)
+    if count == 0:
+        raise ClientError(f"agent.yaml has no memory stanza to update: {agent_yaml_path}")
     agent_yaml_path.write_text(updated)
 
 

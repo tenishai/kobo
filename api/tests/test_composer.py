@@ -1,4 +1,5 @@
 import json
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from kobo_api.composer import (
     update_agent_card_metadata,
     update_agent_yaml_approvals_gates,
     update_agent_yaml_auth,
+    update_agent_yaml_memory_revision,
     update_agent_yaml_tools,
     validate_agent_yaml,
 )
@@ -113,7 +115,7 @@ def test_compose_agent_yaml_literal_placeholder_and_exact_text(tmp_path):
         "transports:\n"
         "  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
         "tools: {provider: none, allow: []}\n"
-        "memory: {personal: techne, home: /techne}\n"
+        "memory: {personal: techne, home: /techne, revision: operator}\n"
         "checkpoints: sqlite\n"
         "approvals:\n"
         "  ceiling: {write: false}\n"
@@ -133,6 +135,54 @@ def test_compose_agent_yaml_parses_with_expected_transport_and_gate(tmp_path):
     assert data["approvals"]["gates"] == [{"match": "*", "require": "plan_approval"}]
     # the placeholder is a literal string pre-validation: not yet substituted
     assert data["model"]["id"] == "${AGENT_MODEL:-vertex_ai/claude-sonnet-4-5}"
+
+
+# --- memory stanza: revision gate (belief-revision plan, Task 2) ---------------
+#
+# The bundle's memory stanza gains `revision: operator` (the gate daedalus's
+# post-boot belief-revision pass reads, per docs/superpowers/specs/
+# 2026-08-20-belief-revision-design.md) unconditionally at compose time --
+# never gated on a check of the memory provider, because `BundleSpec` exposes
+# no field that lets a caller select anything other than techne memory: every
+# bundle this room composes already IS a techne bundle (pinned directly by
+# `test_bundle_spec_has_no_memory_provider_selector` below). If a future
+# `BundleSpec` grows a real memory-provider selector, the emission here
+# should grow a matching conditional and this section's "always" framing
+# would need to change with it.
+
+
+def test_bundle_spec_has_no_memory_provider_selector():
+    """Pin: there is no code path today that composes a bundle whose memory
+    provider is anything other than techne -- `BundleSpec` has no field for
+    it, and `_agent_yaml_data` hardcodes `personal: techne`. This is the
+    reality check the brief asks for before adding `revision: operator`
+    unconditionally: if this test ever starts failing (a future BundleSpec
+    grows a memory-provider-selecting field), the emission of `revision`
+    needs to become conditional on that field rather than unconditional."""
+    field_names = {f.name for f in fields(BundleSpec)}
+    assert "memory" not in field_names
+    assert "memory_provider" not in field_names
+
+
+@pytest.mark.parametrize(
+    "spec_kwargs",
+    [
+        {},
+        {"cabal_url": "http://cabal.example.com"},
+        {"team": "acme-team", "purpose_tags": ["billing", "support"]},
+    ],
+    ids=["default", "cabal_url_configured", "team_and_tags"],
+)
+def test_compose_agent_yaml_memory_always_gains_revision_operator(tmp_path, spec_kwargs):
+    """Emission matrix: whatever else varies about the spec, the memory
+    stanza always parses with `personal: techne` and `revision: operator` --
+    the unconditional-for-room-agents shape this section's header explains."""
+    dest = tmp_path / "out"
+
+    compose(_make_spec(**spec_kwargs), dest)
+
+    data = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())
+    assert data["memory"] == {"personal": "techne", "home": "/techne", "revision": "operator"}
 
 
 # --- a2a auth block (colleagues switchboard arc, Task 4) ------------------------
@@ -168,7 +218,7 @@ def test_compose_agent_yaml_byte_identical_when_cabal_url_none_both_ways(tmp_pat
         "transports:\n"
         "  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
         "tools: {provider: none, allow: []}\n"
-        "memory: {personal: techne, home: /techne}\n"
+        "memory: {personal: techne, home: /techne, revision: operator}\n"
         "checkpoints: sqlite\n"
         "approvals:\n"
         "  ceiling: {write: false}\n"
@@ -205,7 +255,7 @@ def test_compose_agent_yaml_carries_auth_block_when_cabal_url_configured(tmp_pat
         'tools: {provider: colleagues, allow: [colleagues.list_colleagues, '
         'colleagues.ask_colleague], colleagues: {url: "http://cabal.example.com", '
         'token_env: CABAL_COLLEAGUE_TOKEN, self: "sam"}}\n'
-        "memory: {personal: techne, home: /techne}\n"
+        "memory: {personal: techne, home: /techne, revision: operator}\n"
         "checkpoints: sqlite\n"
         "approvals:\n"
         "  ceiling: {write: false}\n"
@@ -1234,6 +1284,140 @@ def test_update_agent_yaml_auth_on_freshly_composed_bundle_round_trips(tmp_path)
         "issuer": _ISSUER,
         "audience": _AUDIENCE,
     }
+
+
+# --- update_agent_yaml_memory_revision (belief-revision plan, Task 2) -----------
+#
+# The in-place backfill helper for any already-composed bundle whose
+# `agent.yaml` predates the belief-revision feature (or that a caller wants
+# to flip to a different revision mode without recomposing the whole
+# bundle): adds or replaces the `revision` key on the existing `memory:`
+# line, touching nothing else on that line (`personal`, `home`) or in the
+# file -- a surgical text edit, same idiom as `update_agent_yaml_auth`.
+
+_FIXTURE_AGENT_YAML_NO_MEMORY_REVISION = (
+    "# agent.yaml -- generated by kobo, do not hand-edit lightly\n"
+    "name: sam\n"
+    "card: agent-card.json\n"
+    "persona: persona.md\n"
+    "model:\n"
+    "  id: ${AGENT_MODEL:-vertex_ai/claude-sonnet-4-5}\n"
+    "  max_tokens: 1024\n"
+    "  budget: {per_task_tokens: 50000}\n"
+    "transports:\n"
+    "  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
+    "tools: {provider: none, allow: []}\n"
+    "memory: {personal: techne, home: /techne}\n"
+    "checkpoints: sqlite\n"
+    "approvals:\n"
+    "  ceiling: {write: false}\n"
+    '  gates: [{match: "*", require: plan_approval}]\n'
+    "  escalation: {route: cli}\n"
+)
+
+
+def _write_memory_fixture(
+    bundle_dir: Path, text: str = _FIXTURE_AGENT_YAML_NO_MEMORY_REVISION
+) -> Path:
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    agent_yaml_path = bundle_dir / "agent.yaml"
+    agent_yaml_path.write_text(text)
+    return agent_yaml_path
+
+
+def test_update_agent_yaml_memory_revision_adds_field_and_preserves_every_other_line(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    agent_yaml_path = _write_memory_fixture(bundle_dir)
+
+    update_agent_yaml_memory_revision(bundle_dir, revision="operator")
+
+    updated_lines = agent_yaml_path.read_text().splitlines(keepends=True)
+    original_lines = _FIXTURE_AGENT_YAML_NO_MEMORY_REVISION.splitlines(keepends=True)
+    memory_index = original_lines.index("memory: {personal: techne, home: /techne}\n")
+    assert len(updated_lines) == len(original_lines)
+    for i, (original, updated) in enumerate(zip(original_lines, updated_lines)):
+        if i == memory_index:
+            continue
+        assert updated == original, f"line {i} changed unexpectedly"
+
+    assert updated_lines[memory_index] == (
+        "memory: {personal: techne, home: /techne, revision: operator}\n"
+    )
+
+
+def test_update_agent_yaml_memory_revision_replaces_an_existing_value(tmp_path):
+    fixture_with_old_revision = _FIXTURE_AGENT_YAML_NO_MEMORY_REVISION.replace(
+        "memory: {personal: techne, home: /techne}\n",
+        "memory: {personal: techne, home: /techne, revision: old-mode}\n",
+    )
+    bundle_dir = tmp_path / "bundle"
+    _write_memory_fixture(bundle_dir, fixture_with_old_revision)
+
+    update_agent_yaml_memory_revision(bundle_dir, revision="operator")
+
+    text = (bundle_dir / "agent.yaml").read_text()
+    assert "old-mode" not in text
+    data = yaml.safe_load(text)
+    assert data["memory"] == {"personal": "techne", "home": "/techne", "revision": "operator"}
+    # every other line is untouched
+    other_lines = [
+        line
+        for line in fixture_with_old_revision.splitlines(keepends=True)
+        if "memory:" not in line
+    ]
+    for line in other_lines:
+        assert line in text
+
+
+def test_update_agent_yaml_memory_revision_is_idempotent(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    _write_memory_fixture(bundle_dir)
+
+    update_agent_yaml_memory_revision(bundle_dir, revision="operator")
+    once = (bundle_dir / "agent.yaml").read_text()
+
+    update_agent_yaml_memory_revision(bundle_dir, revision="operator")
+    twice = (bundle_dir / "agent.yaml").read_text()
+
+    assert once == twice
+
+
+def test_update_agent_yaml_memory_revision_raises_when_no_memory_stanza(tmp_path):
+    fixture_no_memory = _FIXTURE_AGENT_YAML_NO_MEMORY_REVISION.replace(
+        "memory: {personal: techne, home: /techne}\n", ""
+    )
+    bundle_dir = tmp_path / "bundle"
+    _write_memory_fixture(bundle_dir, fixture_no_memory)
+
+    with pytest.raises(ClientError, match="memory") as exc_info:
+        update_agent_yaml_memory_revision(bundle_dir, revision="operator")
+
+    assert "memory" in str(exc_info.value)
+    # unmodified on failure
+    assert (bundle_dir / "agent.yaml").read_text() == fixture_no_memory
+
+
+def test_update_agent_yaml_memory_revision_missing_file_raises_client_error(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir(parents=True)
+
+    with pytest.raises(ClientError, match="agent.yaml not found"):
+        update_agent_yaml_memory_revision(bundle_dir, revision="operator")
+
+
+def test_update_agent_yaml_memory_revision_on_freshly_composed_bundle_round_trips(tmp_path):
+    """Integration: compose() already emits `revision: operator` (see the
+    emission-matrix section above), so calling the backfill helper on a
+    freshly composed bundle is itself an idempotent replace -- proving the
+    helper and compose() agree on the exact shape they each produce."""
+    dest = tmp_path / "out"
+    compose(_make_spec(), dest)
+
+    update_agent_yaml_memory_revision(dest / "bundle", revision="operator")
+
+    validate_agent_yaml(dest / "bundle")  # must not raise
+    data = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())
+    assert data["memory"] == {"personal": "techne", "home": "/techne", "revision": "operator"}
 
 
 # --- optional: validate against the real daedalus runtime, if available -----------
