@@ -79,6 +79,12 @@
 
   let step = $state<"draft" | "preview">("draft");
 
+  // Tracks whether step 2 was reached via a successful draft, as opposed to
+  // a bring-your-own-persona upload/paste or a draft that failed - purely a
+  // copy switch for step 2's intro line below, so it never describes a
+  // draft that doesn't exist.
+  let draftSucceeded = $state(false);
+
   // Rules count cap (upload/limits addendum): mirrors PersonaFields.rules'
   // own Field(max_length=150) (kobo_api/personas.py) — the per-rule length
   // cap that used to live beside it is gone (the merged persona.md's own
@@ -171,6 +177,53 @@
     reader.readAsText(file);
   }
 
+  // --- Bring your own persona (step 1 addendum) -----------------------------
+  //
+  // An operator who arrives with a persona document already written never
+  // wants the draft step at all - it lives on step 1, right beside the job
+  // field, since that's the first thing they see. Both paths below skip
+  // `draftPersonaMutation` entirely and jump straight to step 2's editable
+  // preview; name and who-they-are are left for the operator to fill in
+  // there.
+
+  let personaFileError = $state<string | null>(null);
+
+  /** Same read-as-text idiom as `handleWhatTheyDoFileSelect` above (same
+   * failure copy too), but triggered from step 1: it fills the very same
+   * `whatTheyDo` state step 2's textarea binds to, then advances straight
+   * to the preview without ever calling the draft mutation. */
+  function handlePersonaFileSelect(event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) {
+      return;
+    }
+    personaFileError = null;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        whatTheyDo = e.target?.result as string;
+        draftSucceeded = false;
+        step = "preview";
+      } catch {
+        personaFileError = "Couldn't read this file. Try another.";
+      }
+    };
+    reader.onerror = () => {
+      personaFileError = "Couldn't read this file. Try another.";
+    };
+    reader.readAsText(file);
+  }
+
+  /** The other bring-your-own-persona path: jump straight to the editable
+   * preview with every field exactly as it is - typically empty, aside
+   * from whatever rules were already typed or uploaded above - so the
+   * operator can paste their own persona text directly into step 2. */
+  function startFromOwnText(): void {
+    draftSucceeded = false;
+    step = "preview";
+  }
+
   // Persona-metadata plan: whatever the draft step's model call (or its
   // deterministic fallback) came up with for purpose tags, carried through
   // step 2 untouched and handed to `oncreated` once Create persona lands.
@@ -216,6 +269,7 @@
           whoTheyAre = merged.whoTheyAre;
           whatTheyDo = merged.whatTheyDo;
           draftedPurposeTags = draft.purpose_tags;
+          draftSucceeded = true;
           step = "preview";
         },
         onError: (error: unknown) => {
@@ -230,6 +284,7 @@
             "Couldn't draft a persona right now. Fill it in yourself below.",
           );
           draftedPurposeTags = [];
+          draftSucceeded = false;
           step = "preview";
         },
       },
@@ -244,6 +299,7 @@
     whoTheyAre = "";
     whatTheyDo = "";
     draftedPurposeTags = [];
+    draftSucceeded = false;
     draftError = null;
     submitError = null;
   }
@@ -347,6 +403,36 @@
       </div>
     </div>
 
+    <div class="persona-builder__own-persona">
+      <p class="persona-builder__own-persona-lead">Have their persona written already?</p>
+      <div class="persona-builder__upload">
+        <label class="persona-builder__upload-label" for="persona-builder-own-persona-file">
+          Upload persona file
+        </label>
+        <input
+          id="persona-builder-own-persona-file"
+          type="file"
+          accept=".md,.txt"
+          onchange={handlePersonaFileSelect}
+          aria-describedby="persona-builder-own-persona-file-status"
+        />
+        <div id="persona-builder-own-persona-file-status">
+          {#if personaFileError}
+            <p class="persona-builder__status persona-builder__status--error" role="alert">
+              {personaFileError}
+            </p>
+          {/if}
+        </div>
+      </div>
+      <button
+        type="button"
+        class="persona-builder__own-persona-button"
+        onclick={startFromOwnText}
+      >
+        Start from your own text
+      </button>
+    </div>
+
     <div class="persona-builder__actions">
       <button type="button" class="persona-builder__cancel" onclick={oncancel}>
         Cancel
@@ -358,7 +444,11 @@
   </form>
 {:else}
   <form class="persona-builder" onsubmit={handleCreateSubmit}>
-    <p class="persona-builder__intro">Here's their draft. Edit anything.</p>
+    <p class="persona-builder__intro">
+      {draftSucceeded
+        ? "Here's their draft. Edit anything."
+        : "Fill in anything that's missing, then create."}
+    </p>
 
     {#if draftError}
       <p class="persona-builder__status persona-builder__status--error" role="alert">
@@ -541,6 +631,36 @@
   .persona-builder__upload-label {
     color: var(--muted);
     font-size: 0.8rem;
+  }
+
+  .persona-builder__own-persona {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-xs);
+    padding-top: var(--space-sm);
+    border-top: 1px solid var(--border);
+  }
+
+  .persona-builder__own-persona-lead {
+    margin: 0;
+    color: var(--ink);
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+
+  .persona-builder__own-persona-button {
+    padding: var(--space-xs) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    cursor: pointer;
+  }
+
+  .persona-builder__own-persona-button:hover {
+    border-color: var(--accent);
+    color: var(--accent);
   }
 
   .persona-builder__input:focus-visible,

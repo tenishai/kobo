@@ -149,6 +149,131 @@ describe("PersonaBuilder - honest new limits (upload/limits addendum)", () => {
   });
 });
 
+describe("PersonaBuilder - bring your own persona (step 1)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("uploading a persona file at step 1 fills what-they-do and reaches preview without drafting", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) =>
+      new Response(JSON.stringify({}), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    const personaFile = screen.getByLabelText("Upload persona file") as HTMLInputElement;
+    await fireEvent.change(personaFile, {
+      target: {
+        files: [textFile("A full persona document, ready to go.", "persona.md")],
+      },
+    });
+
+    expect(await screen.findByRole("button", { name: "Create persona" })).not.toBeNull();
+    expect((screen.getByLabelText("What they do") as HTMLTextAreaElement).value).toBe(
+      "A full persona document, ready to go.",
+    );
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Who they are") as HTMLInputElement).value).toBe("");
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes("draft")),
+    ).toBe(false);
+  });
+
+  it("a step-1 persona-file read failure shows the same plain copy the other upload handlers use", async () => {
+    stubFetch({ "/api/": {} });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    const personaFile = screen.getByLabelText("Upload persona file") as HTMLInputElement;
+    const reader = {
+      readAsText: vi.fn(function (this: FileReader) {
+        this.onerror?.(new Event("error") as ProgressEvent<FileReader>);
+      }),
+    };
+    vi.stubGlobal(
+      "FileReader",
+      vi.fn(() => reader),
+    );
+
+    await fireEvent.change(personaFile, { target: { files: [textFile("x")] } });
+
+    expect(await screen.findByText("Couldn't read this file. Try another.")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Create persona" })).toBeNull();
+  });
+
+  it("'Start from your own text' advances to preview with every field empty", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) =>
+      new Response(JSON.stringify({}), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Start from your own text" }));
+
+    expect(await screen.findByRole("button", { name: "Create persona" })).not.toBeNull();
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Who they are") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("What they do") as HTMLTextAreaElement).value).toBe("");
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes("draft")),
+    ).toBe(false);
+  });
+
+  it("rules typed at step 1 survive the step-1 persona-file upload path", async () => {
+    stubFetch({ "/api/": {} });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    const rulesTextarea = screen.getByLabelText("Rules (optional)") as HTMLTextAreaElement;
+    await fireEvent.input(rulesTextarea, { target: { value: "Always be concise." } });
+
+    const personaFile = screen.getByLabelText("Upload persona file") as HTMLInputElement;
+    await fireEvent.change(personaFile, {
+      target: { files: [textFile("Their full persona text.", "persona.md")] },
+    });
+
+    await screen.findByRole("button", { name: "Create persona" });
+    expect(
+      (screen.getByLabelText("Rules (optional)") as HTMLTextAreaElement).value,
+    ).toBe("Always be concise.");
+  });
+
+  it("rules typed at step 1 survive the 'Start from your own text' path", async () => {
+    stubFetch({ "/api/": {} });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    const rulesTextarea = screen.getByLabelText("Rules (optional)") as HTMLTextAreaElement;
+    await fireEvent.input(rulesTextarea, { target: { value: "Never guess at pricing." } });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Start from your own text" }));
+
+    await screen.findByRole("button", { name: "Create persona" });
+    expect(
+      (screen.getByLabelText("Rules (optional)") as HTMLTextAreaElement).value,
+    ).toBe("Never guess at pricing.");
+  });
+
+  it("step 2's intro copy reads sensibly when there was never a draft", async () => {
+    stubFetch({ "/api/": {} });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Start from your own text" }));
+
+    await screen.findByRole("button", { name: "Create persona" });
+    expect(screen.queryByText("Here's their draft. Edit anything.")).toBeNull();
+  });
+
+  it("step 2's intro copy still credits an actual draft when one succeeded", async () => {
+    stubFetch({
+      "/api/personas/draft": DRAFT_RESPONSE,
+      "/api/": {},
+    });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    await reachStep2();
+
+    expect(screen.getByText("Here's their draft. Edit anything.")).not.toBeNull();
+  });
+});
+
 describe("PersonaBuilder - draft no-clobber (component wiring)", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
