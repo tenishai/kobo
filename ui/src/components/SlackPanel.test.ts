@@ -112,7 +112,7 @@ describe("SlackPanel", () => {
     ).not.toBeNull();
     expect(
       screen.getByText(
-        "Copy the bot token from the OAuth page and the App ID from Basic Information.",
+        'Back on "Install App", copy the Bot User OAuth Token. It starts with xoxb-.',
       ),
     ).not.toBeNull();
   });

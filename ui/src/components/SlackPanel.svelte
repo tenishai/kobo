@@ -398,18 +398,30 @@
         <p class="slack-panel__step-text">Paste the manifest above on the JSON tab, then create the app.</p>
       </li>
       <li class="slack-panel__step">
-        <p class="slack-panel__step-text">Install the app to your workspace.</p>
-      </li>
-      <li class="slack-panel__step">
         <p class="slack-panel__step-text">
-          Slack may warn that Socket Mode needs additional setup. That setup is
-          this step: in Basic Information, under App-Level Tokens, create a
-          token that can connect.
+          On the app's "Basic Information" page, copy the App ID from the App
+          Credentials section.
         </p>
       </li>
       <li class="slack-panel__step">
         <p class="slack-panel__step-text">
-          Copy the bot token from the OAuth page and the App ID from Basic Information.
+          Still on "Basic Information", find App-Level Tokens and press
+          "Generate Token and Scopes". Name the token, then add the
+          connections:write scope (the other two offered there aren't
+          needed). Press "Generate", then copy the app-level token. It starts
+          with xapp-.
+        </p>
+      </li>
+      <li class="slack-panel__step">
+        <p class="slack-panel__step-text">
+          In the left sidebar, open "Install App", press "Install to your
+          workspace", and approve.
+        </p>
+      </li>
+      <li class="slack-panel__step">
+        <p class="slack-panel__step-text">
+          Back on "Install App", copy the Bot User OAuth Token. It starts
+          with xoxb-.
         </p>
       </li>
     </ol>
