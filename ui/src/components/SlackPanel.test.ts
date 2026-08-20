@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, screen } from "@testing-library/svelte";
+import { fireEvent, screen, waitFor } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SlackPanel from "./SlackPanel.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
@@ -117,6 +117,25 @@ describe("SlackPanel", () => {
     ).not.toBeNull();
   });
 
+  it('adds a final numbered step telling the human to /invite the agent\'s own bot, by name, into each channel', () => {
+    // The runtime's slack transport never auto-joins channels: a human has
+    // to run /invite themselves. This is the last step in the ceremony,
+    // after the app is installed and both tokens are in hand, and it uses
+    // this agent's actual name (same personalization discipline as the
+    // manifest itself, which is rendered per-agent).
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: IDLE_SLACK,
+      frozen: false,
+    });
+
+    expect(
+      screen.getByText(
+        "In each Slack channel you want the agent in, type /invite @warden, then paste that channel's ID above.",
+      ),
+    ).not.toBeNull();
+  });
+
   it('"Show the manifest" fetches lazily via slackManifestQuery, only once opened (not on mount)', async () => {
     // Order matters: stubFetch matches by url.includes, so the specific
     // manifest path must come before the "/api/" catch-all.
@@ -228,6 +247,99 @@ describe("SlackPanel", () => {
       target: { value: "A1234567" },
     });
     expect(finish.disabled).toBe(false);
+  });
+
+  it("Finish setup with zero channels keeps the pasted App ID and both tokens, and shows the plain-language warning", async () => {
+    // Real flow this pins: App ID, bot token, and app-level token filled in,
+    // but no channel ever added — the channels lane still has just its one
+    // empty row. The server's own client-side-shaped guard (POST
+    // .../slack/connect, 409 "Add at least one channel first.") is what
+    // actually catches this, since `canFinish` itself doesn't look at
+    // channels. Regression coverage for the bug where all three pasted
+    // secrets used to vanish on this exact failure.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/slack/connect")) {
+          return new Response(
+            JSON.stringify({ error: "Add at least one channel first." }),
+            { status: 409, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      }),
+    );
+
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: IDLE_SLACK, // channels: []
+      frozen: false,
+    });
+
+    await fireEvent.input(screen.getByLabelText("App ID"), {
+      target: { value: "A1234567" },
+    });
+    await fireEvent.input(screen.getByLabelText("Bot token"), {
+      target: { value: "xoxb-secret" },
+    });
+    await fireEvent.input(screen.getByLabelText("App-level token"), {
+      target: { value: "xapp-secret" },
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Finish setup" }));
+
+    expect(
+      await screen.findByText(
+        "Add at least one channel above, then press Finish setup again. Your values are kept.",
+      ),
+    ).not.toBeNull();
+
+    expect((screen.getByLabelText("App ID") as HTMLInputElement).value).toBe("A1234567");
+    expect((screen.getByLabelText("Bot token") as HTMLInputElement).value).toBe("xoxb-secret");
+    expect((screen.getByLabelText("App-level token") as HTMLInputElement).value).toBe(
+      "xapp-secret",
+    );
+  });
+
+  it("Finish setup clears the App ID and both tokens only after a successful connect", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/slack/connect")) {
+          return new Response(JSON.stringify({ sha: "abc1234" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      }),
+    );
+
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: { app_id: null, channels: ["C123456"], state: "idle" },
+      frozen: false,
+    });
+
+    await fireEvent.input(screen.getByLabelText("App ID"), {
+      target: { value: "A1234567" },
+    });
+    await fireEvent.input(screen.getByLabelText("Bot token"), {
+      target: { value: "xoxb-secret" },
+    });
+    await fireEvent.input(screen.getByLabelText("App-level token"), {
+      target: { value: "xapp-secret" },
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Finish setup" }));
+
+    await waitFor(() => {
+      expect((screen.getByLabelText("App ID") as HTMLInputElement).value).toBe("");
+    });
+    expect((screen.getByLabelText("Bot token") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("App-level token") as HTMLInputElement).value).toBe("");
   });
 
   it("add-another adds a row; remove removes it; Save disabled while every row is empty", async () => {

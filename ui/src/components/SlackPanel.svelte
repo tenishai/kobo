@@ -136,12 +136,21 @@
       !$connect.isPending,
   );
 
+  // The server's own copy for the missing-channels precondition (POST
+  // .../slack/connect, 409 — see `kobo_api.main.connect_slack`), matched
+  // verbatim so the swap below only fires for that exact case and never
+  // masks a different server error under the wrong warning.
+  const MISSING_CHANNELS_ERROR = "Add at least one channel first.";
+
   /** Submits the app id plus both tokens (two-lane Slack, 2026-08-17: no
    * channel here — the channels lane above owns that; Slack self-service,
    * 2026-08-17 added the app id itself, pasted by the human from Slack's own
-   * app site). All three are always cleared from local state afterward — on
-   * success because they're spent, on failure because the human needs to
-   * re-paste them (the error text says so). */
+   * app site). The three fields are only ever cleared on success, once
+   * they're actually spent — a client-side validation failure or any server
+   * error (including the missing-channels 409, the most common one: nothing
+   * here checks channels before submitting) leaves them exactly as pasted,
+   * since tokens are never persisted server-side and re-pasting them is a
+   * real cost to the human. */
   function handleFinishSetup(): void {
     if (!canFinish) {
       return;
@@ -161,10 +170,11 @@
           beginDelivery(result.sha);
         },
         onError: (err: unknown) => {
-          appId = "";
-          botToken = "";
-          appToken = "";
-          connectError = `${errorMessage(err, "Couldn't finish setting up Slack. Try again.")} Paste them again.`;
+          const message = errorMessage(err, "Couldn't finish setting up Slack. Try again.");
+          connectError =
+            message === MISSING_CHANNELS_ERROR
+              ? "Add at least one channel above, then press Finish setup again. Your values are kept."
+              : message;
         },
       },
     );
@@ -422,6 +432,12 @@
         <p class="slack-panel__step-text">
           Back on "Install App", copy the Bot User OAuth Token. It starts
           with xoxb-.
+        </p>
+      </li>
+      <li class="slack-panel__step">
+        <p class="slack-panel__step-text">
+          In each Slack channel you want the agent in, type /invite @{agentName}, then
+          paste that channel's ID above.
         </p>
       </li>
     </ol>
