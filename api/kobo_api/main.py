@@ -77,7 +77,11 @@ from kobo_api.models import (
 )
 from kobo_api.namegen import SUGGESTION_COUNT, finalize_suggestions
 from kobo_api.org import OrgState, load_org_config
-from kobo_api.pairs import sync_dispatch_pairs, sync_dispatch_pairs_best_effort
+from kobo_api.pairs import (
+    implicitly_paired,
+    sync_dispatch_pairs,
+    sync_dispatch_pairs_best_effort,
+)
 from kobo_api.persona_draft import finalize_distill, finalize_draft
 from kobo_api.personas import PersonaError, PersonaExists, PersonaFields, create_persona
 from kobo_api.provisioner import (
@@ -4019,12 +4023,17 @@ def create_app(
     def _team_pairs(session: Session, agent: Agent) -> list[dict]:
         """The OTHER ready agents implicitly auto-paired with `agent`
         through shared group membership (`kobo_api.pairs.allowed_pairs`'s
-        own same-group rule) -- access-tab refinement wave, read-only facts
-        for the invites view: these colleagues already talk freely with
-        `agent`, no invite ever needed or even possible between them, so
-        they're surfaced here rather than as a revocable invite row. Empty
-        when `agent` has no group (no implicit pairing without one) or has
-        no OTHER ready agent sharing it.
+        own same-group rule, via the shared `implicitly_paired` predicate
+        -- fix round, shared-group wave HIGH) -- access-tab refinement
+        wave, read-only facts for the invites view: these colleagues
+        already talk freely with `agent`, no invite ever needed or even
+        possible between them, so they're surfaced here rather than as a
+        revocable invite row. Empty when `agent` has no group (no implicit
+        pairing without one), has no OTHER ready agent sharing it, or is
+        namespaced into `SHARED_GROUP` -- the commons is humanly open but
+        its agents' wires stay invite-gated, so `implicitly_paired` says
+        `False` even for two commons agents sharing that exact name, and
+        this must not lie that they "talk freely" when they in fact do not.
 
         Fetched fresh, WITHOUT the visibility filter -- same discipline as
         `_agent_ref` above: whoever can see `agent`'s invites at all (its
@@ -4045,7 +4054,11 @@ def create_app(
             .order_by(Agent.id)
             .all()
         )
-        return [{"name": other.name, "group": other.group_name} for other in others]
+        return [
+            {"name": other.name, "group": other.group_name}
+            for other in others
+            if implicitly_paired(agent.group_name, other.group_name)
+        ]
 
     def _no_such_invite_404(invite_id: int) -> JSONResponse:
         """The one 404 body/status every invite-id route (accept/decline/
@@ -4214,12 +4227,15 @@ def create_app(
                 status_code=422,
             )
 
-        # Same-group is already implicit (kobo_api.pairs.allowed_pairs), so
-        # an invite here would be redundant -- both non-null and equal, not
-        # just equal: two group-less agents share no implicit pair at all
-        # (pairs.py's own property), so THAT combination is a real request,
-        # not a redundant one, and must fall through to be created.
-        if from_agent.group_name is not None and from_agent.group_name == to_agent.group_name:
+        # Same-group is already implicit (kobo_api.pairs.allowed_pairs),
+        # via the shared `implicitly_paired` predicate (fix round, shared-
+        # group wave HIGH) -- so an invite here would be redundant. Two
+        # group-less agents share no implicit pair at all (pairs.py's own
+        # property), and neither do two SHARED_GROUP agents (the commons is
+        # humanly open but its agents' wires stay invite-gated) -- both
+        # combinations are real requests, not redundant ones, and must fall
+        # through to be created.
+        if implicitly_paired(from_agent.group_name, to_agent.group_name):
             return JSONResponse(
                 {
                     "error": (
@@ -4324,10 +4340,14 @@ def create_app(
         - `name` itself (an agent cannot request colleague access to
           itself, same rule `create_invite` enforces).
         - Its own same-group colleagues -- already auto-paired
-          (`kobo_api.pairs.allowed_pairs`'s same-group rule, the same
-          "read-only facts, not a revocable invite row" set `_team_pairs`
-          above surfaces), so listing them here as requestABLE would be
-          straightforwardly wrong: there is nothing left to request.
+          (`kobo_api.pairs.allowed_pairs`'s same-group rule, via the shared
+          `implicitly_paired` predicate, the same "read-only facts, not a
+          revocable invite row" set `_team_pairs` above surfaces), so
+          listing them here as requestABLE would be straightforwardly
+          wrong: there is nothing left to request. `SHARED_GROUP` colleagues
+          are NOT excluded by this rule (fix round, shared-group wave HIGH):
+          `implicitly_paired` says two commons agents are never auto-paired,
+          so they remain genuinely requestABLE from each other.
         - Any agent `name` already has a PENDING or ACCEPTED invite
           toward -- same "in flight" definition `create_invite`'s own
           duplicate-request 409 check uses. These are surfaced instead
@@ -4359,7 +4379,7 @@ def create_app(
         requestable = []
         already = []
         for other in all_ready:
-            if agent.group_name is not None and other.group_name == agent.group_name:
+            if implicitly_paired(agent.group_name, other.group_name):
                 continue
             in_flight = in_flight_status.get(other.name)
             if in_flight is not None:

@@ -39,6 +39,36 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def implicitly_paired(a_group: str | None, b_group: str | None) -> bool:
+    """True when two agents' `group_name`s alone make them an implicit
+    dispatch pair, no invite required -- THE one definition every call site
+    that needs this question answered shares: `allowed_pairs`' own same-
+    group loop below, and (fix round, shared-group wave HIGH) `kobo_api.
+    main`'s `create_invite` (the "already in the same group" 422),
+    `list_requestable_agents` (excluding already-auto-paired colleagues from
+    the requestable directory), and `_team_pairs` (the auto-paired-
+    colleagues list on the invites view). Before this predicate existed,
+    those three main.py sites each re-implemented the raw "same non-null
+    group_name" check inline, which is only HALF of `allowed_pairs`' actual
+    rule -- they never learned about the `SHARED_GROUP` exception below, so
+    two commons agents could never invite each other (a false "already
+    talking freely" 422), vanished from each other's requestable list, and
+    `_team_pairs` lied that they were already auto-paired when they were not.
+
+    Same non-null `group_name` on both sides, AND that shared group is not
+    `SHARED_GROUP`: the commons is humanly open (every signed-in caller may
+    create an agent there, and every signed-in caller sees every agent
+    there, `_visible_agents` in `kobo_api.main`), but that openness is about
+    visibility, not wiring -- two agents sharing the commons namespace are
+    no more implicitly connected to each other than two strangers are, so
+    their wire stays invite-gated like any other cross-boundary pair. A
+    group-less agent (`None` on either side) is never implicitly paired
+    with anything, including another group-less agent -- "no group" is not
+    itself a group.
+    """
+    return a_group is not None and a_group == b_group and a_group != SHARED_GROUP
+
+
 def allowed_pairs(session: Session, config: Config) -> set[tuple[str, str]]:
     """Every `(caller, target)` pair currently allowed to talk, computed
     fresh from `session`'s current rows -- nothing cached, nothing carried
@@ -83,12 +113,10 @@ def allowed_pairs(session: Session, config: Config) -> set[tuple[str, str]]:
     pairs: set[tuple[str, str]] = set()
 
     for caller in ready_agents:
-        if caller.group_name is None or caller.group_name == SHARED_GROUP:
-            continue
         for target in ready_agents:
             if target.name == caller.name:
                 continue
-            if target.group_name == caller.group_name:
+            if implicitly_paired(caller.group_name, target.group_name):
                 pairs.add((f"agent:{caller.name}", target.name))
 
     accepted_invites = (

@@ -22,6 +22,7 @@ from kobo_api.main import _boot_sync_dispatch_pairs
 from kobo_api.models import A2AInvite, Agent, AgentStatus, Base
 from kobo_api.pairs import (
     allowed_pairs,
+    implicitly_paired,
     sync_dispatch_pairs,
     sync_dispatch_pairs_best_effort,
 )
@@ -130,6 +131,32 @@ def test_three_agents_same_group_all_pairs_present(session, config):
         ("agent:b", "c"), ("agent:c", "b"),
     }
     assert pairs == expected
+
+
+# --- implicitly_paired: the one predicate every call site (allowed_pairs'
+# own loop below, and kobo_api.main's create_invite/list_requestable_agents/
+# _team_pairs) shares -- fix round, shared-group wave HIGH ------------------
+
+
+def test_implicitly_paired_true_for_same_non_null_group():
+    assert implicitly_paired("growth", "growth") is True
+
+
+def test_implicitly_paired_false_for_different_groups():
+    assert implicitly_paired("growth", "payments-eng") is False
+
+
+def test_implicitly_paired_false_when_either_side_is_group_less():
+    assert implicitly_paired(None, "growth") is False
+    assert implicitly_paired("growth", None) is False
+    assert implicitly_paired(None, None) is False
+
+
+def test_implicitly_paired_false_for_shared_group_even_though_equal():
+    # The one exception: SHARED_GROUP is a real, equal, non-null group on
+    # both sides, but the commons stays invite-gated -- the whole point of
+    # this predicate existing as a single shared definition.
+    assert implicitly_paired(SHARED_GROUP, SHARED_GROUP) is False
 
 
 # --- SHARED_GROUP: commons agents get no implicit pair from anyone,

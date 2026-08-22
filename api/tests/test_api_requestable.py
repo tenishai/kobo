@@ -23,7 +23,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import Clients
-from kobo_api.config import Config
+from kobo_api.config import SHARED_GROUP, Config
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import create_app
 from kobo_api.models import A2AInvite, Agent, AgentStatus, Base
@@ -287,6 +287,25 @@ def test_requestable_excludes_same_group_colleagues_already_auto_paired(session_
     assert response.status_code == 200
     names = [entry["name"] for entry in response.json()["requestable"]]
     assert names == ["c"]
+
+
+def test_requestable_includes_other_shared_group_agents(session_factory, client):
+    # Fix round (shared-group wave HIGH): two commons agents share a real,
+    # equal, non-null group_name (SHARED_GROUP) but are NOT auto-paired
+    # (pairs.allowed_pairs deliberately excludes SHARED_GROUP from implicit
+    # pairing) -- so unlike a real shared group, they must NOT vanish from
+    # each other's requestable list. This route's exclusion has to go
+    # through the same implicitly_paired predicate allowed_pairs itself
+    # uses, not the raw same-group-name check.
+    c, key = client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name=SHARED_GROUP)
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name=SHARED_GROUP)
+
+    response = c.get("/api/agents/a/requestable", headers=_headers(key, email=OWNER_A_EMAIL))
+
+    assert response.status_code == 200
+    names = [entry["name"] for entry in response.json()["requestable"]]
+    assert names == ["b"]
 
 
 def test_requestable_excludes_not_ready_agents(session_factory, client):

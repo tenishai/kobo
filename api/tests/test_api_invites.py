@@ -23,10 +23,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import Clients
-from kobo_api.config import Config
+from kobo_api.config import SHARED_GROUP, Config
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import create_app
 from kobo_api.models import A2AInvite, Agent, AgentStatus, Base
+from kobo_api.pairs import allowed_pairs
 from tests.fakes import (
     FakeAgent,
     FakeCabal,
@@ -300,6 +301,84 @@ def test_two_group_less_agents_may_still_invite_each_other(session_factory, clie
     assert response.status_code == 201, response.text
 
 
+def test_two_shared_group_agents_may_invite_each_other(session_factory, client):
+    # Fix round (shared-group wave HIGH): SHARED_GROUP is a real, equal,
+    # non-null group_name on both sides, but pairs.allowed_pairs excludes it
+    # from implicit pairing on purpose (commons agents stay invite-gated
+    # even though they're humanly visible to everyone). create_invite's own
+    # "already in the same group" 422 must route through that same
+    # implicitly_paired predicate, not the raw same-non-null-group check --
+    # otherwise two commons agents could never invite each other at all.
+    c, key = client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name=SHARED_GROUP)
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name=SHARED_GROUP)
+
+    response = c.post(
+        "/api/agents/a/invites",
+        json={"to_agent": "b"},
+        headers=_headers(key, email=OWNER_A_EMAIL),
+    )
+
+    assert response.status_code == 201, response.text
+
+
+def test_same_real_group_pair_is_still_422_after_the_shared_group_fix(
+    session_factory, client
+):
+    # Pin: the predicate keeps its old truth for a real (non-SHARED_GROUP)
+    # group -- the shared-group fix must not loosen this case.
+    c, key = client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="engineering")
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name="engineering")
+
+    response = c.post(
+        "/api/agents/a/invites",
+        json={"to_agent": "b"},
+        headers=_headers(key, email=OWNER_A_EMAIL),
+    )
+
+    assert response.status_code == 422
+    assert "—" not in response.json()["error"]
+
+
+def test_accepted_invite_between_shared_group_agents_grants_the_directional_pair(
+    session_factory, client, config
+):
+    # The reviewer's live repro, end to end: two READY shared agents can
+    # invite each other, accepting the invite actually grants the
+    # directional allowed_pairs entry (the wire the switchboard enforces),
+    # and the reverse direction is still not implied.
+    c, key = client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name=SHARED_GROUP)
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name=SHARED_GROUP)
+
+    create_response = c.post(
+        "/api/agents/a/invites",
+        json={"to_agent": "b"},
+        headers=_headers(key, email=OWNER_A_EMAIL),
+    )
+    assert create_response.status_code == 201, create_response.text
+    invite_id = create_response.json()["id"]
+
+    accept_response = c.post(
+        f"/api/invites/{invite_id}/accept", headers=_headers(key, email=OWNER_B_EMAIL)
+    )
+    assert accept_response.status_code == 200, accept_response.text
+
+    session = session_factory()
+    pairs = allowed_pairs(session, config)
+    session.close()
+
+    assert ("agent:a", "b") in pairs
+    assert ("agent:b", "a") not in pairs
+
+    # The accepted invite is what grants the pair, not group membership --
+    # team_pairs (auto-paired colleagues) must still not list "b" for "a":
+    # an explicit invite is a revocable arrangement, never an implicit one.
+    invites_response = c.get("/api/agents/a/invites", headers=_headers(key, email=OWNER_A_EMAIL))
+    assert invites_response.json()["team_pairs"] == []
+
+
 def test_duplicate_pending_invite_is_409(session_factory, client):
     c, key = client
     _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
@@ -489,6 +568,23 @@ def test_team_pairs_excludes_a_different_group_agent(session_factory, client):
     c, key = client
     _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
     _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name="payments-eng")
+
+    response = c.get("/api/agents/a/invites", headers=_headers(key, email=OWNER_A_EMAIL))
+
+    assert response.status_code == 200
+    assert response.json()["team_pairs"] == []
+
+
+def test_team_pairs_excludes_other_shared_group_agents(session_factory, client):
+    # Fix round (shared-group wave HIGH): two commons agents share a real,
+    # equal, non-null group_name (SHARED_GROUP), but they are NOT auto-
+    # paired -- pairs.allowed_pairs excludes SHARED_GROUP from implicit
+    # pairing on purpose. _team_pairs must not lie that they "talk freely";
+    # it has to go through the same implicitly_paired predicate as
+    # allowed_pairs itself, not the raw same-group-name check.
+    c, key = client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name=SHARED_GROUP)
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name=SHARED_GROUP)
 
     response = c.get("/api/agents/a/invites", headers=_headers(key, email=OWNER_A_EMAIL))
 
