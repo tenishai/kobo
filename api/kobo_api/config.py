@@ -24,6 +24,22 @@ class ModelChoice(BaseModel):
     location: str | None = None
 
 
+# The reserved commons group name (shared-group + group-requests wave): the
+# one group_name value every signed-in caller may create an agent under, or
+# see an agent under, with no directory membership check at all -- see
+# `kobo_api.pairs.allowed_pairs`'s own docstring for why a commons agent
+# still produces no implicit dispatch pairs from group membership. Lives
+# HERE rather than in `kobo_api.pairs` or `kobo_api.main` (the other two
+# modules that read it): this file already owns what counts as a valid
+# group name (`GroupChoice`, `groups`, `_admin_groups_must_be_configured_
+# groups` below) -- SHARED_GROUP is a valid group name that's deliberately
+# NOT one of `groups`' own entries, so the constant belongs beside the
+# concept it's the one exception to, not beside either of its two
+# consumers. `_groups_may_not_reuse_the_shared_name` below keeps a real
+# `GroupChoice` from ever colliding with it.
+SHARED_GROUP = "shared"
+
+
 class GroupChoice(BaseModel):
     name: str  # what the room shows for this group
     # The directory splits one HUMAN team's membership across several
@@ -272,6 +288,27 @@ class Config(BaseModel):
                     "(an admin group the resolver could never answer for "
                     "would make every gate it should open a permanent, "
                     "silent 403 instead)"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _groups_may_not_reuse_the_shared_name(self) -> Config:
+        """No `groups` entry may be named `SHARED_GROUP` ("shared") -- that
+        name is reserved room-wide for the commons every signed-in caller
+        already gets for free, with no directory membership check at all
+        (shared-group + group-requests wave). A configured group that
+        happened to share the name would collide with the reserved commons
+        the moment either `create_agent`'s "shared is always valid" branch
+        or `_visible_agents`'s "shared is visible to everyone" branch ran --
+        a config mistake, not a valid state, so construction fails loudly
+        here instead, the same posture `_admin_groups_must_be_configured_
+        groups` above already takes for its own collision class.
+        """
+        for g in self.groups:
+            if g.name == SHARED_GROUP:
+                raise ValueError(
+                    f"groups entry {g.name!r} collides with the reserved "
+                    "commons group name (SHARED_GROUP) -- rename it"
                 )
         return self
 

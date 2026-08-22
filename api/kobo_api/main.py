@@ -34,7 +34,7 @@ from kobo_api.clients import (
     cabal_enabled,
     filter_cabal_event_stream,
 )
-from kobo_api.config import Config
+from kobo_api.config import SHARED_GROUP, Config
 from kobo_api.db import init_db, make_engine, make_session_factory
 from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
 from kobo_api.directory import sync_directory
@@ -62,6 +62,9 @@ from kobo_api.metadata import (
     tooling_filenames_for,
 )
 from kobo_api.models import (
+    GROUP_REQUEST_DECLINED,
+    GROUP_REQUEST_DONE,
+    GROUP_REQUEST_PENDING,
     INVITE_ACCEPTED,
     INVITE_DECLINED,
     INVITE_PENDING,
@@ -70,6 +73,7 @@ from kobo_api.models import (
     Agent,
     AgentStatus,
     AgentUserGrant,
+    GroupRequest,
 )
 from kobo_api.namegen import SUGGESTION_COUNT, finalize_suggestions
 from kobo_api.org import OrgState, load_org_config
@@ -233,6 +237,21 @@ class GrantCreateRequest(BaseModel):
     agent."""
 
     email: str
+
+
+class GroupRequestCreate(BaseModel):
+    """POST /api/group-requests body (shared-group + group-requests wave):
+    `group_name` names a directory group `cfg.groups` doesn't know about
+    yet -- never validated against it, since that's the entire point of
+    filing this. `note` is optional free-text context for whoever reviews
+    the queue. Both are plain `str`/`str | None` rather than `Field(min_
+    length=..., max_length=...)`, matching `GrantCreateRequest.email`'s own
+    idiom above: `create_group_request` does its own `.strip()`-then-check
+    so a whitespace-only name reads as empty, the same way `add_grant`
+    treats a whitespace-only email."""
+
+    group_name: str
+    note: str | None = None
 
 
 class KnowledgeSavePayload(BaseModel):
@@ -1002,17 +1021,23 @@ def _visible_agents(session: Session, request: Request) -> tuple[list[Agent], bo
       just because groups haven't been turned on in this room yet.
     - A resolver IS wired: the caller sees what they own (`created_by`)
       UNION every agent GRANTED to them by name (`AgentUserGrant`, access-
-      control Task C1 -- see below) UNION every agent in a group
+      control Task C1 -- see below) UNION every agent namespaced into the
+      commons (`Agent.group_name == SHARED_GROUP`, shared-group + group-
+      requests wave -- see below) UNION every agent in a group
       `groups_for(email)` says they belong to. If the resolver answers
       `None` (fail-closed: the directory itself couldn't be reached,
       kobo_api.groups' own None/`[]` distinction) -- only what the caller
-      owns or was directly granted survives; group-DERIVED visibility
-      vanishes until the directory answers again, never wider.
-      `groups_unavailable` is true only in this exact branch. A grant is
-      NOT group-derived (it's a row this room's own DB owns outright, never
-      Okta's), so it survives a directory outage untouched -- the Global
-      Constraint's "fail-closed on grants" is about Okta-sourced group
-      membership disappearing, not about `AgentUserGrant` rows.
+      owns, was directly granted, or sits in the commons survives; group-
+      DERIVED visibility vanishes until the directory answers again, never
+      wider. `groups_unavailable` is true only in this exact branch. A
+      grant is NOT group-derived (it's a row this room's own DB owns
+      outright, never Okta's), so it survives a directory outage untouched
+      -- the Global Constraint's "fail-closed on grants" is about
+      Okta-sourced group membership disappearing, not about `AgentUserGrant`
+      rows. A commons agent is the same story for the same reason: `SHARED_
+      GROUP` membership was never Okta's to grant in the first place (every
+      signed-in caller already has it, unconditionally), so a directory
+      outage has nothing to take away from it either.
 
     Every branch above "no resolver wired" also implicitly covers ownership
     (an owned agent is always in the returned list) -- the design spec's
@@ -1054,7 +1079,11 @@ def _visible_agents(session: Session, request: Request) -> tuple[list[Agent], bo
 
     groups = resolver.groups_for(email)
     if groups is None:
-        return [agent for agent in all_agents if is_owned(agent) or is_granted(agent)], True
+        return [
+            agent
+            for agent in all_agents
+            if is_owned(agent) or is_granted(agent) or agent.group_name == SHARED_GROUP
+        ], True
 
     group_set = set(groups)
     visible = [
@@ -1062,6 +1091,7 @@ def _visible_agents(session: Session, request: Request) -> tuple[list[Agent], bo
         for agent in all_agents
         if is_owned(agent)
         or is_granted(agent)
+        or agent.group_name == SHARED_GROUP
         or (agent.group_name is not None and agent.group_name in group_set)
     ]
     return visible, False
@@ -1320,8 +1350,17 @@ def create_app(
     # hand-typed list." No UI surface may gate its OWN enforcement on this
     # flag either way -- it is a status hint, never the source of truth the
     # server-side gates above already are.
+    #
+    # `pending_group_requests` (shared-group + group-requests wave) is the
+    # sidebar's badge count -- present ONLY when `operator` is true (an
+    # admin is the only caller who may ever act on the queue,
+    # `_group_requests_admin_block` below enforces the identical check on
+    # the routes themselves); every other caller gets no such key at all,
+    # not a `0`, so a non-admin client can never mistake "the room happens
+    # to have zero open requests right now" for "I have standing to see the
+    # queue."
     @app.get("/api/whoami")
-    def whoami(request: Request) -> dict:
+    def whoami(request: Request, session: Session = Depends(get_session)) -> dict:  # noqa: B008
         clients: Clients | None = app.state.clients
         email = getattr(request.state, "iap_email", None)
 
@@ -1335,12 +1374,20 @@ def create_app(
             else:
                 groups = resolved
 
-        return {
+        is_admin = _is_admin(request)
+        result = {
             "email": email,
-            "operator": _is_admin(request),
+            "operator": is_admin,
             "groups": groups,
             "groups_unavailable": groups_unavailable,
         }
+        if is_admin:
+            result["pending_group_requests"] = (
+                session.query(GroupRequest)
+                .filter(GroupRequest.status == GROUP_REQUEST_PENDING)
+                .count()
+            )
+        return result
 
     @app.get("/api/catalog/models")
     def catalog_models() -> dict:
@@ -1353,14 +1400,192 @@ def create_app(
     # Access control (Task B2): the create modal's group dropdown reads this
     # -- CONFIG names only, never the Okta group names `cfg.groups` also
     # carries (`GroupChoice.okta_group`), which are an implementation detail
-    # the UI has no business knowing. Empty when the room hasn't named any
-    # groups yet, same "absent = feature off" shape as `/api/catalog/models`
-    # would give an empty `cfg.models` (which can't actually happen, but the
-    # convention matches every other catalog route here).
+    # the UI has no business knowing. `cfg.groups` alone would be empty when
+    # the room hasn't named any groups yet, same "absent = feature off"
+    # shape as `/api/catalog/models` would give an empty `cfg.models` (which
+    # can't actually happen, but the convention matches every other catalog
+    # route here) -- but SHARED_GROUP (shared-group + group-requests wave)
+    # is never itself empty-conditional: it's ALWAYS the first entry,
+    # regardless of whether the room has named any real groups, since it's
+    # usable by everyone whether or not `cfg.groups` is configured at all.
+    # `kind` lets the UI section the dropdown ("shared" vs the room's own
+    # named groups) without hardcoding SHARED_GROUP's spelling client-side.
     @app.get("/api/catalog/groups")
     def catalog_groups() -> dict:
         cfg: Config = app.state.config
-        return {"groups": [{"name": g.name} for g in cfg.groups]}
+        return {
+            "groups": [{"name": SHARED_GROUP, "kind": "shared"}]
+            + [{"name": g.name, "kind": "engineering"} for g in cfg.groups]
+        }
+
+    # --- Group requests (shared-group + group-requests wave) ----------------
+    #
+    # The dropdown's escape hatch for "my team's group isn't listed": a
+    # request names a directory group `cfg.groups` doesn't know about yet
+    # and asks an admin to add it, out of band, to org config. Filing one is
+    # open to any signed-in caller (no owner/operator gate beyond the
+    # app-wide IAP middleware every route already carries -- same "sign in
+    # and that's it" reach chat/teach already have); reading the queue and
+    # closing a request out are both admin-only.
+    #
+    # `_group_requests_admin_block` calls `_is_admin` DIRECTLY rather than
+    # going through `_operator_block`/`_admin_operator_block`'s "empty
+    # `operators` AND empty `admin_groups` = ungated" escape hatch those two
+    # use elsewhere in this file for dev parity: a room that never got
+    # around to naming an operator must still keep other people's names and
+    # free-text notes closed by default, not fall open just because nobody
+    # configured a gate yet. IAP-disabled rooms read `_is_admin` -> False
+    # here for the identical reason, unlike every OTHER gate in this file's
+    # "IAP off = trust the perimeter, there's no identity to check anyway"
+    # convention -- there IS something worth protecting here even with no
+    # perimeter at all.
+
+    GROUP_REQUEST_NAME_MAX = 100
+
+    def _group_requests_admin_block(request: Request) -> JSONResponse | None:
+        if _is_admin(request):
+            return None
+        return JSONResponse(
+            {"error": "Group requests are visible to room admins only."},
+            status_code=403,
+        )
+
+    def _group_request_repr(req: GroupRequest) -> dict:
+        return {
+            "id": req.id,
+            "group_name": req.group_name,
+            "requested_by": req.requested_by,
+            "note": req.note,
+            "status": req.status,
+            "decided_by": req.decided_by,
+            "created_at": req.created_at.isoformat(),
+            "decided_at": (
+                req.decided_at.isoformat() if req.decided_at is not None else None
+            ),
+        }
+
+    @app.post("/api/group-requests", status_code=201)
+    def create_group_request(
+        payload: GroupRequestCreate,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        name = payload.group_name.strip()
+        if not name:
+            return JSONResponse({"error": "name a group to request"}, status_code=422)
+        if len(name) > GROUP_REQUEST_NAME_MAX:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"group name is too long (max {GROUP_REQUEST_NAME_MAX} "
+                        "characters)"
+                    )
+                },
+                status_code=422,
+            )
+
+        # "Equivalent" is case-insensitive, trimmed-whitespace equality --
+        # the same normalization `add_grant`'s own case-insensitive email
+        # match already applies, just against `group_name` instead of an
+        # email. Only PENDING requests count as a duplicate: a `done`/
+        # `declined` row for the same name is history, not an open ask
+        # still sitting in the queue, so a new request for it is legitimate
+        # (an admin may have declined it once and reconsidered, or the
+        # group was added and later renamed/removed and someone wants it
+        # back).
+        pending = (
+            session.query(GroupRequest)
+            .filter(GroupRequest.status == GROUP_REQUEST_PENDING)
+            .all()
+        )
+        if any(existing.group_name.strip().lower() == name.lower() for existing in pending):
+            return JSONResponse(
+                {"error": f"a request for {name!r} is already pending"},
+                status_code=409,
+            )
+
+        note = payload.note.strip() if payload.note else ""
+
+        group_request = GroupRequest(
+            group_name=name,
+            requested_by=getattr(request.state, "iap_email", None),
+            note=note or None,
+            status=GROUP_REQUEST_PENDING,
+        )
+        session.add(group_request)
+        session.commit()
+
+        return JSONResponse(_group_request_repr(group_request), status_code=201)
+
+    @app.get("/api/group-requests")
+    def list_group_requests(
+        request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        block = _group_requests_admin_block(request)
+        if block is not None:
+            return block
+
+        requests_ = (
+            session.query(GroupRequest)
+            .order_by(GroupRequest.created_at.desc(), GroupRequest.id.desc())
+            .all()
+        )
+        return JSONResponse({"requests": [_group_request_repr(r) for r in requests_]})
+
+    def _decide_group_request(
+        session: Session, request: Request, request_id: int, *, new_status: str, verb: str
+    ) -> JSONResponse:
+        block = _group_requests_admin_block(request)
+        if block is not None:
+            return block
+
+        group_request = session.get(GroupRequest, request_id)
+        if group_request is None:
+            return JSONResponse(
+                {"error": f"no such group request: {request_id}"}, status_code=404
+            )
+
+        if group_request.status != GROUP_REQUEST_PENDING:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"group request is already {group_request.status}. "
+                        f"Cannot {verb} it now."
+                    )
+                },
+                status_code=409,
+            )
+
+        group_request.status = new_status
+        group_request.decided_by = getattr(request.state, "iap_email", None)
+        group_request.decided_at = datetime.now(UTC)
+        session.commit()
+
+        return JSONResponse(_group_request_repr(group_request))
+
+    @app.post("/api/group-requests/{request_id}/done")
+    def mark_group_request_done(
+        request_id: int,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Closes the loop on kobo's own side after an admin has ALREADY
+        added `group_name` to org config out of band -- this route never
+        touches org config itself, it only records that the ask was acted
+        on."""
+        return _decide_group_request(
+            session, request, request_id, new_status=GROUP_REQUEST_DONE, verb="close"
+        )
+
+    @app.post("/api/group-requests/{request_id}/declined")
+    def decline_group_request(
+        request_id: int,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        return _decide_group_request(
+            session, request, request_id, new_status=GROUP_REQUEST_DECLINED, verb="decline"
+        )
 
     # People search (access-tab refinement wave): a signed-in-only proxy of
     # the directory's own user search (kobo_api.groups.OktaPeopleSearch) --
@@ -1743,7 +1968,13 @@ def create_app(
                 return JSONResponse(
                     {"error": "pick a group for this agent"}, status_code=422
                 )
-            if payload.group_name not in configured_group_names:
+            # SHARED_GROUP (shared-group + group-requests wave) is always a
+            # valid choice even though it never appears in `cfg.groups` --
+            # the commons is usable by everyone, room-config-independent.
+            if (
+                payload.group_name != SHARED_GROUP
+                and payload.group_name not in configured_group_names
+            ):
                 return JSONResponse(
                     {"error": f"unknown group: {payload.group_name!r}"}, status_code=422
                 )
@@ -1776,7 +2007,15 @@ def create_app(
             # membership against, so gating here would just lock out every
             # caller in every IAP-off room (local dev, most of this test
             # suite) instead of the callers this fix actually targets.
-            if cfg.iap_audience:
+            #
+            # SHARED_GROUP is exempt from this whole consent check, not just
+            # from its resolver answer (shared-group + group-requests wave):
+            # this gate exists to stop a caller CLAIMING someone else's real
+            # group without asking; "shared" isn't anyone's group to
+            # protect -- every signed-in caller is already, unconditionally,
+            # a member of the commons, so there is nothing here for a
+            # resolver to confirm one way or the other.
+            if cfg.iap_audience and payload.group_name != SHARED_GROUP:
                 email = (getattr(request.state, "iap_email", None) or "").lower()
                 if not _is_admin(request):
                     clients: Clients | None = app.state.clients

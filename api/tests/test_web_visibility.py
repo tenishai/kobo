@@ -26,7 +26,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import Clients
-from kobo_api.config import Config, GroupChoice
+from kobo_api.config import SHARED_GROUP, Config, GroupChoice
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import create_app
 from kobo_api.models import Agent, AgentStatus, Base
@@ -674,25 +674,212 @@ def test_iap_off_room_keeps_todays_group_claim_behavior_unchanged(groups_client)
 
 
 # --- GET /api/catalog/groups: names only, no Okta names leaked -------------
+#
+# Shared-group + group-requests wave: SHARED_GROUP ("shared") is now always
+# the FIRST entry, marked `kind: "shared"` so the UI can section it apart
+# from the room's own named groups (each marked `kind: "engineering"`) --
+# present whether or not `cfg.groups` names anything at all.
 
 
-def test_catalog_groups_returns_configured_names_only(session_factory, groups_config):
+def test_catalog_groups_returns_shared_first_then_configured_names(
+    session_factory, groups_config
+):
     client = TestClient(create_app(session_factory, config=groups_config))
 
     response = client.get("/api/catalog/groups")
 
     assert response.status_code == 200
     body = response.json()
-    assert body == {"groups": [{"name": "payments-eng"}, {"name": "growth"}]}
+    assert body == {
+        "groups": [
+            {"name": "shared", "kind": "shared"},
+            {"name": "payments-eng", "kind": "engineering"},
+            {"name": "growth", "kind": "engineering"},
+        ]
+    }
     assert "okta-payments" not in response.text
     assert "okta-growth" not in response.text
 
 
-def test_catalog_groups_empty_when_unconfigured(session_factory):
+def test_catalog_groups_is_just_shared_when_unconfigured(session_factory):
     config = Config()
     client = TestClient(create_app(session_factory, config=config))
 
     response = client.get("/api/catalog/groups")
 
     assert response.status_code == 200
-    assert response.json() == {"groups": []}
+    assert response.json() == {"groups": [{"name": "shared", "kind": "shared"}]}
+
+
+# --- Shared commons: visible to everyone, in every _visible_agents branch --
+#
+# The reserved SHARED_GROUP group name: an agent namespaced into it is
+# commons, visible to every signed-in caller regardless of group
+# membership or ownership -- including the two branches that otherwise
+# NARROW visibility (a resolver that's down, and a stranger with no group
+# membership at all). Fail-closed still applies to GROUP-derived visibility
+# (an Okta outage narrows that to nothing); a shared agent isn't a grant, so
+# it isn't narrowed by that same fail-closed rule.
+
+
+def test_shared_agent_visible_to_a_stranger_with_no_group_membership(
+    session_factory, config
+):
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver({})
+    client = _make_client(
+        session_factory, config, groups_resolver=resolver, iap_jwks_fetcher=_fetcher(jwk)
+    )
+    _seed_agent(session_factory, config, name="shared-agent", group_name=SHARED_GROUP)
+    _seed_matrix(session_factory, config)
+
+    response = client.get("/api/agents", headers=_headers(private_key, email=STRANGER_EMAIL))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["groups_unavailable"] is False
+    assert "shared-agent" in {a["name"] for a in body["agents"]}
+
+
+def test_shared_agent_visible_even_when_the_resolver_is_down(session_factory, config):
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver(down=True)
+    client = _make_client(
+        session_factory, config, groups_resolver=resolver, iap_jwks_fetcher=_fetcher(jwk)
+    )
+    _seed_agent(session_factory, config, name="shared-agent", group_name=SHARED_GROUP)
+
+    response = client.get("/api/agents", headers=_headers(private_key, email=STRANGER_EMAIL))
+
+    assert response.status_code == 200
+    body = response.json()
+    # Fail-closed still narrows GROUP-derived visibility to nothing (no
+    # ownership, no grant) -- the commons agent is the only thing left
+    # standing, proving it isn't itself treated as a grant subject to the
+    # same narrowing.
+    assert body["groups_unavailable"] is True
+    assert {a["name"] for a in body["agents"]} == {"shared-agent"}
+
+
+def test_shared_agent_visible_with_no_resolver_configured(session_factory, config):
+    private_key, jwk = _generate_jwk()
+    client = _make_client(
+        session_factory, config, groups_resolver=None, iap_jwks_fetcher=_fetcher(jwk)
+    )
+    _seed_agent(session_factory, config, name="shared-agent", group_name=SHARED_GROUP)
+
+    response = client.get("/api/agents", headers=_headers(private_key, email=STRANGER_EMAIL))
+
+    assert response.status_code == 200
+    assert "shared-agent" in {a["name"] for a in response.json()["agents"]}
+
+
+def test_shared_agent_visible_when_iap_is_disabled(session_factory):
+    config = Config(operators=[], iap_audience="", groups=GROUPS)
+    client = TestClient(
+        create_app(
+            session_factory,
+            config=config,
+            clients=Clients(
+                github=FakeGitHub(),
+                gojira=FakeGojira(),
+                cloud=FakeCloud(),
+                agent=FakeAgent(),
+                kubectl=FakeKubectl(),
+                storage=FakeStorage(),
+                groups=FakeGroupResolver({}),
+            ),
+        )
+    )
+    _seed_agent(session_factory, config, name="shared-agent", group_name=SHARED_GROUP)
+
+    response = client.get("/api/agents")
+
+    assert response.status_code == 200
+    assert "shared-agent" in {a["name"] for a in response.json()["agents"]}
+
+
+def test_shared_agent_detail_route_200s_for_a_stranger(session_factory, config):
+    # The single visibility choke point (_visible_agent_or_404) must honor
+    # the same commons rule for the detail/sub-route seam, not just the
+    # list route.
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver({})
+    client = _make_client(
+        session_factory, config, groups_resolver=resolver, iap_jwks_fetcher=_fetcher(jwk)
+    )
+    _seed_agent(session_factory, config, name="shared-agent", group_name=SHARED_GROUP)
+
+    response = client.get(
+        "/api/agents/shared-agent", headers=_headers(private_key, email=STRANGER_EMAIL)
+    )
+
+    assert response.status_code == 200
+
+
+# --- Create route: SHARED_GROUP is always valid, membership-free -----------
+#
+# The reserved SHARED_GROUP name is never one of cfg.groups' own entries,
+# yet the create route must accept it from ANY signed-in caller. The HIGH-1
+# consent check exists to stop a caller CLAIMING someone else's real group
+# without asking; "shared" isn't anyone's group to protect, so it's exempt
+# from that check entirely, not just from whatever the resolver happens to
+# answer.
+
+
+def test_shared_group_name_is_valid_even_though_it_is_not_a_configured_group(
+    session_factory, consent_config, fake_storage
+):
+    private_key, jwk = _generate_jwk()
+    # MEMBER_EMAIL belongs to neither configured group -- proves this isn't
+    # sneaking through via directory membership in "shared".
+    resolver = FakeGroupResolver({MEMBER_EMAIL: ["payments-eng"]})
+    client = _consent_client(
+        session_factory, consent_config, fake_storage,
+        groups_resolver=resolver, iap_jwks_fetcher=_fetcher(jwk),
+    )
+
+    response = client.post(
+        "/api/agents",
+        json=_create_payload("clio", SHARED_GROUP),
+        headers=_headers(private_key, email=MEMBER_EMAIL),
+    )
+
+    assert response.status_code == 201, response.text
+
+
+def test_shared_group_create_bypasses_membership_check_even_when_resolver_is_down(
+    session_factory, consent_config, fake_storage
+):
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver(down=True)
+    client = _consent_client(
+        session_factory, consent_config, fake_storage,
+        groups_resolver=resolver, iap_jwks_fetcher=_fetcher(jwk),
+    )
+
+    response = client.post(
+        "/api/agents",
+        json=_create_payload("clio", SHARED_GROUP),
+        headers=_headers(private_key, email=MEMBER_EMAIL),
+    )
+
+    assert response.status_code == 201, response.text
+
+
+def test_shared_group_create_ok_with_no_resolver_wired_at_all(
+    session_factory, consent_config, fake_storage
+):
+    private_key, jwk = _generate_jwk()
+    client = _consent_client(
+        session_factory, consent_config, fake_storage,
+        groups_resolver=None, iap_jwks_fetcher=_fetcher(jwk),
+    )
+
+    response = client.post(
+        "/api/agents",
+        json=_create_payload("clio", SHARED_GROUP),
+        headers=_headers(private_key, email=MEMBER_EMAIL),
+    )
+
+    assert response.status_code == 201, response.text

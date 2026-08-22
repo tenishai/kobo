@@ -258,3 +258,60 @@ class AgentUserGrant(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
+
+
+# GroupRequest.status values (shared-group + group-requests wave). Plain
+# strings on a plain `String(20)` column below, same "not a StrEnum" choice
+# A2AInvite.status made above and for the identical reason: a request's
+# status is read only via direct equality/membership checks (main.py's
+# routes), never dispatched on by a state-machine pipeline the way AgentStatus/
+# StepStatus are -- a fourth/fifth enum class would add indirection without
+# buying anything back. Named here anyway so every reader points at the same
+# spelling.
+GROUP_REQUEST_PENDING = "pending"
+GROUP_REQUEST_DONE = "done"
+GROUP_REQUEST_DECLINED = "declined"
+
+
+class GroupRequest(Base):
+    """A request from a signed-in person for a NEW directory group kobo
+    doesn't know about yet to be added to org config (shared-group +
+    group-requests wave) -- the dropdown's escape hatch for "my team's group
+    isn't listed." Anyone signed in may file one (`POST /api/group-requests`,
+    main.py); only a room admin (`_is_admin`) may read the queue or close one
+    out, since a request carries another human's name and free-text note.
+
+    `done` means an admin added `group_name` to org config OUT-OF-BAND (this
+    room never writes org config itself) -- the route that flips a row to
+    `done` just closes the loop on kobo's own side, the same "this table
+    records the ask and the decision, not the mechanism" posture `A2AInvite`
+    already takes for its own accept/decline. `declined` means an admin
+    reviewed it and chose not to. Both are terminal; `pending` is the only
+    status a `done`/`declined` route may act on (closing an already-decided
+    row again is a 409, mirroring `A2AInvite`'s own already-decided guard).
+
+    `group_name` is free text, not validated against `Config.groups` --
+    that's the entire point: it names a group the room does NOT yet
+    recognize. Capped at 100 characters (`main.py`'s create route), a
+    request body, not an agent name or anything with `Agent.name`'s own
+    stricter 63-char/DNS-label shape.
+    """
+
+    __tablename__ = "group_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    # The verified IAP email that filed this request; nullable for the same
+    # IAP-disabled reason `A2AInvite.requested_by` is.
+    requested_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=GROUP_REQUEST_PENDING
+    )
+    # The verified IAP email that closed this request out (done/declined);
+    # None while pending, same shape as `A2AInvite.decided_by`.
+    decided_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

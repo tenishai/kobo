@@ -26,7 +26,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from kobo_api.clients import CabalClient, CabalError, cabal_enabled
-from kobo_api.config import Config
+from kobo_api.config import SHARED_GROUP, Config
 from kobo_api.models import INVITE_ACCEPTED, A2AInvite, Agent, AgentStatus
 
 if TYPE_CHECKING:
@@ -52,7 +52,16 @@ def allowed_pairs(session: Session, config: Config) -> set[tuple[str, str]]:
       b)` of READY agents sharing a non-null `group_name`, `(agent:a.name,
       b.name)` is in the set. A group-less agent (`group_name is None`)
       never produces a same-group pair with anything, including another
-      group-less agent -- "no group" is not itself a group.
+      group-less agent -- "no group" is not itself a group. `SHARED_GROUP`
+      ("shared") is the one further exception (shared-group + group-
+      requests wave): an agent namespaced into the commons produces NO
+      implicit pair with anything either, including another commons agent
+      -- commons agents are humanly open (every signed-in caller may create
+      one, and every signed-in caller sees every one, `_visible_agents` in
+      `kobo_api.main`), but their agent-to-agent connections stay invite-
+      gated; the wire remains consent-based even where visibility isn't.
+      An explicit `A2AInvite` (below) is still the only way two commons
+      agents, or a commons agent and anything else, become a dispatch pair.
     - Accepted invites, directional: an `A2AInvite` row with status
       `accepted` adds exactly `(agent:from_agent, to_agent)`, never the
       reverse -- access granted one direction is not implicitly granted
@@ -74,7 +83,7 @@ def allowed_pairs(session: Session, config: Config) -> set[tuple[str, str]]:
     pairs: set[tuple[str, str]] = set()
 
     for caller in ready_agents:
-        if caller.group_name is None:
+        if caller.group_name is None or caller.group_name == SHARED_GROUP:
             continue
         for target in ready_agents:
             if target.name == caller.name:

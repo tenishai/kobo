@@ -17,7 +17,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import CabalError, Clients
-from kobo_api.config import Config
+from kobo_api.config import SHARED_GROUP, Config
 from kobo_api.main import _boot_sync_dispatch_pairs
 from kobo_api.models import A2AInvite, Agent, AgentStatus, Base
 from kobo_api.pairs import (
@@ -130,6 +130,55 @@ def test_three_agents_same_group_all_pairs_present(session, config):
         ("agent:b", "c"), ("agent:c", "b"),
     }
     assert pairs == expected
+
+
+# --- SHARED_GROUP: commons agents get no implicit pair from anyone,
+# including each other (shared-group + group-requests wave) -----------------
+
+
+def test_two_shared_agents_produce_no_implicit_pair(session, config):
+    _agent(session, "a", group_name=SHARED_GROUP)
+    _agent(session, "b", group_name=SHARED_GROUP)
+
+    pairs = allowed_pairs(session, config)
+
+    assert pairs == set()
+
+
+def test_shared_agent_and_real_group_agent_produce_no_pair(session, config):
+    _agent(session, "a", group_name=SHARED_GROUP)
+    _agent(session, "b", group_name="growth")
+
+    pairs = allowed_pairs(session, config)
+
+    assert pairs == set()
+
+
+def test_shared_agent_alongside_a_real_same_group_pair_only_pairs_the_latter(
+    session, config
+):
+    # A commons agent sitting in the mix must not suppress OTHER agents'
+    # legitimate same-group pairs -- only its own would-be pairs vanish.
+    _agent(session, "a", group_name=SHARED_GROUP)
+    _agent(session, "b", group_name="growth")
+    _agent(session, "c", group_name="growth")
+
+    pairs = allowed_pairs(session, config)
+
+    assert pairs == {("agent:b", "c"), ("agent:c", "b")}
+
+
+def test_accepted_invite_still_grants_a_pair_touching_a_shared_agent(session, config):
+    # An invite is group-agnostic (pinned above for group-less agents) --
+    # a commons agent is no exception: the wire stays consent-based, not
+    # blanket-closed, for a commons endpoint that explicitly asked for one.
+    _agent(session, "a", group_name=SHARED_GROUP)
+    _agent(session, "b", group_name="growth")
+    _invite(session, from_agent="a", to_agent="b", status="accepted")
+
+    pairs = allowed_pairs(session, config)
+
+    assert pairs == {("agent:a", "b")}
 
 
 # --- Accepted invites: directional, never implied backward ------------------

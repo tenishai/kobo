@@ -5,7 +5,13 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from kobo_api.config import Config, GroupChoice, ModelChoice, vertex_location_for
+from kobo_api.config import (
+    SHARED_GROUP,
+    Config,
+    GroupChoice,
+    ModelChoice,
+    vertex_location_for,
+)
 
 
 def test_load_none_returns_defaults_without_touching_disk(tmp_path, monkeypatch):
@@ -381,6 +387,28 @@ def test_admin_groups_entry_with_groups_left_entirely_unset_raises():
         Config(admin_groups=["infra-engineering"])
 
     assert "infra-engineering" in str(exc_info.value)
+
+
+# --- SHARED_GROUP (shared-group + group-requests wave) -----------------------
+
+
+def test_shared_group_constant_is_the_literal_shared():
+    assert SHARED_GROUP == "shared"
+
+
+def test_a_real_group_may_not_be_named_shared():
+    with pytest.raises(ValidationError) as exc_info:
+        Config(groups=[GroupChoice(name=SHARED_GROUP, okta_group="okta-shared")])
+
+    assert "shared" in str(exc_info.value).lower()
+
+
+def test_groups_without_a_shared_entry_construct_fine():
+    # Sanity check the validator above isn't overreaching: an ordinary
+    # groups list with no name collision at all must still construct.
+    config = Config(groups=[GroupChoice(name="growth", okta_group="okta-growth")])
+
+    assert [g.name for g in config.groups] == ["growth"]
 
 
 # --- groups / okta_domain (access-control arc, Task B1: GroupResolver) -------
