@@ -136,6 +136,14 @@ export type OrgCheck = { id: string; label: string; ok: boolean; detail: string 
 
 export type OrgStatus = { org: string | null; wired: boolean; checks: OrgCheck[] };
 
+/** `GET /api/whoami`'s response (access-control Task A1) — the verified
+ * identity this room already knows about the caller. `email` is `null`
+ * whenever IAP isn't configured or verification found no claim; `operator`
+ * is server-derived off `config.operators`, never something the UI computes
+ * itself. `groups` is always `[]` in this phase (a later task fills it in
+ * from the org's group source, same response shape). */
+export type Whoami = { email: string | null; operator: boolean; groups: string[] };
+
 export type ChatMessage = { role: "user" | "agent"; text: string };
 
 /** One row of the room's colleagues switchboard admin surface (the
@@ -483,6 +491,13 @@ export async function fetchNameSuggestions(
 export async function fetchOrgStatus(): Promise<OrgStatus> {
   const res = await fetch("/api/org/status");
   return parse<OrgStatus>(res);
+}
+
+/** `GET /api/whoami` — the signed-in identity this room's server has
+ * already verified (or `{email: null, ...}` when IAP isn't configured). */
+export async function fetchWhoami(): Promise<Whoami> {
+  const res = await fetch("/api/whoami");
+  return parse<Whoami>(res);
 }
 
 export async function chatWithAgent(

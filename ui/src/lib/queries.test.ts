@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, readLocalSkill, type AgentSkill, type CatalogEntry, type IntakeFile, type NameSuggestion, type OrgStatus, type ToolingEnforcement, type ToolingListResponse } from "./api";
+import { ApiError, readLocalSkill, type AgentSkill, type CatalogEntry, type IntakeFile, type NameSuggestion, type OrgStatus, type ToolingEnforcement, type ToolingListResponse, type Whoami } from "./api";
 import {
   addCatalogSkillMutation,
   agentSkillsQuery,
@@ -40,6 +40,7 @@ import {
   uploadAvatarMutation,
   uploadIntakeMutation,
   uploadToolingMutation,
+  whoamiQuery,
 } from "./queries";
 import type { QueryClient } from "@tanstack/svelte-query";
 
@@ -864,6 +865,32 @@ describe("orgStatusQuery", () => {
       status,
     );
     expect(fetch).toHaveBeenCalledWith("/api/org/status");
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("whoamiQuery", () => {
+  it("has queryKey ['whoami']", () => {
+    expect(whoamiQuery().queryKey).toEqual(["whoami"]);
+  });
+
+  it("has staleTime Infinity", () => {
+    expect(whoamiQuery().staleTime).toBe(Infinity);
+  });
+
+  it("queryFn GETs /api/whoami", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const whoami = { email: "ops@example.com", operator: true, groups: [] };
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify(whoami),
+    } as Response);
+
+    await expect(callQueryFn<Whoami>(whoamiQuery())).resolves.toEqual(whoami);
+    expect(fetch).toHaveBeenCalledWith("/api/whoami");
 
     vi.unstubAllGlobals();
   });

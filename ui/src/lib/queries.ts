@@ -26,6 +26,9 @@
 //   ["catalog", "skills", {q, team}]                - a skill catalog search
 //   ["catalog", "personas", {q, team}]              - a persona catalog search
 //   ["org", "status"]                               - org bootstrap/wiring status
+//   ["whoami"]                                       - the signed-in identity
+//                                                      this room's server has
+//                                                      already verified
 //   ["names", "suggestions", {who_they_are, what_they_do}]
 //                                                    - five name-suggestion cards for a committed persona
 //   ["colleagues", "conversations", "list", {all}]  - the watching window's
@@ -58,6 +61,7 @@ import {
   type ToolingEnforcement,
   type ToolingFile,
   type ToolingListResponse,
+  type Whoami,
   addCatalogSkill,
   chatWithAgent,
   connectSlack,
@@ -78,6 +82,7 @@ import {
   fetchSlackManifest,
   fetchTeamOptions,
   fetchTeams,
+  fetchWhoami,
   generateAvatar,
   getAgent,
   importTooling,
@@ -212,6 +217,23 @@ export function orgStatusQuery() {
     queryKey: ["org", "status"] as const,
     queryFn: fetchOrgStatus,
     staleTime: ORG_STATUS_STALE_MS,
+  });
+}
+
+/**
+ * The signed-in identity this room's server has already verified
+ * (access-control Task A1) — `GET /api/whoami`. `staleTime: Infinity`
+ * because identity does not change mid-session: once fetched, there's no
+ * background event that would make a refetch show anything different (a
+ * fresh sign-in is a fresh page load, which starts a fresh QueryClient
+ * anyway), unlike `orgStatusQuery`'s wiring state which a human can change
+ * out from under a long-lived tab.
+ */
+export function whoamiQuery() {
+  return queryOptions({
+    queryKey: ["whoami"] as const,
+    queryFn: fetchWhoami,
+    staleTime: Infinity,
   });
 }
 
@@ -829,4 +851,5 @@ export type {
   ToolingEnforcement,
   ToolingFile,
   ToolingListResponse,
+  Whoami,
 };

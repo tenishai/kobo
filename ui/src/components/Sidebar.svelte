@@ -2,13 +2,22 @@
   // The room's left rail: logo (wordmark placeholder until the operator
   // picks a mark), nav, and the Create button with its warm-prefetch
   // handlers. Collapses to an icon rail on narrow viewports.
+  import { createQuery } from "@tanstack/svelte-query";
   import { formatHash } from "../lib/router.svelte";
+  import { whoamiQuery } from "../lib/queries";
 
   let { active, oncreate, onprefetch }: {
     active: "dashboard" | "agent" | "getting-started";
     oncreate: () => void;
     onprefetch: () => void;
   } = $props();
+
+  // Access-control Task A1: the room shows who is signed in. `staleTime:
+  // Infinity` (whoamiQuery's own option) means this fires once per session,
+  // not on every Sidebar mount. Server-verified identity only — the footer
+  // just displays what `/api/whoami` already decided, never derives
+  // authority itself.
+  const whoami = createQuery(whoamiQuery());
 </script>
 
 <nav class="sidebar" aria-label="Main">
@@ -56,6 +65,10 @@
     <span class="sidebar__create-label">Create agent</span>
     <span class="sidebar__create-glyph" aria-hidden="true">+</span>
   </button>
+
+  {#if $whoami.data?.email}
+    <p class="sidebar__whoami" title={$whoami.data.email}>{$whoami.data.email}</p>
+  {/if}
 </nav>
 
 <style>
@@ -136,6 +149,17 @@
     display: none;
   }
 
+  .sidebar__whoami {
+    margin: auto 0 0 0;
+    padding-top: var(--space-sm);
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.75rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   @media (max-width: 48rem) {
     .sidebar {
       width: auto;
@@ -152,6 +176,10 @@
 
     .sidebar__create-glyph {
       display: inline;
+    }
+
+    .sidebar__whoami {
+      display: none;
     }
   }
 </style>

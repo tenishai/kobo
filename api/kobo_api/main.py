@@ -689,23 +689,35 @@ def _slack_operator_block(request: Request, config: Config) -> JSONResponse | No
     )
 
 
+def _is_operator(email: str | None, config: Config) -> bool:
+    """The room's one operator matcher (access-control Task A1): a
+    case-insensitive email match against `config.operators`. Every caller
+    that needs to know "is this verified email an operator" -- `_operator_
+    block`'s gate below and `/api/whoami`'s status flag -- goes through this
+    single function so the comparison never forks between them. `None`/empty
+    email is never an operator, no matter what `config.operators` holds.
+    """
+    if not email:
+        return False
+    return email.lower() in {o.lower() for o in config.operators}
+
+
 def _operator_block(request: Request, config: Config) -> JSONResponse | None:
     """None when the caller may destroy agents; a 403 body otherwise.
 
     Same semantics family as `_slack_operator_block` above (empty list =
     ungated, dev parity; IAP disabled = operator, the room trusts its
-    perimeter only when it has one; otherwise a case-insensitive email
-    match against `config.operators`) — kept as its own function, not
-    parameterized over the two config lists, since a future gate is free to
-    diverge (different copy already, here) without the two ever needing to
-    stay byte-identical.
+    perimeter only when it has one; otherwise `_is_operator` above) — kept
+    as its own function, not parameterized over the two config lists, since
+    a future gate is free to diverge (different copy already, here) without
+    the two ever needing to stay byte-identical.
     """
     if not config.operators:
         return None
     if not config.iap_audience:
         return None
-    email = (getattr(request.state, "iap_email", None) or "").lower()
-    if email in {e.lower() for e in config.operators}:
+    email = getattr(request.state, "iap_email", None)
+    if _is_operator(email, config):
         return None
     return JSONResponse(
         {"error": "Destroying agents is operator-only on this room"}, status_code=403
@@ -908,6 +920,21 @@ def create_app(
     @app.get("/api/healthz")
     def healthz() -> dict:
         return {"ok": True}
+
+    # --- Whoami (access-control Task A1): the room shows who is signed in ---
+    #
+    # Every authorization decision stays server-side off the VERIFIED
+    # assertion email (`request.state.iap_email`, set only by IapMiddleware
+    # once it has actually checked a signature) — this route just makes that
+    # already-authoritative state visible so the UI can render it, never the
+    # other way around. `groups` is always `[]` in this phase; a later task
+    # fills it in from the org's group source without changing this route's
+    # response shape.
+    @app.get("/api/whoami")
+    def whoami(request: Request) -> dict:
+        cfg: Config = app.state.config
+        email = getattr(request.state, "iap_email", None)
+        return {"email": email, "operator": _is_operator(email, cfg), "groups": []}
 
     @app.get("/api/catalog/models")
     def catalog_models() -> dict:

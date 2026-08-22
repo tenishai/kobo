@@ -15,6 +15,7 @@ import {
   fetchSlackManifest,
   fetchTeamOptions,
   fetchTeams,
+  fetchWhoami,
   generateAvatar,
   listAgents,
   listColleagueConversations,
@@ -1047,6 +1048,32 @@ describe("catalog search / teams / persona builder / org status client", () => {
     await expect(fetchOrgStatus()).resolves.toEqual(status);
 
     expect(fetch).toHaveBeenCalledWith("/api/org/status");
+  });
+});
+
+describe("fetchWhoami", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("GETs /api/whoami and returns {email, operator, groups} verbatim", async () => {
+    const whoami = { email: "ops@example.com", operator: true, groups: [] };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(whoami));
+
+    await expect(fetchWhoami()).resolves.toEqual(whoami);
+
+    expect(fetch).toHaveBeenCalledWith("/api/whoami");
+  });
+
+  it("resolves {email: null, operator: false, groups: []} when signed out", async () => {
+    const whoami = { email: null, operator: false, groups: [] };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(whoami));
+
+    await expect(fetchWhoami()).resolves.toEqual(whoami);
   });
 });
 

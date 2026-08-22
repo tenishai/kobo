@@ -18,13 +18,18 @@ exactly its own check, nothing else.
 
 from __future__ import annotations
 
+import time
+
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import Clients
 from kobo_api.config import Config
+from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import create_app
 from kobo_api.models import Base
 from kobo_api.org import OrgState
@@ -472,3 +477,122 @@ def test_check_raising_arbitrary_exception_is_isolated(wired_config, fake_storag
     assert _check(body, "personas-bucket")["ok"] is True
     assert _check(body, "personas-seeded")["ok"] is True
     assert _check(body, "deploy-platform")["ok"] is True
+
+
+# --- whoami (access-control Task A1): the room shows who is signed in -------
+#
+# Same real-JWT idiom test_web_teach.py/test_web_destroy.py use for their own
+# IAP-attribution slices: a locally generated ES256 keypair signs the
+# assertion, verified through the actual `IapMiddleware`/`IapVerifier`, not a
+# mock. The "IAP off" case needs no middleware at all -- the plain `client`
+# fixture (conftest.py's default, no `iap_audience`) already is that state.
+
+WHOAMI_AUDIENCE = "test-audience"
+WHOAMI_KID = "test-key-1"
+
+
+def _generate_jwk(kid: str = WHOAMI_KID):
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    jwk = jwt.algorithms.ECAlgorithm.to_jwk(private_key.public_key(), as_dict=True)
+    jwk["kid"] = kid
+    jwk["use"] = "sig"
+    jwk["alg"] = "ES256"
+    return private_key, jwk
+
+
+def _sign_whoami(private_key, *, email: str | None, kid: str = WHOAMI_KID) -> str:
+    now = int(time.time())
+    claims = {
+        "aud": WHOAMI_AUDIENCE,
+        "iss": IAP_ISSUER,
+        "iat": now,
+        "exp": now + 3600,
+        "sub": "accounts.google.com:1234567890",
+    }
+    if email is not None:
+        claims["email"] = email
+    return jwt.encode(claims, private_key, algorithm="ES256", headers={"kid": kid})
+
+
+def _fetcher(jwk):
+    def fetch():
+        return {"keys": [jwk]}
+
+    return fetch
+
+
+def _iap_client(config: Config, tmp_path, *, jwk) -> TestClient:
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    return TestClient(
+        create_app(
+            session_factory,
+            config=config,
+            iap_jwks_fetcher=_fetcher(jwk),
+        )
+    )
+
+
+def test_whoami_without_iap_is_null_email_and_not_operator(client):
+    response = client.get("/api/whoami")
+
+    assert response.status_code == 200
+    assert response.json() == {"email": None, "operator": False, "groups": []}
+
+
+def test_whoami_with_iap_operator_email_reports_email_and_operator_true(tmp_path):
+    private_key, jwk = _generate_jwk()
+    config = Config(
+        workdir=tmp_path / "work",
+        iap_audience=WHOAMI_AUDIENCE,
+        operators=["ops@example.com"],
+    )
+    client = _iap_client(config, tmp_path, jwk=jwk)
+
+    token = _sign_whoami(private_key, email="ops@example.com")
+    response = client.get("/api/whoami", headers={ASSERTION_HEADER: token})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "email": "ops@example.com",
+        "operator": True,
+        "groups": [],
+    }
+
+
+def test_whoami_with_iap_non_operator_email_reports_email_and_operator_false(tmp_path):
+    private_key, jwk = _generate_jwk()
+    config = Config(
+        workdir=tmp_path / "work",
+        iap_audience=WHOAMI_AUDIENCE,
+        operators=["ops@example.com"],
+    )
+    client = _iap_client(config, tmp_path, jwk=jwk)
+
+    token = _sign_whoami(private_key, email="someone-else@example.com")
+    response = client.get("/api/whoami", headers={ASSERTION_HEADER: token})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "email": "someone-else@example.com",
+        "operator": False,
+        "groups": [],
+    }
+
+
+def test_whoami_operator_match_is_case_insensitive(tmp_path):
+    private_key, jwk = _generate_jwk()
+    config = Config(
+        workdir=tmp_path / "work",
+        iap_audience=WHOAMI_AUDIENCE,
+        operators=["OPS@EXAMPLE.COM"],
+    )
+    client = _iap_client(config, tmp_path, jwk=jwk)
+
+    token = _sign_whoami(private_key, email="ops@example.com")
+    response = client.get("/api/whoami", headers={ASSERTION_HEADER: token})
+
+    assert response.json()["operator"] is True

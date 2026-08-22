@@ -1,10 +1,18 @@
 // @vitest-environment jsdom
-import { fireEvent, screen } from "@testing-library/svelte";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, screen, waitFor } from "@testing-library/svelte";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import Sidebar from "./Sidebar.svelte";
-import { renderWithClient } from "../test-utils/render";
+import { renderWithClient, stubFetch } from "../test-utils/render";
 
 describe("Sidebar", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    // Sidebar fires whoamiQuery on mount (access-control Task A1); every
+    // test needs at least this catch-all so that fetch never goes unstubbed,
+    // same idiom ChatPanel.test.ts's `stubFetch({ "/api/": {} })` uses.
+    stubFetch({ "/api/": {} });
+  });
+
   it("renders nav links and marks the active page", () => {
     renderWithClient(Sidebar, { active: "getting-started", oncreate: () => {}, onprefetch: () => {} });
     const agents = screen.getByRole("link", { name: "Agents" });
@@ -41,5 +49,32 @@ describe("Sidebar", () => {
     const button = screen.getByRole("button", { name: "Create agent" });
     expect(button.getAttribute("aria-label")).toBe("Create agent");
     expect(button.getAttribute("title")).toBe("Create agent");
+  });
+
+  it("shows the signed-in email in the footer when whoami returns one", async () => {
+    stubFetch({
+      "/api/whoami": { email: "kgreiner@example.com", operator: true, groups: [] },
+      "/api/": {},
+    });
+    renderWithClient(Sidebar, { active: "dashboard", oncreate: () => {}, onprefetch: () => {} });
+
+    expect(await screen.findByText("kgreiner@example.com")).not.toBeNull();
+  });
+
+  it("renders nothing in the footer when whoami's email is null", async () => {
+    stubFetch({
+      "/api/whoami": { email: null, operator: false, groups: [] },
+      "/api/": {},
+    });
+    const { container } = renderWithClient(Sidebar, {
+      active: "dashboard",
+      oncreate: () => {},
+      onprefetch: () => {},
+    });
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith("/api/whoami");
+    });
+    expect(container.querySelector(".sidebar__whoami")).toBeNull();
   });
 });
