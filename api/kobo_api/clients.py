@@ -1967,6 +1967,10 @@ class VertexNameClient:
     (`_gcloud_print_access_token`), just a plain TEXT call instead of an
     image one (no `generationConfig.responseModalities` override needed —
     Vertex's text default already models the desired output shape).
+    `suggest()` below does send its own `generationConfig` regardless (see
+    its own comment) to turn dynamic thinking off, since a naming task needs
+    none of it, and to cap the output length; `draft()`/`capability()`/
+    `distill()` further down send none.
 
     A 200 response doesn't guarantee a well-formed answer: the model can
     reply with a chatty preamble, a fenced code block, or truncated JSON —
@@ -2007,7 +2011,19 @@ class VertexNameClient:
             f"models/{self._model}:generateContent"
         )
         prompt = _NAME_PROMPT_TEMPLATE.format(who=who, what=what)
-        body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
+        body = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            # Naming is a taste task, not a reasoning task: gemini-2.5-flash
+            # defaults to dynamic thinking whenever generationConfig omits
+            # it, and that thinking budget is what was dominating latency
+            # here, so thinking off keeps the ceremony snappy. 512 tokens is
+            # triple what five names plus their one-line reasons ever need.
+            "generationConfig": {
+                "thinkingConfig": {"thinkingBudget": 0},
+                "maxOutputTokens": 512,
+                "temperature": 1.0,
+            },
+        }
 
         try:
             token = self._token_provider()

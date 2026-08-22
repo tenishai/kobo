@@ -2639,6 +2639,15 @@ def test_vertex_name_client_request_shape_url_body_and_auth_header():
     assert "a calm troubleshooter" in prompt
     assert "helps with billing" in prompt
     assert captured["auth"] == "Bearer fake-access-token"
+    # Naming perf fix: dynamic thinking is gemini-2.5-flash's default when
+    # generationConfig is omitted, and it was dominating latency for a
+    # five-name JSON task that needs none of it, so thinkingBudget: 0 turns
+    # it off. 512 tokens is triple what five names plus their reasons need.
+    assert captured["json"]["generationConfig"] == {
+        "thinkingConfig": {"thinkingBudget": 0},
+        "maxOutputTokens": 512,
+        "temperature": 1.0,
+    }
 
 
 def test_vertex_name_client_parses_clean_json_array():
