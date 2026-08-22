@@ -32,5 +32,12 @@ export function renderWithClient(
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return render(Harness, { props: { component, componentProps: props, client } });
+  // `client` rides alongside testing-library's own render result (not just
+  // returned bare) so a test can spy on it (e.g. `queryClient.prefetchQuery`,
+  // naming station perf fix) without also having to hand-roll its own
+  // QueryClientProvider wiring.
+  return {
+    ...render(Harness, { props: { component, componentProps: props, client } }),
+    client,
+  };
 }

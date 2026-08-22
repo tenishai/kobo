@@ -559,3 +559,52 @@ describe("CreateModal — the group menu has a commons, a directory, and a door 
     expect(submit.disabled).toBe(true);
   });
 });
+
+describe("CreateModal - naming station warm-up (perf fix: prefetch on persona pick)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // The naming station's own `nameSuggestions` query is already reactive
+  // (a persona commit sets `nameSuggestionParams`, which the query's own
+  // `derived` options read), but that's still gated behind whatever tick
+  // Svelte schedules the effect on, so an explicit prefetch at the exact
+  // moment of picking makes the warm-up unambiguous and no longer dependent
+  // on that scheduling detail. `who_they_are`/`what_they_do` are both
+  // already known client-side from the search result (persona.description/
+  // persona.name, no network round trip needed), so this is the earliest
+  // possible moment to start the Vertex call.
+  it("prefetches name suggestions exactly once, with the right key, the moment a persona is picked from search", async () => {
+    stubCreateModalCatalogs({
+      "/api/personas/search": {
+        results: [
+          {
+            id: "helper",
+            name: "Helper",
+            description: "Helps with things.",
+            team: "shared",
+            tags: [],
+            builtin: true,
+          },
+        ],
+      },
+      "/api/agents/name-suggestions": { suggestions: [] },
+    });
+    const { client } = renderWithClient(CreateModal, { open: true, onclose: () => {} });
+    await findCreateStationReady();
+
+    const personaRadio = await screen.findByRole("radio", { name: /Helper/i });
+    const prefetchSpy = vi.spyOn(client, "prefetchQuery");
+
+    await fireEvent.click(personaRadio);
+
+    expect(prefetchSpy).toHaveBeenCalledTimes(1);
+    expect(prefetchSpy.mock.calls[0][0]).toMatchObject({
+      queryKey: [
+        "names",
+        "suggestions",
+        { who_they_are: "Helps with things.", what_they_do: "Helper" },
+      ],
+    });
+  });
+});

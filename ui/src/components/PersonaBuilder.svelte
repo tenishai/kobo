@@ -96,6 +96,7 @@
     createPersonaMutation,
     distillPersonaMutation,
     draftPersonaMutation,
+    nameSuggestionsQuery,
   } from "../lib/queries";
   import { mergeDistillFields, mergeDraftFields, splitLines } from "../lib/validate";
 
@@ -396,6 +397,20 @@
       return;
     }
     submitError = null;
+    // Naming station perf fix: warms the suggestion cache the moment this
+    // persona's who/what pair is FINAL, at this click, not at any keystroke
+    // above (`canCreate` already guarantees both fields are non-empty).
+    // Fired here rather than waiting for `oncreated` (CreateModal's own
+    // `selectPersona`, called once the mutation below actually succeeds)
+    // so the naming station's Vertex call runs IN PARALLEL with the
+    // create-persona POST, instead of only starting once that round trip
+    // lands. Second argument is `name`, not `whatTheyDo`, since
+    // CreateModal's own persona-commit effect stands the created persona's
+    // `name` in for `what_they_do` (see CreateModal.svelte's "The Naming"
+    // doc comment), so `name` is the key the naming station will actually
+    // read once this persona lands there; prefetching under `whatTheyDo`
+    // instead would warm a cache entry nothing ever looks at.
+    void queryClient.prefetchQuery(nameSuggestionsQuery(whoTheyAre, name));
     const body: PersonaForm = {
       name,
       who_they_are: whoTheyAre,

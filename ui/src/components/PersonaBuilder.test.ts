@@ -157,6 +157,16 @@ describe("PersonaBuilder - honest new limits (upload/limits addendum)", () => {
             headers: { "Content-Type": "application/json" },
           });
         }
+        if (url.includes("/api/agents/name-suggestions")) {
+          // The Create persona click also prefetches this now (naming
+          // station perf fix), so a real `suggestions` array keeps that
+          // prefetch from spamming "query data cannot be undefined" over
+          // an unrelated 422 test's fetch stub.
+          return new Response(JSON.stringify({ suggestions: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
         if (url.includes("/api/personas")) {
           return new Response(
             JSON.stringify({ error: "persona renders to 151 lines; the limit is 150" }),
@@ -542,5 +552,101 @@ describe("PersonaBuilder - paste their persona + Continue (primary path, compone
     expect(
       (screen.getByLabelText("Rules (optional)") as HTMLTextAreaElement).value,
     ).toBe("Always confirm the account before making changes.");
+  });
+});
+
+describe("PersonaBuilder - naming station warm-up (perf fix: prefetch on Create persona click)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("prefetches name suggestions exactly once, with the committed who/what pair, at the Create persona click, before the create-persona POST even resolves", async () => {
+    const createDeferred = deferredResponse();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/personas/draft")) {
+          return new Response(JSON.stringify(DRAFT_RESPONSE), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.includes("/api/agents/name-suggestions")) {
+          return new Response(JSON.stringify({ suggestions: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.includes("/api/personas")) {
+          return createDeferred.promise;
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      }),
+    );
+    const { client } = renderWithClient(PersonaBuilder, {
+      oncancel: () => {},
+      oncreated: () => {},
+    });
+
+    await reachStep2();
+
+    const prefetchSpy = vi.spyOn(client, "prefetchQuery");
+
+    // Fired and awaited, but the create-persona POST is still pending
+    // (deferred, never resolved), proving the prefetch already happened by
+    // the time this returns, not merely "eventually, once oncreated
+    // fires".
+    await fireEvent.click(screen.getByRole("button", { name: "Create persona" }));
+
+    expect(prefetchSpy).toHaveBeenCalledTimes(1);
+    // Second arg is DRAFT_RESPONSE's `name` field, not `what_they_do`,
+    // since CreateModal's own persona-commit effect stands the persona's
+    // `name` in for `what_they_do` (see CreateModal.svelte's "The Naming"
+    // doc comment), so that's the key the naming station will actually
+    // read once this persona lands there.
+    expect(prefetchSpy.mock.calls[0][0]).toMatchObject({
+      queryKey: [
+        "names",
+        "suggestions",
+        {
+          who_they_are: DRAFT_RESPONSE.who_they_are,
+          what_they_do: DRAFT_RESPONSE.name,
+        },
+      ],
+    });
+
+    createDeferred.resolve({
+      id: DRAFT_RESPONSE.name,
+      name: DRAFT_RESPONSE.name,
+      description: DRAFT_RESPONSE.who_they_are,
+      team: "shared",
+      tags: [],
+      builtin: false,
+    });
+  });
+
+  it("typing in the preview fields does not fire a prefetch; only the Create persona click does", async () => {
+    stubFetch({ "/api/personas/draft": DRAFT_RESPONSE, "/api/": {} });
+    const { client } = renderWithClient(PersonaBuilder, {
+      oncancel: () => {},
+      oncreated: () => {},
+    });
+
+    await reachStep2();
+
+    const prefetchSpy = vi.spyOn(client, "prefetchQuery");
+
+    await fireEvent.input(screen.getByLabelText("Who they are"), {
+      target: { value: "a very particular problem solver" },
+    });
+    await fireEvent.input(screen.getByLabelText("What they do"), {
+      target: { value: "Handles every edge case personally." },
+    });
+    await fireEvent.input(screen.getByLabelText("Name"), {
+      target: { value: "edge-case-eddie" },
+    });
+
+    expect(prefetchSpy).not.toHaveBeenCalled();
   });
 });

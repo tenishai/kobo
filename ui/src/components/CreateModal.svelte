@@ -230,6 +230,28 @@
     };
   }
 
+  /** Warms the naming station's suggestion cache the instant an existing
+   * persona is picked from search (naming station perf fix), since both
+   * `description`/`name` are already sitting right here in the search
+   * result with no network round trip needed to learn them, so this is the
+   * earliest possible moment to start the Vertex call, well before the
+   * operator's eye even reaches station 2. Same query key the
+   * persona-commit effect below feeds `nameSuggestionParams`, so a warm
+   * cache entry here means that reactive query never has to wait on a
+   * second request of its own.
+   *
+   * Deliberately NOT folded into `selectPersona` itself: that's also
+   * called from `handlePersonaCreated` below, for the builder path, which
+   * already warms this same cache earlier still, at `PersonaBuilder`'s own
+   * "Create persona" click, before its create-persona POST even resolves.
+   * Adding a second prefetch here for that path would just be a redundant
+   * (if harmless) extra call once the mutation lands. */
+  function prefetchNameSuggestionsForPick(persona: CatalogEntry): void {
+    void queryClient.prefetchQuery(
+      nameSuggestionsQuery(persona.description, persona.name),
+    );
+  }
+
   function handlePersonaCreated(persona: CatalogEntry, purposeTags: string[]): void {
     selectPersona(persona, purposeTags);
     builderOpen = false;
@@ -745,7 +767,10 @@
                     name="persona"
                     value={persona.id}
                     checked={persona.id === selectedPersona}
-                    onchange={() => selectPersona(persona)}
+                    onchange={() => {
+                      prefetchNameSuggestionsForPick(persona);
+                      selectPersona(persona);
+                    }}
                   />
                   <span class="persona-card__body">
                     <span class="persona-card__head">
