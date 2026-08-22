@@ -171,8 +171,14 @@ def test_render_org_yaml_uses_explicit_names_verbatim_when_set():
 def test_render_org_yaml_admin_groups_round_trips():
     """admin_groups (operator-status-by-group ruling) is org-scoped exactly
     like operators above -- a client's kobo-config repo can name its own
-    admin teams."""
-    config = Config(github_org=GITHUB_ORG, admin_groups=["infra-engineering"])
+    admin teams. Every admin_groups entry must name a groups entry (Config's
+    own `_admin_groups_must_be_configured_groups` validator), hence the
+    matching `groups` entry below."""
+    config = Config(
+        github_org=GITHUB_ORG,
+        admin_groups=["infra-engineering"],
+        groups=[GroupChoice(name="infra-engineering", okta_group="okta-infra-engineering")],
+    )
 
     parsed = yaml.safe_load(render_org_yaml(config))
 

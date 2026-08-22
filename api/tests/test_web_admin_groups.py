@@ -111,13 +111,22 @@ def _req(email: str | None, config: Config, clients=None):
 
 
 def test_is_admin_operator_email_passes_with_no_clients_at_all():
-    config = Config(operators=[OPERATOR_EMAIL], admin_groups=[ADMIN_GROUP], iap_audience=AUDIENCE)
+    config = Config(
+        operators=[OPERATOR_EMAIL],
+        admin_groups=[ADMIN_GROUP],
+        groups=[GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering")],
+        iap_audience=AUDIENCE,
+    )
 
     assert _is_admin(_req(OPERATOR_EMAIL, config, clients=None)) is True
 
 
 def test_is_admin_group_member_passes():
-    config = Config(admin_groups=[ADMIN_GROUP], iap_audience=AUDIENCE)
+    config = Config(
+        admin_groups=[ADMIN_GROUP],
+        groups=[GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering")],
+        iap_audience=AUDIENCE,
+    )
     resolver = FakeGroupResolver({ADMIN_MEMBER_EMAIL: [ADMIN_GROUP]})
     clients = SimpleNamespace(groups=resolver)
 
@@ -125,7 +134,11 @@ def test_is_admin_group_member_passes():
 
 
 def test_is_admin_email_case_insensitive_for_group_member():
-    config = Config(admin_groups=[ADMIN_GROUP], iap_audience=AUDIENCE)
+    config = Config(
+        admin_groups=[ADMIN_GROUP],
+        groups=[GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering")],
+        iap_audience=AUDIENCE,
+    )
     resolver = FakeGroupResolver({ADMIN_MEMBER_EMAIL: [ADMIN_GROUP]})
     clients = SimpleNamespace(groups=resolver)
 
@@ -133,7 +146,11 @@ def test_is_admin_email_case_insensitive_for_group_member():
 
 
 def test_is_admin_plain_member_of_another_group_fails():
-    config = Config(admin_groups=[ADMIN_GROUP], iap_audience=AUDIENCE)
+    config = Config(
+        admin_groups=[ADMIN_GROUP],
+        groups=[GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering")],
+        iap_audience=AUDIENCE,
+    )
     resolver = FakeGroupResolver({PLAIN_MEMBER_EMAIL: [OTHER_GROUP]})
     clients = SimpleNamespace(groups=resolver)
 
@@ -144,14 +161,23 @@ def test_is_admin_resolver_none_group_grant_off_but_email_operator_still_passes(
     # No GroupResolver wired at all (the directory integration is simply not
     # turned on in this room yet) -- group-derived admin status vanishes,
     # but the plain email operators list is untouched.
-    config = Config(operators=[OPERATOR_EMAIL], admin_groups=[ADMIN_GROUP], iap_audience=AUDIENCE)
+    config = Config(
+        operators=[OPERATOR_EMAIL],
+        admin_groups=[ADMIN_GROUP],
+        groups=[GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering")],
+        iap_audience=AUDIENCE,
+    )
 
     assert _is_admin(_req(OPERATOR_EMAIL, config, clients=None)) is True
     assert _is_admin(_req(ADMIN_MEMBER_EMAIL, config, clients=None)) is False
 
 
 def test_is_admin_clients_present_but_groups_resolver_unwired():
-    config = Config(admin_groups=[ADMIN_GROUP], iap_audience=AUDIENCE)
+    config = Config(
+        admin_groups=[ADMIN_GROUP],
+        groups=[GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering")],
+        iap_audience=AUDIENCE,
+    )
     clients = SimpleNamespace(groups=None)
 
     assert _is_admin(_req(ADMIN_MEMBER_EMAIL, config, clients=clients)) is False
@@ -161,7 +187,11 @@ def test_is_admin_resolver_down_group_grant_off():
     # The directory itself failed to answer for this email (fail-closed,
     # kobo_api.groups' own None-vs-[] distinction) -- grants nothing, same
     # as no resolver at all.
-    config = Config(admin_groups=[ADMIN_GROUP], iap_audience=AUDIENCE)
+    config = Config(
+        admin_groups=[ADMIN_GROUP],
+        groups=[GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering")],
+        iap_audience=AUDIENCE,
+    )
     resolver = FakeGroupResolver(down=True)
     clients = SimpleNamespace(groups=resolver)
 
@@ -182,7 +212,11 @@ def test_is_admin_admin_groups_empty_never_consults_the_resolver():
 
 
 def test_is_admin_no_email_at_all_is_false():
-    config = Config(admin_groups=[ADMIN_GROUP], iap_audience=AUDIENCE)
+    config = Config(
+        admin_groups=[ADMIN_GROUP],
+        groups=[GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering")],
+        iap_audience=AUDIENCE,
+    )
 
     assert _is_admin(_req(None, config)) is False
 
@@ -239,6 +273,7 @@ def config(tmp_path):
         workdir=tmp_path / "work",
         operators=[OPERATOR_EMAIL],
         admin_groups=[ADMIN_GROUP],
+        groups=[GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering")],
         iap_audience=AUDIENCE,
     )
 
@@ -534,6 +569,7 @@ def test_admin_group_member_claims_any_configured_group_at_create(
         groups=[
             GroupChoice(name="growth", okta_group="okta-growth"),
             GroupChoice(name="payments-eng", okta_group="okta-payments"),
+            GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering"),
         ],
     )
     private_key, jwk = _generate_jwk()

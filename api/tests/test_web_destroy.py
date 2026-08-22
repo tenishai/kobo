@@ -31,7 +31,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import Clients
-from kobo_api.config import Config
+from kobo_api.config import Config, GroupChoice
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import _operator_block, create_app
 from kobo_api.models import Agent, AgentStatus, AgentStep, Base, StepStatus
@@ -131,6 +131,151 @@ def test_helper_listed_email_operator_list_lowercase_request_uppercase_is_none()
     assert _operator_block(_req("OPS@EXAMPLE.COM", config), config) is None
 
 
+# --- admin_groups-only gate matrix (SHOULD-FIX coverage, fix round 1) ---------
+#
+# The broadened empty-bypass in `_operator_block` ("ungated only when BOTH
+# `operators` and `admin_groups` are empty") had zero tests before this round
+# -- an admin_groups-only room (`operators` left empty, standing entirely on
+# group membership) is a real, supported shape from the operator-status-by-
+# group ruling, not just "operators-only" or "both set." This matrix pins
+# all four cells: a group member passes, a non-member 403s, a down resolver
+# 403s EVERYONE (the documented fail-closed cliff -- `_is_admin`'s own "a
+# resolver that fails outright folds into grant nothing" contract), and the
+# both-empty room stays exactly as ungated as it always was (dev parity).
+
+ADMIN_GROUP = "infra-engineering"
+ADMIN_MEMBER_EMAIL = "admin-member@example.com"
+
+
+class FakeGroupResolver:
+    """The plainest possible `GroupResolver` (kobo_api.groups) stand-in --
+    same shape as test_web_admin_groups.py's own of the same name, duplicated
+    here rather than imported across test modules (this file's own local
+    `_req`/`_generate_jwk` already follow that "each gate-test file keeps its
+    own small fakes" convention)."""
+
+    def __init__(self, mapping: dict[str, list[str]] | None = None, *, down: bool = False):
+        self._mapping = dict(mapping) if mapping else {}
+        self._down = down
+
+    def groups_for(self, email: str) -> list[str] | None:
+        if self._down:
+            return None
+        return self._mapping.get(email.lower(), [])
+
+
+def _req_with_resolver(email: str | None, config: Config, resolver) -> SimpleNamespace:
+    """Same `_req` shape above, but with a real `clients.groups` resolver
+    wired on -- needed for the group-membership cells of the matrix, where
+    `_is_admin` must actually reach a resolver rather than short-circuit on
+    `clients is None`."""
+    state = SimpleNamespace()
+    if email is not None:
+        state.iap_email = email
+    clients = SimpleNamespace(groups=resolver)
+    return SimpleNamespace(
+        state=state, app=SimpleNamespace(state=SimpleNamespace(config=config, clients=clients))
+    )
+
+
+def _admin_groups_only_config(**overrides) -> Config:
+    defaults = dict(
+        operators=[],
+        admin_groups=[ADMIN_GROUP],
+        groups=[GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering")],
+        iap_audience=AUDIENCE,
+    )
+    defaults.update(overrides)
+    return Config(**defaults)
+
+
+def test_helper_admin_groups_only_group_member_passes():
+    config = _admin_groups_only_config()
+    resolver = FakeGroupResolver({ADMIN_MEMBER_EMAIL: [ADMIN_GROUP]})
+
+    assert _operator_block(_req_with_resolver(ADMIN_MEMBER_EMAIL, config, resolver), config) is None
+
+
+def test_helper_admin_groups_only_non_member_gets_403_verbatim():
+    config = _admin_groups_only_config()
+    resolver = FakeGroupResolver({NON_OPERATOR_EMAIL: ["some-other-group"]})
+
+    result = _operator_block(_req_with_resolver(NON_OPERATOR_EMAIL, config, resolver), config)
+
+    assert result is not None
+    assert result.status_code == 403
+    assert json.loads(result.body) == VERBATIM_403
+
+
+def test_helper_admin_groups_only_resolver_down_is_403_for_everyone():
+    # The fail-closed cliff: a resolver that cannot answer at all grants
+    # nothing to anyone, even the email that WOULD be a member had the
+    # directory actually answered.
+    config = _admin_groups_only_config()
+    resolver = FakeGroupResolver(down=True)
+
+    result = _operator_block(_req_with_resolver(ADMIN_MEMBER_EMAIL, config, resolver), config)
+
+    assert result is not None
+    assert result.status_code == 403
+    assert json.loads(result.body) == VERBATIM_403
+
+
+def test_helper_both_operators_and_admin_groups_empty_stays_ungated():
+    config = Config(operators=[], admin_groups=[], iap_audience=AUDIENCE)
+
+    assert _operator_block(_req(None, config), config) is None
+
+
+# --- admin_groups-only, route-level: real TestClient, real IAP JWT -----------
+
+
+def test_route_admin_groups_only_member_destroys_agent(session_factory, config):
+    private_key, jwk = _generate_jwk()
+    cfg = config.model_copy(
+        update={
+            "operators": [],
+            "admin_groups": [ADMIN_GROUP],
+            "groups": [GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering")],
+            "iap_audience": AUDIENCE,
+        }
+    )
+    resolver = FakeGroupResolver({ADMIN_MEMBER_EMAIL: [ADMIN_GROUP]})
+    client = _make_client(session_factory, cfg, iap_jwks_fetcher=_fetcher(jwk), groups=resolver)
+    _seed_agent(session_factory, cfg)
+
+    response = client.delete(
+        f"/api/agents/{AGENT_NAME}", headers={ASSERTION_HEADER: _sign(private_key, email=ADMIN_MEMBER_EMAIL)}
+    )
+
+    assert response.status_code == 202
+    _poll_until_gone(
+        client, AGENT_NAME, headers={ASSERTION_HEADER: _sign(private_key, email=ADMIN_MEMBER_EMAIL)}
+    )
+
+
+def test_route_admin_groups_only_resolver_down_403s_the_member_too(session_factory, config):
+    private_key, jwk = _generate_jwk()
+    cfg = config.model_copy(
+        update={
+            "operators": [],
+            "admin_groups": [ADMIN_GROUP],
+            "groups": [GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering")],
+            "iap_audience": AUDIENCE,
+        }
+    )
+    resolver = FakeGroupResolver(down=True)
+    client = _make_client(session_factory, cfg, iap_jwks_fetcher=_fetcher(jwk), groups=resolver)
+    _seed_agent(session_factory, cfg)
+
+    response = client.delete(
+        f"/api/agents/{AGENT_NAME}", headers={ASSERTION_HEADER: _sign(private_key, email=ADMIN_MEMBER_EMAIL)}
+    )
+
+    assert response.status_code == 403
+    assert response.json() == VERBATIM_403
+
+
 # --- Route-level: real TestClient, real IAP JWT --------------------------------
 
 
@@ -189,6 +334,7 @@ def _make_client(
     github=None,
     gojira=None,
     slack=None,
+    groups=None,
     iap_jwks_fetcher=None,
 ):
     storage = FakeStorage()
@@ -205,6 +351,7 @@ def _make_client(
                 kubectl=FakeKubectl(),
                 slack=slack if slack is not None else FakeSlack(),
                 storage=storage,
+                groups=groups,
             ),
             iap_jwks_fetcher=iap_jwks_fetcher,
         )

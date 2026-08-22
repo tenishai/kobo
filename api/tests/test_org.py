@@ -350,12 +350,18 @@ def test_operators_list_round_trips():
 def test_admin_groups_list_round_trips():
     """admin_groups (operator-status-by-group ruling) is org-scoped exactly
     like operators above -- a client's kobo-config repo can name its own
-    admin teams, independently of the plain operators email list."""
+    admin teams, independently of the plain operators email list. Every
+    admin_groups entry must name a groups entry (Config's own `_admin_
+    groups_must_be_configured_groups` validator), so the org.yaml here
+    defines the matching group too."""
     local = Config(org_repo=ORG_REPO)
     github = FakeGitHub(
         org_yaml=(
             "admin_groups:\n"
             "  - infra-engineering\n"
+            "groups:\n"
+            "  - name: infra-engineering\n"
+            "    okta_group: okta-infra-engineering\n"
         )
     )
 
@@ -363,6 +369,34 @@ def test_admin_groups_list_round_trips():
 
     assert org.wired is True
     assert merged.admin_groups == ["infra-engineering"]
+
+
+def test_admin_groups_entry_with_no_matching_group_is_unwired_not_crash():
+    """A dangling admin_groups entry (no groups entry with that name) fails
+    Config's own validation on merge -- caught by load_org_config's existing
+    ValidationError handling (test_bad_org_value_fails_config_validation_and_
+    is_unwired above), the SAME containment as any other invalid org.yaml
+    value: the room boots on its local defaults with an org-status surface
+    that says broken, rather than crashing or booting half-configured with a
+    resolver that can never answer for the group it was told to trust."""
+    local = Config(org_repo=ORG_REPO)
+    github = FakeGitHub(
+        org_yaml=(
+            "admin_groups:\n"
+            "  - ghost-team\n"
+        )
+    )
+
+    merged, org = load_org_config(local, github)
+
+    # Not a crash: load_org_config returned normally.
+    # Not silent half-config: the local config is untouched, not partially
+    # merged with the dangling admin_groups value.
+    assert merged is local
+    assert merged.admin_groups == []
+    assert org.wired is False
+    assert org.repo == ORG_REPO
+    assert org.error is not None
 
 
 def test_groups_and_okta_domain_round_trip():

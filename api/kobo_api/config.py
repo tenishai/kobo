@@ -176,7 +176,16 @@ class Config(BaseModel):
     # unconfigured or down, same "email operators unaffected" fail-closed
     # contract `_is_admin` documents. Empty (the default) means no admin
     # group is configured, matching today's behavior exactly -- group
-    # membership never grants operator status until this is set.
+    # membership never grants operator status until this is set. Every entry
+    # here must name a `groups` entry's `name` (`_admin_groups_must_be_
+    # configured_groups` below enforces this at construction) -- an admin
+    # group the resolver could never answer for would make every gate it
+    # should open a permanent, silent 403 instead. Removing someone from the
+    # backing directory group can take up to the resolver's cache TTL (900s
+    # default -- `OktaGroupResolver.ttl_s`) to take effect here. Keep at
+    # least one `operators` email set as break-glass: a directory outage
+    # takes group-based admin status down with it, and an email operator is
+    # the only way in that survives that outage.
     admin_groups: list[str] = []
     # Path to a built UI `dist/` directory (e.g. `ui/dist` from `npm run
     # build`) to serve alongside the API, same origin, no CORS (Task 1).
@@ -237,6 +246,34 @@ class Config(BaseModel):
         if v is not None:
             return Path(v).expanduser()
         return v
+
+    @model_validator(mode="after")
+    def _admin_groups_must_be_configured_groups(self) -> Config:
+        """Every `admin_groups` entry must name a `groups` entry's `name`
+        (mirrors `GroupChoice._fold_okta_group_sugar`'s own "fail loudly at
+        construction" voice above). `admin_groups` is matched against
+        `GroupChoice.name` everywhere it's consulted (`kobo_api.main.
+        _is_admin`'s `set(member_groups) & set(cfg.admin_groups)`), and
+        `GroupResolver.groups_for` can only ever answer with configured
+        `groups` names (`kobo_api.groups._invert_universe`'s okta-name ->
+        config-name mapping) -- an `admin_groups` entry with no matching
+        `groups` entry names a group the resolver could never return, so the
+        gate it should open (destroy, sync-pairs, every owner-or-operator
+        check) becomes an unconditional, permanent 403 with nothing in the
+        config to explain why. A config mistake, not a valid empty state, so
+        construction fails loudly instead of silently defining an admin
+        group nobody can ever satisfy.
+        """
+        known = {g.name for g in self.groups}
+        for name in self.admin_groups:
+            if name not in known:
+                raise ValueError(
+                    f"admin_groups entry {name!r} is not a name in `groups` "
+                    "(an admin group the resolver could never answer for "
+                    "would make every gate it should open a permanent, "
+                    "silent 403 instead)"
+                )
+        return self
 
     @classmethod
     def load(cls, path: Path | None = None) -> Config:

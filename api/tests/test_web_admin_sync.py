@@ -28,7 +28,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import Clients
-from kobo_api.config import Config
+from kobo_api.config import Config, GroupChoice
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import _admin_operator_block, create_app
 from kobo_api.models import Agent, AgentStatus, Base
@@ -110,6 +110,102 @@ def test_helper_operator_email_case_insensitive_is_none():
     assert _admin_operator_block(_req("ops@example.com", config), config) is None
 
 
+# --- admin_groups-only gate matrix (SHOULD-FIX coverage, fix round 1) ---------
+#
+# The broadened empty-bypass in `_admin_operator_block` ("ungated only when
+# BOTH `operators` and `admin_groups` are empty") had zero tests before this
+# round -- an admin_groups-only room (`operators` left empty, standing
+# entirely on group membership) is a real, supported shape from the
+# operator-status-by-group ruling, not just "operators-only" or "both set."
+# This matrix pins all four cells: a group member passes, a non-member 403s,
+# a down resolver 403s EVERYONE (the documented fail-closed cliff --
+# `_is_admin`'s own "a resolver that fails outright folds into grant
+# nothing" contract), and the both-empty room stays exactly as ungated as it
+# always was (dev parity). Same shape as test_web_destroy.py's own matrix for
+# `_operator_block`.
+
+ADMIN_GROUP = "infra-engineering"
+ADMIN_MEMBER_EMAIL = "admin-member@example.com"
+
+
+class FakeGroupResolver:
+    """The plainest possible `GroupResolver` (kobo_api.groups) stand-in --
+    same shape as test_web_admin_groups.py's own of the same name, duplicated
+    here rather than imported across test modules."""
+
+    def __init__(self, mapping: dict[str, list[str]] | None = None, *, down: bool = False):
+        self._mapping = dict(mapping) if mapping else {}
+        self._down = down
+
+    def groups_for(self, email: str) -> list[str] | None:
+        if self._down:
+            return None
+        return self._mapping.get(email.lower(), [])
+
+
+def _req_with_resolver(email: str | None, config: Config, resolver) -> SimpleNamespace:
+    """Same `_req` shape above, but with a real `clients.groups` resolver
+    wired on -- needed for the group-membership cells of the matrix, where
+    `_is_admin` must actually reach a resolver rather than short-circuit on
+    `clients is None`."""
+    state = SimpleNamespace()
+    if email is not None:
+        state.iap_email = email
+    clients = SimpleNamespace(groups=resolver)
+    return SimpleNamespace(
+        state=state, app=SimpleNamespace(state=SimpleNamespace(config=config, clients=clients))
+    )
+
+
+def _admin_groups_only_config(**overrides) -> Config:
+    defaults = dict(
+        operators=[],
+        admin_groups=[ADMIN_GROUP],
+        groups=[GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering")],
+        iap_audience=AUDIENCE,
+    )
+    defaults.update(overrides)
+    return Config(**defaults)
+
+
+def test_helper_admin_groups_only_group_member_passes():
+    config = _admin_groups_only_config()
+    resolver = FakeGroupResolver({ADMIN_MEMBER_EMAIL: [ADMIN_GROUP]})
+
+    assert _admin_operator_block(_req_with_resolver(ADMIN_MEMBER_EMAIL, config, resolver), config) is None
+
+
+def test_helper_admin_groups_only_non_member_gets_403_verbatim():
+    config = _admin_groups_only_config()
+    resolver = FakeGroupResolver({STRANGER_EMAIL: ["some-other-group"]})
+
+    result = _admin_operator_block(_req_with_resolver(STRANGER_EMAIL, config, resolver), config)
+
+    assert result is not None
+    assert result.status_code == 403
+    assert json.loads(result.body) == VERBATIM_403
+
+
+def test_helper_admin_groups_only_resolver_down_is_403_for_everyone():
+    # The fail-closed cliff: a resolver that cannot answer at all grants
+    # nothing to anyone, even the email that WOULD be a member had the
+    # directory actually answered.
+    config = _admin_groups_only_config()
+    resolver = FakeGroupResolver(down=True)
+
+    result = _admin_operator_block(_req_with_resolver(ADMIN_MEMBER_EMAIL, config, resolver), config)
+
+    assert result is not None
+    assert result.status_code == 403
+    assert json.loads(result.body) == VERBATIM_403
+
+
+def test_helper_both_operators_and_admin_groups_empty_stays_ungated():
+    config = Config(operators=[], admin_groups=[], iap_audience=AUDIENCE)
+
+    assert _admin_operator_block(_req(None, config), config) is None
+
+
 # --- Route-level: real TestClient, real IAP JWT -------------------------------
 
 
@@ -169,7 +265,7 @@ def _enabled_cabal_config(config):
     )
 
 
-def _make_client(session_factory, config, iap_jwks_fetcher, *, cabal=None):
+def _make_client(session_factory, config, iap_jwks_fetcher, *, cabal=None, groups=None):
     return TestClient(
         create_app(
             session_factory,
@@ -181,6 +277,7 @@ def _make_client(session_factory, config, iap_jwks_fetcher, *, cabal=None):
                 agent=FakeAgent(),
                 kubectl=FakeKubectl(),
                 cabal=cabal,
+                groups=groups,
             ),
             iap_jwks_fetcher=iap_jwks_fetcher,
         )
@@ -297,3 +394,56 @@ def test_iap_off_treats_every_caller_as_operator(session_factory, tmp_path, monk
 
     assert response.status_code == 200
     assert response.json() == {"count": 0}
+
+
+# --- admin_groups-only, route-level: real TestClient, real IAP JWT -----------
+
+
+def test_route_admin_groups_only_member_syncs_pairs(session_factory, tmp_path, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    config = Config(
+        workdir=tmp_path / "work",
+        operators=[],
+        admin_groups=[ADMIN_GROUP],
+        groups=[GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering")],
+        iap_audience=AUDIENCE,
+        cabal_url="http://cabal.internal",
+        agent_endpoint_template="http://agent-{name}.default.svc.cluster.local",
+    )
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver({ADMIN_MEMBER_EMAIL: [ADMIN_GROUP]})
+    fake_cabal = FakeCabal()
+    client = _make_client(session_factory, config, _fetcher(jwk), cabal=fake_cabal, groups=resolver)
+
+    response = client.post(
+        "/api/admin/sync-pairs", headers=_headers(private_key, email=ADMIN_MEMBER_EMAIL)
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"count": 0}
+
+
+def test_route_admin_groups_only_resolver_down_403s_the_member_too(
+    session_factory, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    config = Config(
+        workdir=tmp_path / "work",
+        operators=[],
+        admin_groups=[ADMIN_GROUP],
+        groups=[GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering")],
+        iap_audience=AUDIENCE,
+        cabal_url="http://cabal.internal",
+        agent_endpoint_template="http://agent-{name}.default.svc.cluster.local",
+    )
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver(down=True)
+    fake_cabal = FakeCabal()
+    client = _make_client(session_factory, config, _fetcher(jwk), cabal=fake_cabal, groups=resolver)
+
+    response = client.post(
+        "/api/admin/sync-pairs", headers=_headers(private_key, email=ADMIN_MEMBER_EMAIL)
+    )
+
+    assert response.status_code == 403
+    assert response.json() == VERBATIM_403

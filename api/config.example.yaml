@@ -145,7 +145,12 @@ slack_tokens_path: null
 # (full visibility, every owner-or-operator gate passes, invites on any
 # side) once IAP is enabled -- resolved through the directory, same as
 # `groups`. Empty (the default) means no group has admin standing; the
-# `operators` list above still works on its own either way.
+# `operators` list above still works on its own either way. Every entry
+# here must also be a name in `groups`, or the room fails to start.
+# Removing someone from the backing directory group can take up to the
+# resolver's cache TTL (900s default) to take effect here. Keep at least
+# one `operators` email set as break-glass, since a directory outage takes
+# group-based admin status down with it.
 # admin_groups: [infra-engineering]
 
 # Path to a built UI dist/ directory (e.g. ui/dist from `npm run build`) to

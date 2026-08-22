@@ -44,6 +44,11 @@ operators: __KOBO_OPERATORS__
 # can send or accept an invite on any side) -- resolved through the
 # directory, same as the groups below. Empty (the default) means no group
 # has admin standing; the operators list above is unaffected either way.
+# Every entry here must also be a name in the groups list below, or the
+# room fails to start. Removing someone from the backing directory group
+# can take up to the resolver's cache TTL (900s default) to take effect
+# here. Keep at least one operators email set as break-glass, since a
+# directory outage takes group-based admin status down with it.
 admin_groups: __KOBO_ADMIN_GROUPS__
 
 # Base URL of the switchboard (cabal) service this room registers agents

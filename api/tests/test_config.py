@@ -340,11 +340,47 @@ def test_admin_groups_default_empty():
 
 def test_admin_groups_overridable(tmp_path):
     yaml_path = tmp_path / "config.yaml"
-    yaml_path.write_text("admin_groups:\n  - infra-engineering\n")
+    yaml_path.write_text(
+        "admin_groups:\n"
+        "  - infra-engineering\n"
+        "groups:\n"
+        "  - name: infra-engineering\n"
+        "    okta_group: okta-infra-engineering\n"
+    )
 
     config = Config.load(yaml_path)
 
     assert config.admin_groups == ["infra-engineering"]
+
+
+# --- admin_groups must exist in the groups universe (HIGH finding, fix round 1) --
+
+
+def test_admin_groups_entry_matching_a_groups_name_passes():
+    config = Config(
+        admin_groups=["infra-engineering"],
+        groups=[GroupChoice(name="infra-engineering", okta_group="okta-infra-engineering")],
+    )
+
+    assert config.admin_groups == ["infra-engineering"]
+
+
+def test_admin_groups_entry_with_no_matching_groups_name_raises_naming_it():
+    with pytest.raises(ValidationError) as exc_info:
+        Config(
+            admin_groups=["ghost-team"],
+            groups=[GroupChoice(name="infra-engineering", okta_group="okta-infra-engineering")],
+        )
+
+    message = str(exc_info.value)
+    assert "ghost-team" in message
+
+
+def test_admin_groups_entry_with_groups_left_entirely_unset_raises():
+    with pytest.raises(ValidationError) as exc_info:
+        Config(admin_groups=["infra-engineering"])
+
+    assert "infra-engineering" in str(exc_info.value)
 
 
 # --- groups / okta_domain (access-control arc, Task B1: GroupResolver) -------
