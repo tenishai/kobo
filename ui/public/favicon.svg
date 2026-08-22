@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- Kobo's mark: the same forge cross-peen hammer as the sidebar, on
+       transparent, ink hammer framed by an amber ring. Static colors (not
+       CSS custom properties) since a favicon renders outside the app's own
+       stylesheet. -->
+  <circle cx="12" cy="12" r="10.5" fill="none" stroke="#b5651d" stroke-width="1.5" />
+  <g fill="#262220" transform="rotate(45 12 12)">
+    <path d="M6.5 5.6 L13 3.5 L17.2 3.5 L17.2 7.7 L13 7.7 Z" />
+    <rect x="10.6" y="7.4" width="2.8" height="9.6" rx="1.2" />
+  </g>
+</svg>

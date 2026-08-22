@@ -65,9 +65,18 @@
         use:hammerTitle={building ? "Kobo is building an agent." : undefined}
       >
         <circle class="sidebar__hammer-ring" cx="12" cy="12" r="10.5" />
+        <!-- Forge-hammer redraw: a cross-peen head (flat rectangular face on
+             the right, tapered wedge peen on the left, drawn before the
+             45deg strike rotation below) fused to a stout handle. The path
+             traces tip -> face's near-top corner -> far-top corner -> far
+             bottom corner -> face's near-bottom corner -> Z (back to the
+             tip), so the left edge tapers to a point and the right edge
+             stays a flat vertical face. Same bounding box the old
+             symmetric head rect used (x 6.5-17.2, y 3.5-7.7), so the
+             rotate(45) below still lands the same way. -->
         <g class="sidebar__hammer-glyph" transform="rotate(45 12 12)">
+          <path d="M6.5 5.6 L13 3.5 L17.2 3.5 L17.2 7.7 L13 7.7 Z" />
           <rect x="10.6" y="7.4" width="2.8" height="9.6" rx="1.2" />
-          <rect x="6.5" y="3.5" width="11" height="4.2" rx="1.2" />
         </g>
       </svg>
       <span class="sidebar__wordmark">Kobo</span>
@@ -148,9 +157,10 @@
     font-weight: 600;
   }
 
-  /* The hammer mark: a simple ring (amber accent) framing one hammer glyph
-     (ink), head angled up-right — the "ink/amber palette tokens" the ruling
-     asks for, at rest. */
+  /* The hammer mark: a simple ring (amber accent) framing a forge
+     cross-peen hammer glyph (ink) -- flat rectangular face and tapered
+     wedge peen, head angled up-right at rest -- the "ink/amber palette
+     tokens" the ruling asks for. */
   .sidebar__hammer {
     flex-shrink: 0;
   }
@@ -169,7 +179,10 @@
      green — the same "Ready" green (--ok) StatusBadge's own dot uses, not
      the amber --pulse token (that one means "still working" on a status
      dot; here the room itself is doing the work, so it reads as progress,
-     not a warning). */
+     not a warning). The glow (a drop-shadow tied to the same --ok token)
+     breathes its radius in step with the existing opacity/scale beats,
+     rather than running as a separate animation, so the two never drift
+     out of sync. */
   .sidebar__hammer--building .sidebar__hammer-glyph {
     fill: var(--ok);
   }
@@ -183,16 +196,22 @@
     100% {
       opacity: 1;
       transform: scale(1);
+      filter: drop-shadow(0 0 1px var(--ok));
     }
     50% {
       opacity: 0.75;
       transform: scale(1.12);
+      filter: drop-shadow(0 0 4px var(--ok));
     }
   }
 
+  /* Reduced motion drops the animation, but a state signal still needs to
+     be visible without it moving — a fixed-radius glow stands in for the
+     breath. */
   @media (prefers-reduced-motion: reduce) {
     .sidebar__hammer--building {
       animation: none;
+      filter: drop-shadow(0 0 3px var(--ok));
     }
   }
 

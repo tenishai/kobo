@@ -7,6 +7,31 @@ import Sidebar from "./Sidebar.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 
 const SIDEBAR_SOURCE = readFileSync(join(__dirname, "Sidebar.svelte"), "utf8");
+const INDEX_HTML = readFileSync(join(__dirname, "..", "..", "index.html"), "utf8");
+
+/** Extracts a brace-delimited block (a `@media { ... }` or `@keyframes { ... }`
+ * rule) starting at `startMarker` by brace-counting, since a plain regex
+ * can't safely match nested braces. Returns the block including its own
+ * outer braces. Shared by the keyframes and reduced-motion checks below. */
+function blockAt(source: string, startMarker: string): string {
+  const start = source.indexOf(startMarker);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const openBrace = source.indexOf("{", start);
+  let depth = 0;
+  let end = -1;
+  for (let i = openBrace; i < source.length; i++) {
+    if (source[i] === "{") depth++;
+    if (source[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  expect(end).toBeGreaterThan(openBrace);
+  return source.slice(start, end + 1);
+}
 
 const BASE_AGENT = {
   name: "warden",
@@ -192,27 +217,69 @@ describe("Sidebar — the Kobo identity (wordmark + hammer mark ruling)", () => 
     expect(SIDEBAR_SOURCE).toMatch(/sidebar__hammer--building/);
     expect(SIDEBAR_SOURCE).toMatch(/animation:/);
 
-    // Extract the `@media (prefers-reduced-motion: reduce) { ... }` block by
-    // brace-counting (a plain regex can't safely match nested braces) and
-    // confirm it turns the hammer's own pulse animation off.
-    const start = SIDEBAR_SOURCE.indexOf("@media (prefers-reduced-motion: reduce)");
-    expect(start).toBeGreaterThanOrEqual(0);
-    const openBrace = SIDEBAR_SOURCE.indexOf("{", start);
-    let depth = 0;
-    let end = -1;
-    for (let i = openBrace; i < SIDEBAR_SOURCE.length; i++) {
-      if (SIDEBAR_SOURCE[i] === "{") depth++;
-      if (SIDEBAR_SOURCE[i] === "}") {
-        depth--;
-        if (depth === 0) {
-          end = i;
-          break;
-        }
-      }
-    }
-    expect(end).toBeGreaterThan(openBrace);
-    const reducedMotionBlock = SIDEBAR_SOURCE.slice(start, end + 1);
+    // Confirm the reduced-motion override turns the hammer's own pulse
+    // animation off, but still names the hammer (not just "any animation").
+    const reducedMotionBlock = blockAt(SIDEBAR_SOURCE, "@media (prefers-reduced-motion: reduce)");
     expect(reducedMotionBlock).toMatch(/sidebar__hammer/);
     expect(reducedMotionBlock).toMatch(/animation:\s*none/);
+  });
+
+  it("breathes a green glow (drop-shadow tied to --ok) in step with the pulse's opacity/scale", () => {
+    // The glow radius animates alongside the existing opacity/scale beats
+    // rather than being a separate, out-of-sync animation — same
+    // `hammer-pulse` keyframes, an added `filter` line per stop.
+    const keyframesBlock = blockAt(SIDEBAR_SOURCE, "@keyframes hammer-pulse");
+    const dropShadows = [...keyframesBlock.matchAll(/filter:\s*drop-shadow\(([^)]*var\(--ok\)[^)]*)\)/g)].map(
+      (m) => m[1],
+    );
+    // One drop-shadow per keyframe stop (0%/100% share a stop, 50% is the
+    // other), and the radius actually changes between them — a breath, not
+    // a static glow baked into a looping animation.
+    expect(dropShadows.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(dropShadows).size).toBeGreaterThan(1);
+  });
+
+  it("keeps a static soft glow under reduced motion — a visible state signal without relying on motion", () => {
+    const reducedMotionBlock = blockAt(SIDEBAR_SOURCE, "@media (prefers-reduced-motion: reduce)");
+    expect(reducedMotionBlock).toMatch(/animation:\s*none/);
+    expect(reducedMotionBlock).toMatch(/filter:\s*drop-shadow\([^)]*var\(--ok\)[^)]*\)/);
+  });
+
+  it("redraws the hammer glyph as a cross-peen head (a wedge path) plus a stout handle rect, in the original 24x24 viewBox", () => {
+    const { container } = renderWithClient(Sidebar, {
+      active: "dashboard",
+      oncreate: () => {},
+      onprefetch: () => {},
+    });
+    const hammer = container.querySelector(".sidebar__hammer");
+    expect(hammer?.getAttribute("viewBox")).toBe("0 0 24 24");
+
+    const glyph = container.querySelector(".sidebar__hammer-glyph");
+    expect(glyph).not.toBeNull();
+    // The forge-hammer redraw (cross-peen head: flat face one side, tapered
+    // peen the other) needs a path, not the old two-rect mallet silhouette —
+    // a plain rect can't express a taper.
+    const headPath = glyph!.querySelector("path");
+    expect(headPath).not.toBeNull();
+    expect(headPath!.getAttribute("d")?.length ?? 0).toBeGreaterThan(0);
+    // The handle survives as a rect (stout, short, unchanged in kind).
+    expect(glyph!.querySelector("rect")).not.toBeNull();
+  });
+});
+
+describe("Sidebar — favicon (the same forge hammer, on the tab)", () => {
+  it("links an SVG favicon from index.html", () => {
+    expect(INDEX_HTML).toMatch(
+      /<link\s+rel="icon"\s+type="image\/svg\+xml"\s+href="[^"]+"\s*\/?>/,
+    );
+  });
+
+  it("points the favicon link at an svg file that actually exists on disk", () => {
+    const match = INDEX_HTML.match(/<link\s+rel="icon"\s+type="image\/svg\+xml"\s+href="([^"]+)"/);
+    expect(match).not.toBeNull();
+    const href = match![1].replace(/^\//, "");
+    const svgSource = readFileSync(join(__dirname, "..", "..", "public", href), "utf8");
+    expect(svgSource).toMatch(/<svg/);
+    expect(svgSource).toMatch(/viewBox="0 0 24 24"/);
   });
 });
