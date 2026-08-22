@@ -6,10 +6,10 @@
 
        Glyph color: the original near-black ink (#262220) sat within a few
        RGB values of Chrome/Firefox's dark tab chrome (~#202124) and
-       vanished on dark tabs (WCAG contrast ~1.02:1 -- indistinguishable
+       vanished on dark tabs (WCAG contrast ~1.02:1, indistinguishable
        from the background). #857d70, a warm mid-tone steel/taupe, reads on
        both: ~4.07:1 against white (#ffffff) and ~3.96:1 against dark tab
-       chrome (#202124) -- both comfortably clear the 3:1 WCAG floor for
+       chrome (#202124); both comfortably clear the 3:1 WCAG floor for
        non-text graphics, in each direction, instead of trading one
        background for the other. -->
   <circle cx="12" cy="12" r="10.5" fill="none" stroke="#b5651d" stroke-width="1.5" />

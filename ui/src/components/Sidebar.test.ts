@@ -283,6 +283,19 @@ describe("Sidebar — favicon (the same forge hammer, on the tab)", () => {
     expect(svgSource).toMatch(/viewBox="0 0 24 24"/);
   });
 
+  it("is well-formed XML, since browsers parse a standalone favicon strictly", () => {
+    // Regression pin: a review round found a literal "--" inside the SVG's
+    // XML comment, which the XML spec forbids anywhere in a comment. Both
+    // rsvg and expat refused the file, so browsers would have silently
+    // dropped the icon. DOMParser reports such failures via a parsererror
+    // document instead of throwing.
+    const match = INDEX_HTML.match(/<link\s+rel="icon"\s+type="image\/svg\+xml"\s+href="([^"]+)"/);
+    const href = match![1].replace(/^\//, "");
+    const svgSource = readFileSync(join(__dirname, "..", "..", "public", href), "utf8");
+    const parsed = new DOMParser().parseFromString(svgSource, "image/svg+xml");
+    expect(parsed.getElementsByTagName("parsererror")).toHaveLength(0);
+  });
+
   it("renders the hammer glyph in a color that survives a dark browser tab", () => {
     // MEDIUM bug this pins the fix for: the original near-black ink
     // (#262220) sat within a few RGB values of Chrome/Firefox's dark tab
