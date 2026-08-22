@@ -12,16 +12,18 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from kobo_api.clients import Clients
+from kobo_api.clients import Clients, ClientError
 from kobo_api.config import Config
 from kobo_api.main import _maybe_refresh_catalogs, create_app
 from kobo_api.models import Base
+from kobo_api.search import CATALOG_TTL_S
 from tests.fakes import (
     FakeAgent,
     FakeCloud,
@@ -81,6 +83,26 @@ def _make_client(config: Config, clients: Clients, tmp_path) -> TestClient:
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     return TestClient(create_app(session_factory, config=config, clients=clients))
+
+
+def _make_app_and_client(config: Config, clients: Clients, tmp_path):
+    """Same wiring as `_make_client` above, but also hands back the `FastAPI`
+    app itself -- the stale-while-revalidate tests below need `app.state`
+    directly (to force staleness, poll `catalog_refreshing`, ...), which a
+    bare `TestClient` doesn't expose."""
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    app = create_app(session_factory, config=config, clients=clients)
+    return app, TestClient(app)
+
+
+def _wait_until_refresh_settles(app, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and app.state.catalog_refreshing:
+        time.sleep(0.01)
 
 
 @pytest.fixture
@@ -229,6 +251,209 @@ def test_ttl_lock_serializes_concurrent_refreshes(config, tmp_path):
 
     assert storage.calls.count("read_bytes:skills-bucket:index.json") == 1
     assert storage.calls.count("read_bytes:personas-bucket:index.json") == 1
+
+
+# --- Stale-while-revalidate (Task 3 perf fix) --------------------------------
+#
+# The create modal's search calls were measured at 6+ seconds in the deployed
+# pod because a stale hit used to ingest the FULL catalog inline, on the
+# request path, holding the caller the entire time. The tests below pin down
+# the replacement contract: a stale (but already-loaded) table is served
+# as-is immediately, and the actual refresh happens on a background thread,
+# single-flighted so N concurrent stale hits still cost exactly one ingest.
+# Cold start (never loaded AND the table is genuinely empty) is the one
+# carve-out that still pays for an inline ingest -- serving nothing there
+# helps nobody -- and stays covered by the plain fixture-backed tests above.
+
+
+def test_cold_empty_ingest_never_spawns_a_background_thread(config, tmp_path, monkeypatch):
+    """The cold-start branch performs its ingest itself, on the calling
+    thread -- unlike the stale-while-revalidate branch below, it must never
+    hand the work to a background thread."""
+    import kobo_api.main as main_module
+
+    spawned: list[threading.Thread] = []
+    real_thread = threading.Thread
+
+    def spy_thread(*args, **kwargs):
+        t = real_thread(*args, **kwargs)
+        spawned.append(t)
+        return t
+
+    monkeypatch.setattr(main_module.threading, "Thread", spy_thread)
+
+    storage = FakeStorage(
+        buckets={
+            "skills-bucket": {"index.json": (_index_bytes(SKILL_ENTRIES), {})},
+            "personas-bucket": {"index.json": (_index_bytes(PERSONA_ENTRIES), {})},
+        }
+    )
+    client = _make_client(config, _minimal_clients(storage=storage), tmp_path)
+
+    response = client.get("/api/skills/search", params={"q": ""})
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["id"] == "code-review"
+    assert spawned == []
+
+
+def test_stale_hit_serves_stale_rows_without_inline_ingest(config, tmp_path, monkeypatch):
+    """A stale hit must return immediately with whatever's already in the
+    table -- never waiting on the refresh it triggers. Proven by pausing the
+    background ingest mid-flight (via a paused `ingest_indexes`) and showing
+    the response already came back, still carrying the OLD row, before the
+    paused ingest is ever allowed to finish."""
+    storage = FakeStorage(
+        buckets={
+            "skills-bucket": {"index.json": (_index_bytes(SKILL_ENTRIES), {})},
+            "personas-bucket": {"index.json": (_index_bytes(PERSONA_ENTRIES), {})},
+        }
+    )
+    app, client = _make_app_and_client(config, _minimal_clients(storage=storage), tmp_path)
+
+    # Warm the table (cold path, synchronous -- untouched by this fix).
+    warm = client.get("/api/skills/search", params={"q": ""})
+    assert warm.json()["results"][0]["id"] == "code-review"
+
+    # Publish a change the request path must NOT see yet, then force
+    # staleness directly -- CATALOG_TTL_S is 300s now, far too long to sleep
+    # through in a test.
+    v2_entry = {**SKILL_ENTRIES[0], "id": "code-review-v2", "name": "Code review v2"}
+    storage.write_bytes("skills-bucket", "index.json", _index_bytes([v2_entry]))
+    app.state.catalog_loaded_at -= CATALOG_TTL_S + 1
+
+    import kobo_api.main as main_module
+
+    real_ingest = main_module.ingest_indexes
+    ingest_started = threading.Event()
+    release_ingest = threading.Event()
+    calls: list[int] = []
+
+    def paused_ingest(*args, **kwargs):
+        calls.append(1)
+        ingest_started.set()
+        release_ingest.wait(timeout=2)
+        return real_ingest(*args, **kwargs)
+
+    monkeypatch.setattr(main_module, "ingest_indexes", paused_ingest)
+
+    response = client.get("/api/skills/search", params={"q": ""})
+
+    # Stale row served, not the new one -- and the response above only
+    # returned because the request path never waited on `paused_ingest` at
+    # all (it's still parked on `release_ingest.wait`, which this test
+    # hasn't set yet).
+    assert response.status_code == 200
+    assert response.json()["results"][0]["id"] == "code-review"
+
+    assert ingest_started.wait(timeout=2), "the background refresh never started"
+    release_ingest.set()
+    _wait_until_refresh_settles(app)
+
+    assert len(calls) == 1
+    refreshed = client.get("/api/skills/search", params={"q": ""})
+    assert refreshed.json()["results"][0]["id"] == "code-review-v2"
+
+
+def test_stale_refresh_is_single_flight_for_concurrent_hits(config, tmp_path, monkeypatch):
+    """N concurrent stale hits must still cost exactly one ingest -- the
+    single-flight guard (`catalog_refreshing`, alongside the pre-existing
+    `catalog_lock`) collapses them into one background thread."""
+    storage = FakeStorage(
+        buckets={
+            "skills-bucket": {"index.json": (_index_bytes(SKILL_ENTRIES), {})},
+            "personas-bucket": {"index.json": (_index_bytes(PERSONA_ENTRIES), {})},
+        }
+    )
+    app, client = _make_app_and_client(config, _minimal_clients(storage=storage), tmp_path)
+
+    client.get("/api/skills/search", params={"q": ""})
+    app.state.catalog_loaded_at -= CATALOG_TTL_S + 1
+
+    import kobo_api.main as main_module
+
+    real_ingest = main_module.ingest_indexes
+    release_ingest = threading.Event()
+    calls: list[int] = []
+
+    def paused_ingest(*args, **kwargs):
+        calls.append(1)
+        release_ingest.wait(timeout=2)
+        return real_ingest(*args, **kwargs)
+
+    monkeypatch.setattr(main_module, "ingest_indexes", paused_ingest)
+
+    callers = [
+        threading.Thread(
+            target=client.get,
+            args=("/api/skills/search",),
+            kwargs={"params": {"q": ""}},
+        )
+        for _ in range(5)
+    ]
+    for caller in callers:
+        caller.start()
+    for caller in callers:
+        caller.join(timeout=2)
+
+    release_ingest.set()
+    _wait_until_refresh_settles(app)
+
+    assert len(calls) == 1
+
+
+def test_background_refresh_failure_keeps_serving_stale(config, tmp_path):
+    """A background refresh that fails (a bucket blip) must never disturb
+    what's already being served -- the stale table stays exactly as it was,
+    same fail-soft posture the old inline path always had, and the TTL
+    clock (`catalog_loaded_at`) must not advance on a failed attempt, so the
+    very next hit retries rather than believing the table is fresh again."""
+
+    class FailsAfterFirstReadStorage(FakeStorage):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._skill_reads = 0
+
+        def read_bytes(self, bucket, key):
+            if bucket == "skills-bucket":
+                self._skill_reads += 1
+                if self._skill_reads > 1:
+                    raise ClientError("bucket is on fire")
+            return super().read_bytes(bucket, key)
+
+    storage = FailsAfterFirstReadStorage(
+        buckets={
+            "skills-bucket": {"index.json": (_index_bytes(SKILL_ENTRIES), {})},
+            "personas-bucket": {"index.json": (_index_bytes(PERSONA_ENTRIES), {})},
+        }
+    )
+    app, client = _make_app_and_client(config, _minimal_clients(storage=storage), tmp_path)
+
+    client.get("/api/skills/search", params={"q": ""})  # cold, first read succeeds
+    stale_since = app.state.catalog_loaded_at - (CATALOG_TTL_S + 1)
+    app.state.catalog_loaded_at = stale_since
+
+    response = client.get("/api/skills/search", params={"q": ""})
+    assert response.status_code == 200
+    assert response.json()["results"][0]["id"] == "code-review"
+
+    _wait_until_refresh_settles(app)
+
+    assert app.state.catalog_loaded_at == stale_since
+    again = client.get("/api/skills/search", params={"q": ""})
+    assert again.json()["results"][0]["id"] == "code-review"
+
+
+def test_ttl_respected_fresh_hit_never_reads_the_bucket_again(client, fake_storage):
+    client.get("/api/skills/search", params={"q": ""})
+    reads_after_warm = fake_storage.calls.count("read_bytes:skills-bucket:index.json")
+
+    # Still fresh -- a second hit right away must neither ingest inline nor
+    # spawn a background refresh.
+    response = client.get("/api/skills/search", params={"q": ""})
+
+    assert response.status_code == 200
+    assert fake_storage.calls.count("read_bytes:skills-bucket:index.json") == reads_after_warm
 
 
 def test_search_never_500s_on_malformed_index(config, tmp_path):

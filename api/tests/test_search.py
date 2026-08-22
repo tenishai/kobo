@@ -13,7 +13,9 @@ import pytest
 from kobo_api.clients import ClientError
 from kobo_api.db import make_engine
 from kobo_api.search import (
+    CATALOG_TTL_S,
     CatalogEntry,
+    catalog_is_empty,
     distinct_skill_teams,
     ensure_fts,
     get_entry,
@@ -97,6 +99,34 @@ def test_search_on_never_ingested_db_returns_empty(engine):
 
 def test_teams_on_never_ingested_db_returns_empty(engine):
     assert teams(engine) == []
+
+
+# --- catalog_is_empty (Task 3 perf fix: cold-start vs stale-while-revalidate)
+
+
+def test_catalog_is_empty_true_on_never_ingested_db(engine):
+    # ensure_fts is called by catalog_is_empty itself -- a fresh DB with no
+    # ingest ever run must not raise "no such table", just report empty.
+    assert catalog_is_empty(engine) is True
+
+
+def test_catalog_is_empty_false_after_ingest(engine, storage):
+    _ingest(engine, storage)
+    assert catalog_is_empty(engine) is False
+
+
+def test_catalog_is_empty_true_again_once_the_table_is_cleared(engine, storage):
+    _ingest(engine, storage)
+    ingest_indexes(engine, storage, {})  # rebuild with nothing configured
+    assert catalog_is_empty(engine) is True
+
+
+def test_catalog_ttl_is_five_minutes():
+    # Raised from 60s (Task 3 perf fix): the request path no longer blocks
+    # on a stale refresh, so a longer TTL just means fewer background
+    # refreshes, not a slower create modal. POST /api/catalogs/refresh
+    # remains the operator's own now-button regardless of this value.
+    assert CATALOG_TTL_S == 300
 
 
 def test_ingest_indexes_returns_counts(engine, storage):

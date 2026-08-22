@@ -87,6 +87,7 @@ from kobo_api.purpose_tags import clean_tags, decode_tags, encode_tags
 from kobo_api.search import (
     CATALOG_TTL_S,
     catalog_index_metadata,
+    catalog_is_empty,
     distinct_skill_teams,
     get_entry,
     ingest_indexes,
@@ -477,23 +478,39 @@ def _catalogs_configured(clients: Clients | None, config: Config) -> bool:
 
 
 def _maybe_refresh_catalogs(app: FastAPI, engine) -> None:
-    """TTL-gated catalog refresh (Task 3 controller decision #1), shared by
-    both search endpoints and the teams endpoint: re-ingests the bucket
-    indexes into `catalog_fts` when the table is stale (or has never been
-    loaded) and storage is configured.
+    """TTL-gated catalog refresh (Task 3 controller decision #1; made
+    stale-while-revalidate by the Task 3 perf fix), shared by both search
+    endpoints and the teams endpoint.
 
-    A refresh failure here (a bucket blip, a transient storage error) is
-    logged and swallowed — these routes must never 500 over it, they just
-    keep serving whatever's already in the table (empty, on a cold app).
-    Contrast with the explicit `POST /api/catalogs/refresh` route below,
-    which surfaces the same failure as a 502 — that route exists precisely
-    for an operator who wants to know a refresh failed.
+    Two branches, in order:
 
-    `app.state.catalog_lock` double-checks freshness after acquiring the
-    lock: two requests landing at once both fail the outer TTL check, but
-    only one performs the ingest — the other, once it gets the lock, finds
-    the first request's refresh already covers it and returns without
-    ingesting a second time.
+    - Cold start (never loaded AND `catalog_fts` is genuinely empty):
+      serving nothing here helps nobody, so this is the one case that still
+      pays for a full ingest INLINE, on the request path, exactly as this
+      function always behaved before the perf fix. `app.state.catalog_lock`
+      double-checks both conditions after acquiring the lock: two cold
+      requests landing at once both fail the outer check, but only one
+      performs the ingest.
+    - Stale-while-revalidate (every other stale case -- the table already
+      has *something* to serve, even if it's an older snapshot): the
+      request path NEVER ingests. It returns immediately, leaving whatever
+      is already in the table for the caller to read, and hands the actual
+      refresh to a background daemon thread. `app.state.catalog_refreshing`
+      (checked and set under the same `catalog_lock`) makes this
+      single-flight: N stale hits landing at once all see the flag already
+      set after the first one claims it, so only one background thread
+      ever gets spawned. That thread reuses this same `engine` — the app's
+      own, shared, `check_same_thread=False` engine (kobo_api.db), not a
+      request-scoped `Session` — the identical discipline
+      kobo_api.provisioner's own daemon threads follow for their session.
+
+    A refresh failure (a bucket blip, a transient storage error) is logged
+    and swallowed in both branches — these routes must never 500 over it,
+    and a failed background refresh must not advance `catalog_loaded_at`,
+    so the next stale hit simply tries again. Contrast with the explicit
+    `POST /api/catalogs/refresh` route below, which surfaces the same
+    failure as a 502 — that route exists precisely for an operator who
+    wants to know a refresh failed.
     """
     state = app.state
     if not _catalogs_configured(state.clients, state.config):
@@ -503,16 +520,51 @@ def _maybe_refresh_catalogs(app: FastAPI, engine) -> None:
     if state.catalog_loaded_at is not None and now - state.catalog_loaded_at < CATALOG_TTL_S:
         return
 
+    if state.catalog_loaded_at is None and catalog_is_empty(engine):
+        with state.catalog_lock:
+            if state.catalog_loaded_at is None and catalog_is_empty(engine):
+                try:
+                    ingest_indexes(engine, state.clients.storage, configured_catalogs(state.config))
+                except ClientError as exc:
+                    log.warning("catalog cold-start ingest failed, serving an empty table: %s", exc)
+                    return
+                state.catalog_loaded_at = time.monotonic()
+        return
+
     with state.catalog_lock:
         now = time.monotonic()
         if state.catalog_loaded_at is not None and now - state.catalog_loaded_at < CATALOG_TTL_S:
             return
-        try:
-            ingest_indexes(engine, state.clients.storage, configured_catalogs(state.config))
-        except ClientError as exc:
-            log.warning("catalog TTL refresh failed, serving the stale table: %s", exc)
+        if state.catalog_refreshing:
             return
+        state.catalog_refreshing = True
+
+    threading.Thread(
+        target=_background_refresh_catalogs, args=(app, engine), daemon=True
+    ).start()
+
+
+def _background_refresh_catalogs(app: FastAPI, engine) -> None:
+    """The single-flighted background refresh `_maybe_refresh_catalogs`
+    spawns for a stale-but-nonempty catalog table. Runs entirely off the
+    request path -- nothing here has a caller waiting on it, so a failure
+    is logged and swallowed exactly like the old inline path's fail-soft
+    contract: the table just stays stale until the next request's stale hit
+    tries again. `catalog_loaded_at` only advances on success, and
+    `catalog_refreshing` is always cleared (under `catalog_lock`) in the
+    `finally`, so a failed refresh can never wedge every future hit into
+    believing one is permanently in flight.
+    """
+    state = app.state
+    try:
+        ingest_indexes(engine, state.clients.storage, configured_catalogs(state.config))
+    except ClientError as exc:
+        log.warning("catalog background refresh failed, serving the stale table: %s", exc)
+    else:
         state.catalog_loaded_at = time.monotonic()
+    finally:
+        with state.catalog_lock:
+            state.catalog_refreshing = False
 
 
 def _fail_launch(
@@ -1162,10 +1214,16 @@ def create_app(
     # (the whole test suite) keeps working unchanged, reading this same
     # "not configured" state Tasks 3/8 render honestly off of.
     app.state.org = org if org is not None else OrgState(False, None, "no org configured")
-    # Catalog FTS TTL/refresh state (Task 3 controller decision #1): read and
-    # written only by `_maybe_refresh_catalogs` and the refresh route below.
+    # Catalog FTS TTL/refresh state (Task 3 controller decision #1; extended
+    # by the Task 3 perf fix): read and written only by
+    # `_maybe_refresh_catalogs`/`_background_refresh_catalogs` and the
+    # refresh route below. `catalog_refreshing` is the single-flight guard —
+    # true exactly while a background refresh thread is in flight, checked
+    # and set together with `catalog_loaded_at` under `catalog_lock` so N
+    # concurrent stale hits spawn exactly one thread.
     app.state.catalog_loaded_at = None
     app.state.catalog_lock = threading.Lock()
+    app.state.catalog_refreshing = False
 
     app.add_middleware(
         CORSMiddleware,

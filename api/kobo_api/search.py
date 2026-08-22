@@ -35,8 +35,12 @@ from kobo_api.clients import ClientError, StorageClient, StorageNotFound
 log = logging.getLogger(__name__)
 
 # How long a loaded catalog table is considered fresh before a route's TTL
-# hook (kobo_api.main._maybe_refresh_catalogs) re-ingests it.
-CATALOG_TTL_S = 60
+# hook (kobo_api.main._maybe_refresh_catalogs) re-ingests it. Raised from 60s
+# (Task 3 perf fix): the request path no longer blocks on a stale refresh
+# (it's backgrounded), so a longer TTL just means fewer background refreshes,
+# not a slower create modal. POST /api/catalogs/refresh remains the
+# operator's own now-button regardless of this value.
+CATALOG_TTL_S = 300
 
 _COLUMNS = "id, name, description, team, tags, kind, sha, builtin"
 
@@ -120,6 +124,24 @@ def _read_catalog_json(
         key = f"{prefix}{_MARKETPLACE_CATALOG_KEY}"
         data = storage.read_bytes(bucket, key)
     return key, json.loads(data)
+
+
+def catalog_is_empty(engine: Engine) -> bool:
+    """Whether `catalog_fts` currently holds zero rows -- the cold-start
+    check `kobo_api.main._maybe_refresh_catalogs` uses to tell "never loaded
+    anything yet" apart from "loaded once, now merely stale": a stale-but-
+    nonempty table can be served as-is while a background refresh catches
+    up, but an empty one helps nobody, so that's the one case worth an
+    inline ingest on the request path.
+
+    `ensure_fts` first, same as every other entry point in this module, so
+    this is safe to call on a database that has never been ingested into at
+    all -- that counts as empty, not an error.
+    """
+    ensure_fts(engine)
+    with engine.connect() as conn:
+        count = conn.execute(text("SELECT COUNT(*) FROM catalog_fts")).scalar()
+    return count == 0
 
 
 def catalog_index_metadata(storage: StorageClient, bucket: str, prefix: str = "") -> dict:
