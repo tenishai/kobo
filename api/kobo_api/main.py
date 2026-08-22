@@ -479,7 +479,8 @@ def _catalogs_configured(clients: Clients | None, config: Config) -> bool:
 
 def _maybe_refresh_catalogs(app: FastAPI, engine) -> None:
     """TTL-gated catalog refresh (Task 3 controller decision #1; made
-    stale-while-revalidate by the Task 3 perf fix), shared by both search
+    stale-while-revalidate by the Task 3 perf fix; fixed round 1 to give the
+    ingest itself one true mutual-exclusion lock), shared by both search
     endpoints and the teams endpoint.
 
     Two branches, in order:
@@ -487,22 +488,39 @@ def _maybe_refresh_catalogs(app: FastAPI, engine) -> None:
     - Cold start (never loaded AND `catalog_fts` is genuinely empty):
       serving nothing here helps nobody, so this is the one case that still
       pays for a full ingest INLINE, on the request path, exactly as this
-      function always behaved before the perf fix. `app.state.catalog_lock`
-      double-checks both conditions after acquiring the lock: two cold
-      requests landing at once both fail the outer check, but only one
-      performs the ingest.
+      function always behaved before the perf fix. The cold check itself
+      (`catalog_loaded_at is None and catalog_is_empty(engine)`) is read
+      under `app.state.catalog_lock` — a cheap SELECT, but not a read this
+      function should ever make unprotected — and re-read a second time
+      after acquiring `app.state.catalog_ingest_lock`, which is what
+      actually stays held for the ingest: two cold requests landing at once
+      both see `cold=True` from the first (lock-protected) read, but only
+      the one that wins the race for `catalog_ingest_lock` performs the
+      ingest — the other's second read finds the table no longer empty and
+      returns without ever calling `ingest_indexes` itself.
     - Stale-while-revalidate (every other stale case -- the table already
-      has *something* to serve, even if it's an older snapshot): the
-      request path NEVER ingests. It returns immediately, leaving whatever
-      is already in the table for the caller to read, and hands the actual
-      refresh to a background daemon thread. `app.state.catalog_refreshing`
-      (checked and set under the same `catalog_lock`) makes this
-      single-flight: N stale hits landing at once all see the flag already
-      set after the first one claims it, so only one background thread
-      ever gets spawned. That thread reuses this same `engine` — the app's
-      own, shared, `check_same_thread=False` engine (kobo_api.db), not a
-      request-scoped `Session` — the identical discipline
-      kobo_api.provisioner's own daemon threads follow for their session.
+      has *something* to serve, even if it's an older snapshot, INCLUDING
+      the warm-restart case where `catalog_loaded_at is None` in this
+      process but `catalog_fts` already holds rows a prior process ingested
+      -- `catalog_is_empty(engine)` is what actually tells that apart from
+      a genuine cold start): the request path NEVER ingests. It returns
+      immediately, leaving whatever is already in the table for the caller
+      to read, and hands the actual refresh to a background daemon thread.
+      `app.state.catalog_refreshing` (checked and set under the same
+      `catalog_lock`) makes this single-flight: N stale hits landing at
+      once all see the flag already set after the first one claims it, so
+      only one background thread ever gets spawned. That thread reuses this
+      same `engine` — the app's own, shared, `check_same_thread=False`
+      engine (kobo_api.db), not a request-scoped `Session` — the identical
+      discipline kobo_api.provisioner's own daemon threads follow for their
+      session.
+
+    `app.state.catalog_ingest_lock` is the one lock actually held around
+    every `ingest_indexes` call anywhere in this module (this function's
+    cold branch, `_background_refresh_catalogs` below, and the manual
+    `POST /api/catalogs/refresh` route) — `catalog_lock` itself guards only
+    the flags/timestamp and is never held across an ingest, so it can never
+    again look like it excludes ingests it doesn't actually exclude.
 
     A refresh failure (a bucket blip, a transient storage error) is logged
     and swallowed in both branches — these routes must never 500 over it,
@@ -520,24 +538,30 @@ def _maybe_refresh_catalogs(app: FastAPI, engine) -> None:
     if state.catalog_loaded_at is not None and now - state.catalog_loaded_at < CATALOG_TTL_S:
         return
 
-    if state.catalog_loaded_at is None and catalog_is_empty(engine):
-        with state.catalog_lock:
-            if state.catalog_loaded_at is None and catalog_is_empty(engine):
-                try:
-                    ingest_indexes(engine, state.clients.storage, configured_catalogs(state.config))
-                except ClientError as exc:
-                    log.warning("catalog cold-start ingest failed, serving an empty table: %s", exc)
-                    return
-                state.catalog_loaded_at = time.monotonic()
-        return
-
     with state.catalog_lock:
         now = time.monotonic()
         if state.catalog_loaded_at is not None and now - state.catalog_loaded_at < CATALOG_TTL_S:
             return
-        if state.catalog_refreshing:
-            return
-        state.catalog_refreshing = True
+        cold = state.catalog_loaded_at is None and catalog_is_empty(engine)
+        if not cold:
+            if state.catalog_refreshing:
+                return
+            state.catalog_refreshing = True
+
+    if cold:
+        with state.catalog_ingest_lock:
+            with state.catalog_lock:
+                still_cold = state.catalog_loaded_at is None and catalog_is_empty(engine)
+            if not still_cold:
+                return
+            try:
+                ingest_indexes(engine, state.clients.storage, configured_catalogs(state.config))
+            except ClientError as exc:
+                log.warning("catalog cold-start ingest failed, serving an empty table: %s", exc)
+                return
+            with state.catalog_lock:
+                state.catalog_loaded_at = time.monotonic()
+        return
 
     threading.Thread(
         target=_background_refresh_catalogs, args=(app, engine), daemon=True
@@ -554,10 +578,16 @@ def _background_refresh_catalogs(app: FastAPI, engine) -> None:
     `catalog_refreshing` is always cleared (under `catalog_lock`) in the
     `finally`, so a failed refresh can never wedge every future hit into
     believing one is permanently in flight.
+
+    The ingest itself runs under `app.state.catalog_ingest_lock` -- fixed
+    round 1's concurrency fix -- so this thread can never race a manual
+    `POST /api/catalogs/refresh` (or a concurrent cold-start inline ingest)
+    into two simultaneous `engine.begin()` writers.
     """
     state = app.state
     try:
-        ingest_indexes(engine, state.clients.storage, configured_catalogs(state.config))
+        with state.catalog_ingest_lock:
+            ingest_indexes(engine, state.clients.storage, configured_catalogs(state.config))
     except ClientError as exc:
         log.warning("catalog background refresh failed, serving the stale table: %s", exc)
     else:
@@ -1215,15 +1245,23 @@ def create_app(
     # "not configured" state Tasks 3/8 render honestly off of.
     app.state.org = org if org is not None else OrgState(False, None, "no org configured")
     # Catalog FTS TTL/refresh state (Task 3 controller decision #1; extended
-    # by the Task 3 perf fix): read and written only by
+    # by the Task 3 perf fix, then split into two locks by the Task 3 fix
+    # round 1 concurrency fix): read and written only by
     # `_maybe_refresh_catalogs`/`_background_refresh_catalogs` and the
-    # refresh route below. `catalog_refreshing` is the single-flight guard —
-    # true exactly while a background refresh thread is in flight, checked
-    # and set together with `catalog_loaded_at` under `catalog_lock` so N
-    # concurrent stale hits spawn exactly one thread.
+    # refresh route below. `catalog_lock` guards the flags/timestamp only
+    # (`catalog_loaded_at`, `catalog_refreshing`) — `catalog_refreshing` is
+    # the single-flight guard, true exactly while a background refresh
+    # thread is in flight, checked and set together with `catalog_loaded_at`
+    # under `catalog_lock` so N concurrent stale hits spawn exactly one
+    # thread. `catalog_ingest_lock` is the ONE true mutual exclusion for the
+    # ingest itself — held around every `ingest_indexes` call (cold-inline,
+    # background, and the manual refresh route) so two of sqlite's
+    # `engine.begin()` writers can never run concurrently, past the busy
+    # timeout, regardless of which of those three call sites is running.
     app.state.catalog_loaded_at = None
     app.state.catalog_lock = threading.Lock()
     app.state.catalog_refreshing = False
+    app.state.catalog_ingest_lock = threading.Lock()
 
     app.add_middleware(
         CORSMiddleware,
@@ -1460,10 +1498,31 @@ def create_app(
                 {"error": "catalogs aren't set up yet"}, status_code=503
             )
 
+        # Fixed round 1's concurrency fix: this route used to hold
+        # `catalog_lock` around its own ingest, believing that lock excluded
+        # every ingest -- but the background refresh's ingest (spawned by a
+        # stale hit) only ever ran outside `catalog_lock` (just its flag
+        # flips were locked). Two concurrent `engine.begin()` writers, one
+        # from each, could outrun sqlite's busy timeout and raise an
+        # uncaught `sqlite3.OperationalError`. Rather than queue invisibly
+        # behind an in-flight background refresh, an operator hammering this
+        # route gets an honest 409 the moment one is already running --
+        # `catalog_ingest_lock` below is what now actually excludes every
+        # ingest (this route's own, the background thread's, and the
+        # cold-start inline path's), so even outside this fast path a manual
+        # refresh can never become a second concurrent ingest.
+        with app.state.catalog_lock:
+            if app.state.catalog_refreshing:
+                return JSONResponse(
+                    {"error": "a refresh is already running. Try again in a moment."},
+                    status_code=409,
+                )
+
         engine = session.get_bind()
         try:
-            with app.state.catalog_lock:
+            with app.state.catalog_ingest_lock:
                 counts = ingest_indexes(engine, clients.storage, configured_catalogs(cfg))
+            with app.state.catalog_lock:
                 app.state.catalog_loaded_at = time.monotonic()
         except ClientError as exc:
             log.warning("catalog refresh failed: %s", exc)

@@ -402,6 +402,148 @@ def test_stale_refresh_is_single_flight_for_concurrent_hits(config, tmp_path, mo
     assert len(calls) == 1
 
 
+def test_warm_restart_nonempty_table_with_loaded_at_none_uses_background_path(
+    config, tmp_path, monkeypatch
+):
+    """Coverage gap: a freshly-booted process starts with `catalog_loaded_at
+    is None` (nothing ingested in this process yet), but a warm restart can
+    inherit an on-disk `catalog_fts` table a PRIOR process already
+    populated. `catalog_is_empty(engine)` is what actually tells cold apart
+    from warm here -- `catalog_loaded_at is None` alone is not enough --
+    so this must take the stale-while-revalidate background path (serve the
+    inherited rows immediately, spawn exactly one background thread), NOT
+    the cold-start inline-ingest path."""
+    import kobo_api.main as main_module
+
+    storage = FakeStorage(
+        buckets={
+            "skills-bucket": {"index.json": (_index_bytes(SKILL_ENTRIES), {})},
+            "personas-bucket": {"index.json": (_index_bytes(PERSONA_ENTRIES), {})},
+        }
+    )
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    # Simulate a previous process's completed ingest sitting on disk --
+    # done directly against the engine, before `create_app` ever runs, so
+    # the new app below starts with `catalog_loaded_at is None` despite the
+    # table already holding rows.
+    main_module.ingest_indexes(
+        engine, storage, {"skill": "skills-bucket", "persona": "personas-bucket"}
+    )
+
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    app = create_app(session_factory, config=config, clients=_minimal_clients(storage=storage))
+    client = TestClient(app)
+    assert app.state.catalog_loaded_at is None
+
+    spawned: list[threading.Thread] = []
+    real_thread = threading.Thread
+
+    def spy_thread(*args, **kwargs):
+        t = real_thread(*args, **kwargs)
+        spawned.append(t)
+        return t
+
+    monkeypatch.setattr(main_module.threading, "Thread", spy_thread)
+
+    real_ingest = main_module.ingest_indexes
+    ingest_calls: list[int] = []
+
+    def counting_ingest(*args, **kwargs):
+        ingest_calls.append(1)
+        return real_ingest(*args, **kwargs)
+
+    monkeypatch.setattr(main_module, "ingest_indexes", counting_ingest)
+
+    response = client.get("/api/skills/search", params={"q": ""})
+
+    # The inherited rows are served immediately -- nothing on the request
+    # path blocked on an inline ingest to get them.
+    assert response.status_code == 200
+    assert response.json()["results"][0]["id"] == "code-review"
+    assert len(spawned) == 1
+
+    _wait_until_refresh_settles(app)
+    # Exactly one ingest -- the background refresh -- and it happened off
+    # the request path, not inline.
+    assert len(ingest_calls) == 1
+
+
+def test_manual_refresh_returns_409_while_background_refresh_in_flight(
+    config, tmp_path, monkeypatch
+):
+    """Reproduces the reviewer's concurrency regression: `refresh_catalogs`
+    (POST /api/catalogs/refresh) used to believe `catalog_lock` excluded
+    every ingest, but `_background_refresh_catalogs` only ever ran its
+    ingest outside that lock (just the flag flips were locked). A manual
+    refresh landing while a background refresh was mid-ingest could open a
+    second concurrent `engine.begin()` writer -- past sqlite's busy_timeout
+    that raised an uncaught `sqlite3.OperationalError` (a raw 500 on this
+    route). The fix gives the ingest itself one true mutual-exclusion lock
+    (`catalog_ingest_lock`), and lets this route fast-path to 409 the moment
+    it sees `catalog_refreshing` already set -- honesty instead of a
+    pile-up.
+
+    Proven here with the reviewer's own repro shape: a paused `ingest_indexes`
+    mock, a stale hit that spawns a background refresh parked inside it,
+    then a manual refresh during that window. It must come back 409 --
+    never a second entry into the mock -- and once the background refresh
+    finishes, the manual route works again.
+    """
+    storage = FakeStorage(
+        buckets={
+            "skills-bucket": {"index.json": (_index_bytes(SKILL_ENTRIES), {})},
+            "personas-bucket": {"index.json": (_index_bytes(PERSONA_ENTRIES), {})},
+        }
+    )
+    app, client = _make_app_and_client(config, _minimal_clients(storage=storage), tmp_path)
+
+    client.get("/api/skills/search", params={"q": ""})  # cold warm-up
+    app.state.catalog_loaded_at -= CATALOG_TTL_S + 1  # force staleness
+
+    import kobo_api.main as main_module
+
+    real_ingest = main_module.ingest_indexes
+    ingest_started = threading.Event()
+    release_ingest = threading.Event()
+    calls: list[int] = []
+
+    def paused_ingest(*args, **kwargs):
+        calls.append(1)
+        ingest_started.set()
+        release_ingest.wait(timeout=2)
+        return real_ingest(*args, **kwargs)
+
+    monkeypatch.setattr(main_module, "ingest_indexes", paused_ingest)
+
+    # A stale hit spawns the background refresh, which parks mid-ingest.
+    client.get("/api/skills/search", params={"q": ""})
+    assert ingest_started.wait(timeout=2), "the background refresh never started"
+
+    # A manual refresh landing in that window must not queue behind the
+    # in-flight ingest -- it must answer immediately, never becoming a
+    # second concurrent entry into ingest_indexes.
+    response = client.post("/api/catalogs/refresh")
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "error": "a refresh is already running. Try again in a moment."
+    }
+    assert len(calls) == 1  # still just the one in-flight background call
+
+    release_ingest.set()
+    _wait_until_refresh_settles(app)
+
+    # Now that the background refresh has finished, the manual route works
+    # again -- this is a second, distinct call, not a queued continuation
+    # of the one above.
+    again = client.post("/api/catalogs/refresh")
+    assert again.status_code == 200
+    assert len(calls) == 2
+
+
 def test_background_refresh_failure_keeps_serving_stale(config, tmp_path):
     """A background refresh that fails (a bucket blip) must never disturb
     what's already being served -- the stale table stays exactly as it was,
