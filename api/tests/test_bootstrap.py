@@ -102,6 +102,8 @@ def test_render_org_yaml_golden_with_computed_defaults():
         "operators": [],
         "cabal_url": None,
         "agent_endpoint_template": None,
+        "groups": [],
+        "okta_domain": "",
     }
 
 

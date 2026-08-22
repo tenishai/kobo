@@ -5,7 +5,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from kobo_api.config import Config, ModelChoice, vertex_location_for
+from kobo_api.config import Config, GroupChoice, ModelChoice, vertex_location_for
 
 
 def test_load_none_returns_defaults_without_touching_disk(tmp_path, monkeypatch):
@@ -328,6 +328,42 @@ def test_vertex_location_for_unknown_model_id_falls_back_to_org_default():
     config = Config(vertex_location="us-east5")
 
     assert vertex_location_for(config, "vertex_ai/retired-model") == "us-east5"
+
+
+# --- groups / okta_domain (access-control arc, Task B1: GroupResolver) -------
+
+
+def test_groups_and_okta_domain_default_empty():
+    config = Config()
+    assert config.groups == []
+    assert config.okta_domain == ""
+
+
+def test_group_choice_round_trips_name_and_okta_group():
+    group = GroupChoice(name="SRE", okta_group="okta-sre-group")
+    assert group.name == "SRE"
+    assert group.okta_group == "okta-sre-group"
+
+
+def test_groups_and_okta_domain_overridable(tmp_path):
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        "okta_domain: acme.okta.com\n"
+        "groups:\n"
+        "  - name: SRE\n"
+        "    okta_group: okta-sre-group\n"
+        "  - name: QA\n"
+        "    okta_group: okta-qa-group\n"
+    )
+
+    config = Config.load(yaml_path)
+
+    assert config.okta_domain == "acme.okta.com"
+    assert config.groups == [
+        GroupChoice(name="SRE", okta_group="okta-sre-group"),
+        GroupChoice(name="QA", okta_group="okta-qa-group"),
+    ]
+    assert isinstance(config.groups[0], GroupChoice)
 
 
 def test_config_example_yaml_documents_avatar_keys():

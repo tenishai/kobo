@@ -4,7 +4,7 @@ through FakeGitHub.clone into an actual merged Config — never mocks
 asserting mocks.
 """
 
-from kobo_api.config import Config, ModelChoice
+from kobo_api.config import Config, GroupChoice, ModelChoice
 from kobo_api.main import create_app
 from kobo_api.org import ORG_KEYS, OrgState, load_org_config
 from tests.fakes import FakeGitHub
@@ -278,6 +278,8 @@ def test_org_keys_is_exactly_the_brief_set():
             "operators",
             "cabal_url",
             "agent_endpoint_template",
+            "groups",
+            "okta_domain",
         }
     )
 
@@ -342,3 +344,25 @@ def test_operators_list_round_trips():
         "ops@acme-corp.example.com",
         "Root@Acme-Corp.example.com",
     ]
+
+
+def test_groups_and_okta_domain_round_trip():
+    """groups/okta_domain (access-control arc, Task B1) are org-scoped like
+    every other feature-gating knob above — a client's kobo-config repo
+    names its own directory group universe."""
+    local = Config(org_repo=ORG_REPO)
+    github = FakeGitHub(
+        org_yaml=(
+            "okta_domain: acme.okta.com\n"
+            "groups:\n"
+            "  - name: SRE\n"
+            "    okta_group: okta-sre-group\n"
+        )
+    )
+
+    merged, org = load_org_config(local, github)
+
+    assert org.wired is True
+    assert merged.okta_domain == "acme.okta.com"
+    assert merged.groups == [GroupChoice(name="SRE", okta_group="okta-sre-group")]
+    assert isinstance(merged.groups[0], GroupChoice)

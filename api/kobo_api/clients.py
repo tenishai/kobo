@@ -39,6 +39,7 @@ from urllib.parse import quote
 import httpx
 
 from kobo_api.config import Config
+from kobo_api.groups import GroupResolver, OktaGroupResolver
 
 log = logging.getLogger(__name__)
 
@@ -2945,6 +2946,14 @@ class Clients:
     # checks `cabal_enabled` itself before ever touching this field, so a
     # None here is never dereferenced on an unwired room.
     cabal: CabalClient | None = None
+    # None whenever the directory integration isn't wired (no OKTA_API_TOKEN
+    # env var, or config.groups/config.okta_domain left unset) — same
+    # "absent = feature off" convention as cabal above. Every group-aware
+    # caller (access-control arc, Task B2+) must treat a None here as fail
+    # closed on its own terms too: no resolver configured is not license to
+    # grant group-derived visibility by default, only owner/operator rights
+    # ever survive that.
+    groups: GroupResolver | None = None
 
     @classmethod
     def real(cls, config: Config) -> Clients:
@@ -2976,5 +2985,19 @@ class Clients:
             # and inside CabalClient itself never anywhere it could leak.
             cabal=CabalClient(config.cabal_url, cabal_operator_token())
             if cabal_enabled(config)
+            else None,
+            # Same "is this configured" gate shape as cabal above: all three
+            # of OKTA_API_TOKEN (env, read here and only here — never
+            # cached at module scope, never logged), config.groups, and
+            # config.okta_domain must be present, or group-derived
+            # visibility simply isn't wired (routes fall back to
+            # owner/operator rights only, per the fail-closed contract in
+            # kobo_api.groups).
+            groups=OktaGroupResolver(
+                config.okta_domain,
+                os.environ.get("OKTA_API_TOKEN", ""),
+                {group.name: group.okta_group for group in config.groups},
+            )
+            if os.environ.get("OKTA_API_TOKEN") and config.groups and config.okta_domain
             else None,
         )

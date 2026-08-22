@@ -24,6 +24,11 @@ class ModelChoice(BaseModel):
     location: str | None = None
 
 
+class GroupChoice(BaseModel):
+    name: str  # what the room shows for this group
+    okta_group: str  # the directory's own group name (profile.name) this maps to
+
+
 def vertex_location_for(config: Config, model_id: str) -> str:
     """The Vertex location `model_id` should run against: its own
     `ModelChoice.location` when the catalog sets one, else
@@ -153,6 +158,23 @@ class Config(BaseModel):
     # Path to the App's PEM-encoded private key. Read lazily on first token
     # mint, never logged. NEVER put a real key in a tracked file.
     github_app_private_key_path: Path | None = None
+    # The ACL axis (access-control arc, Task B1) — distinct from `team` (the
+    # skills-catalog-derived capability axis; kobo_api.groups' module
+    # docstring covers the fail-closed contract this feeds). Each entry's
+    # `name` is what the room shows; `okta_group` is the directory's own
+    # group name it maps to — kobo_api.groups.GroupResolver filters an
+    # Okta membership list down to these and answers with the CONFIG
+    # `name`s, never Okta's own names. Empty (the default) means no groups
+    # are configured; Clients.real gates OktaGroupResolver construction on
+    # this being non-empty, same "absent = feature off" convention as
+    # cabal_url/skills_bucket above.
+    groups: list[GroupChoice] = []
+    # This room's Okta org domain (e.g. "acme.okta.com") group lookups hit:
+    # GET https://{okta_domain}/api/v1/users/{email}/groups
+    # (kobo_api.groups.OktaGroupResolver). Empty string (the default) means
+    # unconfigured, same as skills_bucket above; Clients.real gates
+    # OktaGroupResolver construction on this too.
+    okta_domain: str = ""
 
     @field_validator(
         "workdir", "slack_tokens_path", "ui_dist", "github_app_private_key_path",

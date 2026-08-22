@@ -49,3 +49,11 @@ operators: __KOBO_OPERATORS__
 # here; it comes from this room's own CABAL_OPERATOR_TOKEN env var.
 cabal_url: __KOBO_CABAL_URL__
 agent_endpoint_template: __KOBO_AGENT_ENDPOINT_TEMPLATE__
+
+# The ACL axis: named groups this room can grant an agent's audience to,
+# each mapped to the directory's own group name, plus the directory's org
+# domain group lookups hit. Empty groups / empty okta_domain (the default)
+# means group-based access is off — only owners and operators (above) can
+# see anything gated behind it.
+groups: __KOBO_GROUPS__
+okta_domain: __KOBO_OKTA_DOMAIN__

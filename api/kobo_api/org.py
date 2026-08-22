@@ -57,6 +57,8 @@ ORG_KEYS = frozenset(
         "operators",
         "cabal_url",
         "agent_endpoint_template",
+        "groups",
+        "okta_domain",
     }
 )
 

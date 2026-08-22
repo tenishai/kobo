@@ -64,7 +64,8 @@ from kobo_api.clients import (
     image_tag,
     installation_token_provider,
 )
-from kobo_api.config import Config
+from kobo_api.config import Config, GroupChoice
+from kobo_api.groups import OktaGroupResolver
 from tests.fakes import (
     FakeAgent,
     FakeCloud,
@@ -5124,6 +5125,65 @@ def test_clients_real_wires_cabal_when_enabled(monkeypatch):
     assert isinstance(clients.cabal, CabalClient)
     assert clients.cabal._base_url == "http://cabal.internal"
     assert clients.cabal._token == "op-token"
+
+
+# --- Clients.real() group resolver wiring (access-control arc, Task B1) ------
+
+
+def test_clients_real_leaves_groups_none_when_okta_token_env_unset(monkeypatch):
+    monkeypatch.delenv("OKTA_API_TOKEN", raising=False)
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        okta_domain="acme.okta.com",
+        groups=[GroupChoice(name="SRE", okta_group="okta-sre")],
+    )
+    clients = Clients.real(config)
+    assert clients.groups is None
+
+
+def test_clients_real_leaves_groups_none_when_groups_empty(monkeypatch):
+    # Empty universe -> not constructed at all, even with a token and a
+    # domain set: there's nothing for it to resolve against.
+    monkeypatch.setenv("OKTA_API_TOKEN", "okta-token")
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        okta_domain="acme.okta.com",
+        groups=[],
+    )
+    clients = Clients.real(config)
+    assert clients.groups is None
+
+
+def test_clients_real_leaves_groups_none_when_okta_domain_unset(monkeypatch):
+    monkeypatch.setenv("OKTA_API_TOKEN", "okta-token")
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        okta_domain="",
+        groups=[GroupChoice(name="SRE", okta_group="okta-sre")],
+    )
+    clients = Clients.real(config)
+    assert clients.groups is None
+
+
+def test_clients_real_wires_groups_when_fully_configured(monkeypatch):
+    monkeypatch.setenv("OKTA_API_TOKEN", "okta-token")
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        okta_domain="acme.okta.com",
+        groups=[
+            GroupChoice(name="SRE", okta_group="okta-sre"),
+            GroupChoice(name="QA", okta_group="okta-qa"),
+        ],
+    )
+    clients = Clients.real(config)
+    assert isinstance(clients.groups, OktaGroupResolver)
+    assert clients.groups._domain == "acme.okta.com"
+    assert clients.groups._token == "okta-token"
+    assert clients.groups._universe == {"SRE": "okta-sre", "QA": "okta-qa"}
 
 
 # --- Clients.real() GitHub App wiring (Task 3) -------------------------------

@@ -130,6 +130,8 @@ _ORG_YAML_TOKENS = {
     "operators": "__KOBO_OPERATORS__",
     "cabal_url": "__KOBO_CABAL_URL__",
     "agent_endpoint_template": "__KOBO_AGENT_ENDPOINT_TEMPLATE__",
+    "groups": "__KOBO_GROUPS__",
+    "okta_domain": "__KOBO_OKTA_DOMAIN__",
 }
 
 assert set(_ORG_YAML_TOKENS) == ORG_KEYS, (
@@ -165,6 +167,8 @@ def _org_yaml_context(config: Config) -> dict[str, object]:
         "operators": config.operators,
         "cabal_url": config.cabal_url,
         "agent_endpoint_template": config.agent_endpoint_template,
+        "groups": [{"name": g.name, "okta_group": g.okta_group} for g in config.groups],
+        "okta_domain": config.okta_domain,
     }
 
 
