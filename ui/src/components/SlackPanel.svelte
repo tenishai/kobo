@@ -525,7 +525,7 @@
         <p class="slack-panel__hint">Starts with xapp-.</p>
       </div>
 
-      <p class="slack-panel__safety-note">For safety, kobo never keeps these values. They go to the cluster when you press Finish setup.</p>
+      <p class="slack-panel__safety-note">For safety, Kobo never keeps these values. They go to the cluster when you press Finish setup.</p>
 
       {#if connectError}
         <p class="slack-panel__error" role="alert">{connectError}</p>

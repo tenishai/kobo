@@ -536,7 +536,7 @@
 
     <div class="persona-builder__secondary">
       <p class="persona-builder__secondary-lead">
-        No persona yet? Describe the job and kobo drafts one.
+        No persona yet? Describe the job and Kobo drafts one.
       </p>
       <div class="persona-builder__field">
         <label class="persona-builder__label" for="persona-builder-job">
