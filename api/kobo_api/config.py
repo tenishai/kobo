@@ -60,6 +60,30 @@ class GroupChoice(BaseModel):
     # of silently defining a group nobody can ever be granted.
     okta_group: str = ""
     okta_groups: list[str] = []
+    # Which section of the create modal's group dropdown this group renders
+    # under (create-modal non-engineering-wing ruling) -- "engineering" (the
+    # default, so every group configured before this field existed keeps
+    # rendering exactly where it always has) or "non-engineering". "shared"
+    # is deliberately NOT a legal value here: that section is the reserved
+    # commons `catalog_groups` (kobo_api.main) always prepends itself, never
+    # a real `GroupChoice` at all -- see SHARED_GROUP's own docstring above
+    # and `_groups_may_not_reuse_the_shared_name` below, which already keeps
+    # a real group from claiming that NAME; `_kind_must_be_a_known_dropdown_
+    # section` below is the same posture applied to this field instead.
+    kind: str = "engineering"
+
+    @field_validator("kind")
+    @classmethod
+    def _kind_must_be_a_known_dropdown_section(cls, v: str) -> str:
+        allowed = {"engineering", "non-engineering"}
+        if v not in allowed:
+            raise ValueError(
+                f"GroupChoice kind {v!r} is not one of {sorted(allowed)} "
+                "(the create modal's dropdown only sections into these two "
+                "-- 'shared' is the reserved commons section and is never "
+                "configured on a group)"
+            )
+        return v
 
     @model_validator(mode="after")
     def _fold_okta_group_sugar(self) -> GroupChoice:

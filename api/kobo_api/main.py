@@ -1414,12 +1414,23 @@ def create_app(
     # usable by everyone whether or not `cfg.groups` is configured at all.
     # `kind` lets the UI section the dropdown ("shared" vs the room's own
     # named groups) without hardcoding SHARED_GROUP's spelling client-side.
+    # Create-modal non-engineering-wing ruling: each configured group now
+    # carries ITS OWN `kind` (`GroupChoice.kind` -- was hardcoded
+    # "engineering" for every entry here). The response still comes back
+    # grouped rather than in raw `cfg.groups` order: shared first, then
+    # every engineering entry (config order preserved within the group),
+    # then every non-engineering entry (config order preserved) -- the UI
+    # sections purely on `kind` regardless, but a stable grouped payload
+    # keeps the wire shape readable on its own.
     @app.get("/api/catalog/groups")
     def catalog_groups() -> dict:
         cfg: Config = app.state.config
+        engineering = [g for g in cfg.groups if g.kind == "engineering"]
+        non_engineering = [g for g in cfg.groups if g.kind == "non-engineering"]
         return {
             "groups": [{"name": SHARED_GROUP, "kind": "shared"}]
-            + [{"name": g.name, "kind": "engineering"} for g in cfg.groups]
+            + [{"name": g.name, "kind": g.kind} for g in engineering]
+            + [{"name": g.name, "kind": g.kind} for g in non_engineering]
         }
 
     # --- Group requests (shared-group + group-requests wave) ----------------

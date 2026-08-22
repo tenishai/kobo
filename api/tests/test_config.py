@@ -501,6 +501,32 @@ def test_group_choice_requires_at_least_one_okta_field_set():
     assert "okta_group" in message
 
 
+# --- GroupChoice.kind (create-modal non-engineering-wing ruling) -------------
+
+
+def test_group_choice_kind_defaults_to_engineering():
+    # Every group configured before this field existed must keep rendering
+    # in the same dropdown section it always has -- "engineering" is the
+    # default, not a forced choice.
+    group = GroupChoice(name="SRE", okta_group="okta-sre-group")
+
+    assert group.kind == "engineering"
+
+
+def test_group_choice_kind_accepts_non_engineering():
+    group = GroupChoice(name="Legal", okta_group="okta-legal", kind="non-engineering")
+
+    assert group.kind == "non-engineering"
+
+
+def test_group_choice_kind_rejects_unknown_value():
+    with pytest.raises(ValidationError) as exc_info:
+        GroupChoice(name="SRE", okta_group="okta-sre-group", kind="shared")
+
+    message = str(exc_info.value)
+    assert "shared" in message
+
+
 def test_config_example_yaml_documents_avatar_keys():
     # config.example.yaml is the operator-facing template; both new keys must
     # be explicitly present (not merely absent-and-defaulted) and must parse

@@ -711,6 +711,65 @@ def test_catalog_groups_is_just_shared_when_unconfigured(session_factory):
     assert response.json() == {"groups": [{"name": "shared", "kind": "shared"}]}
 
 
+# --- GET /api/catalog/groups: non-engineering wing (create-modal
+# non-engineering-wing ruling) ------------------------------------------------
+#
+# Each configured group now carries ITS OWN kind (was hardcoded
+# "engineering" for every entry) -- and the response comes back grouped:
+# shared, then every engineering entry (config order), then every
+# non-engineering entry (config order), regardless of how they were
+# interleaved in `cfg.groups`. The UI sections purely on `kind`, but a
+# stable grouped order keeps the payload itself readable.
+
+
+def test_catalog_groups_carries_each_configured_groups_own_kind(session_factory):
+    config = Config(
+        groups=[
+            GroupChoice(name="payments-eng", okta_group="okta-payments"),
+            GroupChoice(name="legal", okta_group="okta-legal", kind="non-engineering"),
+        ],
+    )
+    client = TestClient(create_app(session_factory, config=config))
+
+    response = client.get("/api/catalog/groups")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "groups": [
+            {"name": "shared", "kind": "shared"},
+            {"name": "payments-eng", "kind": "engineering"},
+            {"name": "legal", "kind": "non-engineering"},
+        ]
+    }
+
+
+def test_catalog_groups_orders_shared_then_engineering_then_non_engineering_regardless_of_config_order(
+    session_factory,
+):
+    config = Config(
+        groups=[
+            GroupChoice(name="finance", okta_group="okta-finance", kind="non-engineering"),
+            GroupChoice(name="payments-eng", okta_group="okta-payments"),
+            GroupChoice(name="legal", okta_group="okta-legal", kind="non-engineering"),
+            GroupChoice(name="growth", okta_group="okta-growth"),
+        ],
+    )
+    client = TestClient(create_app(session_factory, config=config))
+
+    response = client.get("/api/catalog/groups")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "groups": [
+            {"name": "shared", "kind": "shared"},
+            {"name": "payments-eng", "kind": "engineering"},
+            {"name": "growth", "kind": "engineering"},
+            {"name": "finance", "kind": "non-engineering"},
+            {"name": "legal", "kind": "non-engineering"},
+        ]
+    }
+
+
 # --- Shared commons: visible to everyone, in every _visible_agents branch --
 #
 # The reserved SHARED_GROUP group name: an agent namespaced into it is
