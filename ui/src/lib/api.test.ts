@@ -1097,7 +1097,7 @@ describe("listColleagueConversations", () => {
     vi.unstubAllGlobals();
   });
 
-  it("GETs /api/colleagues/conversations (no query string) when all is false", async () => {
+  it("GETs /api/colleagues/conversations?agent=<agent> (no all param) when all is false", async () => {
     const conversations = [
       {
         task_id: "t-1",
@@ -1113,16 +1113,16 @@ describe("listColleagueConversations", () => {
     ];
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ conversations }));
 
-    await expect(listColleagueConversations(false)).resolves.toEqual(conversations);
-    expect(fetch).toHaveBeenCalledWith("/api/colleagues/conversations");
+    await expect(listColleagueConversations(false, "ward")).resolves.toEqual(conversations);
+    expect(fetch).toHaveBeenCalledWith("/api/colleagues/conversations?agent=ward");
   });
 
-  it("GETs /api/colleagues/conversations?all=true when all is true", async () => {
+  it("GETs /api/colleagues/conversations?all=true&agent=<agent> when all is true", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ conversations: [] }));
 
-    await listColleagueConversations(true);
+    await listColleagueConversations(true, "ward");
 
-    expect(fetch).toHaveBeenCalledWith("/api/colleagues/conversations?all=true");
+    expect(fetch).toHaveBeenCalledWith("/api/colleagues/conversations?all=true&agent=ward");
   });
 
   it("a 409 (switchboard not configured) rejects with an ApiError carrying that status", async () => {
@@ -1130,7 +1130,7 @@ describe("listColleagueConversations", () => {
       jsonResponse({ error: "the switchboard is not configured" }, { status: 409 }),
     );
 
-    await expect(listColleagueConversations(false)).rejects.toMatchObject({
+    await expect(listColleagueConversations(false, "ward")).rejects.toMatchObject({
       status: 409,
     });
   });

@@ -619,22 +619,22 @@ describe("deliveryRefetchInterval", () => {
 });
 
 describe("colleagueConversationsQuery", () => {
-  it("has queryKey ['colleagues', 'conversations', 'list', {all}]", () => {
-    expect(colleagueConversationsQuery(false).queryKey).toEqual([
+  it("has queryKey ['colleagues', 'conversations', 'list', {all, agent}]", () => {
+    expect(colleagueConversationsQuery(false, "ward").queryKey).toEqual([
       "colleagues",
       "conversations",
       "list",
-      { all: false },
+      { all: false, agent: "ward" },
     ]);
-    expect(colleagueConversationsQuery(true).queryKey).toEqual([
+    expect(colleagueConversationsQuery(true, "ward").queryKey).toEqual([
       "colleagues",
       "conversations",
       "list",
-      { all: true },
+      { all: true, agent: "ward" },
     ]);
   });
 
-  it("queryFn GETs /api/colleagues/conversations and unwraps {conversations: [...]}", async () => {
+  it("queryFn GETs /api/colleagues/conversations?agent=<agent> and unwraps {conversations: [...]}", async () => {
     const conversations = [
       {
         task_id: "t-1",
@@ -657,9 +657,9 @@ describe("colleagueConversationsQuery", () => {
     } as Response);
 
     await expect(
-      callQueryFn<typeof conversations>(colleagueConversationsQuery(false)),
+      callQueryFn<typeof conversations>(colleagueConversationsQuery(false, "ward")),
     ).resolves.toEqual(conversations);
-    expect(fetch).toHaveBeenCalledWith("/api/colleagues/conversations");
+    expect(fetch).toHaveBeenCalledWith("/api/colleagues/conversations?agent=ward");
 
     vi.unstubAllGlobals();
   });

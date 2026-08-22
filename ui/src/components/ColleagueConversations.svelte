@@ -1,9 +1,14 @@
 <script lang="ts">
   // The room's watching window (Task 4/B4): every colleague conversation
-  // the switchboard has recorded, live. Room-wide (not per-agent) but
-  // mounted on the Chat tab under the existing ChatPanel per the
-  // operator's ruling (AgentDetail.svelte) — this is the room hearing every
-  // agent talk to a colleague, not a per-agent transcript.
+  // the switchboard has recorded, live. Mounted on the Chat tab under the
+  // existing ChatPanel per the operator's ruling (AgentDetail.svelte).
+  //
+  // Conversation scoping (access-tab refinement wave): `agentName` (the
+  // agent whose Chat tab this is) is threaded into BOTH the list fetch and
+  // the SSE stream as `?agent=`, so this is now the room hearing THIS
+  // agent's own colleague conversations, not every agent's -- the server's
+  // own `_conversation_has_participant` filter (kobo_api.main) is the real
+  // enforcement, this prop just carries which agent to ask it about.
   //
   // Renders nothing at all (silent absence) when the list query 409s — that
   // status means this room has no switchboard wired, which isn't an error
@@ -38,10 +43,15 @@
   import EmptyState from "./EmptyState.svelte";
   import ErrorState from "./ErrorState.svelte";
 
+  let { agentName }: { agentName: string } = $props();
+
   const queryClient = useQueryClient();
 
   const showAll = writable(false);
-  const conversationsOptions = derived(showAll, ($all) => colleagueConversationsQuery($all));
+  // svelte-ignore state_referenced_locally
+  const conversationsOptions = derived(showAll, ($all) =>
+    colleagueConversationsQuery($all, agentName),
+  );
   const conversations = createQuery(conversationsOptions);
 
   const expandedTaskId = writable<string | null>(null);
@@ -91,7 +101,9 @@
     if (!streamActive) {
       return;
     }
-    const source = new EventSource("/api/colleagues/stream");
+    const source = new EventSource(
+      `/api/colleagues/stream?agent=${encodeURIComponent(agentName)}`,
+    );
     const handleFrame = () => {
       queryClient.invalidateQueries({ queryKey: ["colleagues", "conversations", "list"] });
     };

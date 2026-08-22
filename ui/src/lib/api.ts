@@ -188,9 +188,60 @@ export type Invite = {
   decided_at: string | null;
 };
 
+/** One OTHER ready agent implicitly auto-paired with the viewed agent
+ * through shared group membership (`kobo_api.main._team_pairs`, access-tab
+ * refinement wave) -- read-only, never revocable (there's no invite behind
+ * it to revoke). Note the field is `group`, not `group_name` like
+ * `InviteAgentRef` -- a different route, a different (already-shipped)
+ * server shape, not something this side gets to normalize away. */
+export type TeamPair = { name: string; group: string | null };
+
+/** One other READY agent the viewed agent could ask for colleague access
+ * (`GET /api/agents/{name}/requestable`, access-tab refinement wave) --
+ * capped to exactly these five fields, same card-metadata shape
+ * `AgentSummary`/`AgentDetail` already expose, never status/owner/model.
+ * `group` (not `group_name`) matches the route's own already-shipped
+ * response shape. */
+export type RequestableAgent = {
+  name: string;
+  group: string | null;
+  team: string | null;
+  capability: string | null;
+  purpose_tags: string[];
+};
+
+/** One agent the viewed agent already has a pending or accepted invite
+ * toward -- surfaced instead of a `RequestableAgent` row so the picker can
+ * render a status chip rather than silently omitting it. */
+export type AlreadyRequested = { name: string; status: string };
+
+/** `GET /api/agents/{name}/requestable`'s response. */
+export type RequestableResult = {
+  requestable: RequestableAgent[];
+  already: AlreadyRequested[];
+};
+
+/** One directory match (`GET /api/people/search`, access-tab refinement
+ * wave) -- a name plus an email, nothing else. */
+export type Person = { name: string; email: string };
+
+/** `GET /api/people/search`'s response -- `unavailable` is present (and
+ * true) only when the directory couldn't be searched at all (not
+ * configured, or a live failure); a genuine zero-match search reads as a
+ * plain `{people: []}`, no `unavailable` key, per the route's own fail-soft
+ * contract. */
+export type PeopleSearchResult = { people: Person[]; unavailable?: boolean };
+
 /** `GET /api/agents/{name}/invites`'s response: every invite naming this
- * agent, split by which side it's on. */
-export type InvitesResult = { incoming: Invite[]; outgoing: Invite[] };
+ * agent, split by which side it's on, plus `team_pairs` -- the OTHER ready
+ * agents already auto-paired with it through shared group membership
+ * (access-tab refinement wave), rendered as non-revocable rows ahead of the
+ * accepted-invite pairs. */
+export type InvitesResult = {
+  incoming: Invite[];
+  outgoing: Invite[];
+  team_pairs: TeamPair[];
+};
 
 /** One per-user visibility grant (`GET/POST /api/agents/{name}/grants`) --
  * `added_by` is the verified email that created the grant, `null` for one
@@ -621,11 +672,24 @@ export async function teachAgent(
  * when `all` is true. A 409 (the switchboard isn't wired on this room)
  * surfaces as an `ApiError` carrying that status, same as any other route;
  * the caller (`ColleagueConversations.svelte`) treats that status
- * specifically as "render nothing" rather than a scary error banner. */
+ * specifically as "render nothing" rather than a scary error banner.
+ *
+ * `agent` (access-tab refinement wave, conversation scoping) layers ON TOP
+ * of the `all`/agent-only split above -- always sent, never optional: the
+ * caller is always mounted under one specific agent's Chat tab now, so a
+ * viewer only ever sees conversations THAT agent participates in, same
+ * "server decides, UI just carries the filter" discipline as everywhere
+ * else in this room. */
 export async function listColleagueConversations(
   all: boolean,
+  agent: string,
 ): Promise<ColleagueConversation[]> {
-  const res = await fetch(`/api/colleagues/conversations${all ? "?all=true" : ""}`);
+  const params = new URLSearchParams();
+  if (all) {
+    params.set("all", "true");
+  }
+  params.set("agent", agent);
+  const res = await fetch(`/api/colleagues/conversations?${params.toString()}`);
   const data = await parse<{ conversations: ColleagueConversation[] }>(res);
   return data.conversations;
 }
@@ -1164,4 +1228,29 @@ export async function removeGrant(name: string, email: string): Promise<{ remove
     { method: "DELETE" },
   );
   return parse<{ removed: boolean }>(res);
+}
+
+/** `GET /api/agents/{name}/requestable`: every other READY agent `name`
+ * could ask for colleague access, bypassing the caller's own personal
+ * visibility on purpose (the a2a directory of bare names is deliberately
+ * global) -- owner-or-operator of `name` only, server-side. Backs the
+ * Access tab's own browsable picker (AccessPanel.svelte), the primary way
+ * to start a cross-group request now; `RequestAccessCard`'s from-agent
+ * picker on other agents' detail pages still works for a visible-not-yours
+ * agent. */
+export async function fetchRequestable(name: string): Promise<RequestableResult> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/requestable`);
+  return parse<RequestableResult>(res);
+}
+
+/** `GET /api/people/search`: a signed-in-only proxy of the room's directory
+ * search (access-tab refinement wave) -- backs the "Add someone by email"
+ * autocomplete in AccessPanel.svelte. Fail-soft server-side: a directory
+ * outage or a room with no directory wired both answer `{people: [],
+ * unavailable: true}`, never a non-2xx, so this never throws for that
+ * reason -- the caller reads `unavailable` to show a quiet note rather than
+ * treating it as an error. */
+export async function searchPeople(q: string): Promise<PeopleSearchResult> {
+  const res = await fetch(`/api/people/search?q=${encodeURIComponent(q)}`);
+  return parse<PeopleSearchResult>(res);
 }

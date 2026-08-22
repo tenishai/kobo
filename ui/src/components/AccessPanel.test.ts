@@ -4,8 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import AccessPanel from "./AccessPanel.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 
-const EMPTY_INVITES = { incoming: [], outgoing: [] };
+const EMPTY_INVITES = { incoming: [], outgoing: [], team_pairs: [] };
 const EMPTY_GRANTS = { grants: [] };
+const EMPTY_REQUESTABLE = { requestable: [], already: [] };
 
 describe("AccessPanel", () => {
   beforeEach(() => {
@@ -18,6 +19,7 @@ describe("AccessPanel", () => {
     stubFetch({
       "/api/agents/warden/invites": EMPTY_INVITES,
       "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
 
@@ -30,6 +32,7 @@ describe("AccessPanel", () => {
     stubFetch({
       "/api/agents/warden/invites": EMPTY_INVITES,
       "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: null });
 
@@ -44,6 +47,7 @@ describe("AccessPanel", () => {
       "/api/agents/warden/grants": {
         grants: [{ email: "guest@example.com", added_by: "owner@example.com" }],
       },
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: null });
 
@@ -68,6 +72,7 @@ describe("AccessPanel", () => {
     stubFetch({
       "/api/agents/warden/invites": EMPTY_INVITES,
       "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: null });
 
@@ -89,11 +94,114 @@ describe("AccessPanel", () => {
     expect(body).toEqual({ email: "new-person@example.com" });
   });
 
-  // --- Agents section ----------------------------------------------------
+  // --- People: directory-backed autocomplete (access-tab refinement wave) --
+
+  it("debounces the directory search as the person types, shows a dropdown of Name <email> rows, and a pick fills the field", async () => {
+    stubFetch({
+      "/api/agents/warden/invites": EMPTY_INVITES,
+      "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
+      "/api/people/search": {
+        people: [{ name: "Alice Smith", email: "alice@example.com" }],
+      },
+    });
+    renderWithClient(AccessPanel, { agentName: "warden", groupName: null });
+
+    const input = (await screen.findByLabelText(
+      "Add someone by email",
+    )) as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: "al" } });
+
+    const suggestion = await screen.findByText(
+      "Alice Smith <alice@example.com>",
+      {},
+      { timeout: 2000 },
+    );
+    expect(suggestion).not.toBeNull();
+
+    // The search only fires once the debounce settles, and only with the
+    // >= 2 character query typed.
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([url]) => String(url).includes("/api/people/search?q=al")),
+    ).toBe(true);
+
+    await fireEvent.click(suggestion);
+
+    expect(input.value).toBe("alice@example.com");
+    expect(screen.queryByText("Alice Smith <alice@example.com>")).toBeNull();
+  });
+
+  it("never searches below two characters", async () => {
+    stubFetch({
+      "/api/agents/warden/invites": EMPTY_INVITES,
+      "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
+    });
+    renderWithClient(AccessPanel, { agentName: "warden", groupName: null });
+
+    const input = await screen.findByLabelText("Add someone by email");
+    await fireEvent.input(input, { target: { value: "a" } });
+
+    // Give the 250ms debounce a chance to have fired if it were going to.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(
+      vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/api/people/search")),
+    ).toBe(false);
+  });
+
+  it("keeps the plain typed-email entry working with a quiet note when the directory is unavailable", async () => {
+    stubFetch({
+      "/api/agents/warden/invites": EMPTY_INVITES,
+      "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
+      "/api/people/search": { people: [], unavailable: true },
+    });
+    renderWithClient(AccessPanel, { agentName: "warden", groupName: null });
+
+    const input = await screen.findByLabelText("Add someone by email");
+    await fireEvent.input(input, { target: { value: "someone@example.com" } });
+
+    expect(
+      await screen.findByText(/directory search is unavailable/i, {}, { timeout: 2000 }),
+    ).not.toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Add" }));
+
+    const call = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([url, init]) =>
+          String(url) === "/api/agents/warden/grants" &&
+          (init as RequestInit | undefined)?.method === "POST",
+      );
+    expect(call).toBeDefined();
+    const body = JSON.parse((call as [RequestInfo | URL, RequestInit])[1].body as string);
+    expect(body).toEqual({ email: "someone@example.com" });
+  });
+
+  // --- Agents section: headings (access-tab refinement wave renames) ----
+
+  it("renames the incoming and outgoing section headings", async () => {
+    stubFetch({
+      "/api/agents/warden/invites": EMPTY_INVITES,
+      "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
+    });
+    renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
+
+    expect(await screen.findByText("Agent requests to your agent")).not.toBeNull();
+    expect(screen.getByText("Request access to another team's agent")).not.toBeNull();
+    expect(screen.queryByText("Incoming requests")).toBeNull();
+    expect(screen.queryByText("Outgoing requests")).toBeNull();
+  });
 
   it("shows an incoming pending invite with Accept and Decline, wired to the right endpoints", async () => {
     stubFetch({
       "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
       "/api/agents/warden/invites": {
         incoming: [
           {
@@ -108,6 +216,7 @@ describe("AccessPanel", () => {
           },
         ],
         outgoing: [],
+        team_pairs: [],
       },
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
@@ -129,6 +238,7 @@ describe("AccessPanel", () => {
   it("declining an incoming invite calls the decline endpoint", async () => {
     stubFetch({
       "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
       "/api/agents/warden/invites": {
         incoming: [
           {
@@ -143,6 +253,7 @@ describe("AccessPanel", () => {
           },
         ],
         outgoing: [],
+        team_pairs: [],
       },
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
@@ -160,36 +271,140 @@ describe("AccessPanel", () => {
     ).toBe(true);
   });
 
-  it("shows an outgoing invite with a state chip and no action buttons", async () => {
+  // --- Agents section: the outgoing picker (access-tab refinement wave) -
+
+  it("the outgoing picker lists requestable candidates with group + purpose (capability, then tags, then a fallback), and fires a request", async () => {
     stubFetch({
       "/api/agents/warden/grants": EMPTY_GRANTS,
-      "/api/agents/warden/invites": {
-        incoming: [],
-        outgoing: [
+      "/api/agents/warden/invites": EMPTY_INVITES,
+      "/api/agents/warden/requestable": {
+        requestable: [
           {
-            id: 9,
-            from_agent: "warden",
-            to_agent: { name: "payroll-bot", group_name: "payments-eng" },
-            status: "pending",
-            requested_by: "owner@example.com",
-            decided_by: null,
-            created_at: "2026-08-20T00:00:00Z",
-            decided_at: null,
+            name: "payroll-bot",
+            group: "payments-eng",
+            team: "payments",
+            capability: "Handles refund inquiries.",
+            purpose_tags: ["billing", "refunds"],
+          },
+          {
+            name: "tagged-only-bot",
+            group: "growth",
+            team: null,
+            capability: null,
+            purpose_tags: ["scheduling", "reminders"],
+          },
+          {
+            name: "no-description-bot",
+            group: "growth",
+            team: null,
+            capability: null,
+            purpose_tags: [],
           },
         ],
+        already: [],
       },
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
 
     expect(await screen.findByText("payroll-bot")).not.toBeNull();
+    expect(screen.getByText("payments-eng")).not.toBeNull();
+    expect(screen.getByText("Handles refund inquiries.")).not.toBeNull();
+    expect(screen.getByText("scheduling, reminders")).not.toBeNull();
+    expect(screen.getByText("No description yet.")).not.toBeNull();
+
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Request access to payroll-bot" }),
+    );
+
+    const call = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([url, init]) =>
+          String(url) === "/api/agents/warden/invites" &&
+          (init as RequestInit | undefined)?.method === "POST",
+      );
+    expect(call).toBeDefined();
+    const body = JSON.parse((call as [RequestInfo | URL, RequestInit])[1].body as string);
+    expect(body).toEqual({ to_agent: "payroll-bot" });
+  });
+
+  it("rows already asked (pending or accepted) render a status chip instead of a Request access button", async () => {
+    stubFetch({
+      "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/invites": EMPTY_INVITES,
+      "/api/agents/warden/requestable": {
+        requestable: [],
+        already: [
+          { name: "iris", status: "pending" },
+          { name: "clio", status: "accepted" },
+        ],
+      },
+    });
+    renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
+
+    expect(await screen.findByText("iris")).not.toBeNull();
     expect(screen.getByText("pending")).not.toBeNull();
-    expect(screen.queryByRole("button", { name: /accept/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /decline/i })).toBeNull();
+    expect(screen.getByText("clio")).not.toBeNull();
+    expect(screen.getByText("accepted")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: /request access to iris/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /request access to clio/i })).toBeNull();
+  });
+
+  // --- Agents section: Active pairs (team_pairs + accepted invites) -----
+
+  it("Active pairs lists team_pairs first as non-revocable 'auto' rows, formatted '<name> - same team (<group>)', ahead of accepted pairs", async () => {
+    stubFetch({
+      "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
+      "/api/agents/warden/invites": {
+        incoming: [],
+        outgoing: [
+          {
+            id: 21,
+            from_agent: "warden",
+            to_agent: { name: "payroll-bot", group_name: "payments-eng" },
+            status: "accepted",
+            requested_by: "owner@example.com",
+            decided_by: "payroll-owner@example.com",
+            created_at: "2026-08-20T00:00:00Z",
+            decided_at: "2026-08-21T00:00:00Z",
+          },
+        ],
+        team_pairs: [
+          { name: "network", group: "growth" },
+          { name: "relay", group: "growth" },
+          { name: "gemini-one", group: "growth" },
+        ],
+      },
+    });
+    const { container } = renderWithClient(AccessPanel, {
+      agentName: "warden",
+      groupName: "growth",
+    });
+
+    await screen.findByText("network - same team (growth)");
+    expect(screen.getByText("relay - same team (growth)")).not.toBeNull();
+    expect(screen.getByText("gemini-one - same team (growth)")).not.toBeNull();
+    expect(screen.getAllByText("auto")).toHaveLength(3);
+    // Non-revocable: the only Revoke button anywhere belongs to the trailing
+    // accepted pair, never one of the three auto rows.
+    expect(screen.getAllByRole("button", { name: /revoke/i })).toHaveLength(1);
+
+    const rowNames = Array.from(
+      container.querySelectorAll(".access-panel__row-name"),
+    ).map((el) => el.textContent);
+    expect(rowNames).toEqual([
+      "network - same team (growth)",
+      "relay - same team (growth)",
+      "gemini-one - same team (growth)",
+      "warden and payroll-bot",
+    ]);
   });
 
   it("shows an accepted pair with Revoke, wired to the delete endpoint", async () => {
     stubFetch({
       "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
       "/api/agents/warden/invites": {
         incoming: [],
         outgoing: [
@@ -204,14 +419,11 @@ describe("AccessPanel", () => {
             decided_at: "2026-08-21T00:00:00Z",
           },
         ],
+        team_pairs: [],
       },
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
 
-    // This same accepted invite also shows in "Outgoing requests" (that
-    // section lists every outgoing invite regardless of status, chip only,
-    // no actions) — so the query below is scoped to the row carrying the
-    // Revoke button, not a bare substring match that would hit both rows.
     await screen.findByText("warden and payroll-bot");
     await fireEvent.click(screen.getByRole("button", { name: /revoke/i }));
 
@@ -232,6 +444,7 @@ describe("AccessPanel", () => {
     // right where they'd click Revoke.
     stubFetch({
       "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
       "/api/agents/warden/invites": {
         incoming: [],
         outgoing: [
@@ -246,6 +459,7 @@ describe("AccessPanel", () => {
             decided_at: "2026-08-21T00:00:00Z",
           },
         ],
+        team_pairs: [],
       },
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
@@ -258,6 +472,7 @@ describe("AccessPanel", () => {
   it("does not show the revocation-lag note when there are no active pairs", async () => {
     stubFetch({
       "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
       "/api/agents/warden/invites": EMPTY_INVITES,
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
@@ -266,15 +481,16 @@ describe("AccessPanel", () => {
     expect(screen.queryByText("Takes effect within a few minutes.")).toBeNull();
   });
 
-  it("shows empty-state copy when there are no invites at all", async () => {
+  it("shows empty-state copy when there are no invites, pairs, or requestable agents", async () => {
     stubFetch({
       "/api/agents/warden/grants": EMPTY_GRANTS,
       "/api/agents/warden/invites": EMPTY_INVITES,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
 
     expect(await screen.findByText(/no pending requests/i)).not.toBeNull();
-    expect(screen.getByText(/no outgoing requests/i)).not.toBeNull();
+    expect(await screen.findByText(/no other agents to request access from/i)).not.toBeNull();
     expect(screen.getByText(/no cross-group pairs/i)).not.toBeNull();
   });
 });

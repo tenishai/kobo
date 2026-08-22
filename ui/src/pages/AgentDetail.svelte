@@ -446,7 +446,7 @@
             {/if}
           {:else if tab === "chat"}
             <ChatPanel agentName={data.name} frozen={isFrozen(data.status)} />
-            <ColleagueConversations />
+            <ColleagueConversations agentName={data.name} />
           {:else if tab === "memory"}
             <MemoryPanel agentName={data.name} frozen={isFrozen(data.status)} />
           {:else if tab === "skills"}

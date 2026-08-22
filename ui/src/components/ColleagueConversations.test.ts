@@ -98,7 +98,7 @@ describe("ColleagueConversations", () => {
       "/api/colleagues/conversations": { conversations: [AGENT_CONVERSATION] },
     });
 
-    renderWithClient(ColleagueConversations);
+    renderWithClient(ColleagueConversations, { agentName: "warden" });
 
     expect(await screen.findByText("iris")).not.toBeNull();
     expect(screen.getByText("clio")).not.toBeNull();
@@ -106,6 +106,36 @@ describe("ColleagueConversations", () => {
     expect(
       screen.getByText("Sure, here's how you configure that."),
     ).not.toBeNull();
+  });
+
+  it("the list fetch carries ?agent=<the viewed agent> (conversation scoping, access-tab refinement wave)", async () => {
+    stubFetch({
+      "/api/colleagues/conversations": { conversations: [AGENT_CONVERSATION] },
+    });
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("iris");
+
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([url]) =>
+          String(url).includes("/api/colleagues/conversations") &&
+          String(url).includes("agent=ward"),
+        ),
+    ).toBe(true);
+  });
+
+  it("the SSE stream URL also carries ?agent=<the viewed agent>", async () => {
+    stubFetch({
+      "/api/colleagues/conversations": { conversations: [AGENT_CONVERSATION] },
+    });
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("iris");
+
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(FakeEventSource.instances[0].url).toBe("/api/colleagues/stream?agent=ward");
   });
 
   it('"Show everything" toggles the all=true request and reveals every caller', async () => {
@@ -126,7 +156,7 @@ describe("ColleagueConversations", () => {
       }),
     );
 
-    renderWithClient(ColleagueConversations);
+    renderWithClient(ColleagueConversations, { agentName: "warden" });
     await screen.findByText("iris");
     expect(screen.queryByText("kgreiner@example.com")).toBeNull();
 
@@ -144,7 +174,7 @@ describe("ColleagueConversations", () => {
       "/api/colleagues/conversations": { conversations: [AGENT_CONVERSATION] },
     });
 
-    renderWithClient(ColleagueConversations);
+    renderWithClient(ColleagueConversations, { agentName: "warden" });
     await screen.findByText("iris");
 
     expect(
@@ -167,7 +197,7 @@ describe("ColleagueConversations", () => {
       "/api/colleagues/conversations": { conversations: [AGENT_CONVERSATION] },
     });
 
-    renderWithClient(ColleagueConversations);
+    renderWithClient(ColleagueConversations, { agentName: "warden" });
     await screen.findByText("iris");
 
     const callsBefore = vi
@@ -214,7 +244,7 @@ describe("ColleagueConversations", () => {
       }),
     );
 
-    renderWithClient(ColleagueConversations);
+    renderWithClient(ColleagueConversations, { agentName: "warden" });
     await screen.findByText("iris");
     expect(FakeEventSource.instances).toHaveLength(1);
     const firstSource = FakeEventSource.instances[0];
@@ -232,7 +262,7 @@ describe("ColleagueConversations", () => {
   it('shows the empty state "No colleague conversations yet. They start talking once an agent asks for help."', async () => {
     stubFetch({ "/api/colleagues/conversations": { conversations: [] } });
 
-    renderWithClient(ColleagueConversations);
+    renderWithClient(ColleagueConversations, { agentName: "warden" });
 
     expect(
       await screen.findByText(
@@ -252,7 +282,7 @@ describe("ColleagueConversations", () => {
       ),
     );
 
-    const { container } = renderWithClient(ColleagueConversations);
+    const { container } = renderWithClient(ColleagueConversations, { agentName: "warden" });
 
     // A false `{#if}` still leaves Svelte's own anchor comments in the DOM
     // (compiled-output detail) - textContent (no visible text/elements) is

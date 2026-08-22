@@ -43,12 +43,25 @@
 //                                                      already verified
 //   ["names", "suggestions", {who_they_are, what_they_do}]
 //                                                    - five name-suggestion cards for a committed persona
-//   ["colleagues", "conversations", "list", {all}]  - the watching window's
+//   ["colleagues", "conversations", "list", {all, agent}]
+//                                                    - the watching window's
 //                                                      conversation list
-//                                                      (Task 4/B4)
+//                                                      (Task 4/B4), scoped to
+//                                                      one agent (access-tab
+//                                                      refinement wave)
 //   ["colleagues", "conversations", "detail", taskId]
 //                                                    - one conversation's
 //                                                      full detail + events
+//   ["agents", name, "requestable"]                 - the other ready
+//                                                      agents `name` could
+//                                                      ask for colleague
+//                                                      access (access-tab
+//                                                      refinement wave)
+//   ["people", "search", q]                         - a directory search for
+//                                                      the add-by-email
+//                                                      autocomplete
+//                                                      (access-tab
+//                                                      refinement wave)
 
 import { queryOptions, type QueryClient } from "@tanstack/svelte-query";
 import {
@@ -59,6 +72,7 @@ import {
   type AgentSkill,
   type AgentSlack,
   type AgentSummary,
+  type AlreadyRequested,
   type CatalogEntry,
   type ChatMessage,
   type ColleagueConversation,
@@ -71,10 +85,15 @@ import {
   type KnowledgeFile,
   type NameSuggestion,
   type OrgStatus,
+  type PeopleSearchResult,
+  type Person,
   type PersonaDistillResult,
   type PersonaDraft,
   type PersonaForm,
+  type RequestableAgent,
+  type RequestableResult,
   type TeamOptions,
+  type TeamPair,
   type ToolingEnforcement,
   type ToolingFile,
   type ToolingListResponse,
@@ -101,6 +120,7 @@ import {
   fetchModels,
   fetchNameSuggestions,
   fetchOrgStatus,
+  fetchRequestable,
   fetchSlackManifest,
   fetchTeamOptions,
   fetchTeams,
@@ -124,6 +144,7 @@ import {
   saveKnowledgeFile,
   saveLocalSkill,
   saveSlackChannels,
+  searchPeople,
   searchPersonas,
   searchSkills,
   teachAgent,
@@ -785,9 +806,14 @@ export function invitesQuery(name: string) {
  * every other agent-scoped mutation here, because the "Request colleague
  * access" affordance (RequestAccessCard.svelte) lets the human pick which
  * of their own agents is asking via a `<select>`, so the FROM side can
- * change between renders of the same mounted component. On success,
- * invalidates the FROM agent's own invites query so the fresh outgoing row
- * shows up if its Access tab happens to already be open elsewhere.
+ * change between renders of the same mounted component. The SAME factory
+ * backs AccessPanel's own browsable picker (access-tab refinement wave) --
+ * there the FROM side is fixed (the viewed agent), but it's still passed
+ * with `mutate` rather than bound in, so one mounted mutation serves every
+ * row's "Request access" button. On success, invalidates the FROM agent's
+ * own invites query so the fresh outgoing row shows up if its Access tab
+ * happens to already be open elsewhere, and its requestable query so a
+ * freshly-requested candidate moves from the browsable list into "already".
  */
 export function createInviteMutation(queryClient: QueryClient) {
   return {
@@ -797,8 +823,43 @@ export function createInviteMutation(queryClient: QueryClient) {
       queryClient.invalidateQueries({
         queryKey: ["agents", variables.fromAgent, "invites"],
       });
+      queryClient.invalidateQueries({
+        queryKey: ["agents", variables.fromAgent, "requestable"],
+      });
     },
   };
+}
+
+/**
+ * The other READY agents `name` could ask for colleague access (access-tab
+ * refinement wave) -- `GET /api/agents/{name}/requestable`, owner-or-
+ * operator only server-side, same visibility probe discipline `invitesQuery`
+ * documents. No polling: `createInviteMutation` above invalidates this key
+ * on a successful request, same as it already does for `invitesQuery`.
+ */
+export function requestableQuery(name: string) {
+  return queryOptions({
+    queryKey: ["agents", name, "requestable"] as const,
+    queryFn: () => fetchRequestable(name),
+  });
+}
+
+/**
+ * A directory search for the "Add someone by email" autocomplete (access-tab
+ * refinement wave) -- `GET /api/people/search`, disabled below two
+ * characters so a bare keystroke or two never rounds trips (and never risks
+ * the route's own empty-`q` 422). The route itself is fail-soft (a directory
+ * outage or none configured both read as `{people: [], unavailable: true}`,
+ * never a thrown error), so callers only ever branch on `data.unavailable`,
+ * never `isError` for this one.
+ */
+export function peopleSearchQuery(q: string) {
+  const trimmed = q.trim();
+  return queryOptions({
+    queryKey: ["people", "search", trimmed] as const,
+    queryFn: () => searchPeople(trimmed),
+    enabled: trimmed.length >= 2,
+  });
 }
 
 /**
@@ -957,11 +1018,16 @@ export function uploadAvatarMutation(queryClient: QueryClient, name: string) {
  * A 409 (this room has no switchboard wired) surfaces through `$query.
  * error` as an `ApiError` with `status === 409`; the component treats that
  * specifically as "render nothing" rather than an error state.
+ *
+ * `agent` (access-tab refinement wave, conversation scoping) is always
+ * passed now -- the caller (`ColleagueConversations.svelte`) is mounted
+ * under one specific agent's Chat tab, so its own watching window only ever
+ * shows conversations THAT agent participates in.
  */
-export function colleagueConversationsQuery(all: boolean) {
+export function colleagueConversationsQuery(all: boolean, agent: string) {
   return queryOptions({
-    queryKey: ["colleagues", "conversations", "list", { all }] as const,
-    queryFn: () => listColleagueConversations(all),
+    queryKey: ["colleagues", "conversations", "list", { all, agent }] as const,
+    queryFn: () => listColleagueConversations(all, agent),
   });
 }
 
@@ -988,6 +1054,7 @@ export type {
   AgentSkill,
   AgentSlack,
   AgentSummary,
+  AlreadyRequested,
   CatalogEntry,
   ChatMessage,
   ColleagueConversation,
@@ -1000,10 +1067,15 @@ export type {
   KnowledgeFile,
   NameSuggestion,
   OrgStatus,
+  PeopleSearchResult,
+  Person,
   PersonaDistillResult,
   PersonaDraft,
   PersonaForm,
+  RequestableAgent,
+  RequestableResult,
   TeamOptions,
+  TeamPair,
   ToolingEnforcement,
   ToolingFile,
   ToolingListResponse,
