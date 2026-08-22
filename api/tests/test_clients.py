@@ -62,11 +62,12 @@ from kobo_api.clients import (
     _write_slack_tokens,
     cabal_enabled,
     cabal_operator_token,
+    filter_cabal_event_stream,
     image_tag,
     installation_token_provider,
 )
 from kobo_api.config import Config, GroupChoice
-from kobo_api.groups import OktaGroupResolver
+from kobo_api.groups import OktaGroupResolver, OktaPeopleSearch
 from tests.fakes import (
     FakeAgent,
     FakeCloud,
@@ -4578,6 +4579,164 @@ def test_cabal_stream_events_closes_promptly_on_early_cancellation():
     assert first_chunk
 
 
+# --- filter_cabal_event_stream: colleagues conversation scoping on the SSE
+# stream (access-tab refinement wave, conversation scoping) ------------------
+#
+# The switchboard's own wire shape (observed straight from cabal's event
+# publisher): every frame's `data:` line is JSON `{"event_type": ...,
+# "task_id": ..., "payload": {...}}`. Only `dispatch_start`'s own payload
+# ever embeds who's talking to whom (`target`/`caller`, the same two keys
+# `CabalClient.list_conversations`'s row shape carries as `target_agent`/
+# `caller_agent`); every later event for that same task_id (`dispatch_
+# success`/`dispatch_failure`) carries only state/error, so the filter must
+# remember what an earlier `dispatch_start` in THIS stream said about that
+# task_id to judge them. `caller` is only ever `agent:<name>` for a genuine
+# colleague-to-colleague call (`CabalClient.mint_colleague`'s own `sub`
+# shape) -- a human/service caller never takes that form.
+
+
+def _dispatch_start_frame(task_id: str, *, target: str | None, caller: str | None) -> bytes:
+    payload = {
+        "event_type": "dispatch_start",
+        "task_id": task_id,
+        "payload": {"target": target, "caller": caller},
+    }
+    return f"event: dispatch_start\ndata: {json.dumps(payload)}\n\n".encode()
+
+
+def _dispatch_success_frame(task_id: str, *, state: str = "completed") -> bytes:
+    payload = {"event_type": "dispatch_success", "task_id": task_id, "payload": {"state": state}}
+    return f"event: dispatch_success\ndata: {json.dumps(payload)}\n\n".encode()
+
+
+def _hello_frame() -> bytes:
+    payload = {"msg": "connected", "subscriber_count": 1}
+    return f"event: hello\ndata: {json.dumps(payload)}\n\n".encode()
+
+
+async def _achunks(chunks: list[bytes]):
+    for chunk in chunks:
+        yield chunk
+
+
+def _filtered(chunks: list[bytes], agent: str) -> list[bytes]:
+    async def run() -> list[bytes]:
+        return [c async for c in filter_cabal_event_stream(_achunks(chunks), agent)]
+
+    return asyncio.run(run())
+
+
+def test_filter_forwards_dispatch_start_matching_target():
+    frame = _dispatch_start_frame("t-1", target="clio", caller="agent:iris")
+    assert _filtered([frame], "clio") == [frame]
+
+
+def test_filter_forwards_dispatch_start_matching_caller():
+    frame = _dispatch_start_frame("t-1", target="clio", caller="agent:iris")
+    assert _filtered([frame], "iris") == [frame]
+
+
+def test_filter_drops_dispatch_start_matching_neither_side():
+    frame = _dispatch_start_frame("t-1", target="clio", caller="agent:iris")
+    assert _filtered([frame], "warden") == []
+
+
+def test_filter_drops_dispatch_start_with_a_human_caller_when_scoped_to_target_name():
+    # "clio" as a plain string could coincidentally equal a human email's
+    # local part -- the caller side only ever matches the "agent:<name>"
+    # form, never a bare comparison against the raw caller_agent string.
+    frame = _dispatch_start_frame("t-1", target="warden", caller="operator:clio@example.com")
+    assert _filtered([frame], "clio") == []
+
+
+def test_filter_forwards_a_later_event_for_a_matched_tasks_task_id():
+    start = _dispatch_start_frame("t-1", target="clio", caller="agent:iris")
+    success = _dispatch_success_frame("t-1")
+    assert _filtered([start, success], "clio") == [start, success]
+
+
+def test_filter_drops_a_later_event_for_an_unmatched_tasks_task_id():
+    start = _dispatch_start_frame("t-1", target="warden", caller="agent:iris")
+    success = _dispatch_success_frame("t-1")
+    assert _filtered([start, success], "clio") == []
+
+
+def test_filter_drops_an_event_for_a_task_id_this_stream_never_saw_a_start_for():
+    # The conversation began before this connection opened -- stream_events
+    # never replays history, so this filter has no participant memory for
+    # the task_id at all. Fail-closed: an event this filter cannot confirm
+    # belongs to `agent` is dropped, never guessed as a match.
+    success = _dispatch_success_frame("t-unseen")
+    assert _filtered([success], "clio") == []
+
+
+def test_filter_always_forwards_the_hello_banner_regardless_of_agent():
+    hello = _hello_frame()
+    assert _filtered([hello], "clio") == [hello]
+
+
+def test_filter_always_forwards_a_bare_keepalive_comment():
+    comment = b": keepalive\n\n"
+    assert _filtered([comment], "clio") == [comment]
+
+
+def test_filter_handles_frames_split_across_chunk_boundaries():
+    frame = _dispatch_start_frame("t-1", target="clio", caller="agent:iris")
+    # Split mid-frame -- stream_events' chunks carry no guarantee of landing
+    # on a frame boundary, so the filter must buffer and reassemble.
+    midpoint = len(frame) // 2
+    chunks = [frame[:midpoint], frame[midpoint:]]
+    assert _filtered(chunks, "clio") == [frame]
+
+
+def test_filter_multiple_conversations_only_the_matching_ones_survive():
+    clio_start = _dispatch_start_frame("t-1", target="clio", caller="agent:iris")
+    clio_success = _dispatch_success_frame("t-1")
+    warden_start = _dispatch_start_frame("t-2", target="warden", caller="service:kobo")
+    warden_success = _dispatch_success_frame("t-2")
+
+    result = _filtered([clio_start, warden_start, clio_success, warden_success], "clio")
+
+    assert result == [clio_start, clio_success]
+
+
+def test_filter_discards_a_trailing_partial_frame_when_the_stream_ends_mid_frame():
+    frame = _dispatch_start_frame("t-1", target="clio", caller="agent:iris")
+    # No closing blank line on the second chunk -- the connection dropped
+    # mid-frame. Must not raise; the incomplete tail is simply discarded,
+    # matching stream_events' own "ends the generator, never raises"
+    # contract.
+    chunks = [frame, b"event: dispatch_start\ndata: {\"incomplete"]
+    assert _filtered(chunks, "clio") == [frame]
+
+
+def test_filter_composes_with_stream_events_end_to_end():
+    body = (
+        _dispatch_start_frame("t-1", target="clio", caller="agent:iris")
+        + _dispatch_success_frame("t-1")
+        + _dispatch_start_frame("t-2", target="warden", caller="agent:iris")
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        async_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    async def run() -> list[bytes]:
+        return [
+            c async for c in filter_cabal_event_stream(client.stream_events(), "clio")
+        ]
+
+    result = asyncio.run(run())
+    assert result == [
+        _dispatch_start_frame("t-1", target="clio", caller="agent:iris"),
+        _dispatch_success_frame("t-1"),
+    ]
+
+
 def test_cabal_error_is_a_client_error_subclass():
     # So Task 2/3 call sites that only know the general ClientError
     # contract (the same one every other client here raises) keep working
@@ -5469,6 +5628,54 @@ def test_clients_real_wires_groups_merging_duplicate_config_names(monkeypatch):
         "okta-sre-usa": "SRE",
         "okta-sre-india": "SRE",
     }
+
+
+# --- Clients.real() people-search wiring (access-tab refinement wave) --------
+#
+# Deliberately independent of `config.groups` (unlike `clients.groups`
+# above, which stays None on an empty `groups` list) -- people search is a
+# directory-wide lookup, not an ACL feature, so it only ever needs the two
+# things every Okta call in this room needs: the env token and the domain.
+
+
+def test_clients_real_leaves_people_search_none_when_okta_token_env_unset(monkeypatch):
+    monkeypatch.delenv("OKTA_API_TOKEN", raising=False)
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        okta_domain="acme.okta.com",
+    )
+    clients = Clients.real(config)
+    assert clients.people_search is None
+
+
+def test_clients_real_leaves_people_search_none_when_okta_domain_unset(monkeypatch):
+    monkeypatch.setenv("OKTA_API_TOKEN", "okta-token")
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        okta_domain="",
+    )
+    clients = Clients.real(config)
+    assert clients.people_search is None
+
+
+def test_clients_real_wires_people_search_even_with_no_acl_groups_configured(monkeypatch):
+    # The contrast with `clients.groups` above: an empty `groups` list
+    # leaves the ACL resolver unwired, but people search has nothing to do
+    # with ACL groups at all -- token + domain alone are enough.
+    monkeypatch.setenv("OKTA_API_TOKEN", "okta-token")
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        okta_domain="acme.okta.com",
+        groups=[],
+    )
+    clients = Clients.real(config)
+    assert clients.groups is None
+    assert isinstance(clients.people_search, OktaPeopleSearch)
+    assert clients.people_search._domain == "acme.okta.com"
+    assert clients.people_search._token == "okta-token"
 
 
 # --- Clients.real() GitHub App wiring (Task 3) -------------------------------

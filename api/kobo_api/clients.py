@@ -39,7 +39,7 @@ from urllib.parse import quote
 import httpx
 
 from kobo_api.config import Config, GroupChoice
-from kobo_api.groups import GroupResolver, OktaGroupResolver
+from kobo_api.groups import GroupResolver, OktaGroupResolver, OktaPeopleSearch
 
 log = logging.getLogger(__name__)
 
@@ -2913,6 +2913,128 @@ class CabalClient:
             return
 
 
+# --- Colleagues conversation scoping on the SSE stream (access-tab refinement
+# wave, conversation scoping) -------------------------------------------------
+#
+# `GET /api/colleagues/stream` (kobo_api.main) wraps `CabalClient.stream_
+# events()`'s raw byte passthrough with this filter whenever the caller
+# supplies `?agent=<name>` -- forwarding only the frames belonging to a
+# conversation that agent participates in. The switchboard's own event wire
+# shape: every frame's `data:` line is JSON `{"event_type": ..., "task_id":
+# ..., "payload": {...}}`. Only `dispatch_start`'s own payload ever embeds
+# who's talking to whom (`target`/`caller`) -- the same two facts `CabalClient.
+# list_conversations`'s row shape carries as `target_agent`/`caller_agent`
+# (see that method's own docstring); every later event for that task_id
+# (`dispatch_success`/`dispatch_failure`) carries only state/error, never the
+# participants again.
+
+
+def _sse_frame_json(frame: bytes) -> tuple[str | None, dict | None]:
+    """Parse one SSE frame's body (the bytes between two `\\n\\n`
+    terminators, terminator not included) into `(event_name, payload)`.
+    `event_name` comes from the frame's `event:` line (`None` when absent).
+    `payload` is the JSON-decoded `data:` line joined across every `data:`
+    line the frame carries (`None` when there's no `data:` line at all --
+    a bare keepalive comment -- or when what's there isn't valid JSON, or
+    isn't a JSON object once parsed): callers must treat `payload is None`
+    as "nothing here to filter on," never as an empty dict.
+    """
+    event_name: str | None = None
+    data_lines: list[str] = []
+    for raw_line in frame.split(b"\n"):
+        line = raw_line.decode("utf-8", errors="replace")
+        if line.startswith("event:"):
+            event_name = line[len("event:") :].strip()
+        elif line.startswith("data:"):
+            data_lines.append(line[len("data:") :].strip())
+    if not data_lines:
+        return event_name, None
+    try:
+        payload = json.loads("\n".join(data_lines))
+    except ValueError:
+        return event_name, None
+    return event_name, payload if isinstance(payload, dict) else None
+
+
+def _event_matches_agent(
+    payload: dict, agent: str, task_participants: dict[str, bool]
+) -> bool:
+    """Whether one decoded switchboard event names `agent` as a
+    participant, consulting (and updating) `task_participants` -- the
+    per-connection `task_id -> matches` memory `filter_cabal_event_stream`
+    keeps for the life of one SSE connection.
+
+    Only `dispatch_start`'s own payload carries the conversation's
+    participants directly (`target`/`caller`); every later event for the
+    same `task_id` carries only state/error, so this looks up what an
+    earlier `dispatch_start` in THIS SAME connection already recorded for
+    that `task_id`. A `task_id` this connection never saw a `dispatch_
+    start` for (the conversation began before this connection opened --
+    the switchboard never replays history over this feed, `CabalClient.
+    stream_events`'s own docstring) has no participant memory to consult
+    and is dropped -- fail-closed, the same posture `kobo_api.groups`'
+    `None`-means-grant-nothing contract takes on an unanswerable question:
+    an event this filter cannot confirm belongs to `agent` is treated as
+    if it doesn't.
+
+    `agent` matches either side: as the TARGET (a bare name, `payload.
+    get("target")`) or as the CALLER (`payload.get("caller")`, which is
+    only ever `agent:<name>` for a genuine colleague-to-colleague call --
+    `CabalClient.mint_colleague`'s own `sub` shape -- so a human/service
+    caller can never falsely match here).
+    """
+    task_id = payload.get("task_id")
+    inner = payload.get("payload")
+    target = inner.get("target") if isinstance(inner, dict) else None
+    caller = inner.get("caller") if isinstance(inner, dict) else None
+    if target is not None or caller is not None:
+        matches = target == agent or caller == f"agent:{agent}"
+        if isinstance(task_id, str):
+            task_participants[task_id] = matches
+        return matches
+    if isinstance(task_id, str) and task_id in task_participants:
+        return task_participants[task_id]
+    return False
+
+
+async def filter_cabal_event_stream(
+    chunks: AsyncIterator[bytes], agent: str
+) -> AsyncIterator[bytes]:
+    """Wrap `CabalClient.stream_events()`'s raw byte passthrough with the
+    colleagues conversation-scoping filter (`?agent=` on `GET /api/
+    colleagues/stream`, kobo_api.main): forwards only frames belonging to a
+    conversation `agent` participates in (`_event_matches_agent` above),
+    plus every frame this filter can't attribute to any one conversation at
+    all -- a bare keepalive comment, or the connection's own "hello" banner
+    -- since those aren't conversation content at all, so scoping to one
+    agent has no bearing on them and dropping them would only break the
+    client's own connection bookkeeping for no privacy benefit.
+
+    Buffers raw bytes and re-splits on the SSE frame terminator (a blank
+    line, `\\n\\n`) rather than trusting chunk boundaries to line up with
+    frame boundaries -- `stream_events` gives no such guarantee, same "don't
+    trust the transport's own chunking" discipline as any other byte-stream
+    parser. A trailing partial frame still in the buffer when the upstream
+    ends (the connection dropped mid-frame) is simply discarded, matching
+    `stream_events`'s own "ends the generator, never raises" contract: there
+    is no complete frame left to decide on, so nothing is lost that a fresh
+    reconnect wouldn't already have to re-fetch anyway.
+    """
+    buffer = b""
+    task_participants: dict[str, bool] = {}
+    async for chunk in chunks:
+        buffer += chunk
+        while b"\n\n" in buffer:
+            frame, buffer = buffer.split(b"\n\n", 1)
+            event_name, payload = _sse_frame_json(frame)
+            if payload is None or event_name == "hello":
+                forward = True
+            else:
+                forward = _event_matches_agent(payload, agent, task_participants)
+            if forward:
+                yield frame + b"\n\n"
+
+
 def _relay_reply_parts_sources(task: dict) -> list[list]:
     """Every parts list a relayed switchboard task might carry the reply
     text in, most-authoritative first: `status.message.parts` (the exact
@@ -3093,6 +3215,15 @@ class Clients:
     # grant group-derived visibility by default, only owner/operator rights
     # ever survive that.
     groups: GroupResolver | None = None
+    # None whenever the directory integration isn't wired -- same "absent =
+    # feature off" convention as groups above, but deliberately independent
+    # of `config.groups`: people search (access-tab refinement wave) is a
+    # directory-wide lookup, not an ACL feature, so it only ever needs the
+    # env token and the domain, never a configured groups universe. The
+    # people-search route (kobo_api.main) treats a None here the same as a
+    # live search failure -- fail-soft, `{"people": [], "unavailable":
+    # true}`, never a 5xx.
+    people_search: OktaPeopleSearch | None = None
 
     @classmethod
     def real(cls, config: Config) -> Clients:
@@ -3138,5 +3269,14 @@ class Clients:
                 _universe_from_groups(config.groups),
             )
             if os.environ.get("OKTA_API_TOKEN") and config.groups and config.okta_domain
+            else None,
+            # Same env-token-and-domain gate as groups above, but WITHOUT
+            # the `config.groups` requirement -- see the field's own
+            # docstring for why (people search is directory-wide, not an
+            # ACL feature).
+            people_search=OktaPeopleSearch(
+                config.okta_domain, os.environ.get("OKTA_API_TOKEN", "")
+            )
+            if os.environ.get("OKTA_API_TOKEN") and config.okta_domain
             else None,
         )

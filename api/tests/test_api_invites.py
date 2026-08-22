@@ -424,7 +424,76 @@ def test_operator_sees_invites_without_owning_the_agent(session_factory, client)
     response = c.get("/api/agents/a/invites", headers=_headers(key, email=OPERATOR_EMAIL))
 
     assert response.status_code == 200
-    assert response.json() == {"incoming": [], "outgoing": []}
+    assert response.json() == {"incoming": [], "outgoing": [], "team_pairs": []}
+
+
+# --- GET /api/agents/{name}/invites: team_pairs (implicit auto-paired colleagues)
+
+
+def test_team_pairs_lists_other_ready_agents_sharing_the_group(session_factory, client):
+    c, key = client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name="growth")
+    _seed_agent(session_factory, name="c", created_by=OWNER_B_EMAIL, group_name="growth")
+
+    response = c.get("/api/agents/a/invites", headers=_headers(key, email=OWNER_A_EMAIL))
+
+    assert response.status_code == 200
+    team_pairs = response.json()["team_pairs"]
+    assert sorted(p["name"] for p in team_pairs) == ["b", "c"]
+    assert all(p["group"] == "growth" for p in team_pairs)
+
+
+def test_team_pairs_excludes_the_agent_itself(session_factory, client):
+    c, key = client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
+
+    response = c.get("/api/agents/a/invites", headers=_headers(key, email=OWNER_A_EMAIL))
+
+    assert response.status_code == 200
+    assert response.json()["team_pairs"] == []
+
+
+def test_team_pairs_is_empty_when_the_agent_has_no_group(session_factory, client):
+    c, key = client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name=None)
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name=None)
+
+    response = c.get("/api/agents/a/invites", headers=_headers(key, email=OWNER_A_EMAIL))
+
+    assert response.status_code == 200
+    # Group-less agents have no implicit pairing at all (pairs.py's own
+    # property) -- team_pairs must be empty even with another group-less
+    # agent present.
+    assert response.json()["team_pairs"] == []
+
+
+def test_team_pairs_excludes_a_same_group_agent_that_is_not_ready(session_factory, client):
+    c, key = client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
+    _seed_agent(
+        session_factory,
+        name="b",
+        created_by=OWNER_B_EMAIL,
+        group_name="growth",
+        status=AgentStatus.PROVISIONING,
+    )
+
+    response = c.get("/api/agents/a/invites", headers=_headers(key, email=OWNER_A_EMAIL))
+
+    assert response.status_code == 200
+    assert response.json()["team_pairs"] == []
+
+
+def test_team_pairs_excludes_a_different_group_agent(session_factory, client):
+    c, key = client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name="payments-eng")
+
+    response = c.get("/api/agents/a/invites", headers=_headers(key, email=OWNER_A_EMAIL))
+
+    assert response.status_code == 200
+    assert response.json()["team_pairs"] == []
 
 
 # --- POST /api/invites/{id}/accept, /decline ---------------------------------

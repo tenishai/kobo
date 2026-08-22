@@ -241,3 +241,96 @@ class OktaGroupResolver:
             if config_name is not None and config_name not in config_names:
                 config_names.append(config_name)
         return config_names
+
+
+class OktaPeopleSearch:
+    """A directory-wide person search, answering "which real people match
+    this text" (access-tab refinement wave, people search) -- a sibling to
+    `OktaGroupResolver` above, sharing its exact client/token/fail-soft
+    seam (an `httpx.Client` test seam, `Authorization: SSWS {token}`, every
+    failure mode caught and logged without the token ever appearing,
+    `search` never raises to a caller) but answering a different question,
+    so it is its own class rather than a method bolted onto a resolver
+    whose whole shape (a `universe` of CONFIGURED groups) has nothing to do
+    with a free-text person search.
+
+    `GET https://{domain}/api/v1/users?q={query}&limit=10`, same header as
+    `OktaGroupResolver._fetch`. The response is a JSON list of Okta user
+    objects; only three profile fields are ever read out of each --
+    `profile.firstName`, `profile.lastName`, `profile.email` -- and the
+    result is capped to exactly that: `{"name": "First Last", "email":
+    ...}` per person, nothing else about the user (login, status, phone,
+    ...) ever leaves this class. An entry with no email is dropped outright
+    (email is this room's only usable handle for a person); a missing
+    first or last name still yields a trimmed one-part name rather than
+    dropping the entry.
+
+    `search` returns `None` on any failure (non-200, a network error, a
+    timeout, a malformed body) -- distinct from `[]`, a successful "the
+    directory answered, nobody matched" -- same `None`-vs-`[]` contract as
+    `OktaGroupResolver.groups_for`, so a caller can tell "directory
+    unreachable" from "no results" and answer the two differently (the
+    people-search route folds `None` into its own fail-soft `{"people":
+    [], "unavailable": true}` shape; a genuine `[]` renders as an honest
+    empty result list instead).
+
+    No caching here, deliberately, unlike `OktaGroupResolver`'s per-email
+    TTL cache: a typeahead query string is essentially never repeated
+    (each keystroke is a fresh `q`), so a cache would only ever hold
+    single-use entries -- pure overhead, not a hit rate.
+    """
+
+    def __init__(self, domain: str, token: str, *, client: httpx.Client | None = None):
+        self._domain = domain
+        self._token = token
+        # Same "quick JSON-API GET" timeout family as OktaGroupResolver's
+        # own client default above.
+        self._client = client or httpx.Client(timeout=httpx.Timeout(20.0, connect=10.0))
+
+    def search(self, query: str) -> list[dict] | None:
+        url = f"https://{self._domain}/api/v1/users"
+        try:
+            resp = self._client.get(
+                url,
+                params={"q": query, "limit": 10},
+                headers={"Authorization": f"SSWS {self._token}"},
+            )
+        except httpx.HTTPError as exc:
+            # Same safety note as OktaGroupResolver._fetch: repr(exc) never
+            # echoes the request's headers, only method/URL at most -- the
+            # token (sent only via the Authorization header) never rides
+            # along.
+            log.warning("people search request failed: %r", exc)
+            return None
+
+        if resp.status_code != 200:
+            log.warning(
+                "people search failed (%s): %s", resp.status_code, resp.text[:200]
+            )
+            return None
+
+        try:
+            users = resp.json()
+        except ValueError as exc:
+            log.warning("malformed people search reply: %r (body: %s)", exc, resp.text[:200])
+            return None
+
+        if not isinstance(users, list):
+            log.warning("people search reply wasn't a list (got %s)", type(users).__name__)
+            return None
+
+        people: list[dict] = []
+        for user in users:
+            if not isinstance(user, dict):
+                continue
+            profile = user.get("profile")
+            if not isinstance(profile, dict):
+                continue
+            email = profile.get("email")
+            if not isinstance(email, str) or not email:
+                continue
+            first = profile.get("firstName")
+            last = profile.get("lastName")
+            name_parts = [p for p in (first, last) if isinstance(p, str) and p]
+            people.append({"name": " ".join(name_parts), "email": email})
+        return people

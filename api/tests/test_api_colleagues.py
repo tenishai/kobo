@@ -18,6 +18,8 @@ fixtures, a `TestClient` built from `create_app`.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -181,6 +183,86 @@ def test_list_upstream_failure_returns_502_plain_copy(session_factory, config, m
     }
 
 
+# --- GET /api/colleagues/conversations: ?agent= scoping (access-tab refinement
+# wave, conversation scoping) -------------------------------------------------
+#
+# CONVERSATIONS_FIXTURE: t-1 target=clio caller=agent:iris; t-2 target=clio
+# caller=operator:kgreiner@example.com; t-3 target=warden caller=service:kobo.
+# The `agent` filter is layered ON TOP of the existing all/agent-only
+# filtering (AND semantics), never a replacement for it.
+
+
+def test_list_agent_filter_matches_target_side_with_all_true(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    fake_cabal = FakeCabal(conversations_result=CONVERSATIONS_FIXTURE)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get(
+        "/api/colleagues/conversations", params={"all": "true", "agent": "clio"}
+    )
+
+    assert response.status_code == 200
+    assert [c["task_id"] for c in response.json()["conversations"]] == ["t-1", "t-2"]
+
+
+def test_list_agent_filter_matches_caller_side(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    fake_cabal = FakeCabal(conversations_result=CONVERSATIONS_FIXTURE)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get(
+        "/api/colleagues/conversations", params={"all": "true", "agent": "iris"}
+    )
+
+    assert response.status_code == 200
+    assert [c["task_id"] for c in response.json()["conversations"]] == ["t-1"]
+
+
+def test_list_agent_filter_composes_with_default_agent_only_filter(
+    session_factory, config, monkeypatch
+):
+    # Default (all=false) already drops t-2 (a human caller) -- scoping to
+    # clio (the target of both t-1 and t-2) must still only surface t-1,
+    # the one row that survives BOTH filters.
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    fake_cabal = FakeCabal(conversations_result=CONVERSATIONS_FIXTURE)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/conversations", params={"agent": "clio"})
+
+    assert response.status_code == 200
+    assert [c["task_id"] for c in response.json()["conversations"]] == ["t-1"]
+
+
+def test_list_agent_filter_no_participant_match_is_empty(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    fake_cabal = FakeCabal(conversations_result=CONVERSATIONS_FIXTURE)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get(
+        "/api/colleagues/conversations", params={"all": "true", "agent": "nobody"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["conversations"] == []
+
+
+def test_list_no_agent_param_is_unaffected(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    fake_cabal = FakeCabal(conversations_result=CONVERSATIONS_FIXTURE)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/conversations", params={"all": "true"})
+
+    assert response.status_code == 200
+    assert [c["task_id"] for c in response.json()["conversations"]] == ["t-1", "t-2", "t-3"]
+
+
 # --- GET /api/colleagues/conversations/{task_id} ----------------------------
 
 
@@ -227,6 +309,73 @@ def test_detail_upstream_failure_returns_502_plain_copy(session_factory, config,
     }
 
 
+# --- GET /api/colleagues/conversations/{task_id}: ?agent= scoping ----------
+
+
+def _detail_fixture(*, target_agent: str, caller_agent: str) -> dict:
+    return {
+        "conversation": {
+            "task_id": "t-1",
+            "target_agent": target_agent,
+            "caller_agent": caller_agent,
+            "result": "The full untruncated answer.",
+        },
+        "events": [],
+    }
+
+
+def test_detail_agent_filter_matches_target_side(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    detail = _detail_fixture(target_agent="clio", caller_agent="agent:iris")
+    fake_cabal = FakeCabal(conversation_result=detail)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/conversations/t-1", params={"agent": "clio"})
+
+    assert response.status_code == 200
+    assert response.json() == detail
+
+
+def test_detail_agent_filter_matches_caller_side(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    detail = _detail_fixture(target_agent="clio", caller_agent="agent:iris")
+    fake_cabal = FakeCabal(conversation_result=detail)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/conversations/t-1", params={"agent": "iris"})
+
+    assert response.status_code == 200
+    assert response.json() == detail
+
+
+def test_detail_agent_filter_no_match_is_404(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    detail = _detail_fixture(target_agent="clio", caller_agent="agent:iris")
+    fake_cabal = FakeCabal(conversation_result=detail)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/conversations/t-1", params={"agent": "warden"})
+
+    assert response.status_code == 404
+    assert response.json() == {"error": "no such conversation: 't-1'"}
+
+
+def test_detail_no_agent_param_is_unaffected(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    detail = _detail_fixture(target_agent="clio", caller_agent="agent:iris")
+    fake_cabal = FakeCabal(conversation_result=detail)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/conversations/t-1")
+
+    assert response.status_code == 200
+    assert response.json() == detail
+
+
 # --- GET /api/colleagues/stream ---------------------------------------------
 
 
@@ -253,6 +402,55 @@ def test_stream_content_type_and_frame_passthrough(session_factory, config, monk
 
     assert body == b"".join(chunks)
     assert fake_cabal.stream_events_calls == 1
+
+
+# --- GET /api/colleagues/stream: ?agent= scoping ----------------------------
+
+
+def _dispatch_start_chunk(task_id: str, *, target: str, caller: str) -> bytes:
+    payload = {
+        "event_type": "dispatch_start",
+        "task_id": task_id,
+        "payload": {"target": target, "caller": caller},
+    }
+    return f"event: dispatch_start\ndata: {json.dumps(payload)}\n\n".encode()
+
+
+def _dispatch_success_chunk(task_id: str) -> bytes:
+    payload = {"event_type": "dispatch_success", "task_id": task_id, "payload": {"state": "completed"}}
+    return f"event: dispatch_success\ndata: {json.dumps(payload)}\n\n".encode()
+
+
+def test_stream_agent_filter_forwards_only_matching_conversation_frames(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    clio_start = _dispatch_start_chunk("t-1", target="clio", caller="agent:iris")
+    clio_success = _dispatch_success_chunk("t-1")
+    warden_start = _dispatch_start_chunk("t-2", target="warden", caller="service:kobo")
+    chunks = [clio_start, warden_start, clio_success]
+    fake_cabal = FakeCabal(stream_chunks=chunks)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    with client.stream("GET", "/api/colleagues/stream", params={"agent": "clio"}) as response:
+        assert response.status_code == 200
+        body = b"".join(response.iter_bytes())
+
+    assert body == clio_start + clio_success
+
+
+def test_stream_no_agent_param_is_unaffected(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    chunks = [b": hello\n\n", b"event: dispatch_start\ndata: {}\n\n"]
+    fake_cabal = FakeCabal(stream_chunks=chunks)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    with client.stream("GET", "/api/colleagues/stream") as response:
+        body = b"".join(response.iter_bytes())
+
+    assert body == b"".join(chunks)
 
 
 # --- Operator-token-never-leaks proof (all three routes) -------------------

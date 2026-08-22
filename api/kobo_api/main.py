@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, Request, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -32,6 +32,7 @@ from kobo_api.clients import (
     _build_teach_envelope,
     _extract_relay_reply,
     cabal_enabled,
+    filter_cabal_event_stream,
 )
 from kobo_api.config import Config
 from kobo_api.db import init_db, make_engine, make_session_factory
@@ -711,6 +712,24 @@ def _colleagues_gate(config: Config, clients: Clients) -> JSONResponse | None:
     return None
 
 
+def _conversation_has_participant(row: dict, agent: str) -> bool:
+    """Whether `agent` participates in switchboard conversation `row`
+    (access-tab refinement wave, conversation scoping) -- the `?agent=`
+    filter every `/api/colleagues/conversations*` proxy route below
+    applies server-side. `row` is either shape those routes see:
+    `CabalClient.list_conversations`'s own row (`target_agent`/
+    `caller_agent` at the top level), or `get_conversation`'s `
+    "conversation"` object -- both carry the identical two keys, so one
+    function covers both callers.
+
+    Either side counts: `agent` is the TARGET (a bare name) or the CALLER
+    (`caller_agent` is only ever `agent:<name>` for a genuine colleague-to-
+    colleague call -- `CabalClient.mint_colleague`'s own `sub` shape -- so
+    a human/service caller can never falsely match a bare name here).
+    """
+    return row.get("target_agent") == agent or row.get("caller_agent") == f"agent:{agent}"
+
+
 # Uncalled by any route since Slack self-service (2026-08-17) — kept because
 # the `slack_operators` config field it reads stays live for other uses.
 def _slack_operator_block(request: Request, config: Config) -> JSONResponse | None:
@@ -1191,6 +1210,33 @@ def create_app(
     def catalog_groups() -> dict:
         cfg: Config = app.state.config
         return {"groups": [{"name": g.name} for g in cfg.groups]}
+
+    # People search (access-tab refinement wave): a signed-in-only proxy of
+    # the directory's own user search (kobo_api.groups.OktaPeopleSearch) --
+    # no owner/operator gate beyond the app-wide IAP middleware every
+    # `/api/*` route already carries (whoami's own "no verified identity to
+    # gate against" escape hatch applies here too when IAP is off). `q` is
+    # required and non-empty (`Query(..., min_length=1)`) -- an empty or
+    # missing query answers the app-wide RequestValidationError handler's
+    # plain 422, not a route-level check.
+    #
+    # Fail-soft, deliberately: `clients.people_search` absent (the room
+    # never wired OKTA_API_TOKEN/okta_domain) and a live directory failure
+    # (`search` returning `None`, kobo_api.groups' own fail-soft contract)
+    # both read as the SAME `{"people": [], "unavailable": true}` -- this
+    # route never answers 5xx over a directory hiccup, same posture every
+    # other best-effort directory call in this room takes.
+    @app.get("/api/people/search")
+    def search_people(q: str = Query(..., min_length=1)) -> JSONResponse:
+        clients: Clients | None = app.state.clients
+        searcher = clients.people_search if clients is not None else None
+        if searcher is None:
+            return JSONResponse({"people": [], "unavailable": True})
+
+        result = searcher.search(q)
+        if result is None:
+            return JSONResponse({"people": [], "unavailable": True})
+        return JSONResponse({"people": result})
 
     # --- Org status (Task 8): read-only wiring visibility for the room ------
 
@@ -3236,7 +3282,7 @@ def create_app(
 
     @app.get("/api/colleagues/conversations")
     def list_colleague_conversations(
-        all: bool = False, limit: int | None = None
+        all: bool = False, limit: int | None = None, agent: str | None = None
     ) -> JSONResponse:
         cfg: Config = app.state.config
         clients = app.state.clients
@@ -3263,10 +3309,17 @@ def create_app(
                 c for c in conversations
                 if str(c.get("caller_agent", "")).startswith("agent:")
             ]
+        if agent is not None:
+            # Conversation scoping (access-tab refinement wave): layered ON
+            # TOP of the all/agent-only filtering above, never a substitute
+            # for it -- both must hold for a row to survive.
+            conversations = [
+                c for c in conversations if _conversation_has_participant(c, agent)
+            ]
         return JSONResponse({"conversations": conversations})
 
     @app.get("/api/colleagues/conversations/{task_id}")
-    def get_colleague_conversation(task_id: str) -> JSONResponse:
+    def get_colleague_conversation(task_id: str, agent: str | None = None) -> JSONResponse:
         cfg: Config = app.state.config
         clients = app.state.clients
         gate = _colleagues_gate(cfg, clients)
@@ -3282,10 +3335,22 @@ def create_app(
                 status_code=502,
             )
 
+        if agent is not None and not _conversation_has_participant(
+            detail.get("conversation") or {}, agent
+        ):
+            # Conversation scoping (access-tab refinement wave): a
+            # conversation `agent` doesn't participate in reads as "not
+            # found" for this filtered view, same existence-hiding
+            # discipline `_visible_agent_or_404` uses elsewhere -- this is
+            # a scoping view, not an authorization boundary in itself (the
+            # 409 gate above already covers whether colleagues data may be
+            # read at all).
+            return JSONResponse({"error": f"no such conversation: {task_id!r}"}, status_code=404)
+
         return JSONResponse(detail)
 
     @app.get("/api/colleagues/stream", response_model=None)
-    async def stream_colleague_events() -> StreamingResponse | JSONResponse:
+    async def stream_colleague_events(agent: str | None = None) -> StreamingResponse | JSONResponse:
         """SSE passthrough of the switchboard's live event feed.
 
         The 409 gate below (`_colleagues_gate`) covers a room with no
@@ -3308,6 +3373,14 @@ def create_app(
         client disconnect now cancels the awaited read promptly instead of
         leaving a worker thread blocked on a sync socket read until
         upstream happens to send more bytes.
+
+        Conversation scoping (access-tab refinement wave): `?agent=` wraps
+        the raw passthrough in `filter_cabal_event_stream` (kobo_api.
+        clients), dropping every frame that isn't attributable to a
+        conversation `agent` participates in before it ever reaches the
+        browser -- see that function's own docstring for exactly how
+        "attributable" is decided. Omitted entirely, the stream is
+        untouched, byte-for-byte, exactly as before this feature.
         """
         cfg: Config = app.state.config
         clients = app.state.clients
@@ -3315,7 +3388,10 @@ def create_app(
         if gate is not None:
             return gate
 
-        return StreamingResponse(clients.cabal.stream_events(), media_type="text/event-stream")
+        chunks = clients.cabal.stream_events()
+        if agent is not None:
+            chunks = filter_cabal_event_stream(chunks, agent)
+        return StreamingResponse(chunks, media_type="text/event-stream")
 
     # --- Avatar (P2d): persona-derived face, repo-backed with a display cache ---
 
@@ -3525,6 +3601,37 @@ def create_app(
                 invite.decided_at.isoformat() if invite.decided_at is not None else None
             ),
         }
+
+    def _team_pairs(session: Session, agent: Agent) -> list[dict]:
+        """The OTHER ready agents implicitly auto-paired with `agent`
+        through shared group membership (`kobo_api.pairs.allowed_pairs`'s
+        own same-group rule) -- access-tab refinement wave, read-only facts
+        for the invites view: these colleagues already talk freely with
+        `agent`, no invite ever needed or even possible between them, so
+        they're surfaced here rather than as a revocable invite row. Empty
+        when `agent` has no group (no implicit pairing without one) or has
+        no OTHER ready agent sharing it.
+
+        Fetched fresh, WITHOUT the visibility filter -- same discipline as
+        `_agent_ref` above: whoever can see `agent`'s invites at all (its
+        owner or a room operator) already has full standing to know its
+        own auto-paired colleagues, so a bare name+group here is never a
+        leak (the same "the a2a directory is deliberately global" reasoning
+        `_agent_ref` documents, spec section 5).
+        """
+        if agent.group_name is None:
+            return []
+        others = (
+            session.query(Agent)
+            .filter(
+                Agent.group_name == agent.group_name,
+                Agent.name != agent.name,
+                Agent.status == AgentStatus.READY,
+            )
+            .order_by(Agent.id)
+            .all()
+        )
+        return [{"name": other.name, "group": other.group_name} for other in others]
 
     def _no_such_invite_404(invite_id: int) -> JSONResponse:
         """The one 404 body/status every invite-id route (accept/decline/
@@ -3772,8 +3879,89 @@ def create_app(
             {
                 "incoming": [_invite_repr(session, invite) for invite in incoming],
                 "outgoing": [_invite_repr(session, invite) for invite in outgoing],
+                "team_pairs": _team_pairs(session, agent),
             }
         )
+
+    @app.get("/api/agents/{name}/requestable")
+    def list_requestable_agents(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Every other READY agent `name` could ask for colleague access
+        (access-tab refinement wave) -- owner-or-operator of `name` only,
+        but the candidate list itself deliberately BYPASSES the caller's
+        own personal visibility (access-control Task B2's `_visible_agents`
+        is never consulted here): consent needs a directory to ask from in
+        the first place, and the design spec is explicit that the a2a
+        directory of bare names is deliberately global (spec section 5) --
+        an agent's mere EXISTENCE and its group/team/capability blurb are
+        not a leak the way its status, owner, or model would be, exactly
+        the same adjudication `create_invite`'s own TO-agent lookup and
+        `_agent_ref` already rest on. This route just makes that same
+        directory browsable up front, rather than requiring the caller to
+        already know a name to invite it.
+
+        Each candidate is capped to exactly `{"name", "group", "team",
+        "capability", "purpose_tags"}` -- the same card-metadata fields
+        `list_agents`/`get_agent` already expose about an agent the caller
+        CAN see, never anything about status, owner, or model.
+
+        Three exclusions, none of them optional:
+        - `name` itself (an agent cannot request colleague access to
+          itself, same rule `create_invite` enforces).
+        - Its own same-group colleagues -- already auto-paired
+          (`kobo_api.pairs.allowed_pairs`'s same-group rule, the same
+          "read-only facts, not a revocable invite row" set `_team_pairs`
+          above surfaces), so listing them here as requestABLE would be
+          straightforwardly wrong: there is nothing left to request.
+        - Any agent `name` already has a PENDING or ACCEPTED invite
+          toward -- same "in flight" definition `create_invite`'s own
+          duplicate-request 409 check uses. These are surfaced instead
+          under `already`, `{"name", "status"}` each, so the UI can render
+          "already asked" rather than silently omitting them.
+        """
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+
+        all_ready = (
+            session.query(Agent)
+            .filter(Agent.status == AgentStatus.READY, Agent.name != agent.name)
+            .order_by(Agent.id)
+            .all()
+        )
+
+        in_flight_status = {
+            invite.to_agent: invite.status
+            for invite in session.query(A2AInvite)
+            .filter_by(from_agent=agent.name)
+            .filter(A2AInvite.status.in_((INVITE_PENDING, INVITE_ACCEPTED)))
+            .all()
+        }
+
+        requestable = []
+        already = []
+        for other in all_ready:
+            if agent.group_name is not None and other.group_name == agent.group_name:
+                continue
+            in_flight = in_flight_status.get(other.name)
+            if in_flight is not None:
+                already.append({"name": other.name, "status": in_flight})
+                continue
+            requestable.append(
+                {
+                    "name": other.name,
+                    "group": other.group_name,
+                    "team": other.team,
+                    "capability": other.capability,
+                    "purpose_tags": decode_tags(other.purpose_tags),
+                }
+            )
+
+        return JSONResponse({"requestable": requestable, "already": already})
 
     @app.post("/api/invites/{invite_id}/accept")
     def accept_invite(

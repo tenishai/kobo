@@ -1293,6 +1293,29 @@ class FakeCabal:
             yield chunk
 
 
+class FakePeopleSearch:
+    """Records every `search` query (`.search_calls`, in call order) -- no
+    real Okta backend involved (access-tab refinement wave, people search).
+
+    `result`, when given, is `search`'s canned return value for every call
+    (default `[]` -- a genuine "the directory answered, nobody matched").
+    `fails`, when True, makes `search` return `None` instead -- the seam
+    for exercising the people-search route's fail-soft branch (`{"people":
+    [], "unavailable": true}`) without a real directory outage.
+    """
+
+    def __init__(self, *, result: list[dict] | None = None, fails: bool = False):
+        self._result = result if result is not None else []
+        self._fails = fails
+        self.search_calls: list[str] = []
+
+    def search(self, query: str) -> list[dict] | None:
+        self.search_calls.append(query)
+        if self._fails:
+            return None
+        return self._result
+
+
 # Canonical 1x1 transparent PNG (68 bytes) — a real, valid minimal PNG (not a
 # hand-rolled byte string), so a test asserting FakeImage's default return
 # value starts with the PNG magic bytes (`\x89PNG`) is checking something

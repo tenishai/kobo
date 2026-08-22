@@ -19,7 +19,7 @@ import logging
 import httpx
 import pytest
 
-from kobo_api.groups import GroupResolver, OktaGroupResolver
+from kobo_api.groups import GroupResolver, OktaGroupResolver, OktaPeopleSearch
 
 DOMAIN = "acme.okta.com"
 TOKEN = "SUPER_SECRET_OKTA_TOKEN_9f3a"
@@ -556,6 +556,218 @@ def test_every_error_path_never_raises_and_never_logs_the_token(caplog, handler)
 
     with caplog.at_level(logging.DEBUG, logger="kobo_api.groups"):
         result = resolver.groups_for("alice@example.com")
+
+    assert result is None
+    assert TOKEN not in caplog.text
+    for record in caplog.records:
+        assert TOKEN not in record.getMessage()
+
+
+# --- OktaPeopleSearch: the directory's own user typeahead ----------------------
+#
+# Access-tab refinement wave (people search): a sibling to OktaGroupResolver
+# above, sharing the exact same client/token/fail-soft conventions (an
+# httpx.Client test seam, `Authorization: SSWS {token}`, every failure mode
+# caught and logged without the token ever appearing, never raises) but
+# answering a different question -- "which real people match this text" --
+# so it is its own class rather than a method bolted onto a resolver whose
+# whole shape (a `universe` of CONFIGURED groups) has nothing to do with a
+# free-text person search.
+
+
+def _okta_user(first: str | None, last: str | None, email: str | None) -> dict:
+    """One Okta user object shaped like the real API's response -- profile
+    fields at `profile.*`, plus a couple of fields a real user object
+    carries that the search must simply ignore (login, status)."""
+    profile: dict = {}
+    if first is not None:
+        profile["firstName"] = first
+    if last is not None:
+        profile["lastName"] = last
+    if email is not None:
+        profile["email"] = email
+        profile["login"] = email
+    return {"id": "00u1", "status": "ACTIVE", "profile": profile}
+
+
+# --- Protocol/construction shape -----------------------------------------------
+
+
+def test_okta_people_search_is_not_a_group_resolver():
+    # Deliberately NOT a GroupResolver -- it answers a different question
+    # (free-text person search, not "which configured groups") and needs no
+    # `universe` at all.
+    searcher = OktaPeopleSearch(DOMAIN, TOKEN)
+    assert not isinstance(searcher, GroupResolver)
+
+
+# --- Happy path: request shape, response shaping -------------------------------
+
+
+def test_search_sends_correct_url_query_and_ssws_auth_header():
+    captured: list[httpx.Request] = []
+    response = httpx.Response(200, json=[_okta_user("Alice", "Smith", "alice@example.com")])
+    searcher = OktaPeopleSearch(
+        DOMAIN, TOKEN, client=_client(_recording_transport(captured, response))
+    )
+
+    searcher.search("ali")
+
+    assert len(captured) == 1
+    request = captured[0]
+    assert request.method == "GET"
+    assert request.url.host == DOMAIN
+    assert request.url.path == "/api/v1/users"
+    assert request.url.params["q"] == "ali"
+    assert request.url.params["limit"] == "10"
+    assert request.headers["authorization"] == f"SSWS {TOKEN}"
+
+
+def test_search_caps_result_to_name_and_email_only():
+    response = httpx.Response(200, json=[_okta_user("Alice", "Smith", "alice@example.com")])
+    searcher = OktaPeopleSearch(DOMAIN, TOKEN, client=_client(lambda r: response))
+
+    result = searcher.search("ali")
+
+    assert result == [{"name": "Alice Smith", "email": "alice@example.com"}]
+
+
+def test_search_returns_multiple_people_in_response_order():
+    response = httpx.Response(
+        200,
+        json=[
+            _okta_user("Alice", "Smith", "alice@example.com"),
+            _okta_user("Bob", "Jones", "bob@example.com"),
+        ],
+    )
+    searcher = OktaPeopleSearch(DOMAIN, TOKEN, client=_client(lambda r: response))
+
+    result = searcher.search("a")
+
+    assert result == [
+        {"name": "Alice Smith", "email": "alice@example.com"},
+        {"name": "Bob Jones", "email": "bob@example.com"},
+    ]
+
+
+def test_search_missing_first_or_last_name_still_yields_a_trimmed_name():
+    response = httpx.Response(
+        200,
+        json=[
+            _okta_user(None, "Smith", "alice@example.com"),
+            _okta_user("Bob", None, "bob@example.com"),
+        ],
+    )
+    searcher = OktaPeopleSearch(DOMAIN, TOKEN, client=_client(lambda r: response))
+
+    result = searcher.search("a")
+
+    assert result == [
+        {"name": "Smith", "email": "alice@example.com"},
+        {"name": "Bob", "email": "bob@example.com"},
+    ]
+
+
+def test_search_entry_missing_email_is_dropped():
+    response = httpx.Response(
+        200,
+        json=[
+            _okta_user("Alice", "Smith", None),
+            _okta_user("Bob", "Jones", "bob@example.com"),
+        ],
+    )
+    searcher = OktaPeopleSearch(DOMAIN, TOKEN, client=_client(lambda r: response))
+
+    result = searcher.search("a")
+
+    assert result == [{"name": "Bob Jones", "email": "bob@example.com"}]
+
+
+def test_search_no_matches_returns_empty_list_not_none():
+    """A genuine "the directory answered, nobody matched" must be `[]`, not
+    `None` -- the same distinction OktaGroupResolver draws between a real
+    empty answer and an outright failure."""
+    response = httpx.Response(200, json=[])
+    searcher = OktaPeopleSearch(DOMAIN, TOKEN, client=_client(lambda r: response))
+
+    result = searcher.search("zzz-no-such-person")
+
+    assert result == []
+    assert result is not None
+
+
+# --- Error paths: every failure mode -> None, never raises ---------------------
+
+
+@pytest.mark.parametrize("status_code", [401, 403, 500])
+def test_search_http_error_status_codes_return_none(status_code):
+    response = httpx.Response(status_code, text=f"error body for {status_code}")
+    searcher = OktaPeopleSearch(DOMAIN, TOKEN, client=_client(lambda r: response))
+
+    assert searcher.search("ali") is None
+
+
+def test_search_timeout_returns_none():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.TimeoutException("timed out", request=request)
+
+    searcher = OktaPeopleSearch(DOMAIN, TOKEN, client=_client(handler))
+
+    assert searcher.search("ali") is None
+
+
+def test_search_network_error_returns_none():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    searcher = OktaPeopleSearch(DOMAIN, TOKEN, client=_client(handler))
+
+    assert searcher.search("ali") is None
+
+
+def test_search_malformed_json_body_returns_none():
+    response = httpx.Response(200, text="not valid json{{{")
+    searcher = OktaPeopleSearch(DOMAIN, TOKEN, client=_client(lambda r: response))
+
+    assert searcher.search("ali") is None
+
+
+def test_search_non_list_json_body_returns_none():
+    response = httpx.Response(200, json={"not": "a list"})
+    searcher = OktaPeopleSearch(DOMAIN, TOKEN, client=_client(lambda r: response))
+
+    assert searcher.search("ali") is None
+
+
+def test_search_tolerates_entries_missing_a_profile_entirely():
+    response = httpx.Response(
+        200,
+        json=[
+            {"id": "00u1"},  # no profile at all
+            {"id": "00u2", "profile": "not-a-dict"},  # malformed profile
+            _okta_user("Alice", "Smith", "alice@example.com"),
+        ],
+    )
+    searcher = OktaPeopleSearch(DOMAIN, TOKEN, client=_client(lambda r: response))
+
+    result = searcher.search("a")
+
+    assert result == [{"name": "Alice Smith", "email": "alice@example.com"}]
+
+
+# --- Never raises, and the token never appears in any log record --------------
+
+
+@pytest.mark.parametrize(
+    "handler",
+    [_handler_401, _handler_403, _handler_500, _handler_timeout, _handler_network_error],
+    ids=["401", "403", "500", "timeout", "network-error"],
+)
+def test_search_every_error_path_never_raises_and_never_logs_the_token(caplog, handler):
+    searcher = OktaPeopleSearch(DOMAIN, TOKEN, client=_client(handler))
+
+    with caplog.at_level(logging.DEBUG, logger="kobo_api.groups"):
+        result = searcher.search("ali")
 
     assert result is None
     assert TOKEN not in caplog.text
