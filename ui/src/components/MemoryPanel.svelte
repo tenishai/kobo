@@ -505,6 +505,68 @@
       },
     });
   }
+
+  // --- Teach from a file: row condensation + taught-notes grouping --------
+  //
+  // The operator's ruling on this list: every chat teach archives a file
+  // here (Task 1/2's "Teach this" gesture), so it grows constantly, and a
+  // full stacked card per file reads as "a never ending memory card list...
+  // bulky and takes up a lot of room for something that is most likely
+  // going to happen a lot." Two changes address that without touching the
+  // intake contract itself:
+  //
+  //   - each file renders as a single condensed row (name, size, status
+  //     chip, Remove) instead of a stacked multi-line card;
+  //   - a row whose filename matches the taught-note convention this
+  //     room's own server emits (`chat-<8-digit date>-<slug>.md`, see
+  //     `kobo_api.teach.note_filename`) collects under a "Taught notes (N)"
+  //     section that starts collapsed. The archive copy isn't the memory
+  //     itself -- the explainer above already says the learning stays even
+  //     after the file goes away -- so there's rarely a reason to look at
+  //     these once uploaded. A file that doesn't match this convention (an
+  //     upload like warden-field-notes.md) always shows above the group,
+  //     ungrouped, never folded away.
+  //
+  // `list_intake` (kobo_api.intake) returns files sorted by name ascending
+  // -- for the date-prefixed taught-note convention that reads oldest-
+  // first, and it's the only ordering an arbitrary upload's own name gives
+  // us either. Reversing whatever this component receives, once, before
+  // splitting it into the two groups below is enough to make both read
+  // newest-first without `IntakeFile` needing a real timestamp field.
+  const CHAT_NOTE_RE = /^chat-\d{8}-.*\.md$/;
+
+  const orderedIntakeFiles = $derived([...($intake.data ?? [])].reverse());
+  const otherIntakeFiles = $derived(
+    orderedIntakeFiles.filter((file) => !CHAT_NOTE_RE.test(file.name)),
+  );
+  const taughtIntakeFiles = $derived(
+    orderedIntakeFiles.filter((file) => CHAT_NOTE_RE.test(file.name)),
+  );
+
+  // Local to this mount only -- resetting closed on remount (a fresh visit
+  // to the tab) is fine, there's no state worth preserving across it.
+  let taughtExpanded = $state(false);
+
+  function toggleTaught(): void {
+    taughtExpanded = !taughtExpanded;
+  }
+
+  // How many characters of a filename's tail (including its extension)
+  // stay fixed in place while the rest ellipsizes -- the CSS pairing that
+  // reads this (`.intake-row__name-head`/`-tail`) is what turns this into a
+  // middle truncation at narrow widths ("chat-2026082…-notes.md") instead
+  // of plain end-truncation, which would hide the extension first.
+  const NAME_TAIL_CHARS = 14;
+
+  function splitFilenameForDisplay(name: string): { head: string; tail: string } {
+    if (name.length <= NAME_TAIL_CHARS) {
+      return { head: "", tail: name };
+    }
+    return {
+      head: name.slice(0, name.length - NAME_TAIL_CHARS),
+      tail: name.slice(-NAME_TAIL_CHARS),
+    };
+  }
 </script>
 
 <section class="memory-panel" aria-labelledby="memory-panel-heading">
@@ -645,6 +707,33 @@
       </button>
     </form>
 
+    {#snippet intakeRow(file: IntakeFile)}
+      {@const parts = splitFilenameForDisplay(file.name)}
+      <li class="intake-row">
+        <span class="intake-row__name" title={file.name}
+          ><span class="intake-row__name-head">{parts.head}</span><span
+            class="intake-row__name-tail">{parts.tail}</span
+          ></span
+        >
+        <span class="intake-row__meta">{humanSize(file.content_bytes)}</span>
+        <span class="intake-row__status intake-row__status--{file.status}">
+          {file.status === "ingested" ? "Ingested" : "Pending"}
+        </span>
+        <button
+          type="button"
+          class="intake-row__remove"
+          disabled={frozen || file.status !== "ingested"}
+          title={file.status !== "ingested"
+            ? "Wait for this file to be ingested before removing it."
+            : undefined}
+          aria-label={`Remove ${file.name}`}
+          onclick={() => openRemove(file)}
+        >
+          Remove
+        </button>
+      </li>
+    {/snippet}
+
     {#if $intake.isPending}
       <Skeleton rows={3} />
     {:else if $intake.isError}
@@ -655,31 +744,37 @@
     {:else if $intake.data.length === 0}
       <EmptyState message="Nothing here yet. Upload a file for your agent to learn from." />
     {:else}
-      <ul class="intake-panel__list">
-        {#each $intake.data as file (file.name)}
-          <li class="intake-row">
-            <span class="intake-row__body">
-              <span class="intake-row__name">{file.name}</span>
-              <span class="intake-row__meta">{humanSize(file.content_bytes)}</span>
-            </span>
-            <span class="intake-row__status intake-row__status--{file.status}">
-              {file.status === "ingested" ? "Ingested" : "Pending"}
-            </span>
-            <button
-              type="button"
-              class="intake-row__remove"
-              disabled={frozen || file.status !== "ingested"}
-              title={file.status !== "ingested"
-                ? "Wait for this file to be ingested before removing it."
-                : undefined}
-              aria-label={`Remove ${file.name}`}
-              onclick={() => openRemove(file)}
+      {#if otherIntakeFiles.length > 0}
+        <ul class="intake-panel__list">
+          {#each otherIntakeFiles as file (file.name)}
+            {@render intakeRow(file)}
+          {/each}
+        </ul>
+      {/if}
+      {#if taughtIntakeFiles.length > 0}
+        <div class="intake-group">
+          <button
+            type="button"
+            class="intake-group__toggle"
+            aria-expanded={taughtExpanded}
+            onclick={toggleTaught}
+          >
+            <span
+              class="intake-group__chevron"
+              class:intake-group__chevron--open={taughtExpanded}
+              aria-hidden="true">&#9656;</span
             >
-              Remove
-            </button>
-          </li>
-        {/each}
-      </ul>
+            <span>Taught notes ({taughtIntakeFiles.length})</span>
+          </button>
+          {#if taughtExpanded}
+            <ul class="intake-panel__list">
+              {#each taughtIntakeFiles as file (file.name)}
+                {@render intakeRow(file)}
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {/if}
     {/if}
 
     {#if removeNote}
@@ -1321,41 +1416,55 @@
   .intake-panel__list {
     display: flex;
     flex-direction: column;
-    gap: var(--space-xs);
+    gap: var(--space-2xs);
     margin: 0;
     padding: 0;
     list-style: none;
   }
 
+  /* Condensed to a single line (roughly a third of the old stacked
+     card's height) -- the memory-shelf ruling: this list grows on every
+     chat teach, so each row needs to earn its space. */
   .intake-row {
     display: flex;
     align-items: center;
-    gap: var(--space-xs);
-    padding: var(--space-sm);
+    gap: var(--space-sm);
+    padding: var(--space-2xs) var(--space-sm);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--bg);
   }
 
-  .intake-row__body {
+  .intake-row__name {
     display: flex;
     flex: 1;
-    flex-direction: column;
-    gap: 0.15rem;
     min-width: 0;
-  }
-
-  .intake-row__name {
-    overflow-wrap: anywhere;
     color: var(--ink);
     font-family: var(--font-mono);
-    font-size: 0.9rem;
+    font-size: 0.85rem;
     font-weight: 600;
   }
 
+  /* Paired with `-tail` below for a middle-truncation effect: this half
+     shrinks and ellipsizes first, so a long name loses its middle rather
+     than its (fixed, always-visible) tail/extension. */
+  .intake-row__name-head {
+    overflow: hidden;
+    flex-shrink: 1;
+    min-width: 0;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .intake-row__name-tail {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
   .intake-row__meta {
+    flex-shrink: 0;
     color: var(--muted);
-    font-size: 0.8rem;
+    font-size: 0.75rem;
   }
 
   .intake-row__status {
@@ -1400,6 +1509,41 @@
   .intake-row__remove:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .intake-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .intake-group__toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    padding: var(--space-2xs) var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--muted);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .intake-group__toggle:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .intake-group__chevron {
+    display: inline-block;
+    color: var(--muted);
+    transition: transform 0.15s ease;
+  }
+
+  .intake-group__chevron--open {
+    transform: rotate(90deg);
   }
 
   .intake-panel__note {
