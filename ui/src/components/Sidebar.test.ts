@@ -131,7 +131,7 @@ describe("Sidebar — the Kobo identity (wordmark + hammer mark ruling)", () => 
     expect(screen.queryByText("kobo")).toBeNull();
   });
 
-  it("renders an inline hammer-mark svg to the left of the wordmark", () => {
+  it("renders the operator's hammer.png mark to the left of the wordmark", () => {
     const { container } = renderWithClient(Sidebar, {
       active: "dashboard",
       oncreate: () => {},
@@ -140,7 +140,11 @@ describe("Sidebar — the Kobo identity (wordmark + hammer mark ruling)", () => 
     const logo = container.querySelector(".sidebar__logo");
     const hammer = container.querySelector(".sidebar__hammer");
     expect(hammer).not.toBeNull();
-    expect(hammer!.tagName.toLowerCase()).toBe("svg");
+    expect(hammer!.tagName.toLowerCase()).toBe("img");
+    expect(hammer!.getAttribute("src")).toBe("/hammer.png");
+    expect(hammer!.getAttribute("width")).toBe("26");
+    expect(hammer!.getAttribute("height")).toBe("26");
+    expect(hammer!.getAttribute("aria-hidden")).toBe("true");
     // Left of the wordmark: the hammer is an earlier sibling within the
     // same logo link, not appended after the wordmark text.
     const wordmark = container.querySelector(".sidebar__wordmark");
@@ -245,82 +249,42 @@ describe("Sidebar — the Kobo identity (wordmark + hammer mark ruling)", () => 
     expect(reducedMotionBlock).toMatch(/filter:\s*drop-shadow\([^)]*var\(--ok\)[^)]*\)/);
   });
 
-  it("draws the hammer as a single evenodd path -- a solid disc, edge to edge in the 24x24 viewBox, with the hammer knocked out as negative space", () => {
+  it("is a decorative image -- alt text is empty since aria-hidden already removes it from the a11y tree", () => {
     const { container } = renderWithClient(Sidebar, {
       active: "dashboard",
       oncreate: () => {},
       onprefetch: () => {},
     });
     const hammer = container.querySelector(".sidebar__hammer");
-    expect(hammer?.getAttribute("viewBox")).toBe("0 0 24 24");
-
-    // No more ring element: the disc itself carries the mark's fill color.
-    expect(container.querySelector(".sidebar__hammer-ring")).toBeNull();
-
-    const glyph = container.querySelector(".sidebar__hammer-glyph");
-    expect(glyph).not.toBeNull();
-    // One path does the whole job now -- no child <path>/<rect> shapes
-    // (the old cross-peen path + handle rect pairing is gone).
-    expect(glyph!.tagName.toLowerCase()).toBe("path");
-    expect(glyph!.querySelector("path, rect, circle")).toBeNull();
-    expect(glyph!.getAttribute("fill-rule")).toBe("evenodd");
-
-    const d = glyph!.getAttribute("d") ?? "";
-    // Two subpaths in the one path: the disc, then the hammer silhouette
-    // knocked out of it.
-    expect(d.match(/Z/g)?.length).toBe(2);
-    // The disc is a full circle of radius 12 centered on (12,12) -- exactly
-    // tangent to all four viewBox edges, so it fills the canvas edge to
-    // edge with no ring and no margin.
-    expect(d).toMatch(/M\s*0\s+12\s*A\s*12\s+12\s+0\s+1\s+0\s+24\s+12/);
+    expect(hammer?.getAttribute("alt")).toBe("");
   });
 });
 
-describe("Sidebar — favicon (the same forge hammer, on the tab)", () => {
-  it("links an SVG favicon from index.html", () => {
+describe("Sidebar — favicon (the same operator-supplied hammer, on the tab)", () => {
+  it("links a PNG favicon from index.html", () => {
     expect(INDEX_HTML).toMatch(
-      /<link\s+rel="icon"\s+type="image\/svg\+xml"\s+href="[^"]+"\s*\/?>/,
+      /<link\s+rel="icon"\s+type="image\/png"\s+href="[^"]+"\s*\/?>/,
     );
   });
 
-  it("points the favicon link at an svg file that actually exists on disk", () => {
-    const match = INDEX_HTML.match(/<link\s+rel="icon"\s+type="image\/svg\+xml"\s+href="([^"]+)"/);
+  it("points the favicon link at a png file that actually exists on disk", () => {
+    const match = INDEX_HTML.match(/<link\s+rel="icon"\s+type="image\/png"\s+href="([^"]+)"/);
     expect(match).not.toBeNull();
     const href = match![1].replace(/^\//, "");
-    const svgSource = readFileSync(join(__dirname, "..", "..", "public", href), "utf8");
-    expect(svgSource).toMatch(/<svg/);
-    expect(svgSource).toMatch(/viewBox="0 0 24 24"/);
+    const pngPath = join(__dirname, "..", "..", "public", href);
+    const pngBytes = readFileSync(pngPath);
+    expect(pngBytes.length).toBeGreaterThan(0);
   });
 
-  it("is well-formed XML, since browsers parse a standalone favicon strictly", () => {
-    // Regression pin: a review round found a literal "--" inside the SVG's
-    // XML comment, which the XML spec forbids anywhere in a comment. Both
-    // rsvg and expat refused the file, so browsers would have silently
-    // dropped the icon. DOMParser reports such failures via a parsererror
-    // document instead of throwing.
-    const match = INDEX_HTML.match(/<link\s+rel="icon"\s+type="image\/svg\+xml"\s+href="([^"]+)"/);
+  it("has a valid PNG signature, since a mislabeled/corrupt asset would silently fail to render as a tab icon", () => {
+    // Regression-shaped guard: the old favicon.svg test caught XML
+    // well-formedness the same way -- here, the equivalent structural
+    // check for a binary PNG asset is its 8-byte magic-number header
+    // (the fixed signature every PNG file starts with).
+    const match = INDEX_HTML.match(/<link\s+rel="icon"\s+type="image\/png"\s+href="([^"]+)"/);
     const href = match![1].replace(/^\//, "");
-    const svgSource = readFileSync(join(__dirname, "..", "..", "public", href), "utf8");
-    const parsed = new DOMParser().parseFromString(svgSource, "image/svg+xml");
-    expect(parsed.getElementsByTagName("parsererror")).toHaveLength(0);
-  });
-
-  it("fills the disc with the room's amber and knocks the hammer out via evenodd, edge to edge with no ring", () => {
-    // Disc-and-knockout redraw: the favicon is now one solid amber disc
-    // (#b5651d) with the hammer cut from it as negative space, not a ring
-    // (stroke) framing a separately colored glyph fill. Both the old
-    // glyph fill (#857d70) and the old ring stroke are gone.
-    const match = INDEX_HTML.match(/<link\s+rel="icon"\s+type="image\/svg\+xml"\s+href="([^"]+)"/);
-    const href = match![1].replace(/^\//, "");
-    const svgSource = readFileSync(join(__dirname, "..", "..", "public", href), "utf8");
-    expect(svgSource).not.toMatch(/fill="#262220"/i);
-    expect(svgSource).not.toMatch(/fill="#857d70"/i);
-    expect(svgSource).not.toMatch(/stroke="#b5651d"/i);
-    expect(svgSource).toMatch(/fill="#b5651d"/i);
-    expect(svgSource).toMatch(/fill-rule="evenodd"/i);
-    // A single path, two subpaths (disc, then hammer knockout).
-    const pathMatch = svgSource.match(/<path[^>]*\sd="([^"]*)"/s);
-    expect(pathMatch).not.toBeNull();
-    expect(pathMatch![1].match(/Z/g)?.length).toBe(2);
+    const pngPath = join(__dirname, "..", "..", "public", href);
+    const header = readFileSync(pngPath).subarray(0, 8);
+    expect([...header]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   });
 });

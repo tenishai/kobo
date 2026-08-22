@@ -12,7 +12,11 @@ from kobo_api.main import create_app
 
 INDEX_HTML = "<html><body>SPA-INDEX-MARKER</body></html>"
 APP_JS = "console.log('app');"
-FAVICON_SVG = (
+# A tiny but structurally real PNG (the 8-byte signature plus a few bytes of
+# filler) -- the favicon is `hammer.png` now, not `favicon.svg`, so the
+# root-static-file fixture below writes and serves actual PNG bytes.
+HAMMER_PNG = b"\x89PNG\r\n\x1a\n" + b"fake-hammer-bytes"
+NESTED_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
     '<circle cx="12" cy="12" r="10" /></svg>'
 )
@@ -27,7 +31,7 @@ def make_dist(tmp_path, *, with_index=True, with_favicon=False):
         (dist_dir / "index.html").write_text(INDEX_HTML)
     (assets_dir / "app.js").write_text(APP_JS)
     if with_favicon:
-        (dist_dir / "favicon.svg").write_text(FAVICON_SVG)
+        (dist_dir / "hammer.png").write_bytes(HAMMER_PNG)
     return dist_dir
 
 
@@ -64,20 +68,20 @@ def test_assets_are_served(session_factory, config, tmp_path):
     assert response.text == APP_JS
 
 
-def test_favicon_svg_served_with_svg_content_type(session_factory, config, tmp_path):
-    # HIGH bug this pins the fix for: /favicon.svg used to fall into the SPA
+def test_favicon_png_served_with_png_content_type(session_factory, config, tmp_path):
+    # HIGH bug this pins the fix for: /hammer.png used to fall into the SPA
     # catch-all and come back as index.html (text/html), which is wrong for
-    # a file a browser tab requests expecting actual SVG bytes.
+    # a file a browser tab requests expecting actual PNG bytes.
     dist_dir = make_dist(tmp_path, with_favicon=True)
     ui_config = config.model_copy(update={"ui_dist": dist_dir})
     client = TestClient(create_app(session_factory, config=ui_config))
 
-    response = client.get("/favicon.svg")
+    response = client.get("/hammer.png")
 
     assert response.status_code == 200
-    assert response.text == FAVICON_SVG
+    assert response.content == HAMMER_PNG
     assert response.text != INDEX_HTML
-    assert response.headers["content-type"].startswith("image/svg+xml")
+    assert response.headers["content-type"].startswith("image/png")
 
 
 def test_spa_route_still_wins_over_favicon_handling(session_factory, config, tmp_path):
@@ -121,7 +125,7 @@ def test_nested_svg_path_is_not_treated_as_root_static_file(
     dist_dir = make_dist(tmp_path, with_favicon=True)
     nested_dir = dist_dir / "nested"
     nested_dir.mkdir()
-    (nested_dir / "favicon.svg").write_text(FAVICON_SVG)
+    (nested_dir / "favicon.svg").write_text(NESTED_SVG)
     ui_config = config.model_copy(update={"ui_dist": dist_dir})
     client = TestClient(create_app(session_factory, config=ui_config))
 

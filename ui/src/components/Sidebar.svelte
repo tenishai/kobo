@@ -33,61 +33,21 @@
       (agent) => agent.status === "pending" || agent.status === "provisioning",
     ),
   );
-
-  /** Svelte's `SVGAttributes` typing has no `title` entry (unlike
-   * `HTMLAttributes`), so the hammer's explanatory title -- an attribute,
-   * not the `<title>` child element SVG normally wants, since that's what a
-   * plain `getAttribute("title")` reads -- is set imperatively through this
-   * action instead of a typed attribute binding. */
-  function hammerTitle(node: SVGElement, value: string | undefined): { update(value: string | undefined): void } {
-    function apply(v: string | undefined): void {
-      if (v) {
-        node.setAttribute("title", v);
-      } else {
-        node.removeAttribute("title");
-      }
-    }
-    apply(value);
-    return { update: apply };
-  }
 </script>
 
 <nav class="sidebar" aria-label="Main">
   <a class="sidebar__logo" href={formatHash({ page: "dashboard" })} aria-label="Kobo home">
     <span class="sidebar__logo-row">
-      <svg
+      <img
         class="sidebar__hammer"
         class:sidebar__hammer--building={building}
-        viewBox="0 0 24 24"
+        src="/hammer.png"
+        alt=""
         width="26"
         height="26"
         aria-hidden="true"
-        use:hammerTitle={building ? "Kobo is building an agent." : undefined}
-      >
-        <!-- Disc-and-knockout redraw: the mark is one solid disc (the ink
-             tone) with the hammer cut from it as negative space via
-             fill-rule evenodd, instead of a ring framing a separately
-             colored glyph. Two subpaths in this one path: first a full
-             circle (drawn as two arcs) of radius 12 centered on (12,12) --
-             tangent to all four viewBox edges, no ring, no margin -- then
-             the hammer silhouette (a rounded-rectangle head with a small
-             notch step on its outer edge suggesting the claw/peen, fused
-             to a rounded stout handle), drawn pointing straight up so the
-             45deg rotation below angles it head-up-right, handle-down-left.
-             Any point inside both subpaths gets an even crossing count
-             under evenodd, so the hammer reads as a hole showing whatever
-             sits behind the SVG. -->
-        <path
-          class="sidebar__hammer-glyph"
-          fill-rule="evenodd"
-          transform="rotate(45 12 12)"
-          d="M 0 12 A 12 12 0 1 0 24 12 A 12 12 0 1 0 0 12 Z
-             M 7.6 3.2 L 10.5 3.2 L 10.5 4.8 L 13.5 4.8 L 13.5 3.2 L 16.4 3.2
-             A 1.3 1.3 0 0 1 17.7 4.5 L 17.7 6.7 A 1.3 1.3 0 0 1 16.4 8
-             L 13.6 8 L 13.6 16 A 1.6 1.6 0 0 1 10.4 16 L 10.4 8 L 7.6 8
-             A 1.3 1.3 0 0 1 6.3 6.7 L 6.3 4.5 A 1.3 1.3 0 0 1 7.6 3.2 Z"
-        />
-      </svg>
+        title={building ? "Kobo is building an agent." : undefined}
+      />
       <span class="sidebar__wordmark">Kobo</span>
     </span>
     <span class="sidebar__tagline">assembly room</span>
@@ -166,32 +126,24 @@
     font-weight: 600;
   }
 
-  /* The hammer mark: a solid disc filling the mark edge to edge, ink at
-     rest, with the hammer knocked out of it as negative space (fill-rule
-     evenodd on the disc-and-hammer path below) so the room's own
-     background shows through the cutout -- head angled up-right at rest.
-     No separate ring: the disc itself carries the fill color, swapped to
-     --ok below while an agent is building. */
+  /* The hammer mark: the operator's own PNG asset (a dark disc with the
+     hammer knocked out as transparent negative space, baked into the
+     pixels rather than drawn here). A raster image has no fill to recolor,
+     so unlike the old inline-SVG mark, the mark itself doesn't swap tone
+     while building — the glow below is the whole building signal. */
   .sidebar__hammer {
     flex-shrink: 0;
   }
 
-  .sidebar__hammer-glyph {
-    fill: var(--ink);
-  }
-
   /* The pulse: while an agent is pending/provisioning, the hammer breathes
-     green — the same "Ready" green (--ok) StatusBadge's own dot uses, not
-     the amber --pulse token (that one means "still working" on a status
-     dot; here the room itself is doing the work, so it reads as progress,
-     not a warning). The glow (a drop-shadow tied to the same --ok token)
-     breathes its radius in step with the existing opacity/scale beats,
+     a green glow — the same "Ready" green (--ok) StatusBadge's own dot
+     uses, not the amber --pulse token (that one means "still working" on a
+     status dot; here the room itself is doing the work, so it reads as
+     progress, not a warning). The glow (a drop-shadow tied to the same
+     --ok token) follows the PNG's alpha channel same as it did the SVG's,
+     and breathes its radius in step with the existing opacity/scale beats,
      rather than running as a separate animation, so the two never drift
      out of sync. */
-  .sidebar__hammer--building .sidebar__hammer-glyph {
-    fill: var(--ok);
-  }
-
   .sidebar__hammer--building {
     animation: hammer-pulse 1.6s ease-in-out infinite;
   }
