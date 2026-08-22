@@ -453,10 +453,14 @@
   // The select sections on `kind` (never on a hardcoded "shared" string,
   // matching the server's own "don't hardcode SHARED_GROUP's spelling
   // client-side" doc comment on `/api/catalog/groups`): a "Shared" optgroup
-  // first, an "Engineering groups" optgroup next, then one final option
-  // OUTSIDE both optgroups -- "My group is not listed..." -- the escape
-  // hatch into the mini-form below for a directory group `cfg.groups`
-  // doesn't know about yet.
+  // first, an "Engineering groups" optgroup next, a "Non-engineering
+  // groups" optgroup after that (create-modal non-engineering-wing ruling
+  // -- config-driven via `GroupChoice.kind` server-side, never a hardcoded
+  // list of names here), then one final option OUTSIDE all three optgroups
+  // -- "My group is not listed..." -- the escape hatch into the mini-form
+  // below for a directory group `cfg.groups` doesn't know about yet. Each
+  // section is omitted entirely when it has no entries (same "don't render
+  // an empty optgroup" rule already applied to Shared/Engineering).
   let groupValue = $state("");
   const groupOptionsAvailable = $derived(($groups.data?.length ?? 0) > 0);
   const sharedGroupOptions = $derived(
@@ -464,6 +468,9 @@
   );
   const engineeringGroupOptions = $derived(
     ($groups.data ?? []).filter((g) => g.kind === "engineering"),
+  );
+  const nonEngineeringGroupOptions = $derived(
+    ($groups.data ?? []).filter((g) => g.kind === "non-engineering"),
   );
   const selectedGroupKind = $derived(
     $groups.data?.find((g) => g.name === groupValue)?.kind,
@@ -1053,6 +1060,13 @@
             {#if engineeringGroupOptions.length > 0}
               <optgroup label="Engineering groups">
                 {#each engineeringGroupOptions as group (group.name)}
+                  <option value={group.name}>{group.name}</option>
+                {/each}
+              </optgroup>
+            {/if}
+            {#if nonEngineeringGroupOptions.length > 0}
+              <optgroup label="Non-engineering groups">
+                {#each nonEngineeringGroupOptions as group (group.name)}
                   <option value={group.name}>{group.name}</option>
                 {/each}
               </optgroup>

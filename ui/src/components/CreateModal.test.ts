@@ -371,6 +371,54 @@ describe("CreateModal — the group menu has a commons, a directory, and a door 
     expect(optgroups[1].nextElementSibling).toBe(lastChild);
   });
 
+  it("sections the select: Non-engineering groups sits between Engineering groups and My group is not listed (create-modal non-engineering-wing ruling)", async () => {
+    stubCreateModalCatalogs({
+      "/api/catalog/groups": {
+        groups: [
+          { name: "shared", kind: "shared" },
+          { name: "payments-eng", kind: "engineering" },
+          { name: "legal", kind: "non-engineering" },
+          { name: "finance", kind: "non-engineering" },
+        ],
+      },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    const groupSelect = (await screen.findByLabelText("Group")) as HTMLSelectElement;
+    const optgroups = Array.from(groupSelect.querySelectorAll("optgroup"));
+    expect(optgroups.map((g) => g.label)).toEqual([
+      "Shared",
+      "Engineering groups",
+      "Non-engineering groups",
+    ]);
+
+    const nonEngineeringOptions = Array.from(optgroups[2].querySelectorAll("option"));
+    expect(nonEngineeringOptions.map((o) => o.value)).toEqual(["legal", "finance"]);
+
+    // "My group is not listed..." still sits outside every optgroup, as the
+    // very last child of the select -- right after the new section.
+    const lastChild = groupSelect.lastElementChild as HTMLOptionElement;
+    expect(lastChild.tagName).toBe("OPTION");
+    expect(lastChild.textContent).toBe("My group is not listed...");
+    expect(optgroups[2].nextElementSibling).toBe(lastChild);
+  });
+
+  it("omits the Non-engineering groups optgroup entirely when the room has none configured", async () => {
+    stubCreateModalCatalogs({
+      "/api/catalog/groups": {
+        groups: [
+          { name: "shared", kind: "shared" },
+          { name: "payments-eng", kind: "engineering" },
+        ],
+      },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    const groupSelect = (await screen.findByLabelText("Group")) as HTMLSelectElement;
+    const optgroups = Array.from(groupSelect.querySelectorAll("optgroup"));
+    expect(optgroups.map((g) => g.label)).toEqual(["Shared", "Engineering groups"]);
+  });
+
   it("shows the shared helper sentence only once shared is the picked value", async () => {
     stubCreateModalCatalogs({
       "/api/catalog/groups": {

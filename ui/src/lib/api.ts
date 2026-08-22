@@ -480,17 +480,23 @@ export async function fetchModels(): Promise<{
 }
 
 /** `GET /api/catalog/groups` (access-control Task B2, sectioned by the
- * shared-group + group-requests wave) — the room's named ACL namespaces,
- * config names only (never the Okta group names the server maps them to
+ * shared-group + group-requests wave, extended by the create-modal
+ * non-engineering-wing ruling) -- the room's named ACL namespaces, config
+ * names only (never the Okta group names the server maps them to
  * internally). `kind` is `"shared"` for the one commons entry (always
- * first, always present, even when the room has named no groups at all —
- * usable by every signed-in caller regardless of directory config) or
- * `"engineering"` for one of the room's own configured groups. The create
- * modal's group `<select>` sections on this field rather than hardcoding
- * the commons entry's name client-side. `[]` is still possible in a
- * malformed/stubbed response; the create modal treats that defensively as
- * "no picker at all," same as before this wave. */
-export type GroupOption = { name: string; kind: "shared" | "engineering" };
+ * first, always present, even when the room has named no groups at all --
+ * usable by every signed-in caller regardless of directory config),
+ * `"engineering"` for one of the room's own configured groups, or
+ * `"non-engineering"` for a configured group that renders in the dropdown's
+ * separate non-engineering wing instead (`GroupChoice.kind` on the server).
+ * The create modal's group `<select>` sections on this field rather than
+ * hardcoding the commons entry's name client-side. `[]` is still possible
+ * in a malformed/stubbed response; the create modal treats that
+ * defensively as "no picker at all," same as before this wave. */
+export type GroupOption = {
+  name: string;
+  kind: "shared" | "engineering" | "non-engineering";
+};
 
 export async function fetchGroups(): Promise<GroupOption[]> {
   const res = await fetch("/api/catalog/groups");
