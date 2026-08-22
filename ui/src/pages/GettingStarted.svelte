@@ -1,52 +1,68 @@
 <script lang="ts">
   // Static orientation page. No fetching, no state: the room's vocabulary
-  // and the shortest possible path to a first agent.
+  // and the shortest possible path to a first agent, told as the five-step
+  // journey a first-time visitor actually takes (create, talk and teach,
+  // connect agents to each other, wire up Slack, understand who can do
+  // what) rather than a features list. Plain language throughout: no
+  // repos, images, pods, or CI, the same house rule the rest of this
+  // room's own copy follows.
 </script>
 
 <article class="getting-started">
   <h1>Getting started</h1>
 
   <section>
-    <h2>What lives here</h2>
+    <h2>Make an agent</h2>
     <p>
-      An agent is a coworker you assemble: it gets a name, a persona, and a
-      place to work. Once it is ready, you talk to it here or in Slack, and
-      it remembers what you teach it.
+      Press Create agent. Describe the job in a sentence, or paste or upload
+      a full persona document if your team already has one written, and the
+      details fill themselves in. Pick a name from the five cards and skills
+      from the catalog, then choose a group: your team's agents are visible
+      to your teammates, shared agents are visible to everyone, and if your
+      group is not listed you can request it right from the menu. Create it,
+      then watch the checklist: the hammer in the corner glows while Kobo
+      builds.
     </p>
   </section>
 
   <section>
-    <h2>Creating one</h2>
+    <h2>Talk to it, teach it</h2>
     <p>
-      Press Create agent and answer one question: what should it do for you?
-      The room drafts its persona, the agent picks its own name from five
-      choices, and you hand it skills to draw on. The checklist shows every
-      step as it comes alive.
+      Open Chat. When the agent says something worth keeping, or you tell it
+      something it should remember, press Teach this and the fact is in its
+      memory in seconds. Corrections work too: teach the new fact and the
+      old one retires on its own. You can also drop files on the Memory tab
+      for one-shot learning.
     </p>
   </section>
 
   <section>
-    <h2>The vocabulary</h2>
-    <ul>
-      <li><strong>Memory learns.</strong> Files you teach it (md, txt) are read once and remembered.</li>
-      <li><strong>Tooling governs.</strong> Rules it always follows, checked on every reply.</li>
-      <li><strong>Skills inform.</strong> Guidance it draws on when the work calls for it.</li>
-    </ul>
-  </section>
-
-  <section>
-    <h2>Slack</h2>
+    <h2>Give it colleagues</h2>
     <p>
-      Agents can join your Slack. Ask an operator and the room wires it: the
-      agent appears as an app you can message directly.
+      Agents on the same team already know each other. To connect across
+      teams, open Access and request a colleague from another team's list;
+      their owner accepts, and the two can consult each other from then on.
+      Watch any agent's conversations in the terminal view under Chat.
     </p>
   </section>
 
   <section>
-    <h2>Operators</h2>
+    <h2>Put it in Slack</h2>
     <p>
-      A few things are operator-only: wiring Slack and destroying an agent.
-      If a button is missing for you, that is why.
+      The Slack tab walks you through creating the app with a ready-made
+      manifest, pasting two tokens, inviting the bot to a channel, and
+      saving the channel id. Long answers arrive whole.
+    </p>
+  </section>
+
+  <section>
+    <h2>Who can do what</h2>
+    <p>
+      You sign in with your company account, and your email shows bottom
+      left. You own what you create: only you and the room's admins can
+      change your agent, though everyone on your team can see it and chat
+      with it. Grants on the Access tab let you add specific people from
+      other teams.
     </p>
   </section>
 </article>
@@ -70,14 +86,9 @@
     font-size: 1rem;
   }
 
-  .getting-started p,
-  .getting-started ul {
+  .getting-started p {
     margin: 0;
     color: var(--muted);
     line-height: 1.6;
-  }
-
-  .getting-started ul {
-    padding-left: 1.2rem;
   }
 </style>
