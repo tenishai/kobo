@@ -3453,44 +3453,40 @@ def create_app(
             ),
         }
 
+    def _no_such_invite_404(invite_id: int) -> JSONResponse:
+        """The one 404 body/status every invite-id route (accept/decline/
+        revoke) returns for an id with nothing real behind it -- shared so
+        `_fetch_invite_or_404`'s missing-id case and the no-standing case
+        below (folds 1+2, C1 review) are byte-identical, never two call
+        sites that could drift apart.
+        """
+        return JSONResponse({"error": f"no such invite: {invite_id}"}, status_code=404)
+
     def _fetch_invite_or_404(session: Session, invite_id: int) -> A2AInvite | JSONResponse:
         invite = session.get(A2AInvite, invite_id)
         if invite is None:
-            return JSONResponse({"error": f"no such invite: {invite_id}"}, status_code=404)
+            return _no_such_invite_404(invite_id)
         return invite
 
-    def _revoke_gate(session: Session, request: Request, invite: A2AInvite) -> JSONResponse | None:
-        """None when the caller may revoke `invite` -- owner-or-operator of
-        EITHER side (unlike accept/decline below, which is TO-side only: a
-        revoke may come from whichever side wants out of an arrangement it
-        already has standing on). Delegates to `_owner_or_operator_or_403`
-        against each side in turn rather than re-deriving the operator/
-        IAP-off escape hatches here -- those must never fork from the one
-        function that owns them.
-
-        If a side's named agent no longer exists (destroyed since the
-        invite was created), it's treated exactly like `_owner_or_operator_
-        or_403`'s own ownerless-agent branch: fail-closed to operator-only
-        for that side, via a bare stand-in carrying `created_by=None` --
-        the same idiom test_web_ownership_gate.py's own unit tests use for
-        `_owner_or_operator_or_403` directly -- not by skipping the check
-        or raising on a missing row.
+    def _invite_side_stand_in(session: Session, agent_name: str) -> Agent | SimpleNamespace:
+        """The named agent, or a bare `created_by=None` stand-in when it no
+        longer exists (destroyed since the invite was created) -- the
+        fail-closed idiom every invite-id route below shares: a vanished
+        side is operator-only to claim standing on, never nobody's-problem
+        or everybody's.
         """
-        from_agent = session.query(Agent).filter_by(name=invite.from_agent).first()
-        to_agent = session.query(Agent).filter_by(name=invite.to_agent).first()
-        from_stand_in = from_agent if from_agent is not None else SimpleNamespace(created_by=None)
-        to_stand_in = to_agent if to_agent is not None else SimpleNamespace(created_by=None)
+        agent = session.query(Agent).filter_by(name=agent_name).first()
+        return agent if agent is not None else SimpleNamespace(created_by=None)
 
-        if _owner_or_operator_or_403(from_stand_in, request) is None:
-            return None
-        if _owner_or_operator_or_403(to_stand_in, request) is None:
-            return None
-        # Neither side let the caller through. Reuse the exact 403 body
-        # `_owner_or_operator_or_403` itself returns for an ownerless agent
-        # (a stranger is never an operator and IAP-off already returned
-        # None above, so this call can only land on its final 403 branch)
-        # rather than retyping the copy here and risking drift.
-        return _owner_or_operator_or_403(SimpleNamespace(created_by=None), request)
+    def _invite_side_gate(session: Session, request: Request, agent_name: str) -> JSONResponse | None:
+        """`_owner_or_operator_or_403` against the named invite side, through
+        the stand-in above -- `None` when the caller has standing on that
+        side, else the verbatim forbidden-mutation 403 body. The one place
+        every invite-id route below asks "does this caller have standing
+        on this side," so the answer (and its exact 403 body, when it is
+        one) can never fork between accept/decline and revoke.
+        """
+        return _owner_or_operator_or_403(_invite_side_stand_in(session, agent_name), request)
 
     def _decide_invite(
         session: Session, request: Request, invite_id: int, *, new_status: str, verb: str
@@ -3499,24 +3495,31 @@ def create_app(
         gate and state-transition shape, differing only in which terminal
         status they move a pending invite to and the verb their 409 copy
         names.
+
+        Folds 1+2 (C1 review): standing is checked on BOTH sides before
+        anything else. A caller with standing on NEITHER side (a true
+        stranger to this invite) gets the exact same 404
+        (`_no_such_invite_404`) a missing invite id gets -- previously this
+        path fetched the TO agent through `_visible_agent_or_404`, which
+        either leaked the TO agent's real name in a 404 body (when it
+        wasn't visible to the caller) or fell through to a 403 the moment
+        it was (an oracle either way, distinguishable from a genuinely
+        missing id). A caller with standing on the FROM side only (e.g. the
+        agent that SENT this request, checking in on it) still gets the
+        plain forbidden-mutation 403 -- they already know the invite exists
+        from their own `GET .../invites`, so naming that is not a leak;
+        accepting/declining is the TO side's call to make regardless.
         """
         invite = _fetch_invite_or_404(session, invite_id)
         if isinstance(invite, JSONResponse):
             return invite
 
-        # Owner-or-operator of the TO agent, not the FROM agent -- accepting
-        # or declining is the TO side's call to make, the design spec's
-        # "the RECEIVING agent's owner accepts before the handshake exists."
-        # `_visible_agent_or_404` first (404-before-403 discipline, same as
-        # every other gated route): a TO agent the caller can't even see
-        # (or that no longer exists) reads as not-found before the gate
-        # itself ever runs.
-        to_agent = _visible_agent_or_404(session, request, invite.to_agent)
-        if isinstance(to_agent, JSONResponse):
-            return to_agent
-        gate = _owner_or_operator_or_403(to_agent, request)
-        if gate is not None:
-            return gate
+        from_gate = _invite_side_gate(session, request, invite.from_agent)
+        to_gate = _invite_side_gate(session, request, invite.to_agent)
+        if from_gate is not None and to_gate is not None:
+            return _no_such_invite_404(invite_id)
+        if to_gate is not None:
+            return to_gate
 
         if invite.status != INVITE_PENDING:
             return JSONResponse(
@@ -3696,14 +3699,24 @@ def create_app(
         arrangement it's already a party to). A declined or already-revoked
         invite has nothing left to revoke, hence the 409 rather than a
         silent no-op or a second write.
+
+        Fold 2 (C1 review): a caller with standing on NEITHER side gets the
+        exact same 404 a missing invite id gets (`_no_such_invite_404`) --
+        this used to be the 403-vs-404 oracle itself (a stranger to both
+        sides got 403 here but 404 against a genuinely missing id), letting
+        a caller with zero standing learn "this id names a real invite"
+        from the status code alone. For revoke, standing on either side IS
+        the permission (no TO-only asymmetry like accept/decline above), so
+        there is no separate "wrong side" 403 branch to fall through to.
         """
         invite = _fetch_invite_or_404(session, invite_id)
         if isinstance(invite, JSONResponse):
             return invite
 
-        gate = _revoke_gate(session, request, invite)
-        if gate is not None:
-            return gate
+        from_gate = _invite_side_gate(session, request, invite.from_agent)
+        to_gate = _invite_side_gate(session, request, invite.to_agent)
+        if from_gate is not None and to_gate is not None:
+            return _no_such_invite_404(invite_id)
 
         if invite.status not in (INVITE_PENDING, INVITE_ACCEPTED):
             return JSONResponse(

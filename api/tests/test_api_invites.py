@@ -482,6 +482,12 @@ def test_owner_of_from_agent_may_not_accept_their_own_outgoing_request(session_f
 
 
 def test_stranger_may_not_accept(session_factory, client):
+    # Folds 1+2 (C1 review): a caller with zero standing on EITHER side of
+    # the invite (not owner/operator of `a` or `b`) must not be able to
+    # tell "this invite exists but isn't mine" from "this invite id was
+    # never real" -- so this reads as the same invite-shaped 404 a missing
+    # id gets, not the 403 an owner of one side (who already knows the
+    # invite exists) would see.
     c, key = client
     _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
     _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name="payments-eng")
@@ -491,7 +497,53 @@ def test_stranger_may_not_accept(session_factory, client):
         f"/api/invites/{invite_id}/accept", headers=_headers(key, email=STRANGER_EMAIL)
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 404
+    assert response.json() == {"error": f"no such invite: {invite_id}"}
+
+
+def test_accept_by_a_stranger_matches_the_missing_invite_body_shape(session_factory, client):
+    # Fold 1 (C1 review): the accept path used to fetch the TO agent through
+    # `_visible_agent_or_404`, which leaked the TO agent's real name in its
+    # 404 body ({"error": "no such agent: 'b'"}) -- distinguishable from a
+    # genuinely missing invite id's body by content alone even though both
+    # were 404s. Both are pinned to the identical `"no such invite: {id}"`
+    # template (each with its own id, never an agent name) rather than to
+    # each other verbatim, since the two ids necessarily differ.
+    c, key = client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name="payments-eng")
+    invite_id = _seed_invite(session_factory, from_agent="a", to_agent="b", status="pending")
+
+    real_invite_response = c.post(
+        f"/api/invites/{invite_id}/accept", headers=_headers(key, email=STRANGER_EMAIL)
+    )
+    missing_invite_response = c.post(
+        "/api/invites/999999/accept", headers=_headers(key, email=STRANGER_EMAIL)
+    )
+
+    assert real_invite_response.status_code == missing_invite_response.status_code == 404
+    assert real_invite_response.json() == {"error": f"no such invite: {invite_id}"}
+    assert missing_invite_response.json() == {"error": "no such invite: 999999"}
+
+
+def test_decline_by_a_stranger_matches_the_missing_invite_body_shape(session_factory, client):
+    # Same fold, the decline route (shares `_decide_invite` with accept, but
+    # pinned separately since it's its own public route).
+    c, key = client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name="payments-eng")
+    invite_id = _seed_invite(session_factory, from_agent="a", to_agent="b", status="pending")
+
+    real_invite_response = c.post(
+        f"/api/invites/{invite_id}/decline", headers=_headers(key, email=STRANGER_EMAIL)
+    )
+    missing_invite_response = c.post(
+        "/api/invites/999999/decline", headers=_headers(key, email=STRANGER_EMAIL)
+    )
+
+    assert real_invite_response.status_code == missing_invite_response.status_code == 404
+    assert real_invite_response.json() == {"error": f"no such invite: {invite_id}"}
+    assert missing_invite_response.json() == {"error": "no such invite: 999999"}
 
 
 def test_accept_unknown_invite_id_is_404(session_factory, client):
@@ -573,6 +625,12 @@ def test_operator_may_revoke(session_factory, client):
 
 
 def test_stranger_to_both_sides_may_not_revoke(session_factory, client):
+    # Fold 2 (C1 review): this used to be the 403-vs-404 oracle itself --
+    # a stranger to both sides got 403 here but 404 against a missing id
+    # (test_revoke_unknown_invite_id_is_404 below), letting a caller with
+    # zero standing learn "this id names a real invite" from the status
+    # code alone, with no body leak even required. Now it's the identical
+    # invite-shaped 404.
     c, key = client
     _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
     _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name="payments-eng")
@@ -582,8 +640,26 @@ def test_stranger_to_both_sides_may_not_revoke(session_factory, client):
         f"/api/invites/{invite_id}", headers=_headers(key, email=STRANGER_EMAIL)
     )
 
-    assert response.status_code == 403
-    assert response.json() == VERBATIM_403
+    assert response.status_code == 404
+    assert response.json() == {"error": f"no such invite: {invite_id}"}
+
+
+def test_revoke_by_a_stranger_matches_the_missing_invite_body_shape(session_factory, client):
+    c, key = client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name="payments-eng")
+    invite_id = _seed_invite(session_factory, from_agent="a", to_agent="b", status="pending")
+
+    real_invite_response = c.delete(
+        f"/api/invites/{invite_id}", headers=_headers(key, email=STRANGER_EMAIL)
+    )
+    missing_invite_response = c.delete(
+        "/api/invites/999999", headers=_headers(key, email=STRANGER_EMAIL)
+    )
+
+    assert real_invite_response.status_code == missing_invite_response.status_code == 404
+    assert real_invite_response.json() == {"error": f"no such invite: {invite_id}"}
+    assert missing_invite_response.json() == {"error": "no such invite: 999999"}
 
 
 def test_revoke_unknown_invite_id_is_404(session_factory, client):
