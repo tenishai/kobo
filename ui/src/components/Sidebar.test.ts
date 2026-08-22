@@ -282,4 +282,20 @@ describe("Sidebar — favicon (the same forge hammer, on the tab)", () => {
     expect(svgSource).toMatch(/<svg/);
     expect(svgSource).toMatch(/viewBox="0 0 24 24"/);
   });
+
+  it("renders the hammer glyph in a color that survives a dark browser tab", () => {
+    // MEDIUM bug this pins the fix for: the original near-black ink
+    // (#262220) sat within a few RGB values of Chrome/Firefox's dark tab
+    // chrome (~#202124) and effectively vanished there. #857d70 was chosen
+    // for contrast in both directions (see favicon.svg's own comment for
+    // the worked-out ratios) -- assert the old near-invisible ink is gone
+    // and the new glyph color is what actually renders.
+    const match = INDEX_HTML.match(/<link\s+rel="icon"\s+type="image\/svg\+xml"\s+href="([^"]+)"/);
+    const href = match![1].replace(/^\//, "");
+    const svgSource = readFileSync(join(__dirname, "..", "..", "public", href), "utf8");
+    expect(svgSource).not.toMatch(/fill="#262220"/i);
+    expect(svgSource).toMatch(/fill="#857d70"/i);
+    // The amber ring is untouched by this fix.
+    expect(svgSource).toMatch(/stroke="#b5651d"/i);
+  });
 });
