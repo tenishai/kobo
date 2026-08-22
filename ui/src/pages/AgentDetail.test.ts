@@ -22,6 +22,8 @@ const READY_AGENT = {
   slack: { app_id: null, channels: [], state: "idle" },
   destroy_visible: false,
   has_avatar: false,
+  created_by: null,
+  group_name: null,
 };
 
 // A minimal EventSource stand-in - jsdom has none, and ColleagueConversations
@@ -244,6 +246,44 @@ describe("AgentDetail tabs", () => {
     expect(
       within(overviewPanel).queryByText(/Not written yet/),
     ).toBeNull();
+  });
+
+  it("Overview shows 'Made by <email>' when created_by is present (Task A3)", async () => {
+    stubFetch({
+      "/api/colleagues/conversations": { conversations: [] },
+      "/api/agents/warden/knowledge": { files: [] },
+      "/api/agents/warden/intake": { files: [] },
+      "/api/agents/warden/skills": { skills: [] },
+      "/api/agents/warden/tooling": {
+        files: [],
+        enforcement: { attested: false, locked: false, locked_file: null },
+      },
+      "/api/agents/warden": { ...READY_AGENT, created_by: "owner@example.com" },
+      "/api/": {},
+    });
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Chat" });
+    const overviewPanel = document.getElementById("panel-overview") as HTMLElement;
+    expect(within(overviewPanel).getByText("Made by owner@example.com")).not.toBeNull();
+  });
+
+  it("Overview renders no owner line when created_by is null", async () => {
+    stubFetch({
+      "/api/colleagues/conversations": { conversations: [] },
+      "/api/agents/warden/knowledge": { files: [] },
+      "/api/agents/warden/intake": { files: [] },
+      "/api/agents/warden/skills": { skills: [] },
+      "/api/agents/warden/tooling": {
+        files: [],
+        enforcement: { attested: false, locked: false, locked_file: null },
+      },
+      "/api/agents/warden": READY_AGENT,
+      "/api/": {},
+    });
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Chat" });
+    const overviewPanel = document.getElementById("panel-overview") as HTMLElement;
+    expect(within(overviewPanel).queryByText(/Made by/)).toBeNull();
   });
 
   it("the Edit details affordance disables while frozen (destroying)", async () => {

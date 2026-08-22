@@ -305,6 +305,9 @@
                   <span class="composition__team-chip">{data.team}</span>
                 </span>
               </span>
+              {#if data.created_by}
+                <p class="composition__owner">Made by {data.created_by}</p>
+              {/if}
               {#if data.skills.length > 0}
                 <div class="composition__skills">
                   {#each data.skills as skill (skill.name)}
@@ -544,6 +547,12 @@
     color: var(--ink);
     font-family: var(--font-mono);
     font-size: 0.85rem;
+  }
+
+  .composition__owner {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.8rem;
   }
 
   .composition__team-chip {

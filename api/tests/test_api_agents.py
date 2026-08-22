@@ -696,15 +696,63 @@ def test_list_agents_tolerates_null_created_by_and_group_name_on_pre_existing_ro
 
     listing = client.get("/api/agents").json()["agents"]
     assert len(listing) == 1
+    assert listing[0]["created_by"] is None
+    assert listing[0]["group_name"] is None
 
     detail = client.get(f"/api/agents/{AGENT_NAME}")
     assert detail.status_code == 200
+    assert detail.json()["created_by"] is None
+    assert detail.json()["group_name"] is None
 
     session = session_factory()
     row = session.query(Agent).filter_by(name=AGENT_NAME).first()
     session.close()
     assert row.created_by is None
     assert row.group_name is None
+
+
+def test_list_agents_exposes_created_by_and_group_name(client, session_factory, config):
+    """Access-control Task A3: the owner-or-operator gate and the card's
+    "Made by <email>" line both need `created_by` (plus `group_name`, for
+    Task B2's visibility filter) actually on the wire -- A2 stored both
+    columns but deliberately left them off `GET /api/agents`."""
+    session = session_factory()
+    session.add(
+        Agent(
+            name=AGENT_NAME,
+            persona=PERSONA,
+            model_id=config.models[0].id,
+            status=AgentStatus.READY,
+            created_by="owner@example.com",
+            group_name="payments-eng",
+        )
+    )
+    session.commit()
+    session.close()
+
+    row = client.get("/api/agents").json()["agents"][0]
+    assert row["created_by"] == "owner@example.com"
+    assert row["group_name"] == "payments-eng"
+
+
+def test_get_agent_exposes_created_by_and_group_name(client, session_factory, config):
+    session = session_factory()
+    session.add(
+        Agent(
+            name=AGENT_NAME,
+            persona=PERSONA,
+            model_id=config.models[0].id,
+            status=AgentStatus.READY,
+            created_by="owner@example.com",
+            group_name="payments-eng",
+        )
+    )
+    session.commit()
+    session.close()
+
+    body = client.get(f"/api/agents/{AGENT_NAME}").json()
+    assert body["created_by"] == "owner@example.com"
+    assert body["group_name"] == "payments-eng"
 
 
 def test_create_agent_pipeline_materializes_staged_skill_and_persona_body(client, fake_github):

@@ -13,6 +13,17 @@ export type AgentSummary = {
   model_label: string;
   created_at: string;
   has_avatar: boolean;
+  /** The verified email that created this agent (access-control Task A2/
+   * A3), `null` for a pre-A2 row or one created while IAP was off. Drives
+   * the "Made by <email>" line on the card and detail Overview, and is the
+   * OWNER half of the server's owner-or-operator mutation gate -- shown
+   * here for information only, never itself a source of authority. */
+  created_by: string | null;
+  /** The agent's ACL namespace (access-control Task A2), distinct from
+   * `team` (the skills-catalog capability axis) -- `null` until Task B2's
+   * group picker starts sending one. Not yet rendered anywhere; carried
+   * here so Task B2's visibility filter has it on the wire already. */
+  group_name: string | null;
 };
 
 export type StepView = {

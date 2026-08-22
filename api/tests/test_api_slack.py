@@ -235,6 +235,7 @@ def _seed_agent(
     slack_app_id=None,
     slack_channels=None,
     slack_wired=False,
+    created_by=None,
 ):
     session = session_factory()
     session.add(
@@ -248,6 +249,7 @@ def _seed_agent(
             slack_app_id=slack_app_id,
             slack_channels=encode_channels(slack_channels) if slack_channels is not None else None,
             slack_wired=slack_wired,
+            created_by=created_by,
         )
     )
     session.commit()
@@ -907,14 +909,20 @@ def test_put_channels_dedupes(session_factory, config):
 
 def test_put_channels_no_operator_gate(session_factory, config):
     # Unlike connect/app (operator-assisted since they carry real Slack
-    # tokens), the channels lane is for everyone in the room: a non-operator
-    # identity still gets 200, even with slack_operators/IAP fully engaged.
+    # tokens), the channels lane is for everyone in the room: a non-admin-
+    # operator identity still gets 200, even with slack_operators/IAP fully
+    # engaged -- `slack_operators` (the retired admin allowlist this route
+    # never consulted) stays irrelevant to it. Access-control Task A3 put a
+    # DIFFERENT gate behind this route (owner-or-operator), so the caller
+    # here is seeded as the agent's own owner to keep proving the original
+    # point: no ADMIN gate blocks you from touching your own agent's
+    # channels, even though a gate of some kind now exists.
     private_key, jwk = _generate_jwk()
     op_config = config.model_copy(
         update={"slack_operators": [OPERATOR_EMAIL], "iap_audience": IAP_AUDIENCE}
     )
     client = _make_client(session_factory, op_config, iap_jwks_fetcher=_fetcher(jwk))
-    _seed_agent(session_factory, op_config)
+    _seed_agent(session_factory, op_config, created_by=NON_OPERATOR_EMAIL)
     token = _sign(private_key, email=NON_OPERATOR_EMAIL)
 
     response = client.put(

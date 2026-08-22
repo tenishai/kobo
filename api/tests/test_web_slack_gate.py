@@ -257,6 +257,7 @@ def _seed_agent(
     slack_app_id=None,
     gojira_app_id=None,
     slack_channels=None,
+    created_by=None,
 ):
     session = session_factory()
     session.add(
@@ -269,6 +270,7 @@ def _seed_agent(
             slack_app_id=slack_app_id,
             gojira_app_id=gojira_app_id,
             slack_channels=encode_channels(slack_channels) if slack_channels is not None else None,
+            created_by=created_by,
         )
     )
     session.commit()
@@ -294,13 +296,16 @@ def test_empty_operators_connect_slack_still_503s_when_slack_unconfigured(
     assert response.json() == {"error": "Slack is not configured"}
 
 
-# --- non-empty operators + IAP on + non-listed email: connect still 200 -----
+# --- non-empty slack_operators + IAP on + non-listed email: connect still 200 --
 #
-# Slack self-service (2026-08-17) retired connect's operator gate outright:
-# a non-operator identity now gets exactly the same 200 an operator would,
-# proven end to end (secret delivered, transport wired, tokens still never
-# echoed — the token-safety proof survives even though there's no more
-# error path here to hang it on).
+# Slack self-service (2026-08-17) retired connect's ADMIN operator gate
+# outright: `slack_operators` (the retired allowlist this route never
+# consults) stays irrelevant to it. Access-control Task A3 put a DIFFERENT
+# gate behind connect (owner-or-operator), so the caller here is seeded as
+# the agent's own owner to keep proving the original point: no admin-list
+# gate blocks you from connecting Slack for your own agent, even though a
+# gate of some kind now exists -- proven end to end (secret delivered,
+# transport wired, tokens still never echoed).
 
 
 def test_non_operator_gets_200_from_connect_slack(session_factory, config):
@@ -315,7 +320,11 @@ def test_non_operator_gets_200_from_connect_slack(session_factory, config):
         iap_jwks_fetcher=_fetcher(jwk),
     )
     _seed_agent(
-        session_factory, op_config, gojira_app_id=app_id, slack_channels=[CHANNEL]
+        session_factory,
+        op_config,
+        gojira_app_id=app_id,
+        slack_channels=[CHANNEL],
+        created_by=NON_OPERATOR_EMAIL,
     )
     token = _sign(private_key, email=NON_OPERATOR_EMAIL)
 
@@ -347,23 +356,24 @@ def test_anonymous_gets_401_from_connect_slack_via_middleware(session_factory, c
     assert response.json() == UNAUTHORIZED_BODY
 
 
-# --- non-empty operators + IAP on + listed email: passes through to 503 -----
+# --- owner email, opposite case from the token: passes through to 503 ------
 
 
 def test_listed_email_uppercase_token_lowercase_operator_list_passes_through(
     session_factory, config
 ):
-    # Even though connect no longer gates on the operator list at all, this
-    # 503-passthrough case-insensitivity proof still holds unchanged (there
-    # was never anything gate-specific about it beyond the email match,
-    # which `_slack_operator_block`'s own unit tests above already cover
-    # from every case-combination angle).
+    # `slack_operators` (the retired admin allowlist) no longer gates this
+    # route at all, so its own case combination is moot -- what still holds
+    # is that the NEW owner-or-operator gate's email match is case
+    # insensitive too: the agent's recorded owner and the token's asserted
+    # email differ only in case here, and the request still reaches the
+    # real "Slack is not configured" 503 rather than a 403.
     private_key, jwk = _generate_jwk()
     op_config = config.model_copy(
         update={"slack_operators": [OPERATOR_EMAIL.lower()], "iap_audience": AUDIENCE}
     )
     client = _make_client(session_factory, op_config, slack=None, iap_jwks_fetcher=_fetcher(jwk))
-    _seed_agent(session_factory, op_config, slack_app_id=APP_ID)
+    _seed_agent(session_factory, op_config, slack_app_id=APP_ID, created_by=OPERATOR_EMAIL.lower())
     token = _sign(private_key, email=OPERATOR_EMAIL.upper())
 
     response = client.post(

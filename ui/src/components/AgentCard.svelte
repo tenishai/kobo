@@ -33,6 +33,9 @@
     <span class="agent-card__sep" aria-hidden="true">·</span>
     <span class="agent-card__time">{relativeTime(agent.created_at)}</span>
   </div>
+  {#if agent.created_by}
+    <p class="agent-card__owner">Made by {agent.created_by}</p>
+  {/if}
   {#if agentTone(agent.status) === "fail"}
     <p class="agent-card__error">Something went wrong. Open for details.</p>
   {/if}
@@ -116,5 +119,14 @@
     margin: 0;
     color: var(--fail);
     font-size: 0.875rem;
+  }
+
+  .agent-card__owner {
+    margin: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 0.75rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

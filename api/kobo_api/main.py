@@ -732,6 +732,48 @@ def _operator_block(request: Request, config: Config) -> JSONResponse | None:
     )
 
 
+def _owner_or_operator_or_403(agent: Agent, request: Request) -> JSONResponse | None:
+    """None when the caller may mutate `agent`; a 403 body otherwise
+    (access-control Task A3). The gate for every mutating surface EXCEPT
+    destroy (which stays operator-only, its own standing rule from the
+    destruction arc -- `_operator_block` above, unchanged) and teach/chat
+    (open by design to any signed-in user who can see the agent, per the
+    arc spec).
+
+    Read surfaces never call this -- only a route about to write something
+    calls it, right after its own `_ready_agent_or_error`/agent-fetch guard
+    and before any work. A legacy agent with no recorded `created_by` (a
+    pre-Task-A2 row, or one created while IAP was off) is operator-only to
+    mutate: fail closed rather than treat a missing owner as "anyone may
+    claim it", and the rollout task's backfill closes that gap for good.
+
+    IAP-disabled short-circuits to allowed, same escape hatch
+    `_operator_block`/`_slack_operator_block` above already use ("the room
+    trusts its perimeter only when it has one"): with no verified email
+    ever available, `created_by` is never recorded either, so without this
+    the gate would permanently lock every one of these routes for a room
+    that never turned IAP on at all (local dev, most of this test suite) --
+    a far wider blast radius than the fail-closed-on-a-null-owner case above
+    is aimed at.
+    """
+    cfg: Config = request.app.state.config
+    if not cfg.iap_audience:
+        return None
+    email = (getattr(request.state, "iap_email", None) or "").lower()
+    # Adapted from the plan's illustrative helper, which called
+    # `_is_operator(request)` -- the real signature (main.py:~700) takes the
+    # email string plus config, not a Request; reuse that matcher exactly,
+    # never fork it.
+    if _is_operator(email, cfg):
+        return None
+    if agent.created_by and email == agent.created_by.lower():
+        return None
+    return JSONResponse(
+        {"error": "Only this agent's owner or a room operator can change it."},
+        status_code=403,
+    )
+
+
 # --- Org status (Task 8): the room's read-only wiring visibility ------------
 #
 # Six checks, each individually try/excepted so a single unreachable backend
@@ -1415,6 +1457,13 @@ def create_app(
                     "model_label": _model_label(cfg, a.model_id),
                     "created_at": a.created_at.isoformat(),
                     "has_avatar": a.avatar_png is not None,
+                    # Owner-or-operator gate + "Made by <email>" (access-
+                    # control Task A3): both columns are nullable (Task A2)
+                    # and simply pass through as `None` for a pre-A2 or
+                    # IAP-disabled-at-create-time row -- no default, no
+                    # placeholder string.
+                    "created_by": a.created_by,
+                    "group_name": a.group_name,
                 }
                 for a in agents
             ]
@@ -1469,6 +1518,8 @@ def create_app(
                 "slack": slack,
                 "destroy_visible": _operator_block(request, cfg) is None,
                 "has_avatar": agent.avatar_png is not None,
+                "created_by": agent.created_by,
+                "group_name": agent.group_name,
             }
         )
 
@@ -1640,6 +1691,13 @@ def create_app(
         name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
     ) -> JSONResponse:
         cfg: Config = app.state.config
+        # Deliberately NOT `_owner_or_operator_or_403` (access-control Task
+        # A3): destroy keeps its own, STRICTER `_operator_block` gate --
+        # the destruction arc's standing rule that tearing an agent down is
+        # operator-only, full stop, even for the agent's own owner. A3's
+        # owner-or-operator gate is additive and looser for every OTHER
+        # mutating surface; destroy was never meant to loosen alongside them.
+        #
         # Gate FIRST, before the agent even exists check: info-safe, same
         # discipline as the Slack gate (a non-operator gets an identical 403
         # whether or not the named agent exists at all).
@@ -1867,11 +1925,15 @@ def create_app(
     def add_skill_from_catalog(
         name: str,
         payload: CatalogSkillPayload,
+        request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(session, name)
         if isinstance(agent, JSONResponse):
             return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
 
         # Collision check BEFORE any repo work, either-class: re-picking a
         # name this agent already carries — whether that existing entry is
@@ -1924,11 +1986,17 @@ def create_app(
 
     @app.delete("/api/agents/{name}/skills/{skill_id}")
     def delete_skill(
-        name: str, skill_id: str, session: Session = Depends(get_session)  # noqa: B008
+        name: str,
+        skill_id: str,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(session, name)
         if isinstance(agent, JSONResponse):
             return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
 
         # One remove_skill call handles either class: a catalog pick and a
         # locally-authored skill both live under the same
@@ -1992,11 +2060,15 @@ def create_app(
         name: str,
         skill_id: str,
         payload: SkillSavePayload,
+        request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(session, name)
         if isinstance(agent, JSONResponse):
             return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
 
         # Collision check BEFORE any repo work — but only against a
         # catalog-class entry: overwriting your OWN existing local skill via
@@ -2064,11 +2136,15 @@ def create_app(
     def upload_intake(
         name: str,
         payload: IntakeUploadPayload,
+        request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(session, name)
         if isinstance(agent, JSONResponse):
             return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
 
         cfg: Config = app.state.config
         try:
@@ -2091,11 +2167,17 @@ def create_app(
 
     @app.delete("/api/agents/{name}/intake/{filename}")
     def delete_intake(
-        name: str, filename: str, session: Session = Depends(get_session)  # noqa: B008
+        name: str,
+        filename: str,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(session, name)
         if isinstance(agent, JSONResponse):
             return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
 
         try:
             sha = delete_intake_file(app.state.clients.github, agent.repo_full_name, filename)
@@ -2354,11 +2436,15 @@ def create_app(
     def upload_tooling(
         name: str,
         payload: ToolingUploadPayload,
+        request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(session, name)
         if isinstance(agent, JSONResponse):
             return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
 
         cfg: Config = app.state.config
         try:
@@ -2383,11 +2469,15 @@ def create_app(
     def import_tooling_route(
         name: str,
         payload: ToolingImportPayload,
+        request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(session, name)
         if isinstance(agent, JSONResponse):
             return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
 
         cfg: Config = app.state.config
         try:
@@ -2421,11 +2511,17 @@ def create_app(
 
     @app.delete("/api/agents/{name}/tooling/{filename}")
     def delete_tooling(
-        name: str, filename: str, session: Session = Depends(get_session)  # noqa: B008
+        name: str,
+        filename: str,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(session, name)
         if isinstance(agent, JSONResponse):
             return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
 
         try:
             sha = delete_tooling_file(app.state.clients.github, agent.repo_full_name, filename)
@@ -2493,6 +2589,7 @@ def create_app(
     def connect_slack(
         name: str,
         payload: SlackConnectRequest,
+        request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         cfg: Config = app.state.config
@@ -2501,6 +2598,9 @@ def create_app(
         )
         if isinstance(agent, JSONResponse):
             return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
 
         clients = app.state.clients
         if clients.slack is None:
@@ -2571,18 +2671,22 @@ def create_app(
     def save_slack_channels(
         name: str,
         payload: SlackChannelsRequest,
+        request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
-        # Deliberately NO operator gate: the channels lane (Two-lane Slack,
-        # 2026-08-17) is for everyone in the room. Connect above lost its
-        # own operator gate too (Slack self-service, 2026-08-17) — this
-        # route simply never had one to begin with. IAP middleware still
-        # runs app-wide either way.
+        # Owner-or-operator now (access-control Task A3) -- this lane was
+        # briefly gateless (Two-lane Slack, 2026-08-17, "for everyone in the
+        # room"), same as connect above, until A3 put both back behind a
+        # gate: not the old admin-list operator gate, but the room-wide
+        # owner-or-operator one every other mutating surface now shares.
         agent = _ready_agent_or_error(
             session, name, not_ready_message="agent is not ready for Slack changes yet"
         )
         if isinstance(agent, JSONResponse):
             return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
 
         # An empty submitted list is the deliberate disconnect path: it
         # skips clean_channels entirely (which would otherwise reject an
@@ -2632,15 +2736,20 @@ def create_app(
     def update_agent_metadata(
         name: str,
         payload: AgentMetadataPatch,
+        request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
-        # Ready-gated, any signed-in user (no operator gate) — same "everyone
-        # in the room" reach as the Slack channels lane above.
+        # Owner-or-operator now (access-control Task A3) -- this route used
+        # to be ready-gated only, "everyone in the room" reach same as the
+        # Slack channels lane; both moved behind the new gate together.
         agent = _ready_agent_or_error(
             session, name, not_ready_message="agent is not ready for directory changes yet"
         )
         if isinstance(agent, JSONResponse):
             return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
 
         team = agent.team
         if payload.team is not None:
@@ -2703,13 +2812,16 @@ def create_app(
 
     @app.post("/api/agents/{name}/metadata/regenerate")
     def regenerate_agent_metadata(
-        name: str, session: Session = Depends(get_session)  # noqa: B008
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(
             session, name, not_ready_message="agent is not ready for directory changes yet"
         )
         if isinstance(agent, JSONResponse):
             return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
 
         clients = app.state.clients
         cfg: Config = app.state.config
@@ -2890,12 +3002,17 @@ def create_app(
     # --- Avatar (P2d): persona-derived face, repo-backed with a display cache ---
 
     @app.post("/api/agents/{name}/avatar")
-    def generate_avatar(name: str, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+    def generate_avatar(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
         agent = _ready_agent_or_error(
             session, name, not_ready_message="agent is not ready for an avatar yet"
         )
         if isinstance(agent, JSONResponse):
             return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
 
         clients = app.state.clients
         if clients.image is None:
@@ -2979,6 +3096,9 @@ def create_app(
         )
         if isinstance(agent, JSONResponse):
             return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
 
         content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
         if content_type != "image/png":
