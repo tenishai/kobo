@@ -39,6 +39,7 @@ from kobo_api.main import PNG_SIGNATURE, _owner_or_operator_or_403, create_app
 from kobo_api.models import Agent, AgentStatus, Base
 from tests.fakes import (
     FakeAgent,
+    FakeCabal,
     FakeCloud,
     FakeGitHub,
     FakeGojira,
@@ -241,7 +242,7 @@ class _CapturingGitHub(FakeGitHub):
         return super().commit_push(workdir, message)
 
 
-def _make_client(session_factory, config, *, github=None, iap_jwks_fetcher=None):
+def _make_client(session_factory, config, *, github=None, cabal=None, iap_jwks_fetcher=None):
     return TestClient(
         create_app(
             session_factory,
@@ -253,6 +254,12 @@ def _make_client(session_factory, config, *, github=None, iap_jwks_fetcher=None)
                 agent=FakeAgent(),
                 kubectl=FakeKubectl(),
                 storage=FakeStorage(),
+                # None (the default) whenever a test doesn't care -- matches
+                # every pre-existing call site here, none of which touched
+                # the switchboard. The directory-sync fix-round tests below
+                # (Task A3 fix round 1) are the first callers here to pass a
+                # real `FakeCabal()`.
+                cabal=cabal,
             ),
             iap_jwks_fetcher=iap_jwks_fetcher,
         )
@@ -349,6 +356,20 @@ def _save_slack_channels(client, headers):
     )
 
 
+def _save_knowledge(client, headers):
+    # Task A3 fix round 1 (HIGH): the route sweep found `save_knowledge`
+    # (PUT) ungated -- a stranger could overwrite another agent's knowledge
+    # file. A fresh filename against the default `_CapturingGitHub()` (no
+    # pre-existing knowledge_files) is enough for an owner/operator call to
+    # actually succeed end to end, same as `_upload_intake`/`_upload_tooling`
+    # above.
+    return client.put(
+        f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md",
+        json={"content": "new content"},
+        headers=headers,
+    )
+
+
 GATE_MATRIX_ROUTES = [
     ("tooling", _upload_tooling),
     ("skills", _save_local_skill),
@@ -356,6 +377,7 @@ GATE_MATRIX_ROUTES = [
     ("intake", _upload_intake),
     ("avatar", _upload_avatar),
     ("slack", _save_slack_channels),
+    ("knowledge", _save_knowledge),
 ]
 
 
@@ -549,3 +571,198 @@ def test_chat_stays_open_to_a_stranger(session_factory, config):
     )
 
     assert response.status_code == 200
+
+
+# --- Task A3 fix round 1: three more mutating routes the sweep found -------
+#
+# The route sweep after 7b226bc landed found three more mutating agent
+# routes the gate never reached: `delete_knowledge` (DELETE, PUT's sibling
+# above via the "knowledge" gate-matrix entry -- both HIGH, a stranger could
+# overwrite OR delete another agent's knowledge files), `retry_agent`
+# (MEDIUM, a stranger could relaunch someone else's failed pipeline), and
+# `sync_directory_route` (LOW, idempotent but gated for uniformity with
+# every other mutating surface). Each gets its own small owner/operator/
+# stranger trio here rather than folding into `GATE_MATRIX_ROUTES` above,
+# since each needs fixture state that table's shared `_seed_agent`/
+# `_make_client` pair doesn't carry (an existing knowledge file, a FAILED
+# status, a wired switchboard) -- but the three assertions per route are
+# the same ones that table already pins: stranger 403 verbatim, owner
+# passes, operator passes without needing ownership.
+
+
+# --- delete_knowledge (HIGH): needs an existing file for a delete to ---------
+# actually succeed, unlike save_knowledge's fresh-filename PUT above.
+
+
+def _delete_knowledge_client(session_factory, config, iap_jwks_fetcher):
+    github = _CapturingGitHub(knowledge_files={"gotchas.md": "old content"})
+    return _make_client(session_factory, config, github=github, iap_jwks_fetcher=iap_jwks_fetcher)
+
+
+def test_knowledge_delete_owner_may_delete(session_factory, config):
+    private_key, jwk = _generate_jwk()
+    client = _delete_knowledge_client(session_factory, config, _fetcher(jwk))
+    _seed_agent(session_factory, config, created_by=OWNER_EMAIL)
+
+    response = client.delete(
+        f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md",
+        headers=_headers(private_key, email=OWNER_EMAIL),
+    )
+
+    assert response.status_code == 200, response.text
+
+
+def test_knowledge_delete_operator_may_delete_even_without_ownership(session_factory, config):
+    private_key, jwk = _generate_jwk()
+    client = _delete_knowledge_client(session_factory, config, _fetcher(jwk))
+    _seed_agent(session_factory, config, created_by=OWNER_EMAIL)
+
+    response = client.delete(
+        f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md",
+        headers=_headers(private_key, email=OPERATOR_EMAIL),
+    )
+
+    assert response.status_code == 200, response.text
+
+
+def test_knowledge_delete_stranger_gets_403_verbatim(session_factory, config):
+    # This is the exact hole the sweep found: today, before the fix, this
+    # stranger call actually deletes `gotchas.md` and returns 200.
+    private_key, jwk = _generate_jwk()
+    client = _delete_knowledge_client(session_factory, config, _fetcher(jwk))
+    _seed_agent(session_factory, config, created_by=OWNER_EMAIL)
+
+    response = client.delete(
+        f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md",
+        headers=_headers(private_key, email=STRANGER_EMAIL),
+    )
+
+    assert response.status_code == 403
+    assert response.json() == VERBATIM_403
+
+
+# --- retry_agent (MEDIUM): inlines its own fetch/FAILED-status check -------
+# (never `_ready_agent_or_error` -- see that helper's own docstring on why),
+# so a FAILED-status agent is needed just to reach the gate at all; a READY
+# one 409s on the status check before ever getting there. `run_pipeline` is
+# monkeypatched to a recording no-op, same idiom as test_api_agents.py's own
+# `test_retry_agent_race_second_call_409s_and_pipeline_fires_once`, so this
+# never races a real daemon thread against the test's own session.
+
+
+def _retry_client(session_factory, config, iap_jwks_fetcher, monkeypatch):
+    import kobo_api.main as main_module
+
+    monkeypatch.setattr(main_module, "run_pipeline", lambda *args, **kwargs: None)
+    return _make_client(session_factory, config, iap_jwks_fetcher=iap_jwks_fetcher)
+
+
+def test_retry_owner_may_relaunch(session_factory, config, monkeypatch):
+    private_key, jwk = _generate_jwk()
+    client = _retry_client(session_factory, config, _fetcher(jwk), monkeypatch)
+    _seed_agent(session_factory, config, created_by=OWNER_EMAIL, status=AgentStatus.FAILED)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/retry", headers=_headers(private_key, email=OWNER_EMAIL)
+    )
+
+    assert response.status_code == 202, response.text
+
+
+def test_retry_operator_may_relaunch_even_without_ownership(session_factory, config, monkeypatch):
+    private_key, jwk = _generate_jwk()
+    client = _retry_client(session_factory, config, _fetcher(jwk), monkeypatch)
+    _seed_agent(session_factory, config, created_by=OWNER_EMAIL, status=AgentStatus.FAILED)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/retry", headers=_headers(private_key, email=OPERATOR_EMAIL)
+    )
+
+    assert response.status_code == 202, response.text
+
+
+def test_retry_stranger_gets_403_verbatim(session_factory, config, monkeypatch):
+    # This is the exact hole the sweep found: today, before the fix, this
+    # stranger call actually relaunches someone else's failed pipeline and
+    # returns 202.
+    private_key, jwk = _generate_jwk()
+    client = _retry_client(session_factory, config, _fetcher(jwk), monkeypatch)
+    _seed_agent(session_factory, config, created_by=OWNER_EMAIL, status=AgentStatus.FAILED)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/retry", headers=_headers(private_key, email=STRANGER_EMAIL)
+    )
+
+    assert response.status_code == 403
+    assert response.json() == VERBATIM_403
+
+
+# --- sync_directory_route (LOW): needs the switchboard actually wired for --
+# owner/operator to see a real 200, same setup as test_api_directory.py's
+# own success test (cabal_url/agent_endpoint_template on the config, the
+# CABAL_OPERATOR_TOKEN env var, and a real FakeCabal wired into Clients).
+
+
+CABAL_ENDPOINT_TEMPLATE = "http://agent-{name}.default.svc.cluster.local"
+
+
+def _enabled_cabal_config(config):
+    return config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": CABAL_ENDPOINT_TEMPLATE,
+        }
+    )
+
+
+def _directory_sync_client(session_factory, cfg, iap_jwks_fetcher, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    return _make_client(session_factory, cfg, cabal=FakeCabal(), iap_jwks_fetcher=iap_jwks_fetcher)
+
+
+def test_directory_sync_owner_may_sync(session_factory, config, monkeypatch):
+    cfg = _enabled_cabal_config(config)
+    private_key, jwk = _generate_jwk()
+    client = _directory_sync_client(session_factory, cfg, _fetcher(jwk), monkeypatch)
+    _seed_agent(session_factory, cfg, created_by=OWNER_EMAIL)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/directory/sync",
+        headers=_headers(private_key, email=OWNER_EMAIL),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"registered": True}
+
+
+def test_directory_sync_operator_may_sync_even_without_ownership(session_factory, config, monkeypatch):
+    cfg = _enabled_cabal_config(config)
+    private_key, jwk = _generate_jwk()
+    client = _directory_sync_client(session_factory, cfg, _fetcher(jwk), monkeypatch)
+    _seed_agent(session_factory, cfg, created_by=OWNER_EMAIL)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/directory/sync",
+        headers=_headers(private_key, email=OPERATOR_EMAIL),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"registered": True}
+
+
+def test_directory_sync_stranger_gets_403_verbatim(session_factory, config, monkeypatch):
+    # This is the exact hole the sweep found: today, before the fix, this
+    # stranger call actually re-registers the agent in the switchboard's
+    # directory and returns 200.
+    cfg = _enabled_cabal_config(config)
+    private_key, jwk = _generate_jwk()
+    client = _directory_sync_client(session_factory, cfg, _fetcher(jwk), monkeypatch)
+    _seed_agent(session_factory, cfg, created_by=OWNER_EMAIL)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/directory/sync",
+        headers=_headers(private_key, email=STRANGER_EMAIL),
+    )
+
+    assert response.status_code == 403
+    assert response.json() == VERBATIM_403

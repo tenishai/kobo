@@ -1629,6 +1629,16 @@ def create_app(
                 {"error": f"cannot retry agent in status {agent.status!r}"}, status_code=409
             )
 
+        # Owner-or-operator gate (access-control Task A3 fix round 1: the
+        # initial route sweep missed this route, so a stranger could
+        # relaunch someone else's failed pipeline). Placed after the FAILED
+        # check above -- retry's own readiness gate, inlined here rather
+        # than through `_ready_agent_or_error` (see that helper's docstring)
+        # -- and before `reset_failed_steps`, the first actual work.
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+
         reset_failed_steps(session, agent.id)
 
         # Flip to PROVISIONING (and clear the prior error) synchronously,
@@ -1757,6 +1767,11 @@ def create_app(
         return JSONResponse({"status": AgentStatus.DESTROYING}, status_code=202)
 
     # --- Knowledge (P2b): bundle/knowledge/*.md seed-memory editing -------------
+    #
+    # save_knowledge/delete_knowledge are owner-or-operator gated
+    # (access-control Task A3 fix round 1: the initial route sweep missed
+    # both of these, so a stranger could overwrite or delete another
+    # agent's knowledge files -- list_knowledge stays a plain read).
 
     @app.get("/api/agents/{name}/knowledge")
     def list_knowledge(name: str, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
@@ -1781,11 +1796,15 @@ def create_app(
         name: str,
         filename: str,
         payload: KnowledgeSavePayload,
+        request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(session, name)
         if isinstance(agent, JSONResponse):
             return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
 
         try:
             sha = save_knowledge_file(
@@ -1803,11 +1822,17 @@ def create_app(
 
     @app.delete("/api/agents/{name}/knowledge/{filename}")
     def delete_knowledge(
-        name: str, filename: str, session: Session = Depends(get_session)  # noqa: B008
+        name: str,
+        filename: str,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(session, name)
         if isinstance(agent, JSONResponse):
             return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
 
         try:
             sha = delete_knowledge_file(
@@ -2876,18 +2901,25 @@ def create_app(
         )
 
     # --- Directory sync (colleagues switchboard plan, Task 2): on-demand ------
-    # re-registration/backfill route, ready-gated, any signed-in user (same
-    # reach as the metadata routes above).
+    # re-registration/backfill route, ready-gated. Owner-or-operator now
+    # (access-control Task A3 fix round 1) -- this route used to be "any
+    # signed-in user, same reach as the metadata routes above", the initial
+    # A3 sweep simply missed it; re-syncing an already-registered agent is
+    # idempotent either way, but it's gated for uniformity with every other
+    # mutating agent route rather than carrying its own carve-out.
 
     @app.post("/api/agents/{name}/directory/sync")
     def sync_directory_route(
-        name: str, session: Session = Depends(get_session)  # noqa: B008
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(
             session, name, not_ready_message="agent is not ready to join the directory yet"
         )
         if isinstance(agent, JSONResponse):
             return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
 
         cfg: Config = app.state.config
         if not cabal_enabled(cfg):
@@ -2909,9 +2941,12 @@ def create_app(
     # --- Colleagues: the watching window (Task 4/B4) ---------------------------
     #
     # Three read-only proxy routes over the switchboard's own admin
-    # conversation surface, room-wide (not per-agent) — any signed-in user,
-    # same reach as the directory-sync route above (no extra operator gate),
-    # gated only by `_colleagues_gate` (the switchboard being wired at all).
+    # conversation surface, room-wide (not per-agent) -- any signed-in user
+    # may read them (there's no single agent here to own), gated only by
+    # `_colleagues_gate` (the switchboard being wired at all). Unlike
+    # directory-sync above, these were never in scope for the owner-or-
+    # operator gate: read surfaces never call it (see its own docstring),
+    # and there's no per-agent argument here to check ownership against.
     # A 409 here is treated by the UI as "this room has no switchboard" and
     # renders nothing (silent absence), never a scary error banner — see
     # ColleagueConversations.svelte.
