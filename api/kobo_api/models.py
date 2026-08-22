@@ -121,6 +121,21 @@ class Agent(Base):
     avatar_png: Mapped[str | None] = mapped_column(Text, nullable=True)
     first_reply: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Access control (access-control arc, Task A2): who made this agent, and
+    # which ACL namespace it lives in. `created_by` is the verified IAP
+    # email captured at create time (`request.state.iap_email`) -- the
+    # access axis' owner, and the field a later task's owner-or-operator
+    # gate reads directly. `group_name` is the ACL namespace a later task
+    # validates against Okta-derived group membership -- it is DISTINCT
+    # from `team` above (the skills-catalog capability axis); the two must
+    # never be conflated. Both nullable for the same reason team/
+    # purpose_tags/capability are: this pair postdates create_all on any
+    # already-running dev DB -- those need manual ALTERs at rollout (fresh
+    # DBs get them for free via create_all):
+    #   ALTER TABLE agents ADD COLUMN created_by VARCHAR;
+    #   ALTER TABLE agents ADD COLUMN group_name VARCHAR;
+    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    group_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )

@@ -169,6 +169,14 @@ class CreateAgentRequest(BaseModel):
     # back under the cap, so the cap must be checked AFTER normalization,
     # not against the raw submitted length a pydantic max_length would see.
     purpose_tags: list[str] = []
+    # group_name (access-control arc, Task A2): the ACL namespace this agent
+    # belongs to -- DISTINCT from `team` above (the skills-catalog capability
+    # axis), never conflated with it. Optional and unvalidated in this
+    # phase: `create_agent` stores whatever is provided verbatim (Task B2
+    # adds the config.groups membership check and makes this required once
+    # groups exist); the UI does not send this field yet, so it is `None`
+    # on every request today.
+    group_name: str | None = None
 
 
 class NameSuggestionsRequest(BaseModel):
@@ -1316,6 +1324,16 @@ def create_app(
         if existing is not None:
             return JSONResponse({"error": f"name taken: {payload.name!r}"}, status_code=409)
 
+        # Access control (Task A2): the verified IAP email at create time is
+        # this agent's owner. `getattr` with a `None` default covers both
+        # "IAP disabled entirely" and "IAP on, assertion carried no email
+        # claim" the same way `teach`'s `taught_by` does above -- never
+        # raises, just omits ownership rather than faking an identity.
+        # `group_name` is stored verbatim-if-provided in this phase (no
+        # validation yet; see `CreateAgentRequest.group_name`'s own
+        # docstring).
+        created_by = getattr(request.state, "iap_email", None)
+
         agent = Agent(
             name=payload.name,
             persona=payload.persona,
@@ -1327,6 +1345,8 @@ def create_app(
                 for pick, entry in resolved_skills
             ],
             status=AgentStatus.PENDING,
+            created_by=created_by,
+            group_name=payload.group_name,
         )
         session.add(agent)
         try:

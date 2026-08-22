@@ -19,13 +19,16 @@ from __future__ import annotations
 
 import time
 
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import Clients
 from kobo_api.config import Config
+from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import create_app, get_session
 from kobo_api.models import Agent, AgentStatus, Base
 from tests.fakes import (
@@ -46,6 +49,11 @@ from tests.fakes import (
 AGENT_NAME = "clio"
 PERSONA = "helpful-generalist"
 TEAM = "clio-team"
+
+# Real-IAP-JWT idiom (created_by attribution tests, Task A2 below): same
+# audience/kid constants as test_web_teach.py's own copy.
+AUDIENCE = "test-audience"
+KID = "test-key-1"
 
 ALL_STEP_NAMES = ["repo", "onboard", "access", "wire", "build", "deploy", "directory", "hello"]
 
@@ -524,6 +532,179 @@ def test_get_agent_purpose_tags_and_capability_null_for_pre_existing_rows(
     detail = client.get(f"/api/agents/{AGENT_NAME}").json()
     assert detail["purpose_tags"] == []
     assert detail["capability"] is None
+
+
+# --- created_by / group_name (access control, Task A2) ----------------------
+#
+# The identity-attribution slice reuses test_web_teach.py's real-JWT idiom
+# (a locally generated ES256 keypair signs the assertion, verified through
+# the actual `IapMiddleware`/`IapVerifier`, not a mock) rather than the
+# module's own plain `client` fixture, since that fixture's `config` never
+# sets `iap_audience` -- no IapMiddleware is registered at all, so
+# `request.state.iap_email` is never set. Helpers are replicated locally
+# rather than imported, same no-shared-module discipline as test_web_teach.py
+# itself relative to test_steps.py.
+
+
+def _generate_jwk(kid: str = KID):
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    jwk = jwt.algorithms.ECAlgorithm.to_jwk(private_key.public_key(), as_dict=True)
+    jwk["kid"] = kid
+    jwk["use"] = "sig"
+    jwk["alg"] = "ES256"
+    return private_key, jwk
+
+
+def _sign(private_key, *, email: str | None, kid: str = KID) -> str:
+    now = int(time.time())
+    claims = {
+        "aud": AUDIENCE,
+        "iss": IAP_ISSUER,
+        "iat": now,
+        "exp": now + 3600,
+        "sub": "accounts.google.com:1234567890",
+    }
+    if email is not None:
+        claims["email"] = email
+    return jwt.encode(claims, private_key, algorithm="ES256", headers={"kid": kid})
+
+
+def _fetcher(jwk):
+    def fetch():
+        return {"keys": [jwk]}
+
+    return fetch
+
+
+def test_create_agent_records_created_by_from_iap_email(session_factory, config, clients):
+    private_key, jwk = _generate_jwk()
+    iap_config = config.model_copy(update={"iap_audience": AUDIENCE})
+    iap_client = TestClient(
+        create_app(
+            session_factory, config=iap_config, clients=clients, iap_jwks_fetcher=_fetcher(jwk)
+        )
+    )
+    token = _sign(private_key, email="creator@example.com")
+
+    response = iap_client.post(
+        "/api/agents",
+        json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM},
+        headers={ASSERTION_HEADER: token},
+    )
+
+    assert response.status_code == 201
+
+    session = session_factory()
+    row = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    session.close()
+    assert row.created_by == "creator@example.com"
+
+
+def test_create_agent_without_iap_leaves_created_by_none(client, session_factory):
+    # config.iap_audience is "" by default on the module's `client` fixture
+    # (no IapMiddleware registered at all) -- request.state.iap_email is
+    # never set, and the route must fall back to `None` rather than raising
+    # on a missing attribute.
+    response = client.post(
+        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM}
+    )
+
+    assert response.status_code == 201
+
+    session = session_factory()
+    row = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    session.close()
+    assert row.created_by is None
+
+
+def test_create_agent_iap_on_but_no_email_claim_leaves_created_by_none(
+    session_factory, config, clients
+):
+    private_key, jwk = _generate_jwk()
+    iap_config = config.model_copy(update={"iap_audience": AUDIENCE})
+    iap_client = TestClient(
+        create_app(
+            session_factory, config=iap_config, clients=clients, iap_jwks_fetcher=_fetcher(jwk)
+        )
+    )
+    token = _sign(private_key, email=None)
+
+    response = iap_client.post(
+        "/api/agents",
+        json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM},
+        headers={ASSERTION_HEADER: token},
+    )
+
+    assert response.status_code == 201
+
+    session = session_factory()
+    row = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    session.close()
+    assert row.created_by is None
+
+
+def test_create_agent_stores_group_name_verbatim_when_provided(client, session_factory):
+    response = client.post(
+        "/api/agents",
+        json={
+            "name": AGENT_NAME,
+            "persona": PERSONA,
+            "team": TEAM,
+            "group_name": "payments-eng",
+        },
+    )
+
+    assert response.status_code == 201
+
+    session = session_factory()
+    row = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    session.close()
+    assert row.group_name == "payments-eng"
+
+
+def test_create_agent_omitted_group_name_defaults_to_none(client, session_factory):
+    response = client.post(
+        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM}
+    )
+
+    assert response.status_code == 201
+
+    session = session_factory()
+    row = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    session.close()
+    assert row.group_name is None
+
+
+def test_list_agents_tolerates_null_created_by_and_group_name_on_pre_existing_rows(
+    client, session_factory, config
+):
+    """A row that predates the created_by/group_name columns (or was simply
+    never given values) must read back as None, not 500 or raise -- same
+    story as `test_get_agent_team_is_null_for_pre_existing_rows` above, just
+    for this pair of columns instead."""
+    session = session_factory()
+    session.add(
+        Agent(
+            name=AGENT_NAME,
+            persona=PERSONA,
+            model_id=config.models[0].id,
+            status=AgentStatus.READY,
+        )
+    )
+    session.commit()
+    session.close()
+
+    listing = client.get("/api/agents").json()["agents"]
+    assert len(listing) == 1
+
+    detail = client.get(f"/api/agents/{AGENT_NAME}")
+    assert detail.status_code == 200
+
+    session = session_factory()
+    row = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    session.close()
+    assert row.created_by is None
+    assert row.group_name is None
 
 
 def test_create_agent_pipeline_materializes_staged_skill_and_persona_body(client, fake_github):
