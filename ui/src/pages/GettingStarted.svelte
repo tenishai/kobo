@@ -49,9 +49,9 @@
   <section>
     <h2>Put it in Slack</h2>
     <p>
-      The Slack tab walks you through creating the app with a ready-made
-      manifest, pasting two tokens, inviting the bot to a channel, and
-      saving the channel id. Long answers arrive whole.
+      For agents you own, the Slack tab walks you through creating the app
+      with a ready-made manifest, pasting two tokens, inviting the bot to a
+      channel, and saving the channel id. Long answers arrive whole.
     </p>
   </section>
 
