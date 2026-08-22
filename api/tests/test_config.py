@@ -366,6 +366,60 @@ def test_groups_and_okta_domain_overridable(tmp_path):
     assert isinstance(config.groups[0], GroupChoice)
 
 
+# --- GroupChoice okta_group/okta_groups sugar (multi-okta-groups amendment) --
+
+
+def test_group_choice_okta_group_sugar_folds_into_okta_groups():
+    """okta_group is 1:1 sugar for the common single-group case -- setting
+    only it must still populate okta_groups (what the resolver actually
+    consumes)."""
+    group = GroupChoice(name="SRE", okta_group="okta-sre-group")
+
+    assert group.okta_group == "okta-sre-group"
+    assert group.okta_groups == ["okta-sre-group"]
+
+
+def test_group_choice_okta_groups_list_form():
+    """The directory splits one human team across regional groups -- the
+    general case is a list, no okta_group sugar involved at all."""
+    group = GroupChoice(
+        name="infra-engineering",
+        okta_groups=[
+            "engineering_operations_infra-engineering_usa",
+            "engineering_operations_infra-engineering_india",
+            "engineering_operations_infra-engineering_france",
+            "engineering_operations_infra-engineering_lead",
+        ],
+    )
+
+    assert group.okta_groups == [
+        "engineering_operations_infra-engineering_usa",
+        "engineering_operations_infra-engineering_india",
+        "engineering_operations_infra-engineering_france",
+        "engineering_operations_infra-engineering_lead",
+    ]
+
+
+def test_group_choice_both_set_unions_and_dedupes():
+    group = GroupChoice(
+        name="SRE",
+        okta_group="okta-sre-usa",
+        okta_groups=["okta-sre-india", "okta-sre-usa"],
+    )
+
+    # okta_group folded in, but not duplicated -- it was already present in
+    # okta_groups.
+    assert group.okta_groups == ["okta-sre-india", "okta-sre-usa"]
+
+
+def test_group_choice_requires_at_least_one_okta_field_set():
+    with pytest.raises(ValidationError) as exc_info:
+        GroupChoice(name="SRE")
+
+    message = str(exc_info.value)
+    assert "okta_group" in message
+
+
 def test_config_example_yaml_documents_avatar_keys():
     # config.example.yaml is the operator-facing template; both new keys must
     # be explicitly present (not merely absent-and-defaulted) and must parse

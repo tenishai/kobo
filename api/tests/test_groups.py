@@ -23,7 +23,7 @@ from kobo_api.groups import GroupResolver, OktaGroupResolver
 
 DOMAIN = "acme.okta.com"
 TOKEN = "SUPER_SECRET_OKTA_TOKEN_9f3a"
-UNIVERSE = {"SRE": "okta-sre-group", "QA": "okta-qa-group"}
+UNIVERSE = {"SRE": ["okta-sre-group"], "QA": ["okta-qa-group"]}
 
 
 def _okta_group(name: str) -> dict:
@@ -157,6 +157,81 @@ def test_groups_for_tolerates_group_objects_missing_a_profile_or_name():
     result = resolver.groups_for("alice@example.com")
 
     assert result == ["SRE"]
+
+
+# --- Multi-okta groups: one config name -> several regional okta groups ------
+# The directory splits one human team's membership across several regional
+# groups rather than one group per team -- a room group's universe entry is
+# therefore a LIST of okta names, all backing the same config name.
+
+TEAM_UNIVERSE = {
+    "infra-engineering": [
+        "engineering_operations_infra-engineering_usa",
+        "engineering_operations_infra-engineering_india",
+        "engineering_operations_infra-engineering_france",
+        "engineering_operations_infra-engineering_lead",
+    ],
+}
+
+
+def test_membership_in_one_regional_okta_group_yields_the_config_name():
+    """A member of ONLY the india regional group is still a member of the
+    room's config-level group -- membership is a union across the list, not
+    a match against one specific entry."""
+    response = httpx.Response(
+        200, json=[_okta_group("engineering_operations_infra-engineering_india")]
+    )
+    resolver = OktaGroupResolver(
+        DOMAIN, TOKEN, TEAM_UNIVERSE, client=_client(lambda r: response)
+    )
+
+    result = resolver.groups_for("alice@example.com")
+
+    assert result == ["infra-engineering"]
+
+
+def test_membership_in_two_regional_okta_groups_dedupes_to_one_config_name():
+    """A member of both the usa AND lead regional groups (a team lead based
+    in the US, say) must get the config name back exactly ONCE, not once per
+    matching okta group."""
+    response = httpx.Response(
+        200,
+        json=[
+            _okta_group("engineering_operations_infra-engineering_usa"),
+            _okta_group("engineering_operations_infra-engineering_lead"),
+        ],
+    )
+    resolver = OktaGroupResolver(
+        DOMAIN, TOKEN, TEAM_UNIVERSE, client=_client(lambda r: response)
+    )
+
+    result = resolver.groups_for("alice@example.com")
+
+    assert result == ["infra-engineering"]
+
+
+def test_cross_config_name_okta_collision_rejected_at_construction():
+    """The same okta group name claimed by two DIFFERENT config names is an
+    ambiguous mapping the old dict-keyed-by-config-name shape could
+    silently produce (last write wins); inverted construction must reject
+    it outright instead."""
+    universe = {
+        "SRE": ["okta-shared-group"],
+        "QA": ["okta-shared-group"],
+    }
+
+    with pytest.raises(ValueError, match="okta-shared-group"):
+        OktaGroupResolver(DOMAIN, TOKEN, universe)
+
+
+def test_same_config_name_duplicate_okta_names_merge_without_error():
+    """The same okta name appearing twice under the SAME config name (a
+    literal duplicate in the list) is not a collision -- it's a no-op."""
+    universe = {"SRE": ["okta-sre-group", "okta-sre-group"]}
+
+    resolver = OktaGroupResolver(DOMAIN, TOKEN, universe)
+
+    assert resolver._universe == {"okta-sre-group": "SRE"}
 
 
 # --- [] vs None: distinct outcomes --------------------------------------------

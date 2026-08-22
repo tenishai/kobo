@@ -45,17 +45,59 @@ class GroupResolver(Protocol):
         ...
 
 
+def _invert_universe(universe: dict[str, list[str]]) -> dict[str, str]:
+    """Build the okta-name -> config-name mapping `OktaGroupResolver` tests
+    membership against, from the constructor's config-name -> [okta-names]
+    input (`Config.groups`/`kobo_api.clients.Clients.real` -- the directory
+    splits one human team across several regional groups, so the config
+    side is naturally a list; membership only ever needs the reverse
+    direction: one Okta group name to the single CONFIG name it backs).
+
+    Raises `ValueError` if the same Okta group name is claimed by two
+    DIFFERENT config names -- an ambiguous mapping the old
+    dict-keyed-by-config-name shape could silently produce (last write
+    wins) but could never even represent once inverted, so it must be
+    rejected here instead. The same Okta name appearing twice under the
+    SAME config name (a literal duplicate in one entry's list, or the same
+    regional group reachable via both `okta_group` and `okta_groups` sugar)
+    is not an error -- the second assignment just overwrites the first with
+    an identical value.
+    """
+    inverted: dict[str, str] = {}
+    for config_name, okta_names in universe.items():
+        for okta_name in okta_names:
+            existing = inverted.get(okta_name)
+            if existing is not None and existing != config_name:
+                raise ValueError(
+                    f"okta group {okta_name!r} is claimed by both "
+                    f"{existing!r} and {config_name!r} -- a directory group "
+                    "can only ever back one room group"
+                )
+            inverted[okta_name] = config_name
+    return inverted
+
+
 class OktaGroupResolver:
     """`GroupResolver` backed by Okta's Users API.
 
     `GET https://{domain}/api/v1/users/{email}/groups` (email URL-escaped
     into the path -- see `_fetch` below), header `Authorization: SSWS
     {token}`. The response is a JSON list of group objects whose display
-    name lives at `profile.name`; `universe` (config group name -> Okta
-    group name, `Config.groups`/`kobo_api.clients.Clients.real`) is both the
-    filter (only membership in one of these Okta groups counts) and the
+    name lives at `profile.name`.
+
+    `universe` (the constructor argument) is CONFIG group name -> LIST of
+    Okta group names, matching `Config.groups`/`GroupChoice.okta_groups`
+    shape directly (`kobo_api.clients.Clients.real` builds it straight from
+    `config.groups`, one list entry per `GroupChoice`, already merged for
+    any repeated `name`). Construction inverts this into `self._universe`,
+    Okta name -> CONFIG name (`_invert_universe` above) -- that's the
+    direction `_fetch` actually needs: for every Okta group the member is
+    in, look up the one CONFIG name (if any) it backs. Both the filter
+    (only membership in one of these Okta groups counts) and the
     translation (the CONFIG name, not Okta's, is what's returned -- callers
-    never see an Okta group name directly).
+    never see an Okta group name directly) fall out of that single lookup.
+    A member of several regional Okta groups that all back the same CONFIG
+    name is deduped to that one CONFIG name (see `_fetch`).
 
     Every failure mode -- non-200 (401/403/500/...), a network error, a
     timeout, a malformed body -- is caught here and answered as `None`;
@@ -89,7 +131,7 @@ class OktaGroupResolver:
         self,
         domain: str,
         token: str,
-        universe: dict[str, str],
+        universe: dict[str, list[str]],
         ttl_s: int = 900,
         failure_ttl_s: int = 60,
         client: httpx.Client | None = None,
@@ -97,7 +139,10 @@ class OktaGroupResolver:
     ):
         self._domain = domain
         self._token = token
-        self._universe = universe
+        # Inverted at construction (okta name -> config name) -- see
+        # `_invert_universe`'s docstring for why, and for the ValueError
+        # this raises on a cross-config-name collision.
+        self._universe = _invert_universe(universe)
         self._ttl_s = ttl_s
         self._failure_ttl_s = failure_ttl_s
         # A single small JSON GET, not a model roundtrip -- same "quick
@@ -177,8 +222,16 @@ class OktaGroupResolver:
             if isinstance(name, str):
                 okta_names.add(name)
 
-        return [
-            config_name
-            for config_name, okta_name in self._universe.items()
-            if okta_name in okta_names
-        ]
+        # `self._universe` is Okta name -> CONFIG name (inverted at
+        # construction, see `_invert_universe`). A member of several
+        # regional Okta groups that all back the same CONFIG name (the
+        # directory-splits-one-team-by-region case `GroupChoice.okta_groups`
+        # exists for) must yield that CONFIG name exactly once -- the `not
+        # in config_names` guard is the dedup, order-of-first-sight rather
+        # than sorted, since no caller depends on a particular order.
+        config_names: list[str] = []
+        for okta_name in okta_names:
+            config_name = self._universe.get(okta_name)
+            if config_name is not None and config_name not in config_names:
+                config_names.append(config_name)
+        return config_names

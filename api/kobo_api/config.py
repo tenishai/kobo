@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ModelChoice(BaseModel):
@@ -26,7 +26,38 @@ class ModelChoice(BaseModel):
 
 class GroupChoice(BaseModel):
     name: str  # what the room shows for this group
-    okta_group: str  # the directory's own group name (profile.name) this maps to
+    # The directory splits one HUMAN team's membership across several
+    # REGIONAL groups rather than one group per team (e.g. a single
+    # "infra-engineering" team shows up in Okta as an org-wide group PLUS
+    # per-region groups for usa/india/france, plus a separate leads group) --
+    # so a room group's directory mapping is a LIST, not a single name, and
+    # membership in ANY one of them counts. `kobo_api.groups.GroupResolver`
+    # unions across the list; see that module's inverted-universe mapping
+    # for how membership actually resolves.
+    #
+    # okta_group is 1:1 sugar for the (still common) single-group case;
+    # okta_groups is the general list form. Setting both is fine -- they're
+    # unioned (deduped, order preserving) by the validator below. At least
+    # one of the two must resolve to a non-empty list: a group with no
+    # directory group behind it could never have a member, which is a config
+    # mistake, not a valid empty state, so construction fails loudly instead
+    # of silently defining a group nobody can ever be granted.
+    okta_group: str = ""
+    okta_groups: list[str] = []
+
+    @model_validator(mode="after")
+    def _fold_okta_group_sugar(self) -> GroupChoice:
+        merged: list[str] = []
+        for candidate in (*self.okta_groups, self.okta_group):
+            if candidate and candidate not in merged:
+                merged.append(candidate)
+        if not merged:
+            raise ValueError(
+                "GroupChoice requires okta_group or okta_groups to be set "
+                "(a group with no directory group(s) could never have a member)"
+            )
+        self.okta_groups = merged
+        return self
 
 
 def vertex_location_for(config: Config, model_id: str) -> str:
@@ -161,13 +192,15 @@ class Config(BaseModel):
     # The ACL axis (access-control arc, Task B1) — distinct from `team` (the
     # skills-catalog-derived capability axis; kobo_api.groups' module
     # docstring covers the fail-closed contract this feeds). Each entry's
-    # `name` is what the room shows; `okta_group` is the directory's own
-    # group name it maps to — kobo_api.groups.GroupResolver filters an
-    # Okta membership list down to these and answers with the CONFIG
-    # `name`s, never Okta's own names. Empty (the default) means no groups
-    # are configured; Clients.real gates OktaGroupResolver construction on
-    # this being non-empty, same "absent = feature off" convention as
-    # cabal_url/skills_bucket above.
+    # `name` is what the room shows; `okta_groups` (see GroupChoice above)
+    # is the LIST of directory group names it maps to -- the directory
+    # splits one human team across regional groups, so a room group is the
+    # UNION of whichever of those the member is in. kobo_api.groups.
+    # GroupResolver filters an Okta membership list down to these and
+    # answers with the CONFIG `name`s, never Okta's own names. Empty (the
+    # default) means no groups are configured; Clients.real gates
+    # OktaGroupResolver construction on this being non-empty, same
+    # "absent = feature off" convention as cabal_url/skills_bucket above.
     groups: list[GroupChoice] = []
     # This room's Okta org domain (e.g. "acme.okta.com") group lookups hit:
     # GET https://{okta_domain}/api/v1/users/{email}/groups

@@ -38,7 +38,7 @@ from urllib.parse import quote
 
 import httpx
 
-from kobo_api.config import Config
+from kobo_api.config import Config, GroupChoice
 from kobo_api.groups import GroupResolver, OktaGroupResolver
 
 log = logging.getLogger(__name__)
@@ -2906,6 +2906,33 @@ def installation_token_provider(config: Config) -> Callable[[], str] | None:
     return None
 
 
+def _universe_from_groups(groups: list[GroupChoice]) -> dict[str, list[str]]:
+    """`config.groups` (a LIST, so nothing stops two entries sharing a
+    `name` -- a config typo, or two org-config layers each contributing
+    their own entry for the same room group) collapsed into the
+    `OktaGroupResolver` constructor's config-name -> [okta-names] shape.
+
+    Merges (unions, deduped, order-preserving) rather than the naive
+    `{group.name: group.okta_groups for group in groups}` dict
+    comprehension this replaced, whose last-write-wins behavior silently
+    dropped every earlier entry's okta names the moment two `GroupChoice`s
+    shared a `name` -- a flagged Low that's actually reachable: this
+    directory's own regional split means an operator adding "the india
+    group too" for an existing team is one YAML entry away from being that
+    second, colliding entry. `OktaGroupResolver`'s own construction-time
+    `_invert_universe` still separately rejects a single Okta name claimed
+    by two DIFFERENT config names -- that's a distinct failure this merge
+    step does not and should not try to paper over.
+    """
+    merged: dict[str, list[str]] = {}
+    for group in groups:
+        okta_names = merged.setdefault(group.name, [])
+        for okta_name in group.okta_groups:
+            if okta_name not in okta_names:
+                okta_names.append(okta_name)
+    return merged
+
+
 @dataclass
 class Clients:
     github: GitHubClient
@@ -2996,7 +3023,7 @@ class Clients:
             groups=OktaGroupResolver(
                 config.okta_domain,
                 os.environ.get("OKTA_API_TOKEN", ""),
-                {group.name: group.okta_group for group in config.groups},
+                _universe_from_groups(config.groups),
             )
             if os.environ.get("OKTA_API_TOKEN") and config.groups and config.okta_domain
             else None,

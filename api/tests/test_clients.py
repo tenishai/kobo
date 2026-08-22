@@ -57,6 +57,7 @@ from kobo_api.clients import (
     _gcloud_print_access_token,
     _get_card,
     _post_task,
+    _universe_from_groups,
     _wait_for_forwarded_port,
     _write_slack_tokens,
     cabal_enabled,
@@ -5183,7 +5184,50 @@ def test_clients_real_wires_groups_when_fully_configured(monkeypatch):
     assert isinstance(clients.groups, OktaGroupResolver)
     assert clients.groups._domain == "acme.okta.com"
     assert clients.groups._token == "okta-token"
-    assert clients.groups._universe == {"SRE": "okta-sre", "QA": "okta-qa"}
+    # Inverted at construction (okta name -> config name) -- see
+    # kobo_api.groups._invert_universe.
+    assert clients.groups._universe == {"okta-sre": "SRE", "okta-qa": "QA"}
+
+
+def test_universe_from_groups_merges_duplicate_config_names():
+    """The flagged Low this amendment fixes: `config.groups` is a LIST, so
+    nothing stops two entries sharing a `name` -- the old
+    `{group.name: group.okta_group for group in config.groups}` dict
+    comprehension silently kept only the LAST entry's okta name. The
+    replacement must union both entries' okta names instead of dropping
+    either."""
+    groups = [
+        GroupChoice(name="SRE", okta_group="okta-sre-usa"),
+        GroupChoice(name="SRE", okta_group="okta-sre-india"),
+    ]
+
+    universe = _universe_from_groups(groups)
+
+    assert universe == {"SRE": ["okta-sre-usa", "okta-sre-india"]}
+
+
+def test_clients_real_wires_groups_merging_duplicate_config_names(monkeypatch):
+    """Same fix, through the full Clients.real path: two GroupChoice
+    entries named "SRE" (e.g. one org-config layer adding a region the base
+    config didn't have) must both survive into the resolver's universe,
+    not last-write-wins down to one."""
+    monkeypatch.setenv("OKTA_API_TOKEN", "okta-token")
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        okta_domain="acme.okta.com",
+        groups=[
+            GroupChoice(name="SRE", okta_group="okta-sre-usa"),
+            GroupChoice(name="SRE", okta_group="okta-sre-india"),
+        ],
+    )
+
+    clients = Clients.real(config)
+
+    assert clients.groups._universe == {
+        "okta-sre-usa": "SRE",
+        "okta-sre-india": "SRE",
+    }
 
 
 # --- Clients.real() GitHub App wiring (Task 3) -------------------------------
