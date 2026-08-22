@@ -5,11 +5,13 @@ import {
   connectSlack,
   createAgent,
   createPersona,
+  decideGroupRequest,
   deleteKnowledgeFile,
   draftPersona,
   errorMessage,
   fetchColleagueConversation,
   fetchDeliveryState,
+  fetchGroupRequests,
   fetchGroups,
   fetchModels,
   fetchOrgStatus,
@@ -23,6 +25,7 @@ import {
   listKnowledge,
   patchAgentMetadata,
   regenerateAgentMetadata,
+  requestGroup,
   saveKnowledgeFile,
   saveSlackChannels,
   searchPersonas,
@@ -103,8 +106,12 @@ describe("api.ts", () => {
     await expect(listAgents()).resolves.toEqual({ agents, groups_unavailable: false });
   });
 
-  it("fetchGroups GETs /api/catalog/groups and unwraps {groups: [...]}", async () => {
-    const groups = [{ name: "payments-eng" }, { name: "growth" }];
+  it("fetchGroups GETs /api/catalog/groups and unwraps {groups: [...]}, kind included verbatim", async () => {
+    const groups = [
+      { name: "shared", kind: "shared" },
+      { name: "payments-eng", kind: "engineering" },
+      { name: "growth", kind: "engineering" },
+    ];
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ groups }));
 
     await expect(fetchGroups()).resolves.toEqual(groups);
@@ -1085,6 +1092,195 @@ describe("fetchWhoami", () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(whoami));
 
     await expect(fetchWhoami()).resolves.toEqual(whoami);
+  });
+
+  it("carries pending_group_requests verbatim when the server sends it (admin-only badge)", async () => {
+    const whoami = {
+      email: "ops@example.com",
+      operator: true,
+      groups: [],
+      groups_unavailable: false,
+      pending_group_requests: 3,
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(whoami));
+
+    await expect(fetchWhoami()).resolves.toEqual(whoami);
+  });
+});
+
+describe("requestGroup (shared-group + group-requests wave)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("POSTs {group_name, note} to /api/group-requests when a note is given", async () => {
+    const created = {
+      id: 1,
+      group_name: "design-team",
+      requested_by: "kai@example.com",
+      note: "for the new onboarding agent",
+      status: "pending",
+      decided_by: null,
+      created_at: "2026-08-22T00:00:00Z",
+      decided_at: null,
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(created, { status: 201 }));
+
+    await expect(
+      requestGroup("design-team", "for the new onboarding agent"),
+    ).resolves.toEqual(created);
+    expect(fetch).toHaveBeenCalledWith("/api/group-requests", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        group_name: "design-team",
+        note: "for the new onboarding agent",
+      }),
+    });
+  });
+
+  it("omits the note key entirely when none is given", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        {
+          id: 2,
+          group_name: "design-team",
+          requested_by: null,
+          note: null,
+          status: "pending",
+          decided_by: null,
+          created_at: "2026-08-22T00:00:00Z",
+          decided_at: null,
+        },
+        { status: 201 },
+      ),
+    );
+
+    await requestGroup("design-team");
+    expect(fetch).toHaveBeenCalledWith("/api/group-requests", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group_name: "design-team" }),
+    });
+  });
+
+  it("a 409 duplicate rejects as an ApiError carrying the status", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "a request for 'design-team' is already pending" },
+        { status: 409, statusText: "Conflict" },
+      ),
+    );
+
+    await expect(requestGroup("design-team")).rejects.toMatchObject({
+      status: 409,
+    });
+  });
+});
+
+describe("fetchGroupRequests (shared-group + group-requests wave, admin only)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("GETs /api/group-requests and unwraps {requests: [...]}", async () => {
+    const requests = [
+      {
+        id: 1,
+        group_name: "design-team",
+        requested_by: "kai@example.com",
+        note: null,
+        status: "pending",
+        decided_by: null,
+        created_at: "2026-08-22T00:00:00Z",
+        decided_at: null,
+      },
+    ];
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ requests }));
+
+    await expect(fetchGroupRequests()).resolves.toEqual(requests);
+    expect(fetch).toHaveBeenCalledWith("/api/group-requests");
+  });
+
+  it("a non-admin's 403 rejects as an ApiError carrying the status", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "Group requests are visible to room admins only." },
+        { status: 403, statusText: "Forbidden" },
+      ),
+    );
+
+    await expect(fetchGroupRequests()).rejects.toMatchObject({ status: 403 });
+  });
+});
+
+describe("decideGroupRequest (shared-group + group-requests wave, admin only)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("POSTs /api/group-requests/{id}/done", async () => {
+    const decided = {
+      id: 7,
+      group_name: "design-team",
+      requested_by: "kai@example.com",
+      note: null,
+      status: "done",
+      decided_by: "ops@example.com",
+      created_at: "2026-08-22T00:00:00Z",
+      decided_at: "2026-08-22T01:00:00Z",
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(decided));
+
+    await expect(decideGroupRequest(7, "done")).resolves.toEqual(decided);
+    expect(fetch).toHaveBeenCalledWith("/api/group-requests/7/done", {
+      method: "POST",
+    });
+  });
+
+  it("POSTs /api/group-requests/{id}/declined", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({
+        id: 8,
+        group_name: "design-team",
+        requested_by: "kai@example.com",
+        note: null,
+        status: "declined",
+        decided_by: "ops@example.com",
+        created_at: "2026-08-22T00:00:00Z",
+        decided_at: "2026-08-22T01:00:00Z",
+      }),
+    );
+
+    await decideGroupRequest(8, "declined");
+    expect(fetch).toHaveBeenCalledWith("/api/group-requests/8/declined", {
+      method: "POST",
+    });
+  });
+
+  it("a 409 already-decided request rejects as an ApiError carrying the status", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "group request is already done. Cannot decline it now." },
+        { status: 409, statusText: "Conflict" },
+      ),
+    );
+
+    await expect(decideGroupRequest(7, "declined")).rejects.toMatchObject({
+      status: 409,
+    });
   });
 });
 

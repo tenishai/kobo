@@ -95,6 +95,7 @@
     nameSuggestionsQuery,
     orgStatusQuery,
     personasSearchQuery,
+    requestGroupMutation,
     skillsSearchQuery,
     teamsQuery,
   } from "../lib/queries";
@@ -411,19 +412,97 @@
     selectedSkills = next;
   }
 
-  // --- Group (access-control Task B2) -------------------------------------
+  // --- Group (access-control Task B2, sectioned by the shared-group +
+  // group-requests wave) -----------------------------------------------
   //
   // `groupsQuery` (`GET /api/catalog/groups`) is the ACCESS namespace this
   // agent belongs to -- DISTINCT from Team above (the skills-catalog
-  // capability axis). The picker only renders at all once the room has
-  // actually named groups (`groupOptionsAvailable`); a room that hasn't
-  // stays exactly as before this task, no picker, no group_name sent. Once
-  // it HAS, picking one is required -- `canSubmit` below gates on it the
-  // same way it gates on persona/model/team already being chosen, and the
-  // real enforcement is server-side (`create_agent`'s own check against
-  // `cfg.groups`) regardless of what this picker does.
+  // capability axis). The picker only renders at all once `$groups.data`
+  // has anything in it (`groupOptionsAvailable`) -- in production that's
+  // ALWAYS true as of the shared-group wave (the commons entry is always
+  // first, even in a room with no configured groups at all), so this stays
+  // purely a defensive fallback for an empty/malformed response, not a
+  // "room hasn't set up groups" branch any more. Once there IS something to
+  // pick, picking one is required -- `canSubmit` below gates on it the same
+  // way it gates on persona/model already being chosen, and the real
+  // enforcement is server-side (`create_agent`'s own check against
+  // `cfg.groups`/`SHARED_GROUP`) regardless of what this picker does.
+  //
+  // The select sections on `kind` (never on a hardcoded "shared" string,
+  // matching the server's own "don't hardcode SHARED_GROUP's spelling
+  // client-side" doc comment on `/api/catalog/groups`): a "Shared" optgroup
+  // first, an "Engineering groups" optgroup next, then one final option
+  // OUTSIDE both optgroups -- "My group is not listed..." -- the escape
+  // hatch into the mini-form below for a directory group `cfg.groups`
+  // doesn't know about yet.
   let groupValue = $state("");
   const groupOptionsAvailable = $derived(($groups.data?.length ?? 0) > 0);
+  const sharedGroupOptions = $derived(
+    ($groups.data ?? []).filter((g) => g.kind === "shared"),
+  );
+  const engineeringGroupOptions = $derived(
+    ($groups.data ?? []).filter((g) => g.kind === "engineering"),
+  );
+  const selectedGroupKind = $derived(
+    $groups.data?.find((g) => g.name === groupValue)?.kind,
+  );
+
+  /** Sentinel `<option>` value for "My group is not listed..." -- never a
+   * real group name (never sent as `group_name`; `canSubmit` below treats
+   * it identically to no selection at all). */
+  const GROUP_NOT_LISTED = "__group_not_listed__";
+  const groupChosen = $derived(
+    groupValue !== "" && groupValue !== GROUP_NOT_LISTED,
+  );
+
+  let groupRequestName = $state("");
+  let groupRequestNote = $state("");
+  let groupRequestError = $state<string | null>(null);
+  /** True once a request has been filed successfully; drives the quiet
+   * confirmation copy, which stays up even after `groupValue` itself is
+   * reset back to "" (see `handleGroupRequestSubmit`'s `onSuccess`) --
+   * cleared again the moment "My group is not listed..." is picked afresh
+   * (`handleGroupSelect`), or by the modal's own "fresh form every open"
+   * effect below. */
+  let groupRequestConfirmed = $state(false);
+  const requestGroup = createMutation(requestGroupMutation());
+
+  function handleGroupSelect(value: string): void {
+    groupValue = value;
+    if (value === GROUP_NOT_LISTED) {
+      groupRequestConfirmed = false;
+      groupRequestError = null;
+    }
+  }
+
+  function handleGroupRequestSubmit(): void {
+    const name = groupRequestName.trim();
+    if (name.length === 0 || $requestGroup.isPending) {
+      return;
+    }
+    groupRequestError = null;
+    $requestGroup.mutate(
+      { groupName: name, note: groupRequestNote.trim() || undefined },
+      {
+        onSuccess: () => {
+          groupRequestConfirmed = true;
+          groupValue = "";
+          groupRequestName = "";
+          groupRequestNote = "";
+        },
+        onError: (error: unknown) => {
+          if (error instanceof ApiError && error.status === 409) {
+            groupRequestError = "Already requested. A room admin will get to it.";
+          } else {
+            groupRequestError = errorMessage(
+              error,
+              "Couldn't send that request. Try again.",
+            );
+          }
+        },
+      },
+    );
+  }
 
   // --- Purpose tags (persona-metadata plan, Create station) ---------------
   //
@@ -515,6 +594,10 @@
       skillShowAll = false;
       selectedSkills = new Map();
       groupValue = "";
+      groupRequestName = "";
+      groupRequestNote = "";
+      groupRequestError = null;
+      groupRequestConfirmed = false;
       purposeTags = [];
       purposeTagInput = "";
     }
@@ -528,7 +611,7 @@
       !skillsUnwired &&
       selectedPersona !== "" &&
       selectedModel !== "" &&
-      (!groupOptionsAvailable || groupValue !== "") &&
+      (!groupOptionsAvailable || groupChosen) &&
       !$mutation.isPending,
   );
 
@@ -932,14 +1015,74 @@
             required
             value={groupValue}
             onchange={(event) =>
-              (groupValue = (event.currentTarget as HTMLSelectElement).value)}
+              handleGroupSelect((event.currentTarget as HTMLSelectElement).value)}
           >
             <option value="" disabled>Choose a group</option>
-            {#each $groups.data ?? [] as group (group.name)}
-              <option value={group.name}>{group.name}</option>
-            {/each}
+            {#if sharedGroupOptions.length > 0}
+              <optgroup label="Shared">
+                {#each sharedGroupOptions as group (group.name)}
+                  <option value={group.name}>{group.name} (everyone in the company)</option>
+                {/each}
+              </optgroup>
+            {/if}
+            {#if engineeringGroupOptions.length > 0}
+              <optgroup label="Engineering groups">
+                {#each engineeringGroupOptions as group (group.name)}
+                  <option value={group.name}>{group.name}</option>
+                {/each}
+              </optgroup>
+            {/if}
+            <option value={GROUP_NOT_LISTED}>My group is not listed...</option>
           </select>
           <p class="create-form__help">Who can see and use this agent.</p>
+          {#if selectedGroupKind === "shared"}
+            <p class="create-form__help">
+              Shared agents are visible to everyone in the company.
+            </p>
+          {/if}
+
+          {#if groupRequestConfirmed}
+            <p class="create-form__status create-form__status--ok" role="status">
+              Requested. A room admin will add it. Pick shared to create this
+              agent now, or wait for your group.
+            </p>
+          {:else if groupValue === GROUP_NOT_LISTED}
+            <div class="group-request">
+              <label class="create-form__label" for="group-request-name">
+                Your group's name
+              </label>
+              <input
+                id="group-request-name"
+                class="create-form__input"
+                type="text"
+                bind:value={groupRequestName}
+                autocomplete="off"
+              />
+              <label class="create-form__label" for="group-request-note">
+                Note (optional)
+              </label>
+              <input
+                id="group-request-note"
+                class="create-form__input"
+                type="text"
+                bind:value={groupRequestNote}
+                autocomplete="off"
+              />
+              {#if groupRequestError}
+                <p class="create-form__status create-form__status--error" role="alert">
+                  {groupRequestError}
+                </p>
+              {/if}
+              <button
+                type="button"
+                class="group-request__submit"
+                disabled={groupRequestName.trim().length === 0 || $requestGroup.isPending}
+                onclick={handleGroupRequestSubmit}
+              >
+                {$requestGroup.isPending ? "Requesting…" : "Request it"}
+              </button>
+            </div>
+          {/if}
         </div>
       {/if}
 
@@ -1207,6 +1350,36 @@
     .station {
       transition: none;
     }
+  }
+
+  .group-request {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    padding: var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+  }
+
+  .group-request__submit {
+    align-self: flex-start;
+    padding: var(--space-2xs) var(--space-sm);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .group-request__submit:hover:not(:disabled) {
+    filter: brightness(1.05);
+  }
+
+  .group-request__submit:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .catalog-search__row {

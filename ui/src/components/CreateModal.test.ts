@@ -243,7 +243,12 @@ describe("CreateModal — group picker (access-control Task B2)", () => {
 
   it("renders a required group picker with the configured names once the room has some", async () => {
     stubCreateModalCatalogs({
-      "/api/catalog/groups": { groups: [{ name: "payments-eng" }, { name: "growth" }] },
+      "/api/catalog/groups": {
+        groups: [
+          { name: "payments-eng", kind: "engineering" },
+          { name: "growth", kind: "engineering" },
+        ],
+      },
     });
     renderWithClient(CreateModal, { open: true, onclose: () => {} });
 
@@ -256,7 +261,7 @@ describe("CreateModal — group picker (access-control Task B2)", () => {
 
   it("submit stays disabled until a group is chosen when groups are configured", async () => {
     stubCreateModalCatalogs({
-      "/api/catalog/groups": { groups: [{ name: "payments-eng" }] },
+      "/api/catalog/groups": { groups: [{ name: "payments-eng", kind: "engineering" }] },
       "/api/availability": { available: true, reason: null },
     });
     renderWithClient(CreateModal, { open: true, onclose: () => {} });
@@ -315,5 +320,242 @@ describe("CreateModal — group picker (access-control Task B2)", () => {
       expect(screen.getByRole("button", { name: "Remove billing" })).not.toBeNull();
       expect(screen.getByText("support")).not.toBeNull();
     });
+  });
+});
+
+describe("CreateModal — the group menu has a commons, a directory, and a door to ask (shared commons wave)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Finds the option whose visible text is "My group is not listed...",
+   * without hardcoding this component's own internal sentinel value. */
+  function notListedValue(select: HTMLSelectElement): string {
+    const option = Array.from(select.options).find(
+      (o) => o.textContent === "My group is not listed...",
+    );
+    if (!option) {
+      throw new Error("no 'My group is not listed...' option found");
+    }
+    return option.value;
+  }
+
+  it("sections the select: Shared first, Engineering groups next, My group is not listed last and outside both optgroups", async () => {
+    stubCreateModalCatalogs({
+      "/api/catalog/groups": {
+        groups: [
+          { name: "shared", kind: "shared" },
+          { name: "payments-eng", kind: "engineering" },
+          { name: "growth", kind: "engineering" },
+        ],
+      },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    const groupSelect = (await screen.findByLabelText("Group")) as HTMLSelectElement;
+    const optgroups = Array.from(groupSelect.querySelectorAll("optgroup"));
+    expect(optgroups.map((g) => g.label)).toEqual(["Shared", "Engineering groups"]);
+
+    const sharedOptions = Array.from(optgroups[0].querySelectorAll("option"));
+    expect(sharedOptions.map((o) => o.value)).toEqual(["shared"]);
+    expect(sharedOptions[0].textContent).toBe("shared (everyone in the company)");
+
+    const engineeringOptions = Array.from(optgroups[1].querySelectorAll("option"));
+    expect(engineeringOptions.map((o) => o.value)).toEqual(["payments-eng", "growth"]);
+
+    // "My group is not listed..." sits OUTSIDE both optgroups, as the very
+    // last child of the select itself.
+    const lastChild = groupSelect.lastElementChild as HTMLOptionElement;
+    expect(lastChild.tagName).toBe("OPTION");
+    expect(lastChild.textContent).toBe("My group is not listed...");
+    expect(optgroups[1].nextElementSibling).toBe(lastChild);
+  });
+
+  it("shows the shared helper sentence only once shared is the picked value", async () => {
+    stubCreateModalCatalogs({
+      "/api/catalog/groups": {
+        groups: [
+          { name: "shared", kind: "shared" },
+          { name: "payments-eng", kind: "engineering" },
+        ],
+      },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    const groupSelect = (await screen.findByLabelText("Group")) as HTMLSelectElement;
+    const sentence = "Shared agents are visible to everyone in the company.";
+    expect(screen.queryByText(sentence)).toBeNull();
+
+    await fireEvent.change(groupSelect, { target: { value: "payments-eng" } });
+    expect(screen.queryByText(sentence)).toBeNull();
+
+    await fireEvent.change(groupSelect, { target: { value: "shared" } });
+    expect(screen.getByText(sentence)).not.toBeNull();
+  });
+
+  it("picking 'My group is not listed...' reveals an inline mini-form, not a new modal", async () => {
+    stubCreateModalCatalogs({
+      "/api/catalog/groups": { groups: [{ name: "shared", kind: "shared" }] },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    const groupSelect = (await screen.findByLabelText("Group")) as HTMLSelectElement;
+    expect(screen.queryByLabelText("Your group's name")).toBeNull();
+
+    await fireEvent.change(groupSelect, {
+      target: { value: notListedValue(groupSelect) },
+    });
+
+    // Same document, same form — no second dialog opened.
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    const nameField = screen.getByLabelText("Your group's name") as HTMLInputElement;
+    screen.getByLabelText("Note (optional)");
+    const requestButton = screen.getByRole("button", { name: "Request it" }) as HTMLButtonElement;
+    expect(requestButton.disabled).toBe(true);
+
+    await fireEvent.input(nameField, { target: { value: "design-team" } });
+    expect(requestButton.disabled).toBe(false);
+  });
+
+  it("Request it posts to /api/group-requests, then collapses to the confirmation and returns the select to Choose a group", async () => {
+    stubCreateModalCatalogs({
+      "/api/catalog/groups": { groups: [{ name: "shared", kind: "shared" }] },
+      "/api/group-requests": {
+        id: 1,
+        group_name: "design-team",
+        requested_by: "kai@example.com",
+        note: "for the new bot",
+        status: "pending",
+        decided_by: null,
+        created_at: "2026-08-22T00:00:00Z",
+        decided_at: null,
+      },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    const groupSelect = (await screen.findByLabelText("Group")) as HTMLSelectElement;
+    await fireEvent.change(groupSelect, {
+      target: { value: notListedValue(groupSelect) },
+    });
+    await fireEvent.input(screen.getByLabelText("Your group's name"), {
+      target: { value: "design-team" },
+    });
+    await fireEvent.input(screen.getByLabelText("Note (optional)"), {
+      target: { value: "for the new bot" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Request it" }));
+
+    await screen.findByText(
+      "Requested. A room admin will add it. Pick shared to create this agent now, or wait for your group.",
+    );
+    expect(screen.queryByLabelText("Your group's name")).toBeNull();
+    expect(groupSelect.value).toBe("");
+
+    const call = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([url, init]) =>
+          String(url) === "/api/group-requests" &&
+          (init as RequestInit | undefined)?.method === "POST",
+      );
+    expect(call).toBeDefined();
+    const body = JSON.parse((call?.[1] as RequestInit).body as string);
+    expect(body).toEqual({ group_name: "design-team", note: "for the new bot" });
+  });
+
+  it("a 409 duplicate shows 'Already requested. A room admin will get to it.' and keeps the mini-form open to retry", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/api/group-requests") && init?.method === "POST") {
+          return new Response(
+            JSON.stringify({ error: "a request for 'design-team' is already pending" }),
+            { status: 409, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        const routes: Record<string, unknown> = {
+          "/api/catalog/models": {
+            models: [{ id: "gpt-5", label: "GPT-5" }],
+            default: "gpt-5",
+          },
+          "/api/catalog/groups": { groups: [{ name: "shared", kind: "shared" }] },
+          "/api/catalog/teams": { teams: ["shared"] },
+          "/api/teams": { teams: ["growth", "platform"], default: "shared" },
+          "/api/org/status": { org: "acme", wired: true, checks: [] },
+          "/api/personas/search": { results: [] },
+          "/api/skills/search": { results: [] },
+          "/api/": {},
+        };
+        for (const [needle, payload] of Object.entries(routes)) {
+          if (url.includes(needle)) {
+            return new Response(JSON.stringify(payload), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+        }
+        throw new Error(`unstubbed fetch: ${url}`);
+      }),
+    );
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    const groupSelect = (await screen.findByLabelText("Group")) as HTMLSelectElement;
+    await fireEvent.change(groupSelect, {
+      target: { value: notListedValue(groupSelect) },
+    });
+    await fireEvent.input(screen.getByLabelText("Your group's name"), {
+      target: { value: "design-team" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Request it" }));
+
+    await screen.findByText("Already requested. A room admin will get to it.");
+    // The mini-form stays open (not the success confirmation) so the human
+    // can edit and retry.
+    expect(screen.getByLabelText("Your group's name")).not.toBeNull();
+    expect(
+      screen.queryByText(
+        "Requested. A room admin will add it. Pick shared to create this agent now, or wait for your group.",
+      ),
+    ).toBeNull();
+  });
+
+  it("submit stays blocked while 'My group is not listed...' is picked — it is never sent as a real group_name", async () => {
+    stubCreateModalCatalogs({
+      "/api/catalog/groups": { groups: [{ name: "shared", kind: "shared" }] },
+      "/api/personas/search": {
+        results: [
+          {
+            id: "helper",
+            name: "Helper",
+            description: "Helps with things.",
+            team: "shared",
+            tags: [],
+            builtin: true,
+          },
+        ],
+      },
+      "/api/agents/name-suggestions": { suggestions: [] },
+      "/api/availability": { available: true, reason: null },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    const groupSelect = (await screen.findByLabelText("Group")) as HTMLSelectElement;
+    await fireEvent.change(groupSelect, {
+      target: { value: notListedValue(groupSelect) },
+    });
+
+    const personaRadio = await screen.findByRole("radio", { name: /Helper/i });
+    await fireEvent.click(personaRadio);
+    await fireEvent.click(
+      await screen.findByRole("button", { name: "name it yourself" }),
+    );
+    await fireEvent.input(await screen.findByLabelText("Name"), {
+      target: { value: "helper-bot" },
+    });
+    await screen.findByText("✓ Available", {}, { timeout: 2000 });
+
+    const submit = screen.getByRole("button", { name: "Create agent" }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
   });
 });

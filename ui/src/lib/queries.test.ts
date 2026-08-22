@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, readLocalSkill, type AgentSkill, type CatalogEntry, type IntakeFile, type NameSuggestion, type OrgStatus, type ToolingEnforcement, type ToolingListResponse, type Whoami } from "./api";
+import { ApiError, readLocalSkill, type AgentSkill, type CatalogEntry, type GroupRequest, type IntakeFile, type NameSuggestion, type OrgStatus, type ToolingEnforcement, type ToolingListResponse, type Whoami } from "./api";
 import {
   addCatalogSkillMutation,
   agentSkillsQuery,
@@ -8,6 +8,7 @@ import {
   colleagueConversationsQuery,
   connectSlackMutation,
   createPersonaMutation,
+  decideGroupRequestMutation,
   deleteIntakeMutation,
   deleteKnowledgeMutation,
   deleteSkillMutation,
@@ -17,6 +18,7 @@ import {
   destroyAgentMutation,
   draftPersonaMutation,
   generateAvatarMutation,
+  groupRequestsQuery,
   importToolingMutation,
   intakeQuery,
   intakeRefetchInterval,
@@ -26,6 +28,7 @@ import {
   patchMetadataMutation,
   personasSearchQuery,
   regenerateMetadataMutation,
+  requestGroupMutation,
   retryAgentMutation,
   saveKnowledgeMutation,
   saveLocalSkillMutation,
@@ -1768,5 +1771,159 @@ describe("deleteToolingMutation", () => {
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["agents", "clio", "tooling"],
     });
+  });
+});
+
+describe("requestGroupMutation (shared-group + group-requests wave)", () => {
+  it("mutationFn POSTs {group_name, note?} to /api/group-requests", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const created: GroupRequest = {
+      id: 1,
+      group_name: "design-team",
+      requested_by: "kai@example.com",
+      note: "for the new onboarding agent",
+      status: "pending",
+      decided_by: null,
+      created_at: "2026-08-22T00:00:00Z",
+      decided_at: null,
+    };
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      statusText: "Created",
+      text: async () => JSON.stringify(created),
+    } as Response);
+
+    const mutation = requestGroupMutation();
+    await expect(
+      mutation.mutationFn({
+        groupName: "design-team",
+        note: "for the new onboarding agent",
+      }),
+    ).resolves.toEqual(created);
+    expect(fetch).toHaveBeenCalledWith("/api/group-requests", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        group_name: "design-team",
+        note: "for the new onboarding agent",
+      }),
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("omits the note key entirely when none is given", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      statusText: "Created",
+      text: async () =>
+        JSON.stringify({
+          id: 2,
+          group_name: "design-team",
+          requested_by: null,
+          note: null,
+          status: "pending",
+          decided_by: null,
+          created_at: "2026-08-22T00:00:00Z",
+          decided_at: null,
+        }),
+    } as Response);
+
+    const mutation = requestGroupMutation();
+    await mutation.mutationFn({ groupName: "design-team" });
+    expect(fetch).toHaveBeenCalledWith("/api/group-requests", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group_name: "design-team" }),
+    });
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("groupRequestsQuery (shared-group + group-requests wave)", () => {
+  it("has queryKey ['group-requests']", () => {
+    expect(groupRequestsQuery(true).queryKey).toEqual(["group-requests"]);
+  });
+
+  it("is disabled until the admin card is expanded", () => {
+    expect(groupRequestsQuery(false).enabled).toBe(false);
+    expect(groupRequestsQuery(true).enabled).toBe(true);
+  });
+
+  it("queryFn GETs /api/group-requests and unwraps {requests: [...]}", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const requests: GroupRequest[] = [
+      {
+        id: 1,
+        group_name: "design-team",
+        requested_by: "kai@example.com",
+        note: null,
+        status: "pending",
+        decided_by: null,
+        created_at: "2026-08-22T00:00:00Z",
+        decided_at: null,
+      },
+    ];
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ requests }),
+    } as Response);
+
+    await expect(
+      callQueryFn<GroupRequest[]>(groupRequestsQuery(true)),
+    ).resolves.toEqual(requests);
+    expect(fetch).toHaveBeenCalledWith("/api/group-requests");
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("decideGroupRequestMutation (shared-group + group-requests wave)", () => {
+  it("mutationFn POSTs /api/group-requests/{id}/{action}", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          id: 7,
+          group_name: "design-team",
+          requested_by: "kai@example.com",
+          note: null,
+          status: "done",
+          decided_by: "admin@example.com",
+          created_at: "2026-08-22T00:00:00Z",
+          decided_at: "2026-08-22T01:00:00Z",
+        }),
+    } as Response);
+
+    const queryClient = { invalidateQueries: vi.fn() } as unknown as QueryClient;
+    const mutation = decideGroupRequestMutation(queryClient);
+
+    await mutation.mutationFn({ id: 7, action: "done" });
+    expect(fetch).toHaveBeenCalledWith("/api/group-requests/7/done", {
+      method: "POST",
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates both the group-requests queue and whoami on success", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = decideGroupRequestMutation(queryClient);
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(2);
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["group-requests"] });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["whoami"] });
   });
 });

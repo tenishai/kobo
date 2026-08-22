@@ -159,12 +159,22 @@ export type OrgStatus = { org: string | null; wired: boolean; checks: OrgCheck[]
  * directory outage) — WATCH ITEM: no UI affordance keys off `operator`
  * either (a dev-parity room with no configured operators reads `false`
  * here while gates behave as if everyone were one) — every screen stays a
- * pure reflection of what the server's own routes actually do. */
+ * pure reflection of what the server's own routes actually do.
+ *
+ * `pending_group_requests` (shared-group + group-requests wave) is present
+ * ONLY when the server has already decided the caller is an admin — absent
+ * (not `0`) for everyone else. The group-requests admin card
+ * (`GroupRequestsCard.svelte`) reads its PRESENCE and value directly,
+ * deliberately never `operator` above, per the room's own watch item: no UI
+ * surface may gate on `operator` for anything a dev room needs, but keying
+ * a purely additive display off a field the server only ever populates for
+ * admins is API-driven, not client-side gating. */
 export type Whoami = {
   email: string | null;
   operator: boolean;
   groups: string[];
   groups_unavailable: boolean;
+  pending_group_requests?: number;
 };
 
 /** A leak-safe reference to one side of an invite (access-control Task C1's
@@ -415,11 +425,13 @@ export async function createAgent(body: {
    * server-side; an over-cap list (after de-dupe) 422s with "Eight tags at
    * most." */
   purpose_tags: string[];
-  /** The ACL namespace this agent belongs to (access-control Task B2) —
-   * omitted (or `null`) when the room hasn't named any groups
-   * (`GET /api/catalog/groups` returns `[]`); required and checked against
-   * that same list once it has, both server-side (the real gate) and by
-   * the create modal's own required `<select>` (UX only). */
+  /** The ACL namespace this agent belongs to (access-control Task B2,
+   * always includes the commons as of the shared-group + group-requests
+   * wave) — omitted (or `null`) only in the defensive case where
+   * `GET /api/catalog/groups` came back `[]`; required and checked against
+   * that same list once it has anything at all (the commons entry alone is
+   * enough), both server-side (the real gate) and by the create modal's own
+   * required `<select>` (UX only). */
   group_name?: string | null;
 }): Promise<{ name: string; status: string }> {
   const res = await fetch("/api/agents", {
@@ -467,17 +479,90 @@ export async function fetchModels(): Promise<{
   );
 }
 
-/** `GET /api/catalog/groups` (access-control Task B2) — the room's named
- * ACL namespaces, config names only (never the Okta group names the server
- * maps them to internally). `[]` when the room hasn't named any groups at
- * all — the create modal's own signal to render no group picker rather
- * than a required-but-empty one. */
-export type GroupOption = { name: string };
+/** `GET /api/catalog/groups` (access-control Task B2, sectioned by the
+ * shared-group + group-requests wave) — the room's named ACL namespaces,
+ * config names only (never the Okta group names the server maps them to
+ * internally). `kind` is `"shared"` for the one commons entry (always
+ * first, always present, even when the room has named no groups at all —
+ * usable by every signed-in caller regardless of directory config) or
+ * `"engineering"` for one of the room's own configured groups. The create
+ * modal's group `<select>` sections on this field rather than hardcoding
+ * the commons entry's name client-side. `[]` is still possible in a
+ * malformed/stubbed response; the create modal treats that defensively as
+ * "no picker at all," same as before this wave. */
+export type GroupOption = { name: string; kind: "shared" | "engineering" };
 
 export async function fetchGroups(): Promise<GroupOption[]> {
   const res = await fetch("/api/catalog/groups");
   const data = await parse<{ groups: GroupOption[] }>(res);
   return data.groups;
+}
+
+/** One row of the group-requests queue (shared-group + group-requests wave)
+ * — the dropdown's escape hatch for "my team's group isn't listed," and the
+ * admin card's (`GroupRequestsCard.svelte`) own list shape. `requested_by`/
+ * `decided_by` are verified emails, `null` when IAP was off at the time.
+ * `note` is `null` when the requester left it blank. Mirrors
+ * `kobo_api.main._group_request_repr` verbatim. */
+export type GroupRequest = {
+  id: number;
+  group_name: string;
+  requested_by: string | null;
+  note: string | null;
+  status: "pending" | "done" | "declined";
+  decided_by: string | null;
+  created_at: string;
+  decided_at: string | null;
+};
+
+/**
+ * `POST /api/group-requests` — any signed-in caller may file one (no
+ * owner/operator gate beyond the app-wide IAP middleware). `note` is only
+ * sent when non-empty; the server's own field is optional and defaults to
+ * `None`. 422 on an empty/over-100-char name, 409 when an equivalent
+ * (case-insensitive, trimmed) request is already pending — the create
+ * modal's mini-form (CreateModal.svelte) treats that status specifically as
+ * "Already requested," not a generic error.
+ */
+export async function requestGroup(
+  groupName: string,
+  note?: string,
+): Promise<GroupRequest> {
+  const res = await fetch("/api/group-requests", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(
+      note ? { group_name: groupName, note } : { group_name: groupName },
+    ),
+  });
+  return parse<GroupRequest>(res);
+}
+
+/** `GET /api/group-requests` — admin only server-side (`_is_admin`,
+ * no dev-parity "unconfigured room" escape hatch — see the API's own doc
+ * comment on `_group_requests_admin_block`). Newest first, already sorted
+ * server-side. */
+export async function fetchGroupRequests(): Promise<GroupRequest[]> {
+  const res = await fetch("/api/group-requests");
+  const data = await parse<{ requests: GroupRequest[] }>(res);
+  return data.requests;
+}
+
+/**
+ * `POST /api/group-requests/{id}/done` or `/declined` — admin only,
+ * same gate as `fetchGroupRequests`. "done" only closes kobo's own loop; the
+ * admin is expected to have already added the group to org config out of
+ * band (the route never touches org config itself). 404 for an unknown id,
+ * 409 if the request isn't currently pending.
+ */
+export async function decideGroupRequest(
+  id: number,
+  action: "done" | "declined",
+): Promise<GroupRequest> {
+  const res = await fetch(`/api/group-requests/${encodeURIComponent(String(id))}/${action}`, {
+    method: "POST",
+  });
+  return parse<GroupRequest>(res);
 }
 
 /** Builds a `?q=...&team=...` query string: `q` is always present (even

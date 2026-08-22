@@ -17,12 +17,21 @@
   import AgentCard from "../components/AgentCard.svelte";
   import EmptyState from "../components/EmptyState.svelte";
   import ErrorState from "../components/ErrorState.svelte";
+  import GroupRequestsCard from "../components/GroupRequestsCard.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import { errorMessage } from "../lib/api";
   import { agentsQuery } from "../lib/queries";
 
   const agents = createQuery(agentsQuery());
 </script>
+
+<!-- Shared-group + group-requests wave: the least-invasive existing home
+     for the admin queue card. `GroupRequestsCard` renders nothing itself
+     unless whoami's own `pending_group_requests` is present and positive
+     (see its own doc comment) — always mounted, the card decides its own
+     visibility, same "server decides, UI reflects" discipline the
+     groups_unavailable banner below already follows. -->
+<GroupRequestsCard />
 
 {#if $agents.isPending}
   <div class="dashboard-grid">

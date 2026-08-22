@@ -62,6 +62,13 @@
 //                                                      autocomplete
 //                                                      (access-tab
 //                                                      refinement wave)
+//   ["group-requests"]                              - the admin queue of
+//                                                      filed group requests
+//                                                      (shared-group +
+//                                                      group-requests wave),
+//                                                      fetched lazily once
+//                                                      the admin card is
+//                                                      expanded
 
 import { queryOptions, type QueryClient } from "@tanstack/svelte-query";
 import {
@@ -79,6 +86,7 @@ import {
   type ColleagueConversationDetail,
   type Grant,
   type GroupOption,
+  type GroupRequest,
   type IntakeFile,
   type Invite,
   type InvitesResult,
@@ -106,6 +114,7 @@ import {
   createAgent,
   createInvite,
   createPersona,
+  decideGroupRequest,
   declineInvite,
   deleteIntake,
   deleteKnowledgeFile,
@@ -116,6 +125,7 @@ import {
   draftPersona,
   fetchColleagueConversation,
   fetchDeliveryState,
+  fetchGroupRequests,
   fetchGroups,
   fetchModels,
   fetchNameSuggestions,
@@ -139,6 +149,7 @@ import {
   patchAgentMetadata,
   regenerateAgentMetadata,
   removeGrant,
+  requestGroup,
   retryAgent,
   revokeInvite,
   saveKnowledgeFile,
@@ -933,6 +944,60 @@ export function removeGrantMutation(queryClient: QueryClient, name: string) {
 }
 
 /**
+ * Files a group request (shared-group + group-requests wave) -- the create
+ * modal's "My group is not listed..." mini-form. No `queryClient`/`onSuccess`
+ * invalidation: the filer is very often not an admin at all, so there's
+ * nothing in THEIR cache this touches (the admin queue -- `groupRequestsQuery`
+ * below -- lives behind a gate this caller may not even pass), and the
+ * modal's own success handler drives the mini-form's confirmation copy
+ * directly off the mutation result, not a refetched query.
+ */
+export function requestGroupMutation() {
+  return {
+    mutationFn: ({ groupName, note }: { groupName: string; note?: string }) =>
+      requestGroup(groupName, note),
+  };
+}
+
+/**
+ * The admin queue of filed group requests (shared-group + group-requests
+ * wave) -- `GET /api/group-requests`, admin-only server-side. `enabled`
+ * gates the fetch behind the admin card's own expanded state
+ * (`GroupRequestsCard.svelte`), same "don't fetch until a human actually
+ * asks to see it" idiom `slackManifestQuery`'s `opened` flag uses -- the
+ * card's mere presence already implies the caller is an admin (whoami only
+ * ever sends `pending_group_requests` to one), but there's still no reason
+ * to fetch the full list before it's expanded.
+ */
+export function groupRequestsQuery(enabled: boolean) {
+  return queryOptions({
+    queryKey: ["group-requests"] as const,
+    queryFn: fetchGroupRequests,
+    enabled,
+  });
+}
+
+/**
+ * Closes a pending group request out, "done" or "declined" (shared-group +
+ * group-requests wave); on success, invalidates the admin queue itself so
+ * the decided row drops off, and `whoami` so the sidebar/dashboard badge's
+ * `pending_group_requests` count catches up -- `whoami`'s own `staleTime:
+ * Infinity` only suppresses automatic background refetches, not an explicit
+ * invalidation like this one, so an admin who just acted on a request sees
+ * the count move without a page reload.
+ */
+export function decideGroupRequestMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: ({ id, action }: { id: number; action: "done" | "declined" }) =>
+      decideGroupRequest(id, action),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["group-requests"] });
+      queryClient.invalidateQueries({ queryKey: ["whoami"] });
+    },
+  };
+}
+
+/**
  * Edit details' save (persona-metadata plan Task 3/4): PATCHes whichever of
  * team/purpose_tags/capability are submitted; on success, invalidates the
  * agent detail query so the saved values (and the card's fresh delivery
@@ -1060,6 +1125,7 @@ export type {
   ColleagueConversationDetail,
   Grant,
   GroupOption,
+  GroupRequest,
   IntakeFile,
   Invite,
   InvitesResult,
