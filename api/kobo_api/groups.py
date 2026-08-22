@@ -66,11 +66,23 @@ class OktaGroupResolver:
     exception's message nor a response body ever echoes back.
 
     Successful answers are cached per email for `ttl_s` seconds (a plain
-    dict, `email -> (expires_at, result)`); a failed lookup is never cached,
-    so the very next call retries the directory rather than replaying a
-    stale outage for the rest of the TTL window. `client` and `now` are test
-    seams only (a real `httpx.Client` and `time.time` by default), same
+    dict, `email -> (expires_at, result)`). A failed lookup is cached too,
+    but only for the much shorter `failure_ttl_s` floor, in a separate dict
+    keyed by email -- a flapping/slow directory would otherwise make every
+    group-needing request pay the full HTTP timeout for the whole outage.
+    That floor never evicts or shadows a fresh success: `groups_for` only
+    ever reaches the failure check (and the network) once a cached success
+    is either absent or already past its own TTL, so the two stores can
+    never race to overwrite each other's answer. A success once past its
+    own TTL is never re-served just because the refetch that would have
+    replaced it failed -- fail-closed wins there too. `client` and `now` are
+    test seams only (a real `httpx.Client` and `time.time` by default), same
     convention as `kobo_api.github_app.InstallationTokenProvider`.
+
+    `email` is lowercased once at the `groups_for` boundary -- both the
+    cache key and the URL path this sends to Okta -- matching the rest of
+    the house's convention (`main.py`'s operator checks) that an IAP
+    email's case is preserved but an Okta identity is case-insensitive.
     """
 
     def __init__(
@@ -79,6 +91,7 @@ class OktaGroupResolver:
         token: str,
         universe: dict[str, str],
         ttl_s: int = 900,
+        failure_ttl_s: int = 60,
         client: httpx.Client | None = None,
         now: Callable[[], float] | None = None,
     ):
@@ -86,6 +99,7 @@ class OktaGroupResolver:
         self._token = token
         self._universe = universe
         self._ttl_s = ttl_s
+        self._failure_ttl_s = failure_ttl_s
         # A single small JSON GET, not a model roundtrip -- same "quick
         # JSON-API CRUD call" family as HttpxStorageClient (kobo_api.clients),
         # whose 20s/10s-connect default this mirrors: real headroom over
@@ -94,8 +108,13 @@ class OktaGroupResolver:
         self._client = client or httpx.Client(timeout=httpx.Timeout(20.0, connect=10.0))
         self._now = now or time.time
         self._cache: dict[str, tuple[float, list[str]]] = {}
+        # Separate from `_cache` on purpose: a failure marker must live
+        # beside, never instead of, whatever (possibly stale) success entry
+        # is already there -- see the class docstring.
+        self._failed_until: dict[str, float] = {}
 
     def groups_for(self, email: str) -> list[str] | None:
+        email = email.lower()
         now = self._now()
         cached = self._cache.get(email)
         if cached is not None:
@@ -103,9 +122,16 @@ class OktaGroupResolver:
             if expires_at > now:
                 return result
 
+        failed_until = self._failed_until.get(email)
+        if failed_until is not None and failed_until > now:
+            return None
+
         result = self._fetch(email)
         if result is not None:
             self._cache[email] = (now + self._ttl_s, result)
+            self._failed_until.pop(email, None)
+        else:
+            self._failed_until[email] = now + self._failure_ttl_s
         return result
 
     def _fetch(self, email: str) -> list[str] | None:

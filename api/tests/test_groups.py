@@ -248,10 +248,11 @@ def test_cache_is_keyed_per_email_independently():
     assert len(captured) == 2
 
 
-def test_failed_lookup_is_not_cached_next_call_retries():
-    """A directory outage must not be replayed for the rest of the TTL
-    window once Okta recovers — a failure is never written into the cache,
-    so the very next call tries the network again."""
+def test_call_after_failure_ttl_expiry_retries_the_directory():
+    """A directory outage must not be replayed forever -- once the short
+    failure floor (failure_ttl_s) elapses, the next call tries the network
+    again rather than staying fail-closed until the much longer success TTL
+    would have expired."""
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -262,18 +263,126 @@ def test_failed_lookup_is_not_cached_next_call_retries():
 
     clock = {"now": 1_000.0}
     resolver = OktaGroupResolver(
-        DOMAIN, TOKEN, UNIVERSE, ttl_s=900, client=_client(handler), now=lambda: clock["now"]
+        DOMAIN, TOKEN, UNIVERSE, ttl_s=900, failure_ttl_s=60,
+        client=_client(handler), now=lambda: clock["now"],
     )
 
     first = resolver.groups_for("alice@example.com")
     assert first is None
     assert calls["n"] == 1
 
-    # No time has passed at all -- if the failure had been cached, this
-    # would still return None without a second HTTP call.
+    clock["now"] += 61  # just past the 60s failure floor
     second = resolver.groups_for("alice@example.com")
     assert second == ["SRE"]
     assert calls["n"] == 2
+
+
+# --- Negative-cache floor: a flapping directory isn't hammered -----------------
+
+
+def test_second_call_within_failure_ttl_makes_no_http_call_and_returns_none():
+    """A flapping/slow directory must not make every group-needing request
+    pay the full HTTP timeout for the whole outage -- within the short
+    failure floor, groups_for answers None straight from memory, no HTTP
+    call at all."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(500, text="internal error")
+
+    clock = {"now": 1_000.0}
+    resolver = OktaGroupResolver(
+        DOMAIN, TOKEN, UNIVERSE, failure_ttl_s=60,
+        client=_client(handler), now=lambda: clock["now"],
+    )
+
+    first = resolver.groups_for("alice@example.com")
+    assert first is None
+    assert calls["n"] == 1
+
+    clock["now"] += 59  # still within the 60s failure floor
+    second = resolver.groups_for("alice@example.com")
+    assert second is None
+    assert calls["n"] == 1  # no new HTTP call
+
+
+def test_fresh_success_is_never_shadowed_by_a_later_failure():
+    """A cached success that's still within its TTL always wins -- no fetch
+    happens at all while it's fresh, so a later failure can never evict or
+    shadow it."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, json=[_okta_group("okta-sre-group")])
+        return httpx.Response(500, text="internal error")
+
+    clock = {"now": 1_000.0}
+    resolver = OktaGroupResolver(
+        DOMAIN, TOKEN, UNIVERSE, ttl_s=900,
+        client=_client(handler), now=lambda: clock["now"],
+    )
+
+    first = resolver.groups_for("alice@example.com")
+    assert first == ["SRE"]
+    assert calls["n"] == 1
+
+    clock["now"] += 100  # well within the 900s success TTL
+    second = resolver.groups_for("alice@example.com")
+    assert second == ["SRE"]
+    assert calls["n"] == 1  # still no new HTTP call
+
+
+def test_success_ttl_expiry_then_failed_refetch_returns_none_not_the_stale_success():
+    """Honest semantics: once the success TTL is up, a stale cached answer is
+    never served just because the refetch that would have replaced it
+    failed -- fail-closed applies here too."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, json=[_okta_group("okta-sre-group")])
+        return httpx.Response(500, text="internal error")
+
+    clock = {"now": 1_000.0}
+    resolver = OktaGroupResolver(
+        DOMAIN, TOKEN, UNIVERSE, ttl_s=900,
+        client=_client(handler), now=lambda: clock["now"],
+    )
+
+    first = resolver.groups_for("alice@example.com")
+    assert first == ["SRE"]
+    assert calls["n"] == 1
+
+    clock["now"] += 901  # success TTL now expired
+    second = resolver.groups_for("alice@example.com")
+    assert second is None  # NOT ["SRE"] -- stale success isn't served past its TTL
+    assert calls["n"] == 2
+
+
+# --- Email case normalization: one identity regardless of case ----------------
+
+
+def test_email_case_is_normalized_to_one_cache_entry_and_lowercased_url():
+    """Okta identities are case-insensitive; "User@Example.com" and
+    "user@example.com" must resolve to one cache entry (one HTTP call), and
+    the URL path Okta actually receives must carry the lowercased form."""
+    captured: list[httpx.Request] = []
+    response = httpx.Response(200, json=[_okta_group("okta-sre-group")])
+    resolver = OktaGroupResolver(
+        DOMAIN, TOKEN, UNIVERSE, client=_client(_recording_transport(captured, response))
+    )
+
+    first = resolver.groups_for("User@Example.com")
+    second = resolver.groups_for("user@example.com")
+
+    assert first == ["SRE"]
+    assert second == ["SRE"]
+    assert len(captured) == 1
+    assert captured[0].url.path == "/api/v1/users/user@example.com/groups"
 
 
 # --- Error paths: every failure mode -> None, never raises --------------------
