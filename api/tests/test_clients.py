@@ -26,6 +26,7 @@ from kobo_api.clients import (
     AgentClient,
     CabalClient,
     CabalError,
+    CachedGcloudToken,
     ChatMessage,
     ClientError,
     Clients,
@@ -2601,6 +2602,108 @@ def test_gcloud_print_access_token_argv_and_pass_through():
     token = _gcloud_print_access_token(runner)
     assert runner.calls == [["gcloud", "auth", "print-access-token"]]
     assert token == "ya29.fake-access-token"
+
+
+# --- CachedGcloudToken (perf fix: one gcloud shell-out per ttl, not per call) -----
+#
+# `_gcloud_print_access_token` shells out to `gcloud auth print-access-token`
+# on every call (~1-2s live, per the perf report) even though the token it
+# returns is good for about an hour. CachedGcloudToken wraps any `fetch`
+# callable (the real `_gcloud_print_access_token` by default) with a
+# time-boxed cache, mirroring InstallationTokenProvider's own cache+expiry
+# discipline (kobo_api.github_app) — `now` is a test seam here too, real
+# `time.monotonic` by default.
+
+
+def test_cached_gcloud_token_second_call_within_ttl_is_one_fetch():
+    calls: list[str] = []
+
+    def fetch() -> str:
+        calls.append("fetched")
+        return f"token-{len(calls)}"
+
+    clock = {"now": 1000.0}
+    token_provider = CachedGcloudToken(fetch=fetch, ttl_s=1800, now=lambda: clock["now"])
+
+    first = token_provider()
+    clock["now"] += 60  # well inside the 1800s ttl
+    second = token_provider()
+
+    assert first == "token-1"
+    assert second == "token-1"
+    assert len(calls) == 1
+
+
+def test_cached_gcloud_token_expiry_triggers_refetch():
+    calls: list[str] = []
+
+    def fetch() -> str:
+        calls.append("fetched")
+        return f"token-{len(calls)}"
+
+    clock = {"now": 1000.0}
+    token_provider = CachedGcloudToken(fetch=fetch, ttl_s=1800, now=lambda: clock["now"])
+
+    first = token_provider()
+    clock["now"] += 1800  # ttl fully elapsed -> no longer fresh
+    second = token_provider()
+
+    assert first == "token-1"
+    assert second == "token-2"
+    assert len(calls) == 2
+
+
+def test_cached_gcloud_token_concurrent_first_calls_share_one_fetch():
+    # Two threads racing in on a cold cache (background threads calling
+    # Vertex too, per the perf report) must still cost exactly one
+    # underlying fetch — the lock must be held across the fetch itself, not
+    # just around a read-then-write of the cached fields.
+    calls: list[str] = []
+
+    def fetch() -> str:
+        calls.append("fetched")
+        time.sleep(0.05)  # widen the race window
+        return "concurrent-token"
+
+    token_provider = CachedGcloudToken(fetch=fetch)
+    results: list[str] = []
+
+    def worker() -> None:
+        results.append(token_provider())
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(calls) == 1
+    assert results == ["concurrent-token", "concurrent-token"]
+
+
+def test_cached_gcloud_token_fetch_failure_raises_and_later_call_retries():
+    calls: list[str] = []
+
+    def fetch() -> str:
+        calls.append("fetched")
+        if len(calls) == 1:
+            raise ClientError("gcloud auth print-access-token failed (rc=1): not logged in")
+        return "recovered-token"
+
+    token_provider = CachedGcloudToken(fetch=fetch)
+
+    with pytest.raises(ClientError):
+        token_provider()
+
+    result = token_provider()
+
+    assert result == "recovered-token"
+    assert len(calls) == 2
+
+
+def test_cached_gcloud_token_default_fetch_is_gcloud_print_access_token():
+    token_provider = CachedGcloudToken()
+    assert token_provider._fetch is _gcloud_print_access_token
 
 
 # --- Name (VertexNameClient) ----------------------------------------------------
@@ -5510,6 +5613,25 @@ def test_clients_real_wires_storage_client_unconditionally():
     clients = Clients.real(config)
     assert isinstance(clients.storage, HttpxStorageClient)
     assert clients.storage._project == "example-project"
+
+
+def test_clients_real_shares_one_cached_gcloud_token_across_image_name_and_storage():
+    # Perf fix: every real client that defaults to `_gcloud_print_access_token`
+    # (VertexImageClient, VertexNameClient, HttpxStorageClient) previously
+    # shelled out to `gcloud auth print-access-token` on every single call
+    # (~1-2s live) even though the token is good for about an hour.
+    # Clients.real() must wire ONE shared CachedGcloudToken instance into all
+    # three, so a token fetched for one (e.g. a name suggestion) is reused by
+    # the others (an avatar generation, a storage read) within its ttl.
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        vertex_project="acme-model-project",
+    )
+    clients = Clients.real(config)
+    assert isinstance(clients.image._token_provider, CachedGcloudToken)
+    assert clients.image._token_provider is clients.name._token_provider
+    assert clients.image._token_provider is clients.storage._token_provider
 
 
 def test_clients_real_wires_cabal_none_when_disabled(monkeypatch):

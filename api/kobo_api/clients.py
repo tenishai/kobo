@@ -1587,6 +1587,72 @@ def _gcloud_print_access_token(runner: CommandRunner | None = None) -> str:
     return (runner or CommandRunner()).run(["gcloud", "auth", "print-access-token"])
 
 
+class CachedGcloudToken:
+    """Caches `_gcloud_print_access_token`'s result for `ttl_s` seconds.
+
+    Every real client in this module that talks to a Google API
+    (`VertexImageClient`, `VertexNameClient`, `HttpxStorageClient`) defaults
+    its `token_provider` to `_gcloud_print_access_token`, which shells out to
+    `gcloud auth print-access-token` — measured ~1-2s per call in the
+    deployed pod. A Google access token is good for about an hour, so paying
+    that shell-out fresh on every single Vertex/GCS call (per-thought, in
+    the deployed room) is pure waste. `Clients.real` wires ONE instance of
+    this class into all three clients so a token minted for one is reused by
+    the others until it goes stale.
+
+    `ttl_s` defaults to 1800s (30 minutes) — half a token's real lifetime,
+    a generous margin against the token actually expiring mid-flight.
+
+    Thread-safe (`threading.Lock`, held across the fetch itself, not just a
+    read-then-write of the cached fields): background threads that also
+    call Vertex (the persona draft/distill/capability seams,
+    `kobo_api.persona_draft`) must never race into two overlapping
+    `gcloud` shell-outs, and concurrent callers hitting a cold cache
+    together must still cost exactly one fetch.
+
+    A fetch failure is never cached and never wipes an already-cached,
+    unexpired token: the lock is only ever held while EITHER returning the
+    still-fresh cached token OR calling `fetch()`, so a raised exception
+    from `fetch()` propagates straight through (the same `ClientError`
+    shape every caller already handles) without this class touching
+    `_token`/`_expires_at` at all — a later call simply retries.
+
+    `fetch` and `now` are test seams only (the real `_gcloud_print_access_token`
+    and `time.monotonic` by default) — mirrors `InstallationTokenProvider`'s
+    own cache/expiry-margin/`now` seam discipline (`kobo_api.github_app`).
+    `time.monotonic` (not `time.time`) is deliberate: this cache only ever
+    compares against its own earlier reading, so it must be immune to
+    wall-clock adjustments (NTP step, DST, an operator setting the clock)
+    that `time.time` is exposed to.
+    """
+
+    def __init__(
+        self,
+        fetch: Callable[[], str] = _gcloud_print_access_token,
+        ttl_s: int = 1800,
+        now: Callable[[], float] = time.monotonic,
+    ):
+        self._fetch = fetch
+        self._ttl_s = ttl_s
+        self._now = now
+        self._lock = threading.Lock()
+        self._token: str | None = None
+        self._expires_at: float | None = None
+
+    def __call__(self) -> str:
+        with self._lock:
+            if (
+                self._token is not None
+                and self._expires_at is not None
+                and self._now() < self._expires_at
+            ):
+                return self._token
+            token = self._fetch()
+            self._token = token
+            self._expires_at = self._now() + self._ttl_s
+            return token
+
+
 class VertexImageClient:
     """Generates one square avatar PNG per prompt via Vertex AI's Model
     Garden `generateContent` endpoint (`gemini-2.5-flash-image` by default —
@@ -3246,6 +3312,12 @@ class Clients:
         """Wire the real, subprocess/network-backed implementations."""
         runner = CommandRunner()
         token_provider = installation_token_provider(config)
+        # One shared CachedGcloudToken across every client that defaults its
+        # own token_provider to `_gcloud_print_access_token` (image, name,
+        # storage) — a token minted for one is reused by the others until it
+        # goes stale, instead of each shelling out to `gcloud auth
+        # print-access-token` (~1-2s live) on every single call.
+        gcloud_token = CachedGcloudToken()
         return cls(
             github=GhCLI(runner=runner, token_provider=token_provider),
             gojira=HttpxGojiraClient(config.gojira_url, token=config.gojira_token),
@@ -3253,12 +3325,14 @@ class Clients:
             agent=KubectlAgentClient(),
             kubectl=KubectlCLI(runner=runner),
             image=VertexImageClient(
-                config.vertex_project, config.avatar_location, config.avatar_model
+                config.vertex_project, config.avatar_location, config.avatar_model,
+                token_provider=gcloud_token,
             ),
             name=VertexNameClient(
-                config.vertex_project, config.name_location, config.name_model
+                config.vertex_project, config.name_location, config.name_model,
+                token_provider=gcloud_token,
             ),
-            storage=HttpxStorageClient(config.gcp_project),
+            storage=HttpxStorageClient(config.gcp_project, token_provider=gcloud_token),
             slack=HttpxSlackClient(config.slack_tokens_path)
             if config.slack_tokens_path
             else None,
