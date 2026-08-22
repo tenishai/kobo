@@ -43,15 +43,12 @@
 //                                                      already verified
 //   ["names", "suggestions", {who_they_are, what_they_do}]
 //                                                    - five name-suggestion cards for a committed persona
-//   ["colleagues", "conversations", "list", {all, agent}]
-//                                                    - the watching window's
-//                                                      conversation list
-//                                                      (Task 4/B4), scoped to
-//                                                      one agent (access-tab
-//                                                      refinement wave)
-//   ["colleagues", "conversations", "detail", taskId]
-//                                                    - one conversation's
-//                                                      full detail + events
+//   ["colleagues", "feed", agent]                   - the terminal's flattened,
+//                                                      chronological feed of one
+//                                                      agent's own colleague talk
+//                                                      (terminal redesign,
+//                                                      replaced the old card
+//                                                      grid's list/detail pair)
 //   ["agents", name, "requestable"]                 - the other ready
 //                                                      agents `name` could
 //                                                      ask for colleague
@@ -82,8 +79,8 @@ import {
   type AlreadyRequested,
   type CatalogEntry,
   type ChatMessage,
-  type ColleagueConversation,
-  type ColleagueConversationDetail,
+  type ColleagueFeed,
+  type ColleagueFeedEntry,
   type Grant,
   type GroupOption,
   type GroupRequest,
@@ -123,7 +120,7 @@ import {
   destroyAgent,
   distillPersona,
   draftPersona,
-  fetchColleagueConversation,
+  fetchColleagueFeed,
   fetchDeliveryState,
   fetchGroupRequests,
   fetchGroups,
@@ -139,7 +136,6 @@ import {
   getAgent,
   importTooling,
   listAgents,
-  listColleagueConversations,
   listGrants,
   listIntake,
   listInvites,
@@ -1076,40 +1072,28 @@ export function uploadAvatarMutation(queryClient: QueryClient, name: string) {
 }
 
 /**
- * The watching window's conversation list (Task 4/B4) — agent-only by
- * default (`all: false`), every caller (room-human chats and service
- * callers included) when `all` is true. No polling of its own: live
- * updates come from the SSE stream instead (`ColleagueConversations.svelte`
+ * The terminal's one flattened, chronological feed (terminal redesign,
+ * replacing the old card grid's `colleagueConversationsQuery`/
+ * `colleagueConversationQuery` pair). No polling of its own: live updates
+ * come from the SSE stream instead (`ColleagueConversations.svelte`
  * refetches this query on any frame from `/api/colleagues/stream` — "on any
- * SSE message refetch the list", no client-side event merging).
+ * SSE message refetch the feed", no client-side event merging, same
+ * discipline the old card grid used).
  *
  * A 409 (this room has no switchboard wired) surfaces through `$query.
  * error` as an `ApiError` with `status === 409`; the component treats that
  * specifically as "render nothing" rather than an error state.
  *
- * `agent` (access-tab refinement wave, conversation scoping) is always
- * passed now -- the caller (`ColleagueConversations.svelte`) is mounted
- * under one specific agent's Chat tab, so its own watching window only ever
- * shows conversations THAT agent participates in.
+ * `agent` is always passed -- the caller (`ColleagueConversations.svelte`)
+ * is mounted under one specific agent's Chat tab, so the terminal only ever
+ * shows conversations THAT agent participates in (also the server's own
+ * `_visible_agent_or_404` gate: an agent this caller can't see 404s here,
+ * unlike the room-wide routes the old card grid read from).
  */
-export function colleagueConversationsQuery(all: boolean, agent: string) {
+export function colleagueFeedQuery(agent: string) {
   return queryOptions({
-    queryKey: ["colleagues", "conversations", "list", { all, agent }] as const,
-    queryFn: () => listColleagueConversations(all, agent),
-  });
-}
-
-/**
- * One colleague conversation's full detail plus its event log (Task
- * 4/B4), fetched lazily once a row in the watching window is expanded —
- * disabled until a `taskId` is chosen, same "nothing to fetch yet" gate
- * `deliveryQuery`'s sha argument uses.
- */
-export function colleagueConversationQuery(taskId: string | null) {
-  return queryOptions({
-    queryKey: ["colleagues", "conversations", "detail", taskId] as const,
-    queryFn: () => fetchColleagueConversation(taskId as string),
-    enabled: taskId !== null,
+    queryKey: ["colleagues", "feed", agent] as const,
+    queryFn: () => fetchColleagueFeed(agent),
   });
 }
 
@@ -1125,8 +1109,8 @@ export type {
   AlreadyRequested,
   CatalogEntry,
   ChatMessage,
-  ColleagueConversation,
-  ColleagueConversationDetail,
+  ColleagueFeed,
+  ColleagueFeedEntry,
   Grant,
   GroupOption,
   GroupRequest,

@@ -261,45 +261,33 @@ export type Grant = { email: string; added_by: string | null };
 
 export type ChatMessage = { role: "user" | "agent"; text: string };
 
-/** One row of the room's colleagues switchboard admin surface (the
- * watching window, Task 4/B4) — `GET /api/colleagues/conversations`'
- * verified upstream shape, passed through unchanged. `caller_agent` is
- * `"agent:<name>"` when another agent started this conversation asking a
- * colleague for help, or `"operator:..."`/`"service:..."` for a room-human
- * chat or a service caller (e.g. best-effort directory syncs) — the room
- * API's own default filter keeps only the former; `all=true` returns every
- * row. `result_snippet` is truncated to 120 chars upstream and may be
- * `null` before a conversation completes. */
-export type ColleagueConversation = {
-  task_id: string;
-  target_agent: string;
-  target_generation: number | null;
-  caller_agent: string;
-  state: string;
-  cabal_escalated_from: string | null;
-  created_at: string;
-  updated_at: string;
-  result_snippet: string | null;
+/** One line of the terminal's flattened colleague feed (`GET /api/
+ * colleagues/feed`, terminal redesign) — the operator's ruling replaced the
+ * old per-conversation card grid ("truncated text") with "a command line
+ * terminal... showed all the conversations... in order... and the text in
+ * full." `role` is `"ask"` (the caller's message; `from` is the caller's
+ * display name, `to` the target) or `"reply"` (the target's answer; `from`/
+ * `to` reversed) — the direction reversal is what lets the terminal color a
+ * line by outgoing vs incoming. `text` is always the FULL, untruncated
+ * message (never a snippet). `conversation_id` groups an ask with its own
+ * reply; `ts` is the ISO-8601 timestamp the terminal renders as `HH:MM:SS`. */
+export type ColleagueFeedEntry = {
+  ts: string;
+  conversation_id: string;
+  from: string;
+  to: string;
+  role: "ask" | "reply";
+  text: string;
 };
 
-/** One entry of a colleague conversation's event log (part of `GET
- * /api/colleagues/conversations/{task_id}`'s response) — the switchboard's
- * own frame names (`dispatch_start`/`dispatch_success`/`dispatch_failure`)
- * show up here as `event_type`. */
-export type ColleagueEvent = {
-  id: number | string;
-  event_type: string;
-  payload: unknown;
-  created_at: string;
-};
-
-/** One colleague conversation's full detail plus its event log (`GET
- * /api/colleagues/conversations/{task_id}`) — `conversation` carries every
- * `ColleagueConversation` field plus the full, untruncated `result` text
- * (as opposed to the list's own 120-char `result_snippet`). */
-export type ColleagueConversationDetail = {
-  conversation: ColleagueConversation & { result?: string | null };
-  events: ColleagueEvent[];
+/** `GET /api/colleagues/feed`'s response: every entry across every
+ * conversation `agent` participates in, sorted ascending by `ts` (so the
+ * terminal renders it top-to-bottom, oldest first, same reading order as a
+ * real shell scrollback) and capped to the most recent 200 -- `truncated`
+ * is true whenever more existed than that. */
+export type ColleagueFeed = {
+  entries: ColleagueFeedEntry[];
+  truncated: boolean;
 };
 
 export class ApiError extends Error {
@@ -764,42 +752,21 @@ export async function teachAgent(
   return parse<{ filename: string; mode?: "instant" | "archive"; sha?: string }>(res);
 }
 
-/** The room's colleagues watching window list (Task 4/B4) — agent-only by
- * default, every caller (room-human chats and service callers included)
- * when `all` is true. A 409 (the switchboard isn't wired on this room)
- * surfaces as an `ApiError` carrying that status, same as any other route;
- * the caller (`ColleagueConversations.svelte`) treats that status
- * specifically as "render nothing" rather than a scary error banner.
- *
- * `agent` (access-tab refinement wave, conversation scoping) layers ON TOP
- * of the `all`/agent-only split above -- always sent, never optional: the
- * caller is always mounted under one specific agent's Chat tab now, so a
- * viewer only ever sees conversations THAT agent participates in, same
- * "server decides, UI just carries the filter" discipline as everywhere
- * else in this room. */
-export async function listColleagueConversations(
-  all: boolean,
-  agent: string,
-): Promise<ColleagueConversation[]> {
-  const params = new URLSearchParams();
-  if (all) {
-    params.set("all", "true");
-  }
-  params.set("agent", agent);
-  const res = await fetch(`/api/colleagues/conversations?${params.toString()}`);
-  const data = await parse<{ conversations: ColleagueConversation[] }>(res);
-  return data.conversations;
-}
-
-/** One colleague conversation's full detail plus its event log (Task
- * 4/B4), fetched lazily when a row in the watching window is expanded. */
-export async function fetchColleagueConversation(
-  taskId: string,
-): Promise<ColleagueConversationDetail> {
-  const res = await fetch(
-    `/api/colleagues/conversations/${encodeURIComponent(taskId)}`,
-  );
-  return parse<ColleagueConversationDetail>(res);
+/** The terminal's one flattened, chronological feed (`GET /api/colleagues/
+ * feed`, terminal redesign) -- replaces the old card grid's `
+ * listColleagueConversations`/`fetchColleagueConversation` pair (and their
+ * "show everything" toggle) entirely: one call, full text, already sorted.
+ * `agent` is always sent, never optional -- the caller is always mounted
+ * under one specific agent's Chat tab, so a viewer only ever sees the
+ * conversations THAT agent participates in, same "server decides, UI just
+ * carries the filter" discipline as everywhere else in this room. A 409
+ * (the switchboard isn't wired on this room) surfaces as an `ApiError`
+ * carrying that status, same as any other route; the caller
+ * (`ColleagueConversations.svelte`) treats that status specifically as
+ * "render nothing" rather than a scary error banner. */
+export async function fetchColleagueFeed(agent: string): Promise<ColleagueFeed> {
+  const res = await fetch(`/api/colleagues/feed?agent=${encodeURIComponent(agent)}`);
+  return parse<ColleagueFeed>(res);
 }
 
 export async function checkAvailability(

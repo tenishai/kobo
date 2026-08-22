@@ -66,14 +66,14 @@ describe("AgentDetail tabs", () => {
     //   - SkillsPanel:  agentSkillsQuery -> listSkills  -> reads `data.skills`
     //   - ToolingPanel: toolingQuery  -> listTooling    -> the body itself is
     //                   `{ files, enforcement }` (ToolingListResponse)
-    //   - ColleagueConversations: colleagueConversationsQuery ->
-    //                   listColleagueConversations -> reads `data.length`
+    //   - ColleagueConversations: colleagueFeedQuery -> fetchColleagueFeed
+    //                   -> reads `data.entries` (terminal redesign)
     // Against the bare `{}` catch-all, each of those becomes `undefined`
     // (or, for tooling, a `{}` with no `.files`) and the panel throws
     // reading `.length`/`.some` before it ever gets to render an empty
     // state — so each gets its own minimal, healthy payload here instead.
     stubFetch({
-      "/api/colleagues/conversations": { conversations: [] },
+      "/api/colleagues/feed": { entries: [], truncated: false },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -113,7 +113,7 @@ describe("AgentDetail tabs", () => {
 
   it("disables the non-Overview tab triggers while provisioning, so a click can't dead-end into a 409", async () => {
     stubFetch({
-      "/api/colleagues/conversations": { conversations: [] },
+      "/api/colleagues/feed": { entries: [], truncated: false },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -150,7 +150,7 @@ describe("AgentDetail tabs", () => {
 
   it("lands on Overview on mount for a non-ready status (destroying)", async () => {
     stubFetch({
-      "/api/colleagues/conversations": { conversations: [] },
+      "/api/colleagues/feed": { entries: [], truncated: false },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -171,7 +171,7 @@ describe("AgentDetail tabs", () => {
 
   it("renders the checklist and first words inside the Overview tabpanel", async () => {
     stubFetch({
-      "/api/colleagues/conversations": { conversations: [] },
+      "/api/colleagues/feed": { entries: [], truncated: false },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -198,7 +198,7 @@ describe("AgentDetail tabs", () => {
 
   it("composition card shows the team chip, purpose chips, and the null-capability copy verbatim", async () => {
     stubFetch({
-      "/api/colleagues/conversations": { conversations: [] },
+      "/api/colleagues/feed": { entries: [], truncated: false },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -231,7 +231,7 @@ describe("AgentDetail tabs", () => {
 
   it("composition card shows the earned capability line verbatim when present", async () => {
     stubFetch({
-      "/api/colleagues/conversations": { conversations: [] },
+      "/api/colleagues/feed": { entries: [], truncated: false },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -262,7 +262,7 @@ describe("AgentDetail tabs", () => {
 
   it("Overview shows 'Made by <email>' when created_by is present (Task A3)", async () => {
     stubFetch({
-      "/api/colleagues/conversations": { conversations: [] },
+      "/api/colleagues/feed": { entries: [], truncated: false },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -283,7 +283,7 @@ describe("AgentDetail tabs", () => {
 
   it("Overview renders no owner line when created_by is null", async () => {
     stubFetch({
-      "/api/colleagues/conversations": { conversations: [] },
+      "/api/colleagues/feed": { entries: [], truncated: false },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -304,7 +304,7 @@ describe("AgentDetail tabs", () => {
 
   it("the Edit details affordance disables while frozen (destroying)", async () => {
     stubFetch({
-      "/api/colleagues/conversations": { conversations: [] },
+      "/api/colleagues/feed": { entries: [], truncated: false },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -333,7 +333,7 @@ describe("AgentDetail tabs", () => {
     // lane is gone entirely, and AgentDetail no longer threads any such
     // prop into SlackPanel.
     stubFetch({
-      "/api/colleagues/conversations": { conversations: [] },
+      "/api/colleagues/feed": { entries: [], truncated: false },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -361,7 +361,7 @@ describe("AgentDetail tabs", () => {
     // isn't shaped like those endpoints' real responses and leaves those
     // panels' queries permanently pending instead of settled.
     stubFetch({
-      "/api/colleagues/conversations": { conversations: [] },
+      "/api/colleagues/feed": { entries: [], truncated: false },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -413,7 +413,7 @@ describe("AgentDetail tabs", () => {
 
   it('shows a "Download the portrait" link, with the per-agent filename, when has_avatar is true', async () => {
     stubFetch({
-      "/api/colleagues/conversations": { conversations: [] },
+      "/api/colleagues/feed": { entries: [], truncated: false },
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
@@ -483,7 +483,7 @@ describe("AgentDetail tabs", () => {
           return putResponse;
         }
         const routes: Record<string, unknown> = {
-          "/api/colleagues/conversations": { conversations: [] },
+          "/api/colleagues/feed": { entries: [], truncated: false },
           "/api/agents/warden/knowledge": { files: [] },
           "/api/agents/warden/intake": { files: [] },
           "/api/agents/warden/skills": { skills: [] },
@@ -567,7 +567,7 @@ describe("AgentDetail Access tab (access-control Task C2)", () => {
           });
         }
         const routes: Record<string, unknown> = {
-          "/api/colleagues/conversations": { conversations: [] },
+          "/api/colleagues/feed": { entries: [], truncated: false },
           "/api/agents/warden/knowledge": { files: [] },
           "/api/agents/warden/intake": { files: [] },
           "/api/agents/warden/skills": { skills: [] },

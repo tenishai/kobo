@@ -1,16 +1,17 @@
 <script lang="ts">
-  // The room's watching window (Task 4/B4): every colleague conversation
-  // the switchboard has recorded, live. Mounted on the Chat tab under the
-  // existing ChatPanel per the operator's ruling (AgentDetail.svelte).
+  // The room's watching window (Task 4/B4), redesigned as a terminal (the
+  // operator's ruling, verbatim): "a command line terminal, which showed
+  // all the conversations the agent was having with the other agents in
+  // order... and the text in full." The old per-conversation card grid
+  // (truncated snippets, an expand-to-see-more detail view, a "show
+  // everything" toggle) is gone -- `colleagueFeedQuery` (lib/queries.ts)
+  // already hands back one flattened, chronological, full-text feed, so
+  // there is nothing left here to expand or toggle.
   //
-  // Conversation scoping (access-tab refinement wave): `agentName` (the
-  // agent whose Chat tab this is) is threaded into BOTH the list fetch and
-  // the SSE stream as `?agent=`, so this is now the room hearing THIS
-  // agent's own colleague conversations, not every agent's -- the server's
-  // own `_conversation_has_participant` filter (kobo_api.main) is the real
-  // enforcement, this prop just carries which agent to ask it about.
+  // Mounted on the Chat tab under the existing ChatPanel per the operator's
+  // original ruling (AgentDetail.svelte) -- unchanged by this redesign.
   //
-  // Renders nothing at all (silent absence) when the list query 409s — that
+  // Renders nothing at all (silent absence) when the feed query 409s — that
   // status means this room has no switchboard wired, which isn't an error
   // state worth a banner, just a feature that isn't on here. Any other
   // failure (a 502 upstream hiccup, etc.) still shows a normal error state
@@ -20,79 +21,50 @@
   // named SSE frames - `hello`, `dispatch_start`, `dispatch_success`,
   // `dispatch_failure`; browsers only dispatch to `onmessage` for frames
   // with NO explicit `event:` field, so each name needs its own listener)
-  // just refetches the list query - no client-side event merging, same
-  // "simple and correct" call the brief makes explicitly. The connection
-  // only opens once the list has loaded successfully at least once (proof
-  // the switchboard is actually wired here), so a room with none never
-  // opens a doomed EventSource that would otherwise retry forever against
-  // a 409.
+  // just refetches the feed query - no client-side event merging, same
+  // "simple and correct" call the original brief made explicitly, and the
+  // only sane one anyway: the switchboard's own SSE payloads never carry
+  // message text (verified against source -- `dispatch_start`'s payload is
+  // routing metadata, `dispatch_success`'s is just a state string), so there
+  // is nothing to synthesize a feed entry FROM other than re-asking the feed
+  // route itself. The connection only opens once the feed has loaded
+  // successfully at least once (proof the switchboard is actually wired
+  // here), so a room with none never opens a doomed EventSource that would
+  // otherwise retry forever against a 409.
   //
-  // Fix round 1 (Important review finding): opening the stream must NOT be
-  // keyed on the query's result object. `streamActive` is a plain local
-  // `$state` flag flipped once, on the first successful load, and never
-  // re-derived after that - so the SSE handler's own invalidateQueries
-  // refetching NEW data can't cause the stream-opening effect to see a
-  // changed dependency and tear the connection down. A second EventSource
-  // would mean a gap where frames get silently dropped, since the
-  // switchboard never replays.
+  // `streamActive` is a plain local `$state` flag flipped once, on the first
+  // successful load, and never re-derived after that - so the SSE handler's
+  // own invalidateQueries refetching NEW data can't cause the stream-opening
+  // effect to see a changed dependency and tear the connection down. A
+  // second EventSource would mean a gap where frames get silently dropped,
+  // since the switchboard never replays.
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import { derived, writable } from "svelte/store";
   import { ApiError, errorMessage } from "../lib/api";
-  import { colleagueConversationQuery, colleagueConversationsQuery } from "../lib/queries";
-  import { relativeTime } from "../lib/time";
-  import EmptyState from "./EmptyState.svelte";
+  import { colleagueFeedQuery } from "../lib/queries";
   import ErrorState from "./ErrorState.svelte";
 
   let { agentName }: { agentName: string } = $props();
 
   const queryClient = useQueryClient();
-
-  const showAll = writable(false);
+  // agentName is read once here rather than tracked reactively: AgentDetail
+  // (the only caller) remounts every panel via `{#key route.name}` whenever
+  // the routed agent changes, same reasoning as every other panel in this
+  // room (ChatPanel/SlackPanel/ToolingPanel/AccessPanel).
   // svelte-ignore state_referenced_locally
-  const conversationsOptions = derived(showAll, ($all) =>
-    colleagueConversationsQuery($all, agentName),
-  );
-  const conversations = createQuery(conversationsOptions);
-
-  const expandedTaskId = writable<string | null>(null);
-  const detailOptions = derived(expandedTaskId, ($id) => colleagueConversationQuery($id));
-  const detail = createQuery(detailOptions);
+  const feed = createQuery(colleagueFeedQuery(agentName));
 
   const switchboardDisabled = $derived(
-    $conversations.isError &&
-      $conversations.error instanceof ApiError &&
-      $conversations.error.status === 409,
+    $feed.isError && $feed.error instanceof ApiError && $feed.error.status === 409,
   );
 
-  function handleToggleAll(event: Event): void {
-    showAll.set((event.currentTarget as HTMLInputElement).checked);
-  }
-
-  function handleExpand(taskId: string): void {
-    expandedTaskId.set($expandedTaskId === taskId ? null : taskId);
-  }
-
-  /** Strips a caller's namespace prefix ("agent:iris" -> "iris",
-   * "operator:kgreiner@example.com" -> "kgreiner@example.com") for display -
-   * the prefix is what the agent-only filter reads, not something a human
-   * needs to see in the row. */
-  function callerLabel(caller: string): string {
-    const idx = caller.indexOf(":");
-    return idx === -1 ? caller : caller.slice(idx + 1);
-  }
+  const entries = $derived($feed.data?.entries ?? []);
 
   const EVENT_NAMES = ["hello", "dispatch_start", "dispatch_success", "dispatch_failure"];
 
-  // Flips true exactly once, on the first successful load, and stays true -
-  // never reset, never re-derived from `$conversations` itself. This is
-  // the ONLY thing the stream-opening effect below depends on, so a later
-  // refetch (of any kind, including the one the stream's own frames
-  // trigger) can never make that effect see a "changed dependency" and
-  // reopen the connection.
   let streamActive = $state(false);
 
   $effect(() => {
-    if (!streamActive && $conversations.data !== undefined) {
+    if (!streamActive && $feed.data !== undefined) {
       streamActive = true;
     }
   });
@@ -105,7 +77,7 @@
       `/api/colleagues/stream?agent=${encodeURIComponent(agentName)}`,
     );
     const handleFrame = () => {
-      queryClient.invalidateQueries({ queryKey: ["colleagues", "conversations", "list"] });
+      queryClient.invalidateQueries({ queryKey: ["colleagues", "feed", agentName] });
     };
     for (const name of EVENT_NAMES) {
       source.addEventListener(name, handleFrame);
@@ -114,101 +86,146 @@
       source.close();
     };
   });
+
+  // Auto-scroll pin (terminal redesign): pinned to the newest entry except
+  // when the operator has scrolled up to read scrollback. `screenEl` is the
+  // scrollable terminal viewport; `pinned` flips false the moment a scroll
+  // leaves it more than a hair off the bottom, and true again either by
+  // scrolling back down by hand or by clicking "Jump to latest" below.
+  let screenEl: HTMLDivElement | undefined = $state();
+  let pinned = $state(true);
+
+  // Slack/Discord-sized slack, in px: "close enough to the bottom" still
+  // counts as pinned, so a sub-pixel rounding difference after a resize
+  // doesn't spuriously unpin someone who never touched the scrollbar.
+  const BOTTOM_SLACK_PX = 24;
+
+  function isNearBottom(el: HTMLDivElement): boolean {
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_SLACK_PX;
+  }
+
+  function handleScroll(): void {
+    if (!screenEl) {
+      return;
+    }
+    pinned = isNearBottom(screenEl);
+  }
+
+  function jumpToLatest(): void {
+    if (!screenEl) {
+      return;
+    }
+    screenEl.scrollTop = screenEl.scrollHeight;
+    pinned = true;
+  }
+
+  $effect(() => {
+    // Re-run whenever the entry COUNT changes (a genuine append), not on
+    // every unrelated re-render -- reading `.length` here (rather than the
+    // array itself) is what keeps this effect from firing needlessly.
+    const _count = entries.length;
+    if (pinned && screenEl) {
+      screenEl.scrollTop = screenEl.scrollHeight;
+    }
+  });
+
+  /** ISO-8601 timestamp -> its own embedded wall-clock time, `HH:MM:SS` --
+   * sliced straight out of the string rather than parsed through `Date` and
+   * a viewer's local timezone, so the same switchboard timestamp reads
+   * identically for everyone (and deterministically in tests) instead of
+   * drifting with whoever's machine is watching. */
+  function formatTime(ts: string): string {
+    const match = ts.match(/T(\d{2}:\d{2}:\d{2})/);
+    return match ? match[1] : ts;
+  }
 </script>
 
 {#if !switchboardDisabled}
-  <section class="colleague-conversations" aria-labelledby="colleague-conversations-heading">
-    <div class="colleague-conversations__header">
-      <h2 id="colleague-conversations-heading" class="colleague-conversations__heading">
+  <section class="colleague-terminal" aria-labelledby="colleague-terminal-heading">
+    <div class="colleague-terminal__header">
+      <h2 id="colleague-terminal-heading" class="colleague-terminal__heading">
         Colleague conversations
       </h2>
-      <label class="colleague-conversations__toggle">
-        <input
-          type="checkbox"
-          checked={$showAll}
-          onchange={handleToggleAll}
-        />
-        Show everything
-      </label>
     </div>
 
-    {#if $conversations.isPending}
-      <p class="colleague-conversations__status">Loading…</p>
-    {:else if $conversations.isError}
+    {#if $feed.isPending}
+      <p class="colleague-terminal__status">Loading…</p>
+    {:else if $feed.isError}
       <ErrorState
-        message={errorMessage(
-          $conversations.error,
-          "Couldn't load colleague conversations.",
-        )}
-        onretry={() => $conversations.refetch()}
-      />
-    {:else if $conversations.data.length === 0}
-      <EmptyState
-        message="No colleague conversations yet. They start talking once an agent asks for help."
+        message={errorMessage($feed.error, "Couldn't load colleague conversations.")}
+        onretry={() => $feed.refetch()}
       />
     {:else}
-      <ul class="colleague-conversations__list">
-        {#each $conversations.data as convo (convo.task_id)}
-          <li class="colleague-conversations__row">
-            <button
-              type="button"
-              class="colleague-conversations__row-toggle"
-              aria-expanded={$expandedTaskId === convo.task_id}
-              onclick={() => handleExpand(convo.task_id)}
-            >
-              <span class="colleague-conversations__caller">{callerLabel(convo.caller_agent)}</span>
-              <span class="colleague-conversations__asks">asks</span>
-              <span class="colleague-conversations__target">{convo.target_agent}</span>
-              <span class="colleague-conversations__state-chip">{convo.state}</span>
-              <span class="colleague-conversations__time">{relativeTime(convo.updated_at)}</span>
-            </button>
-            {#if convo.result_snippet}
-              <p class="colleague-conversations__snippet">{convo.result_snippet}</p>
-            {/if}
-            {#if $expandedTaskId === convo.task_id}
-              <div class="colleague-conversations__detail">
-                {#if $detail.isPending}
-                  <p class="colleague-conversations__status">Loading the exchange…</p>
-                {:else if $detail.isError}
-                  <p class="colleague-conversations__error" role="alert">
-                    {errorMessage($detail.error, "Couldn't load this exchange.")}
-                  </p>
-                {:else if $detail.data}
-                  <p class="colleague-conversations__result">
-                    {$detail.data.conversation.result ?? convo.result_snippet ?? ""}
-                  </p>
-                  {#if $detail.data.events.length > 0}
-                    <ul class="colleague-conversations__events">
-                      {#each $detail.data.events as event (event.id)}
-                        <li class="colleague-conversations__event">
-                          <span class="colleague-conversations__event-type">{event.event_type}</span>
-                          <span class="colleague-conversations__event-time">{relativeTime(event.created_at)}</span>
-                        </li>
-                      {/each}
-                    </ul>
-                  {/if}
-                {/if}
+      <div class="colleague-terminal__wrap">
+        <div
+          class="colleague-terminal__screen"
+          role="log"
+          aria-live="polite"
+          aria-label="Colleague conversation terminal"
+          bind:this={screenEl}
+          onscroll={handleScroll}
+        >
+          {#if entries.length === 0}
+            <p class="colleague-terminal__line colleague-terminal__line--empty">
+              No agent conversations yet.
+            </p>
+          {:else}
+            {#each entries as entry (entry.conversation_id + ":" + entry.role)}
+              <div class="colleague-terminal__entry colleague-terminal__entry--{entry.role}">
+                <div class="colleague-terminal__prompt">
+                  <span class="colleague-terminal__time">{formatTime(entry.ts)}</span>
+                  <span class="colleague-terminal__direction colleague-terminal__direction--{entry.role}"
+                    >{entry.from} -&gt; {entry.to}</span
+                  >
+                </div>
+                <p class="colleague-terminal__text colleague-terminal__text--{entry.role}">
+                  {entry.text}
+                </p>
               </div>
-            {/if}
-          </li>
-        {/each}
-      </ul>
+            {/each}
+          {/if}
+        </div>
+        {#if !pinned}
+          <button type="button" class="colleague-terminal__jump" onclick={jumpToLatest}>
+            Jump to latest
+          </button>
+        {/if}
+      </div>
+      {#if $feed.data?.truncated}
+        <p class="colleague-terminal__truncated">
+          Only the most recent 200 lines are shown.
+        </p>
+      {/if}
     {/if}
   </section>
 {/if}
 
 <style>
-  .colleague-conversations {
+  /* A terminal is dark in both the room's light and dark themes -- these
+     are fixed values (deliberately NOT `var(--bg)`/`var(--panel)`, which
+     flip with the room's own theme), matching this room's OWN dark-theme
+     palette (app.css's `@media (prefers-color-scheme: dark)` block) so the
+     terminal always looks like a natural extension of the room, never an
+     unrelated black box dropped onto a light page. */
+  .colleague-terminal {
+    --term-bg: #1b1917;
+    --term-panel: #242220;
+    --term-border: #38342f;
+    --term-ink: #f2ede7;
+    --term-muted: #9c9188;
+    --term-outgoing: #e08a3e;
+    --term-incoming: #6fbf96;
+
     display: flex;
     flex-direction: column;
-    gap: var(--space-md);
+    gap: var(--space-sm);
     padding: var(--space-lg);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--panel);
   }
 
-  .colleague-conversations__header {
+  .colleague-terminal__header {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -216,7 +233,7 @@
     gap: var(--space-sm);
   }
 
-  .colleague-conversations__heading {
+  .colleague-terminal__heading {
     margin: 0;
     color: var(--muted);
     font-size: 0.8rem;
@@ -225,125 +242,104 @@
     text-transform: uppercase;
   }
 
-  .colleague-conversations__toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    color: var(--muted);
-    font-size: 0.85rem;
-    cursor: pointer;
-  }
-
-  .colleague-conversations__status {
+  .colleague-terminal__status {
     margin: 0;
     color: var(--muted);
     font-size: 0.85rem;
   }
 
-  .colleague-conversations__list {
+  .colleague-terminal__wrap {
+    position: relative;
+  }
+
+  .colleague-terminal__screen {
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
-    margin: 0;
-    padding: 0;
-    list-style: none;
+    max-height: 22rem;
+    padding: var(--space-md);
+    overflow-y: auto;
+    border: 1px solid var(--term-border);
+    border-radius: var(--radius-sm);
+    background: var(--term-bg);
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
   }
 
-  .colleague-conversations__row {
+  .colleague-terminal__line--empty {
+    margin: 0;
+    color: var(--term-muted);
+  }
+
+  .colleague-terminal__entry {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2xs);
-    padding: var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg);
+    gap: 0.15rem;
   }
 
-  .colleague-conversations__row-toggle {
+  .colleague-terminal__prompt {
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
+    align-items: baseline;
     gap: var(--space-xs);
-    padding: 0;
-    border: none;
-    background: none;
-    color: var(--ink);
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
   }
 
-  .colleague-conversations__caller,
-  .colleague-conversations__target {
+  .colleague-terminal__time {
+    color: var(--term-muted);
+  }
+
+  .colleague-terminal__direction {
     font-weight: 600;
   }
 
-  .colleague-conversations__asks {
-    color: var(--muted);
-    font-size: 0.85rem;
+  .colleague-terminal__direction--ask {
+    color: var(--term-outgoing);
   }
 
-  .colleague-conversations__state-chip {
-    padding: var(--space-2xs) var(--space-xs);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    color: var(--muted);
-    font-size: 0.75rem;
-    text-transform: capitalize;
+  .colleague-terminal__direction--reply {
+    color: var(--term-incoming);
   }
 
-  .colleague-conversations__time {
-    margin-left: auto;
-    color: var(--muted);
-    font-size: 0.75rem;
-    white-space: nowrap;
-  }
-
-  .colleague-conversations__snippet {
+  .colleague-terminal__text {
     margin: 0;
-    color: var(--muted);
-    font-size: 0.85rem;
-  }
-
-  .colleague-conversations__detail {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-    padding-top: var(--space-xs);
-    border-top: 1px solid var(--border);
-  }
-
-  .colleague-conversations__result {
-    margin: 0;
-    color: var(--ink);
-    font-size: 0.9rem;
+    color: var(--term-ink);
     white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
-  .colleague-conversations__error {
+  /* Ask text runs full width; a reply is visually indented two monospace
+     characters, echoing a shell's own "the response is what came back"
+     convention. */
+  .colleague-terminal__text--ask {
+    padding-left: 0;
+  }
+
+  .colleague-terminal__text--reply {
+    padding-left: 2ch;
+  }
+
+  .colleague-terminal__jump {
+    position: absolute;
+    bottom: var(--space-md);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: var(--space-2xs) var(--space-sm);
+    border: 1px solid var(--term-border);
+    border-radius: 999px;
+    background: var(--term-panel);
+    color: var(--term-ink);
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+
+  .colleague-terminal__jump:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .colleague-terminal__truncated {
     margin: 0;
-    color: var(--fail);
-    font-size: 0.85rem;
-  }
-
-  .colleague-conversations__events {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .colleague-conversations__event {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
     color: var(--muted);
     font-size: 0.75rem;
-  }
-
-  .colleague-conversations__event-type {
-    font-family: var(--font-mono);
   }
 </style>

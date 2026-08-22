@@ -4,36 +4,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ColleagueConversations from "./ColleagueConversations.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 
-const AGENT_CONVERSATION = {
-  task_id: "t-1",
-  target_agent: "clio",
-  target_generation: 1,
-  caller_agent: "agent:iris",
-  state: "completed",
-  cabal_escalated_from: null,
-  created_at: "2020-01-01T00:00:00Z",
-  updated_at: "2020-01-01T00:05:00Z",
-  result_snippet: "Sure, here's how you configure that.",
+const ASK_ENTRY = {
+  ts: "2026-08-19T10:00:00Z",
+  conversation_id: "t-1",
+  from: "ward",
+  to: "network",
+  role: "ask" as const,
+  text: "What's the config?",
 };
 
-const OPERATOR_CONVERSATION = {
-  task_id: "t-2",
-  target_agent: "clio",
-  target_generation: 1,
-  caller_agent: "operator:kgreiner@example.com",
-  state: "completed",
-  cabal_escalated_from: null,
-  created_at: "2020-01-01T01:00:00Z",
-  updated_at: "2020-01-01T01:00:02Z",
-  result_snippet: "Hello there.",
-};
-
-const CONVERSATION_DETAIL = {
-  conversation: { ...AGENT_CONVERSATION, result: "Sure, here's the full untruncated answer." },
-  events: [
-    { id: 1, event_type: "dispatch_start", payload: {}, created_at: "2020-01-01T00:00:00Z" },
-    { id: 2, event_type: "dispatch_success", payload: {}, created_at: "2020-01-01T00:00:05Z" },
-  ],
+const REPLY_ENTRY = {
+  ts: "2026-08-19T10:00:05Z",
+  conversation_id: "t-1",
+  from: "network",
+  to: "ward",
+  role: "reply" as const,
+  text: "Here's the config.",
 };
 
 /** A minimal EventSource stand-in — jsdom has no real implementation, and
@@ -77,7 +63,29 @@ class FakeEventSource {
   }
 }
 
-describe("ColleagueConversations", () => {
+/** Stubs fetch so the FIRST `/api/colleagues/feed` call answers with
+ * `first`, and every call after that answers with `later` — the shape
+ * every SSE-refetch test below needs (an append becoming visible only
+ * after the stream's own refetch lands). */
+function stubFeedSequence(first: unknown, later: unknown): void {
+  let callCount = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/colleagues/feed")) {
+        callCount += 1;
+        return new Response(JSON.stringify(callCount === 1 ? first : later), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    }),
+  );
+}
+
+describe("ColleagueConversations (terminal)", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
     FakeEventSource.instances = [];
@@ -88,187 +96,97 @@ describe("ColleagueConversations", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders rows from the fixture: caller without its prefix, target, state, snippet", async () => {
-    // The room API itself owns the agent-only/everything split (it's a
-    // server-side filter, Task 4/B4's own design - see main.py); this stub
-    // returns exactly what a default (agent-only) request would come back
-    // with, and the next test proves the toggle actually changes the
-    // request/response pair.
+  it("renders entries in chronological order with direction-colored prefixes and full text", async () => {
     stubFetch({
-      "/api/colleagues/conversations": { conversations: [AGENT_CONVERSATION] },
+      "/api/colleagues/feed": { entries: [ASK_ENTRY, REPLY_ENTRY], truncated: false },
     });
 
-    renderWithClient(ColleagueConversations, { agentName: "warden" });
+    const { container } = renderWithClient(ColleagueConversations, { agentName: "ward" });
 
-    expect(await screen.findByText("iris")).not.toBeNull();
-    expect(screen.getByText("clio")).not.toBeNull();
-    expect(screen.getByText("completed")).not.toBeNull();
-    expect(
-      screen.getByText("Sure, here's how you configure that."),
-    ).not.toBeNull();
+    expect(await screen.findByText("What's the config?")).not.toBeNull();
+    expect(screen.getByText("Here's the config.")).not.toBeNull();
+    expect(screen.getByText("10:00:00")).not.toBeNull();
+    expect(screen.getByText("10:00:05")).not.toBeNull();
+
+    const directions = Array.from(
+      container.querySelectorAll(".colleague-terminal__direction"),
+    ).map((el) => el.textContent);
+    expect(directions).toEqual(["ward -> network", "network -> ward"]);
   });
 
-  it("the list fetch carries ?agent=<the viewed agent> (conversation scoping, access-tab refinement wave)", async () => {
+  it("renders a long message's full text, unclipped", async () => {
+    const longText = `${"the-switchboard-said-quite-a-lot-".repeat(30)}end-of-message`;
     stubFetch({
-      "/api/colleagues/conversations": { conversations: [AGENT_CONVERSATION] },
+      "/api/colleagues/feed": {
+        entries: [{ ...ASK_ENTRY, text: longText }],
+        truncated: false,
+      },
     });
 
     renderWithClient(ColleagueConversations, { agentName: "ward" });
-    await screen.findByText("iris");
+
+    expect(await screen.findByText(longText)).not.toBeNull();
+  });
+
+  it('shows the quiet terminal-style empty line "No agent conversations yet."', async () => {
+    stubFetch({ "/api/colleagues/feed": { entries: [], truncated: false } });
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+
+    expect(await screen.findByText("No agent conversations yet.")).not.toBeNull();
+  });
+
+  it("shows a note when the feed was capped at the scrollback limit", async () => {
+    stubFetch({
+      "/api/colleagues/feed": { entries: [ASK_ENTRY], truncated: true },
+    });
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+
+    expect(await screen.findByText("What's the config?")).not.toBeNull();
+    expect(screen.getByText("Only the most recent 200 lines are shown.")).not.toBeNull();
+  });
+
+  it("the feed fetch carries ?agent=<the viewed agent>", async () => {
+    stubFetch({ "/api/colleagues/feed": { entries: [], truncated: false } });
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("No agent conversations yet.");
 
     expect(
       vi
         .mocked(fetch)
-        .mock.calls.some(([url]) =>
-          String(url).includes("/api/colleagues/conversations") &&
-          String(url).includes("agent=ward"),
+        .mock.calls.some(
+          ([url]) =>
+            String(url).includes("/api/colleagues/feed") && String(url).includes("agent=ward"),
         ),
     ).toBe(true);
   });
 
   it("the SSE stream URL also carries ?agent=<the viewed agent>", async () => {
-    stubFetch({
-      "/api/colleagues/conversations": { conversations: [AGENT_CONVERSATION] },
-    });
+    stubFetch({ "/api/colleagues/feed": { entries: [], truncated: false } });
 
     renderWithClient(ColleagueConversations, { agentName: "ward" });
-    await screen.findByText("iris");
+    await screen.findByText("No agent conversations yet.");
 
     expect(FakeEventSource.instances).toHaveLength(1);
     expect(FakeEventSource.instances[0].url).toBe("/api/colleagues/stream?agent=ward");
   });
 
-  it('"Show everything" toggles the all=true request and reveals every caller', async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.includes("/api/colleagues/conversations")) {
-          const conversations = url.includes("all=true")
-            ? [AGENT_CONVERSATION, OPERATOR_CONVERSATION]
-            : [AGENT_CONVERSATION];
-          return new Response(JSON.stringify({ conversations }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        return new Response(JSON.stringify({}), { status: 200 });
-      }),
+  it("any SSE frame refetches the feed and the new entry appears (no client-side merging)", async () => {
+    stubFeedSequence(
+      { entries: [ASK_ENTRY], truncated: false },
+      { entries: [ASK_ENTRY, REPLY_ENTRY], truncated: false },
     );
 
-    renderWithClient(ColleagueConversations, { agentName: "warden" });
-    await screen.findByText("iris");
-    expect(screen.queryByText("kgreiner@example.com")).toBeNull();
-
-    await fireEvent.click(screen.getByLabelText("Show everything"));
-
-    expect(await screen.findByText("kgreiner@example.com")).not.toBeNull();
-    expect(
-      vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("all=true")),
-    ).toBe(true);
-  });
-
-  it("expanding a row fetches and renders the detail route's exchange", async () => {
-    stubFetch({
-      "/api/colleagues/conversations/t-1": CONVERSATION_DETAIL,
-      "/api/colleagues/conversations": { conversations: [AGENT_CONVERSATION] },
-    });
-
-    renderWithClient(ColleagueConversations, { agentName: "warden" });
-    await screen.findByText("iris");
-
-    expect(
-      vi.mocked(fetch).mock.calls.some(([url]) =>
-        String(url).includes("/api/colleagues/conversations/t-1"),
-      ),
-    ).toBe(false);
-
-    await fireEvent.click(screen.getByRole("button", { name: /iris/ }));
-
-    expect(
-      await screen.findByText("Sure, here's the full untruncated answer."),
-    ).not.toBeNull();
-    expect(screen.getByText("dispatch_start")).not.toBeNull();
-    expect(screen.getByText("dispatch_success")).not.toBeNull();
-  });
-
-  it("any SSE frame refetches the list (no client-side event merging)", async () => {
-    stubFetch({
-      "/api/colleagues/conversations": { conversations: [AGENT_CONVERSATION] },
-    });
-
-    renderWithClient(ColleagueConversations, { agentName: "warden" });
-    await screen.findByText("iris");
-
-    const callsBefore = vi
-      .mocked(fetch)
-      .mock.calls.filter(([url]) => String(url).includes("/api/colleagues/conversations")).length;
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("What's the config?");
+    expect(screen.queryByText("Here's the config.")).toBeNull();
 
     expect(FakeEventSource.instances).toHaveLength(1);
     FakeEventSource.instances[0].emit("dispatch_success");
 
-    await waitFor(() => {
-      const callsAfter = vi
-        .mocked(fetch)
-        .mock.calls.filter(([url]) => String(url).includes("/api/colleagues/conversations"))
-        .length;
-      expect(callsAfter).toBeGreaterThan(callsBefore);
-    });
-  });
-
-  it("a refetch that brings materially new data does not reopen the EventSource", async () => {
-    // Review finding: the effect that opens the stream must not be keyed on
-    // the query's result object. If it is, invalidateQueries's own refetch
-    // (triggered by the SSE handler itself, right below) tears the old
-    // EventSource down and opens a new one - and since the switchboard never
-    // replays, any frame arriving in that gap is lost for good.
-    let conversationsCallCount = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.includes("/api/colleagues/conversations")) {
-          conversationsCallCount += 1;
-          // First load: one row. Every refetch after: a second, genuinely
-          // new row - not the same object, not the same JSON text.
-          const conversations =
-            conversationsCallCount === 1
-              ? [AGENT_CONVERSATION]
-              : [AGENT_CONVERSATION, OPERATOR_CONVERSATION];
-          return new Response(JSON.stringify({ conversations }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        return new Response(JSON.stringify({}), { status: 200 });
-      }),
-    );
-
-    renderWithClient(ColleagueConversations, { agentName: "warden" });
-    await screen.findByText("iris");
-    expect(FakeEventSource.instances).toHaveLength(1);
-    const firstSource = FakeEventSource.instances[0];
-
-    firstSource.emit("dispatch_success");
-
-    await waitFor(() => {
-      expect(screen.queryByText("kgreiner@example.com")).not.toBeNull();
-    });
-
-    expect(FakeEventSource.instances).toHaveLength(1);
-    expect(firstSource.closed).toBe(false);
-  });
-
-  it('shows the empty state "No colleague conversations yet. They start talking once an agent asks for help."', async () => {
-    stubFetch({ "/api/colleagues/conversations": { conversations: [] } });
-
-    renderWithClient(ColleagueConversations, { agentName: "warden" });
-
-    expect(
-      await screen.findByText(
-        "No colleague conversations yet. They start talking once an agent asks for help.",
-      ),
-    ).not.toBeNull();
+    expect(await screen.findByText("Here's the config.")).not.toBeNull();
   });
 
   it("renders nothing (silent absence) when the room has no switchboard wired (409)", async () => {
@@ -291,6 +209,87 @@ describe("ColleagueConversations", () => {
     await waitFor(() => {
       expect(container.textContent?.trim()).toBe("");
     });
-    expect(screen.queryByLabelText("Show everything")).toBeNull();
+  });
+
+  // --- Auto-scroll pin/unpin (jsdom-level: jsdom computes no real layout,
+  // so scrollHeight/clientHeight/scrollTop are overridden by hand on the
+  // scroll container, the standard way to exercise scroll logic under it) --
+
+  it("scrolling away from the bottom unpins and shows Jump to latest; clicking it re-pins and jumps to the bottom", async () => {
+    stubFetch({
+      "/api/colleagues/feed": { entries: [ASK_ENTRY, REPLY_ENTRY], truncated: false },
+    });
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("What's the config?");
+
+    const logEl = screen.getByRole("log") as HTMLDivElement;
+    expect(screen.queryByText("Jump to latest")).toBeNull();
+
+    Object.defineProperty(logEl, "scrollHeight", { value: 1000, configurable: true });
+    Object.defineProperty(logEl, "clientHeight", { value: 500, configurable: true });
+    Object.defineProperty(logEl, "scrollTop", {
+      value: 100,
+      configurable: true,
+      writable: true,
+    });
+
+    await fireEvent.scroll(logEl);
+
+    expect(await screen.findByText("Jump to latest")).not.toBeNull();
+
+    await fireEvent.click(screen.getByText("Jump to latest"));
+
+    expect(logEl.scrollTop).toBe(1000);
+    expect(screen.queryByText("Jump to latest")).toBeNull();
+  });
+
+  it("staying within a hair of the bottom counts as pinned (no Jump to latest)", async () => {
+    stubFetch({
+      "/api/colleagues/feed": { entries: [ASK_ENTRY, REPLY_ENTRY], truncated: false },
+    });
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("What's the config?");
+
+    const logEl = screen.getByRole("log") as HTMLDivElement;
+    Object.defineProperty(logEl, "scrollHeight", { value: 1000, configurable: true });
+    Object.defineProperty(logEl, "clientHeight", { value: 500, configurable: true });
+    Object.defineProperty(logEl, "scrollTop", {
+      value: 495, // 1000 - 495 - 500 = 5px off the bottom, inside the slack
+      configurable: true,
+      writable: true,
+    });
+
+    await fireEvent.scroll(logEl);
+
+    expect(screen.queryByText("Jump to latest")).toBeNull();
+  });
+
+  it("auto-scrolls to the newest entry while pinned when a new entry arrives", async () => {
+    stubFeedSequence(
+      { entries: [ASK_ENTRY], truncated: false },
+      { entries: [ASK_ENTRY, REPLY_ENTRY], truncated: false },
+    );
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("What's the config?");
+
+    const logEl = screen.getByRole("log") as HTMLDivElement;
+    Object.defineProperty(logEl, "scrollHeight", { value: 800, configurable: true });
+    Object.defineProperty(logEl, "clientHeight", { value: 500, configurable: true });
+    Object.defineProperty(logEl, "scrollTop", {
+      value: 0,
+      configurable: true,
+      writable: true,
+    });
+
+    expect(FakeEventSource.instances).toHaveLength(1);
+    FakeEventSource.instances[0].emit("dispatch_success");
+
+    await screen.findByText("Here's the config.");
+    await waitFor(() => {
+      expect(logEl.scrollTop).toBe(800);
+    });
   });
 });

@@ -9,7 +9,7 @@ import {
   deleteKnowledgeFile,
   draftPersona,
   errorMessage,
-  fetchColleagueConversation,
+  fetchColleagueFeed,
   fetchDeliveryState,
   fetchGroupRequests,
   fetchGroups,
@@ -21,7 +21,6 @@ import {
   fetchWhoami,
   generateAvatar,
   listAgents,
-  listColleagueConversations,
   listKnowledge,
   patchAgentMetadata,
   regenerateAgentMetadata,
@@ -1284,7 +1283,7 @@ describe("decideGroupRequest (shared-group + group-requests wave, admin only)", 
   });
 });
 
-describe("listColleagueConversations", () => {
+describe("fetchColleagueFeed", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
   });
@@ -1293,32 +1292,40 @@ describe("listColleagueConversations", () => {
     vi.unstubAllGlobals();
   });
 
-  it("GETs /api/colleagues/conversations?agent=<agent> (no all param) when all is false", async () => {
-    const conversations = [
-      {
-        task_id: "t-1",
-        target_agent: "clio",
-        target_generation: 1,
-        caller_agent: "agent:iris",
-        state: "completed",
-        cabal_escalated_from: null,
-        created_at: "2026-08-19T10:00:00Z",
-        updated_at: "2026-08-19T10:00:05Z",
-        result_snippet: "Sure, here's how.",
-      },
-    ];
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ conversations }));
+  it("GETs /api/colleagues/feed?agent=<agent> and returns the body verbatim", async () => {
+    const feed = {
+      entries: [
+        {
+          ts: "2026-08-19T10:00:00Z",
+          conversation_id: "t-1",
+          from: "ward",
+          to: "network",
+          role: "ask",
+          text: "What's the config?",
+        },
+        {
+          ts: "2026-08-19T10:00:05Z",
+          conversation_id: "t-1",
+          from: "network",
+          to: "ward",
+          role: "reply",
+          text: "Here's the config.",
+        },
+      ],
+      truncated: false,
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(feed));
 
-    await expect(listColleagueConversations(false, "ward")).resolves.toEqual(conversations);
-    expect(fetch).toHaveBeenCalledWith("/api/colleagues/conversations?agent=ward");
+    await expect(fetchColleagueFeed("ward")).resolves.toEqual(feed);
+    expect(fetch).toHaveBeenCalledWith("/api/colleagues/feed?agent=ward");
   });
 
-  it("GETs /api/colleagues/conversations?all=true&agent=<agent> when all is true", async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ conversations: [] }));
+  it("encodes the agent name in the URL", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ entries: [], truncated: false }));
 
-    await listColleagueConversations(true, "ward");
+    await fetchColleagueFeed("agent/with-slash");
 
-    expect(fetch).toHaveBeenCalledWith("/api/colleagues/conversations?all=true&agent=ward");
+    expect(fetch).toHaveBeenCalledWith("/api/colleagues/feed?agent=agent%2Fwith-slash");
   });
 
   it("a 409 (switchboard not configured) rejects with an ApiError carrying that status", async () => {
@@ -1326,42 +1333,19 @@ describe("listColleagueConversations", () => {
       jsonResponse({ error: "the switchboard is not configured" }, { status: 409 }),
     );
 
-    await expect(listColleagueConversations(false, "ward")).rejects.toMatchObject({
+    await expect(fetchColleagueFeed("ward")).rejects.toMatchObject({
       status: 409,
     });
   });
-});
 
-describe("fetchColleagueConversation", () => {
-  beforeEach(() => {
-    vi.stubGlobal("fetch", vi.fn());
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("GETs /api/colleagues/conversations/{task_id} and returns the body verbatim", async () => {
-    const detail = {
-      conversation: { task_id: "t-1", result: "The full answer." },
-      events: [
-        { id: 1, event_type: "dispatch_start", payload: {}, created_at: "x" },
-      ],
-    };
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(detail));
-
-    await expect(fetchColleagueConversation("t-1")).resolves.toEqual(detail);
-    expect(fetch).toHaveBeenCalledWith("/api/colleagues/conversations/t-1");
-  });
-
-  it("encodes the task id in the URL", async () => {
+  it("a 404 (the caller cannot see this agent) rejects with an ApiError carrying that status", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
-      jsonResponse({ conversation: {}, events: [] }),
+      jsonResponse({ error: "no such agent: 'ward'" }, { status: 404 }),
     );
 
-    await fetchColleagueConversation("t/1");
-
-    expect(fetch).toHaveBeenCalledWith("/api/colleagues/conversations/t%2F1");
+    await expect(fetchColleagueFeed("ward")).rejects.toMatchObject({
+      status: 404,
+    });
   });
 });
 
