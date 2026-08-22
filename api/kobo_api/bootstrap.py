@@ -167,7 +167,7 @@ def _org_yaml_context(config: Config) -> dict[str, object]:
         "operators": config.operators,
         "cabal_url": config.cabal_url,
         "agent_endpoint_template": config.agent_endpoint_template,
-        "groups": [{"name": g.name, "okta_group": g.okta_group} for g in config.groups],
+        "groups": [{"name": g.name, "okta_groups": list(g.okta_groups)} for g in config.groups],
         "okta_domain": config.okta_domain,
     }
 

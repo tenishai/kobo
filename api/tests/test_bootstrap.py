@@ -20,7 +20,7 @@ from kobo_api.bootstrap import (
     run_bootstrap,
 )
 from kobo_api.clients import Clients
-from kobo_api.config import Config
+from kobo_api.config import Config, GroupChoice
 from kobo_api.org import ORG_KEYS
 from tests.fakes import FakeGitHub, FakeStorage
 
@@ -105,6 +105,50 @@ def test_render_org_yaml_golden_with_computed_defaults():
         "groups": [],
         "okta_domain": "",
     }
+
+
+def test_render_org_yaml_multi_okta_groups_round_trips_through_group_choice():
+    """A group defined with the general `okta_groups` list form (the
+    multi-okta-groups amendment -- the directory splits one human team
+    across several regional groups) must render back out in that same
+    canonical list shape, never the single-group `okta_group` sugar --
+    rendering `okta_group` instead would silently drop every group name
+    past the first and, worse, round-trip into an INVALID GroupChoice
+    (empty okta_group, no okta_groups key at all) that `load_org_config`'s
+    broad except would swallow, unwiring the group entirely."""
+    config = Config(
+        github_org=GITHUB_ORG,
+        groups=[
+            GroupChoice(
+                name="infra-engineering",
+                okta_groups=[
+                    "engineering_operations_infra-engineering_usa",
+                    "engineering_operations_infra-engineering_india",
+                    "engineering_operations_infra-engineering_france",
+                ],
+            )
+        ],
+    )
+
+    rendered = render_org_yaml(config)
+    _assert_no_leftover_placeholders(rendered)
+
+    parsed = yaml.safe_load(rendered)
+    assert parsed["groups"] == [
+        {
+            "name": "infra-engineering",
+            "okta_groups": [
+                "engineering_operations_infra-engineering_usa",
+                "engineering_operations_infra-engineering_india",
+                "engineering_operations_infra-engineering_france",
+            ],
+        }
+    ]
+
+    # The whole point: the rendered shape must actually re-validate as a
+    # GroupChoice, with every okta group intact -- not just parse as YAML.
+    round_tripped = Config(github_org=GITHUB_ORG, groups=parsed["groups"])
+    assert round_tripped.groups == config.groups
 
 
 def test_render_org_yaml_uses_explicit_names_verbatim_when_set():

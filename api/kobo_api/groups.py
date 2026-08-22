@@ -213,22 +213,28 @@ class OktaGroupResolver:
             log.warning("group lookup reply wasn't a list (got %s)", type(groups).__name__)
             return None
 
-        okta_names = set()
+        # A list, not a set: response order matters below (`dict.fromkeys`
+        # dedups a literal repeat while preserving first-sight order --
+        # a set would instead reorder by Python's hash seed, which is not
+        # the response order at all).
+        okta_names_seen: list[str] = []
         for group in groups:
             if not isinstance(group, dict):
                 continue
             profile = group.get("profile")
             name = profile.get("name") if isinstance(profile, dict) else None
             if isinstance(name, str):
-                okta_names.add(name)
+                okta_names_seen.append(name)
+        okta_names = dict.fromkeys(okta_names_seen)
 
         # `self._universe` is Okta name -> CONFIG name (inverted at
         # construction, see `_invert_universe`). A member of several
         # regional Okta groups that all back the same CONFIG name (the
         # directory-splits-one-team-by-region case `GroupChoice.okta_groups`
         # exists for) must yield that CONFIG name exactly once -- the `not
-        # in config_names` guard is the dedup, order-of-first-sight rather
-        # than sorted, since no caller depends on a particular order.
+        # in config_names` guard is the dedup, order-of-first-sight over the
+        # RESPONSE's own order (not sorted, not hash-seed order), since
+        # `okta_names` above is built and deduped in that same order.
         config_names: list[str] = []
         for okta_name in okta_names:
             config_name = self._universe.get(okta_name)

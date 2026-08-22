@@ -159,6 +159,26 @@ def test_groups_for_tolerates_group_objects_missing_a_profile_or_name():
     assert result == ["SRE"]
 
 
+def test_groups_for_returns_stable_response_order_across_two_calls():
+    """The dedup in `_fetch` must yield the RESPONSE's own order (first
+    sight in the JSON list), not a `set`'s hash-seed order -- two different
+    emails (separate cache entries, so both actually re-fetch) against the
+    exact same response, which lists the QA okta group before the SRE one,
+    must both come back QA-then-SRE, not just agree with each other by
+    coincidence of a stable hash seed within one process."""
+    response = httpx.Response(
+        200,
+        json=[_okta_group("okta-qa-group"), _okta_group("okta-sre-group")],
+    )
+    resolver = OktaGroupResolver(DOMAIN, TOKEN, UNIVERSE, client=_client(lambda r: response))
+
+    first = resolver.groups_for("alice@example.com")
+    second = resolver.groups_for("bob@example.com")
+
+    assert first == ["QA", "SRE"]
+    assert second == ["QA", "SRE"]
+
+
 # --- Multi-okta groups: one config name -> several regional okta groups ------
 # The directory splits one human team's membership across several regional
 # groups rather than one group per team -- a room group's universe entry is
