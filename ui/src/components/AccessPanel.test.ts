@@ -438,10 +438,13 @@ describe("AccessPanel", () => {
     ).toBe(true);
   });
 
-  it("shows the revocation-lag note next to an active pair's Revoke button", async () => {
+  it("shows the revocation-lag hint inside the same row as its Revoke button, not as a standing caption", async () => {
     // Cabal's D-017: a revoked pass rides ~5 more minutes on any token
     // already minted for it -- the room owes the caller that same honesty
-    // right where they'd click Revoke.
+    // right where they'd click Revoke. It must read as being about
+    // REVOKING specifically -- an earlier wording sat as a standing
+    // caption above the whole Active Pairs list and got misread as
+    // "connection pending" for a brand-new (already-live) pair.
     stubFetch({
       "/api/agents/warden/grants": EMPTY_GRANTS,
       "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
@@ -464,12 +467,14 @@ describe("AccessPanel", () => {
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
 
-    expect(
-      await screen.findByText("Takes effect within a few minutes."),
-    ).not.toBeNull();
+    const revokeButton = await screen.findByRole("button", { name: /revoke/i });
+    const hint = await screen.findByText("Revoking takes effect within a few minutes.");
+    expect(hint).not.toBeNull();
+    // Scoped to the Revoke row itself, not floating above the whole section.
+    expect(revokeButton.closest(".access-panel__row")?.contains(hint)).toBe(true);
   });
 
-  it("does not show the revocation-lag note when there are no active pairs", async () => {
+  it("does not show the revocation-lag hint when there are no active pairs", async () => {
     stubFetch({
       "/api/agents/warden/grants": EMPTY_GRANTS,
       "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
@@ -478,7 +483,35 @@ describe("AccessPanel", () => {
     renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
 
     await screen.findByText(/no cross-group pairs/i);
-    expect(screen.queryByText("Takes effect within a few minutes.")).toBeNull();
+    expect(
+      screen.queryByText("Revoking takes effect within a few minutes."),
+    ).toBeNull();
+    expect(
+      screen.queryByText("Pairs are live as soon as they appear here."),
+    ).toBeNull();
+  });
+
+  it("shows a live-pairs caption for the whole section whenever any pair is listed, even auto pairs alone", async () => {
+    // Accepts are live as soon as the pair appears -- this is the pairs
+    // section's own caption now, distinct from (and never confusable with)
+    // the revoke-specific hint above.
+    stubFetch({
+      "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
+      "/api/agents/warden/invites": {
+        incoming: [],
+        outgoing: [],
+        team_pairs: [{ name: "network", group: "growth" }],
+      },
+    });
+    renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
+
+    expect(
+      await screen.findByText("Pairs are live as soon as they appear here."),
+    ).not.toBeNull();
+    expect(
+      screen.queryByText("Revoking takes effect within a few minutes."),
+    ).toBeNull();
   });
 
   it("shows empty-state copy when there are no invites, pairs, or requestable agents", async () => {

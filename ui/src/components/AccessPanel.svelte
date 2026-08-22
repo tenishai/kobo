@@ -416,9 +416,7 @@
         {#if teamPairs.length === 0 && acceptedPairs.length === 0}
           <EmptyState message="No cross-group pairs yet." />
         {:else}
-          {#if acceptedPairs.length > 0}
-            <p class="access-panel__fact">Takes effect within a few minutes.</p>
-          {/if}
+          <p class="access-panel__fact">Pairs are live as soon as they appear here.</p>
           <ul class="access-panel__list">
             {#each teamPairs as pair (pair.name)}
               <li class="access-panel__row">
@@ -431,15 +429,20 @@
                 <span class="access-panel__row-name">
                   {invite.from_agent} and {invite.to_agent.name}
                 </span>
-                <button
-                  type="button"
-                  class="access-panel__revoke"
-                  disabled={frozen || $revokeMutation.isPending}
-                  aria-label={`Revoke ${invite.from_agent} and ${invite.to_agent.name}`}
-                  onclick={() => handleRevoke(invite.id)}
-                >
-                  Revoke
-                </button>
+                <div class="access-panel__revoke-group">
+                  <button
+                    type="button"
+                    class="access-panel__revoke"
+                    disabled={frozen || $revokeMutation.isPending}
+                    aria-label={`Revoke ${invite.from_agent} and ${invite.to_agent.name}`}
+                    onclick={() => handleRevoke(invite.id)}
+                  >
+                    Revoke
+                  </button>
+                  <span class="access-panel__revoke-hint">
+                    Revoking takes effect within a few minutes.
+                  </span>
+                </div>
               </li>
             {/each}
           </ul>
@@ -710,6 +713,13 @@
     filter: brightness(1.05);
   }
 
+  .access-panel__revoke-group {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: var(--space-2xs);
+  }
+
   .access-panel__revoke {
     padding: var(--space-2xs) var(--space-sm);
     border: 1px solid var(--border);
@@ -722,6 +732,13 @@
 
   .access-panel__revoke:hover:not(:disabled) {
     filter: brightness(1.05);
+  }
+
+  .access-panel__revoke-hint {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.75rem;
+    text-align: right;
   }
 
   .access-panel__row-remove:disabled,
