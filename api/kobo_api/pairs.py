@@ -92,10 +92,14 @@ def allowed_pairs(session: Session, config: Config) -> set[tuple[str, str]]:
     return pairs
 
 
-def sync_dispatch_pairs(cabal: CabalClient, session: Session, config: Config) -> None:
+def sync_dispatch_pairs(cabal: CabalClient, session: Session, config: Config) -> int:
     """Compute `allowed_pairs(session, config)` fresh and push it to the
     switchboard via `cabal.put_dispatch_pairs` (Task C4: the room becomes
     the switchboard's policy source, syncing on every consent change).
+    Returns the pushed pair count (`put_dispatch_pairs`'s own return value)
+    verbatim -- final-review fix round, HIGH-2: the operator resync route
+    and the boot-time sync both want to report a count, and this is the one
+    place that already has it.
 
     Raises whatever `put_dispatch_pairs` raises (`CabalError` on a non-2xx
     response) or a raw `httpx` transport error -- this function never
@@ -104,24 +108,32 @@ def sync_dispatch_pairs(cabal: CabalClient, session: Session, config: Config) ->
     problem. Every real trigger in this room (`kobo_api.main`'s invite
     accept/revoke, `kobo_api.destroy`'s forget step, `kobo_api.provisioner`'s
     READY flip) calls this only through `sync_dispatch_pairs_best_effort`
-    below, never directly -- but this raising core stays a free-standing,
+    below, never directly -- the operator resync route (`kobo_api.main`,
+    HIGH-2b) is the one caller that DOES call this raising core directly,
+    on purpose: an operator who explicitly asked for a resync needs to
+    learn it failed, not have that swallowed the way an incidental trigger's
+    own failure must be. This raising core stays a free-standing,
     independently testable function rather than folding the fail-soft
     wrapping into it, the same split `sync_directory`/`_sync_directory_
     best_effort` already established.
     """
-    cabal.put_dispatch_pairs(allowed_pairs(session, config))
+    return cabal.put_dispatch_pairs(allowed_pairs(session, config))
 
 
-def sync_dispatch_pairs_best_effort(clients: Clients, config: Config, session: Session) -> None:
+def sync_dispatch_pairs_best_effort(
+    clients: Clients, config: Config, session: Session
+) -> int | None:
     """Fail-soft wrapper around `sync_dispatch_pairs` -- the ONE seam every
     pair-mutating trigger in this room shares: an invite's accept or an
     accepted invite's revoke (`kobo_api.main`), an agent's destroy-forget
-    step completing (`kobo_api.destroy`), and an agent's READY flip at the
-    end of provisioning (`kobo_api.provisioner`). New READY agents join
-    their group's implicit pairs through the same `allowed_pairs` query
-    every other trigger recomputes from scratch; a group change has no
-    trigger of its own because `group_name` is immutable once an agent is
-    created (nothing in this room currently changes it after create).
+    step completing (`kobo_api.destroy`), an agent's READY flip at the end
+    of provisioning (`kobo_api.provisioner`), and now the boot-time sync
+    (`kobo_api.main`'s `_boot_sync_dispatch_pairs`, final-review fix round,
+    HIGH-2a). New READY agents join their group's implicit pairs through
+    the same `allowed_pairs` query every other trigger recomputes from
+    scratch; a group change has no trigger of its own because `group_name`
+    is immutable once an agent is created (nothing in this room currently
+    changes it after create).
 
     Lives here, next to `allowed_pairs`/`sync_dispatch_pairs` themselves,
     rather than in `kobo_api.main` alongside its structurally identical
@@ -136,20 +148,33 @@ def sync_dispatch_pairs_best_effort(clients: Clients, config: Config, session: S
     clients`/`app.state.config` the way every other route-level cabal call
     already does.
 
-    A no-op when the switchboard isn't wired: `cabal_enabled(config)` false,
-    or `clients.cabal` is `None` (both gates checked, same two-part test
-    `kobo_api.main._colleagues_gate` already uses -- either alone isn't
-    enough to safely dereference `clients.cabal`). When wired, any
-    `CabalError` (a non-2xx response) or raw `httpx.HTTPError` (a transport
-    failure -- connection refused, timeout, DNS) is logged and swallowed
-    here, never raised: by the time any of the four triggers above calls
-    this, the state change that triggered it has already committed, and a
-    switchboard hiccup must not turn an otherwise-successful accept/revoke/
-    destroy/ready-flip into a failure this late.
+    A no-op (returns `None`) when the switchboard isn't wired: `cabal_
+    enabled(config)` false, or `clients.cabal` is `None` (both gates
+    checked, same two-part test `kobo_api.main._colleagues_gate` already
+    uses -- either alone isn't enough to safely dereference `clients.
+    cabal`). When wired, any `CabalError` (a non-2xx response) or raw
+    `httpx.HTTPError` (a transport failure -- connection refused, timeout,
+    DNS) is logged and swallowed here, never raised (also returning `None`):
+    by the time any of the triggers above calls this, the state change that
+    triggered it has already committed, and a switchboard hiccup must not
+    turn an otherwise-successful accept/revoke/destroy/ready-flip/boot into
+    a failure this late. `CabalClient.put_dispatch_pairs`'s own `dispatch_
+    pairs_dirty` flag is what actually marks a failure here for later
+    reconciliation (HIGH-2b) -- this function never reads or clears it
+    itself, since (per that flag's own docstring) every call here already
+    pushes the full current `allowed_pairs` unconditionally, which is
+    itself what heals a prior failure the next time any trigger fires.
+
+    On success, returns the pushed pair count (`sync_dispatch_pairs`'s own
+    return value) -- every one of the four original fire-and-forget
+    triggers still ignores it, exactly as before; the boot-time sync and
+    (indirectly, via the raising core instead) the operator resync route
+    are the two callers that use it.
     """
     if not cabal_enabled(config) or clients.cabal is None:
-        return
+        return None
     try:
-        sync_dispatch_pairs(clients.cabal, session, config)
+        return sync_dispatch_pairs(clients.cabal, session, config)
     except (CabalError, httpx.HTTPError):
         log.warning("dispatch-pairs sync to the switchboard failed", exc_info=True)
+        return None

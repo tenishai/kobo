@@ -18,6 +18,7 @@ from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import CabalError, Clients
 from kobo_api.config import Config
+from kobo_api.main import _boot_sync_dispatch_pairs
 from kobo_api.models import A2AInvite, Agent, AgentStatus, Base
 from kobo_api.pairs import (
     allowed_pairs,
@@ -255,6 +256,20 @@ def test_sync_dispatch_pairs_pushes_the_computed_set(session, config):
     ]
 
 
+def test_sync_dispatch_pairs_returns_the_pushed_count(session, config):
+    # Final-review fix round, HIGH-2: the operator resync route reports
+    # this count straight back to the caller, and the boot-time sync logs
+    # it -- `sync_dispatch_pairs` must hand back whatever `put_dispatch_
+    # pairs` itself returned, not just fire-and-forget.
+    _agent(session, "a", group_name="growth")
+    _agent(session, "b", group_name="growth")
+    fake_cabal = FakeCabal()
+
+    count = sync_dispatch_pairs(fake_cabal, session, config)
+
+    assert count == 2
+
+
 def test_sync_dispatch_pairs_pushes_empty_set_when_nothing_is_allowed(session, config):
     fake_cabal = FakeCabal()
 
@@ -359,5 +374,124 @@ def test_best_effort_swallows_a_raw_httpx_transport_error(session, config, monke
 
     with caplog.at_level(logging.WARNING):
         sync_dispatch_pairs_best_effort(clients, cfg, session)  # must not raise
+
+    assert any(rec.levelname == "WARNING" for rec in caplog.records)
+
+
+# --- sync_dispatch_pairs_best_effort's return value (final-review fix
+# round, HIGH-2): the pushed count on success, None when skipped or failed
+# -- the boot-time sync (kobo_api.main._boot_sync_dispatch_pairs) is the
+# one caller that reads this; every pre-existing trigger still ignores it.
+
+
+def test_best_effort_returns_none_when_switchboard_not_configured(session, config):
+    fake_cabal = FakeCabal()
+    clients = _clients_with_cabal(fake_cabal)
+
+    assert sync_dispatch_pairs_best_effort(clients, config, session) is None
+
+
+def test_best_effort_returns_the_pushed_count_on_success(session, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    _agent(session, "a", group_name="growth")
+    _agent(session, "b", group_name="growth")
+    fake_cabal = FakeCabal()
+    clients = _clients_with_cabal(fake_cabal)
+
+    assert sync_dispatch_pairs_best_effort(clients, cfg, session) == 2
+
+
+def test_best_effort_returns_none_on_a_swallowed_failure(session, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    fake_cabal = FakeCabal(put_dispatch_pairs_error="switchboard unreachable")
+    clients = _clients_with_cabal(fake_cabal)
+
+    assert sync_dispatch_pairs_best_effort(clients, cfg, session) is None
+
+
+def test_best_effort_retries_on_the_next_call_after_a_failure_even_with_unchanged_pairs(
+    session, config, monkeypatch
+):
+    # The reconciling-retry guarantee (HIGH-2b): a failed sync must not
+    # wedge this seam shut -- the NEXT call (an organic trigger, or the
+    # boot-time sync) tries again and succeeds, even though nothing about
+    # the underlying pairs changed between the two calls.
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    _agent(session, "a", group_name="growth")
+    _agent(session, "b", group_name="growth")
+    fake_cabal = FakeCabal(put_dispatch_pairs_error="switchboard unreachable")
+    clients = _clients_with_cabal(fake_cabal)
+
+    first = sync_dispatch_pairs_best_effort(clients, cfg, session)
+    assert first is None
+    assert len(fake_cabal.put_dispatch_pairs_calls) == 1
+
+    fake_cabal._put_dispatch_pairs_error = None  # the switchboard recovers
+    second = sync_dispatch_pairs_best_effort(clients, cfg, session)
+
+    assert second == 2
+    assert len(fake_cabal.put_dispatch_pairs_calls) == 2
+    assert fake_cabal.put_dispatch_pairs_calls[0] == fake_cabal.put_dispatch_pairs_calls[1]
+
+
+# --- Boot-time sync (kobo_api.main._boot_sync_dispatch_pairs, final-review
+# fix round, HIGH-2a): pushes once at process boot, right beside the
+# boot-time org-config clone, so enforcement doesn't wait on an organic
+# trigger that might never come. -------------------------------------------
+
+
+def test_boot_sync_skips_when_switchboard_not_wired(session_factory, config):
+    fake_cabal = FakeCabal()
+    clients = _clients_with_cabal(fake_cabal)
+
+    _boot_sync_dispatch_pairs(clients, config, session_factory)
+
+    assert fake_cabal.put_dispatch_pairs_calls == []
+
+
+def test_boot_sync_pushes_the_current_pairs_when_wired(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    session = session_factory()
+    _agent(session, "a", group_name="growth")
+    _agent(session, "b", group_name="growth")
+    session.close()
+    fake_cabal = FakeCabal()
+    clients = _clients_with_cabal(fake_cabal)
+
+    _boot_sync_dispatch_pairs(clients, cfg, session_factory)
+
+    assert fake_cabal.put_dispatch_pairs_calls == [
+        sorted({("agent:a", "b"), ("agent:b", "a")})
+    ]
+
+
+def test_boot_sync_logs_the_pushed_count(session_factory, config, monkeypatch, caplog):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    session = session_factory()
+    _agent(session, "a", group_name="growth")
+    _agent(session, "b", group_name="growth")
+    session.close()
+    fake_cabal = FakeCabal()
+    clients = _clients_with_cabal(fake_cabal)
+
+    with caplog.at_level(logging.INFO):
+        _boot_sync_dispatch_pairs(clients, cfg, session_factory)
+
+    assert any("2" in rec.message for rec in caplog.records)
+
+
+def test_boot_sync_never_raises_when_the_push_fails(session_factory, config, monkeypatch, caplog):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    fake_cabal = FakeCabal(put_dispatch_pairs_error="switchboard unreachable")
+    clients = _clients_with_cabal(fake_cabal)
+
+    with caplog.at_level(logging.WARNING):
+        _boot_sync_dispatch_pairs(clients, cfg, session_factory)  # must not raise
 
     assert any(rec.levelname == "WARNING" for rec in caplog.records)

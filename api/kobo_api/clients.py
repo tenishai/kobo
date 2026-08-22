@@ -2584,6 +2584,37 @@ class CabalClient:
         # first-ever push, even an empty one, is "nothing to allow yet," not
         # a shrink from anything.
         self._last_dispatch_pairs_nonempty = False
+        # The lost-sync reconciliation flag (final-review fix round,
+        # HIGH-2b): True whenever this instance's LAST attempted push
+        # failed (either a non-2xx `CabalError` below or a raw transport
+        # `httpx.HTTPError` propagating straight out of the request call),
+        # False once a push has actually succeeded. Lives right beside
+        # `_last_dispatch_pairs_nonempty` above for the same reason -- both
+        # are in-process-only memory of this client's own push history,
+        # shared by every caller through the one `Clients.cabal` instance
+        # per process, "in-process memory is fine" per the same Task C4
+        # design this mirrors.
+        #
+        # Nothing in this class READS the flag to decide whether to push --
+        # `put_dispatch_pairs` always pushes whatever it's handed, same as
+        # today. What actually reconciles a lost sync is that every one of
+        # kobo's four consent-change triggers (`kobo_api.pairs.sync_
+        # dispatch_pairs_best_effort`) recomputes and pushes the FULL,
+        # current `allowed_pairs` set unconditionally on every call -- so
+        # the very next trigger to fire, even one whose OWN pairs delta is
+        # a no-op, still re-sends the room's complete current policy and
+        # heals whatever a previous failed push left stale. This flag exists
+        # to make that "did the last push actually land" fact observable
+        # (logging, `dispatch_pairs_dirty` below) for the boot-time sync and
+        # the operator resync route, not to gate anything itself.
+        self._dispatch_pairs_dirty = False
+
+    @property
+    def dispatch_pairs_dirty(self) -> bool:
+        """True iff this instance's most recent `put_dispatch_pairs` call
+        failed and no later call has since succeeded -- see the flag's own
+        `__init__` comment for the full reconciliation story."""
+        return self._dispatch_pairs_dirty
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}"}
@@ -2722,7 +2753,12 @@ class CabalClient:
 
         Raises `CabalError` on non-2xx, same logging convention as every
         other method here: the response body is logged server-side
-        (truncated), never echoed into the raised message.
+        (truncated), never echoed into the raised message. Either that or a
+        raw transport `httpx.HTTPError` marks `dispatch_pairs_dirty` True
+        before propagating (final-review fix round, HIGH-2b -- see that
+        flag's own `__init__` comment); a push that goes on to succeed,
+        whether this is its first attempt or a retry after one of those
+        failures, always clears it back to False.
         """
         sorted_pairs = sorted(pairs)
         if not sorted_pairs and self._last_dispatch_pairs_nonempty:
@@ -2732,20 +2768,26 @@ class CabalClient:
                 "treats an empty set as WIDE OPEN by design, so this is a "
                 "real access-control shrink, not a skipped no-op"
             )
-        resp = self._client.put(
-            f"{self._base_url}/admin/dispatch-pairs",
-            json={"pairs": [list(pair) for pair in sorted_pairs]},
-            headers=self._headers(),
-        )
+        try:
+            resp = self._client.put(
+                f"{self._base_url}/admin/dispatch-pairs",
+                json={"pairs": [list(pair) for pair in sorted_pairs]},
+                headers=self._headers(),
+            )
+        except httpx.HTTPError:
+            self._dispatch_pairs_dirty = True
+            raise
         if not resp.is_success:
             log.warning(
                 "cabal put_dispatch_pairs failed (%s): %s",
                 resp.status_code, resp.text[:200],
             )
+            self._dispatch_pairs_dirty = True
             raise CabalError(f"put_dispatch_pairs failed ({resp.status_code})")
         count = resp.json()["count"]
         log.info("cabal put_dispatch_pairs: pushed %d pair(s)", count)
         self._last_dispatch_pairs_nonempty = bool(sorted_pairs)
+        self._dispatch_pairs_dirty = False
         return count
 
     def list_conversations(self, *, limit: int | None = None) -> list[dict]:

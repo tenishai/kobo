@@ -527,6 +527,152 @@ def test_create_agent_accepts_a_configured_group_name(session_factory, groups_cl
     assert row.group_name == "payments-eng"
 
 
+# --- Create route: claiming a group takes membership (final-review fix
+# round, HIGH-1: consent) ----------------------------------------------------
+#
+# Once IAP is on and cfg.groups is non-empty, being a NAME in cfg.groups is
+# no longer enough for a non-operator to claim a group_name -- it must also
+# be one of the CALLER's own resolved groups (`clients.groups.groups_for`).
+# Operators are exempt. IAP-off rooms are untouched (pinned above by
+# test_create_agent_accepts_a_configured_group_name, which claims "payments-
+# eng" through the IAP-off `groups_client` with no resolver wired at all).
+
+
+@pytest.fixture
+def consent_config(tmp_path):
+    return Config(
+        workdir=tmp_path / "work",
+        skills_bucket="skills-bucket",
+        personas_bucket="personas-bucket",
+        operators=[OPERATOR_EMAIL],
+        iap_audience=AUDIENCE,
+        groups=GROUPS,
+    )
+
+
+def _consent_client(session_factory, consent_config, fake_storage, *, groups_resolver, iap_jwks_fetcher):
+    return TestClient(
+        create_app(
+            session_factory,
+            config=consent_config,
+            clients=Clients(
+                github=FakeGitHub(),
+                gojira=FakeGojira(),
+                cloud=FakeCloud(),
+                agent=FakeAgent(),
+                kubectl=FakeKubectl(),
+                storage=fake_storage,
+                groups=groups_resolver,
+            ),
+            iap_jwks_fetcher=iap_jwks_fetcher,
+        )
+    )
+
+
+def _create_payload(name, group_name):
+    return {
+        "name": name,
+        "persona": "helpful-generalist",
+        "team": "shared",
+        "group_name": group_name,
+    }
+
+
+def test_member_creates_in_own_group_gets_201(session_factory, consent_config, fake_storage):
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver({MEMBER_EMAIL: ["payments-eng"]})
+    client = _consent_client(
+        session_factory, consent_config, fake_storage,
+        groups_resolver=resolver, iap_jwks_fetcher=_fetcher(jwk),
+    )
+
+    response = client.post(
+        "/api/agents",
+        json=_create_payload("clio", "payments-eng"),
+        headers=_headers(private_key, email=MEMBER_EMAIL),
+    )
+
+    assert response.status_code == 201, response.text
+
+
+def test_member_claiming_a_group_they_are_not_in_is_403_verbatim(
+    session_factory, consent_config, fake_storage
+):
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver({MEMBER_EMAIL: ["payments-eng"]})
+    client = _consent_client(
+        session_factory, consent_config, fake_storage,
+        groups_resolver=resolver, iap_jwks_fetcher=_fetcher(jwk),
+    )
+
+    response = client.post(
+        "/api/agents",
+        json=_create_payload("clio", "growth"),
+        headers=_headers(private_key, email=MEMBER_EMAIL),
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"error": "You are not a member of growth."}
+
+
+def test_operator_claims_any_configured_group_gets_201(
+    session_factory, consent_config, fake_storage
+):
+    private_key, jwk = _generate_jwk()
+    # The operator belongs to no configured group by directory membership at
+    # all -- still allowed, since operators are exempt from the membership
+    # check entirely.
+    resolver = FakeGroupResolver({})
+    client = _consent_client(
+        session_factory, consent_config, fake_storage,
+        groups_resolver=resolver, iap_jwks_fetcher=_fetcher(jwk),
+    )
+
+    response = client.post(
+        "/api/agents",
+        json=_create_payload("clio", "growth"),
+        headers=_headers(private_key, email=OPERATOR_EMAIL),
+    )
+
+    assert response.status_code == 201, response.text
+
+
+def test_resolver_down_member_create_is_403_with_honest_copy(
+    session_factory, consent_config, fake_storage
+):
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver(down=True)
+    client = _consent_client(
+        session_factory, consent_config, fake_storage,
+        groups_resolver=resolver, iap_jwks_fetcher=_fetcher(jwk),
+    )
+
+    response = client.post(
+        "/api/agents",
+        json=_create_payload("clio", "payments-eng"),
+        headers=_headers(private_key, email=MEMBER_EMAIL),
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": "Group membership could not be confirmed right now. Try again shortly."
+    }
+    assert "—" not in response.json()["error"]
+
+
+def test_iap_off_room_keeps_todays_group_claim_behavior_unchanged(groups_client):
+    # groups_client (module fixture above) has IAP entirely off and no
+    # resolver wired -- this HIGH-1 fix must change nothing about that room:
+    # claiming any configured group_name still just needs to be a name
+    # cfg.groups knows about.
+    response = groups_client.post(
+        "/api/agents",
+        json=_create_payload("clio", "growth"),
+    )
+
+    assert response.status_code == 201, response.text
+
+
 # --- GET /api/catalog/groups: names only, no Okta names leaked -------------
 
 

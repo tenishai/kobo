@@ -72,7 +72,7 @@ from kobo_api.models import (
 )
 from kobo_api.namegen import SUGGESTION_COUNT, finalize_suggestions
 from kobo_api.org import OrgState, load_org_config
-from kobo_api.pairs import sync_dispatch_pairs_best_effort
+from kobo_api.pairs import sync_dispatch_pairs, sync_dispatch_pairs_best_effort
 from kobo_api.persona_draft import finalize_distill, finalize_draft
 from kobo_api.personas import PersonaError, PersonaExists, PersonaFields, create_persona
 from kobo_api.provisioner import (
@@ -763,6 +763,29 @@ def _operator_block(request: Request, config: Config) -> JSONResponse | None:
         return None
     return JSONResponse(
         {"error": "Destroying agents is operator-only on this room"}, status_code=403
+    )
+
+
+def _admin_operator_block(request: Request, config: Config) -> JSONResponse | None:
+    """None when the caller may run room-wide admin actions (today, just the
+    dispatch-pairs resync route below, final-review fix round HIGH-2b); a
+    403 body otherwise. Same semantics family as `_operator_block`/`_slack_
+    operator_block` above (empty `operators` = ungated, dev parity; IAP
+    disabled = operator, "the room trusts its perimeter only when it has
+    one"; otherwise `_is_operator`) -- kept as its own function rather than
+    reusing `_operator_block` directly, since that one's 403 copy names
+    destroying agents specifically and would read as flatly wrong copy for
+    an unrelated admin route.
+    """
+    if not config.operators:
+        return None
+    if not config.iap_audience:
+        return None
+    email = getattr(request.state, "iap_email", None)
+    if _is_operator(email, config):
+        return None
+    return JSONResponse(
+        {"error": "Syncing the switchboard is operator-only on this room"}, status_code=403
     )
 
 
@@ -1506,6 +1529,55 @@ def create_app(
                 return JSONResponse(
                     {"error": f"unknown group: {payload.group_name!r}"}, status_code=422
                 )
+
+            # Access control (final-review fix round, HIGH-1: consent).
+            # Being a NAME in cfg.groups was the only thing checked above --
+            # any signed-in caller could claim ANY configured group and
+            # inherit its implicit same-group wire pairs (kobo_api.pairs.
+            # allowed_pairs) the moment this agent goes READY, with no
+            # consent from anyone already in that group. That nullifies
+            # spec section 5's request-and-accept handshake for cross-group
+            # access by letting a caller simply BE the other group instead
+            # of asking it to accept an invite. An operator is exempt --
+            # operators may assign any configured group, the same standing
+            # every other operator-vs-owner gate in this file grants.
+            # Everyone else must have the claimed group in their OWN
+            # resolved membership (`clients.groups.groups_for`), fail-closed
+            # the same way `_visible_agents` treats a `None` answer: a
+            # resolver that can't answer right now grants nothing, never
+            # "assume it's fine."
+            #
+            # IAP-off dev rooms keep today's behavior untouched: the same
+            # config-level bypass idiom `_owner_or_operator_or_403`/`_
+            # operator_block` already use elsewhere in this file ("the room
+            # trusts its perimeter only when it has one") -- with no
+            # verified email ever available, there is no identity to check
+            # membership against, so gating here would just lock out every
+            # caller in every IAP-off room (local dev, most of this test
+            # suite) instead of the callers this fix actually targets.
+            if cfg.iap_audience:
+                email = (getattr(request.state, "iap_email", None) or "").lower()
+                if not _is_operator(email, cfg):
+                    clients: Clients | None = app.state.clients
+                    resolver = clients.groups if clients is not None else None
+                    caller_groups = (
+                        resolver.groups_for(email) if resolver is not None else None
+                    )
+                    if caller_groups is None:
+                        return JSONResponse(
+                            {
+                                "error": (
+                                    "Group membership could not be confirmed "
+                                    "right now. Try again shortly."
+                                )
+                            },
+                            status_code=403,
+                        )
+                    if payload.group_name not in caller_groups:
+                        return JSONResponse(
+                            {"error": f"You are not a member of {payload.group_name}."},
+                            status_code=403,
+                        )
 
         cleaned_tags = clean_tags(payload.purpose_tags)
         if isinstance(cleaned_tags, str):
@@ -3771,6 +3843,55 @@ def create_app(
 
         return JSONResponse(_invite_repr(session, invite))
 
+    # --- Admin: on-demand dispatch-pairs resync (final-review fix round,
+    # HIGH-2b) ---------------------------------------------------------------
+    #
+    # The lost-sync problem this closes: a revoke or destroy whose push to
+    # the switchboard failed (cabal down, a crash mid-request) leaves a
+    # stale ALLOW pair there indefinitely unless SOMETHING re-pushes the
+    # room's current, correct `allowed_pairs`. Two of the three ways that
+    # happens are automatic and already covered -- `_boot_sync_dispatch_
+    # pairs` below (every fresh process boot) and the next organic trigger
+    # to fire (every one of `sync_dispatch_pairs_best_effort`'s four
+    # callers pushes the FULL current set unconditionally, which heals a
+    # prior failure the instant any of them next succeeds). This route is
+    # the third: an operator who wants to force a resync RIGHT NOW --
+    # diagnosing a suspected drift, or confirming a switchboard outage they
+    # know just ended, without waiting on either of the other two.
+
+    @app.post("/api/admin/sync-pairs")
+    def sync_pairs_route(
+        request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        cfg: Config = app.state.config
+        # Operator-gated (`_admin_operator_block`, its own copy -- see that
+        # function's docstring for why this isn't `_operator_block` itself):
+        # this pushes room-wide policy, not one agent's own state, so there
+        # is no per-agent owner to fall back to the way the looser `_owner_
+        # or_operator_or_403` gate allows elsewhere.
+        block = _admin_operator_block(request, cfg)
+        if block is not None:
+            return block
+
+        clients: Clients | None = app.state.clients
+        if not cabal_enabled(cfg) or clients is None or clients.cabal is None:
+            return JSONResponse(_SWITCHBOARD_NOT_CONFIGURED, status_code=409)
+
+        # Deliberately the RAISING core (`sync_dispatch_pairs`), not the
+        # fail-soft `..._best_effort` wrapper every incidental trigger uses:
+        # an operator who explicitly asked for a resync needs to be told it
+        # didn't work, not have that silently logged and swallowed the way
+        # an accept/revoke/destroy's own incidental sync attempt must be.
+        try:
+            count = sync_dispatch_pairs(clients.cabal, session, cfg)
+        except (CabalError, httpx.HTTPError):
+            log.warning("operator-triggered dispatch-pairs resync failed", exc_info=True)
+            return JSONResponse(
+                {"error": "couldn't sync the switchboard. Try again."}, status_code=502
+            )
+
+        return JSONResponse({"count": count})
+
     # --- User grants: per-user visibility, wired into _visible_agents above -
 
     @app.get("/api/agents/{name}/grants")
@@ -3872,6 +3993,49 @@ def create_app(
     return app
 
 
+def _boot_sync_dispatch_pairs(
+    clients: Clients, config: Config, session_factory: sessionmaker[Session]
+) -> None:
+    """Push the room's current `allowed_pairs` to the switchboard once at
+    process boot (access-control arc, final-review fix round, HIGH-2a).
+
+    Closes the "enforcement never begins after deploy" gap: without this, a
+    revoke/destroy whose push failed just before a crash (or simply a fresh
+    deploy against a room that already has agents/invites from before the
+    switchboard was ever wired) leaves cabal's policy stale or empty until
+    some UNRELATED consent change happens to fire one of `sync_dispatch_
+    pairs_best_effort`'s four existing triggers. Every fresh boot now IS a
+    trigger of its own, unconditionally, before this process serves a
+    single request -- called from `build_default_app`, right beside its own
+    boot-time org-config clone (both are "leave the room in the state it
+    should already be in before anyone can hit it" boot work).
+
+    Delegates entirely to `sync_dispatch_pairs_best_effort` -- same no-op-
+    when-unwired gate, same fail-soft swallowing of a `CabalError`/`httpx.
+    HTTPError` (a boot must never crash on a switchboard hiccup, the same
+    posture `load_org_config` already takes for the org-config clone: land
+    in a degraded-but-running state, never refuse to start). Opens and
+    closes its own session (this runs once, before `create_app` wires the
+    per-request `get_session` dependency) rather than sharing one with any
+    other boot step.
+
+    Logs the pushed count at `log.info` on an actual push -- distinct from
+    `CabalClient.put_dispatch_pairs`'s own count log, so an operator
+    scanning boot logs can tell AT A GLANCE that the boot-time resync
+    specifically ran, without first knowing to go looking for cabal's own
+    line buried among everything else `Clients.real(config)` just did.
+    """
+    if not cabal_enabled(config) or clients.cabal is None:
+        return
+    session = session_factory()
+    try:
+        count = sync_dispatch_pairs_best_effort(clients, config, session)
+    finally:
+        session.close()
+    if count is not None:
+        log.info("boot-time dispatch-pairs sync pushed %d pair(s) to the switchboard", count)
+
+
 def build_default_app() -> FastAPI:
     """Wire the real config, org config, database, and platform clients."""
     # Local import: `kobo_api.clients` pulls in httpx/subprocess-backed
@@ -3919,4 +4083,10 @@ def build_default_app() -> FastAPI:
     # Built from the MERGED config, same as the engine above — everything
     # downstream of boot sees org values as if they'd always been local.
     clients = Clients.real(config)
+    # Boot-time dispatch-pairs resync (final-review fix round, HIGH-2a): a
+    # no-op if the switchboard isn't wired, fail-soft otherwise -- see
+    # `_boot_sync_dispatch_pairs`'s own docstring for why this belongs
+    # here, right beside the org-config clone above, rather than waiting
+    # for an organic consent-change trigger that might never come.
+    _boot_sync_dispatch_pairs(clients, config, session_factory)
     return create_app(session_factory, config=config, clients=clients, org=org)

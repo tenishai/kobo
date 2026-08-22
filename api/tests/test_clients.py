@@ -4249,6 +4249,78 @@ def test_cabal_put_dispatch_pairs_empty_to_empty_does_not_warn(caplog):
     assert not any(rec.levelname == "WARNING" for rec in caplog.records)
 
 
+# --- dispatch_pairs_dirty (final-review fix round, HIGH-2b: the lost-sync
+# reconciliation flag) -- False fresh, True after a failed push, cleared by
+# the next SUCCESSFUL push regardless of whether the pairs it carries are
+# the same set as before. ------------------------------------------------
+
+
+def test_dispatch_pairs_dirty_is_false_on_a_fresh_client():
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"count": 0}))),
+    )
+    assert client.dispatch_pairs_dirty is False
+
+
+def test_dispatch_pairs_dirty_true_after_a_non_2xx_failure():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(CabalError):
+        client.put_dispatch_pairs([("agent:a", "b")])
+
+    assert client.dispatch_pairs_dirty is True
+
+
+def test_dispatch_pairs_dirty_true_after_a_raw_transport_failure():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(httpx.ConnectError):
+        client.put_dispatch_pairs([("agent:a", "b")])
+
+    assert client.dispatch_pairs_dirty is True
+
+
+def test_dispatch_pairs_dirty_clears_on_the_next_successful_push_even_with_the_same_pairs():
+    # The reconciliation guarantee itself: a failed push leaves the flag
+    # set; the NEXT push -- carrying the exact same pairs, nothing "changed"
+    # -- still actually goes out over HTTP and, once it succeeds, clears
+    # the flag. Nothing here special-cases "pairs unchanged" into a skip.
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(500, text="boom")
+        return httpx.Response(200, json={"count": 1})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    same_pairs = [("agent:a", "b")]
+
+    with pytest.raises(CabalError):
+        client.put_dispatch_pairs(same_pairs)
+    assert client.dispatch_pairs_dirty is True
+
+    count = client.put_dispatch_pairs(same_pairs)
+
+    assert count == 1
+    assert calls["n"] == 2  # the retry actually went out, not skipped
+    assert client.dispatch_pairs_dirty is False
+
+
 # --- list_conversations / get_conversation / stream_events (Task 4/B4: the
 # watching window) ------------------------------------------------------------
 
