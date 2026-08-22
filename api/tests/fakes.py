@@ -1183,7 +1183,13 @@ class FakeCabal:
     secret, since this is a fake). `conversations_result`, when given, is
     `list_conversations`'s canned return value (default `[]`).
     `conversation_result`, when given, is `get_conversation`'s canned
-    return value (default an empty conversation/events shape).
+    return value (default an empty conversation/events shape) -- returned
+    for EVERY `task_id` unless that id has its own entry in
+    `conversation_results` (a `task_id -> detail` dict, default `{}`), the
+    per-conversation override the feed route's own tests need (Task: the
+    terminal redesign) to hand back a DIFFERENT detail for each of several
+    conversations in one test, rather than the one-size-fits-all default
+    every earlier caller of this fake was content with.
     `stream_chunks`, when given, is exactly what `stream_events` yields, in
     order (default `[]` -- an immediately empty stream, no real transport
     involved). `put_dispatch_pairs` itself has no separate "result" knob --
@@ -1205,6 +1211,7 @@ class FakeCabal:
         conversations_result: list[dict] | None = None,
         conversations_error: str | None = None,
         conversation_result: dict | None = None,
+        conversation_results: dict[str, dict] | None = None,
         conversation_error: str | None = None,
         stream_chunks: list[bytes] | None = None,
         put_dispatch_pairs_error: str | None = None,
@@ -1223,6 +1230,9 @@ class FakeCabal:
             conversation_result
             if conversation_result is not None
             else {"conversation": {}, "events": []}
+        )
+        self._conversation_results = (
+            dict(conversation_results) if conversation_results is not None else {}
         )
         self._conversation_error = conversation_error
         self._stream_chunks = stream_chunks if stream_chunks is not None else []
@@ -1274,7 +1284,7 @@ class FakeCabal:
         self.get_conversation_calls.append(task_id)
         if self._conversation_error is not None:
             raise CabalError(f"get_conversation failed: {self._conversation_error}")
-        return self._conversation_result
+        return self._conversation_results.get(task_id, self._conversation_result)
 
     def put_dispatch_pairs(self, pairs) -> int:
         sorted_pairs = sorted(pairs)

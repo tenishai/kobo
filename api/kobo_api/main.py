@@ -835,6 +835,137 @@ def _conversation_has_participant(row: dict, agent: str) -> bool:
     return row.get("target_agent") == agent or row.get("caller_agent") == f"agent:{agent}"
 
 
+# --- Colleagues: the terminal (terminal redesign) ---------------------------
+#
+# The operator's ruling: the per-conversation cards go away in favor of "a
+# command line terminal, which showed all the conversations the agent was
+# having with the other agents in order... and the text in full." `GET
+# /api/colleagues/feed` below is the one flattened, chronological feed that
+# view reads from; `_flatten_conversation_entries` is the piece that turns
+# one `get_conversation` detail into the 0-2 lines it contributes.
+#
+# The switchboard's own persistence shape (verified against source, `cabal.
+# core.broker.bookkeeping.Bookkeeper` -- this room has no swagger for its
+# admin surface beyond what `CabalClient.list_conversations`/`get_
+# conversation`'s own docstrings already describe): a conversation's `
+# "result"` field (`get_conversation`'s "the full, untruncated result") is
+# the COMPLETED a2a Task body, and it is ONLY EVER written once dispatch
+# actually succeeds (`on_dispatch_success` persists it; `on_dispatch_start`
+# persists nothing but routing metadata -- target/generation/caller -- and
+# never the message text itself). Concretely, once populated:
+#   - `result["status"]["message"]` is the TARGET's reply (the persona's own
+#     new message, role `"agent"`).
+#   - `result["history"][-1]` is the CALLER's original ask (the turn that
+#     request's own `status.message` becomes once the target echoes it back
+#     into its reply's history -- confirmed against `cabal.agents.echo.
+#     EchoAgent`, the switchboard's own reference persona).
+# A conversation still in flight, or one that failed before a reply ever
+# landed, carries no `"result"` at all -- there is genuinely no ask text
+# recorded anywhere on the switchboard's admin surface until the round trip
+# completes, so `_flatten_conversation_entries` contributes ZERO lines for
+# one of those, rather than inventing a lone "ask" entry from nothing. Once
+# an in-flight conversation later completes, the next SSE frame's refetch
+# picks up both its ask and reply together.
+
+
+def _caller_display(caller: str) -> str:
+    """Strip a caller's namespace prefix ("agent:iris" -> "iris",
+    "operator:kgreiner@example.com" -> "kgreiner@example.com") for terminal
+    display -- a raw caller with no prefix at all passes through unchanged.
+    Same convention `ColleagueConversations.svelte`'s own (now retired)
+    `callerLabel` used: the prefix is what `_conversation_has_participant`
+    reads, not something a human needs to see in a terminal line.
+    """
+    idx = caller.find(":")
+    return caller[idx + 1 :] if idx != -1 else caller
+
+
+def _task_message_text(message: object) -> str | None:
+    """The first text part's text out of one a2a Message dict (`{"role":
+    ..., "parts": [{"kind": "text", "text": ...}, ...]}`) -- `None` when
+    `message` isn't a dict, carries no `parts` list, or that list's first
+    entry has no string `"text"`. Deliberately looks ONLY at `parts[0]`,
+    same "authoritative source, no scanning" discipline `_extract_relay_
+    reply` (kobo_api.clients) already holds for this identical wire shape.
+    """
+    if not isinstance(message, dict):
+        return None
+    parts = message.get("parts")
+    if not isinstance(parts, list) or not parts:
+        return None
+    first = parts[0]
+    if isinstance(first, dict) and isinstance(first.get("text"), str):
+        return first["text"]
+    return None
+
+
+def _flatten_conversation_entries(detail: dict) -> list[dict]:
+    """One `GET /api/colleagues/conversations/{task_id}`-shaped detail,
+    flattened into 0-2 chronological terminal entries: the caller's ask
+    (`ts` = `created_at`), then the target's reply (`ts` = `updated_at`) --
+    see this section's own module-level comment for exactly where each
+    text comes from and why an incomplete conversation yields nothing.
+
+    Each entry is `{"ts", "conversation_id", "from", "to", "role", "text"}`;
+    `role` is `"ask"` (from = the caller's display name, to = the target)
+    or `"reply"` (direction reversed: from = the target, to = the caller's
+    display name) -- the reversal is deliberate, it's what lets the
+    terminal color a line by direction (outgoing vs incoming) and read
+    right as a real back-and-forth rather than two lines both "from" the
+    same party.
+    """
+    conv = detail.get("conversation")
+    if not isinstance(conv, dict):
+        return []
+    result = conv.get("result")
+    if not isinstance(result, dict):
+        return []
+
+    task_id = conv.get("task_id")
+    target = conv.get("target_agent")
+    caller_display = _caller_display(conv.get("caller_agent") or "")
+    created_at = conv.get("created_at")
+    updated_at = conv.get("updated_at")
+
+    status = result.get("status")
+    reply_text = _task_message_text(status.get("message")) if isinstance(status, dict) else None
+    history = result.get("history")
+    ask_text = _task_message_text(history[-1]) if isinstance(history, list) and history else None
+
+    entries: list[dict] = []
+    if ask_text is not None and created_at is not None:
+        entries.append(
+            {
+                "ts": created_at,
+                "conversation_id": task_id,
+                "from": caller_display,
+                "to": target,
+                "role": "ask",
+                "text": ask_text,
+            }
+        )
+    if reply_text is not None and updated_at is not None:
+        entries.append(
+            {
+                "ts": updated_at,
+                "conversation_id": task_id,
+                "from": target,
+                "to": caller_display,
+                "role": "reply",
+                "text": reply_text,
+            }
+        )
+    return entries
+
+
+# The feed's scrollback cap -- also what this route asks `list_conversations`
+# for (the switchboard's own hard ceiling on that call, per its route's
+# `limit = max(1, min(limit, 200))`), since each surviving conversation
+# contributes at most 2 entries and requesting fewer conversations than the
+# entry cap would make the cap under-fill for no reason.
+_FEED_SCROLLBACK_CAP = 200
+
+
 # Uncalled by any route since Slack self-service (2026-08-17) — kept because
 # the `slack_operators` config field it reads stays live for other uses.
 def _slack_operator_block(request: Request, config: Config) -> JSONResponse | None:
@@ -3821,6 +3952,87 @@ def create_app(
         if agent is not None:
             chunks = filter_cabal_event_stream(chunks, agent)
         return StreamingResponse(chunks, media_type="text/event-stream")
+
+    @app.get("/api/colleagues/feed")
+    def colleague_feed(
+        agent: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """The terminal's one flattened, chronological feed of `agent`'s own
+        colleague talk (terminal redesign, replacing the per-conversation
+        card grid): every conversation `agent` participates in, either side,
+        flattened into `{"ts", "conversation_id", "from", "to", "role",
+        "text"}` entries (`_flatten_conversation_entries` above) and sorted
+        ascending by `ts` across every conversation -- not per-conversation,
+        the whole room-wide scrollback interleaved as it actually happened.
+        Capped to the most recent `_FEED_SCROLLBACK_CAP` (200) entries;
+        `truncated` is true whenever more existed than that.
+
+        `agent` is REQUIRED (a plain, non-Optional `str` -- FastAPI 422s a
+        request that omits it, before this body ever runs) and is resolved
+        through `_visible_agent_or_404`, the room's one visibility choke
+        point -- UNLIKE the three room-wide proxy routes right above
+        (`list_colleague_conversations`/`get_colleague_conversation`/
+        `stream_colleague_events`), which read only snippets, or full text
+        gated solely on the switchboard being wired at all, regardless of
+        which agents the caller can otherwise see. This route hands back
+        FULL, untruncated conversation text -- a strictly bigger exposure
+        than a 120-char snippet -- so it additionally follows the same
+        per-agent visibility every other agent-scoped route in this file
+        already enforces: a caller who cannot see `agent` gets the same 404
+        as if it didn't exist, never a peek at its colleague talk by name
+        alone. This is a deliberate widening of what's gated, not a
+        loosening of anything the older routes already allowed.
+
+        Fail-soft on any cabal trouble, the house 502 copy convention: a
+        failed `list_conversations` or a failed `get_conversation` partway
+        through the loop below both answer with the same plain "The
+        switchboard did not answer. Try again shortly." -- no partial feed
+        is ever assembled from a request that didn't fully succeed.
+        """
+        visible_agent = _visible_agent_or_404(session, request, agent)
+        if isinstance(visible_agent, JSONResponse):
+            return visible_agent
+
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        gate = _colleagues_gate(cfg, clients)
+        if gate is not None:
+            return gate
+
+        try:
+            conversations = clients.cabal.list_conversations(limit=_FEED_SCROLLBACK_CAP)
+        except (CabalError, httpx.HTTPError) as exc:
+            log.warning("colleague feed list failed for %s: %s", agent, exc)
+            return JSONResponse(
+                {"error": "The switchboard did not answer. Try again shortly."},
+                status_code=502,
+            )
+
+        scoped = [c for c in conversations if _conversation_has_participant(c, agent)]
+
+        entries: list[dict] = []
+        for row in scoped:
+            task_id = row.get("task_id")
+            if not isinstance(task_id, str):
+                continue
+            try:
+                detail = clients.cabal.get_conversation(task_id)
+            except (CabalError, httpx.HTTPError) as exc:
+                log.warning(
+                    "colleague feed detail failed for %s (agent=%s): %s", task_id, agent, exc
+                )
+                return JSONResponse(
+                    {"error": "The switchboard did not answer. Try again shortly."},
+                    status_code=502,
+                )
+            entries.extend(_flatten_conversation_entries(detail))
+
+        entries.sort(key=lambda e: e["ts"])
+        truncated = len(entries) > _FEED_SCROLLBACK_CAP
+        if truncated:
+            entries = entries[-_FEED_SCROLLBACK_CAP:]
+
+        return JSONResponse({"entries": entries, "truncated": truncated})
 
     # --- Avatar (P2d): persona-derived face, repo-backed with a display cache ---
 

@@ -1,6 +1,8 @@
 """Tests for the room's colleagues proxy surface (colleagues switchboard
 plan, Task 4/B4 "the watching window"): `GET /api/colleagues/conversations`,
-`GET /api/colleagues/conversations/{task_id}`, `GET /api/colleagues/stream`.
+`GET /api/colleagues/conversations/{task_id}`, `GET /api/colleagues/stream`,
+and `GET /api/colleagues/feed` (terminal redesign, the flattened chronological
+feed that replaced the card grid's per-conversation queries).
 
 Any signed-in user (no operator gate, same reach as the directory-sync route
 in test_api_directory.py), 409 plain detail when the switchboard isn't
@@ -10,7 +12,9 @@ and SSE content-type + byte-for-byte frame passthrough on the stream route —
 against `tests/fakes.FakeCabal` for the first two, and a real `CabalClient`
 wired to `httpx.MockTransport` for the operator-token-never-leaks proof
 (FakeCabal never touches a real token at all, so it can't stand in for that
-one).
+one). `/api/colleagues/feed` gets its own section further down: same 409/502
+conventions, plus the one thing that sets it apart from the other three --
+`_visible_agent_or_404` gating, since it hands back full conversation text.
 
 Same harness shape as test_api_directory.py: own `session_factory`/`config`
 fixtures, a `TestClient` built from `create_app`.
@@ -26,10 +30,16 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import time
+
+import jwt
+from cryptography.hazmat.primitives.asymmetric import ec
+
 from kobo_api.clients import CabalClient, Clients
-from kobo_api.config import Config
+from kobo_api.config import Config, GroupChoice
+from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import create_app
-from kobo_api.models import Base
+from kobo_api.models import Agent, AgentStatus, Base
 from tests.fakes import (
     FakeAgent,
     FakeCabal,
@@ -528,3 +538,499 @@ def test_operator_token_never_appears_in_stream_response_or_headers(
         body = b"".join(response.iter_bytes())
 
     assert secret.encode() not in body
+
+
+# --- GET /api/colleagues/feed (terminal redesign) ---------------------------
+#
+# The terminal's one flattened, chronological feed: `_flatten_conversation_
+# entries` (kobo_api.main) turns each conversation's `get_conversation`
+# detail into 0-2 lines (ask, then reply), sorted ascending by `ts` across
+# every conversation, capped to the most recent 200. UNLIKE the three
+# room-wide proxy routes above, this one is gated by `_visible_agent_or_404`
+# -- the same room-wide 409/502 conventions still apply on top of that.
+
+
+def _seed_agent(session_factory, config, name: str = "ward", **kwargs) -> None:
+    session = session_factory()
+    session.add(
+        Agent(
+            name=name,
+            persona="helpful-generalist",
+            model_id=config.models[0].id,
+            status=AgentStatus.READY,
+            repo_full_name=f"acme/agent-{name}",
+            **kwargs,
+        )
+    )
+    session.commit()
+    session.close()
+
+
+def _task_result(*, ask_text: str, reply_text: str) -> dict:
+    """A completed a2a Task body shaped exactly like the switchboard's own
+    persisted `result_json` (verified against `cabal.core.broker.
+    bookkeeping.Bookkeeper.on_dispatch_success` + `cabal.agents.echo.
+    EchoAgent`): `status.message` is the reply, `history[-1]` is the ask."""
+    return {
+        "id": "irrelevant-to-the-feed",
+        "status": {
+            "state": "completed",
+            "message": {"role": "agent", "parts": [{"kind": "text", "text": reply_text}]},
+        },
+        "history": [{"role": "user", "parts": [{"kind": "text", "text": ask_text}]}],
+    }
+
+
+def _feed_summary(task_id: str, *, target: str, caller: str) -> dict:
+    return {
+        "task_id": task_id,
+        "target_agent": target,
+        "target_generation": 1,
+        "caller_agent": caller,
+        "state": "completed",
+        "cabal_escalated_from": None,
+        "created_at": "unused-by-the-feed-route",
+        "updated_at": "unused-by-the-feed-route",
+        "result_snippet": "unused-by-the-feed-route",
+    }
+
+
+def _feed_detail(
+    task_id: str,
+    *,
+    target: str,
+    caller: str,
+    created_at: str,
+    updated_at: str,
+    ask_text: str,
+    reply_text: str,
+) -> dict:
+    return {
+        "conversation": {
+            "task_id": task_id,
+            "target_agent": target,
+            "caller_agent": caller,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "result": _task_result(ask_text=ask_text, reply_text=reply_text),
+        },
+        "events": [],
+    }
+
+
+def test_feed_requires_the_agent_query_param(session_factory, config):
+    client = _make_client(session_factory, config)
+
+    response = client.get("/api/colleagues/feed")
+
+    assert response.status_code == 422
+
+
+def test_feed_404s_for_an_unknown_agent(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    client = _make_client(session_factory, cfg, cabal=FakeCabal())
+
+    response = client.get("/api/colleagues/feed", params={"agent": "ghost"})
+
+    assert response.status_code == 404
+    assert response.json() == {"error": "no such agent: 'ghost'"}
+
+
+def test_feed_409s_when_switchboard_not_configured(session_factory, config):
+    _seed_agent(session_factory, config)
+    client = _make_client(session_factory, config)
+
+    response = client.get("/api/colleagues/feed", params={"agent": "ward"})
+
+    assert response.status_code == 409
+    assert response.json() == {"error": "the switchboard is not configured"}
+
+
+def test_feed_flattens_one_conversation_into_ask_then_reply(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    _seed_agent(session_factory, cfg)
+    summaries = [_feed_summary("t-1", target="network", caller="agent:ward")]
+    detail = _feed_detail(
+        "t-1",
+        target="network",
+        caller="agent:ward",
+        created_at="2026-08-19T10:00:00Z",
+        updated_at="2026-08-19T10:00:05Z",
+        ask_text="What's the config?",
+        reply_text="Here's the config.",
+    )
+    fake_cabal = FakeCabal(conversations_result=summaries, conversation_results={"t-1": detail})
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/feed", params={"agent": "ward"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "entries": [
+            {
+                "ts": "2026-08-19T10:00:00Z",
+                "conversation_id": "t-1",
+                "from": "ward",
+                "to": "network",
+                "role": "ask",
+                "text": "What's the config?",
+            },
+            {
+                "ts": "2026-08-19T10:00:05Z",
+                "conversation_id": "t-1",
+                "from": "network",
+                "to": "ward",
+                "role": "reply",
+                "text": "Here's the config.",
+            },
+        ],
+        "truncated": False,
+    }
+    # Asked for the max the switchboard allows, since each surviving
+    # conversation contributes up to 2 entries toward the 200-entry cap.
+    assert fake_cabal.list_conversations_calls[-1] == {"limit": 200}
+
+
+def test_feed_strips_a_raw_no_prefix_caller_unchanged(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    _seed_agent(session_factory, cfg, name="network")
+    summaries = [_feed_summary("t-1", target="network", caller="weird-caller-no-prefix")]
+    detail = _feed_detail(
+        "t-1",
+        target="network",
+        caller="weird-caller-no-prefix",
+        created_at="2026-08-19T10:00:00Z",
+        updated_at="2026-08-19T10:00:05Z",
+        ask_text="ask",
+        reply_text="reply",
+    )
+    fake_cabal = FakeCabal(conversations_result=summaries, conversation_results={"t-1": detail})
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/feed", params={"agent": "network"})
+
+    assert response.status_code == 200
+    entries = response.json()["entries"]
+    assert entries[0]["from"] == "weird-caller-no-prefix"
+    assert entries[1]["to"] == "weird-caller-no-prefix"
+
+
+def test_feed_sorts_ascending_across_multiple_conversations(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    _seed_agent(session_factory, cfg)
+    # Listed most-recent-first (t-2 before t-1), same as the real
+    # switchboard's own `list_conversations` ordering -- the feed's own
+    # ascending sort must undo that, not just pass it through.
+    summaries = [
+        _feed_summary("t-2", target="network", caller="agent:ward"),
+        _feed_summary("t-1", target="network", caller="agent:ward"),
+    ]
+    details = {
+        "t-1": _feed_detail(
+            "t-1",
+            target="network",
+            caller="agent:ward",
+            created_at="2026-08-19T10:00:00Z",
+            updated_at="2026-08-19T10:00:05Z",
+            ask_text="first ask",
+            reply_text="first reply",
+        ),
+        "t-2": _feed_detail(
+            "t-2",
+            target="network",
+            caller="agent:ward",
+            created_at="2026-08-19T11:00:00Z",
+            updated_at="2026-08-19T11:00:03Z",
+            ask_text="second ask",
+            reply_text="second reply",
+        ),
+    }
+    fake_cabal = FakeCabal(conversations_result=summaries, conversation_results=details)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/feed", params={"agent": "ward"})
+
+    assert response.status_code == 200
+    texts = [e["text"] for e in response.json()["entries"]]
+    assert texts == ["first ask", "first reply", "second ask", "second reply"]
+
+
+def test_feed_only_includes_conversations_the_agent_participates_in(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    _seed_agent(session_factory, cfg)
+    summaries = [
+        _feed_summary("t-1", target="network", caller="agent:ward"),
+        _feed_summary("t-9", target="someone-else", caller="agent:other"),
+    ]
+    details = {
+        "t-1": _feed_detail(
+            "t-1",
+            target="network",
+            caller="agent:ward",
+            created_at="2026-08-19T10:00:00Z",
+            updated_at="2026-08-19T10:00:05Z",
+            ask_text="ask",
+            reply_text="reply",
+        ),
+    }
+    fake_cabal = FakeCabal(conversations_result=summaries, conversation_results=details)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/feed", params={"agent": "ward"})
+
+    assert response.status_code == 200
+    # t-9 never even gets a get_conversation call -- filtered before the
+    # detail fetch, same efficiency the existing list route's own
+    # agent-filter buys.
+    assert fake_cabal.get_conversation_calls == ["t-1"]
+    assert [e["conversation_id"] for e in response.json()["entries"]] == ["t-1", "t-1"]
+
+
+def test_feed_skips_a_conversation_with_no_completed_result_yet(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    _seed_agent(session_factory, cfg)
+    summaries = [_feed_summary("t-1", target="network", caller="agent:ward")]
+    in_flight_detail = {
+        "conversation": {
+            "task_id": "t-1",
+            "target_agent": "network",
+            "caller_agent": "agent:ward",
+            "created_at": "2026-08-19T10:00:00Z",
+            "updated_at": "2026-08-19T10:00:00Z",
+            "result": None,
+        },
+        "events": [],
+    }
+    fake_cabal = FakeCabal(
+        conversations_result=summaries, conversation_results={"t-1": in_flight_detail}
+    )
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/feed", params={"agent": "ward"})
+
+    assert response.status_code == 200
+    assert response.json() == {"entries": [], "truncated": False}
+
+
+def test_feed_caps_at_200_most_recent_entries_and_flags_truncated(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    _seed_agent(session_factory, cfg)
+    n = 101  # 101 conversations * 2 entries each = 202 > the 200 cap
+    summaries = [_feed_summary(f"t-{i}", target="network", caller="agent:ward") for i in range(n)]
+    details = {}
+    for i in range(n):
+        hh, mm = divmod(i, 60)
+        details[f"t-{i}"] = _feed_detail(
+            f"t-{i}",
+            target="network",
+            caller="agent:ward",
+            created_at=f"2026-08-19T{hh:02d}:{mm:02d}:00Z",
+            updated_at=f"2026-08-19T{hh:02d}:{mm:02d}:01Z",
+            ask_text=f"ask-{i}",
+            reply_text=f"reply-{i}",
+        )
+    fake_cabal = FakeCabal(conversations_result=summaries, conversation_results=details)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/feed", params={"agent": "ward"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["truncated"] is True
+    assert len(body["entries"]) == 200
+    # The 2 earliest entries (t-0's ask + reply) were dropped to make room.
+    assert body["entries"][0]["text"] == "ask-1"
+    assert body["entries"][-1]["text"] == "reply-100"
+
+
+def test_feed_not_truncated_when_at_or_under_the_cap(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    _seed_agent(session_factory, cfg)
+    summaries = [_feed_summary("t-1", target="network", caller="agent:ward")]
+    detail = _feed_detail(
+        "t-1",
+        target="network",
+        caller="agent:ward",
+        created_at="2026-08-19T10:00:00Z",
+        updated_at="2026-08-19T10:00:05Z",
+        ask_text="ask",
+        reply_text="reply",
+    )
+    fake_cabal = FakeCabal(conversations_result=summaries, conversation_results={"t-1": detail})
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/feed", params={"agent": "ward"})
+
+    assert response.json()["truncated"] is False
+
+
+def test_feed_list_failure_returns_502_plain_copy(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    _seed_agent(session_factory, cfg)
+    fake_cabal = FakeCabal(conversations_error="switchboard unreachable")
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/feed", params={"agent": "ward"})
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "error": "The switchboard did not answer. Try again shortly."
+    }
+
+
+def test_feed_detail_failure_returns_502_plain_copy(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    _seed_agent(session_factory, cfg)
+    summaries = [_feed_summary("t-1", target="network", caller="agent:ward")]
+    fake_cabal = FakeCabal(conversations_result=summaries, conversation_error="boom upstream")
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/feed", params={"agent": "ward"})
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "error": "The switchboard did not answer. Try again shortly."
+    }
+
+
+# --- Visibility (the feed's one real gate beyond the room-wide 409) --------
+#
+# Same real-JWT idiom test_web_visibility.py uses for its own IAP slices: a
+# locally generated ES256 keypair signs the assertion, verified through the
+# actual IapMiddleware/IapVerifier, not a mock.
+
+_VISIBILITY_AUDIENCE = "feed-visibility-audience"
+_VISIBILITY_KID = "feed-visibility-key-1"
+
+
+class _StrangerGroupResolver:
+    """The plainest possible `GroupResolver` stand-in: everyone belongs to
+    nothing, so ownership is the only route to visibility left standing."""
+
+    def groups_for(self, email: str) -> list[str] | None:
+        return []
+
+
+def _generate_jwk(kid: str = _VISIBILITY_KID):
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    jwk = jwt.algorithms.ECAlgorithm.to_jwk(private_key.public_key(), as_dict=True)
+    jwk["kid"] = kid
+    jwk["use"] = "sig"
+    jwk["alg"] = "ES256"
+    return private_key, jwk
+
+
+def _sign(private_key, *, email: str, kid: str = _VISIBILITY_KID) -> str:
+    now = int(time.time())
+    claims = {
+        "aud": _VISIBILITY_AUDIENCE,
+        "iss": IAP_ISSUER,
+        "iat": now,
+        "exp": now + 3600,
+        "sub": "accounts.google.com:1234567890",
+        "email": email,
+    }
+    return jwt.encode(claims, private_key, algorithm="ES256", headers={"kid": kid})
+
+
+def _iap_headers(private_key, *, email: str) -> dict:
+    return {ASSERTION_HEADER: _sign(private_key, email=email)}
+
+
+def test_feed_404s_when_the_caller_cannot_see_the_agent(session_factory, tmp_path, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    private_key, jwk = _generate_jwk()
+    cfg = Config(
+        workdir=tmp_path / "work",
+        cabal_url="http://cabal.internal",
+        agent_endpoint_template=ENDPOINT_TEMPLATE,
+        iap_audience=_VISIBILITY_AUDIENCE,
+        groups=[GroupChoice(name="payments-eng", okta_group="okta-payments")],
+    )
+    _seed_agent(session_factory, cfg, name="ward", group_name="payments-eng")
+    client = TestClient(
+        create_app(
+            session_factory,
+            config=cfg,
+            clients=Clients(
+                github=FakeGitHub(),
+                gojira=FakeGojira(),
+                cloud=FakeCloud(),
+                agent=FakeAgent(),
+                kubectl=FakeKubectl(),
+                cabal=FakeCabal(),
+                groups=_StrangerGroupResolver(),
+            ),
+            iap_jwks_fetcher=lambda: {"keys": [jwk]},
+        )
+    )
+
+    response = client.get(
+        "/api/colleagues/feed",
+        params={"agent": "ward"},
+        headers=_iap_headers(private_key, email="stranger@example.com"),
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"error": "no such agent: 'ward'"}
+
+
+def test_feed_200s_for_the_agents_own_owner(session_factory, tmp_path, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    private_key, jwk = _generate_jwk()
+    owner_email = "owner@example.com"
+    cfg = Config(
+        workdir=tmp_path / "work",
+        cabal_url="http://cabal.internal",
+        agent_endpoint_template=ENDPOINT_TEMPLATE,
+        iap_audience=_VISIBILITY_AUDIENCE,
+        groups=[GroupChoice(name="payments-eng", okta_group="okta-payments")],
+    )
+    _seed_agent(
+        session_factory, cfg, name="ward", group_name="payments-eng", created_by=owner_email
+    )
+    client = TestClient(
+        create_app(
+            session_factory,
+            config=cfg,
+            clients=Clients(
+                github=FakeGitHub(),
+                gojira=FakeGojira(),
+                cloud=FakeCloud(),
+                agent=FakeAgent(),
+                kubectl=FakeKubectl(),
+                cabal=FakeCabal(),
+                groups=_StrangerGroupResolver(),
+            ),
+            iap_jwks_fetcher=lambda: {"keys": [jwk]},
+        )
+    )
+
+    response = client.get(
+        "/api/colleagues/feed",
+        params={"agent": "ward"},
+        headers=_iap_headers(private_key, email=owner_email),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"entries": [], "truncated": False}
