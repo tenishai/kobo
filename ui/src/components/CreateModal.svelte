@@ -450,17 +450,21 @@
   // enforcement is server-side (`create_agent`'s own check against
   // `cfg.groups`/`SHARED_GROUP`) regardless of what this picker does.
   //
-  // The select sections on `kind` (never on a hardcoded "shared" string,
+  // The select leads with the door out (group-menu-leads-with-the-door
+  // ruling): "My group is not listed..." -- the escape hatch into the
+  // mini-form below for a directory group `cfg.groups` doesn't know about
+  // yet -- comes FIRST, right after the disabled "Choose a group"
+  // placeholder and OUTSIDE any optgroup, so it's the first real choice a
+  // person sees rather than something buried at the bottom. After it, the
+  // select sections on `kind` (never on a hardcoded "shared" string,
   // matching the server's own "don't hardcode SHARED_GROUP's spelling
   // client-side" doc comment on `/api/catalog/groups`): a "Shared" optgroup
-  // first, an "Engineering groups" optgroup next, a "Non-engineering
-  // groups" optgroup after that (create-modal non-engineering-wing ruling
-  // -- config-driven via `GroupChoice.kind` server-side, never a hardcoded
-  // list of names here), then one final option OUTSIDE all three optgroups
-  // -- "My group is not listed..." -- the escape hatch into the mini-form
-  // below for a directory group `cfg.groups` doesn't know about yet. Each
-  // section is omitted entirely when it has no entries (same "don't render
-  // an empty optgroup" rule already applied to Shared/Engineering).
+  // next, a "Non-engineering groups" optgroup after that (create-modal
+  // non-engineering-wing ruling -- config-driven via `GroupChoice.kind`
+  // server-side, never a hardcoded list of names here), then an
+  // "Engineering groups" optgroup last. Each section is omitted entirely
+  // when it has no entries (same "don't render an empty optgroup" rule
+  // already applied to every section).
   let groupValue = $state("");
   const groupOptionsAvailable = $derived(($groups.data?.length ?? 0) > 0);
   const sharedGroupOptions = $derived(
@@ -1050,17 +1054,11 @@
               handleGroupSelect((event.currentTarget as HTMLSelectElement).value)}
           >
             <option value="" disabled>Choose a group</option>
+            <option value={GROUP_NOT_LISTED}>My group is not listed...</option>
             {#if sharedGroupOptions.length > 0}
               <optgroup label="Shared">
                 {#each sharedGroupOptions as group (group.name)}
                   <option value={group.name}>{group.name} (everyone in the company)</option>
-                {/each}
-              </optgroup>
-            {/if}
-            {#if engineeringGroupOptions.length > 0}
-              <optgroup label="Engineering groups">
-                {#each engineeringGroupOptions as group (group.name)}
-                  <option value={group.name}>{group.name}</option>
                 {/each}
               </optgroup>
             {/if}
@@ -1071,7 +1069,13 @@
                 {/each}
               </optgroup>
             {/if}
-            <option value={GROUP_NOT_LISTED}>My group is not listed...</option>
+            {#if engineeringGroupOptions.length > 0}
+              <optgroup label="Engineering groups">
+                {#each engineeringGroupOptions as group (group.name)}
+                  <option value={group.name}>{group.name}</option>
+                {/each}
+              </optgroup>
+            {/if}
           </select>
           <p class="create-form__help">Who can see and use this agent.</p>
           {#if selectedGroupKind === "shared"}

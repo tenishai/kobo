@@ -1,10 +1,10 @@
 <script lang="ts">
-  // The room's left rail: logo (wordmark placeholder until the operator
-  // picks a mark), nav, and the Create button with its warm-prefetch
-  // handlers. Collapses to an icon rail on narrow viewports.
+  // The room's left rail: logo (the Kobo identity -- hammer mark + wordmark,
+  // "the room gets its hammer" ruling), nav, and the Create button with its
+  // warm-prefetch handlers. Collapses to an icon rail on narrow viewports.
   import { createQuery } from "@tanstack/svelte-query";
   import { formatHash } from "../lib/router.svelte";
-  import { whoamiQuery } from "../lib/queries";
+  import { agentsQuery, whoamiQuery } from "../lib/queries";
 
   let { active, oncreate, onprefetch }: {
     active: "dashboard" | "agent" | "getting-started";
@@ -18,11 +18,60 @@
   // just displays what `/api/whoami` already decided, never derives
   // authority itself.
   const whoami = createQuery(whoamiQuery());
+
+  // The Kobo identity ruling ("the pulse"): the hammer mark pulses while
+  // any agent is under construction. Same `["agents"]` query key Dashboard
+  // already polls (`agentsQuery`'s own adaptive `refetchInterval`, status.ts)
+  // — this just subscribes to that one shared cache entry, it doesn't start
+  // a second poll of its own. "Building" is deliberately narrower than
+  // status.ts's `isTerminal`/`anyAgentActive` (which also count a
+  // destroy-in-flight as non-terminal): only the two statuses that actually
+  // mean "under construction" count here.
+  const agents = createQuery(agentsQuery());
+  const building = $derived(
+    ($agents.data?.agents ?? []).some(
+      (agent) => agent.status === "pending" || agent.status === "provisioning",
+    ),
+  );
+
+  /** Svelte's `SVGAttributes` typing has no `title` entry (unlike
+   * `HTMLAttributes`), so the hammer's explanatory title -- an attribute,
+   * not the `<title>` child element SVG normally wants, since that's what a
+   * plain `getAttribute("title")` reads -- is set imperatively through this
+   * action instead of a typed attribute binding. */
+  function hammerTitle(node: SVGElement, value: string | undefined): { update(value: string | undefined): void } {
+    function apply(v: string | undefined): void {
+      if (v) {
+        node.setAttribute("title", v);
+      } else {
+        node.removeAttribute("title");
+      }
+    }
+    apply(value);
+    return { update: apply };
+  }
 </script>
 
 <nav class="sidebar" aria-label="Main">
-  <a class="sidebar__logo" href={formatHash({ page: "dashboard" })} aria-label="kobo home">
-    <span class="sidebar__wordmark">kobo</span>
+  <a class="sidebar__logo" href={formatHash({ page: "dashboard" })} aria-label="Kobo home">
+    <span class="sidebar__logo-row">
+      <svg
+        class="sidebar__hammer"
+        class:sidebar__hammer--building={building}
+        viewBox="0 0 24 24"
+        width="26"
+        height="26"
+        aria-hidden="true"
+        use:hammerTitle={building ? "Kobo is building an agent." : undefined}
+      >
+        <circle class="sidebar__hammer-ring" cx="12" cy="12" r="10.5" />
+        <g class="sidebar__hammer-glyph" transform="rotate(45 12 12)">
+          <rect x="10.6" y="7.4" width="2.8" height="9.6" rx="1.2" />
+          <rect x="6.5" y="3.5" width="11" height="4.2" rx="1.2" />
+        </g>
+      </svg>
+      <span class="sidebar__wordmark">Kobo</span>
+    </span>
     <span class="sidebar__tagline">assembly room</span>
   </a>
 
@@ -88,9 +137,63 @@
     text-decoration: none;
   }
 
+  .sidebar__logo-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
   .sidebar__wordmark {
     font-size: 1.3rem;
     font-weight: 600;
+  }
+
+  /* The hammer mark: a simple ring (amber accent) framing one hammer glyph
+     (ink), head angled up-right — the "ink/amber palette tokens" the ruling
+     asks for, at rest. */
+  .sidebar__hammer {
+    flex-shrink: 0;
+  }
+
+  .sidebar__hammer-ring {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 1.5;
+  }
+
+  .sidebar__hammer-glyph {
+    fill: var(--ink);
+  }
+
+  /* The pulse: while an agent is pending/provisioning, the hammer breathes
+     green — the same "Ready" green (--ok) StatusBadge's own dot uses, not
+     the amber --pulse token (that one means "still working" on a status
+     dot; here the room itself is doing the work, so it reads as progress,
+     not a warning). */
+  .sidebar__hammer--building .sidebar__hammer-glyph {
+    fill: var(--ok);
+  }
+
+  .sidebar__hammer--building {
+    animation: hammer-pulse 1.6s ease-in-out infinite;
+  }
+
+  @keyframes hammer-pulse {
+    0%,
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.75;
+      transform: scale(1.12);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar__hammer--building {
+      animation: none;
+    }
   }
 
   .sidebar__tagline {

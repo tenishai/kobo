@@ -340,7 +340,7 @@ describe("CreateModal — the group menu has a commons, a directory, and a door 
     return option.value;
   }
 
-  it("sections the select: Shared first, Engineering groups next, My group is not listed last and outside both optgroups", async () => {
+  it("sections the select: My group is not listed first, then Shared, then Engineering groups (group-menu-leads-with-the-door ruling)", async () => {
     stubCreateModalCatalogs({
       "/api/catalog/groups": {
         groups: [
@@ -353,8 +353,19 @@ describe("CreateModal — the group menu has a commons, a directory, and a door 
     renderWithClient(CreateModal, { open: true, onclose: () => {} });
 
     const groupSelect = (await screen.findByLabelText("Group")) as HTMLSelectElement;
+    const children = Array.from(groupSelect.children);
+
+    // The disabled "Choose a group" placeholder is still the very first
+    // child (untouched by this ruling); "My group is not listed..." is the
+    // first SELECTABLE option right after it, outside any optgroup.
+    expect((children[0] as HTMLOptionElement).disabled).toBe(true);
+    expect(children[1].tagName).toBe("OPTION");
+    expect(children[1].textContent).toBe("My group is not listed...");
+
     const optgroups = Array.from(groupSelect.querySelectorAll("optgroup"));
     expect(optgroups.map((g) => g.label)).toEqual(["Shared", "Engineering groups"]);
+    // The not-listed option leads straight into the Shared optgroup.
+    expect(children[1].nextElementSibling).toBe(optgroups[0]);
 
     const sharedOptions = Array.from(optgroups[0].querySelectorAll("option"));
     expect(sharedOptions.map((o) => o.value)).toEqual(["shared"]);
@@ -362,16 +373,9 @@ describe("CreateModal — the group menu has a commons, a directory, and a door 
 
     const engineeringOptions = Array.from(optgroups[1].querySelectorAll("option"));
     expect(engineeringOptions.map((o) => o.value)).toEqual(["payments-eng", "growth"]);
-
-    // "My group is not listed..." sits OUTSIDE both optgroups, as the very
-    // last child of the select itself.
-    const lastChild = groupSelect.lastElementChild as HTMLOptionElement;
-    expect(lastChild.tagName).toBe("OPTION");
-    expect(lastChild.textContent).toBe("My group is not listed...");
-    expect(optgroups[1].nextElementSibling).toBe(lastChild);
   });
 
-  it("sections the select: Non-engineering groups sits between Engineering groups and My group is not listed (create-modal non-engineering-wing ruling)", async () => {
+  it("sections the select: Non-engineering groups sits between Shared and Engineering groups (create-modal non-engineering-wing ruling)", async () => {
     stubCreateModalCatalogs({
       "/api/catalog/groups": {
         groups: [
@@ -385,22 +389,21 @@ describe("CreateModal — the group menu has a commons, a directory, and a door 
     renderWithClient(CreateModal, { open: true, onclose: () => {} });
 
     const groupSelect = (await screen.findByLabelText("Group")) as HTMLSelectElement;
+    const children = Array.from(groupSelect.children);
+
+    // "My group is not listed..." still leads, right after the placeholder.
+    expect(children[1].textContent).toBe("My group is not listed...");
+
     const optgroups = Array.from(groupSelect.querySelectorAll("optgroup"));
     expect(optgroups.map((g) => g.label)).toEqual([
       "Shared",
-      "Engineering groups",
       "Non-engineering groups",
+      "Engineering groups",
     ]);
+    expect(children[1].nextElementSibling).toBe(optgroups[0]);
 
-    const nonEngineeringOptions = Array.from(optgroups[2].querySelectorAll("option"));
+    const nonEngineeringOptions = Array.from(optgroups[1].querySelectorAll("option"));
     expect(nonEngineeringOptions.map((o) => o.value)).toEqual(["legal", "finance"]);
-
-    // "My group is not listed..." still sits outside every optgroup, as the
-    // very last child of the select -- right after the new section.
-    const lastChild = groupSelect.lastElementChild as HTMLOptionElement;
-    expect(lastChild.tagName).toBe("OPTION");
-    expect(lastChild.textContent).toBe("My group is not listed...");
-    expect(optgroups[2].nextElementSibling).toBe(lastChild);
   });
 
   it("omits the Non-engineering groups optgroup entirely when the room has none configured", async () => {
