@@ -15,6 +15,15 @@
 //   ["agents", name, "slack", "manifest"]           - an agent's rendered
 //                                                      Slack manifest (fetched
 //                                                      lazily, once opened)
+//   ["agents", name, "invites"]                     - an agent's cross-group
+//                                                      colleagueship invites,
+//                                                      incoming + outgoing
+//                                                      (access-control Task
+//                                                      C1/C2)
+//   ["agents", name, "grants"]                      - an agent's per-user
+//                                                      visibility grants
+//                                                      (access-control Task
+//                                                      C1/C2)
 //   ["catalog", "models"]                           - the model list + default
 //   ["catalog", "groups"]                           - the room's named ACL
 //                                                      groups (access-control
@@ -54,8 +63,11 @@ import {
   type ChatMessage,
   type ColleagueConversation,
   type ColleagueConversationDetail,
+  type Grant,
   type GroupOption,
   type IntakeFile,
+  type Invite,
+  type InvitesResult,
   type KnowledgeFile,
   type NameSuggestion,
   type OrgStatus,
@@ -67,11 +79,15 @@ import {
   type ToolingFile,
   type ToolingListResponse,
   type Whoami,
+  acceptInvite,
   addCatalogSkill,
+  addGrant,
   chatWithAgent,
   connectSlack,
   createAgent,
+  createInvite,
   createPersona,
+  declineInvite,
   deleteIntake,
   deleteKnowledgeFile,
   deleteSkill,
@@ -94,13 +110,17 @@ import {
   importTooling,
   listAgents,
   listColleagueConversations,
+  listGrants,
   listIntake,
+  listInvites,
   listKnowledge,
   listSkills,
   listTooling,
   patchAgentMetadata,
   regenerateAgentMetadata,
+  removeGrant,
   retryAgent,
+  revokeInvite,
   saveKnowledgeFile,
   saveLocalSkill,
   saveSlackChannels,
@@ -743,6 +763,116 @@ export function saveSlackChannelsMutation(
 }
 
 /**
+ * An agent's cross-group colleagueship invites (access-control Task C2) --
+ * `GET /api/agents/{name}/invites`, owner-or-operator only server-side. No
+ * polling: this is the same "edits are user-driven" reasoning `knowledgeQuery`
+ * documents, plus every mutation below invalidates this key on success. The
+ * Access tab's own visibility (AgentDetail.svelte) is driven by whether THIS
+ * query succeeds at all -- a 403/404 here means the tab doesn't render for
+ * the current caller, per the access-control design spec's "visible to its
+ * owner and operators" rule for the Access tab.
+ */
+export function invitesQuery(name: string) {
+  return queryOptions({
+    queryKey: ["agents", name, "invites"] as const,
+    queryFn: () => listInvites(name),
+  });
+}
+
+/**
+ * Requests colleague access from one of the CALLER's OWN agents to another
+ * agent -- both names travel with `mutate`, not bound into the factory like
+ * every other agent-scoped mutation here, because the "Request colleague
+ * access" affordance (RequestAccessCard.svelte) lets the human pick which
+ * of their own agents is asking via a `<select>`, so the FROM side can
+ * change between renders of the same mounted component. On success,
+ * invalidates the FROM agent's own invites query so the fresh outgoing row
+ * shows up if its Access tab happens to already be open elsewhere.
+ */
+export function createInviteMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: ({ fromAgent, toAgent }: { fromAgent: string; toAgent: string }) =>
+      createInvite(fromAgent, toAgent),
+    onSuccess: (_result: Invite, variables: { fromAgent: string; toAgent: string }) => {
+      queryClient.invalidateQueries({
+        queryKey: ["agents", variables.fromAgent, "invites"],
+      });
+    },
+  };
+}
+
+/**
+ * Accepts a pending incoming invite; on success, invalidates `name`'s own
+ * invites query so the accepted row (and its new state) shows up.
+ */
+export function acceptInviteMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (inviteId: number) => acceptInvite(inviteId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "invites"] });
+    },
+  };
+}
+
+/** Declines a pending incoming invite; same invalidation as `acceptInviteMutation`. */
+export function declineInviteMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (inviteId: number) => declineInvite(inviteId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "invites"] });
+    },
+  };
+}
+
+/**
+ * Revokes a pending or accepted invite from either side; same invalidation
+ * as `acceptInviteMutation` -- the one query every invite state change here
+ * needs to refresh.
+ */
+export function revokeInviteMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (inviteId: number) => revokeInvite(inviteId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "invites"] });
+    },
+  };
+}
+
+/** An agent's per-user visibility grants (access-control Task C2) -- `GET
+ * /api/agents/{name}/grants`, owner-or-operator only server-side. No polling,
+ * same reasoning as `invitesQuery` above. */
+export function grantsQuery(name: string) {
+  return queryOptions({
+    queryKey: ["agents", name, "grants"] as const,
+    queryFn: () => listGrants(name),
+  });
+}
+
+/**
+ * Grants an email visibility into this agent; on success, invalidates this
+ * agent's grants query so the new row (or the existing one, on the
+ * idempotent re-grant path) shows up.
+ */
+export function addGrantMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (email: string) => addGrant(name, email),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "grants"] });
+    },
+  };
+}
+
+/** Removes a per-user visibility grant; same invalidation as `addGrantMutation`. */
+export function removeGrantMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (email: string) => removeGrant(name, email),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "grants"] });
+    },
+  };
+}
+
+/**
  * Edit details' save (persona-metadata plan Task 3/4): PATCHes whichever of
  * team/purpose_tags/capability are submitted; on success, invalidates the
  * agent detail query so the saved values (and the card's fresh delivery
@@ -862,8 +992,11 @@ export type {
   ChatMessage,
   ColleagueConversation,
   ColleagueConversationDetail,
+  Grant,
   GroupOption,
   IntakeFile,
+  Invite,
+  InvitesResult,
   KnowledgeFile,
   NameSuggestion,
   OrgStatus,

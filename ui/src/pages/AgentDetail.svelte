@@ -7,6 +7,7 @@
   // this component only renders whatever state that query is in, same
   // loading/error/populated split Dashboard already uses.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
+  import AccessPanel from "../components/AccessPanel.svelte";
   import ChatPanel from "../components/ChatPanel.svelte";
   import ColleagueConversations from "../components/ColleagueConversations.svelte";
   import DangerZone from "../components/DangerZone.svelte";
@@ -14,6 +15,7 @@
   import FirstReply from "../components/FirstReply.svelte";
   import MemoryPanel from "../components/MemoryPanel.svelte";
   import MetadataDetails from "../components/MetadataDetails.svelte";
+  import RequestAccessCard from "../components/RequestAccessCard.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import SkillsPanel from "../components/SkillsPanel.svelte";
   import SlackPanel from "../components/SlackPanel.svelte";
@@ -24,6 +26,7 @@
   import {
     agentQuery,
     generateAvatarMutation,
+    invitesQuery,
     retryAgentMutation,
     uploadAvatarMutation,
   } from "../lib/queries";
@@ -40,6 +43,22 @@
 
   const queryClient = useQueryClient();
   const agent = createQuery(agentQuery(name));
+
+  // The Access tab's own visibility probe (access-control Task C2): fired
+  // independently of which tab is selected, and independently of the Access
+  // tab even existing yet, since that's exactly what this decides. A 200
+  // means the caller is this agent's owner or a room operator (the Access
+  // tab renders, see `tabs` below); a 403 means the agent is visible but
+  // not theirs to administer (the "Request colleague access" card renders
+  // instead, right below); anything else (a 404, in practice unreachable
+  // here since a 404 on the AGENT itself would already have kept this page
+  // from ever mounting `$agent.data`) renders neither. Deliberately never
+  // keyed on `whoami.operator` -- see `Whoami`'s own WATCH ITEM doc comment
+  // in api.ts and `visibleTabs`'s doc comment in tabs.ts -- this tab is
+  // exactly as real as the server's own gate on this route, nothing a
+  // client-side flag could fake or fall out of sync with.
+  const invites = createQuery(invitesQuery(name));
+
   const retry = createMutation(retryAgentMutation(queryClient, name));
   const generateAvatar = createMutation(generateAvatarMutation(queryClient, name));
   const uploadAvatar = createMutation(uploadAvatarMutation(queryClient, name));
@@ -254,7 +273,11 @@
       </p>
     {/if}
 
-    {@const tabs = visibleTabs()}
+    {#if $invites.isError && $invites.error instanceof ApiError && $invites.error.status === 403}
+      <RequestAccessCard toAgentName={data.name} />
+    {/if}
+
+    {@const tabs = visibleTabs($invites.isSuccess)}
     <div class="detail-tabs">
       <div class="detail-tabs__bar" role="tablist" aria-label="Agent sections">
         <!-- Every panel mounts regardless of status (see the tabpanel loop
@@ -430,10 +453,16 @@
             <SkillsPanel agentName={data.name} frozen={isFrozen(data.status)} />
           {:else if tab === "tooling"}
             <ToolingPanel agentName={data.name} frozen={isFrozen(data.status)} />
-          {:else}
+          {:else if tab === "slack"}
             <SlackPanel
               agentName={data.name}
               slack={data.slack}
+              frozen={isFrozen(data.status)}
+            />
+          {:else}
+            <AccessPanel
+              agentName={data.name}
+              groupName={data.group_name}
               frozen={isFrozen(data.status)}
             />
           {/if}

@@ -81,6 +81,8 @@ describe("AgentDetail tabs", () => {
         files: [],
         enforcement: { attested: false, locked: false, locked_file: null },
       },
+      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+      "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": READY_AGENT,
       "/api/": {},
     });
@@ -119,6 +121,8 @@ describe("AgentDetail tabs", () => {
         files: [],
         enforcement: { attested: false, locked: false, locked_file: null },
       },
+      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+      "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": { ...READY_AGENT, status: "provisioning" },
       "/api/": {},
     });
@@ -154,6 +158,8 @@ describe("AgentDetail tabs", () => {
         files: [],
         enforcement: { attested: false, locked: false, locked_file: null },
       },
+      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+      "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": { ...READY_AGENT, status: "destroying", destroy_visible: true },
       "/api/": {},
     });
@@ -173,6 +179,8 @@ describe("AgentDetail tabs", () => {
         files: [],
         enforcement: { attested: false, locked: false, locked_file: null },
       },
+      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+      "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": {
         ...READY_AGENT,
         steps: [{ name: "clone", label: "Clone the repo", status: "done", error: null }],
@@ -198,6 +206,8 @@ describe("AgentDetail tabs", () => {
         files: [],
         enforcement: { attested: false, locked: false, locked_file: null },
       },
+      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+      "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": {
         ...READY_AGENT,
         team: "growth",
@@ -229,6 +239,8 @@ describe("AgentDetail tabs", () => {
         files: [],
         enforcement: { attested: false, locked: false, locked_file: null },
       },
+      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+      "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": {
         ...READY_AGENT,
         capability: "Answers billing questions and escalates refunds.",
@@ -258,6 +270,8 @@ describe("AgentDetail tabs", () => {
         files: [],
         enforcement: { attested: false, locked: false, locked_file: null },
       },
+      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+      "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": { ...READY_AGENT, created_by: "owner@example.com" },
       "/api/": {},
     });
@@ -277,6 +291,8 @@ describe("AgentDetail tabs", () => {
         files: [],
         enforcement: { attested: false, locked: false, locked_file: null },
       },
+      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+      "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": READY_AGENT,
       "/api/": {},
     });
@@ -296,6 +312,8 @@ describe("AgentDetail tabs", () => {
         files: [],
         enforcement: { attested: false, locked: false, locked_file: null },
       },
+      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+      "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": {
         ...READY_AGENT,
         status: "destroying",
@@ -323,6 +341,8 @@ describe("AgentDetail tabs", () => {
         files: [],
         enforcement: { attested: false, locked: false, locked_file: null },
       },
+      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+      "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": READY_AGENT,
       "/api/": {},
     });
@@ -349,6 +369,8 @@ describe("AgentDetail tabs", () => {
         files: [],
         enforcement: { attested: false, locked: false, locked_file: null },
       },
+      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+      "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": { ...READY_AGENT, status: "destroying", destroy_visible: true },
       "/api/": {},
     });
@@ -399,6 +421,8 @@ describe("AgentDetail tabs", () => {
         files: [],
         enforcement: { attested: false, locked: false, locked_file: null },
       },
+      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+      "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": { ...READY_AGENT, has_avatar: true },
       "/api/": {},
     });
@@ -467,6 +491,8 @@ describe("AgentDetail tabs", () => {
             files: [],
             enforcement: { attested: false, locked: false, locked_file: null },
           },
+          "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+          "/api/agents/warden/grants": { grants: [] },
           "/api/agents/warden": READY_AGENT,
         };
         for (const [needle, payload] of Object.entries(routes)) {
@@ -512,5 +538,102 @@ describe("AgentDetail tabs", () => {
     expect(putCall).toBeDefined();
     const sentBody = (putCall as [RequestInfo | URL, RequestInit])[1].body as ArrayBuffer;
     expect(new Uint8Array(sentBody)).toEqual(pngBytes);
+  });
+});
+
+describe("AgentDetail Access tab (access-control Task C2)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.stubGlobal("EventSource", NoopEventSource);
+    location.hash = "#/agents/warden";
+    window.dispatchEvent(new Event("hashchange"));
+  });
+
+  /** Every route AgentDetail's panels touch, with `/api/agents/warden/invites`
+   * answering `invitesStatus`/`invitesBody` -- the one thing that decides
+   * whether the Access tab shows at all (per `tabs.ts`'s own doc comment,
+   * never `whoami.operator`). `/api/whoami` and the bare `/api/agents` list
+   * are included unconditionally since RequestAccessCard (mounted whenever
+   * invites 403s) reads both for its own-agents picker. */
+  function stubAccessProbe(invitesStatus: number, invitesBody: unknown): void {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/agents/warden/invites")) {
+          return new Response(JSON.stringify(invitesBody), {
+            status: invitesStatus,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const routes: Record<string, unknown> = {
+          "/api/colleagues/conversations": { conversations: [] },
+          "/api/agents/warden/knowledge": { files: [] },
+          "/api/agents/warden/intake": { files: [] },
+          "/api/agents/warden/skills": { skills: [] },
+          "/api/agents/warden/tooling": {
+            files: [],
+            enforcement: { attested: false, locked: false, locked_file: null },
+          },
+          "/api/agents/warden/grants": { grants: [] },
+          "/api/agents/warden": READY_AGENT,
+          "/api/whoami": {
+            email: "me@example.com",
+            operator: false,
+            groups: [],
+            groups_unavailable: false,
+          },
+          "/api/agents": { agents: [], groups_unavailable: false },
+        };
+        for (const [needle, payload] of Object.entries(routes)) {
+          if (url.includes(needle)) {
+            return new Response(JSON.stringify(payload), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      }),
+    );
+  }
+
+  it("owner/operator (invites 200): the Access tab shows, and its People/Agents sections render", async () => {
+    stubAccessProbe(200, { incoming: [], outgoing: [] });
+    renderWithClient(AgentDetail);
+
+    const accessTab = await screen.findByRole("tab", { name: "Access" });
+    expect((accessTab as HTMLButtonElement).disabled).toBe(false);
+    await fireEvent.click(accessTab);
+
+    const panel = document.getElementById("panel-access") as HTMLElement;
+    expect(within(panel).getByText("People")).not.toBeNull();
+    expect(within(panel).getByText("Agents")).not.toBeNull();
+    // No group on this fixture (group_name: null) -- the no-group fact
+    // line, not the "Everyone in <group>" one.
+    expect(within(panel).getByText(/This agent is not in a group\./)).not.toBeNull();
+
+    // A caller who already administers this agent isn't shown the
+    // request-access affordance meant for someone else's agent.
+    expect(screen.queryByText("Request colleague access")).toBeNull();
+  });
+
+  it("stranger (invites 403): no Access tab, but the Request colleague access card renders instead", async () => {
+    stubAccessProbe(403, { error: "Only this agent's owner or a room operator can change it." });
+    renderWithClient(AgentDetail);
+
+    await screen.findByRole("tab", { name: "Chat" });
+    expect(await screen.findByText("Request colleague access")).not.toBeNull();
+    expect(screen.queryByRole("tab", { name: "Access" })).toBeNull();
+  });
+
+  it("a caller who owns nothing sees the explanatory copy in the request-access card, not a picker", async () => {
+    stubAccessProbe(403, { error: "Only this agent's owner or a room operator can change it." });
+    renderWithClient(AgentDetail);
+
+    expect(
+      await screen.findByText(/you need an agent of your own/i),
+    ).not.toBeNull();
+    expect(screen.queryByRole("combobox")).toBeNull();
   });
 });

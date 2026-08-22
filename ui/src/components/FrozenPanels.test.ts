@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { screen } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import AccessPanel from "./AccessPanel.svelte";
 import ChatPanel from "./ChatPanel.svelte";
 import MemoryPanel from "./MemoryPanel.svelte";
 import MetadataDetails from "./MetadataDetails.svelte";
@@ -34,6 +35,11 @@ const CASES: Array<[string, unknown, Record<string, unknown>]> = [
       capability: null,
     },
   ],
+  [
+    "AccessPanel",
+    AccessPanel,
+    { agentName: "warden", groupName: "growth", frozen: true },
+  ],
 ];
 
 describe("frozen panels disable every control", () => {
@@ -56,6 +62,8 @@ describe("frozen panels disable every control", () => {
         files: [],
         enforcement: { attested: false, locked: false, locked_file: null },
       },
+      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+      "/api/agents/warden/grants": { grants: [] },
       "/api/": {},
     });
   });

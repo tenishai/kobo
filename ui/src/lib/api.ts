@@ -166,6 +166,37 @@ export type Whoami = {
   groups_unavailable: boolean;
 };
 
+/** A leak-safe reference to one side of an invite (access-control Task C1's
+ * `_agent_ref`): a name plus that agent's group, nothing else -- the shape
+ * every invite's `to_agent` renders through, since that side may sit
+ * outside the caller's own visible set. */
+export type InviteAgentRef = { name: string; group_name: string | null };
+
+/** One cross-group colleagueship invite (`_invite_repr`, access-control
+ * Task C1) -- `from_agent` is always a bare name (the caller of every route
+ * that can see an invite at all already has full standing on that side);
+ * `to_agent` is capped to `InviteAgentRef`. `status` moves pending ->
+ * accepted/declined, or -> revoked from either pending or accepted. */
+export type Invite = {
+  id: number;
+  from_agent: string;
+  to_agent: InviteAgentRef;
+  status: "pending" | "accepted" | "declined" | "revoked";
+  requested_by: string | null;
+  decided_by: string | null;
+  created_at: string;
+  decided_at: string | null;
+};
+
+/** `GET /api/agents/{name}/invites`'s response: every invite naming this
+ * agent, split by which side it's on. */
+export type InvitesResult = { incoming: Invite[]; outgoing: Invite[] };
+
+/** One per-user visibility grant (`GET/POST /api/agents/{name}/grants`) --
+ * `added_by` is the verified email that created the grant, `null` for one
+ * added while IAP was off. */
+export type Grant = { email: string; added_by: string | null };
+
 export type ChatMessage = { role: "user" | "agent"; text: string };
 
 /** One row of the room's colleagues switchboard admin surface (the
@@ -1050,4 +1081,87 @@ export async function uploadAvatar(name: string, png: ArrayBuffer): Promise<{ sh
     body: png,
   });
   return parse<{ sha: string }>(res);
+}
+
+// --- Cross-group colleagueship: invites + per-user grants (access-control
+// arc, Task C1 API / Task C2 UI) ---------------------------------------------
+
+/** `GET /api/agents/{name}/invites`: every invite naming this agent, split
+ * into incoming (this agent is the TO side) and outgoing (this agent is the
+ * FROM side). Owner-or-operator only server-side -- a 403/404 here is how
+ * the Access tab (AgentDetail.svelte) decides it isn't allowed to show at
+ * all for the current caller. */
+export async function listInvites(name: string): Promise<InvitesResult> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/invites`);
+  return parse<InvitesResult>(res);
+}
+
+/** `POST /api/agents/{name}/invites`: requests cross-group colleague access
+ * from `name` (the FROM agent, must be owned/operated by the caller) to
+ * `toAgent` (the TO agent, may sit outside the caller's own visible set --
+ * that's the feature, not a hole in it). */
+export async function createInvite(name: string, toAgent: string): Promise<Invite> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/invites`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ to_agent: toAgent }),
+  });
+  return parse<Invite>(res);
+}
+
+/** `POST /api/invites/{id}/accept`: owner-or-operator of the invite's TO
+ * agent only. */
+export async function acceptInvite(id: number): Promise<Invite> {
+  const res = await fetch(`/api/invites/${encodeURIComponent(String(id))}/accept`, {
+    method: "POST",
+  });
+  return parse<Invite>(res);
+}
+
+/** `POST /api/invites/{id}/decline`: owner-or-operator of the invite's TO
+ * agent only. */
+export async function declineInvite(id: number): Promise<Invite> {
+  const res = await fetch(`/api/invites/${encodeURIComponent(String(id))}/decline`, {
+    method: "POST",
+  });
+  return parse<Invite>(res);
+}
+
+/** `DELETE /api/invites/{id}`: owner-or-operator of EITHER side may walk
+ * away from a pending or accepted invite. */
+export async function revokeInvite(id: number): Promise<Invite> {
+  const res = await fetch(`/api/invites/${encodeURIComponent(String(id))}`, {
+    method: "DELETE",
+  });
+  return parse<Invite>(res);
+}
+
+/** `GET /api/agents/{name}/grants`: every per-user visibility grant on this
+ * agent, owner-or-operator only. */
+export async function listGrants(name: string): Promise<Grant[]> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/grants`);
+  const data = await parse<{ grants: Grant[] }>(res);
+  return data.grants;
+}
+
+/** `POST /api/agents/{name}/grants`: grants `email` visibility into this
+ * agent as if they owned it. Idempotent server-side -- re-granting an
+ * already-granted email returns the existing row rather than erroring. */
+export async function addGrant(name: string, email: string): Promise<Grant> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/grants`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  return parse<Grant>(res);
+}
+
+/** `DELETE /api/agents/{name}/grants/{email}`: removes a per-user visibility
+ * grant. */
+export async function removeGrant(name: string, email: string): Promise<{ removed: boolean }> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/grants/${encodeURIComponent(email)}`,
+    { method: "DELETE" },
+  );
+  return parse<{ removed: boolean }>(res);
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { defaultTab, TAB_LABELS, visibleTabs } from "./tabs";
 
 describe("visibleTabs", () => {
-  it("always includes slack last", () => {
+  it("always includes slack last, with no argument", () => {
     expect(visibleTabs()).toEqual([
       "overview",
       "chat",
@@ -10,6 +10,29 @@ describe("visibleTabs", () => {
       "skills",
       "tooling",
       "slack",
+    ]);
+  });
+
+  it("omits access when showAccess is false", () => {
+    expect(visibleTabs(false)).toEqual([
+      "overview",
+      "chat",
+      "memory",
+      "skills",
+      "tooling",
+      "slack",
+    ]);
+  });
+
+  it("appends access last when showAccess is true", () => {
+    expect(visibleTabs(true)).toEqual([
+      "overview",
+      "chat",
+      "memory",
+      "skills",
+      "tooling",
+      "slack",
+      "access",
     ]);
   });
 });
@@ -23,6 +46,7 @@ describe("TAB_LABELS", () => {
       skills: "Skills",
       tooling: "Tooling",
       slack: "Slack",
+      access: "Access",
     });
   });
 });
