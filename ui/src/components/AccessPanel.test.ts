@@ -226,6 +226,46 @@ describe("AccessPanel", () => {
     ).toBe(true);
   });
 
+  it("shows the revocation-lag note next to an active pair's Revoke button", async () => {
+    // Cabal's D-017: a revoked pass rides ~5 more minutes on any token
+    // already minted for it -- the room owes the caller that same honesty
+    // right where they'd click Revoke.
+    stubFetch({
+      "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/invites": {
+        incoming: [],
+        outgoing: [
+          {
+            id: 12,
+            from_agent: "warden",
+            to_agent: { name: "payroll-bot", group_name: "payments-eng" },
+            status: "accepted",
+            requested_by: "owner@example.com",
+            decided_by: "payroll-owner@example.com",
+            created_at: "2026-08-20T00:00:00Z",
+            decided_at: "2026-08-21T00:00:00Z",
+          },
+        ],
+      },
+    });
+    renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
+
+    expect(
+      await screen.findByText("Takes effect within a few minutes."),
+    ).not.toBeNull();
+  });
+
+  it("does not show the revocation-lag note when there are no active pairs", async () => {
+    stubFetch({
+      "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/invites": EMPTY_INVITES,
+    });
+    renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
+
+    await screen.findByText(/no cross-group pairs/i);
+    expect(screen.queryByText("Takes effect within a few minutes.")).toBeNull();
+  });
+
   it("shows empty-state copy when there are no invites at all", async () => {
     stubFetch({
       "/api/agents/warden/grants": EMPTY_GRANTS,

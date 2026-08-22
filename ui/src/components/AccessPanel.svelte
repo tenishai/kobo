@@ -280,6 +280,7 @@
         {#if acceptedPairs.length === 0}
           <EmptyState message="No cross-group pairs yet." />
         {:else}
+          <p class="access-panel__fact">Takes effect within a few minutes.</p>
           <ul class="access-panel__list">
             {#each acceptedPairs as invite (invite.id)}
               <li class="access-panel__row">
