@@ -259,6 +259,63 @@ describe("SlackPanel", () => {
     expect(await screen.findByText("Copy failed. Select the text instead.")).not.toBeNull();
   });
 
+  it("the bot token toggle reveals the pasted value as plain text, then re-hides it", async () => {
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: IDLE_SLACK,
+      frozen: false,
+    });
+
+    const botToken = screen.getByLabelText("Bot token") as HTMLInputElement;
+    await fireEvent.input(botToken, { target: { value: "xoxb-secret" } });
+    expect(botToken.type).toBe("password");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Show bot token" }));
+    expect(botToken.type).toBe("text");
+    expect(botToken.value).toBe("xoxb-secret");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Hide bot token" }));
+    expect(botToken.type).toBe("password");
+    expect(botToken.value).toBe("xoxb-secret");
+  });
+
+  it("the app-level token toggle reveals the pasted value as plain text, then re-hides it", async () => {
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: IDLE_SLACK,
+      frozen: false,
+    });
+
+    const appToken = screen.getByLabelText("App-level token") as HTMLInputElement;
+    await fireEvent.input(appToken, { target: { value: "xapp-secret" } });
+    expect(appToken.type).toBe("password");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Show app-level token" }));
+    expect(appToken.type).toBe("text");
+    expect(appToken.value).toBe("xapp-secret");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Hide app-level token" }));
+    expect(appToken.type).toBe("password");
+  });
+
+  it("the two token toggles are independent: revealing bot token leaves app-level token masked", async () => {
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: IDLE_SLACK,
+      frozen: false,
+    });
+
+    const botToken = screen.getByLabelText("Bot token") as HTMLInputElement;
+    const appToken = screen.getByLabelText("App-level token") as HTMLInputElement;
+    await fireEvent.input(botToken, { target: { value: "xoxb-secret" } });
+    await fireEvent.input(appToken, { target: { value: "xapp-secret" } });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Show bot token" }));
+
+    expect(botToken.type).toBe("text");
+    expect(appToken.type).toBe("password");
+  });
+
   it("Finish setup stays disabled until App ID, bot token, and app token are all filled", async () => {
     renderWithClient(SlackPanel, {
       agentName: "warden",

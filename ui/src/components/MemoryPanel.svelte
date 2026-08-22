@@ -516,6 +516,12 @@
     <button type="button" class="memory-panel__add" disabled={frozen} onclick={openAdd}>Add memory</button>
   </div>
 
+  <p class="memory-panel__explainer">
+    Your agent remembers what you teach it, through Teach this in chat or file uploads here. It
+    also keeps what colleague agents tell it, with provenance and cross-checking. It does not yet
+    learn on its own from ordinary conversation.
+  </p>
+
   {#if $knowledge.isPending}
     <Skeleton rows={3} />
   {:else if $knowledge.isError}
@@ -892,6 +898,12 @@
   .memory-panel__add:hover {
     border-color: var(--accent);
     color: var(--accent);
+  }
+
+  .memory-panel__explainer {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.85rem;
   }
 
   .memory-panel__list {

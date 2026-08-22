@@ -129,6 +129,15 @@
   let botToken = $state("");
   let appToken = $state("");
 
+  // Per-field show/hide (mis-paste fix): both tokens start masked
+  // (`type="password"`), and each has its own independent toggle so a
+  // pasted value can be checked before Finish setup is pressed. Purely
+  // client-side and pre-submit — it changes nothing about the never-
+  // stored-by-kobo guarantee below, since the value never leaves this
+  // input either way.
+  let showBotToken = $state(false);
+  let showAppToken = $state(false);
+
   const canFinish = $derived(
     appId.trim().length > 0 &&
       botToken.trim().length > 0 &&
@@ -471,26 +480,48 @@
       </div>
       <div class="slack-panel__field">
         <label class="slack-panel__label" for="slack-panel-bot-token">Bot token</label>
-        <input
-          id="slack-panel-bot-token"
-          class="slack-panel__input"
-          type="password"
-          autocomplete="off"
-          bind:value={botToken}
-          disabled={frozen}
-        />
+        <div class="slack-panel__token-row">
+          <input
+            id="slack-panel-bot-token"
+            class="slack-panel__input"
+            type={showBotToken ? "text" : "password"}
+            autocomplete="off"
+            bind:value={botToken}
+            disabled={frozen}
+          />
+          <button
+            type="button"
+            class="slack-panel__token-toggle"
+            disabled={frozen}
+            aria-label={showBotToken ? "Hide bot token" : "Show bot token"}
+            onclick={() => (showBotToken = !showBotToken)}
+          >
+            {showBotToken ? "Hide" : "Show"}
+          </button>
+        </div>
         <p class="slack-panel__hint">Starts with xoxb-.</p>
       </div>
       <div class="slack-panel__field">
         <label class="slack-panel__label" for="slack-panel-app-token">App-level token</label>
-        <input
-          id="slack-panel-app-token"
-          class="slack-panel__input"
-          type="password"
-          autocomplete="off"
-          bind:value={appToken}
-          disabled={frozen}
-        />
+        <div class="slack-panel__token-row">
+          <input
+            id="slack-panel-app-token"
+            class="slack-panel__input"
+            type={showAppToken ? "text" : "password"}
+            autocomplete="off"
+            bind:value={appToken}
+            disabled={frozen}
+          />
+          <button
+            type="button"
+            class="slack-panel__token-toggle"
+            disabled={frozen}
+            aria-label={showAppToken ? "Hide app-level token" : "Show app-level token"}
+            onclick={() => (showAppToken = !showAppToken)}
+          >
+            {showAppToken ? "Hide" : "Show"}
+          </button>
+        </div>
         <p class="slack-panel__hint">Starts with xapp-.</p>
       </div>
 
@@ -817,6 +848,38 @@
   .slack-panel__input:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
+  }
+
+  .slack-panel__token-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .slack-panel__token-row .slack-panel__input {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .slack-panel__token-toggle {
+    flex-shrink: 0;
+    padding: var(--space-2xs) var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--muted);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .slack-panel__token-toggle:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .slack-panel__token-toggle:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .slack-panel__finish {
