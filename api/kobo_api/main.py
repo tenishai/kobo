@@ -958,11 +958,14 @@ def _flatten_conversation_entries(detail: dict) -> list[dict]:
     return entries
 
 
-# The feed's scrollback cap -- also what this route asks `list_conversations`
-# for (the switchboard's own hard ceiling on that call, per its route's
-# `limit = max(1, min(limit, 200))`), since each surviving conversation
-# contributes at most 2 entries and requesting fewer conversations than the
-# entry cap would make the cap under-fill for no reason.
+# The feed's scrollback cap -- applied AFTER scoping to `agent`'s own
+# conversations, never as a `limit` passed to `list_conversations` itself.
+# Fix round: a room-wide `limit` there truncates the ROOM'S most-recent
+# conversations before `agent`'s own are ever picked out, so a quiet agent
+# whose real conversations are older than the room's other traffic gets
+# silently crowded out to an empty feed -- see `colleague_feed`'s own
+# docstring for the full tradeoff. Each surviving conversation contributes
+# at most 2 entries, so this cap counts flattened entries, not conversations.
 _FEED_SCROLLBACK_CAP = 200
 
 
@@ -3967,6 +3970,32 @@ def create_app(
         Capped to the most recent `_FEED_SCROLLBACK_CAP` (200) entries;
         `truncated` is true whenever more existed than that.
 
+        Fix round: scope FIRST, cap AFTER. `list_conversations` below is
+        called with NO `limit` -- the same no-limit-passthrough the retired
+        `list_colleague_conversations` route used whenever its own `limit`
+        query param was left unset (see that route, and `CabalClient.
+        list_conversations`'s own docstring: "omitted entirely ... so the
+        switchboard's own default applies"). The room-wide result is
+        filtered down to `agent`'s own conversations BEFORE anything is
+        flattened or capped -- only `agent`'s own scoped, flattened entries
+        are ever measured against `_FEED_SCROLLBACK_CAP`, so `truncated`
+        reflects whether `agent`'s OWN history overflowed the cap, never
+        the room's. Passing a room-wide `limit` here was the bug this fixed:
+        it truncated the ROOM's most-recent conversations before scoping
+        ever ran, so a quiet agent whose real (possibly older) conversations
+        fell outside that room-wide window got silently crowded out to an
+        empty feed with `truncated: false` -- correct-looking and wrong.
+
+        The tradeoff: this fetch is now unbounded, potentially heavier than
+        the old room-wide-capped call -- but an unbounded fetch is exactly
+        how the pre-terminal `list_colleague_conversations` route always
+        behaved by default, so this is a reversion to that established
+        shape, not a new cost being introduced. If switchboard history ever
+        grows large enough for this fetch itself to hurt, the correct fix
+        is pagination at the cabal admin API -- NOT silently re-adding a
+        room-wide `limit` here and under-fetching a given agent's history
+        again.
+
         `agent` is REQUIRED (a plain, non-Optional `str` -- FastAPI 422s a
         request that omits it, before this body ever runs) and is resolved
         through `_visible_agent_or_404`, the room's one visibility choke
@@ -4000,7 +4029,12 @@ def create_app(
             return gate
 
         try:
-            conversations = clients.cabal.list_conversations(limit=_FEED_SCROLLBACK_CAP)
+            # No `limit` passthrough -- see the docstring's "Fix round"
+            # paragraph. Scoping to `agent` has to run against the room's
+            # WHOLE conversation list, not a room-wide-most-recent slice of
+            # it, or a quiet agent's own history can fall outside that slice
+            # entirely and vanish from its own feed.
+            conversations = clients.cabal.list_conversations()
         except (CabalError, httpx.HTTPError) as exc:
             log.warning("colleague feed list failed for %s: %s", agent, exc)
             return JSONResponse(

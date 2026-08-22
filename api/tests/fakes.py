@@ -1181,7 +1181,15 @@ class FakeCabal:
     `mint_colleague_result`, when given, is `mint_colleague`'s canned
     return value (default a fixed placeholder token string -- never a real
     secret, since this is a fake). `conversations_result`, when given, is
-    `list_conversations`'s canned return value (default `[]`).
+    `list_conversations`'s canned return value (default `[]`) -- when
+    called with a `limit`, `list_conversations` returns the first `limit`
+    items of it (fix round: this fake used to ignore `limit` entirely and
+    always hand back the whole list, which is exactly why the colleague
+    feed route's own room-wide-crowd-out bug had no test that could catch
+    it -- a fake that can't reproduce a real `limit`'s truncation can't
+    stand in for a test that needs to prove truncation is scoped
+    correctly). Ordered most-recent-first in a test's own fixture, same as
+    the real switchboard, so slicing from the front is "the N most recent."
     `conversation_result`, when given, is `get_conversation`'s canned
     return value (default an empty conversation/events shape) -- returned
     for EVERY `task_id` unless that id has its own entry in
@@ -1278,6 +1286,8 @@ class FakeCabal:
         self.list_conversations_calls.append({"limit": limit})
         if self._conversations_error is not None:
             raise CabalError(f"list_conversations failed: {self._conversations_error}")
+        if limit is not None:
+            return self._conversations_result[:limit]
         return self._conversations_result
 
     def get_conversation(self, task_id: str) -> dict:

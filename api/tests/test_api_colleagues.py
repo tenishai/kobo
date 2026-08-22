@@ -690,9 +690,10 @@ def test_feed_flattens_one_conversation_into_ask_then_reply(
         ],
         "truncated": False,
     }
-    # Asked for the max the switchboard allows, since each surviving
-    # conversation contributes up to 2 entries toward the 200-entry cap.
-    assert fake_cabal.list_conversations_calls[-1] == {"limit": 200}
+    # No `limit` passthrough (fix round): scoping to `agent` has to run
+    # against the switchboard's whole conversation list, never a room-wide
+    # slice of it -- see `colleague_feed`'s own docstring.
+    assert fake_cabal.list_conversations_calls[-1] == {"limit": None}
 
 
 def test_feed_strips_a_raw_no_prefix_caller_unchanged(session_factory, config, monkeypatch):
@@ -880,6 +881,121 @@ def test_feed_not_truncated_when_at_or_under_the_cap(session_factory, config, mo
     response = client.get("/api/colleagues/feed", params={"agent": "ward"})
 
     assert response.json()["truncated"] is False
+
+
+# --- Regression: scope FIRST, cap AFTER (fix round 1) -----------------------
+#
+# The High finding this fixed: the room-wide `list_conversations(limit=200)`
+# call truncated to the room's 200 MOST-RECENT conversations before `agent`
+# scoping ever ran, so a quiet agent whose own conversations fell outside
+# that room-wide window vanished from its own feed with `truncated: false`
+# -- correct-looking, silently wrong. Both tests below rely on `FakeCabal.
+# list_conversations` actually honoring `limit` (the separate Low finding:
+# the old fake ignored it entirely, which is exactly why no test caught the
+# High bug in the first place).
+
+
+def test_feed_finds_the_agents_history_past_a_busy_rooms_recent_traffic(
+    session_factory, config, monkeypatch
+):
+    """250 conversations room-wide (most-recent-first, matching the real
+    switchboard's own ordering); only 3 belong to `ward`, and those 3 are
+    the OLDEST of the 250 -- the last three in the list. A room-wide
+    `limit=200` fetch would return only the 200 most recent, none of which
+    are `ward`'s, and the feed would come back empty with `truncated:
+    false`. Scoping against the WHOLE room-wide list finds them."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    _seed_agent(session_factory, cfg)
+    noise = [
+        _feed_summary(f"t-noise-{i}", target="someone-else", caller="agent:other")
+        for i in range(247)
+    ]
+    wards_own = [
+        _feed_summary(f"t-ward-{i}", target="network", caller="agent:ward") for i in range(3)
+    ]
+    summaries = noise + wards_own  # ward's 3 are the last (oldest) of the 250
+    details = {
+        f"t-ward-{i}": _feed_detail(
+            f"t-ward-{i}",
+            target="network",
+            caller="agent:ward",
+            created_at=f"2026-08-01T{i:02d}:00:00Z",
+            updated_at=f"2026-08-01T{i:02d}:00:05Z",
+            ask_text=f"ask-{i}",
+            reply_text=f"reply-{i}",
+        )
+        for i in range(3)
+    }
+    fake_cabal = FakeCabal(conversations_result=summaries, conversation_results=details)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/feed", params={"agent": "ward"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["truncated"] is False
+    assert [e["text"] for e in body["entries"]] == [
+        "ask-0", "reply-0", "ask-1", "reply-1", "ask-2", "reply-2",
+    ]
+    # The noise conversations never even got a detail fetch -- filtered
+    # before that, same as the existing agent-participant-scoping test.
+    assert fake_cabal.get_conversation_calls == ["t-ward-0", "t-ward-1", "t-ward-2"]
+    # And no room-wide `limit` was ever passed -- see `colleague_feed`'s
+    # docstring for why that's the fix, not an oversight.
+    assert fake_cabal.list_conversations_calls[-1] == {"limit": None}
+
+
+def test_feed_caps_the_agents_own_history_even_amid_busier_room_wide_traffic(
+    session_factory, config, monkeypatch
+):
+    """`ward`'s own 101 conversations (-> 202 entries, 2 over the cap) sit
+    BEHIND 150 noisier, more-recent conversations from other agents in the
+    room-wide list -- so a room-wide `limit=200` fetch would only surface
+    50 of `ward`'s 101 conversations (100 entries, under the cap, `
+    truncated: false`), silently dropping the other half of a legitimately
+    busy agent's own history. The fix (unbounded room-wide fetch, scoped
+    after) finds the full 101 and applies the 200-entry cap to `ward`'s OWN
+    scoped, flattened history -- not the room's -- landing on exactly the
+    200 newest entries and `truncated: true`."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    _seed_agent(session_factory, cfg)
+    noise = [
+        _feed_summary(f"t-noise-{i}", target="someone-else", caller="agent:other")
+        for i in range(150)
+    ]
+    n = 101
+    wards_own = [
+        _feed_summary(f"t-ward-{i}", target="network", caller="agent:ward") for i in range(n)
+    ]
+    summaries = noise + wards_own  # ward's own are the older (latter) block
+    details = {}
+    for i in range(n):
+        hh, mm = divmod(i, 60)
+        details[f"t-ward-{i}"] = _feed_detail(
+            f"t-ward-{i}",
+            target="network",
+            caller="agent:ward",
+            created_at=f"2026-08-19T{hh:02d}:{mm:02d}:00Z",
+            updated_at=f"2026-08-19T{hh:02d}:{mm:02d}:01Z",
+            ask_text=f"ask-{i}",
+            reply_text=f"reply-{i}",
+        )
+    fake_cabal = FakeCabal(conversations_result=summaries, conversation_results=details)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/feed", params={"agent": "ward"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["truncated"] is True
+    assert len(body["entries"]) == 200
+    # The 2 oldest entries (t-ward-0's ask + reply) were dropped to make
+    # room -- the noise conversations never contributed an entry at all.
+    assert body["entries"][0]["text"] == "ask-1"
+    assert body["entries"][-1]["text"] == "reply-100"
+    assert fake_cabal.list_conversations_calls[-1] == {"limit": None}
 
 
 def test_feed_list_failure_returns_502_plain_copy(session_factory, config, monkeypatch):
