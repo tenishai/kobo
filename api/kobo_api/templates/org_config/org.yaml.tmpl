@@ -39,6 +39,13 @@ slack_operators: __KOBO_SLACK_OPERATORS__
 # reach this room.
 operators: __KOBO_OPERATORS__
 
+# Names from the groups list below whose members hold operator status
+# room-wide (they see every agent, pass every owner-or-operator gate, and
+# can send or accept an invite on any side) -- resolved through the
+# directory, same as the groups below. Empty (the default) means no group
+# has admin standing; the operators list above is unaffected either way.
+admin_groups: __KOBO_ADMIN_GROUPS__
+
 # Base URL of the switchboard (cabal) service this room registers agents
 # with and (once wired) relays chat through, and the template for an
 # agent's in-cluster a2a endpoint (the directory sync substitutes the

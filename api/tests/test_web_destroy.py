@@ -67,29 +67,37 @@ POLL_INTERVAL_S = 0.02
 # --- Unit-level: _operator_block called directly ------------------------------
 
 
-def _req(email: str | None = None):
+def _req(email: str | None, config: Config):
+    """A minimal stand-in for `Request` -- `_operator_block` reads `request.
+    state.iap_email` directly, but now also reaches `_is_admin(request)`
+    (operator-status-by-group ruling), which reads `request.app.state.
+    config`/`.clients` -- so this stand-in carries the same `config` the
+    test already passes as `_operator_block`'s own second argument, same
+    idiom test_web_ownership_gate.py's own `_req` uses. `clients` is left
+    unset (not even `None`-valued): `_is_admin` reaches it through `getattr`
+    with a default, so a resolver-free room needs nothing here at all."""
     state = SimpleNamespace()
     if email is not None:
         state.iap_email = email
-    return SimpleNamespace(state=state)
+    return SimpleNamespace(state=state, app=SimpleNamespace(state=SimpleNamespace(config=config)))
 
 
 def test_helper_empty_operators_is_none_even_with_iap_on_and_no_email():
     config = Config(operators=[], iap_audience=AUDIENCE)
 
-    assert _operator_block(_req(), config) is None
+    assert _operator_block(_req(None, config), config) is None
 
 
 def test_helper_iap_off_is_none_even_with_operators_set_and_no_email():
     config = Config(operators=["ops@example.com"], iap_audience="")
 
-    assert _operator_block(_req(), config) is None
+    assert _operator_block(_req(None, config), config) is None
 
 
 def test_helper_non_listed_email_returns_403_body_verbatim():
     config = Config(operators=["ops@example.com"], iap_audience=AUDIENCE)
 
-    result = _operator_block(_req(NON_OPERATOR_EMAIL), config)
+    result = _operator_block(_req(NON_OPERATOR_EMAIL, config), config)
 
     assert result is not None
     assert result.status_code == 403
@@ -99,7 +107,7 @@ def test_helper_non_listed_email_returns_403_body_verbatim():
 def test_helper_no_email_at_all_returns_403():
     config = Config(operators=["ops@example.com"], iap_audience=AUDIENCE)
 
-    result = _operator_block(_req(None), config)
+    result = _operator_block(_req(None, config), config)
 
     assert result is not None
     assert result.status_code == 403
@@ -108,19 +116,19 @@ def test_helper_no_email_at_all_returns_403():
 def test_helper_listed_email_exact_case_is_none():
     config = Config(operators=["ops@example.com"], iap_audience=AUDIENCE)
 
-    assert _operator_block(_req("ops@example.com"), config) is None
+    assert _operator_block(_req("ops@example.com", config), config) is None
 
 
 def test_helper_listed_email_operator_list_uppercase_request_lowercase_is_none():
     config = Config(operators=["OPS@EXAMPLE.COM"], iap_audience=AUDIENCE)
 
-    assert _operator_block(_req("ops@example.com"), config) is None
+    assert _operator_block(_req("ops@example.com", config), config) is None
 
 
 def test_helper_listed_email_operator_list_lowercase_request_uppercase_is_none():
     config = Config(operators=["ops@example.com"], iap_audience=AUDIENCE)
 
-    assert _operator_block(_req("OPS@EXAMPLE.COM"), config) is None
+    assert _operator_block(_req("OPS@EXAMPLE.COM", config), config) is None
 
 
 # --- Route-level: real TestClient, real IAP JWT --------------------------------

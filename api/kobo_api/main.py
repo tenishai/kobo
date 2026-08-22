@@ -763,22 +763,68 @@ def _is_operator(email: str | None, config: Config) -> bool:
     return email.lower() in {o.lower() for o in config.operators}
 
 
+def _is_admin(request: Request) -> bool:
+    """Whether `request`'s verified caller holds operator status ROOM-WIDE
+    (operator-status-by-group ruling: "the infra-engineering team should be
+    able to send and accept requests for any agents, as they are the admin
+    team over kobo"). An email operator (`_is_operator` above) always
+    qualifies. ADDITIONALLY, a caller whose resolved directory group
+    membership (`clients.groups.groups_for`) intersects `config.
+    admin_groups` also qualifies -- group-based operator status, matching
+    this room's benchmark model (the org's own infra team administers the
+    whole PaaS).
+
+    `_is_operator(email, config)` stays the pure, resolver-free email
+    matcher, used as-is wherever no resolver is reachable. This function is
+    the one place group membership ALSO grants operator status; every gate
+    that has a `Request` in hand (as opposed to a bare email plus `Config`)
+    calls this instead, so a room's admin groups take effect everywhere
+    operator status already did: visibility, every owner-or-operator gate,
+    invites on either side, and whoami's own status flag.
+
+    Fail-closed, the same contract `_visible_agents` already holds group-
+    derived visibility to: no `admin_groups` configured, no `Clients`
+    reachable at all, or no `GroupResolver` wired on it means group-based
+    admin status is simply off -- `_is_operator`'s plain email answer is
+    still the last word, never widened by a directory this room can't
+    currently reach. `admin_groups` empty short-circuits before the
+    resolver is ever consulted, not just before it can grant anything --
+    a room that hasn't opted into this at all pays no directory call and
+    behaves exactly as it did before this function existed. A resolver
+    that fails outright for this email (`groups_for` returning `None`)
+    folds into that same "grant nothing" answer via the `or []` below,
+    exactly `_visible_agents`'s own None-vs-`[]` discipline.
+    """
+    cfg: Config = request.app.state.config
+    email = (getattr(request.state, "iap_email", None) or "").lower()
+    if _is_operator(email, cfg):
+        return True
+    if not email or not cfg.admin_groups:
+        return False
+    clients: Clients | None = getattr(request.app.state, "clients", None)
+    resolver = clients.groups if clients is not None else None
+    if resolver is None:
+        return False
+    member_groups = resolver.groups_for(email) or []
+    return bool(set(member_groups) & set(cfg.admin_groups))
+
+
 def _operator_block(request: Request, config: Config) -> JSONResponse | None:
     """None when the caller may destroy agents; a 403 body otherwise.
 
-    Same semantics family as `_slack_operator_block` above (empty list =
-    ungated, dev parity; IAP disabled = operator, the room trusts its
-    perimeter only when it has one; otherwise `_is_operator` above) — kept
-    as its own function, not parameterized over the two config lists, since
-    a future gate is free to diverge (different copy already, here) without
-    the two ever needing to stay byte-identical.
+    Same semantics family as `_slack_operator_block` above (empty `operators`
+    AND empty `admin_groups` = ungated, dev parity; IAP disabled = operator,
+    the room trusts its perimeter only when it has one; otherwise `_is_admin`
+    above, which folds in group-based admin status alongside the plain email
+    list) -- kept as its own function, not parameterized over the two config
+    lists, since a future gate is free to diverge (different copy already,
+    here) without the two ever needing to stay byte-identical.
     """
-    if not config.operators:
+    if not config.operators and not config.admin_groups:
         return None
     if not config.iap_audience:
         return None
-    email = getattr(request.state, "iap_email", None)
-    if _is_operator(email, config):
+    if _is_admin(request):
         return None
     return JSONResponse(
         {"error": "Destroying agents is operator-only on this room"}, status_code=403
@@ -789,19 +835,18 @@ def _admin_operator_block(request: Request, config: Config) -> JSONResponse | No
     """None when the caller may run room-wide admin actions (today, just the
     dispatch-pairs resync route below, final-review fix round HIGH-2b); a
     403 body otherwise. Same semantics family as `_operator_block`/`_slack_
-    operator_block` above (empty `operators` = ungated, dev parity; IAP
-    disabled = operator, "the room trusts its perimeter only when it has
-    one"; otherwise `_is_operator`) -- kept as its own function rather than
-    reusing `_operator_block` directly, since that one's 403 copy names
-    destroying agents specifically and would read as flatly wrong copy for
-    an unrelated admin route.
+    operator_block` above (empty `operators` AND empty `admin_groups` =
+    ungated, dev parity; IAP disabled = operator, "the room trusts its
+    perimeter only when it has one"; otherwise `_is_admin`) -- kept as its
+    own function rather than reusing `_operator_block` directly, since that
+    one's 403 copy names destroying agents specifically and would read as
+    flatly wrong copy for an unrelated admin route.
     """
-    if not config.operators:
+    if not config.operators and not config.admin_groups:
         return None
     if not config.iap_audience:
         return None
-    email = getattr(request.state, "iap_email", None)
-    if _is_operator(email, config):
+    if _is_admin(request):
         return None
     return JSONResponse(
         {"error": "Syncing the switchboard is operator-only on this room"}, status_code=403
@@ -836,11 +881,11 @@ def _owner_or_operator_or_403(agent: Agent, request: Request) -> JSONResponse | 
     if not cfg.iap_audience:
         return None
     email = (getattr(request.state, "iap_email", None) or "").lower()
-    # Adapted from the plan's illustrative helper, which called
-    # `_is_operator(request)` -- the real signature (main.py:~700) takes the
-    # email string plus config, not a Request; reuse that matcher exactly,
-    # never fork it.
-    if _is_operator(email, cfg):
+    # `_is_admin` (above) folds in group-based operator status alongside the
+    # plain `_is_operator` email match -- every owner-or-operator gate in
+    # this file grants standing to a room admin group, not just a listed
+    # email (operator-status-by-group ruling).
+    if _is_admin(request):
         return None
     if agent.created_by and email == agent.created_by.lower():
         return None
@@ -861,8 +906,12 @@ def _visible_agents(session: Session, request: Request) -> tuple[list[Agent], bo
       gate in this file uses (`_operator_block`/`_owner_or_operator_or_403`)
       -- with no verified identity there's nothing to filter by, so the
       room behaves exactly as it always has.
-    - An operator (`_is_operator`, never forked): full visibility. Operators
-      see everything, same as today.
+    - An operator, plain email or group-based (`_is_admin`, never forked):
+      full visibility. Operators see everything, same as today, now
+      including a member of one of `config.admin_groups` (operator-status-
+      by-group ruling) -- distinct from the group-derived visibility branch
+      below, which is about `config.groups`/`Agent.group_name`, a different
+      axis entirely.
     - No `GroupResolver` wired (`clients.groups is None` -- no Okta token/
       domain/groups configured, `kobo_api.clients.Clients.real`'s own
       "absent = feature off" gate): full visibility. This is the honest
@@ -897,7 +946,7 @@ def _visible_agents(session: Session, request: Request) -> tuple[list[Agent], bo
 
     email = (getattr(request.state, "iap_email", None) or "").lower()
 
-    if _is_operator(email, cfg):
+    if _is_admin(request):
         return all_agents, False
 
     resolver = clients.groups if clients is not None else None
@@ -1168,9 +1217,15 @@ def create_app(
     # reading `_visible_agents` below uses. `groups_unavailable` mirrors the
     # list route's own flag: true only when a resolver IS wired but just
     # failed to answer for this email (fail-closed, never guessed as `[]`).
+    # `operator` reflects `_is_admin` (operator-status-by-group ruling), not
+    # just the plain email list -- a member of a configured admin group sees
+    # this flag as true too, since the sidebar (and any future UI) reads it
+    # as "does this room's operator standing apply to me," not "am I on a
+    # hand-typed list." No UI surface may gate its OWN enforcement on this
+    # flag either way -- it is a status hint, never the source of truth the
+    # server-side gates above already are.
     @app.get("/api/whoami")
     def whoami(request: Request) -> dict:
-        cfg: Config = app.state.config
         clients: Clients | None = app.state.clients
         email = getattr(request.state, "iap_email", None)
 
@@ -1186,7 +1241,7 @@ def create_app(
 
         return {
             "email": email,
-            "operator": _is_operator(email, cfg),
+            "operator": _is_admin(request),
             "groups": groups,
             "groups_unavailable": groups_unavailable,
         }
@@ -1585,9 +1640,12 @@ def create_app(
             # spec section 5's request-and-accept handshake for cross-group
             # access by letting a caller simply BE the other group instead
             # of asking it to accept an invite. An operator is exempt --
-            # operators may assign any configured group, the same standing
-            # every other operator-vs-owner gate in this file grants.
-            # Everyone else must have the claimed group in their OWN
+            # plain email or group-based (`_is_admin`) -- may assign any
+            # configured group, the same standing every other operator-vs-
+            # owner gate in this file grants (operator-status-by-group
+            # ruling: an admin group is operator status everywhere, this
+            # consent check included). Everyone else must have the claimed
+            # group in their OWN
             # resolved membership (`clients.groups.groups_for`), fail-closed
             # the same way `_visible_agents` treats a `None` answer: a
             # resolver that can't answer right now grants nothing, never
@@ -1603,7 +1661,7 @@ def create_app(
             # suite) instead of the callers this fix actually targets.
             if cfg.iap_audience:
                 email = (getattr(request.state, "iap_email", None) or "").lower()
-                if not _is_operator(email, cfg):
+                if not _is_admin(request):
                     clients: Clients | None = app.state.clients
                     resolver = clients.groups if clients is not None else None
                     caller_groups = (

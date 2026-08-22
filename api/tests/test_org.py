@@ -276,6 +276,7 @@ def test_org_keys_is_exactly_the_brief_set():
             "skills_publish_external",
             "slack_operators",
             "operators",
+            "admin_groups",
             "cabal_url",
             "agent_endpoint_template",
             "groups",
@@ -344,6 +345,24 @@ def test_operators_list_round_trips():
         "ops@acme-corp.example.com",
         "Root@Acme-Corp.example.com",
     ]
+
+
+def test_admin_groups_list_round_trips():
+    """admin_groups (operator-status-by-group ruling) is org-scoped exactly
+    like operators above -- a client's kobo-config repo can name its own
+    admin teams, independently of the plain operators email list."""
+    local = Config(org_repo=ORG_REPO)
+    github = FakeGitHub(
+        org_yaml=(
+            "admin_groups:\n"
+            "  - infra-engineering\n"
+        )
+    )
+
+    merged, org = load_org_config(local, github)
+
+    assert org.wired is True
+    assert merged.admin_groups == ["infra-engineering"]
 
 
 def test_groups_and_okta_domain_round_trip():

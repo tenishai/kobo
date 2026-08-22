@@ -100,6 +100,7 @@ def test_render_org_yaml_golden_with_computed_defaults():
         "skills_publish_external": False,
         "slack_operators": [],
         "operators": [],
+        "admin_groups": [],
         "cabal_url": None,
         "agent_endpoint_template": None,
         "groups": [],
@@ -165,6 +166,17 @@ def test_render_org_yaml_uses_explicit_names_verbatim_when_set():
     assert parsed["skills_bucket"] == "acme-corp-curated-skills-bucket"
     assert parsed["personas_bucket"] == "acme-corp-curated-personas-bucket"
     assert parsed["skills_publish_external"] is True
+
+
+def test_render_org_yaml_admin_groups_round_trips():
+    """admin_groups (operator-status-by-group ruling) is org-scoped exactly
+    like operators above -- a client's kobo-config repo can name its own
+    admin teams."""
+    config = Config(github_org=GITHUB_ORG, admin_groups=["infra-engineering"])
+
+    parsed = yaml.safe_load(render_org_yaml(config))
+
+    assert parsed["admin_groups"] == ["infra-engineering"]
 
 
 def test_render_org_yaml_agent_endpoint_template_with_braced_name_does_not_trip_guard():

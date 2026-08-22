@@ -166,6 +166,18 @@ class Config(BaseModel):
     # treats every caller as an operator too — the room only trusts an email
     # claim when it has a perimeter that verified it.
     operators: list[str] = []
+    # Group-based operator status (operator-status-by-group ruling): names
+    # from the groups universe below (`Config.groups`, matched against
+    # `GroupChoice.name`, never an Okta group name directly) whose members
+    # hold operator status room-wide, resolved via the directory
+    # (`clients.groups.groups_for`, `kobo_api.main._is_admin`). This is
+    # additive, not a replacement: the plain `operators` email list above
+    # stays live and keeps granting operator status even with the directory
+    # unconfigured or down, same "email operators unaffected" fail-closed
+    # contract `_is_admin` documents. Empty (the default) means no admin
+    # group is configured, matching today's behavior exactly -- group
+    # membership never grants operator status until this is set.
+    admin_groups: list[str] = []
     # Path to a built UI `dist/` directory (e.g. `ui/dist` from `npm run
     # build`) to serve alongside the API, same origin, no CORS (Task 1).
     # None (the default) means dev: no UI is mounted, matching today's setup

@@ -330,6 +330,23 @@ def test_vertex_location_for_unknown_model_id_falls_back_to_org_default():
     assert vertex_location_for(config, "vertex_ai/retired-model") == "us-east5"
 
 
+# --- admin_groups (operator-status-by-group ruling) --------------------------
+
+
+def test_admin_groups_default_empty():
+    config = Config()
+    assert config.admin_groups == []
+
+
+def test_admin_groups_overridable(tmp_path):
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text("admin_groups:\n  - infra-engineering\n")
+
+    config = Config.load(yaml_path)
+
+    assert config.admin_groups == ["infra-engineering"]
+
+
 # --- groups / okta_domain (access-control arc, Task B1: GroupResolver) -------
 
 

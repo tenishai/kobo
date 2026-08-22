@@ -141,6 +141,13 @@ slack_tokens_path: null
 # matching today's behavior.
 # operators: [ops@example.com]
 
+# Names from `groups` below whose members hold operator status room-wide
+# (full visibility, every owner-or-operator gate passes, invites on any
+# side) once IAP is enabled -- resolved through the directory, same as
+# `groups`. Empty (the default) means no group has admin standing; the
+# `operators` list above still works on its own either way.
+# admin_groups: [infra-engineering]
+
 # Path to a built UI dist/ directory (e.g. ui/dist from `npm run build`) to
 # serve alongside the API on the same origin, no CORS. Unset (the default)
 # means dev: the API runs alone and the UI runs separately via its own dev
