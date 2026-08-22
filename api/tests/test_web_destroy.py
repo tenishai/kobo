@@ -179,12 +179,12 @@ def _req_with_resolver(email: str | None, config: Config, resolver) -> SimpleNam
 
 
 def _admin_groups_only_config(**overrides) -> Config:
-    defaults = dict(
-        operators=[],
-        admin_groups=[ADMIN_GROUP],
-        groups=[GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering")],
-        iap_audience=AUDIENCE,
-    )
+    defaults = {
+        "operators": [],
+        "admin_groups": [ADMIN_GROUP],
+        "groups": [GroupChoice(name=ADMIN_GROUP, okta_group="okta-infra-engineering")],
+        "iap_audience": AUDIENCE,
+    }
     defaults.update(overrides)
     return Config(**defaults)
 
