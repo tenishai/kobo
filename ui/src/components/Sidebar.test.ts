@@ -245,7 +245,7 @@ describe("Sidebar — the Kobo identity (wordmark + hammer mark ruling)", () => 
     expect(reducedMotionBlock).toMatch(/filter:\s*drop-shadow\([^)]*var\(--ok\)[^)]*\)/);
   });
 
-  it("redraws the hammer glyph as a cross-peen head (a wedge path) plus a stout handle rect, in the original 24x24 viewBox", () => {
+  it("draws the hammer as a single evenodd path -- a solid disc, edge to edge in the 24x24 viewBox, with the hammer knocked out as negative space", () => {
     const { container } = renderWithClient(Sidebar, {
       active: "dashboard",
       oncreate: () => {},
@@ -254,16 +254,25 @@ describe("Sidebar — the Kobo identity (wordmark + hammer mark ruling)", () => 
     const hammer = container.querySelector(".sidebar__hammer");
     expect(hammer?.getAttribute("viewBox")).toBe("0 0 24 24");
 
+    // No more ring element: the disc itself carries the mark's fill color.
+    expect(container.querySelector(".sidebar__hammer-ring")).toBeNull();
+
     const glyph = container.querySelector(".sidebar__hammer-glyph");
     expect(glyph).not.toBeNull();
-    // The forge-hammer redraw (cross-peen head: flat face one side, tapered
-    // peen the other) needs a path, not the old two-rect mallet silhouette —
-    // a plain rect can't express a taper.
-    const headPath = glyph!.querySelector("path");
-    expect(headPath).not.toBeNull();
-    expect(headPath!.getAttribute("d")?.length ?? 0).toBeGreaterThan(0);
-    // The handle survives as a rect (stout, short, unchanged in kind).
-    expect(glyph!.querySelector("rect")).not.toBeNull();
+    // One path does the whole job now -- no child <path>/<rect> shapes
+    // (the old cross-peen path + handle rect pairing is gone).
+    expect(glyph!.tagName.toLowerCase()).toBe("path");
+    expect(glyph!.querySelector("path, rect, circle")).toBeNull();
+    expect(glyph!.getAttribute("fill-rule")).toBe("evenodd");
+
+    const d = glyph!.getAttribute("d") ?? "";
+    // Two subpaths in the one path: the disc, then the hammer silhouette
+    // knocked out of it.
+    expect(d.match(/Z/g)?.length).toBe(2);
+    // The disc is a full circle of radius 12 centered on (12,12) -- exactly
+    // tangent to all four viewBox edges, so it fills the canvas edge to
+    // edge with no ring and no margin.
+    expect(d).toMatch(/M\s*0\s+12\s*A\s*12\s+12\s+0\s+1\s+0\s+24\s+12/);
   });
 });
 
@@ -296,19 +305,22 @@ describe("Sidebar — favicon (the same forge hammer, on the tab)", () => {
     expect(parsed.getElementsByTagName("parsererror")).toHaveLength(0);
   });
 
-  it("renders the hammer glyph in a color that survives a dark browser tab", () => {
-    // MEDIUM bug this pins the fix for: the original near-black ink
-    // (#262220) sat within a few RGB values of Chrome/Firefox's dark tab
-    // chrome (~#202124) and effectively vanished there. #857d70 was chosen
-    // for contrast in both directions (see favicon.svg's own comment for
-    // the worked-out ratios) -- assert the old near-invisible ink is gone
-    // and the new glyph color is what actually renders.
+  it("fills the disc with the room's amber and knocks the hammer out via evenodd, edge to edge with no ring", () => {
+    // Disc-and-knockout redraw: the favicon is now one solid amber disc
+    // (#b5651d) with the hammer cut from it as negative space, not a ring
+    // (stroke) framing a separately colored glyph fill. Both the old
+    // glyph fill (#857d70) and the old ring stroke are gone.
     const match = INDEX_HTML.match(/<link\s+rel="icon"\s+type="image\/svg\+xml"\s+href="([^"]+)"/);
     const href = match![1].replace(/^\//, "");
     const svgSource = readFileSync(join(__dirname, "..", "..", "public", href), "utf8");
     expect(svgSource).not.toMatch(/fill="#262220"/i);
-    expect(svgSource).toMatch(/fill="#857d70"/i);
-    // The amber ring is untouched by this fix.
-    expect(svgSource).toMatch(/stroke="#b5651d"/i);
+    expect(svgSource).not.toMatch(/fill="#857d70"/i);
+    expect(svgSource).not.toMatch(/stroke="#b5651d"/i);
+    expect(svgSource).toMatch(/fill="#b5651d"/i);
+    expect(svgSource).toMatch(/fill-rule="evenodd"/i);
+    // A single path, two subpaths (disc, then hammer knockout).
+    const pathMatch = svgSource.match(/<path[^>]*\sd="([^"]*)"/s);
+    expect(pathMatch).not.toBeNull();
+    expect(pathMatch![1].match(/Z/g)?.length).toBe(2);
   });
 });

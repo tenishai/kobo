@@ -64,20 +64,29 @@
         aria-hidden="true"
         use:hammerTitle={building ? "Kobo is building an agent." : undefined}
       >
-        <circle class="sidebar__hammer-ring" cx="12" cy="12" r="10.5" />
-        <!-- Forge-hammer redraw: a cross-peen head (flat rectangular face on
-             the right, tapered wedge peen on the left, drawn before the
-             45deg strike rotation below) fused to a stout handle. The path
-             traces tip -> face's near-top corner -> far-top corner -> far
-             bottom corner -> face's near-bottom corner -> Z (back to the
-             tip), so the left edge tapers to a point and the right edge
-             stays a flat vertical face. Same bounding box the old
-             symmetric head rect used (x 6.5-17.2, y 3.5-7.7), so the
-             rotate(45) below still lands the same way. -->
-        <g class="sidebar__hammer-glyph" transform="rotate(45 12 12)">
-          <path d="M6.5 5.6 L13 3.5 L17.2 3.5 L17.2 7.7 L13 7.7 Z" />
-          <rect x="10.6" y="7.4" width="2.8" height="9.6" rx="1.2" />
-        </g>
+        <!-- Disc-and-knockout redraw: the mark is one solid disc (the ink
+             tone) with the hammer cut from it as negative space via
+             fill-rule evenodd, instead of a ring framing a separately
+             colored glyph. Two subpaths in this one path: first a full
+             circle (drawn as two arcs) of radius 12 centered on (12,12) --
+             tangent to all four viewBox edges, no ring, no margin -- then
+             the hammer silhouette (a rounded-rectangle head with a small
+             notch step on its outer edge suggesting the claw/peen, fused
+             to a rounded stout handle), drawn pointing straight up so the
+             45deg rotation below angles it head-up-right, handle-down-left.
+             Any point inside both subpaths gets an even crossing count
+             under evenodd, so the hammer reads as a hole showing whatever
+             sits behind the SVG. -->
+        <path
+          class="sidebar__hammer-glyph"
+          fill-rule="evenodd"
+          transform="rotate(45 12 12)"
+          d="M 0 12 A 12 12 0 1 0 24 12 A 12 12 0 1 0 0 12 Z
+             M 7.6 3.2 L 10.5 3.2 L 10.5 4.8 L 13.5 4.8 L 13.5 3.2 L 16.4 3.2
+             A 1.3 1.3 0 0 1 17.7 4.5 L 17.7 6.7 A 1.3 1.3 0 0 1 16.4 8
+             L 13.6 8 L 13.6 16 A 1.6 1.6 0 0 1 10.4 16 L 10.4 8 L 7.6 8
+             A 1.3 1.3 0 0 1 6.3 6.7 L 6.3 4.5 A 1.3 1.3 0 0 1 7.6 3.2 Z"
+        />
       </svg>
       <span class="sidebar__wordmark">Kobo</span>
     </span>
@@ -157,18 +166,14 @@
     font-weight: 600;
   }
 
-  /* The hammer mark: a simple ring (amber accent) framing a forge
-     cross-peen hammer glyph (ink) -- flat rectangular face and tapered
-     wedge peen, head angled up-right at rest -- the "ink/amber palette
-     tokens" the ruling asks for. */
+  /* The hammer mark: a solid disc filling the mark edge to edge, ink at
+     rest, with the hammer knocked out of it as negative space (fill-rule
+     evenodd on the disc-and-hammer path below) so the room's own
+     background shows through the cutout -- head angled up-right at rest.
+     No separate ring: the disc itself carries the fill color, swapped to
+     --ok below while an agent is building. */
   .sidebar__hammer {
     flex-shrink: 0;
-  }
-
-  .sidebar__hammer-ring {
-    fill: none;
-    stroke: var(--accent);
-    stroke-width: 1.5;
   }
 
   .sidebar__hammer-glyph {
