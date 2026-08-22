@@ -160,3 +160,101 @@ class AgentStep(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     agent: Mapped[Agent] = relationship(back_populates="steps")
+
+
+# A2AInvite.status values (access-control arc, Task C1). Plain strings on a
+# plain `String(20)` column below, deliberately NOT a StrEnum like
+# AgentStatus/StepStatus above: those two drive an actual state-machine
+# dispatch elsewhere (the provisioner/destroy pipelines branch on every
+# member), while an invite's status is read only via direct equality/
+# membership checks -- main.py's routes and `kobo_api.pairs.allowed_pairs`'s
+# own "accepted" filter -- so a fourth enum class would add indirection
+# without buying anything back. Named here anyway (rather than repeating the
+# literal at every call site) so every reader points at the same spelling.
+INVITE_PENDING = "pending"
+INVITE_ACCEPTED = "accepted"
+INVITE_DECLINED = "declined"
+INVITE_REVOKED = "revoked"
+
+
+class A2AInvite(Base):
+    """Cross-group colleagueship, asked for and granted (access-control arc,
+    Task C1, design spec section 5): one row per request from one agent
+    (`from_agent`) to become an allowed dispatch pair with another agent
+    (`to_agent`) outside the pair same-group talk already covers implicitly.
+    `kobo_api.pairs.allowed_pairs` is the pure function that turns an
+    ACCEPTED row here into a flat `(from, to)` pair for the switchboard --
+    this table is kobo's own record of the ask and the decision, not
+    something cabal ever reads directly.
+
+    `from_agent`/`to_agent` are agent NAMES, not foreign keys to `agents.id`
+    -- deliberately, mirroring `Agent.slack_app_id`/`slack_channel`'s own
+    "free-text handle, not a hard reference" shape: an invite must be able
+    to outlive the row it names long enough to render an honest history
+    (main.py's list/detail routes resolve the name against the CURRENT
+    `agents` table at read time, treating a name with no matching row as
+    "that agent is gone" rather than raising), and a destroyed endpoint
+    simply drops out of `allowed_pairs`'s own READY-agent query on its own,
+    with no cascade/cleanup step needed here.
+    """
+
+    __tablename__ = "a2a_invites"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    from_agent: Mapped[str] = mapped_column(String(63), nullable=False)
+    to_agent: Mapped[str] = mapped_column(String(63), nullable=False)
+    # The verified IAP email that created this invite -- always the FROM
+    # agent's owner or an operator (main.py's create-invite route enforces
+    # this before ever constructing a row); this column just records who it
+    # was, same "created_by" idiom `Agent.created_by` already established.
+    # Nullable for the same IAP-disabled reason `Agent.created_by` is.
+    requested_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=INVITE_PENDING
+    )
+    # The verified IAP email that accepted/declined/revoked this invite --
+    # the TO agent's owner or an operator for accept/decline, either side's
+    # owner or an operator for revoke. None while status is still pending.
+    decided_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    # None while pending -- set the moment accept/decline/revoke fires, same
+    # "nullable until the event happens" shape as AgentStep's own
+    # started_at/finished_at above.
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AgentUserGrant(Base):
+    """A per-user visibility grant (access-control arc, Task C1, design spec
+    section 6's "per-user additions ... for cross-group humans who need to
+    see/chat with this agent"): `email` sees `agent_name` as if they owned
+    it -- `main.py`'s `_visible_agents` (the single visibility choke point)
+    reads this table directly rather than through any separate helper, so
+    an agent's visible set never has two places that could drift apart.
+
+    Distinct from group-derived visibility (`Agent.group_name` matched
+    against `GroupResolver.groups_for`): a grant is a direct, per-user
+    record this room's own DB owns outright, so it survives an Okta outage
+    untouched -- the Global Constraint's "fail-closed on grants" is about
+    Okta-sourced group membership vanishing when the directory is
+    unreachable, not about rows in this table, which were never Okta's to
+    begin with.
+
+    `agent_name` is a plain string, not a foreign key, same reasoning as
+    `A2AInvite.from_agent`/`to_agent` above. Added and removed only by
+    `agent_name`'s owner or an operator (main.py's grants routes).
+    """
+
+    __tablename__ = "agent_user_grants"
+    __table_args__ = (UniqueConstraint("agent_name", "email"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    agent_name: Mapped[str] = mapped_column(String(63), nullable=False)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    # The verified IAP email that added this grant (the agent's owner or an
+    # operator); nullable for the same IAP-disabled reason as elsewhere.
+    added_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )

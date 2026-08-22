@@ -10,6 +10,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import httpx
@@ -59,7 +60,16 @@ from kobo_api.metadata import (
     skill_descriptions_for_agent,
     tooling_filenames_for,
 )
-from kobo_api.models import Agent, AgentStatus
+from kobo_api.models import (
+    INVITE_ACCEPTED,
+    INVITE_DECLINED,
+    INVITE_PENDING,
+    INVITE_REVOKED,
+    A2AInvite,
+    Agent,
+    AgentStatus,
+    AgentUserGrant,
+)
 from kobo_api.namegen import SUGGESTION_COUNT, finalize_suggestions
 from kobo_api.org import OrgState, load_org_config
 from kobo_api.persona_draft import finalize_distill, finalize_draft
@@ -203,6 +213,23 @@ class ChatRequest(BaseModel):
 CHAT_MESSAGE_TEXT_MAX_LEN = 4000
 
 CHAT_MESSAGE_ROLES = {"user", "agent"}
+
+
+class InviteCreateRequest(BaseModel):
+    """POST /api/agents/{name}/invites body (access-control arc, Task C1):
+    the path's `{name}` is always the FROM agent; `to_agent` is the agent
+    being asked for colleague access, named the same way every other
+    agent-scoped route names one -- a bare agent name, resolved server-side."""
+
+    to_agent: str
+
+
+class GrantCreateRequest(BaseModel):
+    """POST /api/agents/{name}/grants body (access-control arc, Task C1):
+    the email being granted visibility into `{name}` as if it owned the
+    agent."""
+
+    email: str
 
 
 class KnowledgeSavePayload(BaseModel):
@@ -800,12 +827,18 @@ def _visible_agents(session: Session, request: Request) -> tuple[list[Agent], bo
       feature off, room behaves as today plus ownership" -- never narrower
       just because groups haven't been turned on in this room yet.
     - A resolver IS wired: the caller sees what they own (`created_by`)
-      UNION every agent in a group `groups_for(email)` says they belong to.
-      If the resolver answers `None` (fail-closed: the directory itself
-      couldn't be reached, kobo_api.groups' own None/`[]` distinction) --
-      only what the caller owns survives; group-derived visibility vanishes
-      until the directory answers again, never wider. `groups_unavailable`
-      is true only in this exact branch.
+      UNION every agent GRANTED to them by name (`AgentUserGrant`, access-
+      control Task C1 -- see below) UNION every agent in a group
+      `groups_for(email)` says they belong to. If the resolver answers
+      `None` (fail-closed: the directory itself couldn't be reached,
+      kobo_api.groups' own None/`[]` distinction) -- only what the caller
+      owns or was directly granted survives; group-DERIVED visibility
+      vanishes until the directory answers again, never wider.
+      `groups_unavailable` is true only in this exact branch. A grant is
+      NOT group-derived (it's a row this room's own DB owns outright, never
+      Okta's), so it survives a directory outage untouched -- the Global
+      Constraint's "fail-closed on grants" is about Okta-sourced group
+      membership disappearing, not about `AgentUserGrant` rows.
 
     Every branch above "no resolver wired" also implicitly covers ownership
     (an owned agent is always in the returned list) -- the design spec's
@@ -831,15 +864,31 @@ def _visible_agents(session: Session, request: Request) -> tuple[list[Agent], bo
     def is_owned(agent: Agent) -> bool:
         return bool(agent.created_by) and agent.created_by.lower() == email
 
+    # AgentUserGrant (access-control Task C1): a direct, per-user visibility
+    # grant, independent of group membership -- matched case-insensitively,
+    # same convention `is_owned` above already uses for `created_by`. A
+    # plain full-table scan, same idiom `all_agents` itself already is; this
+    # room's grant table is never expected to be large enough to matter.
+    granted_agent_names = {
+        grant.agent_name
+        for grant in session.query(AgentUserGrant).all()
+        if grant.email.lower() == email
+    }
+
+    def is_granted(agent: Agent) -> bool:
+        return agent.name in granted_agent_names
+
     groups = resolver.groups_for(email)
     if groups is None:
-        return [agent for agent in all_agents if is_owned(agent)], True
+        return [agent for agent in all_agents if is_owned(agent) or is_granted(agent)], True
 
     group_set = set(groups)
     visible = [
         agent
         for agent in all_agents
-        if is_owned(agent) or (agent.group_name is not None and agent.group_name in group_set)
+        if is_owned(agent)
+        or is_granted(agent)
+        or (agent.group_name is not None and agent.group_name in group_set)
     ]
     return visible, False
 
@@ -3345,6 +3394,422 @@ def create_app(
 
         png = base64.b64decode(agent.avatar_png)
         return Response(content=png, media_type="image/png")
+
+    # --- Cross-group colleagueship (access-control arc, Task C1) -----------
+    #
+    # Invites: `A2AInvite` rows recording a request from one agent (the FROM
+    # side) to become an allowed dispatch pair with another (the TO side)
+    # outside the pair same-group talk already covers implicitly (see
+    # kobo_api.pairs.allowed_pairs, the pure function a later task syncs to
+    # the switchboard). Grants: `AgentUserGrant` rows extending an agent's
+    # VISIBILITY (not dispatch -- there is no such thing as a human dispatch
+    # pair) to a named human, wired straight into `_visible_agents` above so
+    # the room keeps exactly one visibility choke point.
+    #
+    # `_agent_ref`/`_invite_repr` below are the one JSON shape every
+    # invite-returning route shares, so the leak-safety rule (an invite may
+    # only ever reveal a NAME and a GROUP about the side the caller doesn't
+    # already have full standing on) lives in one place, not once per route.
+
+    def _agent_ref(session: Session, name: str) -> dict:
+        """A minimal, leak-safe reference to the agent named `name`: its
+        name plus its group, nothing else. Fetched fresh, WITHOUT the
+        visibility filter -- deliberately: an invite's TO agent is allowed
+        to be outside the caller's own visible set (requesting access to a
+        visible-in-the-directory-but-not-yours agent is the feature this
+        arc ships, spec section 5 -- "the a2a directory is deliberately
+        global," so a bare NAME is never itself a leak), but nothing beyond
+        name and group about that agent may ride along in the response.
+        `name` may no longer resolve to a row at all (the agent was
+        destroyed after the invite was created) -- `group_name` reads as
+        `None` in that case, same as a row that was always group-less, so
+        an invite's history stays renderable rather than erroring on a
+        vanished endpoint.
+        """
+        agent = session.query(Agent).filter_by(name=name).first()
+        return {"name": name, "group_name": agent.group_name if agent is not None else None}
+
+    def _invite_repr(session: Session, invite: A2AInvite) -> dict:
+        """The one response shape every invite-returning route below uses.
+        `from_agent` renders as a bare name (the caller of every route that
+        can see this invite at all is already entitled to full standing on
+        the FROM side -- its own owner/operator for create/list, or the
+        equally-entitled TO side for accept/decline/revoke, which never
+        needs more than the name to identify who's asking). `to_agent`
+        renders through `_agent_ref` -- the side that may sit outside the
+        caller's visibility, capped to name+group as that function's own
+        docstring covers.
+        """
+        return {
+            "id": invite.id,
+            "from_agent": invite.from_agent,
+            "to_agent": _agent_ref(session, invite.to_agent),
+            "status": invite.status,
+            "requested_by": invite.requested_by,
+            "decided_by": invite.decided_by,
+            "created_at": invite.created_at.isoformat(),
+            "decided_at": (
+                invite.decided_at.isoformat() if invite.decided_at is not None else None
+            ),
+        }
+
+    def _fetch_invite_or_404(session: Session, invite_id: int) -> A2AInvite | JSONResponse:
+        invite = session.get(A2AInvite, invite_id)
+        if invite is None:
+            return JSONResponse({"error": f"no such invite: {invite_id}"}, status_code=404)
+        return invite
+
+    def _revoke_gate(session: Session, request: Request, invite: A2AInvite) -> JSONResponse | None:
+        """None when the caller may revoke `invite` -- owner-or-operator of
+        EITHER side (unlike accept/decline below, which is TO-side only: a
+        revoke may come from whichever side wants out of an arrangement it
+        already has standing on). Delegates to `_owner_or_operator_or_403`
+        against each side in turn rather than re-deriving the operator/
+        IAP-off escape hatches here -- those must never fork from the one
+        function that owns them.
+
+        If a side's named agent no longer exists (destroyed since the
+        invite was created), it's treated exactly like `_owner_or_operator_
+        or_403`'s own ownerless-agent branch: fail-closed to operator-only
+        for that side, via a bare stand-in carrying `created_by=None` --
+        the same idiom test_web_ownership_gate.py's own unit tests use for
+        `_owner_or_operator_or_403` directly -- not by skipping the check
+        or raising on a missing row.
+        """
+        from_agent = session.query(Agent).filter_by(name=invite.from_agent).first()
+        to_agent = session.query(Agent).filter_by(name=invite.to_agent).first()
+        from_stand_in = from_agent if from_agent is not None else SimpleNamespace(created_by=None)
+        to_stand_in = to_agent if to_agent is not None else SimpleNamespace(created_by=None)
+
+        if _owner_or_operator_or_403(from_stand_in, request) is None:
+            return None
+        if _owner_or_operator_or_403(to_stand_in, request) is None:
+            return None
+        # Neither side let the caller through. Reuse the exact 403 body
+        # `_owner_or_operator_or_403` itself returns for an ownerless agent
+        # (a stranger is never an operator and IAP-off already returned
+        # None above, so this call can only land on its final 403 branch)
+        # rather than retyping the copy here and risking drift.
+        return _owner_or_operator_or_403(SimpleNamespace(created_by=None), request)
+
+    def _decide_invite(
+        session: Session, request: Request, invite_id: int, *, new_status: str, verb: str
+    ) -> JSONResponse:
+        """Shared body for accept_invite/decline_invite below -- identical
+        gate and state-transition shape, differing only in which terminal
+        status they move a pending invite to and the verb their 409 copy
+        names.
+        """
+        invite = _fetch_invite_or_404(session, invite_id)
+        if isinstance(invite, JSONResponse):
+            return invite
+
+        # Owner-or-operator of the TO agent, not the FROM agent -- accepting
+        # or declining is the TO side's call to make, the design spec's
+        # "the RECEIVING agent's owner accepts before the handshake exists."
+        # `_visible_agent_or_404` first (404-before-403 discipline, same as
+        # every other gated route): a TO agent the caller can't even see
+        # (or that no longer exists) reads as not-found before the gate
+        # itself ever runs.
+        to_agent = _visible_agent_or_404(session, request, invite.to_agent)
+        if isinstance(to_agent, JSONResponse):
+            return to_agent
+        gate = _owner_or_operator_or_403(to_agent, request)
+        if gate is not None:
+            return gate
+
+        if invite.status != INVITE_PENDING:
+            return JSONResponse(
+                {"error": f"invite is already {invite.status}. Cannot {verb} it now."},
+                status_code=409,
+            )
+
+        invite.status = new_status
+        invite.decided_by = getattr(request.state, "iap_email", None)
+        invite.decided_at = datetime.now(UTC)
+        session.commit()
+
+        return JSONResponse(_invite_repr(session, invite))
+
+    @app.post("/api/agents/{name}/invites", status_code=201)
+    def create_invite(
+        name: str,
+        payload: InviteCreateRequest,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Request cross-group colleague access from `name` (the FROM
+        agent) to `payload.to_agent` (the TO agent) -- access-control arc,
+        Task C1, design spec section 5: "an agent from another group must
+        request access, and the RECEIVING agent's owner accepts before the
+        handshake exists."
+
+        The two sides of this request are resolved through deliberately
+        different fetch disciplines:
+
+        - `name` (FROM) goes through `_visible_agent_or_404`, the single
+          choke point every agent-scoped route in this file resolves its
+          path agent through, followed by the usual owner-or-operator gate
+          -- so an invisible-to-the-caller FROM agent 404s before that gate
+          ever runs (the house 404-before-403 discipline), and a visible
+          FROM agent the caller doesn't own or operate 403s. Requesting
+          access on behalf of somebody else's agent is exactly the
+          mutation that gate exists to block.
+        - `payload.to_agent` is fetched WITHOUT the visibility filter -- a
+          plain, unfiltered lookup by name, on purpose. The adjudicated
+          design here: the TO agent is ALLOWED to sit outside the caller's
+          own visible set. Asking for access to an agent that shows up in
+          the (deliberately global, spec section 5) a2a directory but that
+          the caller can't otherwise see is the feature this route exists
+          to offer, not a hole in it -- knowing a name the directory
+          already surfaced is not itself a leak. What the route must never
+          do is hand back anything MORE than that name plus the TO agent's
+          group once it exists in this row: every response below embeds
+          the TO side through `_agent_ref`, which caps it to exactly that
+          shape, never the agent's status, owner, model, or anything else
+          a caller without real visibility has no standing to see.
+        """
+        from_agent = _visible_agent_or_404(session, request, name)
+        if isinstance(from_agent, JSONResponse):
+            return from_agent
+        gate = _owner_or_operator_or_403(from_agent, request)
+        if gate is not None:
+            return gate
+
+        to_agent = session.query(Agent).filter_by(name=payload.to_agent).first()
+        if to_agent is None:
+            return JSONResponse(
+                {"error": f"no such agent: {payload.to_agent!r}"}, status_code=404
+            )
+
+        if to_agent.name == from_agent.name:
+            return JSONResponse(
+                {"error": "an agent cannot request colleague access to itself"},
+                status_code=422,
+            )
+
+        # Same-group is already implicit (kobo_api.pairs.allowed_pairs), so
+        # an invite here would be redundant -- both non-null and equal, not
+        # just equal: two group-less agents share no implicit pair at all
+        # (pairs.py's own property), so THAT combination is a real request,
+        # not a redundant one, and must fall through to be created.
+        if from_agent.group_name is not None and from_agent.group_name == to_agent.group_name:
+            return JSONResponse(
+                {
+                    "error": (
+                        "these two agents are already in the same group and "
+                        "can talk freely. No invite is needed."
+                    )
+                },
+                status_code=422,
+            )
+
+        existing = (
+            session.query(A2AInvite)
+            .filter_by(from_agent=from_agent.name, to_agent=to_agent.name)
+            .filter(A2AInvite.status.in_((INVITE_PENDING, INVITE_ACCEPTED)))
+            .first()
+        )
+        if existing is not None:
+            return JSONResponse(
+                {
+                    "error": (
+                        "a colleague request between these two agents is "
+                        "already pending or accepted"
+                    )
+                },
+                status_code=409,
+            )
+
+        invite = A2AInvite(
+            from_agent=from_agent.name,
+            to_agent=to_agent.name,
+            requested_by=getattr(request.state, "iap_email", None),
+            status=INVITE_PENDING,
+        )
+        session.add(invite)
+        session.commit()
+
+        return JSONResponse(_invite_repr(session, invite), status_code=201)
+
+    @app.get("/api/agents/{name}/invites")
+    def list_invites(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Every invite naming `name` on either side, split into `incoming`
+        (name is the TO side) and `outgoing` (name is the FROM side) --
+        visible only to `name`'s own owner or a room operator. Read-only,
+        but still owner-or-operator gated rather than open like chat/teach:
+        an invite is "the agent's stuff" (who's asking to talk to it, who
+        it's asked to talk to), not a colleague conversation.
+        """
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+
+        outgoing = (
+            session.query(A2AInvite)
+            .filter_by(from_agent=agent.name)
+            .order_by(A2AInvite.id)
+            .all()
+        )
+        incoming = (
+            session.query(A2AInvite)
+            .filter_by(to_agent=agent.name)
+            .order_by(A2AInvite.id)
+            .all()
+        )
+
+        return JSONResponse(
+            {
+                "incoming": [_invite_repr(session, invite) for invite in incoming],
+                "outgoing": [_invite_repr(session, invite) for invite in outgoing],
+            }
+        )
+
+    @app.post("/api/invites/{invite_id}/accept")
+    def accept_invite(
+        invite_id: int, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        return _decide_invite(
+            session, request, invite_id, new_status=INVITE_ACCEPTED, verb="accept"
+        )
+
+    @app.post("/api/invites/{invite_id}/decline")
+    def decline_invite(
+        invite_id: int, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        return _decide_invite(
+            session, request, invite_id, new_status=INVITE_DECLINED, verb="decline"
+        )
+
+    @app.delete("/api/invites/{invite_id}")
+    def revoke_invite(
+        invite_id: int, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Revoke a pending or accepted invite -- either side's owner or an
+        operator (design spec section 5's decision record: unlike accept/
+        decline, which is TO-side only, either party may walk away from an
+        arrangement it's already a party to). A declined or already-revoked
+        invite has nothing left to revoke, hence the 409 rather than a
+        silent no-op or a second write.
+        """
+        invite = _fetch_invite_or_404(session, invite_id)
+        if isinstance(invite, JSONResponse):
+            return invite
+
+        gate = _revoke_gate(session, request, invite)
+        if gate is not None:
+            return gate
+
+        if invite.status not in (INVITE_PENDING, INVITE_ACCEPTED):
+            return JSONResponse(
+                {"error": f"invite is already {invite.status}. Nothing to revoke."},
+                status_code=409,
+            )
+
+        invite.status = INVITE_REVOKED
+        invite.decided_by = getattr(request.state, "iap_email", None)
+        invite.decided_at = datetime.now(UTC)
+        session.commit()
+
+        return JSONResponse(_invite_repr(session, invite))
+
+    # --- User grants: per-user visibility, wired into _visible_agents above -
+
+    @app.get("/api/agents/{name}/grants")
+    def list_grants(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+
+        grants = (
+            session.query(AgentUserGrant)
+            .filter_by(agent_name=agent.name)
+            .order_by(AgentUserGrant.id)
+            .all()
+        )
+        return JSONResponse(
+            {"grants": [{"email": g.email, "added_by": g.added_by} for g in grants]}
+        )
+
+    @app.post("/api/agents/{name}/grants", status_code=201)
+    def add_grant(
+        name: str,
+        payload: GrantCreateRequest,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Grant `payload.email` visibility into `name` as if they owned it
+        (access-control arc, Task C1, design spec section 6's per-user
+        additions) -- wired into `_visible_agents` above, the room's single
+        visibility choke point, rather than through any route-local check.
+
+        Idempotent by design: re-granting an email that already has a row
+        for this agent (matched case-insensitively, same convention
+        `_visible_agents`'s own grant lookup uses) returns the EXISTING
+        grant with a plain 200 rather than creating a second row or
+        erroring -- there is nothing more for a repeat grant to accomplish.
+        """
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+
+        email = payload.email.strip()
+        if not email:
+            return JSONResponse({"error": "an email is required"}, status_code=422)
+
+        existing_grants = session.query(AgentUserGrant).filter_by(agent_name=agent.name).all()
+        for existing in existing_grants:
+            if existing.email.lower() == email.lower():
+                return JSONResponse(
+                    {"email": existing.email, "added_by": existing.added_by}, status_code=200
+                )
+
+        grant = AgentUserGrant(
+            agent_name=agent.name,
+            email=email,
+            added_by=getattr(request.state, "iap_email", None),
+        )
+        session.add(grant)
+        session.commit()
+
+        return JSONResponse({"email": grant.email, "added_by": grant.added_by}, status_code=201)
+
+    @app.delete("/api/agents/{name}/grants/{email}")
+    def remove_grant(
+        name: str,
+        email: str,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+
+        grants = session.query(AgentUserGrant).filter_by(agent_name=agent.name).all()
+        grant = next((g for g in grants if g.email.lower() == email.lower()), None)
+        if grant is None:
+            return JSONResponse({"error": f"no such grant: {email!r}"}, status_code=404)
+
+        session.delete(grant)
+        session.commit()
+
+        return JSONResponse({"removed": True})
 
     # --- Built UI (Task 1): last, so every /api/* route above always wins ---
 
