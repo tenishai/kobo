@@ -261,7 +261,7 @@ def _agent_yaml_data(spec: BundleSpec) -> dict:
         "persona": "persona.md",
         "model": {
             "id": f"${{AGENT_MODEL:-{spec.model_id}}}",
-            "max_tokens": 1024,
+            "max_tokens": 8192,
             "budget": {"per_task_tokens": 50000},
         },
         "transports": [_a2a_transport(spec)],
@@ -755,6 +755,76 @@ def update_agent_yaml_memory_revision(bundle_dir: Path, *, revision: str) -> Non
     updated, count = _MEMORY_LINE_RE.subn(_replace, text, count=1)
     if count == 0:
         raise ClientError(f"agent.yaml has no memory stanza to update: {agent_yaml_path}")
+    agent_yaml_path.write_text(updated)
+
+
+# Matches the `model:` stanza's `max_tokens:` line anywhere in an already-
+# composed `agent.yaml` -- this module's own `_render_agent_yaml` always
+# renders `model:` as a block-style mapping (`id`, `max_tokens`, and `budget`
+# each get their own line), so `max_tokens:` is on its own line nested two
+# spaces under `model:`, the same as `_APPROVALS_GATES_LINE_RE`'s own
+# `gates:` line is nested under `approvals:` -- a single-line, regex-based
+# surgical edit finds and replaces the whole line without a full YAML
+# round-trip that would reorder/reformat every other line in the file.
+# `max_tokens:` is nested (unlike `tools:`'s top-level key), so the pattern
+# captures its leading indentation (group 1) to reproduce it verbatim in the
+# replacement, rather than assuming a fixed column the way `_TOOLS_LINE_RE`
+# does for its own top-level key.
+_MAX_TOKENS_LINE_RE = re.compile(r"^([ \t]*)max_tokens:[ \t]*\d+[ \t]*$", re.MULTILINE)
+
+
+def update_agent_yaml_max_tokens(bundle_dir: Path, *, max_tokens: int) -> None:
+    """In-place edit of an already-composed `bundle_dir/agent.yaml`'s
+    `model.max_tokens` line: replace it wholesale with `max_tokens`, leaving
+    `id`, `budget`, and every other line in the file byte-identical.
+
+    The backfill path for agents composed before this fix (the truncated-
+    answers incident: this room's own composed default of 1024 sat well
+    under the runtime's own 8192 default, cutting long or thinking-heavy
+    answers off mid-sentence) -- and, more generally, for any already-
+    composed bundle a caller wants to point at a different token ceiling
+    without recomposing the whole bundle (which would also require
+    re-downloading every staged skill).
+
+    Same file-editing idiom as `update_agent_yaml_approvals_gates` above:
+    read the whole file as text, apply one targeted `re.subn` against a
+    replacement function, and raise rather than silently no-op when the
+    thing being edited isn't found. Wholesale line replace, not
+    strip-then-append (mirrors `update_agent_yaml_approvals_gates`/
+    `update_agent_yaml_tools`, not `update_agent_yaml_auth`/`update_agent_
+    yaml_memory_revision`): unlike those two, `max_tokens:` already sits
+    alone on its own line with no sibling keys sharing it, so there is
+    nothing to strip out before the new value is written.
+
+    Idempotent by construction: a second call with the same `max_tokens`
+    value replaces the line with byte-identical text, so the file's contents
+    never drift on a repeat call.
+
+    Raises `ClientError` (never silently no-ops), mirroring
+    `update_agent_yaml_approvals_gates`'s own two failure modes:
+
+    - `agent.yaml` is missing entirely: `Path.read_text()` raises `OSError`.
+    - No line in the file matches `_MAX_TOKENS_LINE_RE` (no `max_tokens:`
+      line to replace, e.g. a hand-edited `model:` stanza).
+
+    Ledgered follow-up: this whole `update_agent_yaml_*` family locates its
+    target with a hand-rolled single-line regex rather than a real YAML
+    round-trip -- hardening that shared idiom (or replacing it with
+    something less brittle) is tracked separately and deliberately out of
+    scope here.
+    """
+    agent_yaml_path = bundle_dir / "agent.yaml"
+    try:
+        text = agent_yaml_path.read_text()
+    except OSError as exc:
+        raise ClientError(f"agent.yaml not found: {agent_yaml_path}") from exc
+
+    def _replace(match: re.Match) -> str:
+        return f"{match.group(1)}max_tokens: {max_tokens}"
+
+    updated, count = _MAX_TOKENS_LINE_RE.subn(_replace, text, count=1)
+    if count == 0:
+        raise ClientError(f"agent.yaml has no max_tokens line to update: {agent_yaml_path}")
     agent_yaml_path.write_text(updated)
 
 

@@ -14,6 +14,7 @@ from kobo_api.composer import (
     update_agent_card_metadata,
     update_agent_yaml_approvals_gates,
     update_agent_yaml_auth,
+    update_agent_yaml_max_tokens,
     update_agent_yaml_memory_revision,
     update_agent_yaml_tools,
     validate_agent_yaml,
@@ -110,7 +111,7 @@ def test_compose_agent_yaml_literal_placeholder_and_exact_text(tmp_path):
         "persona: persona.md\n"
         "model:\n"
         "  id: ${AGENT_MODEL:-vertex_ai/claude-sonnet-4-5}\n"
-        "  max_tokens: 1024\n"
+        "  max_tokens: 8192\n"
         "  budget: {per_task_tokens: 50000}\n"
         "transports:\n"
         "  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
@@ -135,6 +136,10 @@ def test_compose_agent_yaml_parses_with_expected_transport_and_gate(tmp_path):
     assert data["approvals"]["gates"] == [{"match": "*", "require": "plan_approval"}]
     # the placeholder is a literal string pre-validation: not yet substituted
     assert data["model"]["id"] == "${AGENT_MODEL:-vertex_ai/claude-sonnet-4-5}"
+    # Truncated-answers fix: the runtime's own default is 8192 -- the room's
+    # composed default must match it, not the old 1024 that cut long or
+    # thinking-heavy answers off mid-sentence.
+    assert data["model"]["max_tokens"] == 8192
 
 
 # --- memory stanza: revision gate (belief-revision plan, Task 2) ---------------
@@ -213,7 +218,7 @@ def test_compose_agent_yaml_byte_identical_when_cabal_url_none_both_ways(tmp_pat
         "persona: persona.md\n"
         "model:\n"
         "  id: ${AGENT_MODEL:-vertex_ai/claude-sonnet-4-5}\n"
-        "  max_tokens: 1024\n"
+        "  max_tokens: 8192\n"
         "  budget: {per_task_tokens: 50000}\n"
         "transports:\n"
         "  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
@@ -246,7 +251,7 @@ def test_compose_agent_yaml_carries_auth_block_when_cabal_url_configured(tmp_pat
         "persona: persona.md\n"
         "model:\n"
         "  id: ${AGENT_MODEL:-vertex_ai/claude-sonnet-4-5}\n"
-        "  max_tokens: 1024\n"
+        "  max_tokens: 8192\n"
         "  budget: {per_task_tokens: 50000}\n"
         "transports:\n"
         '  - {kind: a2a, host: 0.0.0.0, port: 8080, auth: {jwks_url: '
@@ -1284,6 +1289,46 @@ def test_update_agent_yaml_auth_on_freshly_composed_bundle_round_trips(tmp_path)
         "issuer": _ISSUER,
         "audience": _AUDIENCE,
     }
+
+
+# --- update_agent_yaml_max_tokens (truncated-answers fix) -----------------------
+#
+# The in-place backfill helper for any already-composed bundle whose
+# `agent.yaml` still carries the old 1024 ceiling: replaces the `model.
+# max_tokens` line wholesale, touching nothing else on the `model:` stanza
+# (`id`, `budget`) or elsewhere in the file -- a surgical text edit, same
+# idiom as `update_agent_yaml_approvals_gates`.
+
+
+def test_update_agent_yaml_max_tokens_rewrites_and_preserves_every_other_line(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    agent_yaml_path = _write_fixture(bundle_dir)
+
+    update_agent_yaml_max_tokens(bundle_dir, max_tokens=8192)
+
+    updated_lines = agent_yaml_path.read_text().splitlines(keepends=True)
+    original_lines = _FIXTURE_AGENT_YAML_NO_AUTH.splitlines(keepends=True)
+    max_tokens_index = original_lines.index("  max_tokens: 1024\n")
+    assert len(updated_lines) == len(original_lines)
+    for i, (original, updated) in enumerate(zip(original_lines, updated_lines)):
+        if i == max_tokens_index:
+            continue
+        assert updated == original, f"line {i} changed unexpectedly"
+
+    assert updated_lines[max_tokens_index] == "  max_tokens: 8192\n"
+
+
+def test_update_agent_yaml_max_tokens_is_idempotent(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    _write_fixture(bundle_dir)
+
+    update_agent_yaml_max_tokens(bundle_dir, max_tokens=8192)
+    once = (bundle_dir / "agent.yaml").read_text()
+
+    update_agent_yaml_max_tokens(bundle_dir, max_tokens=8192)
+    twice = (bundle_dir / "agent.yaml").read_text()
+
+    assert once == twice
 
 
 # --- update_agent_yaml_memory_revision (belief-revision plan, Task 2) -----------
