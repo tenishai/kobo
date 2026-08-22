@@ -2535,7 +2535,10 @@ class CabalClient:
     reads the switchboard's own admin conversation surface (`list_
     conversations`/`get_conversation`/`stream_events`, Task 4/B4 "the
     watching window") so the room can show every colleague conversation as
-    it happens.
+    it happens, and pushes the room's own allow-pairs policy to the
+    switchboard's dispatch gate (`put_dispatch_pairs`, colleagues
+    switchboard plan Task C4) so cabal always enforces exactly what kobo
+    currently thinks callers may reach.
 
     Every failure mode raises a message built only from the method name,
     the target persona name, and the HTTP status code — never the response
@@ -2572,6 +2575,15 @@ class CabalClient:
         self._async_client = async_client or httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, connect=10.0)
         )
+        # `put_dispatch_pairs`'s own shrink-to-empty guard (below) needs to
+        # remember what the LAST push from this very instance looked like --
+        # there is nowhere else to keep that memory (no row in kobo's own
+        # DB, nothing cabal's response echoes back), and "in-process memory
+        # is fine" (Task C4 design) since every caller shares one `Clients.
+        # cabal` instance per process. Starts `False`: a fresh client's
+        # first-ever push, even an empty one, is "nothing to allow yet," not
+        # a shrink from anything.
+        self._last_dispatch_pairs_nonempty = False
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}"}
@@ -2677,6 +2689,64 @@ class CabalClient:
             )
             raise CabalError(f"mint_colleague({name!r}) failed ({resp.status_code})")
         return resp.json()["access_token"]
+
+    def put_dispatch_pairs(self, pairs: list[tuple[str, str]] | set[tuple[str, str]]) -> int:
+        """Atomically replace the switchboard's entire dispatch allow-pairs
+        set with `pairs` (`PUT /admin/dispatch-pairs`, colleagues switchboard
+        plan Task C4) -- kobo is the policy owner, cabal just enforces
+        whatever set this call last handed it; cabal's own side dedupes and
+        never echoes the set back, only a `{"count": N}` tally of what it
+        now holds, which is this method's return value (never re-parsed as
+        pairs -- there is nothing to parse, and no caller needs to).
+
+        `pairs` is sent as a sorted list (`sorted(pairs)`, tuples compare
+        lexicographically) rather than in whatever order a `set` happened to
+        iterate in -- determinism, so two calls carrying the identical set
+        produce byte-identical request bodies (useful for anything diffing
+        requests, e.g. a test or a proxy log), same rationale as every other
+        JSON-body method on this client that accepts an unordered input.
+
+        EMPTY is a legitimate policy shape to cabal -- an empty set means
+        "wide open" there, by its own design (colleagues switchboard plan,
+        D-017) -- so this method always pushes exactly what it's given,
+        never treating `not pairs` as "nothing to do" and skipping the
+        call. But because an accidental empty push would silently OPEN the
+        switchboard rather than closing it, a push that computes to empty
+        right after THIS SAME CLIENT last pushed something non-empty is
+        logged loudly (`log.warning`, naming the shrink) before the request
+        even goes out -- still pushed regardless (policy is policy, and a
+        real revoke-everything moment must not get silently swallowed
+        here) -- while every push, empty or not, logs its resulting count
+        at `log.info` so a room's ordinary logs show the switchboard policy
+        actually moving.
+
+        Raises `CabalError` on non-2xx, same logging convention as every
+        other method here: the response body is logged server-side
+        (truncated), never echoed into the raised message.
+        """
+        sorted_pairs = sorted(pairs)
+        if not sorted_pairs and self._last_dispatch_pairs_nonempty:
+            log.warning(
+                "cabal put_dispatch_pairs: pushing an EMPTY pair set right "
+                "after this client's last push was non-empty -- cabal "
+                "treats an empty set as WIDE OPEN by design, so this is a "
+                "real access-control shrink, not a skipped no-op"
+            )
+        resp = self._client.put(
+            f"{self._base_url}/admin/dispatch-pairs",
+            json={"pairs": [list(pair) for pair in sorted_pairs]},
+            headers=self._headers(),
+        )
+        if not resp.is_success:
+            log.warning(
+                "cabal put_dispatch_pairs failed (%s): %s",
+                resp.status_code, resp.text[:200],
+            )
+            raise CabalError(f"put_dispatch_pairs failed ({resp.status_code})")
+        count = resp.json()["count"]
+        log.info("cabal put_dispatch_pairs: pushed %d pair(s)", count)
+        self._last_dispatch_pairs_nonempty = bool(sorted_pairs)
+        return count
 
     def list_conversations(self, *, limit: int | None = None) -> list[dict]:
         """List conversations recorded on the switchboard's admin surface

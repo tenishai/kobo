@@ -4080,6 +4080,175 @@ def test_cabal_mint_colleague_returned_token_never_appears_in_a_debug_log(caplog
     assert "ultra-secret-minted-colleague-token" not in caplog.text
 
 
+# --- put_dispatch_pairs (Task C4: kobo syncs the switchboard's allow-pairs
+# policy on every consent change) ---------------------------------------------
+
+
+def test_cabal_put_dispatch_pairs_request_shape_body_and_auth_header():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.content)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"count": 2})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    count = client.put_dispatch_pairs({("agent:b", "c"), ("agent:a", "b")})
+
+    assert captured["method"] == "PUT"
+    assert captured["url"] == "http://cabal.local/admin/dispatch-pairs"
+    # Sorted for determinism -- a set's own iteration order must never leak
+    # into the request body two calls with the same pairs could otherwise
+    # send in a different order.
+    assert captured["json"] == {"pairs": [["agent:a", "b"], ["agent:b", "c"]]}
+    assert captured["auth"] == "Bearer op-token"
+    assert count == 2
+
+
+def test_cabal_put_dispatch_pairs_accepts_a_list_too():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"count": 1})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert client.put_dispatch_pairs([("agent:a", "b")]) == 1
+
+
+def test_cabal_put_dispatch_pairs_empty_set_still_pushes():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(200, json={"count": 0})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    count = client.put_dispatch_pairs(set())
+
+    assert captured["json"] == {"pairs": []}
+    assert count == 0
+
+
+def test_cabal_put_dispatch_pairs_does_not_parse_pairs_back_from_the_response():
+    # The response only ever carries {"count": N} -- this must never reach
+    # into a "pairs" key on the response body, even if one happened to be
+    # present (a future cabal change echoing the pairs back must not change
+    # this method's return shape).
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"count": 1, "pairs": [["should", "be-ignored"]]})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert client.put_dispatch_pairs([("agent:a", "b")]) == 1
+
+
+def test_cabal_put_dispatch_pairs_raises_typed_cabal_error_on_non_2xx():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(CabalError):
+        client.put_dispatch_pairs([("agent:a", "b")])
+
+
+def test_cabal_put_dispatch_pairs_error_message_never_contains_the_token():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="internal failure detail")
+
+    client = CabalClient(
+        "http://cabal.local", "super-secret-operator-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(CabalError) as exc_info:
+        client.put_dispatch_pairs([("agent:a", "b")])
+    assert "super-secret-operator-token" not in str(exc_info.value)
+    assert "internal failure detail" not in str(exc_info.value)
+
+
+def test_cabal_put_dispatch_pairs_logs_the_count_on_every_push(caplog):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"count": 3})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with caplog.at_level(logging.INFO, logger="kobo_api.clients"):
+        client.put_dispatch_pairs([("agent:a", "b"), ("agent:a", "c"), ("agent:b", "a")])
+
+    assert any("3" in rec.message for rec in caplog.records)
+
+
+def test_cabal_put_dispatch_pairs_shrink_to_empty_after_nonempty_logs_a_warning(caplog):
+    # cabal treats an EMPTY pair set as WIDE OPEN by design -- so a computed
+    # set that shrinks to empty right after this same client pushed a
+    # non-empty one is exactly the accidental-open-the-gate shape worth a
+    # loud warning, even though the push itself still goes through
+    # ("policy is policy").
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"count": 0})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.put_dispatch_pairs([("agent:a", "b")])  # non-empty first
+
+    with caplog.at_level(logging.WARNING, logger="kobo_api.clients"):
+        client.put_dispatch_pairs([])
+
+    assert any(
+        rec.levelname == "WARNING" and "empty" in rec.message.lower()
+        for rec in caplog.records
+    )
+
+
+def test_cabal_put_dispatch_pairs_first_ever_push_being_empty_does_not_warn(caplog):
+    # No prior push from this client at all -- an empty set here is just
+    # "nothing to allow yet" (a fresh room, or one with no groups/invites),
+    # not a shrink from anything.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"count": 0})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with caplog.at_level(logging.WARNING, logger="kobo_api.clients"):
+        client.put_dispatch_pairs([])
+
+    assert not any(rec.levelname == "WARNING" for rec in caplog.records)
+
+
+def test_cabal_put_dispatch_pairs_empty_to_empty_does_not_warn(caplog):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"count": 0})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.put_dispatch_pairs([])
+    with caplog.at_level(logging.WARNING, logger="kobo_api.clients"):
+        client.put_dispatch_pairs(set())
+
+    assert not any(rec.levelname == "WARNING" for rec in caplog.records)
+
+
 # --- list_conversations / get_conversation / stream_events (Task 4/B4: the
 # watching window) ------------------------------------------------------------
 

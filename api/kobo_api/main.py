@@ -72,6 +72,7 @@ from kobo_api.models import (
 )
 from kobo_api.namegen import SUGGESTION_COUNT, finalize_suggestions
 from kobo_api.org import OrgState, load_org_config
+from kobo_api.pairs import sync_dispatch_pairs_best_effort
 from kobo_api.persona_draft import finalize_distill, finalize_draft
 from kobo_api.personas import PersonaError, PersonaExists, PersonaFields, create_persona
 from kobo_api.provisioner import (
@@ -3488,6 +3489,23 @@ def create_app(
         """
         return _owner_or_operator_or_403(_invite_side_stand_in(session, agent_name), request)
 
+    def _sync_dispatch_pairs(session: Session) -> None:
+        """Thin, session-only wrapper the invite accept/revoke routes below
+        call after their own state-changing commit (access-control arc,
+        Task C4: the room becomes the switchboard's policy source) --
+        pulls `clients`/`config` off `app.state` (same convention the chat
+        route's own `cfg`/`clients` fetch already uses) and delegates to
+        `kobo_api.pairs.sync_dispatch_pairs_best_effort`, the one fail-soft
+        implementation this room's other two triggers (an agent's destroy-
+        forget step in `kobo_api.destroy`, an agent's READY flip in
+        `kobo_api.provisioner`) call directly with their own already-in-
+        scope clients/config. Those two live inside a background-thread
+        pipeline in a module `main.py` itself imports, so a `main.py`-side
+        entry point could never be their call path without a circular
+        import -- see `sync_dispatch_pairs_best_effort`'s own docstring.
+        """
+        sync_dispatch_pairs_best_effort(app.state.clients, app.state.config, session)
+
     def _decide_invite(
         session: Session, request: Request, invite_id: int, *, new_status: str, verb: str
     ) -> JSONResponse:
@@ -3531,6 +3549,18 @@ def create_app(
         invite.decided_by = getattr(request.state, "iap_email", None)
         invite.decided_at = datetime.now(UTC)
         session.commit()
+
+        # Only an accept actually changes `allowed_pairs` -- a decline
+        # leaves a PENDING invite PENDING-shaped-but-terminal, and a
+        # pending invite was never in the pairs set to begin with
+        # (kobo_api.pairs.allowed_pairs only ever reads ACCEPTED rows), so
+        # syncing after a decline would just re-push the same set for no
+        # reason. `new_status` (not `invite.status`, though they're the
+        # same object right after the assignment above) makes the branch
+        # read directly off what this call decided, rather than off a
+        # mutation that happened three lines up.
+        if new_status == INVITE_ACCEPTED:
+            _sync_dispatch_pairs(session)
 
         return JSONResponse(_invite_repr(session, invite))
 
@@ -3724,10 +3754,20 @@ def create_app(
                 status_code=409,
             )
 
+        # Captured before the mutation below: only an ACCEPTED -> REVOKED
+        # transition actually removes anything from `allowed_pairs` (a
+        # PENDING invite was never in that set), so only that transition
+        # needs to sync -- same "only sync a real pairs change" discipline
+        # `_decide_invite`'s own accept-only branch above follows.
+        was_accepted = invite.status == INVITE_ACCEPTED
+
         invite.status = INVITE_REVOKED
         invite.decided_by = getattr(request.state, "iap_email", None)
         invite.decided_at = datetime.now(UTC)
         session.commit()
+
+        if was_accepted:
+            _sync_dispatch_pairs(session)
 
         return JSONResponse(_invite_repr(session, invite))
 

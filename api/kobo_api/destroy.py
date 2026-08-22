@@ -48,6 +48,7 @@ from kobo_api.clients import ClientError, cabal_enabled
 from kobo_api.config import Config
 from kobo_api.directory import retire_directory
 from kobo_api.models import Agent, AgentStatus, AgentStep, StepStatus
+from kobo_api.pairs import sync_dispatch_pairs_best_effort
 from kobo_api.provisioner import _get_or_create_step
 
 if TYPE_CHECKING:
@@ -447,6 +448,16 @@ def _run_destroy_body(
                     # then committed — there is nothing left here to mark
                     # DONE. The row disappearing IS the completion signal.
                     log.info("destroy step %r done for agent %s: %s", name, agent_id, detail)
+                    # Access-control arc, Task C4: the destroyed agent's row
+                    # is already gone, so allowed_pairs (recomputed fresh
+                    # inside this call) naturally drops every pair that
+                    # named it -- same "query current rows only" discipline
+                    # that function's own docstring already documents.
+                    # Fail-soft and skip-when-unwired, same as every other
+                    # trigger of this shared helper (never lets a
+                    # switchboard hiccup undo this step's already-committed
+                    # deletion).
+                    sync_dispatch_pairs_best_effort(clients, config, session)
                     return
 
                 log.info("destroy step %r done for agent %s: %s", name, agent_id, detail)

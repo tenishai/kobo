@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from kobo_api.clients import Clients
 from kobo_api.models import Agent, AgentStatus, AgentStep, StepStatus
 from kobo_api.provisioner import reset_failed_steps, run_pipeline, sweep_interrupted
+from tests.fakes import FakeCabal
 
 # No real backend is touched by the toy steps below, so every client slot is None.
 NO_CLIENTS = Clients(github=None, gojira=None, cloud=None, agent=None, kubectl=None)
@@ -56,6 +57,39 @@ def _load(session_factory, agent_id: int):
     rows = {s.name: s for s in agent.steps}
     session.close()
     return agent, rows
+
+
+def _make_agent_with_group(session_factory, name: str, group_name: str) -> int:
+    session = session_factory()
+    agent = Agent(
+        name=name,
+        persona="helpful-generalist",
+        model_id="vertex_ai/claude-sonnet-4-5",
+        group_name=group_name,
+    )
+    session.add(agent)
+    session.commit()
+    agent_id = agent.id
+    session.close()
+    return agent_id
+
+
+def _seed_ready_agent(session_factory, name: str, group_name: str) -> None:
+    """A colleague already READY before the pipeline under test runs --
+    this is the other half of the same-group pair a READY flip below
+    should join."""
+    session = session_factory()
+    session.add(
+        Agent(
+            name=name,
+            persona="helpful-generalist",
+            model_id="vertex_ai/claude-sonnet-4-5",
+            status=AgentStatus.READY,
+            group_name=group_name,
+        )
+    )
+    session.commit()
+    session.close()
 
 
 def test_happy_path_all_steps_done_and_agent_ready(session_factory, config):
@@ -381,3 +415,120 @@ def test_sweep_interrupted_is_a_noop_on_a_clean_table(session_factory, config):
     assert ready.status == AgentStatus.READY
     assert {s.name: s.status for s in ready.steps} == {"repo": StepStatus.DONE}
     session.close()
+
+
+# --- dispatch-pairs sync on the READY flip (Task C4: the room becomes the
+# switchboard's own policy source) ---------------------------------------------
+
+
+def _cabal_enabled_config(config):
+    return config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": "http://agent-{name}.default.svc.cluster.local",
+        }
+    )
+
+
+def test_ready_flip_syncs_dispatch_pairs_when_cabal_enabled(session_factory, config, monkeypatch):
+    """A brand-new agent flipping to READY joins its group's implicit
+    pairs -- the switchboard push right after the flip must carry both
+    directions of that pair, computed fresh off the DB, not anything this
+    test hands the pipeline directly."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    _seed_ready_agent(session_factory, "b", "growth")
+    agent_id = _make_agent_with_group(session_factory, "a", "growth")
+    fake_cabal = FakeCabal()
+    clients = Clients(
+        github=None, gojira=None, cloud=None, agent=None, kubectl=None, cabal=fake_cabal
+    )
+
+    thread = run_pipeline(
+        session_factory,
+        agent_id,
+        config=cfg,
+        clients=clients,
+        steps=[RecordingStep(name="step-a", calls=[])],
+    )
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+
+    assert fake_cabal.put_dispatch_pairs_calls == [
+        sorted({("agent:a", "b"), ("agent:b", "a")})
+    ]
+
+
+def test_ready_flip_does_not_sync_when_cabal_disabled(session_factory, config):
+    agent_id = _make_agent_with_group(session_factory, "a", "growth")
+    fake_cabal = FakeCabal()
+    clients = Clients(
+        github=None, gojira=None, cloud=None, agent=None, kubectl=None, cabal=fake_cabal
+    )
+
+    thread = run_pipeline(
+        session_factory,
+        agent_id,
+        config=config,
+        clients=clients,
+        steps=[RecordingStep(name="step-a", calls=[])],
+    )
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+
+    assert fake_cabal.put_dispatch_pairs_calls == []
+
+
+def test_ready_flip_sync_does_not_fire_when_the_pipeline_fails(
+    session_factory, config, monkeypatch
+):
+    # A failed run never reaches AgentStatus.READY -- the sync trigger, tied
+    # to that exact transition, must never fire for it either.
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    agent_id = _make_agent_with_group(session_factory, "a", "growth")
+    fake_cabal = FakeCabal()
+    clients = Clients(
+        github=None, gojira=None, cloud=None, agent=None, kubectl=None, cabal=fake_cabal
+    )
+
+    thread = run_pipeline(
+        session_factory,
+        agent_id,
+        config=cfg,
+        clients=clients,
+        steps=[RecordingStep(name="step-a", calls=[], fail_times=99)],
+    )
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+
+    agent, _ = _load(session_factory, agent_id)
+    assert agent.status == AgentStatus.FAILED
+    assert fake_cabal.put_dispatch_pairs_calls == []
+
+
+def test_ready_flip_completes_even_when_dispatch_pairs_sync_fails(
+    session_factory, config, monkeypatch
+):
+    """Fail-soft: a CabalError from put_dispatch_pairs must never leave the
+    agent stuck out of READY or crash the pipeline thread."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    agent_id = _make_agent_with_group(session_factory, "a", "growth")
+    fake_cabal = FakeCabal(put_dispatch_pairs_error="switchboard unreachable")
+    clients = Clients(
+        github=None, gojira=None, cloud=None, agent=None, kubectl=None, cabal=fake_cabal
+    )
+
+    thread = run_pipeline(
+        session_factory,
+        agent_id,
+        config=cfg,
+        clients=clients,
+        steps=[RecordingStep(name="step-a", calls=[])],
+    )
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+
+    agent, _ = _load(session_factory, agent_id)
+    assert agent.status == AgentStatus.READY

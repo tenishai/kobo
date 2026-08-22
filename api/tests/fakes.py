@@ -1165,27 +1165,32 @@ class FakeSlack:
 
 class FakeCabal:
     """Records every `graduate`/`absorb`/`relay`/`mint_colleague`/
-    `list_conversations`/`get_conversation`/`stream_events` call (in call
-    order, each its own typed list) — no real switchboard admin API
-    involved.
+    `list_conversations`/`get_conversation`/`stream_events`/
+    `put_dispatch_pairs` call (in call order, each its own typed list) --
+    no real switchboard admin API involved.
 
     `graduate_error`/`absorb_error`/`relay_error`/`mint_colleague_error`/
-    `conversations_error`/`conversation_error`, when set, make the
-    matching method raise `CabalError(that message)` instead of
-    succeeding — the seam for exercising a caller's failure handling
-    (`DirectoryStep`, the destroy stage, the metadata tails, the sync
-    route, `WireStep`'s colleague-pass delivery, the watching window's
-    proxy routes) without a real backend. `relay_result`, when given, is
-    `relay`'s canned return value (default an empty dict — no caller in
-    this task inspects it). `mint_colleague_result`, when given, is
-    `mint_colleague`'s canned return value (default a fixed placeholder
-    token string — never a real secret, since this is a fake).
-    `conversations_result`, when given, is `list_conversations`'s canned
-    return value (default `[]`). `conversation_result`, when given, is
-    `get_conversation`'s canned return value (default an empty
-    conversation/events shape). `stream_chunks`, when given, is exactly
-    what `stream_events` yields, in order (default `[]` — an immediately
-    empty stream, no real transport involved).
+    `conversations_error`/`conversation_error`/`put_dispatch_pairs_error`,
+    when set, make the matching method raise `CabalError(that message)`
+    instead of succeeding -- the seam for exercising a caller's failure
+    handling (`DirectoryStep`, the destroy stage, the metadata tails, the
+    sync route, `WireStep`'s colleague-pass delivery, the watching window's
+    proxy routes, `kobo_api.pairs`'s dispatch-pairs sync) without a real
+    backend. `relay_result`, when given, is `relay`'s canned return value
+    (default an empty dict -- no caller in this task inspects it).
+    `mint_colleague_result`, when given, is `mint_colleague`'s canned
+    return value (default a fixed placeholder token string -- never a real
+    secret, since this is a fake). `conversations_result`, when given, is
+    `list_conversations`'s canned return value (default `[]`).
+    `conversation_result`, when given, is `get_conversation`'s canned
+    return value (default an empty conversation/events shape).
+    `stream_chunks`, when given, is exactly what `stream_events` yields, in
+    order (default `[]` -- an immediately empty stream, no real transport
+    involved). `put_dispatch_pairs` itself has no separate "result" knob --
+    unlike the other methods here, the real `CabalClient.put_dispatch_
+    pairs`'s return value (a count) is fully determined by what was passed
+    in, so this fake just returns `len(pairs)`, same as the real one does
+    off cabal's own dedupe-then-count response.
     """
 
     def __init__(
@@ -1202,6 +1207,7 @@ class FakeCabal:
         conversation_result: dict | None = None,
         conversation_error: str | None = None,
         stream_chunks: list[bytes] | None = None,
+        put_dispatch_pairs_error: str | None = None,
     ):
         self._graduate_error = graduate_error
         self._absorb_error = absorb_error
@@ -1220,10 +1226,16 @@ class FakeCabal:
         )
         self._conversation_error = conversation_error
         self._stream_chunks = stream_chunks if stream_chunks is not None else []
+        self._put_dispatch_pairs_error = put_dispatch_pairs_error
         self.graduate_calls: list[dict] = []
         self.absorb_calls: list[str] = []
         self.relay_calls: list[dict] = []
         self.mint_colleague_calls: list[str] = []
+        # Each entry is the exact sorted list of pairs that call received --
+        # mirrors `CabalClient.put_dispatch_pairs`'s own determinism
+        # (sorted, not raw set-iteration order), so a test asserting call
+        # shape never has to worry about set-ordering flakiness.
+        self.put_dispatch_pairs_calls: list[list[tuple[str, str]]] = []
         self.list_conversations_calls: list[dict] = []
         self.get_conversation_calls: list[str] = []
         self.stream_events_calls = 0
@@ -1263,6 +1275,13 @@ class FakeCabal:
         if self._conversation_error is not None:
             raise CabalError(f"get_conversation failed: {self._conversation_error}")
         return self._conversation_result
+
+    def put_dispatch_pairs(self, pairs) -> int:
+        sorted_pairs = sorted(pairs)
+        self.put_dispatch_pairs_calls.append(sorted_pairs)
+        if self._put_dispatch_pairs_error is not None:
+            raise CabalError(f"put_dispatch_pairs failed: {self._put_dispatch_pairs_error}")
+        return len(sorted_pairs)
 
     async def stream_events(self):
         # Async generator, matching the real `CabalClient.stream_events`

@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from kobo_api.clients import Clients
 from kobo_api.config import Config
 from kobo_api.models import Agent, AgentStatus, AgentStep, StepStatus
+from kobo_api.pairs import sync_dispatch_pairs_best_effort
 from kobo_api.steps import (
     AccessStep,
     BuildStep,
@@ -146,6 +147,13 @@ def _run_pipeline_body(
                 agent.status = AgentStatus.READY
                 agent.error = None
                 session.commit()
+                # Access-control arc, Task C4: a newly-READY agent joins its
+                # group's implicit pairs (kobo_api.pairs.allowed_pairs,
+                # recomputed fresh right here) -- push the switchboard's
+                # policy now rather than waiting on some other trigger to
+                # notice. Fail-soft and skip-when-unwired, same as every
+                # other trigger of this shared helper.
+                sync_dispatch_pairs_best_effort(clients, config, session)
         except Exception as exc:
             # Engine-level failure: anything outside a step's own run() (workdir
             # mkdir, a commit, ...). Steps have a FAILED row to resume from; this

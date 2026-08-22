@@ -734,6 +734,65 @@ def test_run_destroy_happy_path_retires_the_directory_listing_when_cabal_enabled
     session.close()
 
 
+# --- dispatch-pairs sync after destroy-forget (Task C4) ------------------------
+
+
+def test_run_destroy_syncs_dispatch_pairs_after_forget_when_cabal_enabled(
+    session_factory, config, monkeypatch
+):
+    """Engine-level: destroying an agent pushes the freshly-recomputed
+    allowed_pairs set (the destroyed agent already gone from it) to the
+    switchboard, right after destroy-forget deletes its row -- the two
+    survivors' own same-group pair is what should be left."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    agent_id = _seed_agent(session_factory, status=AgentStatus.READY, group_name="growth")
+    _seed_agent(session_factory, name="b", status=AgentStatus.READY, group_name="growth")
+    _seed_agent(session_factory, name="c", status=AgentStatus.READY, group_name="growth")
+    fake_cabal = FakeCabal()
+
+    thread = run_destroy(session_factory, agent_id, _clients(cabal=fake_cabal), cfg)
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+
+    assert fake_cabal.put_dispatch_pairs_calls == [
+        sorted({("agent:b", "c"), ("agent:c", "b")})
+    ]
+
+
+def test_run_destroy_does_not_sync_dispatch_pairs_when_cabal_disabled(
+    session_factory, config
+):
+    agent_id = _seed_agent(session_factory, status=AgentStatus.READY, group_name="growth")
+    fake_cabal = FakeCabal()
+
+    thread = run_destroy(session_factory, agent_id, _clients(cabal=fake_cabal), config)
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+
+    assert fake_cabal.put_dispatch_pairs_calls == []
+
+
+def test_run_destroy_completes_even_when_dispatch_pairs_sync_fails(
+    session_factory, config, monkeypatch
+):
+    """Fail-soft: a CabalError from put_dispatch_pairs must never leave the
+    agent's row behind or crash the destroy thread -- destroy-forget's own
+    row deletion already committed by the time this sync runs."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    agent_id = _seed_agent(session_factory, status=AgentStatus.READY)
+    fake_cabal = FakeCabal(put_dispatch_pairs_error="switchboard unreachable")
+
+    thread = run_destroy(session_factory, agent_id, _clients(cabal=fake_cabal), cfg)
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+
+    session = session_factory()
+    assert session.get(Agent, agent_id) is None
+    session.close()
+
+
 def test_run_destroy_self_service_slack_records_note_and_completes_step(
     session_factory, config, caplog
 ):

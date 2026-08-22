@@ -27,7 +27,14 @@ from kobo_api.config import Config
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import create_app
 from kobo_api.models import A2AInvite, Agent, AgentStatus, Base
-from tests.fakes import FakeAgent, FakeCloud, FakeGitHub, FakeGojira, FakeKubectl
+from tests.fakes import (
+    FakeAgent,
+    FakeCabal,
+    FakeCloud,
+    FakeGitHub,
+    FakeGojira,
+    FakeKubectl,
+)
 
 PERSONA = "helpful-generalist"
 REPO_TEMPLATE = "acme/agent-{name}"
@@ -747,3 +754,162 @@ def test_full_lifecycle_request_accept_then_revoke(session_factory, client):
         headers=_headers(key, email=OWNER_A_EMAIL),
     )
     assert fresh.status_code == 201, fresh.text
+
+
+# --- Dispatch-pairs sync (Task C4: the room becomes the switchboard's own
+# policy source) ---------------------------------------------------------------
+#
+# Accept and revoke are the two invite-lifecycle triggers that push kobo's
+# current `allowed_pairs` set to the switchboard (`kobo_api.pairs.sync_
+# dispatch_pairs_best_effort`, called through `kobo_api.main`'s own thin
+# `_sync_dispatch_pairs(session)` wrapper). Decline never changes the pairs
+# set (a pending invite was never in it), so it must never sync either.
+
+
+def _enabled_cabal_config(config):
+    return config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": "http://agent-{name}.default.svc.cluster.local",
+        }
+    )
+
+
+def _make_client_with_cabal(session_factory, config, iap_jwks_fetcher, cabal):
+    return TestClient(
+        create_app(
+            session_factory,
+            config=config,
+            clients=Clients(
+                github=FakeGitHub(),
+                gojira=FakeGojira(),
+                cloud=FakeCloud(),
+                agent=FakeAgent(),
+                kubectl=FakeKubectl(),
+                cabal=cabal,
+            ),
+            iap_jwks_fetcher=iap_jwks_fetcher,
+        )
+    )
+
+
+@pytest.fixture
+def cabal_client(session_factory, config, monkeypatch):
+    """Same shape as the plain `client` fixture above, but with the
+    switchboard wired to a `FakeCabal` this test can inspect -- returns
+    `(TestClient, private_key, FakeCabal)`."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    private_key, jwk = _generate_jwk()
+    fake_cabal = FakeCabal()
+    c = _make_client_with_cabal(session_factory, cfg, _fetcher(jwk), fake_cabal)
+    return c, private_key, fake_cabal
+
+
+def test_accept_syncs_dispatch_pairs_to_the_switchboard(session_factory, cabal_client):
+    c, key, fake_cabal = cabal_client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name="payments-eng")
+    invite_id = _seed_invite(session_factory, from_agent="a", to_agent="b", status="pending")
+
+    response = c.post(
+        f"/api/invites/{invite_id}/accept", headers=_headers(key, email=OWNER_B_EMAIL)
+    )
+
+    assert response.status_code == 200, response.text
+    assert fake_cabal.put_dispatch_pairs_calls == [[("agent:a", "b")]]
+
+
+def test_decline_of_a_pending_invite_does_not_sync(session_factory, cabal_client):
+    c, key, fake_cabal = cabal_client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name="payments-eng")
+    invite_id = _seed_invite(session_factory, from_agent="a", to_agent="b", status="pending")
+
+    response = c.post(
+        f"/api/invites/{invite_id}/decline", headers=_headers(key, email=OWNER_B_EMAIL)
+    )
+
+    assert response.status_code == 200, response.text
+    assert fake_cabal.put_dispatch_pairs_calls == []
+
+
+def test_revoke_of_an_accepted_invite_syncs_dispatch_pairs(session_factory, cabal_client):
+    c, key, fake_cabal = cabal_client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name="payments-eng")
+    invite_id = _seed_invite(session_factory, from_agent="a", to_agent="b", status="accepted")
+
+    response = c.delete(
+        f"/api/invites/{invite_id}", headers=_headers(key, email=OWNER_A_EMAIL)
+    )
+
+    assert response.status_code == 200, response.text
+    assert fake_cabal.put_dispatch_pairs_calls == [[]]
+
+
+def test_revoke_of_a_pending_invite_does_not_sync(session_factory, cabal_client):
+    # A pending invite was never in allowed_pairs in the first place --
+    # revoking it changes nothing the switchboard needs to hear about.
+    c, key, fake_cabal = cabal_client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name="payments-eng")
+    invite_id = _seed_invite(session_factory, from_agent="a", to_agent="b", status="pending")
+
+    response = c.delete(
+        f"/api/invites/{invite_id}", headers=_headers(key, email=OWNER_A_EMAIL)
+    )
+
+    assert response.status_code == 200, response.text
+    assert fake_cabal.put_dispatch_pairs_calls == []
+
+
+def test_accept_then_revoke_each_sync_exactly_once(session_factory, cabal_client):
+    c, key, fake_cabal = cabal_client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name="payments-eng")
+    invite_id = _seed_invite(session_factory, from_agent="a", to_agent="b", status="pending")
+
+    c.post(f"/api/invites/{invite_id}/accept", headers=_headers(key, email=OWNER_B_EMAIL))
+    c.delete(f"/api/invites/{invite_id}", headers=_headers(key, email=OWNER_A_EMAIL))
+
+    assert fake_cabal.put_dispatch_pairs_calls == [[("agent:a", "b")], []]
+
+
+def test_accept_does_not_sync_when_switchboard_not_configured(session_factory, client):
+    # The plain `client` fixture (no cabal_url/token) has no FakeCabal to
+    # inspect at all -- this pins that accept still succeeds normally (the
+    # sync is a no-op skip, never a hard dependency) rather than testing
+    # call counts against nothing.
+    c, key = client
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name="payments-eng")
+    invite_id = _seed_invite(session_factory, from_agent="a", to_agent="b", status="pending")
+
+    response = c.post(
+        f"/api/invites/{invite_id}/accept", headers=_headers(key, email=OWNER_B_EMAIL)
+    )
+
+    assert response.status_code == 200, response.text
+
+
+def test_accept_succeeds_even_when_the_switchboard_push_fails(
+    session_factory, config, monkeypatch
+):
+    # Fail-soft: a CabalError from put_dispatch_pairs must never turn an
+    # otherwise-successful accept into an error response.
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    private_key, jwk = _generate_jwk()
+    fake_cabal = FakeCabal(put_dispatch_pairs_error="switchboard unreachable")
+    c = _make_client_with_cabal(session_factory, cfg, _fetcher(jwk), fake_cabal)
+    _seed_agent(session_factory, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
+    _seed_agent(session_factory, name="b", created_by=OWNER_B_EMAIL, group_name="payments-eng")
+    invite_id = _seed_invite(session_factory, from_agent="a", to_agent="b", status="pending")
+
+    response = c.post(
+        f"/api/invites/{invite_id}/accept", headers=_headers(private_key, email=OWNER_B_EMAIL)
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "accepted"

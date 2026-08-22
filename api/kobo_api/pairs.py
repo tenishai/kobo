@@ -19,10 +19,24 @@ dispatch routes key on.
 
 from __future__ import annotations
 
+import logging
+from typing import TYPE_CHECKING
+
+import httpx
 from sqlalchemy.orm import Session
 
+from kobo_api.clients import CabalClient, CabalError, cabal_enabled
 from kobo_api.config import Config
 from kobo_api.models import INVITE_ACCEPTED, A2AInvite, Agent, AgentStatus
+
+if TYPE_CHECKING:
+    # Type-only, same "keep the real Clients import light for callers that
+    # don't need it" posture kobo_api.main takes with the identical import --
+    # this module only ever touches `clients.cabal` (already typed via the
+    # `CabalClient` import above), never anything else `Clients` carries.
+    from kobo_api.clients import Clients
+
+log = logging.getLogger(__name__)
 
 
 def allowed_pairs(session: Session, config: Config) -> set[tuple[str, str]]:
@@ -76,3 +90,66 @@ def allowed_pairs(session: Session, config: Config) -> set[tuple[str, str]]:
             pairs.add((f"agent:{invite.from_agent}", invite.to_agent))
 
     return pairs
+
+
+def sync_dispatch_pairs(cabal: CabalClient, session: Session, config: Config) -> None:
+    """Compute `allowed_pairs(session, config)` fresh and push it to the
+    switchboard via `cabal.put_dispatch_pairs` (Task C4: the room becomes
+    the switchboard's policy source, syncing on every consent change).
+
+    Raises whatever `put_dispatch_pairs` raises (`CabalError` on a non-2xx
+    response) or a raw `httpx` transport error -- this function never
+    tolerates a failure itself, mirroring `kobo_api.directory.sync_
+    directory`'s identical raising contract for the analogous directory-sync
+    problem. Every real trigger in this room (`kobo_api.main`'s invite
+    accept/revoke, `kobo_api.destroy`'s forget step, `kobo_api.provisioner`'s
+    READY flip) calls this only through `sync_dispatch_pairs_best_effort`
+    below, never directly -- but this raising core stays a free-standing,
+    independently testable function rather than folding the fail-soft
+    wrapping into it, the same split `sync_directory`/`_sync_directory_
+    best_effort` already established.
+    """
+    cabal.put_dispatch_pairs(allowed_pairs(session, config))
+
+
+def sync_dispatch_pairs_best_effort(clients: Clients, config: Config, session: Session) -> None:
+    """Fail-soft wrapper around `sync_dispatch_pairs` -- the ONE seam every
+    pair-mutating trigger in this room shares: an invite's accept or an
+    accepted invite's revoke (`kobo_api.main`), an agent's destroy-forget
+    step completing (`kobo_api.destroy`), and an agent's READY flip at the
+    end of provisioning (`kobo_api.provisioner`). New READY agents join
+    their group's implicit pairs through the same `allowed_pairs` query
+    every other trigger recomputes from scratch; a group change has no
+    trigger of its own because `group_name` is immutable once an agent is
+    created (nothing in this room currently changes it after create).
+
+    Lives here, next to `allowed_pairs`/`sync_dispatch_pairs` themselves,
+    rather than in `kobo_api.main` alongside its structurally identical
+    `_sync_directory_best_effort` -- `kobo_api.main` imports `kobo_api.
+    destroy` and `kobo_api.provisioner` (for `run_destroy`/`run_pipeline`),
+    so a helper defined in `main.py` could never be called back into from
+    either of those two modules without a circular import. `kobo_api.pairs`
+    sits underneath all three, so it's the one place every caller can reach
+    without inverting that dependency direction. `kobo_api.main` still
+    exposes its own thin, session-only `_sync_dispatch_pairs` wrapper around
+    this function for its two call sites, closing over its own `app.state.
+    clients`/`app.state.config` the way every other route-level cabal call
+    already does.
+
+    A no-op when the switchboard isn't wired: `cabal_enabled(config)` false,
+    or `clients.cabal` is `None` (both gates checked, same two-part test
+    `kobo_api.main._colleagues_gate` already uses -- either alone isn't
+    enough to safely dereference `clients.cabal`). When wired, any
+    `CabalError` (a non-2xx response) or raw `httpx.HTTPError` (a transport
+    failure -- connection refused, timeout, DNS) is logged and swallowed
+    here, never raised: by the time any of the four triggers above calls
+    this, the state change that triggered it has already committed, and a
+    switchboard hiccup must not turn an otherwise-successful accept/revoke/
+    destroy/ready-flip into a failure this late.
+    """
+    if not cabal_enabled(config) or clients.cabal is None:
+        return
+    try:
+        sync_dispatch_pairs(clients.cabal, session, config)
+    except (CabalError, httpx.HTTPError):
+        log.warning("dispatch-pairs sync to the switchboard failed", exc_info=True)
