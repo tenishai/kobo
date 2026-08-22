@@ -8,17 +8,19 @@
   // state (name, selections, the availability check, submit errors) but
   // not whether it's visible.
   //
-  // Persona v3 / teamless-create addendum dropped Team as a client-supplied
-  // field entirely. The persona-metadata plan (2026-08-18) supersedes that
-  // for AGENTS specifically: Team returns to the Create station as a real
-  // picker (station 4, alongside Model) — the design's own ruling is that
-  // team is instance truth an agent carries, born at create time, not
-  // something to defer to a later IAP-derived phase. The persona itself
-  // still has no team field of its own (`PersonaBuilder` unchanged, still
-  // no `team` prop) — personas stay shared templates; only the AGENT being
-  // created here now records an explicit team, chosen from the picker or a
-  // typed escape, and the server still defaults to "shared" if this room
-  // ever omitted the key (it no longer does).
+  // Persona v3 / teamless-create addendum first dropped Team as a
+  // client-supplied field entirely; the persona-metadata plan (2026-08-18)
+  // briefly brought it back as a real picker at station 4. The "team vs
+  // group" ruling retires that picker for good: an operator asking "isn't
+  // team and group basically the same thing?" surfaced that this room
+  // already asks the one belonging question with Group (below). Team stays
+  // what it reads as to a human — a derived marketplace fact (the
+  // skills-catalog owner axis) — never a create-time choice. The create
+  // REQUEST simply stops sending `team`; the server's existing default
+  // ("shared") covers its absence exactly as it did before the picker ever
+  // existed. Team is still editable after the fact through Edit details
+  // (`MetadataDetails`, untouched by this ruling) — this modal just no
+  // longer asks the question up front.
   //
   // "Unlocking" here is a visual/motivational cue only (reduced opacity +
   // a hollow station marker — see the `.station--locked` styling below),
@@ -52,22 +54,24 @@
   // writable-store idiom, just set once per persona commit rather than
   // per keystroke.
   //
-  // Models and teams come from `modelsQuery()`/`teamsQuery()`, both
-  // prefetched by App.svelte the same "warm modal" way the old whole-catalog
-  // fetch was. Org wiring status (`orgStatusQuery()`) decides whether the
-  // persona/skills sections show real pickers or an honest "not set up yet"
-  // empty state — see `personasUnwired`/`skillsUnwired` below.
+  // Models come from `modelsQuery()`, prefetched by App.svelte the same
+  // "warm modal" way the old whole-catalog fetch was. `teamsQuery()` (also
+  // prefetched there) now feeds only the Skills section's search-by-team
+  // filter — the "team vs group" ruling retired this station's own team
+  // picker, so `teamOptionsQuery()` (`/api/teams`, the distinct skill-owner
+  // pool + a server-named default) has no reader in this component any
+  // more; it still backs Edit details' own team field (`MetadataDetails`).
+  // Org wiring status (`orgStatusQuery()`) decides whether the persona/
+  // skills sections show real pickers or an honest "not set up yet" empty
+  // state — see `personasUnwired`/`skillsUnwired` below.
   //
-  // The Create station's own team PICKER (persona-metadata plan) reads a
-  // DIFFERENT query, `teamOptionsQuery()` (`/api/teams`, the distinct
-  // skill-owner pool + a server-named default) — not `teamsQuery()` above,
-  // which spans both catalog kinds and only ever feeds the Skills section's
-  // search-by-team filter. Also prefetched by App.svelte's warm-modal set.
   // Purpose chips are a plain local list, pre-filled once from the persona
   // draft step's own `purpose_tags` (`PersonaBuilder`'s `oncreated`) when
   // this agent's persona was actually drafted here; a search-picked existing
-  // persona has no draft, so its chips start empty. No capability field at
-  // create — that's earned after first contact (Overview/Edit details).
+  // persona has no draft, so its chips start empty. A row of example chips
+  // (below, in the markup) adds a starter tag on click through the same
+  // list. No capability field at create — that's earned after first contact
+  // (Overview/Edit details).
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { tick } from "svelte";
   import { derived, writable } from "svelte/store";
@@ -92,7 +96,6 @@
     orgStatusQuery,
     personasSearchQuery,
     skillsSearchQuery,
-    teamOptionsQuery,
     teamsQuery,
   } from "../lib/queries";
   import { toast } from "../lib/toast.svelte";
@@ -103,7 +106,6 @@
   const queryClient = useQueryClient();
   const models = createQuery(modelsQuery());
   const teams = createQuery(teamsQuery());
-  const teamOptions = createQuery(teamOptionsQuery());
   const groups = createQuery(groupsQuery());
   const orgStatus = createQuery(orgStatusQuery());
   const mutation = createMutation(createAgentMutation(queryClient));
@@ -409,44 +411,6 @@
     selectedSkills = next;
   }
 
-  // --- Team + purpose tags (persona-metadata plan, Create station) --------
-  //
-  // Team: a plain `<select>` (options = `teamOptionsQuery`'s distinct
-  // skill-owner pool + its server-named default, "shared" today) plus a
-  // typed escape ("Other...") for a team that hasn't published a skill yet.
-  // Purpose tags: free chips, pre-filled once per persona commit (see the
-  // effect above), otherwise a plain add/remove list capped at 8 — same
-  // normalize-on-add discipline `MetadataDetails`'s own chips editor uses.
-
-  const TEAM_OTHER = "__other__";
-  let teamMode = $state<"select" | "other">("select");
-  let teamValue = $state("shared");
-  let teamOtherInput = $state("");
-
-  function handleTeamSelectChange(value: string): void {
-    if (value === TEAM_OTHER) {
-      teamMode = "other";
-      teamOtherInput = "";
-    } else {
-      teamMode = "select";
-      teamValue = value;
-    }
-  }
-
-  const effectiveTeam = $derived(
-    teamMode === "other" ? teamOtherInput.trim().toLowerCase() : teamValue,
-  );
-
-  // Always includes "shared" (the safe default while the query is still
-  // loading) and whatever `teamValue` currently holds, so the select never
-  // shows a mismatched selection.
-  const teamPickerOptions = $derived.by((): string[] => {
-    const data = $teamOptions.data;
-    const pool = new Set<string>(data ? [data.default, ...data.teams] : ["shared"]);
-    pool.add(teamValue);
-    return [...pool];
-  });
-
   // --- Group (access-control Task B2) -------------------------------------
   //
   // `groupsQuery` (`GET /api/catalog/groups`) is the ACCESS namespace this
@@ -461,9 +425,22 @@
   let groupValue = $state("");
   const groupOptionsAvailable = $derived(($groups.data?.length ?? 0) > 0);
 
+  // --- Purpose tags (persona-metadata plan, Create station) ---------------
+  //
+  // Free chips, pre-filled once per persona commit (see the effect above),
+  // otherwise a plain add/remove list capped at 8 — same normalize-on-add
+  // discipline `MetadataDetails`'s own chips editor uses. The example row
+  // (markup, below) offers four starter tags that add themselves through
+  // `addExampleTag`, the same normalize/cap-checked path just skinned as a
+  // one-click chip instead of the type-and-press-Add flow.
+
   let purposeTags = $state<string[]>([]);
   let purposeTagInput = $state("");
   const PURPOSE_TAGS_CAP = 8;
+
+  /** Picked to fit this room's own world (all four are names of real work
+   * this room's agents actually do), not a generic SaaS example set. */
+  const PURPOSE_TAG_EXAMPLES = ["networking", "incident-response", "gcp", "billing"];
 
   function addPurposeTag(): void {
     const value = purposeTagInput.trim().toLowerCase();
@@ -476,6 +453,13 @@
     }
     purposeTags = [...purposeTags, value];
     purposeTagInput = "";
+  }
+
+  function addExampleTag(tag: string): void {
+    if (purposeTags.includes(tag) || purposeTags.length >= PURPOSE_TAGS_CAP) {
+      return;
+    }
+    purposeTags = [...purposeTags, tag];
   }
 
   function removePurposeTag(value: string): void {
@@ -530,9 +514,6 @@
       skillSearchParams.set({ q: "", team: null });
       skillShowAll = false;
       selectedSkills = new Map();
-      teamMode = "select";
-      teamValue = "shared";
-      teamOtherInput = "";
       groupValue = "";
       purposeTags = [];
       purposeTagInput = "";
@@ -547,7 +528,6 @@
       !skillsUnwired &&
       selectedPersona !== "" &&
       selectedModel !== "" &&
-      effectiveTeam.length > 0 &&
       (!groupOptionsAvailable || groupValue !== "") &&
       !$mutation.isPending,
   );
@@ -563,7 +543,6 @@
       {
         name: createdName,
         persona: selectedPersona,
-        team: effectiveTeam,
         skills: [...selectedSkills.values()].map(({ id, team: skillTeam }) => ({
           id,
           team: skillTeam,
@@ -944,35 +923,6 @@
         <h3 class="station__heading">Create</h3>
       </div>
 
-      <div class="create-form__field">
-        <label class="create-form__label" for="create-team">Team</label>
-        <select
-          id="create-team"
-          class="create-form__input"
-          value={teamMode === "other" ? TEAM_OTHER : teamValue}
-          onchange={(event) =>
-            handleTeamSelectChange((event.currentTarget as HTMLSelectElement).value)}
-        >
-          {#each teamPickerOptions as t (t)}
-            <option value={t}>{t}</option>
-          {/each}
-          <option value={TEAM_OTHER}>Other...</option>
-        </select>
-        {#if teamMode === "other"}
-          <label class="sr-only" for="create-team-other">Team name</label>
-          <input
-            id="create-team-other"
-            class="create-form__input"
-            type="text"
-            bind:value={teamOtherInput}
-            placeholder="team-name"
-            autocomplete="off"
-            spellcheck="false"
-          />
-          <p class="create-form__help">lowercase-with-dashes</p>
-        {/if}
-      </div>
-
       {#if groupOptionsAvailable}
         <div class="create-form__field">
           <label class="create-form__label" for="create-group">Group</label>
@@ -995,6 +945,22 @@
 
       <div class="create-form__field">
         <label class="create-form__label" for="create-purpose-tag-input">Purpose tags</label>
+        <p class="create-form__help">
+          Short labels that help people and agents discover what this agent is for.
+        </p>
+        <div class="chip-row">
+          {#each PURPOSE_TAG_EXAMPLES as example (example)}
+            <button
+              type="button"
+              class="chip chip--example"
+              disabled={purposeTags.includes(example) ||
+                purposeTags.length >= PURPOSE_TAGS_CAP}
+              onclick={() => addExampleTag(example)}
+            >
+              {example}
+            </button>
+          {/each}
+        </div>
         {#if purposeTags.length > 0}
           <div class="chip-row">
             {#each purposeTags as tag (tag)}
@@ -1281,6 +1247,22 @@
 
   .chip__remove:hover {
     color: var(--fail);
+  }
+
+  .chip--example {
+    background: none;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .chip--example:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .chip--example:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .catalog-badge {

@@ -17,7 +17,6 @@
     personasSearchQuery,
     shouldRetry,
     skillsSearchQuery,
-    teamOptionsQuery,
     teamsQuery,
   } from "./lib/queries";
   import { route } from "./lib/router.svelte";
@@ -41,17 +40,18 @@
   // opens. Every one of these is exactly what CreateModal's own queries
   // ask for on a fresh, unfiltered open (empty search text, no team
   // filter), so a warm cache means the modal renders instantly instead of
-  // a page of skeletons. `teamOptionsQuery` (persona-metadata plan) joins
-  // this set for the same reason: the Create station's team picker reads
-  // it on every open, same as `teamsQuery` (the skill-team search filter)
-  // already does. `groupsQuery` (access-control Task B2) joins for the
-  // identical reason: the Create station's group picker reads it on every
-  // open too.
+  // a page of skeletons. `groupsQuery` (access-control Task B2) joins for
+  // the identical reason: the Create station's group picker reads it on
+  // every open. `teamOptionsQuery` (`/api/teams`) used to join this set for
+  // the Create station's own team picker (persona-metadata plan); the
+  // "team vs group" ruling retired that picker, so this file no longer
+  // warms it at all — Edit details (`MetadataDetails`), its only remaining
+  // reader, fetches it lazily on its own `open` instead, same as before
+  // that picker ever existed.
   function prefetchCatalogs(): void {
     void queryClient.prefetchQuery(modelsQuery());
     void queryClient.prefetchQuery(groupsQuery());
     void queryClient.prefetchQuery(teamsQuery());
-    void queryClient.prefetchQuery(teamOptionsQuery());
     void queryClient.prefetchQuery(orgStatusQuery());
     void queryClient.prefetchQuery(personasSearchQuery("", null));
     void queryClient.prefetchQuery(skillsSearchQuery("", null));

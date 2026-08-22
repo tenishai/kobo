@@ -399,11 +399,15 @@ export async function getAgent(name: string): Promise<AgentDetail> {
 export async function createAgent(body: {
   name: string;
   persona: string;
-  /** The creating team (persona-metadata plan, 2026-08-18 revival of the
-   * create station's team picker) — a slug, server-validated against
-   * `TEAM_SLUG_RE`, rejected with the plain copy "that doesn't look like a
-   * team name" on mismatch. */
-  team: string;
+  /** The creating team — a slug, server-validated against `TEAM_SLUG_RE`,
+   * rejected with the plain copy "that doesn't look like a team name" on
+   * mismatch. Optional: the "team vs group" ruling retired the create
+   * modal's own team picker (team is a derived marketplace fact, edited
+   * later through Edit details, not a create-time choice), so this key is
+   * never sent from the UI any more; the server's own default ("shared")
+   * covers its absence exactly as it did before the picker briefly
+   * existed. */
+  team?: string;
   skills: { id: string; team: string }[];
   model: string | null;
   /** Purpose chips (persona-metadata plan) — normalized/capped (8)
