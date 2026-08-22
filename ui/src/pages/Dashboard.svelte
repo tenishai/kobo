@@ -5,6 +5,14 @@
   // wired up anywhere. This page only owns the four states that query can
   // be in: loading, error (with retry), empty, and populated. The header
   // (wordmark + Create button) lives one level up, in App.svelte.
+  //
+  // Access-control Task B2: the response is already server-filtered to
+  // what THIS caller may see (`_visible_agents`, kobo_api.main) — this page
+  // just renders whatever comes back, no client-side filtering of its own.
+  // `groups_unavailable` (true only when a directory outage narrowed the
+  // list down to owned-only) renders the Global Constraints' banner copy
+  // verbatim, above the grid rather than replacing it — a degraded list is
+  // still a real list, not an error state.
   import { createQuery } from "@tanstack/svelte-query";
   import AgentCard from "../components/AgentCard.svelte";
   import EmptyState from "../components/EmptyState.svelte";
@@ -32,14 +40,22 @@
     message={errorMessage($agents.error, "Couldn't load agents.")}
     onretry={() => $agents.refetch()}
   />
-{:else if $agents.data.length === 0}
-  <EmptyState message="No agents yet. Create your first." />
 {:else}
-  <div class="dashboard-grid">
-    {#each $agents.data as agent (agent.name)}
-      <AgentCard {agent} />
-    {/each}
-  </div>
+  {#if $agents.data.groups_unavailable}
+    <p class="groups-unavailable-banner" role="status">
+      Group lookups are unavailable right now. You are seeing only what you
+      own.
+    </p>
+  {/if}
+  {#if $agents.data.agents.length === 0}
+    <EmptyState message="No agents yet. Create your first." />
+  {:else}
+    <div class="dashboard-grid">
+      {#each $agents.data.agents as agent (agent.name)}
+        <AgentCard {agent} />
+      {/each}
+    </div>
+  {/if}
 {/if}
 
 <style>
@@ -54,5 +70,15 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--panel);
+  }
+
+  .groups-unavailable-banner {
+    margin: 0 0 var(--space-md) 0;
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--muted);
+    font-size: 0.85rem;
   }
 </style>

@@ -69,7 +69,7 @@ def test_api_routes_unaffected_by_ui_mount(session_factory, config, tmp_path):
     assert healthz.status_code == 200
     assert healthz.json() == {"ok": True}
     assert agents.status_code == 200
-    assert agents.json() == {"agents": []}
+    assert agents.json() == {"agents": [], "groups_unavailable": False}
 
 
 def test_unknown_api_path_still_404s_not_swallowed_by_spa_fallback(

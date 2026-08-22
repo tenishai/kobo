@@ -18,6 +18,10 @@ function stubCreateModalCatalogs(extra: Record<string, unknown> = {}): void {
       models: [{ id: "gpt-5", label: "GPT-5" }],
       default: "gpt-5",
     },
+    // Empty by default (access-control Task B2): most existing cases here
+    // predate groups entirely and must see no picker at all — a test that
+    // wants the picker overrides this key in `extra`.
+    "/api/catalog/groups": { groups: [] },
     "/api/catalog/teams": { teams: ["shared"] },
     "/api/teams": { teams: ["growth", "platform"], default: "shared" },
     "/api/org/status": { org: "acme", wired: true, checks: [] },
@@ -95,6 +99,52 @@ describe("CreateModal — team picker + purpose chips (persona-metadata plan)", 
     await fireEvent.click(screen.getByRole("button", { name: "Remove support" }));
     expect(screen.queryByText("support")).toBeNull();
     expect(screen.getAllByRole("button", { name: /^Remove /i })).toHaveLength(7);
+  });
+});
+
+describe("CreateModal — group picker (access-control Task B2)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("renders no group picker when the room hasn't named any groups", async () => {
+    stubCreateModalCatalogs();
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    await screen.findByLabelText("Team");
+    expect(screen.queryByLabelText("Group")).toBeNull();
+  });
+
+  it("renders a required group picker with the configured names once the room has some", async () => {
+    stubCreateModalCatalogs({
+      "/api/catalog/groups": { groups: [{ name: "payments-eng" }, { name: "growth" }] },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    const groupSelect = (await screen.findByLabelText("Group")) as HTMLSelectElement;
+    expect(groupSelect.required).toBe(true);
+    const optionValues = Array.from(groupSelect.options).map((o) => o.value);
+    expect(optionValues).toEqual(expect.arrayContaining(["payments-eng", "growth"]));
+  });
+
+  it("submit stays disabled until a group is chosen when groups are configured", async () => {
+    stubCreateModalCatalogs({
+      "/api/catalog/groups": { groups: [{ name: "payments-eng" }] },
+      "/api/availability": { available: true, reason: null },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    const groupSelect = (await screen.findByLabelText("Group")) as HTMLSelectElement;
+    const submit = screen.getByRole("button", { name: "Create agent" }) as HTMLButtonElement;
+    // No persona/name picked yet either, so this is already disabled for
+    // other reasons -- this test only proves the group select's own empty
+    // starting value (the disabled "Choose a group" placeholder) never
+    // silently counts as a pick.
+    expect(groupSelect.value).toBe("");
+    expect(submit.disabled).toBe(true);
+
+    await fireEvent.change(groupSelect, { target: { value: "payments-eng" } });
+    expect(groupSelect.value).toBe("payments-eng");
   });
 
   it("pre-fills purpose chips from the persona builder's drafted purpose_tags", async () => {

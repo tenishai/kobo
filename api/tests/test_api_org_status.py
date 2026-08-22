@@ -540,7 +540,12 @@ def test_whoami_without_iap_is_null_email_and_not_operator(client):
     response = client.get("/api/whoami")
 
     assert response.status_code == 200
-    assert response.json() == {"email": None, "operator": False, "groups": []}
+    assert response.json() == {
+        "email": None,
+        "operator": False,
+        "groups": [],
+        "groups_unavailable": False,
+    }
 
 
 def test_whoami_with_iap_operator_email_reports_email_and_operator_true(tmp_path):
@@ -560,6 +565,7 @@ def test_whoami_with_iap_operator_email_reports_email_and_operator_true(tmp_path
         "email": "ops@example.com",
         "operator": True,
         "groups": [],
+        "groups_unavailable": False,
     }
 
 
@@ -580,6 +586,7 @@ def test_whoami_with_iap_non_operator_email_reports_email_and_operator_false(tmp
         "email": "someone-else@example.com",
         "operator": False,
         "groups": [],
+        "groups_unavailable": False,
     }
 
 

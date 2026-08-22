@@ -147,13 +147,24 @@ export type OrgCheck = { id: string; label: string; ok: boolean; detail: string 
 
 export type OrgStatus = { org: string | null; wired: boolean; checks: OrgCheck[] };
 
-/** `GET /api/whoami`'s response (access-control Task A1) — the verified
- * identity this room already knows about the caller. `email` is `null`
- * whenever IAP isn't configured or verification found no claim; `operator`
- * is server-derived off `config.operators`, never something the UI computes
- * itself. `groups` is always `[]` in this phase (a later task fills it in
- * from the org's group source, same response shape). */
-export type Whoami = { email: string | null; operator: boolean; groups: string[] };
+/** `GET /api/whoami`'s response (access-control Task A1, groups made real in
+ * Task B2) — the verified identity this room already knows about the
+ * caller. `email` is `null` whenever IAP isn't configured or verification
+ * found no claim; `operator` is server-derived off `config.operators`,
+ * never something the UI computes itself. `groups` is the caller's resolved
+ * group membership when a directory resolver is wired, `[]` when the groups
+ * feature isn't configured at all. `groups_unavailable` is true only when a
+ * resolver IS wired but couldn't answer for this email right now (a
+ * directory outage) — WATCH ITEM: no UI affordance keys off `operator`
+ * either (a dev-parity room with no configured operators reads `false`
+ * here while gates behave as if everyone were one) — every screen stays a
+ * pure reflection of what the server's own routes actually do. */
+export type Whoami = {
+  email: string | null;
+  operator: boolean;
+  groups: string[];
+  groups_unavailable: boolean;
+};
 
 export type ChatMessage = { role: "user" | "agent"; text: string };
 
@@ -284,10 +295,18 @@ async function parse<T>(res: Response): Promise<T> {
   return data as T;
 }
 
-export async function listAgents(): Promise<AgentSummary[]> {
+/** `GET /api/agents`'s response (access-control Task B2): the CALLER's
+ * visible agents (server-filtered, never the full table — the UI only
+ * ever reflects `_visible_agents`' own decision), plus whether group-
+ * derived visibility is degraded right now for them. `groups_unavailable`
+ * true means a directory outage narrowed this list down to only what the
+ * caller owns — the dashboard's banner (Dashboard.svelte) reads this
+ * verbatim, never derives it from anything else. */
+export type AgentListResult = { agents: AgentSummary[]; groups_unavailable: boolean };
+
+export async function listAgents(): Promise<AgentListResult> {
   const res = await fetch("/api/agents");
-  const data = await parse<{ agents: AgentSummary[] }>(res);
-  return data.agents;
+  return parse<AgentListResult>(res);
 }
 
 export async function getAgent(name: string): Promise<AgentDetail> {
@@ -309,6 +328,12 @@ export async function createAgent(body: {
    * server-side; an over-cap list (after de-dupe) 422s with "Eight tags at
    * most." */
   purpose_tags: string[];
+  /** The ACL namespace this agent belongs to (access-control Task B2) —
+   * omitted (or `null`) when the room hasn't named any groups
+   * (`GET /api/catalog/groups` returns `[]`); required and checked against
+   * that same list once it has, both server-side (the real gate) and by
+   * the create modal's own required `<select>` (UX only). */
+  group_name?: string | null;
 }): Promise<{ name: string; status: string }> {
   const res = await fetch("/api/agents", {
     method: "POST",
@@ -353,6 +378,19 @@ export async function fetchModels(): Promise<{
   return parse<{ models: { id: string; label: string }[]; default: string }>(
     res,
   );
+}
+
+/** `GET /api/catalog/groups` (access-control Task B2) — the room's named
+ * ACL namespaces, config names only (never the Okta group names the server
+ * maps them to internally). `[]` when the room hasn't named any groups at
+ * all — the create modal's own signal to render no group picker rather
+ * than a required-but-empty one. */
+export type GroupOption = { name: string };
+
+export async function fetchGroups(): Promise<GroupOption[]> {
+  const res = await fetch("/api/catalog/groups");
+  const data = await parse<{ groups: GroupOption[] }>(res);
+  return data.groups;
 }
 
 /** Builds a `?q=...&team=...` query string: `q` is always present (even

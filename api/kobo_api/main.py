@@ -169,13 +169,12 @@ class CreateAgentRequest(BaseModel):
     # back under the cap, so the cap must be checked AFTER normalization,
     # not against the raw submitted length a pydantic max_length would see.
     purpose_tags: list[str] = []
-    # group_name (access-control arc, Task A2): the ACL namespace this agent
-    # belongs to -- DISTINCT from `team` above (the skills-catalog capability
-    # axis), never conflated with it. Optional and unvalidated in this
-    # phase: `create_agent` stores whatever is provided verbatim (Task B2
-    # adds the config.groups membership check and makes this required once
-    # groups exist); the UI does not send this field yet, so it is `None`
-    # on every request today.
+    # group_name (access-control arc, Task A2, validated in Task B2): the
+    # ACL namespace this agent belongs to -- DISTINCT from `team` above (the
+    # skills-catalog capability axis), never conflated with it. `create_
+    # agent` (below) requires this and checks it against `cfg.groups` once
+    # the room has named any groups at all; a room that hasn't stays exactly
+    # as before B2 -- optional, stored verbatim, unvalidated.
     group_name: str | None = None
 
 
@@ -599,6 +598,7 @@ def _validation_error_message(exc: RequestValidationError) -> str:
 
 def _ready_agent_or_error(
     session: Session,
+    request: Request,
     name: str,
     *,
     not_ready_message: str = "agent is not ready for memory changes",
@@ -614,13 +614,19 @@ def _ready_agent_or_error(
     every existing call site is unaffected), so it's factored out once here
     instead of copy-pasted across routes.
 
+    The fetch itself goes through `_visible_agent_or_404` (access-control
+    Task B2) — every one of this function's callers therefore inherits
+    visibility filtering for free: an agent outside the caller's visibility
+    reads as 404 here, identically to one that never existed, before this
+    function's own READY check ever runs.
+
     Returns the `Agent` row when the guard passes, or the `JSONResponse` a
     route should return immediately otherwise — callers must `isinstance`-
     check the result before using it as an `Agent`.
     """
-    agent = session.query(Agent).filter_by(name=name).first()
-    if agent is None:
-        return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
+    agent = _visible_agent_or_404(session, request, name)
+    if isinstance(agent, JSONResponse):
+        return agent
     if agent.status != AgentStatus.READY:
         return JSONResponse({"error": not_ready_message}, status_code=409)
     return agent
@@ -772,6 +778,93 @@ def _owner_or_operator_or_403(agent: Agent, request: Request) -> JSONResponse | 
         {"error": "Only this agent's owner or a room operator can change it."},
         status_code=403,
     )
+
+
+def _visible_agents(session: Session, request: Request) -> tuple[list[Agent], bool]:
+    """Which agents `request`'s caller may SEE (access-control Task B2:
+    "each person sees their own aisle"), and whether group-derived
+    visibility is degraded right now for them. Returns `(agents, groups_
+    unavailable)`.
+
+    Branches, in order:
+    - IAP disabled entirely: full visibility, same escape hatch every other
+      gate in this file uses (`_operator_block`/`_owner_or_operator_or_403`)
+      -- with no verified identity there's nothing to filter by, so the
+      room behaves exactly as it always has.
+    - An operator (`_is_operator`, never forked): full visibility. Operators
+      see everything, same as today.
+    - No `GroupResolver` wired (`clients.groups is None` -- no Okta token/
+      domain/groups configured, `kobo_api.clients.Clients.real`'s own
+      "absent = feature off" gate): full visibility. This is the honest
+      phase-gate the design spec calls for verbatim: "Absent token = groups
+      feature off, room behaves as today plus ownership" -- never narrower
+      just because groups haven't been turned on in this room yet.
+    - A resolver IS wired: the caller sees what they own (`created_by`)
+      UNION every agent in a group `groups_for(email)` says they belong to.
+      If the resolver answers `None` (fail-closed: the directory itself
+      couldn't be reached, kobo_api.groups' own None/`[]` distinction) --
+      only what the caller owns survives; group-derived visibility vanishes
+      until the directory answers again, never wider. `groups_unavailable`
+      is true only in this exact branch.
+
+    Every branch above "no resolver wired" also implicitly covers ownership
+    (an owned agent is always in the returned list) -- the design spec's
+    "everyone sees agents they created" holds throughout, not just once
+    groups are wired.
+    """
+    cfg: Config = request.app.state.config
+    clients: Clients | None = request.app.state.clients
+    all_agents = session.query(Agent).order_by(Agent.id).all()
+
+    if not cfg.iap_audience:
+        return all_agents, False
+
+    email = (getattr(request.state, "iap_email", None) or "").lower()
+
+    if _is_operator(email, cfg):
+        return all_agents, False
+
+    resolver = clients.groups if clients is not None else None
+    if resolver is None:
+        return all_agents, False
+
+    def is_owned(agent: Agent) -> bool:
+        return bool(agent.created_by) and agent.created_by.lower() == email
+
+    groups = resolver.groups_for(email)
+    if groups is None:
+        return [agent for agent in all_agents if is_owned(agent)], True
+
+    group_set = set(groups)
+    visible = [
+        agent
+        for agent in all_agents
+        if is_owned(agent) or (agent.group_name is not None and agent.group_name in group_set)
+    ]
+    return visible, False
+
+
+def _visible_agent_or_404(session: Session, request: Request, name: str) -> Agent | JSONResponse:
+    """Fetch the agent named `name`, collapsing "doesn't exist" and "exists
+    but this caller can't see it" into the identical 404 (access-control
+    Task B2: existence is itself information a stranger to an agent's
+    group must not get for free -- a 403 here would leak that much).
+
+    The single choke point every agent-scoped route in this file resolves
+    its agent through: `_ready_agent_or_error` (above) calls this for its
+    own fetch step, and every route that inlines its own lookup because it
+    needs a status other than READY (`get_agent`, `chat_with_agent`,
+    `retry_agent`, `destroy_agent`, `get_avatar`) calls this directly
+    instead of querying the table itself. Visibility is therefore enforced
+    in exactly one place, never per-route.
+    """
+    agent = session.query(Agent).filter_by(name=name).first()
+    if agent is None:
+        return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
+    visible, _ = _visible_agents(session, request)
+    if agent not in visible:
+        return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
+    return agent
 
 
 # --- Org status (Task 8): the room's read-only wiring visibility ------------
@@ -971,20 +1064,40 @@ def create_app(
     def healthz() -> dict:
         return {"ok": True}
 
-    # --- Whoami (access-control Task A1): the room shows who is signed in ---
+    # --- Whoami (access-control Task A1, groups made real in Task B2) -------
     #
     # Every authorization decision stays server-side off the VERIFIED
     # assertion email (`request.state.iap_email`, set only by IapMiddleware
     # once it has actually checked a signature) — this route just makes that
     # already-authoritative state visible so the UI can render it, never the
-    # other way around. `groups` is always `[]` in this phase; a later task
-    # fills it in from the org's group source without changing this route's
-    # response shape.
+    # other way around. `groups` is the caller's CONFIGURED group membership
+    # (`kobo_api.groups.GroupResolver.groups_for`) when a resolver is wired
+    # (`clients.groups`), else `[]` -- the same "absent = feature off"
+    # reading `_visible_agents` below uses. `groups_unavailable` mirrors the
+    # list route's own flag: true only when a resolver IS wired but just
+    # failed to answer for this email (fail-closed, never guessed as `[]`).
     @app.get("/api/whoami")
     def whoami(request: Request) -> dict:
         cfg: Config = app.state.config
+        clients: Clients | None = app.state.clients
         email = getattr(request.state, "iap_email", None)
-        return {"email": email, "operator": _is_operator(email, cfg), "groups": []}
+
+        groups: list[str] = []
+        groups_unavailable = False
+        resolver = clients.groups if clients is not None else None
+        if email and resolver is not None:
+            resolved = resolver.groups_for(email)
+            if resolved is None:
+                groups_unavailable = True
+            else:
+                groups = resolved
+
+        return {
+            "email": email,
+            "operator": _is_operator(email, cfg),
+            "groups": groups,
+            "groups_unavailable": groups_unavailable,
+        }
 
     @app.get("/api/catalog/models")
     def catalog_models() -> dict:
@@ -993,6 +1106,18 @@ def create_app(
             "models": [{"id": m.id, "label": m.label} for m in cfg.models],
             "default": cfg.models[0].id,
         }
+
+    # Access control (Task B2): the create modal's group dropdown reads this
+    # -- CONFIG names only, never the Okta group names `cfg.groups` also
+    # carries (`GroupChoice.okta_group`), which are an implementation detail
+    # the UI has no business knowing. Empty when the room hasn't named any
+    # groups yet, same "absent = feature off" shape as `/api/catalog/models`
+    # would give an empty `cfg.models` (which can't actually happen, but the
+    # convention matches every other catalog route here).
+    @app.get("/api/catalog/groups")
+    def catalog_groups() -> dict:
+        cfg: Config = app.state.config
+        return {"groups": [{"name": g.name} for g in cfg.groups]}
 
     # --- Org status (Task 8): read-only wiring visibility for the room ------
 
@@ -1311,6 +1436,27 @@ def create_app(
                 {"error": "that doesn't look like a team name"}, status_code=422
             )
 
+        # Access control (Task B2): once the room has named its groups
+        # (`cfg.groups` non-empty), every new agent must declare which one
+        # it belongs to -- this IS the ACL namespace `_visible_agents`
+        # filters on, so an agent with no group would be invisible to
+        # everyone but its owner and the room's operators, forever, the
+        # moment groups turn on. A room that hasn't named any groups yet
+        # stays exactly as today: `group_name` is optional and stored
+        # verbatim, unvalidated (pinned by
+        # test_create_agent_stores_group_name_verbatim_when_provided /
+        # test_create_agent_omitted_group_name_defaults_to_none, Task A2).
+        if cfg.groups:
+            configured_group_names = {g.name for g in cfg.groups}
+            if payload.group_name is None:
+                return JSONResponse(
+                    {"error": "pick a group for this agent"}, status_code=422
+                )
+            if payload.group_name not in configured_group_names:
+                return JSONResponse(
+                    {"error": f"unknown group: {payload.group_name!r}"}, status_code=422
+                )
+
         cleaned_tags = clean_tags(payload.purpose_tags)
         if isinstance(cleaned_tags, str):
             return JSONResponse({"error": cleaned_tags}, status_code=422)
@@ -1444,9 +1590,15 @@ def create_app(
         return JSONResponse({"name": payload.name, "status": status}, status_code=201)
 
     @app.get("/api/agents")
-    def list_agents(session: Session = Depends(get_session)) -> dict:  # noqa: B008
+    def list_agents(request: Request, session: Session = Depends(get_session)) -> dict:  # noqa: B008
         cfg: Config = app.state.config
-        agents = session.query(Agent).order_by(Agent.id).all()
+        # Access control (Task B2): "each person sees their own aisle" --
+        # `_visible_agents` is the single filter every visibility-aware
+        # route in this file shares (see its own docstring for the full
+        # branch table). `groups_unavailable` rides alongside the list
+        # itself so the UI can render the room's honest banner copy without
+        # a second round trip.
+        agents, groups_unavailable = _visible_agents(session, request)
         return {
             "agents": [
                 {
@@ -1466,7 +1618,8 @@ def create_app(
                     "group_name": a.group_name,
                 }
                 for a in agents
-            ]
+            ],
+            "groups_unavailable": groups_unavailable,
         }
 
     @app.get("/api/agents/{name}")
@@ -1474,9 +1627,9 @@ def create_app(
         name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
     ) -> JSONResponse:
         cfg: Config = app.state.config
-        agent = session.query(Agent).filter_by(name=name).first()
-        if agent is None:
-            return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
 
         steps = [
             {
@@ -1525,11 +1678,11 @@ def create_app(
 
     @app.post("/api/agents/{name}/chat")
     def chat_with_agent(
-        name: str, payload: ChatRequest, session: Session = Depends(get_session)  # noqa: B008
+        name: str, payload: ChatRequest, request: Request, session: Session = Depends(get_session)  # noqa: B008
     ) -> JSONResponse:
-        agent = session.query(Agent).filter_by(name=name).first()
-        if agent is None:
-            return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
 
         if agent.status != AgentStatus.READY:
             return JSONResponse({"error": "agent is not ready to chat"}, status_code=409)
@@ -1620,9 +1773,9 @@ def create_app(
 
     @app.post("/api/agents/{name}/retry", status_code=202)
     def retry_agent(name: str, request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
-        agent = session.query(Agent).filter_by(name=name).first()
-        if agent is None:
-            return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
 
         if agent.status != AgentStatus.FAILED:
             return JSONResponse(
@@ -1715,9 +1868,9 @@ def create_app(
         if block is not None:
             return block
 
-        agent = session.query(Agent).filter_by(name=name).first()
-        if agent is None:
-            return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
 
         if agent.status in _PROVISIONING_IN_FLIGHT:
             return JSONResponse(
@@ -1774,8 +1927,10 @@ def create_app(
     # agent's knowledge files -- list_knowledge stays a plain read).
 
     @app.get("/api/agents/{name}/knowledge")
-    def list_knowledge(name: str, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
-        agent = _ready_agent_or_error(session, name)
+    def list_knowledge(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
 
@@ -1799,7 +1954,7 @@ def create_app(
         request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
-        agent = _ready_agent_or_error(session, name)
+        agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
         gate = _owner_or_operator_or_403(agent, request)
@@ -1827,7 +1982,7 @@ def create_app(
         request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
-        agent = _ready_agent_or_error(session, name)
+        agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
         gate = _owner_or_operator_or_403(agent, request)
@@ -1865,9 +2020,9 @@ def create_app(
 
     @app.get("/api/agents/{name}/knowledge/delivery/{sha}")
     def knowledge_delivery(
-        name: str, sha: str, session: Session = Depends(get_session)  # noqa: B008
+        name: str, sha: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
     ) -> JSONResponse:
-        agent = _ready_agent_or_error(session, name)
+        agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
 
@@ -1924,8 +2079,10 @@ def create_app(
         )
 
     @app.get("/api/agents/{name}/skills")
-    def list_skills(name: str, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
-        agent = _ready_agent_or_error(session, name)
+    def list_skills(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
 
@@ -1953,7 +2110,7 @@ def create_app(
         request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
-        agent = _ready_agent_or_error(session, name)
+        agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
         gate = _owner_or_operator_or_403(agent, request)
@@ -2016,7 +2173,7 @@ def create_app(
         request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
-        agent = _ready_agent_or_error(session, name)
+        agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
         gate = _owner_or_operator_or_403(agent, request)
@@ -2047,9 +2204,9 @@ def create_app(
 
     @app.get("/api/agents/{name}/skills/local/{skill_id}")
     def get_local_skill(
-        name: str, skill_id: str, session: Session = Depends(get_session)  # noqa: B008
+        name: str, skill_id: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
     ) -> JSONResponse:
-        agent = _ready_agent_or_error(session, name)
+        agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
 
@@ -2088,7 +2245,7 @@ def create_app(
         request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
-        agent = _ready_agent_or_error(session, name)
+        agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
         gate = _owner_or_operator_or_403(agent, request)
@@ -2133,8 +2290,10 @@ def create_app(
     # the live image every time, nothing here to keep in sync.
 
     @app.get("/api/agents/{name}/intake")
-    def list_intake_route(name: str, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
-        agent = _ready_agent_or_error(session, name)
+    def list_intake_route(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
 
@@ -2164,7 +2323,7 @@ def create_app(
         request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
-        agent = _ready_agent_or_error(session, name)
+        agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
         gate = _owner_or_operator_or_403(agent, request)
@@ -2197,7 +2356,7 @@ def create_app(
         request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
-        agent = _ready_agent_or_error(session, name)
+        agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
         gate = _owner_or_operator_or_403(agent, request)
@@ -2324,7 +2483,7 @@ def create_app(
         background_tasks: BackgroundTasks,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
-        agent = _ready_agent_or_error(session, name)
+        agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
 
@@ -2421,8 +2580,10 @@ def create_app(
     # docstring for the full honesty-guarantee reasoning.
 
     @app.get("/api/agents/{name}/tooling")
-    def list_tooling_route(name: str, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
-        agent = _ready_agent_or_error(session, name)
+    def list_tooling_route(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
 
@@ -2464,7 +2625,7 @@ def create_app(
         request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
-        agent = _ready_agent_or_error(session, name)
+        agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
         gate = _owner_or_operator_or_403(agent, request)
@@ -2497,7 +2658,7 @@ def create_app(
         request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
-        agent = _ready_agent_or_error(session, name)
+        agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
         gate = _owner_or_operator_or_403(agent, request)
@@ -2541,7 +2702,7 @@ def create_app(
         request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
-        agent = _ready_agent_or_error(session, name)
+        agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
         gate = _owner_or_operator_or_403(agent, request)
@@ -2581,10 +2742,10 @@ def create_app(
 
     @app.get("/api/agents/{name}/slack/manifest")
     def slack_manifest(
-        name: str, session: Session = Depends(get_session)  # noqa: B008
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(
-            session, name, not_ready_message="agent is not ready to connect to Slack yet"
+            session, request, name, not_ready_message="agent is not ready to connect to Slack yet"
         )
         if isinstance(agent, JSONResponse):
             return agent
@@ -2619,7 +2780,7 @@ def create_app(
     ) -> JSONResponse:
         cfg: Config = app.state.config
         agent = _ready_agent_or_error(
-            session, name, not_ready_message="agent is not ready to connect to Slack yet"
+            session, request, name, not_ready_message="agent is not ready to connect to Slack yet"
         )
         if isinstance(agent, JSONResponse):
             return agent
@@ -2705,7 +2866,7 @@ def create_app(
         # gate: not the old admin-list operator gate, but the room-wide
         # owner-or-operator one every other mutating surface now shares.
         agent = _ready_agent_or_error(
-            session, name, not_ready_message="agent is not ready for Slack changes yet"
+            session, request, name, not_ready_message="agent is not ready for Slack changes yet"
         )
         if isinstance(agent, JSONResponse):
             return agent
@@ -2768,7 +2929,7 @@ def create_app(
         # to be ready-gated only, "everyone in the room" reach same as the
         # Slack channels lane; both moved behind the new gate together.
         agent = _ready_agent_or_error(
-            session, name, not_ready_message="agent is not ready for directory changes yet"
+            session, request, name, not_ready_message="agent is not ready for directory changes yet"
         )
         if isinstance(agent, JSONResponse):
             return agent
@@ -2840,7 +3001,7 @@ def create_app(
         name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(
-            session, name, not_ready_message="agent is not ready for directory changes yet"
+            session, request, name, not_ready_message="agent is not ready for directory changes yet"
         )
         if isinstance(agent, JSONResponse):
             return agent
@@ -2913,7 +3074,7 @@ def create_app(
         name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(
-            session, name, not_ready_message="agent is not ready to join the directory yet"
+            session, request, name, not_ready_message="agent is not ready to join the directory yet"
         )
         if isinstance(agent, JSONResponse):
             return agent
@@ -3041,7 +3202,7 @@ def create_app(
         name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(
-            session, name, not_ready_message="agent is not ready for an avatar yet"
+            session, request, name, not_ready_message="agent is not ready for an avatar yet"
         )
         if isinstance(agent, JSONResponse):
             return agent
@@ -3127,7 +3288,7 @@ def create_app(
         502 for its own size cap.
         """
         agent = _ready_agent_or_error(
-            session, name, not_ready_message="agent is not ready for an avatar yet"
+            session, request, name, not_ready_message="agent is not ready for an avatar yet"
         )
         if isinstance(agent, JSONResponse):
             return agent
@@ -3165,14 +3326,19 @@ def create_app(
         return JSONResponse({"sha": sha})
 
     @app.get("/api/agents/{name}/avatar")
-    def get_avatar(name: str, session: Session = Depends(get_session)) -> Response:  # noqa: B008
+    def get_avatar(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> Response:
         # Deliberately no READY gate here (unlike every route above): a
         # provisioning agent's page may still render, and an <img> tag just
         # gets a 404 until a cache exists — the guard would only block a
         # legitimate "not there yet" read the frontend is designed to tolerate.
-        agent = session.query(Agent).filter_by(name=name).first()
-        if agent is None:
-            return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
+        # Visibility IS still enforced (access-control Task B2): a picture is
+        # as much "the agent's stuff" as any other field, and existence is
+        # itself information.
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
 
         if agent.avatar_png is None:
             return JSONResponse({"error": "no picture yet"}, status_code=404)

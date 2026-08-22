@@ -10,6 +10,7 @@ import {
   errorMessage,
   fetchColleagueConversation,
   fetchDeliveryState,
+  fetchGroups,
   fetchModels,
   fetchOrgStatus,
   fetchSlackManifest,
@@ -84,7 +85,7 @@ describe("api.ts", () => {
     await expect(listAgents()).rejects.toMatchObject({ status: 502 });
   });
 
-  it("listAgents unwraps {agents: [...]} into a plain array", async () => {
+  it("listAgents returns {agents, groups_unavailable} verbatim (access-control Task B2)", async () => {
     const agents = [
       {
         name: "alpha",
@@ -95,9 +96,19 @@ describe("api.ts", () => {
         has_avatar: false,
       },
     ];
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ agents }));
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({ agents, groups_unavailable: false }),
+    );
 
-    await expect(listAgents()).resolves.toEqual(agents);
+    await expect(listAgents()).resolves.toEqual({ agents, groups_unavailable: false });
+  });
+
+  it("fetchGroups GETs /api/catalog/groups and unwraps {groups: [...]}", async () => {
+    const groups = [{ name: "payments-eng" }, { name: "growth" }];
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ groups }));
+
+    await expect(fetchGroups()).resolves.toEqual(groups);
+    expect(fetch).toHaveBeenCalledWith("/api/catalog/groups");
   });
 
   it("fetchModels GETs /api/catalog/models and returns {models, default} verbatim", async () => {

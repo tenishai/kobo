@@ -86,6 +86,7 @@
   import { debounced } from "../lib/debounce";
   import {
     createAgentMutation,
+    groupsQuery,
     modelsQuery,
     nameSuggestionsQuery,
     orgStatusQuery,
@@ -103,6 +104,7 @@
   const models = createQuery(modelsQuery());
   const teams = createQuery(teamsQuery());
   const teamOptions = createQuery(teamOptionsQuery());
+  const groups = createQuery(groupsQuery());
   const orgStatus = createQuery(orgStatusQuery());
   const mutation = createMutation(createAgentMutation(queryClient));
 
@@ -445,6 +447,20 @@
     return [...pool];
   });
 
+  // --- Group (access-control Task B2) -------------------------------------
+  //
+  // `groupsQuery` (`GET /api/catalog/groups`) is the ACCESS namespace this
+  // agent belongs to -- DISTINCT from Team above (the skills-catalog
+  // capability axis). The picker only renders at all once the room has
+  // actually named groups (`groupOptionsAvailable`); a room that hasn't
+  // stays exactly as before this task, no picker, no group_name sent. Once
+  // it HAS, picking one is required -- `canSubmit` below gates on it the
+  // same way it gates on persona/model/team already being chosen, and the
+  // real enforcement is server-side (`create_agent`'s own check against
+  // `cfg.groups`) regardless of what this picker does.
+  let groupValue = $state("");
+  const groupOptionsAvailable = $derived(($groups.data?.length ?? 0) > 0);
+
   let purposeTags = $state<string[]>([]);
   let purposeTagInput = $state("");
   const PURPOSE_TAGS_CAP = 8;
@@ -517,6 +533,7 @@
       teamMode = "select";
       teamValue = "shared";
       teamOtherInput = "";
+      groupValue = "";
       purposeTags = [];
       purposeTagInput = "";
     }
@@ -531,6 +548,7 @@
       selectedPersona !== "" &&
       selectedModel !== "" &&
       effectiveTeam.length > 0 &&
+      (!groupOptionsAvailable || groupValue !== "") &&
       !$mutation.isPending,
   );
 
@@ -552,6 +570,7 @@
         })),
         model: selectedModel,
         purpose_tags: purposeTags,
+        group_name: groupOptionsAvailable ? groupValue : undefined,
       },
       {
         onSuccess: () => {
@@ -953,6 +972,26 @@
           <p class="create-form__help">lowercase-with-dashes</p>
         {/if}
       </div>
+
+      {#if groupOptionsAvailable}
+        <div class="create-form__field">
+          <label class="create-form__label" for="create-group">Group</label>
+          <select
+            id="create-group"
+            class="create-form__input"
+            required
+            value={groupValue}
+            onchange={(event) =>
+              (groupValue = (event.currentTarget as HTMLSelectElement).value)}
+          >
+            <option value="" disabled>Choose a group</option>
+            {#each $groups.data ?? [] as group (group.name)}
+              <option value={group.name}>{group.name}</option>
+            {/each}
+          </select>
+          <p class="create-form__help">Who can see and use this agent.</p>
+        </div>
+      {/if}
 
       <div class="create-form__field">
         <label class="create-form__label" for="create-purpose-tag-input">Purpose tags</label>

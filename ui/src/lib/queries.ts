@@ -16,6 +16,9 @@
 //                                                      Slack manifest (fetched
 //                                                      lazily, once opened)
 //   ["catalog", "models"]                           - the model list + default
+//   ["catalog", "groups"]                           - the room's named ACL
+//                                                      groups (access-control
+//                                                      Task B2)
 //   ["catalog", "teams"]                             - the team-slug list
 //                                                      (all catalog kinds,
 //                                                      for search filtering)
@@ -42,6 +45,7 @@ import { queryOptions, type QueryClient } from "@tanstack/svelte-query";
 import {
   ApiError,
   type AgentDetail,
+  type AgentListResult,
   type AgentMetadata,
   type AgentSkill,
   type AgentSlack,
@@ -50,6 +54,7 @@ import {
   type ChatMessage,
   type ColleagueConversation,
   type ColleagueConversationDetail,
+  type GroupOption,
   type IntakeFile,
   type KnowledgeFile,
   type NameSuggestion,
@@ -76,6 +81,7 @@ import {
   draftPersona,
   fetchColleagueConversation,
   fetchDeliveryState,
+  fetchGroups,
   fetchModels,
   fetchNameSuggestions,
   fetchOrgStatus,
@@ -125,12 +131,16 @@ export function shouldRetry(failureCount: number, error: unknown): boolean {
   return !isClientError && failureCount < 3;
 }
 
-/** The agent list. Polls at the adaptive cadence while any agent is active. */
+/** The agent list — server-filtered to what the caller may see
+ * (access-control Task B2), plus the room's `groups_unavailable` banner
+ * flag. Polls at the adaptive cadence while any VISIBLE agent is active
+ * (`listRefetchInterval` only ever sees the `agents` array, same as
+ * before this task — the poll cadence has nothing to do with the flag). */
 export function agentsQuery() {
   return queryOptions({
     queryKey: ["agents"] as const,
     queryFn: listAgents,
-    refetchInterval: (query) => listRefetchInterval(query.state.data),
+    refetchInterval: (query) => listRefetchInterval(query.state.data?.agents),
   });
 }
 
@@ -159,6 +169,17 @@ export function modelsQuery() {
   return queryOptions({
     queryKey: ["catalog", "models"] as const,
     queryFn: fetchModels,
+  });
+}
+
+/** The room's named ACL groups (access-control Task B2) — `[]` when the
+ * room hasn't configured any, in which case the create modal's group
+ * picker doesn't render at all. Same "doesn't change on its own in the
+ * background" reasoning as `modelsQuery`: no polling. */
+export function groupsQuery() {
+  return queryOptions({
+    queryKey: ["catalog", "groups"] as const,
+    queryFn: fetchGroups,
   });
 }
 
@@ -832,6 +853,7 @@ export function colleagueConversationQuery(taskId: string | null) {
 // import from api.ts just to type their component-level state.
 export type {
   AgentDetail,
+  AgentListResult,
   AgentMetadata,
   AgentSkill,
   AgentSlack,
@@ -840,6 +862,7 @@ export type {
   ChatMessage,
   ColleagueConversation,
   ColleagueConversationDetail,
+  GroupOption,
   IntakeFile,
   KnowledgeFile,
   NameSuggestion,

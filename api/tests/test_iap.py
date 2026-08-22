@@ -383,7 +383,7 @@ def test_enabled_valid_token_reaches_a_real_api_route(session_factory, iap_confi
     response = test_client.get("/api/agents", headers={ASSERTION_HEADER: token})
 
     assert response.status_code == 200
-    assert response.json() == {"agents": []}
+    assert response.json() == {"agents": [], "groups_unavailable": False}
 
 
 def test_enabled_no_header_401_teams_route(session_factory, iap_config):

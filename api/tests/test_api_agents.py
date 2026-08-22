@@ -813,7 +813,7 @@ def test_list_agents_empty_when_none_created(client):
     response = client.get("/api/agents")
 
     assert response.status_code == 200
-    assert response.json() == {"agents": []}
+    assert response.json() == {"agents": [], "groups_unavailable": False}
 
 
 # --- GET /api/agents/{name} --------------------------------------------------------

@@ -11,6 +11,7 @@
   import Dashboard from "./pages/Dashboard.svelte";
   import GettingStarted from "./pages/GettingStarted.svelte";
   import {
+    groupsQuery,
     modelsQuery,
     orgStatusQuery,
     personasSearchQuery,
@@ -43,9 +44,12 @@
   // a page of skeletons. `teamOptionsQuery` (persona-metadata plan) joins
   // this set for the same reason: the Create station's team picker reads
   // it on every open, same as `teamsQuery` (the skill-team search filter)
-  // already does.
+  // already does. `groupsQuery` (access-control Task B2) joins for the
+  // identical reason: the Create station's group picker reads it on every
+  // open too.
   function prefetchCatalogs(): void {
     void queryClient.prefetchQuery(modelsQuery());
+    void queryClient.prefetchQuery(groupsQuery());
     void queryClient.prefetchQuery(teamsQuery());
     void queryClient.prefetchQuery(teamOptionsQuery());
     void queryClient.prefetchQuery(orgStatusQuery());
