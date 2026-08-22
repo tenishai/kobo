@@ -315,9 +315,12 @@ export function whoamiQuery() {
  * `who_they_are`/`what_they_do` text. `enabled` is false until both fields
  * are non-empty — there's nothing to suggest against before a persona is
  * picked, same "nothing to fetch yet" gate `deliveryQuery` uses for its own
- * sha. No polling, no extra staleTime: the naming station's "offer more"
- * action is a plain `refetch()` on this same query, not a second query key
- * or a timer.
+ * sha. No polling. `staleTime: Infinity` because the builder path PREFETCHES
+ * this key while the create-persona POST is still in flight (naming-latency
+ * fix) — without it, the station's own mount would refetch a just-settled
+ * prefetch and double the model call. The naming station's "offer more"
+ * action is a plain `refetch()` on this same query, which ignores staleTime
+ * by design, so re-rolls still work.
  */
 export function nameSuggestionsQuery(whoTheyAre: string, whatTheyDo: string) {
   return queryOptions({
@@ -327,6 +330,7 @@ export function nameSuggestionsQuery(whoTheyAre: string, whatTheyDo: string) {
       { who_they_are: whoTheyAre, what_they_do: whatTheyDo },
     ] as const,
     queryFn: () => fetchNameSuggestions(whoTheyAre, whatTheyDo),
+    staleTime: Infinity,
     enabled: whoTheyAre.trim().length > 0 && whatTheyDo.trim().length > 0,
   });
 }
