@@ -33,8 +33,8 @@
 //                                                      for search filtering)
 //   ["teams"]                                        - the skill-owner team
 //                                                      pool + default, for
-//                                                      the create/Edit
-//                                                      details team pickers
+//                                                      the Edit details
+//                                                      team picker
 //   ["catalog", "skills", {q, team}]                - a skill catalog search
 //   ["catalog", "personas", {q, team}]              - a persona catalog search
 //   ["org", "status"]                               - org bootstrap/wiring status
@@ -235,13 +235,12 @@ export function teamsQuery() {
 
 /**
  * The skill-owner team pool + default (persona-metadata plan), for the
- * create station's team picker and the Edit details modal's team field —
+ * Edit details modal's team field (the create form stopped asking; team
+ * defaults server-side) —
  * a DIFFERENT query from `teamsQuery` above (which reads `/api/catalog/teams`,
  * spanning both catalog kinds for search filtering). No polling/staleTime
  * override: same "doesn't change on its own in the background" reasoning
- * as `modelsQuery`. CreateModal fetches this unconditionally, warmed by
- * `prefetchCatalogs` (App.svelte) same as `modelsQuery`/`teamsQuery`; the
- * Edit details modal (`MetadataDetails`) instead gates it on its own `open`
+ * as `modelsQuery`. The Edit details modal (`MetadataDetails`) gates it on its own `open`
  * state via a local writable/derived pair (same "only fetch once actually
  * needed" idiom `slackManifestQuery` documents), since most agent-detail
  * visits never open that modal.

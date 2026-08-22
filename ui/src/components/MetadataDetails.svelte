@@ -21,8 +21,8 @@
   // only re-derives a query's options from an actual Svelte store, not a
   // plain object recomputed on every render — see MemoryPanel/SlackPanel's
   // own doc comments). Most agent-detail visits never open this modal, so
-  // there's no reason to warm it on every AgentDetail mount the way
-  // CreateModal's own team query is warmed by App.svelte's prefetch.
+  // there's no reason to warm it on every AgentDetail mount; this modal is
+  // now the query's only consumer (the create form stopped asking teams).
   //
   // The delivery chip is the exact same writable/derived-sha pattern
   // MemoryPanel/SlackPanel use, shared by both Save and Regenerate — each

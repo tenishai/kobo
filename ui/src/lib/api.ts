@@ -49,10 +49,11 @@ export type AgentSlack = {
 
 export type AgentDetail = AgentSummary & {
   persona: string;
-  /** The agent's directory team (persona-metadata plan, 2026-08-18) — set
-   * at create time from the create station's team picker, editable
-   * afterward through Edit details/`patchAgentMetadata`. Always a slug
-   * (`TEAM_SLUG_RE` server-side), defaulting to "shared". */
+  /** The agent's directory team (persona-metadata plan, 2026-08-18) — the
+   * create request no longer sends one (the create form asks only the
+   * Group question; the server defaults "shared"), editable afterward
+   * through Edit details/`patchAgentMetadata`. Always a slug
+   * (`TEAM_SLUG_RE` server-side). */
   team: string;
   /** Free-form purpose chips (persona-metadata plan), persona-drafted at
    * create time with a deterministic fallback, editable afterward. Always
@@ -522,7 +523,8 @@ export async function fetchTeams(): Promise<string[]> {
  * from `fetchTeams`/`/api/catalog/teams` above, which spans every catalog
  * kind (skills and personas) for filtering a catalog search. This one is
  * skill-owner-only, meant for "which team does this agent belong to": the
- * create station's team picker and the Edit details modal both read it. A
+ * Edit details modal reads it (the create form stopped asking; team
+ * defaults server-side and derives from the agent's skills). A
  * newly-published owner appears here without a room change, same
  * TTL-refresh hook every other catalog route shares. */
 export type TeamOptions = { teams: string[]; default: string };
