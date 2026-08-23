@@ -2898,27 +2898,41 @@ class CabalClient:
         self._dispatch_pairs_dirty = False
         return count
 
-    def list_conversations(self, *, limit: int | None = None) -> list[dict]:
+    def list_conversations(
+        self,
+        *,
+        limit: int | None = None,
+        target: str | None = None,
+        caller: str | None = None,
+    ) -> list[dict]:
         """List conversations recorded on the switchboard's admin surface
         (`GET /admin/conversations`) — the room's watching window (Task
         4/B4), one row per relayed a2a task: `task_id`, `target_agent`,
         `target_generation`, `caller_agent`, `state`, `cabal_escalated_
         from`, `created_at`, `updated_at`, `result_snippet` (<=120 chars).
 
-        `limit` is sent as a query param only when given; omitted entirely
-        otherwise, so the switchboard's own default applies. No `state`/
-        `target` passthrough here — this room API's own agent-only/everything
-        split (`kobo_api.main`) happens after the fact on `caller_agent`,
-        not via the switchboard's own filters.
+        Each param is sent as a query param only when given. BEWARE the
+        omitted-`limit` trap: the switchboard's own default is 50 rows,
+        room-wide, most-recent first (and it clamps any explicit limit to
+        200) — "no limit" never meant unbounded, whatever this docstring
+        used to claim. `target` scopes to conversations an agent ANSWERED;
+        `caller` (matched verbatim against `caller_agent`, e.g.
+        `agent:ward`) to the ones it STARTED — the two halves of
+        participant scoping, server-side, so a consumer never has to fish
+        one agent's history out of the room-wide window.
 
         Returns the parsed `"conversations"` list verbatim. Raises
         `CabalError` on non-2xx, same logging convention as every other
         method here (response body logged server-side, truncated, never
         echoed into the raised message).
         """
-        params: dict[str, int] = {}
+        params: dict[str, int | str] = {}
         if limit is not None:
             params["limit"] = limit
+        if target is not None:
+            params["target"] = target
+        if caller is not None:
+            params["caller"] = caller
         resp = self._client.get(
             f"{self._base_url}/admin/conversations",
             params=params,

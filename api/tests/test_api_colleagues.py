@@ -173,10 +173,14 @@ def test_list_limit_passthrough_only_when_given(session_factory, config, monkeyp
     client = _make_client(session_factory, cfg, cabal=fake_cabal)
 
     client.get("/api/colleagues/conversations")
-    assert fake_cabal.list_conversations_calls[-1] == {"limit": None}
+    assert fake_cabal.list_conversations_calls[-1] == {
+        "limit": None, "target": None, "caller": None,
+    }
 
     client.get("/api/colleagues/conversations", params={"limit": "7"})
-    assert fake_cabal.list_conversations_calls[-1] == {"limit": 7}
+    assert fake_cabal.list_conversations_calls[-1] == {
+        "limit": 7, "target": None, "caller": None,
+    }
 
 
 def test_list_upstream_failure_returns_502_plain_copy(session_factory, config, monkeypatch):
@@ -690,10 +694,13 @@ def test_feed_flattens_one_conversation_into_ask_then_reply(
         ],
         "truncated": False,
     }
-    # No `limit` passthrough (fix round): scoping to `agent` has to run
-    # against the switchboard's whole conversation list, never a room-wide
-    # slice of it -- see `colleague_feed`'s own docstring.
-    assert fake_cabal.list_conversations_calls[-1] == {"limit": None}
+    # Fix round 2: TWO server-side-scoped queries (the switchboard's
+    # omitted-limit default was 50, never unbounded) -- see
+    # `colleague_feed`'s own docstring.
+    assert fake_cabal.list_conversations_calls[-2:] == [
+        {"limit": 200, "target": "ward", "caller": None},
+        {"limit": 200, "target": None, "caller": "agent:ward"},
+    ]
 
 
 def test_feed_strips_a_raw_no_prefix_caller_unchanged(session_factory, config, monkeypatch):
@@ -900,10 +907,11 @@ def test_feed_finds_the_agents_history_past_a_busy_rooms_recent_traffic(
 ):
     """250 conversations room-wide (most-recent-first, matching the real
     switchboard's own ordering); only 3 belong to `ward`, and those 3 are
-    the OLDEST of the 250 -- the last three in the list. A room-wide
-    `limit=200` fetch would return only the 200 most recent, none of which
-    are `ward`'s, and the feed would come back empty with `truncated:
-    false`. Scoping against the WHOLE room-wide list finds them."""
+    the OLDEST of the 250 -- the last three in the list. A room-wide fetch
+    (default 50, clamp 200 upstream) would return only the most recent,
+    none of which are `ward`'s, and the feed would come back empty with
+    `truncated: false`. The server-side-scoped queries (target=ward +
+    caller=agent:ward) find them no matter how busy the room is."""
     monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
     cfg = _enabled_config(config)
     _seed_agent(session_factory, cfg)
@@ -941,9 +949,12 @@ def test_feed_finds_the_agents_history_past_a_busy_rooms_recent_traffic(
     # The noise conversations never even got a detail fetch -- filtered
     # before that, same as the existing agent-participant-scoping test.
     assert fake_cabal.get_conversation_calls == ["t-ward-0", "t-ward-1", "t-ward-2"]
-    # And no room-wide `limit` was ever passed -- see `colleague_feed`'s
-    # docstring for why that's the fix, not an oversight.
-    assert fake_cabal.list_conversations_calls[-1] == {"limit": None}
+    # Both directions were fetched server-side-scoped -- the room-wide
+    # window can no longer crowd ward out (fix round 2).
+    assert fake_cabal.list_conversations_calls[-2:] == [
+        {"limit": 200, "target": "ward", "caller": None},
+        {"limit": 200, "target": None, "caller": "agent:ward"},
+    ]
 
 
 def test_feed_caps_the_agents_own_history_even_amid_busier_room_wide_traffic(
@@ -954,10 +965,10 @@ def test_feed_caps_the_agents_own_history_even_amid_busier_room_wide_traffic(
     room-wide list -- so a room-wide `limit=200` fetch would only surface
     50 of `ward`'s 101 conversations (100 entries, under the cap, `
     truncated: false`), silently dropping the other half of a legitimately
-    busy agent's own history. The fix (unbounded room-wide fetch, scoped
-    after) finds the full 101 and applies the 200-entry cap to `ward`'s OWN
-    scoped, flattened history -- not the room's -- landing on exactly the
-    200 newest entries and `truncated: true`."""
+    busy agent's own history. The fix (server-side-scoped queries, both
+    directions) finds the full 101 and applies the 200-entry cap to
+    `ward`'s OWN scoped, flattened history -- not the room's -- landing on
+    exactly the 200 newest entries and `truncated: true`."""
     monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
     cfg = _enabled_config(config)
     _seed_agent(session_factory, cfg)
@@ -995,7 +1006,10 @@ def test_feed_caps_the_agents_own_history_even_amid_busier_room_wide_traffic(
     # room -- the noise conversations never contributed an entry at all.
     assert body["entries"][0]["text"] == "ask-1"
     assert body["entries"][-1]["text"] == "reply-100"
-    assert fake_cabal.list_conversations_calls[-1] == {"limit": None}
+    assert fake_cabal.list_conversations_calls[-2:] == [
+        {"limit": 200, "target": "ward", "caller": None},
+        {"limit": 200, "target": None, "caller": "agent:ward"},
+    ]
 
 
 def test_feed_list_failure_returns_502_plain_copy(session_factory, config, monkeypatch):

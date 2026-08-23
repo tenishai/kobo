@@ -1282,13 +1282,30 @@ class FakeCabal:
             raise CabalError(f"mint_colleague failed: {self._mint_colleague_error}")
         return self._mint_colleague_result
 
-    def list_conversations(self, *, limit: int | None = None) -> list[dict]:
-        self.list_conversations_calls.append({"limit": limit})
+    def list_conversations(
+        self,
+        *,
+        limit: int | None = None,
+        target: str | None = None,
+        caller: str | None = None,
+    ) -> list[dict]:
+        self.list_conversations_calls.append(
+            {"limit": limit, "target": target, "caller": caller}
+        )
         if self._conversations_error is not None:
             raise CabalError(f"list_conversations failed: {self._conversations_error}")
+        rows = self._conversations_result
+        # Mirror the real route's filters exactly: verbatim equality, then
+        # the most-recent-first limit. The fake's list is ordered
+        # most-recent FIRST by convention (matches cabal's updated_at DESC),
+        # so [:limit] keeps the newest -- same rows the real route keeps.
+        if target is not None:
+            rows = [r for r in rows if r.get("target_agent") == target]
+        if caller is not None:
+            rows = [r for r in rows if r.get("caller_agent") == caller]
         if limit is not None:
-            return self._conversations_result[:limit]
-        return self._conversations_result
+            rows = rows[: max(1, min(limit, 200))]
+        return rows
 
     def get_conversation(self, task_id: str) -> dict:
         self.get_conversation_calls.append(task_id)

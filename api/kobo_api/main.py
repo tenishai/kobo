@@ -3970,31 +3970,30 @@ def create_app(
         Capped to the most recent `_FEED_SCROLLBACK_CAP` (200) entries;
         `truncated` is true whenever more existed than that.
 
-        Fix round: scope FIRST, cap AFTER. `list_conversations` below is
-        called with NO `limit` -- the same no-limit-passthrough the retired
-        `list_colleague_conversations` route used whenever its own `limit`
-        query param was left unset (see that route, and `CabalClient.
-        list_conversations`'s own docstring: "omitted entirely ... so the
-        switchboard's own default applies"). The room-wide result is
-        filtered down to `agent`'s own conversations BEFORE anything is
-        flattened or capped -- only `agent`'s own scoped, flattened entries
-        are ever measured against `_FEED_SCROLLBACK_CAP`, so `truncated`
-        reflects whether `agent`'s OWN history overflowed the cap, never
-        the room's. Passing a room-wide `limit` here was the bug this fixed:
-        it truncated the ROOM's most-recent conversations before scoping
-        ever ran, so a quiet agent whose real (possibly older) conversations
-        fell outside that room-wide window got silently crowded out to an
-        empty feed with `truncated: false` -- correct-looking and wrong.
+        Fix round 2: scope AT THE SWITCHBOARD, cap after. Round 1 ("scope
+        first, cap after") called `list_conversations` with no `limit`,
+        believing that meant unbounded -- it never did: the switchboard's
+        route DEFAULTS to 50 rows room-wide and clamps any explicit limit
+        to 200 (found by the terminal review, reproduced against the cabal
+        source), so the quiet-agent crowd-out round 1 claimed to fix was
+        quietly back, worse. The fetch below is now TWO server-side-scoped
+        queries -- `target=agent` (conversations `agent` answered) and
+        `caller=agent:<agent>` (the ones it started; cabal #128 added the
+        caller filter), merged and deduped by `task_id` -- so no other
+        agent's traffic can ever crowd `agent`'s history out of its own
+        feed, and the room-wide window stops mattering entirely.
+        `_conversation_has_participant` still runs as a belt, and only
+        `agent`'s own scoped, flattened entries are measured against
+        `_FEED_SCROLLBACK_CAP`, so `truncated` keeps meaning "`agent`'s OWN
+        history overflowed", never the room's.
 
-        The tradeoff: this fetch is now unbounded, potentially heavier than
-        the old room-wide-capped call -- but an unbounded fetch is exactly
-        how the pre-terminal `list_colleague_conversations` route always
-        behaved by default, so this is a reversion to that established
-        shape, not a new cost being introduced. If switchboard history ever
-        grows large enough for this fetch itself to hurt, the correct fix
-        is pagination at the cabal admin API -- NOT silently re-adding a
-        room-wide `limit` here and under-fetching a given agent's history
-        again.
+        Residual bound, stated honestly: each scoped query is still capped
+        at the switchboard's 200-row clamp, PER DIRECTION -- an agent with
+        more than 200 conversations in one direction under-fetches its
+        oldest ones (~400 entries fetched vs. the 200-entry display cap, so
+        the terminal itself stays full). The completing fix is pagination
+        at the cabal admin API, tracked upstream -- NOT re-widening to a
+        room-wide fetch here.
 
         `agent` is REQUIRED (a plain, non-Optional `str` -- FastAPI 422s a
         request that omits it, before this body ever runs) and is resolved
@@ -4029,12 +4028,15 @@ def create_app(
             return gate
 
         try:
-            # No `limit` passthrough -- see the docstring's "Fix round"
-            # paragraph. Scoping to `agent` has to run against the room's
-            # WHOLE conversation list, not a room-wide-most-recent slice of
-            # it, or a quiet agent's own history can fall outside that slice
-            # entirely and vanish from its own feed.
-            conversations = clients.cabal.list_conversations()
+            # Two server-side-scoped queries (see the docstring's "Fix
+            # round 2"): the conversations `agent` answered, and the ones
+            # it started. limit=200 is the switchboard's own clamp maximum,
+            # passed explicitly because OMITTING it means 50, not
+            # unbounded. Merged + deduped by task_id (a conversation can
+            # never genuinely match both filters, but dedupe is cheap and
+            # a duplicated row would double its feed lines).
+            incoming = clients.cabal.list_conversations(limit=200, target=agent)
+            outgoing = clients.cabal.list_conversations(limit=200, caller=f"agent:{agent}")
         except (CabalError, httpx.HTTPError) as exc:
             log.warning("colleague feed list failed for %s: %s", agent, exc)
             return JSONResponse(
@@ -4042,6 +4044,19 @@ def create_app(
                 status_code=502,
             )
 
+        seen_ids: set[str] = set()
+        conversations: list[dict] = []
+        for row in incoming + outgoing:
+            task_id = row.get("task_id")
+            if isinstance(task_id, str) and task_id in seen_ids:
+                continue
+            if isinstance(task_id, str):
+                seen_ids.add(task_id)
+            conversations.append(row)
+
+        # Belt: the switchboard already scoped both queries, but this
+        # room-side predicate is the single definition of "participates",
+        # and a filter regression upstream must not widen the feed.
         scoped = [c for c in conversations if _conversation_has_participant(c, agent)]
 
         entries: list[dict] = []

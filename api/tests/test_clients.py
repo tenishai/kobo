@@ -4545,6 +4545,27 @@ def test_cabal_list_conversations_passes_limit_only_when_given():
     assert captured["params"] == {"limit": "5"}
 
 
+def test_cabal_list_conversations_passes_target_and_caller_when_given():
+    """The two halves of participant scoping (cabal #128): `target` for the
+    conversations an agent answered, `caller` (verbatim `agent:<name>`) for
+    the ones it started. Sent only when given, like `limit`."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["params"] = dict(request.url.params)
+        return httpx.Response(200, json={"conversations": []})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.list_conversations(limit=200, target="ward")
+    assert captured["params"] == {"limit": "200", "target": "ward"}
+
+    client.list_conversations(limit=200, caller="agent:ward")
+    assert captured["params"] == {"limit": "200", "caller": "agent:ward"}
+
+
 def test_cabal_list_conversations_raises_typed_cabal_error_on_non_2xx():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text="boom")
