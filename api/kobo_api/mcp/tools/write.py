@@ -58,7 +58,8 @@ status code into either the tool's return value or a `ToolError`.
 by name (or, for `kobo_accept_invite`, an existing invite naming two
 agents) before doing anything else, so the anti-enumeration property the
 read tools already pin (`kobo_api.mcp.authz.NotFound`'s own docstring)
-applies here too:
+applies here too. `kobo_set_agent_skills` carries one narrow, documented,
+operator-ruled exception to this table -- see its own section below.
 
 | Route status | Tool outcome |
 |---|---|
@@ -138,22 +139,44 @@ tool reads `kobo_api.search.read_marketplace_catalog` (once, up front, the
 same hoisted-read idiom `kobo_api.skills.add_catalog_skill` itself already
 uses) and resolves that id's `team` from the catalog entry's own `owner`
 field -- `"shared"` when the entry carries none. An id absent from the
-catalog entirely raises `ToolError` naming it BEFORE any route call at
-all -- this tool's own gate, not a status this module's shared table (A)
-translates, since there is no route response yet to translate. A `None`
-catalog (`kobo_api.mcp.tools.read`'s own "unavailable" wording, imported
-rather than duplicated) or a `ClientError` off the storage read (that
-module's own sanitized "did not answer" wording, same reuse) both raise
-before any add is attempted.
+catalog raises `ToolError` naming it before THAT id's own route call --
+this tool's own gate, not a status table (A) translates, since there is no
+route response yet to translate for that id. This is a PER-id check, run
+just before each add in the loop, NOT a single upfront scan of the whole
+`add` list: an earlier id in the same call may already have been applied
+(and stays applied) before a later, unknown id raises -- see partial
+application below. A `None` catalog (`kobo_api.mcp.tools.read`'s own
+"unavailable" wording, imported rather than duplicated), a `ClientError`
+off the storage read (that module's own sanitized "did not answer"
+wording, same reuse), or an unconfigured `skills_bucket` (this module's
+own `_SKILLS_BUCKET_NOT_CONFIGURED`, mirroring that same read tool's own
+guard) all raise before any add is attempted, since none of those three
+can be blamed on any one id.
 
 Each id's own add/remove route call, once made, is translated through
-table (A) exactly like every other tool in this module. Application is
-deliberately partial-tolerant: entries already applied before a later one
-fails stay applied (the routes underneath already committed them), and
-the `ToolError` a failing id raises is that id's own route message
-(`"the agent already carries a skill named '<id>'"` on a 409 collision,
-say) -- always naming the id that failed, never a generic mid-loop
-failure.
+table (A) with ONE documented deviation (operator-ruled, MCP marketplace
+wave Task 3 review): `_skill_route_result` -- used by this tool alone, in
+place of `_agent_route_result` -- surfaces a 404 verbatim instead of
+folding it into "agent not found" when, and only when, that 404's body is
+one of the two skill-scoped "not found" messages the underlying routes
+raise AFTER their own visibility/ownership gate has already passed --
+`"skill not found: <id>"` (`delete_skill`'s `remove_skill` call, a
+`remove` id this agent doesn't carry) or `"skill no longer in the
+catalog: <id>"` (`add_skill_from_catalog`'s `add_catalog_skill` call, an
+`add` id the catalog stopped serving between this tool's own catalog read
+and the route's own). Both fire strictly POST-gate -- the caller already
+has standing on this exact agent by the time either can happen -- so
+folding them into the generic "agent not found" would carry zero
+enumeration value while actively hiding which id failed; every OTHER 404
+(the gate's own "not visible") and every 403 still normalize exactly like
+every other tool in this module.
+
+Application is deliberately partial-tolerant: entries already applied
+before a later one fails stay applied (the routes underneath already
+committed them), and the `ToolError` a failing id raises is that id's own
+route message (e.g. `"the agent already carries a skill named '<id>'"` on
+a 409 collision, or either skill-scoped 404 above) -- always naming the
+id that failed, never a generic mid-loop failure.
 """
 
 from __future__ import annotations
@@ -173,7 +196,11 @@ from kobo_api.clients import ClientError
 from kobo_api.mcp import authz
 from kobo_api.mcp.audit import audited
 from kobo_api.mcp.server import get_user_email
-from kobo_api.mcp.tools.read import _CATALOG_UNAVAILABLE, _MARKETPLACE_DID_NOT_ANSWER
+from kobo_api.mcp.tools.read import (
+    _CATALOG_UNAVAILABLE,
+    _MARKETPLACE_DID_NOT_ANSWER,
+    _SKILLS_BUCKET_NOT_CONFIGURED,
+)
 from kobo_api.search import read_marketplace_catalog
 
 # Shared with kobo_api.mcp.tools.read -- see that module's own module
@@ -187,6 +214,16 @@ _SLACK_APP_NOT_CONNECTED = (
     "no Slack app is connected for this agent yet. Connect one for this "
     "agent in the room's web UI first, then wire tokens here."
 )
+
+# The two stable message prefixes `kobo_api.skills.SkillsError` carries
+# through `delete_skill`/`add_skill_from_catalog` for a POST-GATE 404 (see
+# this module's own `kobo_set_agent_skills` docstring section for the
+# operator-ruled reasoning): both fire only after the shared visibility/
+# ownership gate has already passed, so `_skill_route_result` surfaces
+# them verbatim rather than folding them into `_AGENT_NOT_FOUND` the way
+# every other 404 in this module still does.
+_SKILL_NOT_FOUND_PREFIX = "skill not found:"
+_SKILL_GONE_FROM_CATALOG_PREFIX = "skill no longer in the catalog:"
 
 _OK_STATUSES = (200, 201)
 
@@ -243,6 +280,27 @@ def _agent_route_result(response: JSONResponse) -> dict:
         raise ToolError(_DID_NOT_ANSWER)
     body = _parse(response)
     raise ToolError(str(body.get("error", "that request could not be completed")))
+
+
+def _skill_route_result(response: JSONResponse) -> dict:
+    """`kobo_set_agent_skills`'s own status translation -- table (A) with
+    the one documented, operator-ruled deviation this module's own
+    `kobo_set_agent_skills` docstring section explains: a 404 whose body
+    is one of the two skill-scoped "not found" messages
+    (`_SKILL_NOT_FOUND_PREFIX` from `delete_skill`, `_SKILL_GONE_FROM_
+    CATALOG_PREFIX` from `add_skill_from_catalog`) surfaces that message
+    verbatim instead of folding into `_AGENT_NOT_FOUND` -- both fire only
+    AFTER the shared visibility/ownership gate has already passed, so they
+    carry zero enumeration value. Every other 404 (the gate's own "not
+    visible") and every 403 fall through to `_agent_route_result` and
+    normalize exactly like every other tool in this module.
+    """
+    if response.status_code == 404:
+        body = _parse(response)
+        message = str(body.get("error", ""))
+        if message.startswith((_SKILL_NOT_FOUND_PREFIX, _SKILL_GONE_FROM_CATALOG_PREFIX)):
+            raise ToolError(message)
+    return _agent_route_result(response)
 
 
 def _create_result(response: JSONResponse) -> dict:
@@ -514,7 +572,7 @@ def register(mcp: FastMCP, app: Any) -> None:
 
         return {"agent": agent, "connected": True, "sha": body.get("sha")}
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
     @audited("kobo_set_agent_skills")
     async def kobo_set_agent_skills(
         ctx: Context,
@@ -528,10 +586,13 @@ def register(mcp: FastMCP, app: Any) -> None:
         in `add` must name a skill in the marketplace catalog (see
         kobo_list_skills first); each id in `remove` names a skill already
         on `agent`, whether it was picked from the catalog or authored
-        locally. You must own `agent` (or be a room operator). Adds are
-        applied first, then removals, each in the order given. If one
-        entry fails partway through, every entry already applied stays
-        applied and the error names the id that failed.
+        locally -- removing one deletes its whole directory from the
+        agent's repo, so treat `remove` as destructive. You must own
+        `agent` (or be a room operator), and `agent` must be READY (both
+        routes answer with a conflict otherwise). Adds are applied first,
+        then removals, each in the order given. If one entry fails partway
+        through, every entry already applied stays applied and the error
+        names the id that failed.
         """
         from kobo_api.main import CatalogSkillPayload
 
@@ -545,6 +606,8 @@ def register(mcp: FastMCP, app: Any) -> None:
             if add_ids:
                 clients = app.state.clients
                 cfg = app.state.config
+                if not cfg.skills_bucket:
+                    raise ToolError(_SKILLS_BUCKET_NOT_CONFIGURED)
                 try:
                     catalog = read_marketplace_catalog(clients.storage, cfg.skills_bucket)
                 except ClientError as exc:
@@ -563,14 +626,14 @@ def register(mcp: FastMCP, app: Any) -> None:
                         request=req,
                         session=session,
                     )
-                    body = _agent_route_result(response)
+                    body = _skill_route_result(response)
                     added.append({"id": skill_id, "sha": body.get("sha")})
 
             for skill_id in remove or []:
                 response = remove_skill_endpoint(
                     name=agent, skill_id=skill_id, request=req, session=session
                 )
-                _agent_route_result(response)
+                _skill_route_result(response)
                 removed.append(skill_id)
         finally:
             session.close()

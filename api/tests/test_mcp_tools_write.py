@@ -1141,3 +1141,170 @@ def test_set_agent_skills_partial_failure_leaves_earlier_adds_applied(
         assert [entry["name"] for entry in agent.skills] == [SKILL_ID]
     finally:
         session.close()
+
+
+# --- kobo_set_agent_skills review round 1 (operator-ruled deviation + minors) -
+
+
+def test_set_agent_skills_remove_unknown_id_surfaces_the_routes_own_message(
+    session_factory, config, fake_storage
+):
+    """Operator-ruled deviation: a `remove` id the agent doesn't actually
+    carry gets `delete_skill`'s own 404 message verbatim, not the generic
+    "agent not found" -- this fires strictly post-gate (the caller already
+    has standing on THIS agent by the time remove_skill even runs), so
+    folding it would hide which id failed for zero enumeration benefit."""
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="skill not found: ghost"):
+        _call_tool(
+            mcp, "kobo_set_agent_skills", _ctx_for(OWNER_A_EMAIL), agent="ward", remove=["ghost"]
+        )
+
+
+def test_set_agent_skills_add_id_gone_from_catalog_surfaces_the_routes_own_message(
+    session_factory, config, fake_storage
+):
+    """The other half of the operator-ruled deviation, on the ADD side: the
+    marketplace index still lists the id (so this tool's own pre-route
+    catalog check passes and resolves a team), but the index's promised
+    SKILL.md content is gone from the bucket by the time
+    add_catalog_skill's own materialization step tries to download it --
+    an index/content drift the route reports as "skill no longer in the
+    catalog: <id>", which must surface verbatim, not fold into "agent not
+    found"."""
+    fake_storage.write_bytes(
+        SKILLS_BUCKET,
+        "index.json",
+        json.dumps(
+            {
+                "skills": {
+                    SKILL_ID: {
+                        "name": SKILL_ID,
+                        "description": "d",
+                        "tags": [],
+                        "owner": SKILL_TEAM,
+                    }
+                },
+                "count": 1,
+            }
+        ).encode(),
+    )
+    # Deliberately no catalog/<id>/SKILL.md written -- the index promises a
+    # skill the content bucket no longer actually carries.
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match=f"skill no longer in the catalog: {SKILL_ID}"):
+        _call_tool(
+            mcp, "kobo_set_agent_skills", _ctx_for(OWNER_A_EMAIL), agent="ward", add=[SKILL_ID]
+        )
+
+
+def test_set_agent_skills_remove_on_invisible_agent_raises_agent_not_found(
+    session_factory, config, fake_storage
+):
+    """The gate path still normalizes on the remove side too: an invisible
+    agent's own 404 (the visibility gate, fired before remove_skill is
+    ever called) is never one of the two skill-scoped messages, so it
+    keeps folding into the byte-identical "agent not found" every other
+    tool in this module already gives."""
+    _seed_agent(session_factory, name="hidden", created_by=OWNER_B_EMAIL, group_name=GROUP_B)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="agent not found"):
+        _call_tool(
+            mcp,
+            "kobo_set_agent_skills",
+            _ctx_for(STRANGER_EMAIL),
+            agent="hidden",
+            remove=["whatever"],
+        )
+
+
+def test_set_agent_skills_bucket_not_configured_raises_tool_error(
+    session_factory, config, fake_storage
+):
+    cfg = config.model_copy(update={"skills_bucket": ""})
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, cfg, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="marketplace skills bucket is not configured"):
+        _call_tool(
+            mcp, "kobo_set_agent_skills", _ctx_for(OWNER_A_EMAIL), agent="ward", add=[SKILL_ID]
+        )
+
+
+def test_set_agent_skills_is_marked_destructive(session_factory, config, fake_storage):
+    """remove deletes a whole bundle/skills/<id>/ tree from the agent's
+    repo -- this tool's own annotation must say so, distinct from the
+    module-wide `destructiveHint=False` every other write tool here
+    carries."""
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    tool = next(t for t in mcp._tool_manager.list_tools() if t.name == "kobo_set_agent_skills")
+
+    assert tool.annotations.destructiveHint is True
+
+
+def test_set_agent_skills_add_then_remove_applies_adds_before_removals(
+    session_factory, config, fake_storage
+):
+    _seed_marketplace_skill(fake_storage, SKILL_ID, owner=SKILL_TEAM)
+    github = _SkillSeedingGitHub(local_skills={"old-skill/SKILL.md": "content"})
+    _seed_agent(
+        session_factory,
+        name="ward",
+        created_by=OWNER_A_EMAIL,
+        group_name=GROUP_A,
+        skills=[{"name": "old-skill", "team": SKILL_TEAM, "sha": "abc", "source": "catalog"}],
+    )
+    app = _app(
+        session_factory, config, groups_resolver=_resolver(), storage=fake_storage, github=github
+    )
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp,
+        "kobo_set_agent_skills",
+        _ctx_for(OWNER_A_EMAIL),
+        agent="ward",
+        add=[SKILL_ID],
+        remove=["old-skill"],
+    )
+
+    assert result["added"][0]["id"] == SKILL_ID
+    assert result["removed"] == ["old-skill"]
+    # Pins the order this module's own docstring promises ("adds are
+    # applied first, then removals") -- if the loop order ever flipped,
+    # this would see "kobo: remove skill old-skill" pushed first.
+    push_messages = [message for _, message in github.pushes]
+    assert push_messages == [
+        f"kobo: add skill {SKILL_ID}",
+        "kobo: remove skill old-skill",
+    ]
+
+
+def test_set_agent_skills_audit_row_logs_tool_status_and_arguments(
+    session_factory, config, fake_storage
+):
+    _seed_marketplace_skill(fake_storage, SKILL_ID, owner=SKILL_TEAM)
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    _call_tool(mcp, "kobo_set_agent_skills", _ctx_for(OWNER_A_EMAIL), agent="ward", add=[SKILL_ID])
+
+    row = _last_audit_row(session_factory)
+    assert row is not None
+    assert row.tool == "kobo_set_agent_skills"
+    assert row.status == "ok"
+    logged = json.loads(row.redacted_args)
+    assert logged["agent"] == "ward"
+    assert logged["add"] == [SKILL_ID]
