@@ -1,9 +1,12 @@
 """kobo's MCP write tools: the original six from the MCP server arc (Task
 8) -- create_agent, teach, chat, request_colleague, accept_invite, and
 wire_slack -- plus `kobo_set_agent_skills` (MCP marketplace wave Task 3,
-staging/removing marketplace catalog skills on an owned agent) and
+staging/removing marketplace catalog skills on an owned agent),
 `kobo_add_agent_tool` (Task 4, staging a `bundle/tools/*.py` file on an
-owned agent, from the marketplace or given inline).
+owned agent, from the marketplace or given inline), and `kobo_create_skill`/
+`kobo_create_tool` (Task 5, publishing a NEW skill or tool into the org
+marketplace catalog itself, membership-gated -- see that pair's own
+docstring section below).
 
 THE REUSE MECHANISM -- this is the entire design of this module. Every
 tool below is a thin shim that calls the SAME route handler the room's own
@@ -218,6 +221,60 @@ something the route echoes) alongside it.
 `content` -- the raw source of a tool a caller is staging -- joins
 `kobo_api.mcp.audit.SENSITIVE_KEYS` the same way `kobo_wire_slack`'s
 `bot_token`/`app_token` already do: never stored raw in an audit row.
+
+## `kobo_create_skill`/`kobo_create_tool`'s membership gate (MCP marketplace
+## wave, Task 5)
+
+Unlike every other tool in this module, these two call `kobo_api.
+marketplace.create_skill`/`create_tool` DIRECTLY -- there is no existing
+route for either (the marketplace door has no HTTP surface of its own),
+so this module's own reuse mechanism (this docstring's opening section)
+does not apply here: the membership gate that stands in for a route's own
+visibility/ownership check is written once, right here, as
+`_require_team_membership`.
+
+`marketplace.create_skill`/`create_tool` publish by direct commit with NO
+review gate (operator ruling 1, `kobo_api.marketplace`'s own module
+docstring) -- so the one thing standing between any signed-in caller and
+a same-day, org-wide publish under an arbitrary team's name is this
+module's own membership check: `_require_team_membership(app, email,
+team)` raises before either marketplace function is ever called.
+`authz.is_admin` short-circuits it entirely (an operator may publish under
+any team, the same "operator may name any configured group" ruling
+`kobo_create_agent`'s own group-consent check already holds); otherwise
+`clients.groups.groups_for(email)` must contain `team` exactly. A `None`
+answer (the resolver could not be reached, or none is configured at all)
+refuses -- fail closed, matching `kobo_api.main`'s own group-consent gate
+for `kobo_create_agent`'s `group_name` (a resolver that cannot answer
+right now grants nothing, never "assume it's fine").
+
+Once membership clears, both tools call straight through with
+`author=email` (the commit message's own attribution, `marketplace.
+create_skill`/`create_tool`'s own docstrings) and translate the two typed
+failures the same way `kobo_add_agent_tool`'s marketplace path already
+does: a `MarketplaceError` (bad id shape, a frontmatter owner conflict, a
+failed tooling validation, or an "already exists" collision) becomes a
+`ToolError` with that message preserved verbatim; a `ClientError` off the
+clone itself becomes the same sanitized `_MARKETPLACE_DID_NOT_ANSWER`
+wording every other marketplace-transport failure in this arc already
+uses.
+
+The two tools' own `note` fields deliberately differ, matching how each
+catalog is actually served: `kobo_list_skills` reads a periodically
+refreshed bucket index (`kobo_api.search.read_marketplace_catalog`), so
+`kobo_create_skill`'s note says the new entry appears after the publish
+pipeline and that refresh finish; `kobo_list_tools` reads the marketplace
+repo directly on every call (`marketplace.list_tools`'s own docstring), so
+`kobo_create_tool`'s note says the new entry is visible there immediately,
+no pipeline involved. Both tools carry `destructiveHint=False`: unlike
+`kobo_set_agent_skills`/`kobo_add_agent_tool`, neither ever overwrites
+anything -- an id already taken is refused (`MarketplaceError`), never
+replaced.
+
+`content` -- the skill body or tool source a caller is publishing -- is
+already in `kobo_api.mcp.audit.SENSITIVE_KEYS` (added by Task 4 for
+`kobo_add_agent_tool`'s own `content`); both tools below reuse that same
+kwarg name, so it redacts here for free, no new entry needed.
 """
 
 from __future__ import annotations
@@ -234,7 +291,12 @@ from mcp.types import ToolAnnotations
 from pydantic import ValidationError
 
 from kobo_api.clients import ClientError
-from kobo_api.marketplace import MarketplaceError, fetch_tool_py
+from kobo_api.marketplace import (
+    MarketplaceError,
+    create_skill,
+    create_tool,
+    fetch_tool_py,
+)
 from kobo_api.mcp import authz
 from kobo_api.mcp.audit import audited
 from kobo_api.mcp.server import get_user_email
@@ -270,6 +332,12 @@ _SKILL_GONE_FROM_CATALOG_PREFIX = "skill no longer in the catalog:"
 # `kobo_add_agent_tool`'s own source-arbitration gate -- see this module's
 # own docstring section for exactly which shapes this covers.
 _EXACTLY_ONE_SOURCE = "pass exactly one source: tool_id, or filename with content"
+
+# `_require_team_membership`'s own fail-closed answer for a `None` resolve
+# (the resolver is unreachable right now, or none is configured at all) --
+# see this module's own docstring section on `kobo_create_skill`/
+# `kobo_create_tool` for why this refuses rather than assumes membership.
+_DIRECTORY_LOOKUP_UNAVAILABLE = "directory lookup unavailable; try again"
 
 _OK_STATUSES = (200, 201)
 
@@ -363,10 +431,38 @@ def _create_result(response: JSONResponse) -> dict:
     raise ToolError(str(body.get("error", "that request could not be completed")))
 
 
+def _require_team_membership(app: Any, email: str, team: str) -> None:
+    """`kobo_create_skill`/`kobo_create_tool`'s shared membership gate --
+    see this module's own docstring section for the full reasoning.
+    Raises `ToolError`, never returns anything, when the caller may not
+    publish under `team`; a silent return means they may.
+
+    `authz.is_admin` short-circuits first -- an operator may name any
+    team, mirroring `kobo_create_agent`'s own group-consent exemption for
+    operators. Otherwise `clients.groups.groups_for(email)` (a `None`
+    `clients.groups` -- no resolver configured at all -- treated
+    identically to a resolver that answered `None`) must contain `team`
+    exactly; anything else -- unresolvable right now, or resolved but not
+    a member -- refuses.
+    """
+    if authz.is_admin(app, email):
+        return
+
+    clients = app.state.clients
+    resolver = clients.groups if clients is not None else None
+    groups = resolver.groups_for(email) if resolver is not None else None
+    if groups is None:
+        raise ToolError(_DIRECTORY_LOOKUP_UNAVAILABLE)
+    if team not in groups:
+        raise ToolError(f"you are not a member of team {team!r}")
+
+
 def register(mcp: FastMCP, app: Any) -> None:
-    """Registers this module's eight write tools on `mcp`. Every route this
+    """Registers this module's ten write tools on `mcp`. Every route this
     module calls is looked up exactly once, here, at registration time --
-    never re-resolved per call.
+    never re-resolved per call. `kobo_create_skill`/`kobo_create_tool`
+    (Task 5) call `kobo_api.marketplace` directly and have no route of
+    their own to look up here.
     """
     create_agent_endpoint = _endpoint(app, "POST", "/api/agents")
     name_suggestions_endpoint = _endpoint(app, "POST", "/api/agents/name-suggestions")
@@ -746,3 +842,94 @@ def register(mcp: FastMCP, app: Any) -> None:
             session.close()
 
         return {"filename": filename, "sha": body.get("sha")}
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @audited("kobo_create_skill")
+    async def kobo_create_skill(ctx: Context, skill_id: str, content: str, team: str) -> dict:
+        """Publish a brand-new skill to the org marketplace catalog -- a
+        direct commit, no review gate. Before creating, run kobo_list_skills
+        and check fit first; prefer an existing entry over a near-twin
+        rather than publishing a duplicate. `skill_id` becomes the catalog
+        id (must not already exist) and `content` is the skill's Markdown
+        body, frontmatter and all; `name`/`owner` in that frontmatter are
+        set to `skill_id`/`team` for you. `team` is the marketplace team
+        this skill is filed under -- you must already be a member of it (a
+        room operator may name any team). The entry lands under YOUR team
+        and publishes immediately, org-wide: it shows up for kobo_list_skills
+        callers after the publish pipeline and the room's catalog refresh
+        finish, a few minutes later, not instantly.
+        """
+        email = get_user_email(ctx)
+        _require_team_membership(app, email, team)
+        clients = app.state.clients
+        cfg = app.state.config
+        try:
+            sha = create_skill(
+                clients.github, cfg, skill_id=skill_id, content=content, team=team, author=email
+            )
+        except MarketplaceError as exc:
+            raise ToolError(str(exc)) from exc
+        except ClientError as exc:
+            raise ToolError(_MARKETPLACE_DID_NOT_ANSWER) from exc
+
+        return {
+            "commit": sha,
+            "note": (
+                "appears in the catalog after the publish pipeline and the "
+                "room's catalog refresh (minutes)"
+            ),
+        }
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @audited("kobo_create_tool")
+    async def kobo_create_tool(
+        ctx: Context,
+        tool_id: str,
+        content: str,
+        team: str,
+        description: str,
+        tags: list[str] | None = None,
+    ) -> dict:
+        """Publish a brand-new tool to the org marketplace catalog -- a
+        direct commit, no review gate. Before creating, run kobo_list_tools
+        and check fit first; prefer an existing entry over a near-twin
+        rather than publishing a duplicate. `tool_id` becomes the catalog
+        id (must not already exist) and `content` is the tool's Python
+        source: it must pass the room's tooling checks, a top-level
+        `pre_task` or `post_draft` hook, no import beyond the standard
+        library. `team` is the marketplace team this tool is filed under --
+        you must already be a member of it (a room operator may name any
+        team). `description` and `tags` are catalog metadata shown to
+        anyone browsing the marketplace. The entry lands under YOUR team
+        and publishes immediately, org-wide: kobo_list_tools reads the
+        marketplace repo directly, so it is visible there right after this
+        commit, with no pipeline to wait on.
+        """
+        email = get_user_email(ctx)
+        _require_team_membership(app, email, team)
+        clients = app.state.clients
+        cfg = app.state.config
+        try:
+            sha = create_tool(
+                clients.github,
+                cfg,
+                tool_id=tool_id,
+                content=content,
+                team=team,
+                description=description,
+                tags=list(tags or []),
+                author=email,
+            )
+        except MarketplaceError as exc:
+            raise ToolError(str(exc)) from exc
+        except ClientError as exc:
+            raise ToolError(_MARKETPLACE_DID_NOT_ANSWER) from exc
+
+        return {
+            "commit": sha,
+            "note": (
+                "appears in kobo_list_tools immediately after this commit; "
+                "the tools listing reads the repo directly, no publish "
+                "pipeline in between"
+            ),
+        }

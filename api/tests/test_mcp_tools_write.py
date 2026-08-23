@@ -149,10 +149,19 @@ def fake_storage():
 
 
 class FakeGroupResolver:
-    def __init__(self, mapping: dict[str, list[str]] | None = None):
+    """Mapping-driven, or always-`None` ("the directory is down") when
+    `down=True` -- same seam `test_mcp_tools_read.py`'s own copy of this
+    fake uses for `kobo_whoami`'s `groups_unavailable` case, reused here
+    for `kobo_create_skill`/`kobo_create_tool`'s membership gate (MCP
+    marketplace wave, Task 5)."""
+
+    def __init__(self, mapping: dict[str, list[str]] | None = None, *, down: bool = False):
         self._mapping = dict(mapping) if mapping else {}
+        self._down = down
 
     def groups_for(self, email: str) -> list[str] | None:
+        if self._down:
+            return None
         return self._mapping.get(email.lower(), [])
 
 
@@ -322,7 +331,7 @@ def test_build_mcp_server_registers_the_six_write_tools_alongside_the_read_ones(
     } <= names
 
 
-def test_build_mcp_server_registers_exactly_the_fourteen_named_tools(
+def test_build_mcp_server_registers_exactly_the_sixteen_named_tools(
     session_factory, config, fake_storage
 ):
     """Coverage folded in from Task 8's review: the subset check just
@@ -331,14 +340,15 @@ def test_build_mcp_server_registers_exactly_the_fourteen_named_tools(
     their own file's tools with `<=`, deliberately, so neither file also
     has to track the other's count -- which means nothing anywhere pins
     the FULL registered set. This is that missing test: `build_mcp_server`
-    must register EXACTLY these fourteen tools, no more, no fewer,
+    must register EXACTLY these sixteen tools, no more, no fewer,
     matching the design's own "Tool surface" table
     (docs/superpowers/specs/2026-08-22-mcp-server-design.md) plus the MCP
     marketplace wave's Task 2 pair (`kobo_list_skills`/`kobo_list_tools`),
-    Task 3's `kobo_set_agent_skills`, and Task 4's `kobo_add_agent_tool`,
-    one-for-one. A stray extra registration (a copy-paste twin, a leftover
-    experiment) or a dropped one would fail this even though both narrower
-    `<=` checks above would stay green.
+    Task 3's `kobo_set_agent_skills`, Task 4's `kobo_add_agent_tool`, and
+    Task 5's `kobo_create_skill`/`kobo_create_tool`, one-for-one. A stray
+    extra registration (a copy-paste twin, a leftover experiment) or a
+    dropped one would fail this even though both narrower `<=` checks
+    above would stay green.
     """
     app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
 
@@ -360,6 +370,8 @@ def test_build_mcp_server_registers_exactly_the_fourteen_named_tools(
         "kobo_wire_slack",
         "kobo_set_agent_skills",
         "kobo_add_agent_tool",
+        "kobo_create_skill",
+        "kobo_create_tool",
     }
 
 
@@ -1538,3 +1550,307 @@ def test_add_agent_tool_marketplace_transport_failure_is_sanitized(
         )
 
     assert transport_message not in str(exc_info.value)
+
+
+# --- kobo_create_skill / kobo_create_tool (MCP marketplace wave, Task 5) -----
+#
+# Unlike every other tool in this module, these two call `kobo_api.
+# marketplace.create_skill`/`create_tool` DIRECTLY -- there is no existing
+# route to reuse (module docstring's whole reuse mechanism does not apply
+# here), so the membership gate that stands in for a route's own
+# visibility/ownership check is this module's own `_require_team_
+# membership`. `config.skills_repo` is unset on the bare `config` fixture,
+# so every test below that expects to reach `marketplace.create_skill`/
+# `create_tool` sets it first, the same way `test_marketplace.py`'s own
+# `marketplace_github` fixture and this file's `test_add_agent_tool_*`
+# marketplace-path tests already do.
+
+NEW_SKILL_ID = "onboarding-faq"
+NEW_SKILL_CONTENT = "# Onboarding FAQ\n\nAnswers the most common onboarding questions.\n"
+
+NEW_TOOL_ID = "redact-guard"
+
+
+def test_create_skill_member_of_team_commits(session_factory, config, fake_storage):
+    """The caller's own resolved groups (`_resolver()`'s `MEMBER_A_EMAIL ->
+    [GROUP_A]`) contain the claimed `team` -> the membership gate passes
+    and `marketplace.create_skill` commits for real."""
+    config.skills_repo = "org-skills"
+    fake_github = FakeGitHub()
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp,
+        "kobo_create_skill",
+        _ctx_for(MEMBER_A_EMAIL),
+        skill_id=NEW_SKILL_ID,
+        content=NEW_SKILL_CONTENT,
+        team=GROUP_A,
+    )
+
+    assert result["commit"]
+    assert result["note"] == (
+        "appears in the catalog after the publish pipeline and the room's "
+        "catalog refresh (minutes)"
+    )
+    written = fake_github.pushed_file(f"skills/{NEW_SKILL_ID}/SKILL.md")
+    assert f"owner: {GROUP_A}" in written
+
+
+def test_create_skill_non_member_refused(session_factory, config, fake_storage):
+    """`STRANGER_EMAIL` resolves to no groups at all (`_resolver()`'s own
+    default `[]` for an email absent from its mapping) -- refused before
+    any clone, naming the claimed team."""
+    config.skills_repo = "org-skills"
+    fake_github = FakeGitHub()
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match=f"not a member of team {GROUP_A!r}"):
+        _call_tool(
+            mcp,
+            "kobo_create_skill",
+            _ctx_for(STRANGER_EMAIL),
+            skill_id=NEW_SKILL_ID,
+            content=NEW_SKILL_CONTENT,
+            team=GROUP_A,
+        )
+
+    assert fake_github.push_count == 0
+
+
+def test_create_skill_resolver_down_fail_closed(session_factory, config, fake_storage):
+    """A resolver that cannot answer right now (`groups_for` -> `None`)
+    refuses even a caller who might really be a member -- fail closed,
+    the same posture `kobo_api.main`'s own group-consent gate holds for
+    `kobo_create_agent`. Not an operator, so the membership gate is the
+    only thing standing between this caller and a commit."""
+    config.skills_repo = "org-skills"
+    fake_github = FakeGitHub()
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=FakeGroupResolver(down=True),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="directory lookup unavailable"):
+        _call_tool(
+            mcp,
+            "kobo_create_skill",
+            _ctx_for(MEMBER_A_EMAIL),
+            skill_id=NEW_SKILL_ID,
+            content=NEW_SKILL_CONTENT,
+            team=GROUP_A,
+        )
+
+    assert fake_github.push_count == 0
+
+
+def test_create_skill_operator_any_team(session_factory, config, fake_storage):
+    """`OPERATOR_EMAIL` is a plain-email operator (`config.operators`) --
+    `authz.is_admin` short-circuits the membership gate entirely, so this
+    commits even for `GROUP_B`, a team the operator is not resolved into
+    at all by `_resolver()`."""
+    config.skills_repo = "org-skills"
+    fake_github = FakeGitHub()
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp,
+        "kobo_create_skill",
+        _ctx_for(OPERATOR_EMAIL),
+        skill_id=NEW_SKILL_ID,
+        content=NEW_SKILL_CONTENT,
+        team=GROUP_B,
+    )
+
+    assert result["commit"]
+    written = fake_github.pushed_file(f"skills/{NEW_SKILL_ID}/SKILL.md")
+    assert f"owner: {GROUP_B}" in written
+
+
+def test_create_skill_collision_surfaces(session_factory, config, fake_storage):
+    """`marketplace.create_skill`'s own "already exists" `MarketplaceError`
+    (the repo's `clone_tree` already carries this skill's slot) surfaces
+    as a `ToolError` with that message preserved verbatim -- the
+    membership gate passed, this is `marketplace.create_skill`'s own
+    collision check."""
+    config.skills_repo = "org-skills"
+    fake_github = FakeGitHub(
+        clone_tree={
+            f"skills/{NEW_SKILL_ID}/SKILL.md": (
+                f"---\nname: {NEW_SKILL_ID}\nowner: {GROUP_A}\n---\nAlready there.\n"
+            )
+        }
+    )
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="already exists"):
+        _call_tool(
+            mcp,
+            "kobo_create_skill",
+            _ctx_for(MEMBER_A_EMAIL),
+            skill_id=NEW_SKILL_ID,
+            content=NEW_SKILL_CONTENT,
+            team=GROUP_A,
+        )
+
+
+def test_create_tool_member_of_team_commits(session_factory, config, fake_storage):
+    """`kobo_create_tool`'s own happy path -- distinct from `kobo_create_
+    skill`'s: a different marketplace fixture (`TOOL.md` + `<id>.py`) and
+    a distinct, pipeline-free `note` (this tool's listing reads the repo
+    directly, per this module's own `register` docstring addition)."""
+    config.skills_repo = "org-skills"
+    fake_github = FakeGitHub()
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp,
+        "kobo_create_tool",
+        _ctx_for(MEMBER_A_EMAIL),
+        tool_id=NEW_TOOL_ID,
+        content=TOOL_PY,
+        team=GROUP_A,
+        description="Redacts secret-shaped strings from a draft.",
+        tags=["security"],
+    )
+
+    assert result["commit"]
+    assert "catalog refresh" not in result["note"]  # kobo_create_skill's note, not this one
+    assert "kobo_list_tools" in result["note"]
+    assert "immediately" in result["note"]
+    assert fake_github.pushed_file(f"tools/{NEW_TOOL_ID}/{NEW_TOOL_ID}.py") == TOOL_PY
+    written_md = fake_github.pushed_file(f"tools/{NEW_TOOL_ID}/TOOL.md")
+    assert f"owner: {GROUP_A}" in written_md
+
+
+def test_create_tool_invalid_hook_never_commits(session_factory, config, fake_storage):
+    """`marketplace.create_tool` runs `kobo_api.tooling`'s own mechanical
+    validator (size/UTF-8/non-empty/ast/import-allowlist/entrypoint)
+    BEFORE any clone -- `BAD_HOOK_PY` (no top-level `pre_task`/
+    `post_draft`, the same fixture `test_add_agent_tool_inline_content_
+    bad_hook_is_tool_error` already uses) surfaces that validator's own
+    message, and `FakeGitHub.push_count` proves no commit was ever made."""
+    config.skills_repo = "org-skills"
+    fake_github = FakeGitHub()
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="neither pre_task nor post_draft"):
+        _call_tool(
+            mcp,
+            "kobo_create_tool",
+            _ctx_for(MEMBER_A_EMAIL),
+            tool_id=NEW_TOOL_ID,
+            content=BAD_HOOK_PY,
+            team=GROUP_A,
+            description="A guard.",
+        )
+
+    assert fake_github.push_count == 0
+
+
+def test_create_content_redacted_in_audit(session_factory, config, fake_storage):
+    """`content` already joins `kobo_api.mcp.audit.SENSITIVE_KEYS` (Task 4
+    wired the substring mechanism) -- this pins that `kobo_create_skill`'s
+    own audit row shows it redacted, the same idiom `test_add_agent_tool_
+    audit_row_redacts_content` already follows for `kobo_add_agent_tool`."""
+    config.skills_repo = "org-skills"
+    fake_github = FakeGitHub()
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+
+    _call_tool(
+        mcp,
+        "kobo_create_skill",
+        _ctx_for(MEMBER_A_EMAIL),
+        skill_id=NEW_SKILL_ID,
+        content=NEW_SKILL_CONTENT,
+        team=GROUP_A,
+    )
+
+    row = _last_audit_row(session_factory)
+    assert row is not None
+    assert row.tool == "kobo_create_skill"
+    assert row.status == "ok"
+    logged = json.loads(row.redacted_args)
+    assert logged["content"] == "***REDACTED***"
+    assert logged["skill_id"] == NEW_SKILL_ID
+    assert logged["team"] == GROUP_A
+    assert NEW_SKILL_CONTENT not in row.redacted_args
+
+
+def test_create_skill_is_marked_not_destructive(session_factory, config, fake_storage):
+    """A `skill_id` collision refuses rather than overwrites (`marketplace.
+    create_skill`'s own "already exists" check) -- unlike `kobo_set_agent_
+    skills`/`kobo_add_agent_tool`'s `destructiveHint=True`, this tool only
+    ever creates a new, never-before-existing slot, so `False` is
+    accurate."""
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    tool = next(t for t in mcp._tool_manager.list_tools() if t.name == "kobo_create_skill")
+
+    assert tool.annotations.destructiveHint is False
+
+
+def test_create_tool_is_marked_not_destructive(session_factory, config, fake_storage):
+    """Same reasoning as `test_create_skill_is_marked_not_destructive`:
+    `marketplace.create_tool`'s own collision check refuses rather than
+    overwrites."""
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    tool = next(t for t in mcp._tool_manager.list_tools() if t.name == "kobo_create_tool")
+
+    assert tool.annotations.destructiveHint is False
