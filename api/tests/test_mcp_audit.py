@@ -225,6 +225,31 @@ def test_check_window_partial_expiry_frees_exactly_the_expired_slots(monkeypatch
     assert rate_limit.check(EMAIL) is False
 
 
+def test_check_window_boundary_exact_instant_still_counts_against_the_limit(monkeypatch):
+    # T6 coverage, folded in here per this task's brief: pins the EXACT
+    # prune boundary in rate_limit.py's `while timestamps and timestamps[0]
+    # < cutoff: timestamps.popleft()`. `cutoff = now - WINDOW_S`, so a
+    # timestamp exactly `WINDOW_S` old satisfies `timestamp == cutoff` --
+    # strictly-less-than does NOT prune it (it's still "within the last
+    # WINDOW_S seconds", the comment on `_calls` above says so explicitly).
+    # A `<` -> `<=` mutation would prune it instead, freeing a slot this
+    # test proves must stay occupied.
+    now = [1000.0]
+    monkeypatch.setattr(rate_limit.time, "monotonic", lambda: now[0])
+
+    # Fill the whole window's quota, every timestamp landing at t=1000.
+    for _ in range(rate_limit.LIMIT):
+        assert rate_limit.check(EMAIL) is True
+    assert rate_limit.check(EMAIL) is False
+
+    # Advance to EXACTLY WINDOW_S later: every one of those timestamps is
+    # now precisely `WINDOW_S` old, the boundary instant itself -- still
+    # inside the window, per `<`'s own semantics (only STRICTLY older than
+    # the window ages out). No slot is freed: still refused.
+    now[0] = 1000.0 + rate_limit.WINDOW_S
+    assert rate_limit.check(EMAIL) is False
+
+
 def test_reset_one_email_clears_only_that_email():
     for _ in range(rate_limit.LIMIT):
         rate_limit.check(EMAIL)
