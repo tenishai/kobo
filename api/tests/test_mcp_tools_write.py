@@ -1715,7 +1715,7 @@ def test_create_skill_collision_surfaces(session_factory, config, fake_storage):
     )
     mcp = build_mcp_server(app)
 
-    with pytest.raises(ToolError, match="already exists"):
+    with pytest.raises(ToolError, match=f"skill {NEW_SKILL_ID!r} already exists"):
         _call_tool(
             mcp,
             "kobo_create_skill",
@@ -1724,6 +1724,40 @@ def test_create_skill_collision_surfaces(session_factory, config, fake_storage):
             content=NEW_SKILL_CONTENT,
             team=GROUP_A,
         )
+
+
+def test_create_skill_marketplace_transport_failure_is_sanitized(
+    session_factory, config, fake_storage
+):
+    """A `ClientError` off the marketplace clone itself (a real transport
+    failure, distinct from `MarketplaceError`'s own typed cases) must
+    surface as the same sanitized "did not answer" wording every other
+    marketplace-transport failure in this arc already uses, never the raw
+    transport text -- mirrors `test_add_agent_tool_marketplace_transport_
+    failure_is_sanitized`. Review round 1, Important 1."""
+    config.skills_repo = "org-skills"
+    transport_message = "github clone failed: rate limited by the origin"
+    fake_github = FakeGitHub(clone_error=transport_message)
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="did not answer") as exc_info:
+        _call_tool(
+            mcp,
+            "kobo_create_skill",
+            _ctx_for(MEMBER_A_EMAIL),
+            skill_id=NEW_SKILL_ID,
+            content=NEW_SKILL_CONTENT,
+            team=GROUP_A,
+        )
+
+    assert transport_message not in str(exc_info.value)
 
 
 def test_create_tool_member_of_team_commits(session_factory, config, fake_storage):
@@ -1762,6 +1796,68 @@ def test_create_tool_member_of_team_commits(session_factory, config, fake_storag
     assert f"owner: {GROUP_A}" in written_md
 
 
+def test_create_tool_non_member_refused(session_factory, config, fake_storage):
+    """Mirrors `test_create_skill_non_member_refused`: the membership gate
+    (`_require_team_membership`) is shared code, but nothing else in this
+    file calls `kobo_create_tool` with a non-member -- without this test,
+    deleting the gate's call site inside `kobo_create_tool` specifically
+    (as opposed to the shared helper itself) would go unnoticed. Review
+    round 1, Important 2."""
+    config.skills_repo = "org-skills"
+    fake_github = FakeGitHub()
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match=f"not a member of team {GROUP_A!r}"):
+        _call_tool(
+            mcp,
+            "kobo_create_tool",
+            _ctx_for(STRANGER_EMAIL),
+            tool_id=NEW_TOOL_ID,
+            content=TOOL_PY,
+            team=GROUP_A,
+            description="A guard.",
+        )
+
+    assert fake_github.push_count == 0
+
+
+def test_create_tool_resolver_down_fail_closed(session_factory, config, fake_storage):
+    """Mirrors `test_create_skill_resolver_down_fail_closed` for
+    `kobo_create_tool` -- same "deleting the gate's call site inside this
+    specific tool would go unnoticed" reasoning as `test_create_tool_non_
+    member_refused` just above. Review round 1, Important 2."""
+    config.skills_repo = "org-skills"
+    fake_github = FakeGitHub()
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=FakeGroupResolver(down=True),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="directory lookup unavailable"):
+        _call_tool(
+            mcp,
+            "kobo_create_tool",
+            _ctx_for(MEMBER_A_EMAIL),
+            tool_id=NEW_TOOL_ID,
+            content=TOOL_PY,
+            team=GROUP_A,
+            description="A guard.",
+        )
+
+    assert fake_github.push_count == 0
+
+
 def test_create_tool_invalid_hook_never_commits(session_factory, config, fake_storage):
     """`marketplace.create_tool` runs `kobo_api.tooling`'s own mechanical
     validator (size/UTF-8/non-empty/ast/import-allowlist/entrypoint)
@@ -1792,6 +1888,40 @@ def test_create_tool_invalid_hook_never_commits(session_factory, config, fake_st
         )
 
     assert fake_github.push_count == 0
+
+
+def test_create_tool_marketplace_transport_failure_is_sanitized(
+    session_factory, config, fake_storage
+):
+    """`kobo_create_tool`'s own twin of `test_create_skill_marketplace_
+    transport_failure_is_sanitized` -- pins the same sanitization on the
+    OTHER tool's own `except ClientError` arm, since the two are separate
+    lines of code that could independently regress to leaking `str(exc)`.
+    Review round 1, Important 1."""
+    config.skills_repo = "org-skills"
+    transport_message = "github clone failed: rate limited by the origin"
+    fake_github = FakeGitHub(clone_error=transport_message)
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="did not answer") as exc_info:
+        _call_tool(
+            mcp,
+            "kobo_create_tool",
+            _ctx_for(MEMBER_A_EMAIL),
+            tool_id=NEW_TOOL_ID,
+            content=TOOL_PY,
+            team=GROUP_A,
+            description="A guard.",
+        )
+
+    assert transport_message not in str(exc_info.value)
 
 
 def test_create_content_redacted_in_audit(session_factory, config, fake_storage):

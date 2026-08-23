@@ -448,7 +448,7 @@ def _require_team_membership(app: Any, email: str, team: str) -> None:
     if authz.is_admin(app, email):
         return
 
-    clients = app.state.clients
+    clients = getattr(app.state, "clients", None)
     resolver = clients.groups if clients is not None else None
     groups = resolver.groups_for(email) if resolver is not None else None
     if groups is None:
@@ -852,10 +852,13 @@ def register(mcp: FastMCP, app: Any) -> None:
         rather than publishing a duplicate. `skill_id` becomes the catalog
         id (must not already exist) and `content` is the skill's Markdown
         body, frontmatter and all; `name`/`owner` in that frontmatter are
-        set to `skill_id`/`team` for you. `team` is the marketplace team
-        this skill is filed under -- you must already be a member of it (a
-        room operator may name any team). The entry lands under YOUR team
-        and publishes immediately, org-wide: it shows up for kobo_list_skills
+        set to `skill_id`/`team` for you when absent. If you paste an
+        existing skill's own frontmatter and it already sets an `owner`
+        naming a DIFFERENT team than `team`, that is refused as a
+        conflict, never silently overwritten. `team` is the marketplace
+        team this skill is filed under -- you must already be a member of
+        it (a room operator may name any team). The entry lands under YOUR
+        team and publishes immediately, org-wide: it shows up for kobo_list_skills
         callers after the publish pipeline and the room's catalog refresh
         finish, a few minutes later, not instantly.
         """
