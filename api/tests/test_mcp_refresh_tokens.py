@@ -155,6 +155,91 @@ def test_consume_after_replay_the_previously_issued_new_jti_no_longer_works(sess
     assert result is None
 
 
+# --- consume: lost race on the guarded UPDATE falls back to a replay ----
+
+
+def test_a_lost_update_race_revokes_the_family_as_replay(session_factory, monkeypatch):
+    """The rowcount-guarded UPDATE exists for exactly this: a caller whose
+    own pre-read looked rotatable, but who loses the race to another
+    caller that rotates the same jti first. Two Session objects share one
+    file-backed sqlite engine (via `session_factory`) so each can hold its
+    own view of the same row.
+
+    Session B takes its pre-read before A ever touches the row, then A
+    runs a full rotation (rotate + insert child + commit). B then calls
+    `consume()` for the same jti. To deterministically land B in the
+    FALLBACK branch (rowcount 0 after a clean-looking pre-check) rather
+    than the pre-check branch, B's own `session.get` is monkeypatched to
+    keep handing back its stale pre-read for this jti, no matter how many
+    times `consume()` calls it internally.
+
+    Note: the brief's preferred approach was relying on SQLAlchemy's
+    identity map alone (seed it with a pre-read, let `consume()`'s own
+    `session.get()` hit the cache). That was tried first and found to be
+    genuinely flaky here: across repeated runs of the identical test body,
+    B's internal `session.get()` sometimes returned the stale cached row
+    (landing in the fallback, as intended) and sometimes returned a fresh
+    row reflecting A's committed rotation (landing in the pre-check
+    instead) -- apparently timing-dependent on how the shared engine's
+    connection pool hands out and reclaims connections between the two
+    sessions. A test that only sometimes exercises the branch it exists to
+    prove is worse than not having it, so this uses the explicitly
+    sanctioned fallback: monkeypatching the lookup seam directly.
+    """
+    session_a = session_factory()
+    session_b = session_factory()
+    try:
+        create_family(session_a, jti="jti-0", email=EMAIL)
+        session_a.commit()
+
+        # B's clean-looking pre-read, taken before A rotates anything.
+        # Detached so it can't be silently refreshed by anything B's
+        # session does later.
+        stale_row = session_b.get(MCPRefreshToken, "jti-0")
+        session_b.expunge(stale_row)
+
+        # A completes a full rotation and commits it to disk.
+        new_jti = consume(session_a, jti="jti-0", email=EMAIL)
+        session_a.commit()
+        assert new_jti is not None
+
+        # Pin B's session.get for this jti to always return the stale,
+        # pre-rotation snapshot -- deterministically reproducing "B's
+        # pre-check saw an unrotated row" regardless of identity-map or
+        # connection-pool timing. Every other call (there are none here)
+        # falls through to the real session.get.
+        real_get = session_b.get
+
+        def _stale_get(model, pk):
+            if model is MCPRefreshToken and pk == "jti-0":
+                return stale_row
+            return real_get(model, pk)
+
+        monkeypatch.setattr(session_b, "get", _stale_get)
+
+        # B now runs consume() for the same jti. Its internal session.get
+        # returns the pinned stale row, so B sails past the "already
+        # rotated" pre-check and reaches the guarded UPDATE, which runs
+        # for real against the database and matches zero rows (A already
+        # rotated jti-0 on disk) -- the fallback branch, not the
+        # pre-check, is what fires here.
+        result = consume(session_b, jti="jti-0", email=EMAIL)
+        session_b.commit()
+
+        assert result is None
+
+        session_a.expire_all()
+        original_row = session_a.get(MCPRefreshToken, "jti-0")
+        child_row = session_a.get(MCPRefreshToken, new_jti)
+        assert original_row.revoked_at is not None
+        assert original_row.revoked_reason == "replay_detected"
+        assert child_row.revoked_at is not None
+        assert child_row.revoked_reason == "replay_detected"
+    finally:
+        session_a.close()
+        session_b.close()
+
+
 # --- consume: unknown jti ------------------------------------------------
 
 

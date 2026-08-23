@@ -105,10 +105,13 @@ def consume(session: Session, *, jti: str, email: str) -> str | None:
         return None
 
     if row.email != email:
+        # Truncated to 8 chars: the jti alone isn't a credential (the
+        # token's signature is still required to use it), but a full id
+        # doesn't belong verbatim in a log line either.
         log.warning(
             "MCP refresh token jti=%s presented for email=%s but belongs "
             "to a different email; treating as not-found",
-            jti,
+            jti[:8],
             email,
         )
         return None
