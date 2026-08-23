@@ -293,3 +293,198 @@ describe("ColleagueConversations (terminal)", () => {
     });
   });
 });
+
+// --- Terminal legibility wave: date rules, hover timestamps, xN collapse,
+// filter box, counterpart chips (the operator's "hard to search / hard to
+// follow with multiple agents / old conversations look like today" report) --
+
+const DAY_ONE_ASK = { ...ASK_ENTRY, ts: "2026-08-19T10:00:00Z", conversation_id: "d1" };
+const DAY_TWO_ASK = {
+  ...ASK_ENTRY,
+  ts: "2026-08-21T09:30:00Z",
+  conversation_id: "d2",
+  text: "Still the same config?",
+};
+
+describe("ColleagueConversations (legibility wave)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    FakeEventSource.instances = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("draws a dim date rule when the feed crosses a day boundary", async () => {
+    stubFetch({
+      "/api/colleagues/feed": { entries: [DAY_ONE_ASK, DAY_TWO_ASK], truncated: false },
+    });
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("What's the config?");
+
+    expect(screen.getByText("2026-08-19")).not.toBeNull();
+    expect(screen.getByText("2026-08-21")).not.toBeNull();
+  });
+
+  it("a single-day feed still gets one date rule so old scrollback can't pass as today", async () => {
+    stubFetch({
+      "/api/colleagues/feed": { entries: [DAY_ONE_ASK], truncated: false },
+    });
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("What's the config?");
+
+    expect(screen.getByText("2026-08-19")).not.toBeNull();
+  });
+
+  it("hovering a time shows the full timestamp (title carries the ISO string)", async () => {
+    stubFetch({
+      "/api/colleagues/feed": { entries: [DAY_ONE_ASK], truncated: false },
+    });
+
+    const { container } = renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("What's the config?");
+
+    const time = container.querySelector(".colleague-terminal__time");
+    expect(time?.getAttribute("title")).toBe("2026-08-19T10:00:00Z");
+  });
+
+  it("consecutive identical asks collapse into one line with an xN badge", async () => {
+    const repeat = (n: number) => ({
+      ...ASK_ENTRY,
+      ts: `2026-08-19T10:0${n}:00Z`,
+      conversation_id: `rep-${n}`,
+    });
+    stubFetch({
+      "/api/colleagues/feed": {
+        entries: [repeat(1), repeat(2), repeat(3), REPLY_ENTRY],
+        truncated: false,
+      },
+    });
+
+    const { container } = renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("What's the config?");
+
+    expect(screen.getAllByText("What's the config?")).toHaveLength(1);
+    expect(screen.getByText("x3")).not.toBeNull();
+    // The collapsed line shows when the repetition STARTED.
+    expect(screen.getByText("10:01:00")).not.toBeNull();
+    // The reply stayed its own line, uncollapsed and unbadged.
+    expect(screen.getByText("Here's the config.")).not.toBeNull();
+    expect(container.querySelectorAll(".colleague-terminal__count")).toHaveLength(1);
+  });
+
+  it("identical text that is NOT consecutive does not collapse", async () => {
+    const a1 = { ...ASK_ENTRY, ts: "2026-08-19T10:00:00Z", conversation_id: "n1" };
+    const other = {
+      ...ASK_ENTRY,
+      ts: "2026-08-19T10:01:00Z",
+      conversation_id: "n2",
+      text: "Something else entirely.",
+    };
+    const a2 = { ...ASK_ENTRY, ts: "2026-08-19T10:02:00Z", conversation_id: "n3" };
+    stubFetch({
+      "/api/colleagues/feed": { entries: [a1, other, a2], truncated: false },
+    });
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("Something else entirely.");
+
+    expect(screen.getAllByText("What's the config?")).toHaveLength(2);
+    expect(screen.queryByText("x2")).toBeNull();
+  });
+
+  it("the filter box narrows lines to matches and clears back to everything", async () => {
+    stubFetch({
+      "/api/colleagues/feed": { entries: [ASK_ENTRY, REPLY_ENTRY], truncated: false },
+    });
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("What's the config?");
+
+    const box = screen.getByLabelText("Filter conversations") as HTMLInputElement;
+    await fireEvent.input(box, { target: { value: "here's" } });
+
+    expect(screen.queryByText("What's the config?")).toBeNull();
+    expect(screen.getByText("Here's the config.")).not.toBeNull();
+
+    await fireEvent.input(box, { target: { value: "" } });
+    expect(screen.getByText("What's the config?")).not.toBeNull();
+  });
+
+  it("a filter with no matches says so instead of showing an empty void", async () => {
+    stubFetch({
+      "/api/colleagues/feed": { entries: [ASK_ENTRY], truncated: false },
+    });
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("What's the config?");
+
+    const box = screen.getByLabelText("Filter conversations") as HTMLInputElement;
+    await fireEvent.input(box, { target: { value: "zzz-nothing" } });
+
+    expect(await screen.findByText("No lines match the filter.")).not.toBeNull();
+  });
+
+  it("counterpart chips scope the feed to one colleague and toggle back off", async () => {
+    const toRelay = {
+      ...ASK_ENTRY,
+      ts: "2026-08-19T11:00:00Z",
+      conversation_id: "r-1",
+      to: "relay",
+      text: "Relay, are you there?",
+    };
+    stubFetch({
+      "/api/colleagues/feed": {
+        entries: [ASK_ENTRY, REPLY_ENTRY, toRelay],
+        truncated: false,
+      },
+    });
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("Relay, are you there?");
+
+    // One chip per counterpart, derived from the feed (never the viewed agent).
+    const networkChip = screen.getByRole("button", { name: "network" });
+    expect(screen.getByRole("button", { name: "relay" })).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "ward" })).toBeNull();
+
+    await fireEvent.click(networkChip);
+    expect(screen.getByText("What's the config?")).not.toBeNull();
+    expect(screen.getByText("Here's the config.")).not.toBeNull();
+    expect(screen.queryByText("Relay, are you there?")).toBeNull();
+
+    // Clicking the active chip again clears the scope.
+    await fireEvent.click(networkChip);
+    expect(await screen.findByText("Relay, are you there?")).not.toBeNull();
+  });
+
+  it("chip scoping and the filter box compose (both must match)", async () => {
+    const toRelay = {
+      ...ASK_ENTRY,
+      ts: "2026-08-19T11:00:00Z",
+      conversation_id: "r-1",
+      to: "relay",
+      text: "What's the config, relay?",
+    };
+    stubFetch({
+      "/api/colleagues/feed": {
+        entries: [ASK_ENTRY, toRelay],
+        truncated: false,
+      },
+    });
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("What's the config, relay?");
+
+    await fireEvent.click(screen.getByRole("button", { name: "network" }));
+    const box = screen.getByLabelText("Filter conversations") as HTMLInputElement;
+    await fireEvent.input(box, { target: { value: "config" } });
+
+    expect(screen.getByText("What's the config?")).not.toBeNull();
+    expect(screen.queryByText("What's the config, relay?")).toBeNull();
+  });
+});

@@ -138,6 +138,120 @@
     const match = ts.match(/T(\d{2}:\d{2}:\d{2})/);
     return match ? match[1] : ts;
   }
+
+  /** Same philosophy for the calendar day: the string's own `YYYY-MM-DD`,
+   * never `Date`. The operator's report that "old conversations show up as
+   * if they happened today" was exactly this - the terminal rendered only
+   * `HH:MM:SS`, so day-old scrollback read as fresh. */
+  function dateOf(ts: string): string {
+    return ts.split("T")[0] ?? ts;
+  }
+
+  type FeedEntry = {
+    ts: string;
+    conversation_id: string;
+    from: string;
+    to: string;
+    role: "ask" | "reply";
+    text: string;
+  };
+
+  /** One rendered terminal line: a run of CONSECUTIVE identical entries
+   * (same direction, same role, same text) collapsed to its first
+   * occurrence plus a count. Repetition is real signal (an agent re-asking
+   * the same question), so it is badged, never hidden; non-consecutive
+   * repeats stay separate lines because the interleaving IS the story. */
+  type Line = { entry: FeedEntry; count: number; lastTs: string };
+
+  const lines = $derived.by((): Line[] => {
+    const out: Line[] = [];
+    for (const entry of entries as FeedEntry[]) {
+      const prev = out[out.length - 1];
+      if (
+        prev &&
+        prev.entry.role === entry.role &&
+        prev.entry.from === entry.from &&
+        prev.entry.to === entry.to &&
+        prev.entry.text === entry.text
+      ) {
+        prev.count += 1;
+        prev.lastTs = entry.ts;
+      } else {
+        out.push({ entry, count: 1, lastTs: entry.ts });
+      }
+    }
+    return out;
+  });
+
+  // The other side of each line, from the viewed agent's seat - the chip
+  // vocabulary. Derived from the FULL feed, so chips don't vanish while one
+  // of them is active.
+  const counterparts = $derived.by((): string[] => {
+    const seen = new Set<string>();
+    for (const entry of entries as FeedEntry[]) {
+      const other = entry.from === agentName ? entry.to : entry.from;
+      if (other && other !== agentName) {
+        seen.add(other);
+      }
+    }
+    return [...seen].sort();
+  });
+
+  let filterText = $state("");
+  let activeCounterpart = $state<string | null>(null);
+
+  function toggleCounterpart(name: string): void {
+    activeCounterpart = activeCounterpart === name ? null : name;
+  }
+
+  const visibleLines = $derived.by((): Line[] => {
+    const query = filterText.trim().toLowerCase();
+    return lines.filter((line) => {
+      if (
+        activeCounterpart !== null &&
+        line.entry.from !== activeCounterpart &&
+        line.entry.to !== activeCounterpart
+      ) {
+        return false;
+      }
+      if (query === "") {
+        return true;
+      }
+      return (
+        line.entry.text.toLowerCase().includes(query) ||
+        line.entry.from.toLowerCase().includes(query) ||
+        line.entry.to.toLowerCase().includes(query)
+      );
+    });
+  });
+
+  const filtering = $derived(filterText.trim() !== "" || activeCounterpart !== null);
+
+  /** The render list: visible lines with a dim date rule wherever the
+   * calendar day changes (and one before the very first line, so a screen
+   * of pure scrollback can never pass as today). */
+  type Row = { kind: "date"; date: string } | { kind: "line"; line: Line };
+
+  const rows = $derived.by((): Row[] => {
+    const out: Row[] = [];
+    let lastDate: string | null = null;
+    for (const line of visibleLines) {
+      const date = dateOf(line.entry.ts);
+      if (date !== lastDate) {
+        out.push({ kind: "date", date });
+        lastDate = date;
+      }
+      out.push({ kind: "line", line });
+    }
+    return out;
+  });
+
+  function lineTitle(line: Line): string {
+    if (line.count === 1) {
+      return line.entry.ts;
+    }
+    return `${line.entry.ts} to ${line.lastTs} (${line.count} times)`;
+  }
 </script>
 
 {#if !switchboardDisabled}
@@ -146,7 +260,31 @@
       <h2 id="colleague-terminal-heading" class="colleague-terminal__heading">
         Colleague conversations
       </h2>
+      {#if entries.length > 0}
+        <input
+          type="search"
+          class="colleague-terminal__filter"
+          placeholder="Filter…"
+          aria-label="Filter conversations"
+          bind:value={filterText}
+        />
+      {/if}
     </div>
+    {#if counterparts.length > 1}
+      <div class="colleague-terminal__chips" role="group" aria-label="Scope to one colleague">
+        {#each counterparts as name (name)}
+          <button
+            type="button"
+            class="colleague-terminal__chip"
+            class:colleague-terminal__chip--active={activeCounterpart === name}
+            aria-pressed={activeCounterpart === name}
+            onclick={() => toggleCounterpart(name)}
+          >
+            {name}
+          </button>
+        {/each}
+      </div>
+    {/if}
 
     {#if $feed.isPending}
       <p class="colleague-terminal__status">Loading…</p>
@@ -169,19 +307,39 @@
             <p class="colleague-terminal__line colleague-terminal__line--empty">
               No agent conversations yet.
             </p>
+          {:else if visibleLines.length === 0 && filtering}
+            <p class="colleague-terminal__line colleague-terminal__line--empty">
+              No lines match the filter.
+            </p>
           {:else}
-            {#each entries as entry (entry.conversation_id + ":" + entry.role)}
-              <div class="colleague-terminal__entry colleague-terminal__entry--{entry.role}">
-                <div class="colleague-terminal__prompt">
-                  <span class="colleague-terminal__time">{formatTime(entry.ts)}</span>
-                  <span class="colleague-terminal__direction colleague-terminal__direction--{entry.role}"
-                    >{entry.from} -&gt; {entry.to}</span
-                  >
+            {#each rows as row (row.kind === "date" ? "date:" + row.date : row.line.entry.conversation_id + ":" + row.line.entry.role)}
+              {#if row.kind === "date"}
+                <div class="colleague-terminal__date" role="separator">
+                  <span class="colleague-terminal__date-label">{row.date}</span>
                 </div>
-                <p class="colleague-terminal__text colleague-terminal__text--{entry.role}">
-                  {entry.text}
-                </p>
-              </div>
+              {:else}
+                {@const entry = row.line.entry}
+                <div class="colleague-terminal__entry colleague-terminal__entry--{entry.role}">
+                  <div class="colleague-terminal__prompt">
+                    <span class="colleague-terminal__time" title={lineTitle(row.line)}
+                      >{formatTime(entry.ts)}</span
+                    >
+                    <span class="colleague-terminal__direction colleague-terminal__direction--{entry.role}"
+                      >{entry.from} -&gt; {entry.to}</span
+                    >
+                    {#if row.line.count > 1}
+                      <span
+                        class="colleague-terminal__count"
+                        title="Repeated {row.line.count} times in a row"
+                        >x{row.line.count}</span
+                      >
+                    {/if}
+                  </div>
+                  <p class="colleague-terminal__text colleague-terminal__text--{entry.role}">
+                    {entry.text}
+                  </p>
+                </div>
+              {/if}
             {/each}
           {/if}
         </div>
@@ -246,6 +404,76 @@
     margin: 0;
     color: var(--muted);
     font-size: 0.85rem;
+  }
+
+  .colleague-terminal__filter {
+    min-width: 10rem;
+    padding: var(--space-2xs) var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+  }
+
+  .colleague-terminal__filter:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .colleague-terminal__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2xs);
+  }
+
+  .colleague-terminal__chip {
+    padding: 0.1rem var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+
+  .colleague-terminal__chip:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .colleague-terminal__chip--active {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--panel);
+  }
+
+  /* A dim horizontal rule with the date sitting in it -- day boundaries in
+     the scrollback, so old conversations can never pass as today. */
+  .colleague-terminal__date {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    color: var(--term-muted);
+    font-size: 0.75rem;
+    user-select: none;
+  }
+
+  .colleague-terminal__date::before,
+  .colleague-terminal__date::after {
+    content: "";
+    flex: 1;
+    border-top: 1px solid var(--term-border);
+  }
+
+  .colleague-terminal__count {
+    padding: 0 0.4rem;
+    border: 1px solid var(--term-border);
+    border-radius: 999px;
+    color: var(--term-muted);
+    font-size: 0.75rem;
   }
 
   .colleague-terminal__wrap {
