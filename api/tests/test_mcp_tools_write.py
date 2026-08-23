@@ -35,6 +35,7 @@ from sqlalchemy.orm import sessionmaker
 from kobo_api.clients import Clients
 from kobo_api.config import Config, GroupChoice, MCPConfig
 from kobo_api.main import create_app
+from kobo_api.marketplace import marketplace_repo
 from kobo_api.mcp import audit, rate_limit
 from kobo_api.mcp.server import build_mcp_server
 from kobo_api.models import (
@@ -321,7 +322,7 @@ def test_build_mcp_server_registers_the_six_write_tools_alongside_the_read_ones(
     } <= names
 
 
-def test_build_mcp_server_registers_exactly_the_thirteen_named_tools(
+def test_build_mcp_server_registers_exactly_the_fourteen_named_tools(
     session_factory, config, fake_storage
 ):
     """Coverage folded in from Task 8's review: the subset check just
@@ -330,14 +331,14 @@ def test_build_mcp_server_registers_exactly_the_thirteen_named_tools(
     their own file's tools with `<=`, deliberately, so neither file also
     has to track the other's count -- which means nothing anywhere pins
     the FULL registered set. This is that missing test: `build_mcp_server`
-    must register EXACTLY these thirteen tools, no more, no fewer,
+    must register EXACTLY these fourteen tools, no more, no fewer,
     matching the design's own "Tool surface" table
     (docs/superpowers/specs/2026-08-22-mcp-server-design.md) plus the MCP
-    marketplace wave's Task 2 pair (`kobo_list_skills`/`kobo_list_tools`)
-    and Task 3's `kobo_set_agent_skills`, one-for-one. A stray extra
-    registration (a copy-paste twin, a leftover experiment) or a dropped
-    one would fail this even though both narrower `<=` checks above would
-    stay green.
+    marketplace wave's Task 2 pair (`kobo_list_skills`/`kobo_list_tools`),
+    Task 3's `kobo_set_agent_skills`, and Task 4's `kobo_add_agent_tool`,
+    one-for-one. A stray extra registration (a copy-paste twin, a leftover
+    experiment) or a dropped one would fail this even though both narrower
+    `<=` checks above would stay green.
     """
     app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
 
@@ -358,6 +359,7 @@ def test_build_mcp_server_registers_exactly_the_thirteen_named_tools(
         "kobo_accept_invite",
         "kobo_wire_slack",
         "kobo_set_agent_skills",
+        "kobo_add_agent_tool",
     }
 
 
@@ -1308,3 +1310,153 @@ def test_set_agent_skills_audit_row_logs_tool_status_and_arguments(
     logged = json.loads(row.redacted_args)
     assert logged["agent"] == "ward"
     assert logged["add"] == [SKILL_ID]
+
+
+# --- kobo_add_agent_tool (MCP marketplace wave, Task 4) -----------------------
+
+TOOL_ID = "ptr-guard"
+
+# Satisfies kobo_api.tooling's own validator: a top-level `post_draft` hook,
+# no import beyond the standard library.
+TOOL_PY = (
+    '"""Sample marketplace tool."""\n'
+    "import re\n"
+    "def post_draft(draft):\n"
+    "    return re.sub(r'secret-[0-9]+', '[redacted]', draft)\n"
+)
+
+# Neither `pre_task` nor `post_draft` at module top level -- the exact shape
+# `kobo_api.tooling._check_entrypoint` rejects.
+BAD_HOOK_PY = "def helper():\n    return 1\n"
+
+
+def test_add_agent_tool_from_marketplace(session_factory, config, fake_storage):
+    """`tool_id` path: `fetch_tool_py` pulls the marketplace repo's own
+    `tools/<id>/<id>.py`, then the SAME upload route the inline path also
+    calls lands it on the agent's repo -- the response carries both the
+    resolved filename and the route's own commit sha."""
+    config.skills_repo = "org-skills"
+    filename = f"{TOOL_ID}.py"
+    fake_github = FakeGitHub(
+        tooling_source_files={
+            marketplace_repo(config): {f"tools/{TOOL_ID}/{filename}": TOOL_PY}
+        }
+    )
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp, "kobo_add_agent_tool", _ctx_for(OWNER_A_EMAIL), agent="ward", tool_id=TOOL_ID
+    )
+
+    assert result["filename"] == filename
+    assert result["sha"]
+    assert fake_github.pushed_file(f"bundle/tools/{filename}") == TOOL_PY
+
+
+def test_add_agent_tool_inline_content_bad_hook_is_tool_error(
+    session_factory, config, fake_storage
+):
+    """`filename`+`content` path hits the same upload route; content that
+    fails the tooling validator (here: no `pre_task`/`post_draft` hook)
+    surfaces as a `ToolError` carrying the validator's own message
+    verbatim -- proof the inline path reaches the same real gate the
+    marketplace path does, not a shortcut around it."""
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="tooling file defines neither pre_task nor post_draft"):
+        _call_tool(
+            mcp,
+            "kobo_add_agent_tool",
+            _ctx_for(OWNER_A_EMAIL),
+            agent="ward",
+            filename="no-hook.py",
+            content=BAD_HOOK_PY,
+        )
+
+
+def test_add_agent_tool_requires_exactly_one_source(session_factory, config, fake_storage):
+    """Neither source, both sources, or only half of the inline pair
+    (`filename` without `content`, or vice versa) -- all four shapes raise
+    the identical arbitration `ToolError`, before any route is ever
+    called."""
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="pass exactly one source"):
+        _call_tool(mcp, "kobo_add_agent_tool", _ctx_for(OWNER_A_EMAIL), agent="ward")
+
+    with pytest.raises(ToolError, match="pass exactly one source"):
+        _call_tool(
+            mcp,
+            "kobo_add_agent_tool",
+            _ctx_for(OWNER_A_EMAIL),
+            agent="ward",
+            tool_id=TOOL_ID,
+            filename="x.py",
+            content=TOOL_PY,
+        )
+
+    with pytest.raises(ToolError, match="pass exactly one source"):
+        _call_tool(
+            mcp, "kobo_add_agent_tool", _ctx_for(OWNER_A_EMAIL), agent="ward", filename="x.py"
+        )
+
+    with pytest.raises(ToolError, match="pass exactly one source"):
+        _call_tool(
+            mcp, "kobo_add_agent_tool", _ctx_for(OWNER_A_EMAIL), agent="ward", content=TOOL_PY
+        )
+
+
+def test_add_agent_tool_invisible_agent_not_found(session_factory, config, fake_storage):
+    _seed_agent(session_factory, name="hidden", created_by=OWNER_B_EMAIL, group_name=GROUP_B)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="agent not found"):
+        _call_tool(
+            mcp,
+            "kobo_add_agent_tool",
+            _ctx_for(MEMBER_A_EMAIL),
+            agent="hidden",
+            filename="ptr-guard.py",
+            content=TOOL_PY,
+        )
+
+
+def test_add_agent_tool_audit_row_redacts_content(session_factory, config, fake_storage):
+    """Mirrors `test_wire_slack_audit_row_redacts_both_tokens_but_not_the_
+    channel` -- `content` must join the audit redact set, the same way
+    `bot_token`/`app_token` already do, while `filename` (not sensitive)
+    logs as given."""
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    _call_tool(
+        mcp,
+        "kobo_add_agent_tool",
+        _ctx_for(OWNER_A_EMAIL),
+        agent="ward",
+        filename="ptr-guard.py",
+        content=TOOL_PY,
+    )
+
+    row = _last_audit_row(session_factory)
+    assert row is not None
+    assert row.tool == "kobo_add_agent_tool"
+    assert row.status == "ok"
+    logged = json.loads(row.redacted_args)
+    assert logged["content"] == "***REDACTED***"
+    assert logged["filename"] == "ptr-guard.py"
+    assert TOOL_PY not in row.redacted_args

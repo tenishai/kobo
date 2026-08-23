@@ -74,6 +74,7 @@ SENSITIVE_KEYS = {
     "token",
     "value",
     "secret_values",
+    "content",
 }
 
 _REDACTED = "***REDACTED***"

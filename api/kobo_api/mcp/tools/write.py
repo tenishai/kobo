@@ -1,7 +1,9 @@
 """kobo's MCP write tools: the original six from the MCP server arc (Task
 8) -- create_agent, teach, chat, request_colleague, accept_invite, and
-wire_slack -- plus `kobo_set_agent_skills`, added by the MCP marketplace
-wave's Task 3 to stage/remove marketplace catalog skills on an owned agent.
+wire_slack -- plus `kobo_set_agent_skills` (MCP marketplace wave Task 3,
+staging/removing marketplace catalog skills on an owned agent) and
+`kobo_add_agent_tool` (Task 4, staging a `bundle/tools/*.py` file on an
+owned agent, from the marketplace or given inline).
 
 THE REUSE MECHANISM -- this is the entire design of this module. Every
 tool below is a thin shim that calls the SAME route handler the room's own
@@ -177,6 +179,44 @@ committed them), and the `ToolError` a failing id raises is that id's own
 route message (e.g. `"the agent already carries a skill named '<id>'"` on
 a 409 collision, or either skill-scoped 404 above) -- always naming the
 id that failed, never a generic mid-loop failure.
+
+## `kobo_add_agent_tool`'s source arbitration
+
+Unlike every other tool in this module, `kobo_add_agent_tool` accepts TWO
+mutually exclusive ways to name the file it stages: a marketplace `tool_id`
+(fetched from the marketplace repo via `marketplace.fetch_tool_py`, Task
+1) or an inline `filename` plus its `content`. Exactly one shape is
+accepted -- `tool_id` alone, or `filename` together with `content` -- and
+this is checked FIRST, before any route or marketplace call, using this
+module's own gate (not table (A), since there is no route response yet to
+translate): `ToolError(_EXACTLY_ONE_SOURCE)` for neither, for both, or for
+only half of the inline pair (a `filename` with no `content`, or vice
+versa).
+
+The marketplace path resolves `(filename, content)` via `fetch_tool_py`
+before ever touching the agent: a `MarketplaceError` (an invalid `tool_id`
+shape, an unconfigured marketplace repo, or no such tool) becomes a
+`ToolError` with that message preserved verbatim, and a `ClientError` (the
+underlying clone's own transport failure) becomes the same sanitized
+`_MARKETPLACE_DID_NOT_ANSWER` wording `kobo_set_agent_skills`'s own
+catalog read already uses, imported rather than duplicated.
+
+Both paths, once `(filename, content)` is in hand, call the SAME upload
+route (`POST .../tooling`, `main.py:3366`) this module's own docstring
+mechanism describes -- the route owns the visibility/ownership/readiness
+gates, the tooling validator (size/UTF-8/non-empty/ast/import-allowlist/
+entrypoint hook), and the runtime-image re-pin, exactly once, for either
+source. The response is translated through the shared `_agent_route_result`
+table (A) -- the plain table every other agent-scoped tool here uses, NOT
+`_skill_route_result`'s one documented deviation, since the upload route
+carries no post-gate not-found case of its own to unfold. The route's own
+success body is just `{"sha": ...}`; this tool's own return value adds back
+`filename` (the caller's own `tool_id`-derived or given name, never
+something the route echoes) alongside it.
+
+`content` -- the raw source of a tool a caller is staging -- joins
+`kobo_api.mcp.audit.SENSITIVE_KEYS` the same way `kobo_wire_slack`'s
+`bot_token`/`app_token` already do: never stored raw in an audit row.
 """
 
 from __future__ import annotations
@@ -193,6 +233,7 @@ from mcp.types import ToolAnnotations
 from pydantic import ValidationError
 
 from kobo_api.clients import ClientError
+from kobo_api.marketplace import MarketplaceError, fetch_tool_py
 from kobo_api.mcp import authz
 from kobo_api.mcp.audit import audited
 from kobo_api.mcp.server import get_user_email
@@ -224,6 +265,10 @@ _SLACK_APP_NOT_CONNECTED = (
 # every other 404 in this module still does.
 _SKILL_NOT_FOUND_PREFIX = "skill not found:"
 _SKILL_GONE_FROM_CATALOG_PREFIX = "skill no longer in the catalog:"
+
+# `kobo_add_agent_tool`'s own source-arbitration gate -- see this module's
+# own docstring section for exactly which shapes this covers.
+_EXACTLY_ONE_SOURCE = "pass exactly one source: tool_id, or filename with content"
 
 _OK_STATUSES = (200, 201)
 
@@ -318,7 +363,7 @@ def _create_result(response: JSONResponse) -> dict:
 
 
 def register(mcp: FastMCP, app: Any) -> None:
-    """Registers this module's seven write tools on `mcp`. Every route this
+    """Registers this module's eight write tools on `mcp`. Every route this
     module calls is looked up exactly once, here, at registration time --
     never re-resolved per call.
     """
@@ -332,6 +377,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     save_slack_channels_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/slack/channels")
     add_skill_endpoint = _endpoint(app, "POST", "/api/agents/{name}/skills/catalog")
     remove_skill_endpoint = _endpoint(app, "DELETE", "/api/agents/{name}/skills/{skill_id}")
+    add_tool_endpoint = _endpoint(app, "POST", "/api/agents/{name}/tooling")
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     @audited("kobo_create_agent")
@@ -639,3 +685,58 @@ def register(mcp: FastMCP, app: Any) -> None:
             session.close()
 
         return {"added": added, "removed": removed}
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @audited("kobo_add_agent_tool")
+    async def kobo_add_agent_tool(
+        ctx: Context,
+        agent: str,
+        tool_id: str | None = None,
+        filename: str | None = None,
+        content: str | None = None,
+    ) -> dict:
+        """Stage a tool file on `agent`'s bundle/tools directory -- the same
+        upload the room's own Tooling tab drives. Pass exactly one source:
+        `tool_id` alone (pulls that tool's Python source from the org
+        marketplace catalog, see kobo_list_tools first) or `filename`
+        together with `content` (an inline upload of your own source). The
+        file must pass the room's tooling checks before it lands: a
+        top-level `pre_task` or `post_draft` hook, no import beyond the
+        standard library. You must own `agent` (or be a room operator), and
+        `agent` must be READY. Returns the staged file's name and the
+        commit sha that landed it.
+        """
+        from kobo_api.main import ToolingUploadPayload
+
+        inline_given = filename is not None or content is not None
+        if tool_id is not None:
+            if inline_given:
+                raise ToolError(_EXACTLY_ONE_SOURCE)
+        elif filename is None or content is None:
+            raise ToolError(_EXACTLY_ONE_SOURCE)
+
+        email = get_user_email(ctx)
+        req = authz.room_request(app, email)
+        session = app.state.session_factory()
+        try:
+            if tool_id is not None:
+                clients = app.state.clients
+                cfg = app.state.config
+                try:
+                    filename, content = fetch_tool_py(clients.github, cfg, tool_id)
+                except MarketplaceError as exc:
+                    raise ToolError(str(exc)) from exc
+                except ClientError as exc:
+                    raise ToolError(_MARKETPLACE_DID_NOT_ANSWER) from exc
+
+            response = add_tool_endpoint(
+                name=agent,
+                payload=ToolingUploadPayload(filename=filename, content=content),
+                request=req,
+                session=session,
+            )
+            body = _agent_route_result(response)
+        finally:
+            session.close()
+
+        return {"filename": filename, "sha": body.get("sha")}
