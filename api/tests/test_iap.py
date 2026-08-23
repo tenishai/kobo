@@ -530,3 +530,25 @@ def test_enabled_mcp_lookalike_roots_still_401(session_factory, iap_config):
         resp = test_client.get(lookalike)
         assert resp.status_code == 401, f"{lookalike} should be IAP-gated"
         assert resp.json() == UNAUTHORIZED_BODY
+
+
+def test_is_exempt_normalizes_before_matching_so_traversal_cannot_forge_exemption():
+    """Defense in depth (IAP-exemption review): a percent-decoded traversal
+    reaches the middleware as a literal, un-collapsed dotted path. It must be
+    canonicalized before the prefix compare, so it cannot borrow an exempt
+    root's prefix to slip an /api target past IAP."""
+    # decoded %2f traversals that START with an exempt root but RESOLVE to /api
+    for forged in (
+        "/mcp/../../api/agents",
+        "/mcp/../api/agents",
+        "/oauth/../api/agents",
+        "/.well-known/../api/agents",
+        "//mcp/../api/agents",       # leading double-slash collapsed first
+    ):
+        assert _is_exempt(forged) is False, forged
+    # and the reverse: a dotted path that RESOLVES into an exempt root is
+    # exempt (it genuinely targets the real endpoint)
+    assert _is_exempt("/api/agents/../../oauth/authorize") is True
+    # trailing slash still exempt after normpath strips it
+    assert _is_exempt("/mcp/") is True
+    assert _is_exempt("/oauth/") is True

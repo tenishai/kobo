@@ -19,6 +19,7 @@ just `/api/*`.
 from __future__ import annotations
 
 import logging
+import posixpath
 import threading
 import time
 from collections.abc import Callable
@@ -53,7 +54,23 @@ EXEMPT_PATHS = frozenset({"/api/healthz"})
 EXEMPT_PREFIXES = ("/mcp", "/oauth", "/.well-known")
 
 
+def _normalize(path: str) -> str:
+    """Canonicalize before any exemption compare: collapse a leading run of
+    slashes to one, then resolve `.` / `..` segments (`posixpath.normpath`).
+    Without this, a percent-decoded traversal like `/mcp/..%2f..%2fapi/agents`
+    -- which reaches the middleware as the literal, un-collapsed string
+    `/mcp/../../api/agents` -- would pass a raw `startswith("/mcp/")` and be
+    treated as exempt. Normalizing turns it into `/api/agents` so the prefix
+    check sees the real target, making exemption independent of routing
+    topology (defense in depth, per the arc's IAP-exemption review). normpath
+    strips a trailing slash, so `/mcp/` canonicalizes to `/mcp`, still exempt
+    by the exact-equality arm below."""
+    collapsed = "/" + path.lstrip("/")
+    return posixpath.normpath(collapsed)
+
+
 def _is_exempt(path: str) -> bool:
+    path = _normalize(path)
     if path in EXEMPT_PATHS:
         return True
     return any(path == p or path.startswith(p + "/") for p in EXEMPT_PREFIXES)
