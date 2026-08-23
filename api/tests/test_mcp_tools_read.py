@@ -746,9 +746,23 @@ def _marketplace_storage(skills: dict, *, bucket: str = SKILLS_BUCKET) -> FakeSt
     return FakeStorage(buckets={bucket: {"index.json": (_marketplace_index_bytes(skills), {})}})
 
 
-def test_list_skills_returns_catalog_entries(session_factory, config):
+def test_list_skills_returns_catalog_entries_sorted_by_id(session_factory, config):
+    # Seeded in reverse-of-sorted insertion order ("zzz-tail-skill" before
+    # "ptr-primer") -- since json round-trips a dict in insertion order,
+    # an unsorted implementation would return them in THIS order, not
+    # sorted order. Pins the review-flagged sort-order property (fix
+    # round 1) alongside the brief's original literal entry-shape
+    # assertion for "ptr-primer".
     storage = _marketplace_storage(
         {
+            "zzz-tail-skill": {
+                "name": "zzz-tail-skill",
+                "version": "2.0.0",
+                "description": "z",
+                "when_to_use": "zz",
+                "tags": ["ops"],
+                "owner": "growth",
+            },
             "ptr-primer": {
                 "name": "ptr-primer",
                 "version": "1.0.0",
@@ -756,7 +770,7 @@ def test_list_skills_returns_catalog_entries(session_factory, config):
                 "when_to_use": "w",
                 "tags": ["net"],
                 "owner": "sre",
-            }
+            },
         }
     )
     cfg = config.model_copy(update={"skills_bucket": SKILLS_BUCKET})
@@ -765,8 +779,8 @@ def test_list_skills_returns_catalog_entries(session_factory, config):
 
     result = _call_tool(mcp, "kobo_list_skills", _ctx_for(MEMBER_A_EMAIL))
 
-    entry = result["result"][0]
-    assert entry == {
+    assert [e["id"] for e in result["result"]] == ["ptr-primer", "zzz-tail-skill"]
+    assert result["result"][0] == {
         "id": "ptr-primer",
         "description": "d",
         "when_to_use": "w",
@@ -790,6 +804,35 @@ def test_list_skills_raises_tool_error_when_the_catalog_is_unavailable(session_f
         _call_tool(mcp, "kobo_list_skills", _ctx_for(MEMBER_A_EMAIL))
 
 
+def test_list_skills_raises_tool_error_when_the_bucket_is_not_configured(session_factory, config):
+    # config.skills_bucket defaults to "" (absent = feature off, same
+    # convention as skills_repo) -- distinct from the above "configured
+    # but no marketplace-dialect index published yet" case, and worth its
+    # own message (fix round 1, minor 2).
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=FakeStorage())
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="marketplace skills bucket is not configured"):
+        _call_tool(mcp, "kobo_list_skills", _ctx_for(MEMBER_A_EMAIL))
+
+
+def test_list_skills_raises_tool_error_on_a_storage_transport_failure(session_factory, config):
+    # Scenario A from the review: a GCS 403 (or any other transport-level
+    # failure) on the skills bucket must never leak FakeStorage/HttpxStorage
+    # Client's own internal call-signature/bucket-name string to the MCP
+    # client -- it collapses to the same sanitized message kobo_feed's
+    # switchboard-unreachable path already uses.
+    storage = FakeStorage(read_error="read_bytes('skills-bucket') failed (403)")
+    cfg = config.model_copy(update={"skills_bucket": SKILLS_BUCKET})
+    app = _app(session_factory, cfg, groups_resolver=_resolver(), storage=storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="did not answer") as exc_info:
+        _call_tool(mcp, "kobo_list_skills", _ctx_for(MEMBER_A_EMAIL))
+    assert "403" not in str(exc_info.value)
+    assert SKILLS_BUCKET not in str(exc_info.value)
+
+
 def test_list_tools_reads_the_marketplace_tree(session_factory, config):
     cfg = config.model_copy(update={"skills_repo": "org-skills"})
     github = FakeGitHub(clone_tree={"tools/baseline-leakguard/TOOL.md": TOOL_MD})
@@ -799,6 +842,21 @@ def test_list_tools_reads_the_marketplace_tree(session_factory, config):
     result = _call_tool(mcp, "kobo_list_tools", _ctx_for(MEMBER_A_EMAIL))
 
     assert [t["id"] for t in result["result"]] == ["baseline-leakguard"]
+
+
+def test_list_tools_raises_tool_error_on_a_github_transport_failure(session_factory, config):
+    # Scenario B from the review: a failed `gh repo clone` (a renamed repo,
+    # an expired token) must never leak the private repo name + gh's own
+    # stderr to the MCP client -- same sanitized-message discipline as the
+    # storage-side test just above.
+    cfg = config.model_copy(update={"skills_repo": "org-skills"})
+    github = FakeGitHub(clone_error="gh: repo not found (acme/org-skills), or token expired")
+    app = _app(session_factory, cfg, groups_resolver=_resolver(), github=github)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="did not answer") as exc_info:
+        _call_tool(mcp, "kobo_list_tools", _ctx_for(MEMBER_A_EMAIL))
+    assert "org-skills" not in str(exc_info.value)
 
 
 def test_list_tools_raises_tool_error_when_the_repo_is_not_configured(session_factory, config):
