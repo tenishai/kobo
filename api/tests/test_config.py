@@ -546,12 +546,14 @@ def test_mcp_config_overridable_via_yaml(tmp_path):
         "mcp:\n"
         "  oauth_client_id: some-client-id.apps.example.com\n"
         "  workspace_domain: example.com\n"
+        "  issuer_base_url: https://kobo.example.org\n"
     )
 
     config = Config.load(yaml_path)
 
     assert config.mcp.oauth_client_id == "some-client-id.apps.example.com"
     assert config.mcp.workspace_domain == "example.com"
+    assert config.mcp.issuer_base_url == "https://kobo.example.org"
     # Fields left out of the overlay still fall back to MCPConfig's own
     # defaults, same as every other overlay test in this file.
     assert config.mcp.oauth_client_secret_env == "KOBO_MCP_GOOGLE_CLIENT_SECRET"
@@ -560,7 +562,11 @@ def test_mcp_config_overridable_via_yaml(tmp_path):
 
 def test_mcp_enabled_true_when_oauth_client_id_set():
     config = Config(
-        mcp=MCPConfig(oauth_client_id="some-client-id", workspace_domain="example.com")
+        mcp=MCPConfig(
+            oauth_client_id="some-client-id",
+            workspace_domain="example.com",
+            issuer_base_url="https://kobo.example.org",
+        )
     )
     assert config.mcp_enabled is True
 
@@ -577,6 +583,43 @@ def test_mcp_enabled_requires_workspace_domain():
         "mcp.oauth_client_id is set but mcp.workspace_domain is empty; "
         "the domain check is the org gate on the MCP path"
     ) in message
+
+
+# --- mcp.issuer_base_url must be set when enabled (fix round 1) --------------
+
+
+def test_mcp_enabled_requires_issuer_base_url():
+    """Same fail-closed posture as test_mcp_enabled_requires_workspace_domain
+    above -- an enabled MCP server left with no issuer_base_url boots
+    silently serving issuer:"" in the well-known documents (non-conformant
+    for MCP clients) and falls back to trusting the incoming request's Host
+    header to build the google redirect_uri
+    (kobo_api.mcp.oauth_as._google_redirect_uri) -- fine for local
+    dev/tests, not for a real deployment."""
+    with pytest.raises(ValidationError) as exc_info:
+        Config(
+            mcp=MCPConfig(oauth_client_id="some-client-id", workspace_domain="example.com")
+        )
+
+    message = str(exc_info.value)
+    assert "mcp.oauth_client_id is set but mcp.issuer_base_url is empty" in message
+
+
+def test_mcp_enabled_with_issuer_base_url_set_constructs_fine():
+    # Sanity check the validator above isn't overreaching: all three fields
+    # set together must still construct, same "still constructs" check
+    # test_groups_without_a_shared_entry_construct_fine runs for its own
+    # validator.
+    config = Config(
+        mcp=MCPConfig(
+            oauth_client_id="some-client-id",
+            workspace_domain="example.com",
+            issuer_base_url="https://kobo.example.org",
+        )
+    )
+
+    assert config.mcp_enabled is True
+    assert config.mcp.issuer_base_url == "https://kobo.example.org"
 
 
 def test_config_example_yaml_documents_avatar_keys():

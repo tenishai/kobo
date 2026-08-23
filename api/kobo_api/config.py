@@ -145,7 +145,11 @@ class MCPConfig(BaseModel):
     # callback redirect_uri falls back to the incoming request's own base
     # URL -- both fine for local dev/tests, neither sufficient for a real
     # deployment, which must set this before Google's own redirect_uri
-    # allowlist can ever be satisfied.
+    # allowlist can ever be satisfied. Required the moment `oauth_client_id`
+    # is set (see the `Config` validator below,
+    # `_mcp_requires_an_issuer_base_url_when_enabled`, for why leaving it
+    # empty on an enabled server fails loudly at construction instead of
+    # booting half-configured).
     issuer_base_url: str = ""
 
 
@@ -413,6 +417,27 @@ class Config(BaseModel):
             raise ValueError(
                 "mcp.oauth_client_id is set but mcp.workspace_domain is "
                 "empty; the domain check is the org gate on the MCP path"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _mcp_requires_an_issuer_base_url_when_enabled(self) -> Config:
+        """An enabled MCP server (`mcp.oauth_client_id` set) must also set
+        `mcp.issuer_base_url` -- same fail-closed posture as
+        `_mcp_requires_a_workspace_domain_when_enabled` just above: a server
+        left with this field empty boots silently serving `issuer: ""` in
+        the well-known documents (non-conformant for MCP clients) and falls
+        back to trusting the incoming request's own Host header to build
+        the Google callback `redirect_uri`
+        (`kobo_api.mcp.oauth_as._google_redirect_uri`) -- fine for local
+        dev/tests, not a valid state for a real deployment, so construction
+        fails loudly instead of booting half-configured.
+        """
+        if self.mcp.oauth_client_id and not self.mcp.issuer_base_url:
+            raise ValueError(
+                "mcp.oauth_client_id is set but mcp.issuer_base_url is "
+                "empty; issuer_base_url is required for the well-known "
+                "documents and the google redirect_uri once mcp is enabled"
             )
         return self
 

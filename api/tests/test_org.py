@@ -329,16 +329,20 @@ def test_cabal_keys_round_trip():
 def test_mcp_keys_round_trip():
     """mcp (MCP server arc, Task 1) is org-scoped exactly like the other
     feature-gating knobs above -- a client's kobo-config repo points its
-    own MCP server at its own Google OAuth app and Workspace domain. Only
-    the two fields a real client sets are given here; MCPConfig's own
-    defaults fill in the rest on re-validation (mirrors admin_groups/groups
-    re-validation the same way)."""
+    own MCP server at its own Google OAuth app, Workspace domain, and
+    externally-reachable issuer_base_url. Only the fields a real client
+    sets are given here; MCPConfig's own defaults fill in the rest on
+    re-validation (mirrors admin_groups/groups re-validation the same way).
+    issuer_base_url is included (not just oauth_client_id/workspace_domain)
+    because Config._mcp_requires_an_issuer_base_url_when_enabled (fix round
+    1) now fails construction without it once oauth_client_id is set."""
     local = Config(org_repo=ORG_REPO)
     github = FakeGitHub(
         org_yaml=(
             "mcp:\n"
             "  oauth_client_id: some-client-id.apps.example.com\n"
             "  workspace_domain: example.com\n"
+            "  issuer_base_url: https://kobo.example.org\n"
         )
     )
 
@@ -347,6 +351,7 @@ def test_mcp_keys_round_trip():
     assert org.wired is True
     assert merged.mcp.oauth_client_id == "some-client-id.apps.example.com"
     assert merged.mcp.workspace_domain == "example.com"
+    assert merged.mcp.issuer_base_url == "https://kobo.example.org"
     assert merged.mcp.oauth_client_secret_env == "KOBO_MCP_GOOGLE_CLIENT_SECRET"
     assert merged.mcp.jwt_key_env == "KOBO_MCP_JWT_KEY"
     assert merged.mcp_enabled is True

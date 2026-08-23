@@ -143,10 +143,18 @@ def _redirect_uri_allowed(uri: str) -> bool:
     if uri == _CLAUDE_REDIRECT_URI:
         return True
     try:
-        host = urlparse(uri).hostname
+        parsed = urlparse(uri)
     except ValueError:
         return False
-    return host in ("localhost", "127.0.0.1")
+    # Restricted to http/https (fix round 1, defense in depth): hostname
+    # alone isn't enough -- a file:// or custom-scheme URI can set its host
+    # to "localhost" too, and that must not ride this branch. Matches this
+    # module's own docstring above, which already promises "any port, http
+    # or https" for this branch.
+    return parsed.scheme in ("http", "https") and parsed.hostname in (
+        "localhost",
+        "127.0.0.1",
+    )
 
 
 # --- PKCE (S256 only) -------------------------------------------------------

@@ -37,6 +37,14 @@ from kobo_api.models import Base, MCPRefreshToken
 CLIENT_ID = "mcp-test-client"
 WORKSPACE_DOMAIN = "example.com"
 EMAIL = "person@example.com"
+# fix round 1: mcp.issuer_base_url is now required the moment
+# mcp.oauth_client_id is set (Config._mcp_requires_an_issuer_base_url_when_
+# enabled), so the default `config` fixture below must set it too, same as
+# it already sets workspace_domain. test_well_known_uses_configured_issuer_
+# base_url_when_set below still separately exercises a different value to
+# pin the "well-known docs use the configured issuer" behavior; this one
+# just needs to be non-empty.
+ISSUER_BASE_URL = "https://kobo-test.example.org"
 
 CLAUDE_REDIRECT_URI = "https://claude.ai/api/mcp/auth_callback"
 DISALLOWED_REDIRECT_URI = "https://not-on-the-allowlist.example.net/callback"
@@ -87,7 +95,13 @@ def session_factory(tmp_path):
 
 @pytest.fixture
 def config():
-    return Config(mcp=MCPConfig(oauth_client_id=CLIENT_ID, workspace_domain=WORKSPACE_DOMAIN))
+    return Config(
+        mcp=MCPConfig(
+            oauth_client_id=CLIENT_ID,
+            workspace_domain=WORKSPACE_DOMAIN,
+            issuer_base_url=ISSUER_BASE_URL,
+        )
+    )
 
 
 @pytest.fixture
@@ -297,6 +311,34 @@ def test_localhost_and_loopback_redirect_uris_are_allowed(client, redirect_uri):
     resp = _authorize(client, challenge=challenge, redirect_uri=redirect_uri)
 
     assert resp.status_code == 302
+
+
+# --- localhost/127.0.0.1 branch is scheme-restricted (fix round 1) ---------
+#
+# `_redirect_uri_allowed` used to accept the localhost/127.0.0.1 branch on
+# hostname alone, so a `file://` or custom-scheme URI with a "localhost"
+# host rode the same allowlist branch a real http/https redirect does. The
+# module's own docstring already promised "any port, http or https" -- this
+# just makes the code match that promise.
+
+
+@pytest.mark.parametrize(
+    ("redirect_uri", "expected_status"),
+    [
+        ("file://localhost/etc/passwd", 400),
+        ("custom-scheme://localhost/cb", 400),
+        ("http://localhost:3000/cb", 302),
+        ("https://127.0.0.1/cb", 302),
+    ],
+)
+def test_redirect_uri_localhost_branch_requires_http_or_https_scheme(
+    client, redirect_uri, expected_status
+):
+    _, challenge = _pkce_pair()
+
+    resp = _authorize(client, challenge=challenge, redirect_uri=redirect_uri)
+
+    assert resp.status_code == expected_status
 
 
 # --- /oauth/google/callback: hd hard-check, tampered state -----------------
