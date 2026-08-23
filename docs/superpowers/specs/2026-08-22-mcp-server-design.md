@@ -1,7 +1,7 @@
 # Kobo MCP Server — design
 
 **Date:** 2026-08-22
-**Status:** approved-pending-review
+**Status:** implemented
 **Arc:** the room's tools, reachable from any MCP client (claude.ai connectors, Claude Code) as the signed-in user
 
 ## Goal

@@ -63,6 +63,12 @@ Kobo is opinionated by design:
 - **Slack**: self-service wiring with a manifest ceremony — the agent answers mentions in
   threads, with long replies chunked at safe boundaries.
 - **Faces**: a generated portrait per agent, or upload your own.
+- **MCP**: the room's tools are reachable from MCP clients (claude.ai connectors, Claude Code)
+  as the signed-in user, over the room's own OAuth — no service account, no second permission
+  system. Every call resolves the same visibility, ownership, and admin as the UI: check who
+  you're signed in as, list and inspect the agents you can see, read an agent's conversation
+  feed, create an agent, teach it, chat with it, run the colleague-invite handshake, and wire
+  it to Slack. Off until the org turns it on.
 
 ## Part of a larger platform
 
