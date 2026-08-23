@@ -37,6 +37,27 @@ IAP_JWKS_URL = "https://www.gstatic.com/iap/verify/public_key-jwk"
 ASSERTION_HEADER = "x-goog-iap-jwt-assertion"
 EXEMPT_PATHS = frozenset({"/api/healthz"})
 
+# Path ROOTS the app-wide IAP assertion check never applies to, because they
+# carry their OWN authentication (the MCP server arc): kobo's OAuth 2.1 server
+# (/oauth/*, Google-OIDC + Workspace-domain + PKCE) and the MCP surface it
+# guards (/mcp, bearer-token-verified per call), plus the public OAuth
+# discovery documents (/.well-known/*, unauthenticated by RFC). The deploy's
+# ingress split serves these roots off a no-IAP backend, so a real MCP client
+# reaches the pod with NO IAP assertion by design -- without this exemption
+# the app's own middleware would 401 them before routing, defeating the split.
+# Safe when the MCP server is flag-OFF too: those roots then have no routes,
+# so an exempted request simply 404s (leaks nothing) instead of 401ing.
+# Matched on a segment boundary (exact, or prefix + "/") so "/oauth" never
+# exempts a lookalike like "/oauthx" -- the same boundary discipline the
+# OAuth redirect-URI allowlist uses.
+EXEMPT_PREFIXES = ("/mcp", "/oauth", "/.well-known")
+
+
+def _is_exempt(path: str) -> bool:
+    if path in EXEMPT_PATHS:
+        return True
+    return any(path == p or path.startswith(p + "/") for p in EXEMPT_PREFIXES)
+
 # IAP rotates its signing keys infrequently; caching for this long avoids a
 # JWKS round trip on every request while still picking up a rotation well
 # inside any plausible rotation window. A `kid` miss (the key genuinely
@@ -170,8 +191,9 @@ class IapVerifier:
 
 
 class IapMiddleware(BaseHTTPMiddleware):
-    """Rejects, with a 401, any request whose path isn't in `EXEMPT_PATHS`
-    and doesn't carry a valid `ASSERTION_HEADER` — registered by `create_app`
+    """Rejects, with a 401, any request whose path isn't exempt (`_is_exempt`:
+    `EXEMPT_PATHS` exactly, or under an `EXEMPT_PREFIXES` root that carries its
+    own auth) and doesn't carry a valid `ASSERTION_HEADER` — registered by `create_app`
     (`kobo_api.main`) only when `Config.iap_audience` is non-empty. On
     success, stashes the verified `email` claim at `request.state.iap_email`
     for downstream use (future team mapping).
@@ -188,7 +210,7 @@ class IapMiddleware(BaseHTTPMiddleware):
         self._verifier = verifier
 
     async def dispatch(self, request: Request, call_next):
-        if request.url.path in EXEMPT_PATHS:
+        if _is_exempt(request.url.path):
             return await call_next(request)
 
         token = request.headers.get(ASSERTION_HEADER)

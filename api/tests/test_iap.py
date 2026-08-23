@@ -22,10 +22,12 @@ from fastapi.testclient import TestClient
 from kobo_api.iap import (
     ASSERTION_HEADER,
     EXEMPT_PATHS,
+    EXEMPT_PREFIXES,
     IAP_ISSUER,
     UNAUTHORIZED_BODY,
     IapError,
     IapVerifier,
+    _is_exempt,
 )
 from kobo_api.main import create_app
 
@@ -458,3 +460,73 @@ def test_enabled_ui_dist_paths_require_the_header_too(session_factory, iap_confi
     assert root_with_header.status_code == 200
     assert root_with_header.text == "<html>SPA-MARKER</html>"
     assert assets_with_header.status_code == 200
+
+
+# --- MCP-surface IAP exemption (MCP server arc rollout) --------------------
+# The /mcp, /oauth/*, /.well-known/* roots carry their OWN auth (kobo's OAuth
+# 2.1 server + the MCP bearer-token verifier), served off a no-IAP ingress
+# backend. The app-wide IAP middleware must let them through, or a real MCP
+# client -- arriving with no IAP assertion by design -- is 401'd by kobo
+# itself before routing. Boundary-matched so a lookalike root is NOT exempt.
+
+
+def test_is_exempt_covers_the_mcp_roots_and_healthz_but_not_lookalikes():
+    assert EXEMPT_PREFIXES == ("/mcp", "/oauth", "/.well-known")
+    # exact healthz (unchanged behavior)
+    assert _is_exempt("/api/healthz") is True
+    # the MCP roots, exact and as prefixes
+    for exempt in (
+        "/mcp",
+        "/mcp/",
+        "/oauth",
+        "/oauth/authorize",
+        "/oauth/token",
+        "/oauth/google/callback",
+        "/.well-known/oauth-authorization-server",
+        "/.well-known/oauth-protected-resource",
+    ):
+        assert _is_exempt(exempt) is True, exempt
+    # lookalikes on a non-segment boundary must NOT be exempt
+    for guarded in (
+        "/mcpevil",
+        "/oauthx",
+        "/oauth-something",
+        "/.well-knownx",
+        "/api/agents",
+        "/api/agents/x/teach",
+        "/",
+    ):
+        assert _is_exempt(guarded) is False, guarded
+
+
+def test_enabled_mcp_roots_are_not_401_without_a_header(session_factory, iap_config):
+    """With IAP enabled and NO assertion header, the MCP-surface roots pass
+    the middleware (reach routing) instead of 401ing. MCP is flag-off in this
+    config, so they 404 at routing -- the point is they are not blocked by the
+    identity proxy, unlike every /api route."""
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    for root in (
+        "/oauth/authorize",
+        "/mcp",
+        "/.well-known/oauth-authorization-server",
+    ):
+        resp = test_client.get(root)
+        assert resp.status_code != 401, f"{root} was 401'd by IAP"
+
+
+def test_enabled_mcp_lookalike_roots_still_401(session_factory, iap_config):
+    """The boundary discipline end to end: a path that merely starts with an
+    exempt root's characters but not on a segment boundary is still IAP-gated."""
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    for lookalike in ("/oauthx", "/mcpevil", "/.well-knownx"):
+        resp = test_client.get(lookalike)
+        assert resp.status_code == 401, f"{lookalike} should be IAP-gated"
+        assert resp.json() == UNAUTHORIZED_BODY
