@@ -930,8 +930,22 @@ def _flatten_conversation_entries(detail: dict) -> list[dict]:
 
     status = result.get("status")
     reply_text = _task_message_text(status.get("message")) if isinstance(status, dict) else None
+    # The ask is the caller's QUESTION -- the last message with role "user",
+    # NOT history[-1]. A completed daedalus conversation persists the FULL
+    # transcript ([user question, agent reply, ...]), so history[-1] is the
+    # AGENT's reply; taking it as the ask rendered the answer text on the
+    # outgoing line (the "ward told gemini-one what a PSC is" display bug).
+    # The last user-role message is the ask for every shape: cabal's builtin
+    # EchoAgent (history = [user] alone) and real daedalus agents alike, and
+    # for a multi-turn chat it pairs the most recent question with the most
+    # recent reply (status.message).
     history = result.get("history")
-    ask_text = _task_message_text(history[-1]) if isinstance(history, list) and history else None
+    ask_msg = (
+        next((m for m in reversed(history) if isinstance(m, dict) and m.get("role") == "user"), None)
+        if isinstance(history, list)
+        else None
+    )
+    ask_text = _task_message_text(ask_msg) if ask_msg is not None else None
 
     entries: list[dict] = []
     if ask_text is not None and created_at is not None:

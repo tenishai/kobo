@@ -571,17 +571,25 @@ def _seed_agent(session_factory, config, name: str = "ward", **kwargs) -> None:
 
 
 def _task_result(*, ask_text: str, reply_text: str) -> dict:
-    """A completed a2a Task body shaped exactly like the switchboard's own
-    persisted `result_json` (verified against `cabal.core.broker.
-    bookkeeping.Bookkeeper.on_dispatch_success` + `cabal.agents.echo.
-    EchoAgent`): `status.message` is the reply, `history[-1]` is the ask."""
+    """A completed a2a Task body shaped like a REAL daedalus agent's persisted
+    `result_json` (the shape `daedalus.transports.a2a.task_to_a2a` emits and
+    the switchboard stores): `status.message` is the reply, and `history`
+    holds the FULL transcript -- the user's question AND the agent's reply,
+    in order. NOTE the earlier fixture modeled only cabal's builtin EchoAgent
+    (history = [user] alone), where `history[-1]` was the ask; every real
+    colleague (a daedalus agent) persists [user, agent], so `history[-1]` is
+    the ANSWER, not the ask. The feed must take the ask from the user-role
+    message, not blindly from `history[-1]`."""
     return {
         "id": "irrelevant-to-the-feed",
         "status": {
             "state": "completed",
             "message": {"role": "agent", "parts": [{"kind": "text", "text": reply_text}]},
         },
-        "history": [{"role": "user", "parts": [{"kind": "text", "text": ask_text}]}],
+        "history": [
+            {"role": "user", "parts": [{"kind": "text", "text": ask_text}]},
+            {"role": "agent", "parts": [{"kind": "text", "text": reply_text}]},
+        ],
     }
 
 
@@ -701,6 +709,81 @@ def test_feed_flattens_one_conversation_into_ask_then_reply(
         {"limit": 200, "target": "ward", "caller": None},
         {"limit": 200, "target": None, "caller": "agent:ward"},
     ]
+
+
+def test_feed_ask_line_shows_the_question_not_the_answer_when_history_holds_both(
+    session_factory, config, monkeypatch
+):
+    """Regression: the 'ward told gemini-one what a PSC is' display bug. A
+    completed daedalus conversation's `history` ends with the AGENT reply, so
+    deriving the ask from `history[-1]` put the answer on the outgoing (ask)
+    line. Here the ask is a short question and the reply is a long, distinct
+    answer -- the ask entry MUST carry the question, never the answer text."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    _seed_agent(session_factory, cfg)
+    question = "what a psc is"
+    answer = "PSC stands for Private Service Connect, a Google Cloud networking feature..."
+    summaries = [_feed_summary("t-psc", target="gemini-one", caller="agent:ward")]
+    detail = _feed_detail(
+        "t-psc",
+        target="gemini-one",
+        caller="agent:ward",
+        created_at="2026-08-23T04:30:40Z",
+        updated_at="2026-08-23T04:30:46Z",
+        ask_text=question,
+        reply_text=answer,
+    )
+    fake_cabal = FakeCabal(conversations_result=summaries, conversation_results={"t-psc": detail})
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    entries = client.get("/api/colleagues/feed", params={"agent": "ward"}).json()["entries"]
+
+    ask = next(e for e in entries if e["role"] == "ask")
+    reply = next(e for e in entries if e["role"] == "reply")
+    assert ask["from"] == "ward" and ask["to"] == "gemini-one"
+    assert ask["text"] == question  # the QUESTION, not the answer
+    assert answer not in ask["text"]  # the answer never bleeds onto the ask line
+    assert reply["from"] == "gemini-one" and reply["to"] == "ward"
+    assert reply["text"] == answer
+
+
+def test_feed_ask_survives_the_echo_agent_shape_history_user_only(
+    session_factory, config, monkeypatch
+):
+    """The fix must not regress cabal's builtin EchoAgent shape, whose
+    persisted `history` is the user message ALONE (no agent turn). The last
+    user-role message is still the ask; the reply comes from status.message."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    _seed_agent(session_factory, cfg)
+    summaries = [_feed_summary("t-echo", target="echo", caller="agent:ward")]
+    detail = {
+        "conversation": {
+            "task_id": "t-echo",
+            "target_agent": "echo",
+            "caller_agent": "agent:ward",
+            "created_at": "2026-08-23T05:00:00Z",
+            "updated_at": "2026-08-23T05:00:01Z",
+            "result": {
+                "status": {
+                    "state": "completed",
+                    "message": {"role": "agent", "parts": [{"kind": "text", "text": "echo: hi"}]},
+                },
+                # EchoAgent shape: history is the user message ALONE.
+                "history": [{"role": "user", "parts": [{"kind": "text", "text": "hi"}]}],
+            },
+        },
+        "events": [],
+    }
+    fake_cabal = FakeCabal(conversations_result=summaries, conversation_results={"t-echo": detail})
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    entries = client.get("/api/colleagues/feed", params={"agent": "ward"}).json()["entries"]
+    ask = next(e for e in entries if e["role"] == "ask")
+    assert ask["text"] == "hi"
+    reply = next(e for e in entries if e["role"] == "reply")
+    assert reply["text"] == "echo: hi"
 
 
 def test_feed_strips_a_raw_no_prefix_caller_unchanged(session_factory, config, monkeypatch):

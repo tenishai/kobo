@@ -505,13 +505,20 @@ def test_get_agent_raises_the_identical_error_for_an_invisible_agent_no_existenc
 
 
 def _task_result(*, ask_text: str, reply_text: str) -> dict:
+    # Real daedalus shape: history holds the FULL transcript [question, reply],
+    # not just the question. history[-1] is therefore the AGENT reply -- the
+    # feed must take the ask from the user-role message. See the same fixture
+    # + the flatten fix in test_api_colleagues / main._flatten_conversation_entries.
     return {
         "id": "irrelevant-to-the-feed",
         "status": {
             "state": "completed",
             "message": {"role": "agent", "parts": [{"kind": "text", "text": reply_text}]},
         },
-        "history": [{"role": "user", "parts": [{"kind": "text", "text": ask_text}]}],
+        "history": [
+            {"role": "user", "parts": [{"kind": "text", "text": ask_text}]},
+            {"role": "agent", "parts": [{"kind": "text", "text": reply_text}]},
+        ],
     }
 
 
