@@ -1438,12 +1438,21 @@ def test_add_agent_tool_audit_row_redacts_content(session_factory, config, fake_
     """Mirrors `test_wire_slack_audit_row_redacts_both_tokens_but_not_the_
     channel` -- `content` must join the audit redact set, the same way
     `bot_token`/`app_token` already do, while `filename` (not sensitive)
-    logs as given."""
+    logs as given. Also pins the inline path's own happy-path result and
+    pushed content (review round 1, minor 4) -- the audit assertions alone
+    never checked that this call actually succeeded and landed the file."""
+    fake_github = FakeGitHub()
     _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+    )
     mcp = build_mcp_server(app)
 
-    _call_tool(
+    result = _call_tool(
         mcp,
         "kobo_add_agent_tool",
         _ctx_for(OWNER_A_EMAIL),
@@ -1451,6 +1460,10 @@ def test_add_agent_tool_audit_row_redacts_content(session_factory, config, fake_
         filename="ptr-guard.py",
         content=TOOL_PY,
     )
+
+    assert result["filename"] == "ptr-guard.py"
+    assert result["sha"]
+    assert fake_github.pushed_file("bundle/tools/ptr-guard.py") == TOOL_PY
 
     row = _last_audit_row(session_factory)
     assert row is not None
@@ -1460,3 +1473,68 @@ def test_add_agent_tool_audit_row_redacts_content(session_factory, config, fake_
     assert logged["content"] == "***REDACTED***"
     assert logged["filename"] == "ptr-guard.py"
     assert TOOL_PY not in row.redacted_args
+
+
+def test_add_agent_tool_is_marked_destructive(session_factory, config, fake_storage):
+    """A same-named upload silently REPLACES whatever `bundle/tools` file
+    was already there (`kobo_api.tooling.upload_tooling_file`'s own
+    "Write (or overwrite)" docstring, an unconditional `write_text`) --
+    including a live, enforced hook -- so this tool's own annotation must
+    say so, matching `kobo_set_agent_skills`'s own `destructiveHint=True`
+    rather than the module-wide `False` most other write tools carry
+    (review round 1, important 2)."""
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    tool = next(t for t in mcp._tool_manager.list_tools() if t.name == "kobo_add_agent_tool")
+
+    assert tool.annotations.destructiveHint is True
+
+
+def test_add_agent_tool_marketplace_repo_not_configured_is_tool_error(
+    session_factory, config, fake_storage
+):
+    """`config.skills_repo` unset (the bare `config` fixture's own default)
+    -> `marketplace.marketplace_repo` raises `MarketplaceError("the
+    marketplace repo is not configured")` from inside `fetch_tool_py`,
+    before any clone -- this tool's own `except MarketplaceError` arm must
+    preserve that message verbatim (review round 1, important 1)."""
+    assert not config.skills_repo
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="the marketplace repo is not configured"):
+        _call_tool(
+            mcp, "kobo_add_agent_tool", _ctx_for(OWNER_A_EMAIL), agent="ward", tool_id=TOOL_ID
+        )
+
+
+def test_add_agent_tool_marketplace_transport_failure_is_sanitized(
+    session_factory, config, fake_storage
+):
+    """A `ClientError` off the marketplace clone itself (a real transport
+    failure, distinct from `MarketplaceError`'s own "no such tool"/
+    "not configured" cases) must surface as the same sanitized "did not
+    answer" wording `kobo_set_agent_skills`'s own catalog-read failure
+    already uses -- never the raw transport text (review round 1,
+    important 1)."""
+    config.skills_repo = "org-skills"
+    transport_message = "github clone failed: rate limited by the origin"
+    fake_github = FakeGitHub(clone_error=transport_message)
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="did not answer") as exc_info:
+        _call_tool(
+            mcp, "kobo_add_agent_tool", _ctx_for(OWNER_A_EMAIL), agent="ward", tool_id=TOOL_ID
+        )
+
+    assert transport_message not in str(exc_info.value)

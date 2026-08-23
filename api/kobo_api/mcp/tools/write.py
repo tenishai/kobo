@@ -48,20 +48,21 @@ that already exists and is already tested in `kobo_api.main`. Concretely:
 Every route function below returns a `fastapi.responses.JSONResponse` in
 every branch (verified against each route's own source) -- `_parse` reads
 its `.body` (already-serialized JSON bytes) back into a dict, and the two
-status-code translators below (`_agent_route_result` for the five
+status-code translators below (`_agent_route_result` for the seven
 agent-scoped tools, `_create_result` for `kobo_create_agent`) turn that
 status code into either the tool's return value or a `ToolError`.
 
 ## Status -> ToolError translation
 
-**(A) The six agent-scoped tools** (`kobo_teach`, `kobo_chat`,
+**(A) The seven agent-scoped tools** (`kobo_teach`, `kobo_chat`,
 `kobo_request_colleague`, `kobo_accept_invite`, `kobo_wire_slack`,
-`kobo_set_agent_skills`) -- every one of these resolves an existing agent
-by name (or, for `kobo_accept_invite`, an existing invite naming two
-agents) before doing anything else, so the anti-enumeration property the
-read tools already pin (`kobo_api.mcp.authz.NotFound`'s own docstring)
-applies here too. `kobo_set_agent_skills` carries one narrow, documented,
-operator-ruled exception to this table -- see its own section below.
+`kobo_set_agent_skills`, `kobo_add_agent_tool`) -- every one of these
+resolves an existing agent by name (or, for `kobo_accept_invite`, an
+existing invite naming two agents) before doing anything else, so the
+anti-enumeration property the read tools already pin
+(`kobo_api.mcp.authz.NotFound`'s own docstring) applies here too.
+`kobo_set_agent_skills` carries one narrow, documented, operator-ruled
+exception to this table -- see its own section below.
 
 | Route status | Tool outcome |
 |---|---|
@@ -686,7 +687,7 @@ def register(mcp: FastMCP, app: Any) -> None:
 
         return {"added": added, "removed": removed}
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
     @audited("kobo_add_agent_tool")
     async def kobo_add_agent_tool(
         ctx: Context,
@@ -699,12 +700,17 @@ def register(mcp: FastMCP, app: Any) -> None:
         upload the room's own Tooling tab drives. Pass exactly one source:
         `tool_id` alone (pulls that tool's Python source from the org
         marketplace catalog, see kobo_list_tools first) or `filename`
-        together with `content` (an inline upload of your own source). The
-        file must pass the room's tooling checks before it lands: a
-        top-level `pre_task` or `post_draft` hook, no import beyond the
-        standard library. You must own `agent` (or be a room operator), and
-        `agent` must be READY. Returns the staged file's name and the
-        commit sha that landed it.
+        together with `content` (an inline upload of your own source). A
+        file already staged under that same name is silently REPLACED, not
+        merged -- treat this as destructive if `agent` already carries a
+        live, enforced hook by that name. The file must pass the room's
+        tooling checks before it lands: a top-level `pre_task` or
+        `post_draft` hook, no import beyond the standard library. You must
+        own `agent` (or be a room operator), and `agent` must be READY.
+        Returns the staged file's name and the sha of the repo's head
+        afterward -- the route's own commit when the content actually
+        changed anything, or the head already there when it was
+        byte-identical to what this agent already had staged.
         """
         from kobo_api.main import ToolingUploadPayload
 
