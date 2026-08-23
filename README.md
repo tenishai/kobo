@@ -68,7 +68,11 @@ Kobo is opinionated by design:
   system. Every call resolves the same visibility, ownership, and admin as the UI: check who
   you're signed in as, list and inspect the agents you can see, read an agent's conversation
   feed, create an agent, teach it, chat with it, run the colleague-invite handshake, and wire
-  it to Slack. Off until the org turns it on.
+  it to Slack. Browse the org's skills and tooling marketplaces, stage either onto an agent
+  you own, and publish new entries under your own team (publishing is instant and org-wide;
+  tool publishing runs the same mechanical law the room enforces, and baseline tool ids are
+  reserved for operators). Every new agent ships with the baseline tooling pack, a leak guard
+  and a probe guard, unless created with skip_baseline. Off until the org turns it on.
 
 ## Part of a larger platform
 

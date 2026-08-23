@@ -1,6 +1,9 @@
 # MCP marketplace wave 1 -- skills and tooling on the connector surface
 
-Status: approved (operator rulings encoded below). Wave 1 of the
+Status: implemented (operator rulings encoded below; two execution-time
+amendments recorded in the ledger: baseline- tool ids are operator-reserved
+at kobo_create_tool, and kobo_set_agent_skills surfaces the two post-gate
+skill-scoped 404 messages verbatim). Wave 1 of the
 full-marketplace decomposition; waves 2-4 are registered at the bottom and
 are OUT of this spec's scope.
 
