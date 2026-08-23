@@ -317,30 +317,38 @@ describe("ColleagueConversations (legibility wave)", () => {
     vi.unstubAllGlobals();
   });
 
-  it("draws a dim date rule when the feed crosses a day boundary", async () => {
+  it("shows each line's own date inline next to the time, across a day boundary", async () => {
     stubFetch({
       "/api/colleagues/feed": { entries: [DAY_ONE_ASK, DAY_TWO_ASK], truncated: false },
     });
 
-    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    const { container } = renderWithClient(ColleagueConversations, { agentName: "ward" });
     await screen.findByText("What's the config?");
 
-    expect(screen.getByText("2026-08-19")).not.toBeNull();
-    expect(screen.getByText("2026-08-21")).not.toBeNull();
+    // Every line carries its own date span (self-contained, no day divider).
+    const days = Array.from(container.querySelectorAll(".colleague-terminal__day")).map(
+      (el) => el.textContent,
+    );
+    expect(days).toEqual(["2026-08-19", "2026-08-21"]);
   });
 
-  it("a single-day feed still gets one date rule so old scrollback can't pass as today", async () => {
+  it("every line on the same day still shows the date, so a line never reads as today alone", async () => {
+    // ASK_ENTRY + REPLY_ENTRY are both 2026-08-19: the date appears on BOTH
+    // lines (not just once at a boundary), so any single line is unambiguous.
     stubFetch({
-      "/api/colleagues/feed": { entries: [DAY_ONE_ASK], truncated: false },
+      "/api/colleagues/feed": { entries: [ASK_ENTRY, REPLY_ENTRY], truncated: false },
     });
 
-    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    const { container } = renderWithClient(ColleagueConversations, { agentName: "ward" });
     await screen.findByText("What's the config?");
 
-    expect(screen.getByText("2026-08-19")).not.toBeNull();
+    const days = Array.from(container.querySelectorAll(".colleague-terminal__day")).map(
+      (el) => el.textContent,
+    );
+    expect(days).toEqual(["2026-08-19", "2026-08-19"]);
   });
 
-  it("hovering a time shows the full timestamp (title carries the ISO string)", async () => {
+  it("hovering the timestamp shows the full ISO string (title on the date+time stamp)", async () => {
     stubFetch({
       "/api/colleagues/feed": { entries: [DAY_ONE_ASK], truncated: false },
     });
@@ -348,8 +356,8 @@ describe("ColleagueConversations (legibility wave)", () => {
     const { container } = renderWithClient(ColleagueConversations, { agentName: "ward" });
     await screen.findByText("What's the config?");
 
-    const time = container.querySelector(".colleague-terminal__time");
-    expect(time?.getAttribute("title")).toBe("2026-08-19T10:00:00Z");
+    const stamp = container.querySelector(".colleague-terminal__stamp");
+    expect(stamp?.getAttribute("title")).toBe("2026-08-19T10:00:00Z");
   });
 
   it("consecutive identical asks collapse into one line with an xN badge", async () => {

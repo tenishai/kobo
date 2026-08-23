@@ -120,11 +120,11 @@
   }
 
   $effect(() => {
-    // Re-run whenever the RENDERED row count changes -- a genuine append,
+    // Re-run whenever the RENDERED line count changes -- a genuine append,
     // but also a filter or chip transition regrowing the list (review fix:
     // keying off entries.length left `pinned` stale-true after clearing a
     // filter, so the next SSE append yanked the scroll without warning).
-    const _count = rows.length;
+    const _count = visibleLines.length;
     if (pinned && screenEl) {
       screenEl.scrollTop = screenEl.scrollHeight;
     }
@@ -250,25 +250,6 @@
 
   const filtering = $derived(filterText.trim() !== "" || activeCounterpart !== null);
 
-  /** The render list: visible lines with a dim date rule wherever the
-   * calendar day changes (and one before the very first line, so a screen
-   * of pure scrollback can never pass as today). */
-  type Row = { kind: "date"; date: string } | { kind: "line"; line: Line };
-
-  const rows = $derived.by((): Row[] => {
-    const out: Row[] = [];
-    let lastDate: string | null = null;
-    for (const line of visibleLines) {
-      const date = dateOf(line.entry.ts);
-      if (date !== lastDate) {
-        out.push({ kind: "date", date });
-        lastDate = date;
-      }
-      out.push({ kind: "line", line });
-    }
-    return out;
-  });
-
   function lineTitle(line: Line): string {
     if (line.count === 1) {
       return line.entry.ts;
@@ -342,34 +323,29 @@
               </button>
             </p>
           {:else}
-            {#each rows as row (row.kind === "date" ? "date:" + row.date : row.line.entry.conversation_id + ":" + row.line.entry.role)}
-              {#if row.kind === "date"}
-                <div class="colleague-terminal__date" role="separator">
-                  <span class="colleague-terminal__date-label">{row.date}</span>
-                </div>
-              {:else}
-                {@const entry = row.line.entry}
-                <div class="colleague-terminal__entry colleague-terminal__entry--{entry.role}">
-                  <div class="colleague-terminal__prompt">
-                    <span class="colleague-terminal__time" title={lineTitle(row.line)}
-                      >{formatTime(entry.ts)}</span
+            {#each visibleLines as line (line.entry.conversation_id + ":" + line.entry.role)}
+              {@const entry = line.entry}
+              <div class="colleague-terminal__entry colleague-terminal__entry--{entry.role}">
+                <div class="colleague-terminal__prompt">
+                  <span class="colleague-terminal__stamp" title={lineTitle(line)}>
+                    <span class="colleague-terminal__day">{dateOf(entry.ts)}</span>
+                    <span class="colleague-terminal__time">{formatTime(entry.ts)}</span>
+                  </span>
+                  <span class="colleague-terminal__direction colleague-terminal__direction--{entry.role}"
+                    >{entry.from} -&gt; {entry.to}</span
+                  >
+                  {#if line.count > 1}
+                    <span
+                      class="colleague-terminal__count"
+                      title="Repeated {line.count} times in a row"
+                      >x{line.count}</span
                     >
-                    <span class="colleague-terminal__direction colleague-terminal__direction--{entry.role}"
-                      >{entry.from} -&gt; {entry.to}</span
-                    >
-                    {#if row.line.count > 1}
-                      <span
-                        class="colleague-terminal__count"
-                        title="Repeated {row.line.count} times in a row"
-                        >x{row.line.count}</span
-                      >
-                    {/if}
-                  </div>
-                  <p class="colleague-terminal__text colleague-terminal__text--{entry.role}">
-                    {entry.text}
-                  </p>
+                  {/if}
                 </div>
-              {/if}
+                <p class="colleague-terminal__text colleague-terminal__text--{entry.role}">
+                  {entry.text}
+                </p>
+              </div>
             {/each}
           {/if}
         </div>
@@ -480,22 +456,18 @@
     color: var(--panel);
   }
 
-  /* A dim horizontal rule with the date sitting in it -- day boundaries in
-     the scrollback, so old conversations can never pass as today. */
-  .colleague-terminal__date {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    color: var(--term-muted);
-    font-size: 0.75rem;
-    user-select: none;
+  /* The timestamp: a dim date directly before the time on every line, so a
+     line is self-contained about WHEN it happened (no scrolling up to a day
+     divider, and it survives filtering and xN collapse). Replaces the old
+     day-boundary rule, which only marked where a day started. */
+  .colleague-terminal__stamp {
+    display: inline-flex;
+    gap: 0.4ch;
+    white-space: nowrap;
   }
 
-  .colleague-terminal__date::before,
-  .colleague-terminal__date::after {
-    content: "";
-    flex: 1;
-    border-top: 1px solid var(--term-border);
+  .colleague-terminal__day {
+    color: var(--term-muted);
   }
 
   .colleague-terminal__count {
