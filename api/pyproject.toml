@@ -24,13 +24,14 @@ dependencies = [
     # The official Model Context Protocol Python SDK (MCP server arc, Task 6
     # onward): Task 6 needs it for the real `ToolError` the audit decorator
     # raises on a rate-limited call; Task 7 needs it for the server itself.
-    # NOTE: the version resolved here (2.0.0 at the time Task 6 landed)
-    # restructured `mcp.server.fastmcp` -> `mcp.server.mcpserver` and
-    # renamed `FastMCP` -> `MCPServer`, which the MCP server arc's own
-    # design doc still writes against the older `fastmcp` names -- Task 7's
-    # implementer needs to reconcile that drift, not assume the doc's
-    # import paths are current.
-    "mcp>=1.0",
+    # PINNED BELOW 2.0: mcp 2.0.0 restructured `mcp.server.fastmcp` ->
+    # `mcp.server.mcpserver` and renamed `FastMCP` -> `MCPServer`. This arc's
+    # spec, plan, and the proven reference architecture it follows are all
+    # written against the 1.x `fastmcp` surface (FastMCP, TokenVerifier,
+    # streamable_http_app, the 308/lifespan gotchas). 1.29.0 carries that
+    # surface intact; adopting 2.0's rename would discard every verified
+    # gotcha for an unproven API. Revisit as its own arc if 2.x is wanted.
+    "mcp>=1.15,<2",
 ]
 
 [project.optional-dependencies]

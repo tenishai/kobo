@@ -51,7 +51,7 @@ import time
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.fastmcp.exceptions import ToolError
 from sqlalchemy.orm import Session, sessionmaker
 
 from kobo_api.mcp import rate_limit
