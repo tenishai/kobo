@@ -182,6 +182,181 @@ def test_oauth_authorize_route_exists(session_factory, tmp_path):
     assert response.status_code == 400
 
 
+def test_real_initialize_request_over_the_rooms_real_hostname_is_not_421(
+    session_factory, tmp_path
+):
+    """Rollout-blocker regression (Task 9 review, reproduced live): the
+    design's ingress serves `/mcp` on the room's REAL hostname (same host
+    as the UI) -- never on `localhost`/`127.0.0.1`, which is all
+    `test_real_initialize_request_does_not_hit_the_uninitialized_session_
+    manager` above ever drives through. `build_mcp_server` used to
+    construct `FastMCP(...)` with no `host=`/`transport_security=` at
+    all, so the SDK defaulted to `host="127.0.0.1"`, which auto-enables
+    `TransportSecuritySettings(allowed_hosts=["127.0.0.1:*",
+    "localhost:*", "[::1]:*"])` -- a request whose `Host` header is the
+    room's real hostname then fails `TransportSecurityMiddleware.
+    _validate_host` and the SDK answers 421 "Invalid Host header" before
+    the request ever reaches the session manager or a tool.
+
+    `base_url="https://kobo.example.org"` with NO explicit port -- the
+    exact shape a real HTTPS-on-443 client uses, and the exact shape the
+    reviewer's live probe used -- reproduces that 421 pre-fix. This test
+    is the reproduction turned around to assert the FIXED behavior: 200,
+    never 421.
+    """
+    app = _enabled_app(session_factory, tmp_path)
+    cfg = app.state.config
+    token = mint(
+        "access_token",
+        EMAIL,
+        CLIENT_ID,
+        ACCESS_TTL_S,
+        key=signing_key(cfg.mcp.jwt_key_env),
+        scope="mcp",
+    )
+
+    with TestClient(app, base_url=ISSUER_BASE_URL) as client:
+        response = client.post(
+            "/mcp/",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test-real-host-smoke", "version": "0.0.1"},
+                },
+            },
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+        )
+
+    assert response.status_code != 421
+    assert response.status_code == 200
+    assert '"protocolVersion"' in response.text
+
+
+def test_allowed_hosts_carries_both_the_bare_hostname_and_the_wildcard_port_form(
+    session_factory, tmp_path
+):
+    """Pins the nuance the review called out as the one most likely to
+    regress silently: `TransportSecurityMiddleware._validate_host`'s
+    wildcard branch (`mcp.server.transport_security`) only matches when
+    the incoming `Host` header already contains a colon and port
+    (`host.startswith(base_host + ":")`) -- a standard HTTPS request on
+    443 arrives with a BARE `Host` header, no port at all, which only an
+    exact bare-hostname entry in `allowed_hosts` matches. An
+    `allowed_hosts` of just `["kobo.example.org:*"]` would STILL 421 a
+    bare `Host: kobo.example.org` -- both the bare entry and the `:*`
+    wildcard entry are required, not just the wildcard one. Checked
+    directly against the constructed `FastMCP`'s own settings (not only
+    indirectly through one HTTP probe's Host-header shape) so a future
+    "simplification" down to a single-entry list fails this test even if
+    it happened to still pass some other request shape.
+    """
+    from kobo_api.mcp.server import build_mcp_server
+
+    app = _enabled_app(session_factory, tmp_path)
+    mcp = build_mcp_server(app)
+
+    allowed_hosts = mcp.settings.transport_security.allowed_hosts
+    assert "kobo.example.org" in allowed_hosts
+    assert "kobo.example.org:*" in allowed_hosts
+
+    allowed_origins = mcp.settings.transport_security.allowed_origins
+    assert "https://kobo.example.org" in allowed_origins
+    assert "https://kobo.example.org:*" in allowed_origins
+
+
+def test_bare_host_header_https_request_is_not_421(session_factory, tmp_path):
+    """The live-request half of the bare-vs-wildcard proof above: a
+    request whose `Host` header genuinely has no port (confirmed against
+    `TestClient`'s own request construction -- `base_url` with no
+    explicit port, or an explicit default port for the scheme, both
+    produce a bare `Host` header with no `:<port>` suffix at all) must
+    still be accepted. This is the exact request shape that an
+    `allowed_hosts` containing only the `"kobo.example.org:*"` wildcard
+    entry would reject.
+    """
+    app = _enabled_app(session_factory, tmp_path)
+    cfg = app.state.config
+    token = mint(
+        "access_token",
+        EMAIL,
+        CLIENT_ID,
+        ACCESS_TTL_S,
+        key=signing_key(cfg.mcp.jwt_key_env),
+        scope="mcp",
+    )
+
+    with TestClient(app, base_url="https://kobo.example.org:443") as client:
+        response = client.post(
+            "/mcp/",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test-bare-host-smoke", "version": "0.0.1"},
+                },
+            },
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+        )
+
+    assert response.status_code == 200
+    assert '"protocolVersion"' in response.text
+
+
+def test_mcp_and_oauth_routes_beat_the_spa_catch_all_in_a_fully_wired_room(
+    session_factory, tmp_path
+):
+    """Review's minor coverage gap: every other test in this module builds
+    an mcp-enabled app with `ui_dist` unset, so nothing here previously
+    proved that a room wired with BOTH the built UI (Task 1's SPA
+    catch-all, `kobo_api.static_ui.mount_ui`) AND MCP (this task's
+    `mount_mcp`) still routes `/mcp` and `/.well-known/*` to their real
+    handlers rather than to the SPA's `index.html` fallback.
+    `kobo_api.main.create_app` mounts MCP before the UI (see its own
+    comment there), so registration order alone should make this true --
+    this test exists to prove that ordering holds against the real app,
+    not just to restate it.
+    """
+    dist_dir = tmp_path / "dist"
+    (dist_dir / "assets").mkdir(parents=True)
+    (dist_dir / "index.html").write_text("<html><body>SPA-INDEX-MARKER</body></html>")
+    (dist_dir / "assets" / "app.js").write_text("console.log('app');")
+
+    config = _enabled_config(tmp_path).model_copy(update={"ui_dist": dist_dir})
+    clients = Clients(
+        github=FakeGitHub(),
+        gojira=FakeGojira(),
+        cloud=FakeCloud(),
+        agent=FakeAgent(),
+        kubectl=FakeKubectl(),
+    )
+    app = create_app(session_factory, config=config, clients=clients)
+
+    with TestClient(app, base_url=ISSUER_BASE_URL, follow_redirects=False) as client:
+        well_known = client.get("/.well-known/oauth-authorization-server")
+        mcp_bare = client.get("/mcp")
+        spa_route = client.get("/agents/whatever-arbitrary-path")
+
+    assert well_known.status_code == 200
+    assert mcp_bare.status_code == 308
+    assert spa_route.status_code == 200
+    assert "SPA-INDEX-MARKER" in spa_route.text
+
+
 def test_real_initialize_request_does_not_hit_the_uninitialized_session_manager(
     session_factory, tmp_path
 ):
@@ -202,12 +377,18 @@ def test_real_initialize_request_does_not_hit_the_uninitialized_session_manager(
     lifespan chain. Hence minting a real access token here rather than
     reusing the simpler well-known/oauth checks above.
 
-    `base_url` carries an explicit port because `build_mcp_server`
-    constructs its `FastMCP` with the default `host="127.0.0.1"`, which
-    auto-enables the SDK's own DNS-rebinding protection allowing only
-    Host headers of the exact form `localhost:<port>`/`127.0.0.1:<port>`
-    -- a bare `localhost` or the TestClient default `testserver` both get
-    a 421 from that unrelated guard, not from anything under test here.
+    `base_url` is the room's own configured `ISSUER_BASE_URL`
+    (`https://kobo.example.org`), not `localhost`, per the rollout-blocker
+    fix in `_transport_security_for` (`kobo_api.mcp.server`): `build_mcp_
+    server` now points `FastMCP`'s `transport_security` at this room's
+    real hostname (parsed off `config.mcp.issuer_base_url`) instead of
+    leaving the SDK's own loopback-only default (`host="127.0.0.1"` ->
+    `allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"]`) in place --
+    a `localhost` Host header no longer matches at all post-fix, exactly
+    as it shouldn't for a room whose real ingress never serves `/mcp` on
+    loopback. See `test_real_initialize_request_over_the_rooms_real_
+    hostname_is_not_421` below for the fix's own dedicated regression
+    test, reproduced RED against the pre-fix 421 and GREEN after.
     """
     app = _enabled_app(session_factory, tmp_path)
     cfg = app.state.config
@@ -220,7 +401,7 @@ def test_real_initialize_request_does_not_hit_the_uninitialized_session_manager(
         scope="mcp",
     )
 
-    with TestClient(app, base_url="http://localhost:8000") as client:
+    with TestClient(app, base_url=ISSUER_BASE_URL) as client:
         response = client.post(
             "/mcp/",
             json={

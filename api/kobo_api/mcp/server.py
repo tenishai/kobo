@@ -60,10 +60,12 @@ under it -- is load-bearing, not stylistic.
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlparse
 
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.server import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 
 from kobo_api.config import Config
@@ -152,12 +154,73 @@ def get_user_email(ctx: Any) -> str:
     return email or ""
 
 
+def _transport_security_for(issuer_base_url: str) -> TransportSecuritySettings | None:
+    """The rollout-blocking gap a live 421 probe caught (Task 9's review):
+    `FastMCP(...)` built with no `host=`/`transport_security=` at all
+    defaults to `host="127.0.0.1"`, which auto-enables the SDK's own
+    `TransportSecuritySettings(allowed_hosts=["127.0.0.1:*",
+    "localhost:*", "[::1]:*"])` (`mcp.server.fastmcp.server.Settings`'s
+    own defaults). The design's ingress serves `/mcp` on the room's REAL
+    hostname (same host as the UI, per the spec's ingress section) -- a
+    live request arrives with `Host: <room-host>`, and `mcp.server.
+    transport_security.TransportSecurityMiddleware._validate_host`
+    rejects it with a 421 "Invalid Host header" before the request ever
+    reaches a tool. This builds the `TransportSecuritySettings` that
+    replaces the SDK's loopback-only default with the room's own
+    hostname, parsed straight off `issuer_base_url` -- the one config
+    field that already carries this room's externally-reachable identity
+    (`MCPConfig.issuer_base_url`'s own docstring).
+
+    **Both the bare hostname AND the `host:*` wildcard are required --
+    proven against the installed SDK, not asserted on faith.**
+    `_validate_host`'s wildcard branch only matches when the incoming
+    `Host` header already contains a colon and port
+    (`host.startswith(base_host + ":")`); a standard HTTPS request on
+    443 (or HTTP on 80) arrives with a BARE `Host` header, no port at
+    all, which only an exact `allowed_hosts` entry matches. An
+    `allowed_hosts` of just `["kobo.example.org:*"]` would STILL 421 a
+    bare `Host: kobo.example.org` -- reproduced by hand while fixing
+    this, and pinned by `test_bare_host_header_https_request_is_not_421`
+    / `test_allowed_hosts_carries_both_the_bare_hostname_and_the_
+    wildcard_port_form` in `tests/test_mcp_mount.py`. Both entries are
+    listed for `allowed_origins` too, for the same reason applied to the
+    `Origin` header `_validate_origin` checks.
+
+    Empty `issuer_base_url` (MCP enabled with no issuer -- forbidden by
+    `Config._mcp_requires_an_issuer_base_url_when_enabled` the moment
+    `oauth_client_id` is set, so this should never actually happen for a
+    server that gets this far) returns `None`, which leaves `FastMCP`'s
+    own default (loopback-only `TransportSecuritySettings`) in place:
+    a server with no known public host has no safe non-loopback host to
+    add to `allowed_hosts`, and loopback-only is the safe default for
+    local dev, not an open one.
+    """
+    if not issuer_base_url:
+        return None
+
+    parsed = urlparse(issuer_base_url)
+    room_host = parsed.hostname
+    if not room_host:
+        return None
+    if parsed.port:
+        room_host = f"{room_host}:{parsed.port}"
+    scheme = parsed.scheme or "https"
+
+    return TransportSecuritySettings(
+        allowed_hosts=[room_host, f"{room_host}:*"],
+        allowed_origins=[f"{scheme}://{room_host}", f"{scheme}://{room_host}:*"],
+    )
+
+
 def build_mcp_server(app: Any) -> FastMCP:
     """Constructs kobo's MCP server: stateless streamable-HTTP FastMCP
     (`stateless_http=True`, `streamable_http_path="/"` -- the mounting
     app, a later task, puts this whole sub-app at `/mcp`), `_KoboToken
     Verifier` wired to `app`, `AuthSettings` pointed at this room's own
-    issuer/resource URLs, `audit.configure`d with `app`'s own session
+    issuer/resource URLs, `transport_security` widened past the SDK's own
+    loopback-only default to this room's real hostname (see `_transport_
+    security_for` above -- a rollout-blocking gap Task 9's review caught
+    via a live 421 probe), `audit.configure`d with `app`'s own session
     factory so every tool call's audit row lands in the room's real DB,
     the four read tools (Task 7), and the six write tools (Task 8) --
     `create_agent`/`teach`/`chat`/`request_colleague`/`accept_invite`/
@@ -188,6 +251,7 @@ def build_mcp_server(app: Any) -> FastMCP:
             issuer_url=AnyHttpUrl(cfg.mcp.issuer_base_url),
             resource_server_url=AnyHttpUrl(f"{cfg.mcp.issuer_base_url.rstrip('/')}/mcp"),
         ),
+        transport_security=_transport_security_for(cfg.mcp.issuer_base_url),
     )
 
     audit.configure(app.state.session_factory)
