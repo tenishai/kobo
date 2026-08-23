@@ -1015,6 +1015,29 @@ def _build_teach_envelope(note: str, filename: str) -> dict:
     return envelope
 
 
+def _join_text_parts(parts: object) -> str:
+    """Join ALL text parts of an a2a message, in order — the family's
+    join-all-parts contract (daedalus's `transports.a2a.text_of`), adopted
+    here after the daedalus #13 review flagged `parts[0]["text"]` as a
+    tripwire standardized in three places: it silently drops text the day
+    any peer emits a multi-part reply. Parts without a `kind` key are
+    accepted as text (this room's own older fixtures and some a2a servers
+    omit it); parts whose `kind` says they are something else are skipped.
+    Returns "" when nothing text-shaped is present — callers decide whether
+    that is an error (direct path) or a try-the-next-source (relay path).
+    """
+    if not isinstance(parts, list):
+        return ""
+    texts = [
+        p["text"]
+        for p in parts
+        if isinstance(p, dict)
+        and isinstance(p.get("text"), str)
+        and p.get("kind") in (None, "text")
+    ]
+    return "\n".join(t for t in texts if t)
+
+
 def _post_task(client: httpx.Client, port: int, messages: list[ChatMessage]) -> str:
     """POST the a2a task envelope for `messages` to the forwarded port; return
     the reply text.
@@ -1040,11 +1063,14 @@ def _post_task(client: httpx.Client, port: int, messages: list[ChatMessage]) -> 
     if resp.status_code != 200:
         raise ClientError(f"a2a request failed ({resp.status_code}): {resp.text}")
     try:
-        return resp.json()["status"]["message"]["parts"][0]["text"]
+        text = _join_text_parts(resp.json()["status"]["message"]["parts"])
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise ClientError(
             f"malformed a2a reply: {exc!r} (body: {resp.text[:200]!r})"
         ) from exc
+    if not text:
+        raise ClientError(f"malformed a2a reply: no text parts (body: {resp.text[:200]!r})")
+    return text
 
 
 def _get_card(client: httpx.Client, port: int) -> dict:
@@ -3164,12 +3190,11 @@ def _extract_relay_reply(response: dict) -> str:
     under a `"task"` key (a request shape some caller echoes back) or a
     `"result"` key (the JSON-RPC-style envelope some a2a servers use) — both
     wrappings are unwrapped first. For each parts list `_relay_reply_parts_sources`
-    returns (most-authoritative first), the extraction looks ONLY at `parts[0]`:
-    if it carries a `"text"` key (and the value is a string), that text is
-    returned; if the list is empty or `parts[0]` lacks a `"text"` key, that
-    source is skipped and extraction moves to the next source. This matches
-    the direct path's own semantics, where it does `parts[0]["text"]`
-    unconditionally on the authoritative source.
+    returns (most-authoritative first), the extraction joins ALL text parts
+    in order (`_join_text_parts`, the family contract); a source whose parts
+    carry no text is skipped and extraction moves to the next source. This
+    matches the direct path's own semantics, which joins the same way on the
+    authoritative source.
 
     Raises `CabalError` when no text part turns up in any source — callers
     map that to the same failure handling a genuine relay failure gets,
@@ -3186,8 +3211,9 @@ def _extract_relay_reply(response: dict) -> str:
         raise CabalError("malformed switchboard reply: not a task object")
 
     for parts in _relay_reply_parts_sources(task):
-        if parts and isinstance(parts[0], dict) and isinstance(parts[0].get("text"), str):
-            return parts[0]["text"]
+        text = _join_text_parts(parts)
+        if text:
+            return text
 
     raise CabalError("malformed switchboard reply: no text part found")
 

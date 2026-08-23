@@ -1434,8 +1434,8 @@ def test_chat_relay_envelope_matches_the_shared_builder_verbatim(
         ),
         pytest.param(
             {"status": {"message": {"parts": [{"text": "first"}, {"text": "last"}]}}},
-            "first",
-            id="multiple-parts-takes-the-first-one",
+            "first\nlast",
+            id="multiple-parts-join-in-order",
         ),
         pytest.param(
             {
@@ -1445,7 +1445,7 @@ def test_chat_relay_envelope_matches_the_shared_builder_verbatim(
                 ],
             },
             "from history",
-            id="skips-source-when-first-part-lacks-text",
+            id="skips-source-when-no-part-carries-text",
         ),
         pytest.param(
             {

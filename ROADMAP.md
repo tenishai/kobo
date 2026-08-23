@@ -37,7 +37,7 @@ never overwritten.
 - **Phase B — Client hosting & identity** — the room under a client's domain behind
   IAP; verified-identity header contract; client-onboarding mechanics (GitHub App,
   keyless DNS delegation).
-- **P3 — Colleagues** — a2a links between agents (cabal/limenal), allow-list
+- **P3 — Colleagues** — a2a links between agents (cabal/liminal), allow-list
   checkboxes with agent-card badges, dual enforcement.
 
 ## Later

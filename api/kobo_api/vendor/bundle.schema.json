@@ -147,7 +147,7 @@
       "title": "GateSpec",
       "type": "object"
     },
-    "LimenalSpec": {
+    "LiminalSpec": {
       "additionalProperties": true,
       "properties": {
         "url": {
@@ -175,7 +175,7 @@
           "title": "Token Env"
         }
       },
-      "title": "LimenalSpec",
+      "title": "LiminalSpec",
       "type": "object"
     },
     "MemorySpec": {
@@ -210,6 +210,18 @@
           ],
           "title": "Team",
           "type": "string"
+        },
+        "revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Revision"
         }
       },
       "title": "MemorySpec",
@@ -269,7 +281,7 @@
           "enum": [
             "none",
             "mcp",
-            "limenal",
+            "liminal",
             "colleagues"
           ],
           "title": "Provider",
@@ -283,8 +295,8 @@
           "title": "Servers",
           "type": "array"
         },
-        "limenal": {
-          "$ref": "#/$defs/LimenalSpec"
+        "liminal": {
+          "$ref": "#/$defs/LiminalSpec"
         },
         "colleagues": {
           "$ref": "#/$defs/ColleaguesSpec"

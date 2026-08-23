@@ -1556,6 +1556,74 @@ def test_post_task_raises_on_non_200():
         _post_task(client, 54321, [{"role": "user", "text": "hello?"}])
 
 
+def test_post_task_joins_all_text_parts_of_a_multi_part_reply():
+    """The join-all-parts contract (daedalus #13 review): a multi-part reply
+    arrives whole, non-text parts are skipped, order kept. parts[0] alone
+    would have silently dropped everything after the first."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": {
+                    "message": {
+                        "parts": [
+                            {"kind": "text", "text": "first half"},
+                            {"kind": "file", "uri": "s3://irrelevant"},
+                            {"kind": "text", "text": "second half"},
+                        ]
+                    }
+                }
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    reply = _post_task(client, 54321, [{"role": "user", "text": "hello?"}])
+    assert reply == "first half\nsecond half"
+
+
+def test_post_task_raises_client_error_when_reply_has_no_text_parts():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"status": {"message": {"parts": [{"kind": "file", "uri": "s3://x"}]}}}
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(ClientError) as exc_info:
+        _post_task(client, 54321, [{"role": "user", "text": "hello?"}])
+    assert "no text parts" in str(exc_info.value)
+
+
+def test_extract_relay_reply_joins_all_text_parts_within_a_source():
+    from kobo_api.clients import _extract_relay_reply
+
+    task = {
+        "status": {
+            "message": {
+                "parts": [
+                    {"kind": "text", "text": "the summary"},
+                    {"kind": "text", "text": "the detail"},
+                ]
+            }
+        }
+    }
+    assert _extract_relay_reply(task) == "the summary\nthe detail"
+
+
+def test_extract_relay_reply_skips_a_source_with_only_non_text_parts():
+    """A source whose parts carry no text falls through to the next source
+    (previously only an empty list or a text-less parts[0] fell through)."""
+    from kobo_api.clients import _extract_relay_reply
+
+    task = {
+        "status": {"message": {"parts": [{"kind": "file", "uri": "s3://x"}]}},
+        "history": [
+            {"role": "agent", "parts": [{"kind": "text", "text": "from history"}]}
+        ],
+    }
+    assert _extract_relay_reply(task) == "from history"
+
+
 def test_post_task_raises_client_error_on_non_json_body():
     # 200 with a body that isn't JSON at all (json.JSONDecodeError, a
     # ValueError) must be wrapped, not left to escape as a raw ValueError.
