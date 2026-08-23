@@ -109,6 +109,7 @@ def test_render_org_yaml_golden_with_computed_defaults():
             "oauth_client_id": "",
             "oauth_client_secret_env": "KOBO_MCP_GOOGLE_CLIENT_SECRET",
             "workspace_domain": "",
+            "issuer_base_url": "",
             "jwt_key_env": "KOBO_MCP_JWT_KEY",
         },
     }

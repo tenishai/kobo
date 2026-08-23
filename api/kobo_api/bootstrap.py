@@ -176,6 +176,7 @@ def _org_yaml_context(config: Config) -> dict[str, object]:
             "oauth_client_id": config.mcp.oauth_client_id,
             "oauth_client_secret_env": config.mcp.oauth_client_secret_env,
             "workspace_domain": config.mcp.workspace_domain,
+            "issuer_base_url": config.mcp.issuer_base_url,
             "jwt_key_env": config.mcp.jwt_key_env,
         },
     }
