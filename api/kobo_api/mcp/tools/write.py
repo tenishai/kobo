@@ -1,5 +1,7 @@
-"""kobo's six MCP write tools (MCP server arc, Task 8): create_agent,
-teach, chat, request_colleague, accept_invite, and wire_slack.
+"""kobo's MCP write tools: the original six from the MCP server arc (Task
+8) -- create_agent, teach, chat, request_colleague, accept_invite, and
+wire_slack -- plus `kobo_set_agent_skills`, added by the MCP marketplace
+wave's Task 3 to stage/remove marketplace catalog skills on an owned agent.
 
 THE REUSE MECHANISM -- this is the entire design of this module. Every
 tool below is a thin shim that calls the SAME route handler the room's own
@@ -50,12 +52,13 @@ status code into either the tool's return value or a `ToolError`.
 
 ## Status -> ToolError translation
 
-**(A) The five agent-scoped tools** (`kobo_teach`, `kobo_chat`,
-`kobo_request_colleague`, `kobo_accept_invite`, `kobo_wire_slack`) --
-every one of these resolves an existing agent by name (or, for
-`kobo_accept_invite`, an existing invite naming two agents) before doing
-anything else, so the anti-enumeration property the read tools already
-pin (`kobo_api.mcp.authz.NotFound`'s own docstring) applies here too:
+**(A) The six agent-scoped tools** (`kobo_teach`, `kobo_chat`,
+`kobo_request_colleague`, `kobo_accept_invite`, `kobo_wire_slack`,
+`kobo_set_agent_skills`) -- every one of these resolves an existing agent
+by name (or, for `kobo_accept_invite`, an existing invite naming two
+agents) before doing anything else, so the anti-enumeration property the
+read tools already pin (`kobo_api.mcp.authz.NotFound`'s own docstring)
+applies here too:
 
 | Route status | Tool outcome |
 |---|---|
@@ -123,6 +126,34 @@ return value never includes anything from `bot_token`/`app_token`.
 (`bot_token`, `app_token`) whole in the audit log; `channel_id` is not
 sensitive and is logged as given, same as every other non-secret argument
 in this module.
+
+## `kobo_set_agent_skills`'s catalog resolution and partial application
+
+Unlike this module's other five agent-scoped tools, `kobo_set_agent_skills`
+loops over TWO caller-given lists (`add`, then `remove`), each entry a bare
+skill id -- never a `{"id", "team"}` pair the way `kobo_create_agent`'s own
+`skills` argument takes one. `POST .../skills/catalog`'s own
+`CatalogSkillPayload` needs a `team`, though, so for every id in `add` this
+tool reads `kobo_api.search.read_marketplace_catalog` (once, up front, the
+same hoisted-read idiom `kobo_api.skills.add_catalog_skill` itself already
+uses) and resolves that id's `team` from the catalog entry's own `owner`
+field -- `"shared"` when the entry carries none. An id absent from the
+catalog entirely raises `ToolError` naming it BEFORE any route call at
+all -- this tool's own gate, not a status this module's shared table (A)
+translates, since there is no route response yet to translate. A `None`
+catalog (`kobo_api.mcp.tools.read`'s own "unavailable" wording, imported
+rather than duplicated) or a `ClientError` off the storage read (that
+module's own sanitized "did not answer" wording, same reuse) both raise
+before any add is attempted.
+
+Each id's own add/remove route call, once made, is translated through
+table (A) exactly like every other tool in this module. Application is
+deliberately partial-tolerant: entries already applied before a later one
+fails stay applied (the routes underneath already committed them), and
+the `ToolError` a failing id raises is that id's own route message
+(`"the agent already carries a skill named '<id>'"` on a 409 collision,
+say) -- always naming the id that failed, never a generic mid-loop
+failure.
 """
 
 from __future__ import annotations
@@ -138,9 +169,12 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import ValidationError
 
+from kobo_api.clients import ClientError
 from kobo_api.mcp import authz
 from kobo_api.mcp.audit import audited
 from kobo_api.mcp.server import get_user_email
+from kobo_api.mcp.tools.read import _CATALOG_UNAVAILABLE, _MARKETPLACE_DID_NOT_ANSWER
+from kobo_api.search import read_marketplace_catalog
 
 # Shared with kobo_api.mcp.tools.read -- see that module's own module
 # docstring for why this exact string is the one answer every agent-scoped
@@ -181,6 +215,22 @@ def _parse(response: JSONResponse) -> dict:
     return json.loads(response.body)
 
 
+def _skill_team(entry: dict) -> str:
+    """`kobo_set_agent_skills`'s own `team` resolution for one marketplace
+    catalog entry: the entry's own `owner` when it's a non-blank string,
+    else `"shared"` -- an add-tool caller passes bare skill ids, never a
+    team, unlike the room's own web UI (which already knows which team
+    owns a given catalog listing before it ever calls the route). Mirrors
+    `kobo_api.search._entry_team`'s own owner-precedence discipline for a
+    malformed (missing, non-string, or blank) `owner`, just with `"shared"`
+    as the fallback rather than that function's `""`.
+    """
+    owner = entry.get("owner")
+    if isinstance(owner, str) and owner.strip():
+        return owner
+    return "shared"
+
+
 def _agent_route_result(response: JSONResponse) -> dict:
     """Table (A) from this module's own docstring -- the shared status
     translation for every agent-scoped write tool.
@@ -210,9 +260,9 @@ def _create_result(response: JSONResponse) -> dict:
 
 
 def register(mcp: FastMCP, app: Any) -> None:
-    """Registers the six write tools on `mcp`. Every route this module
-    calls is looked up exactly once, here, at registration time -- never
-    re-resolved per call.
+    """Registers this module's seven write tools on `mcp`. Every route this
+    module calls is looked up exactly once, here, at registration time --
+    never re-resolved per call.
     """
     create_agent_endpoint = _endpoint(app, "POST", "/api/agents")
     name_suggestions_endpoint = _endpoint(app, "POST", "/api/agents/name-suggestions")
@@ -222,6 +272,8 @@ def register(mcp: FastMCP, app: Any) -> None:
     accept_invite_endpoint = _endpoint(app, "POST", "/api/invites/{invite_id}/accept")
     connect_slack_endpoint = _endpoint(app, "POST", "/api/agents/{name}/slack/connect")
     save_slack_channels_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/slack/channels")
+    add_skill_endpoint = _endpoint(app, "POST", "/api/agents/{name}/skills/catalog")
+    remove_skill_endpoint = _endpoint(app, "DELETE", "/api/agents/{name}/skills/{skill_id}")
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     @audited("kobo_create_agent")
@@ -461,3 +513,66 @@ def register(mcp: FastMCP, app: Any) -> None:
             session.close()
 
         return {"agent": agent, "connected": True, "sha": body.get("sha")}
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @audited("kobo_set_agent_skills")
+    async def kobo_set_agent_skills(
+        ctx: Context,
+        agent: str,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+    ) -> dict:
+        """Pull skills from the org marketplace catalog onto `agent`,
+        remove skills it already carries, or both in one call -- the same
+        catalog pick and removal the room's own Skills tab drives. Each id
+        in `add` must name a skill in the marketplace catalog (see
+        kobo_list_skills first); each id in `remove` names a skill already
+        on `agent`, whether it was picked from the catalog or authored
+        locally. You must own `agent` (or be a room operator). Adds are
+        applied first, then removals, each in the order given. If one
+        entry fails partway through, every entry already applied stays
+        applied and the error names the id that failed.
+        """
+        from kobo_api.main import CatalogSkillPayload
+
+        email = get_user_email(ctx)
+        req = authz.room_request(app, email)
+        session = app.state.session_factory()
+        added: list[dict] = []
+        removed: list[str] = []
+        try:
+            add_ids = list(add or [])
+            if add_ids:
+                clients = app.state.clients
+                cfg = app.state.config
+                try:
+                    catalog = read_marketplace_catalog(clients.storage, cfg.skills_bucket)
+                except ClientError as exc:
+                    raise ToolError(_MARKETPLACE_DID_NOT_ANSWER) from exc
+                if catalog is None:
+                    raise ToolError(_CATALOG_UNAVAILABLE)
+
+                for skill_id in add_ids:
+                    entry = catalog.get(skill_id)
+                    if entry is None:
+                        raise ToolError(f"no such skill: {skill_id!r}")
+
+                    response = add_skill_endpoint(
+                        name=agent,
+                        payload=CatalogSkillPayload(name=skill_id, team=_skill_team(entry)),
+                        request=req,
+                        session=session,
+                    )
+                    body = _agent_route_result(response)
+                    added.append({"id": skill_id, "sha": body.get("sha")})
+
+            for skill_id in remove or []:
+                response = remove_skill_endpoint(
+                    name=agent, skill_id=skill_id, request=req, session=session
+                )
+                _agent_route_result(response)
+                removed.append(skill_id)
+        finally:
+            session.close()
+
+        return {"added": added, "removed": removed}

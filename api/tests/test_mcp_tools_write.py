@@ -202,6 +202,7 @@ def _seed_agent(
     slack_app_id=None,
     slack_channels=None,
     slack_wired=False,
+    skills=None,
 ):
     session = session_factory()
     session.add(
@@ -218,6 +219,7 @@ def _seed_agent(
             slack_app_id=slack_app_id,
             slack_channels=encode_channels(slack_channels) if slack_channels is not None else None,
             slack_wired=slack_wired,
+            skills=skills if skills is not None else [],
         )
     )
     session.commit()
@@ -319,7 +321,7 @@ def test_build_mcp_server_registers_the_six_write_tools_alongside_the_read_ones(
     } <= names
 
 
-def test_build_mcp_server_registers_exactly_the_twelve_named_tools(
+def test_build_mcp_server_registers_exactly_the_thirteen_named_tools(
     session_factory, config, fake_storage
 ):
     """Coverage folded in from Task 8's review: the subset check just
@@ -328,13 +330,14 @@ def test_build_mcp_server_registers_exactly_the_twelve_named_tools(
     their own file's tools with `<=`, deliberately, so neither file also
     has to track the other's count -- which means nothing anywhere pins
     the FULL registered set. This is that missing test: `build_mcp_server`
-    must register EXACTLY these twelve tools, no more, no fewer, matching
-    the design's own "Tool surface" table
+    must register EXACTLY these thirteen tools, no more, no fewer,
+    matching the design's own "Tool surface" table
     (docs/superpowers/specs/2026-08-22-mcp-server-design.md) plus the MCP
-    marketplace wave's Task 2 pair (`kobo_list_skills`/`kobo_list_tools`),
-    one-for-one. A stray extra registration (a copy-paste twin, a leftover
-    experiment) or a dropped one would fail this even though both
-    narrower `<=` checks above would stay green.
+    marketplace wave's Task 2 pair (`kobo_list_skills`/`kobo_list_tools`)
+    and Task 3's `kobo_set_agent_skills`, one-for-one. A stray extra
+    registration (a copy-paste twin, a leftover experiment) or a dropped
+    one would fail this even though both narrower `<=` checks above would
+    stay green.
     """
     app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
 
@@ -354,6 +357,7 @@ def test_build_mcp_server_registers_exactly_the_twelve_named_tools(
         "kobo_request_colleague",
         "kobo_accept_invite",
         "kobo_wire_slack",
+        "kobo_set_agent_skills",
     }
 
 
@@ -885,3 +889,255 @@ def test_wire_slack_audit_row_redacts_both_tokens_but_not_the_channel(
     assert logged["channel_id"] == CHANNEL
     assert BOT_TOKEN not in row.redacted_args
     assert APP_TOKEN not in row.redacted_args
+
+
+# --- kobo_set_agent_skills (MCP marketplace wave, Task 3) ---------------------
+
+SKILL_ID = "ptr-primer"
+SKILL_TEAM = "sre"
+
+
+class _SkillSeedingGitHub(FakeGitHub):
+    """A github fake whose clone() also materializes an existing
+    bundle/skills/<id>/SKILL.md tree -- the local-repo state the removal
+    tests need already in place before delete_skill's own remove_skill call
+    runs. Local copy of test_web_skills.py's own fixture of the same
+    name/shape -- this file's own "don't cross-import test fixtures"
+    convention (see module docstring) applies here too."""
+
+    def __init__(self, *, local_skills=None, **kwargs):
+        super().__init__(**kwargs)
+        self._local_skills = local_skills or {}
+
+    def clone(self, repo, dest):
+        super().clone(repo, dest)
+        for rel_path, content in self._local_skills.items():
+            target = dest / "bundle" / "skills" / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+
+
+def _seed_marketplace_skill(storage, skill_id, *, owner="sre", description="A sample skill."):
+    """Seeds `storage`'s skills bucket with one marketplace-dialect catalog
+    entry (persona-metadata plan Task 1b shape -- a top-level object with a
+    dict-shaped "skills" mapping and a "count" key, no per-entry "version",
+    so materialization falls back to the mutable head copy) plus the
+    SKILL.md content `kobo_api.skills.add_catalog_skill` downloads for it.
+    Local copy of test_mcp_tools_read.py's own `_marketplace_index_bytes`
+    idiom, per this file's no-cross-import-fixtures convention.
+    `owner=None` seeds an entry that carries no owner key at all, for the
+    "no owner -> shared" resolution case."""
+    entry = {"name": skill_id, "description": description, "tags": []}
+    if owner is not None:
+        entry["owner"] = owner
+    storage.write_bytes(
+        SKILLS_BUCKET,
+        "index.json",
+        json.dumps({"skills": {skill_id: entry}, "count": 1}).encode(),
+    )
+    storage.write_bytes(
+        SKILLS_BUCKET,
+        f"catalog/{skill_id}/SKILL.md",
+        f"---\nname: {skill_id}\ndescription: {description}\n---\nBody.\n".encode(),
+    )
+
+
+def test_set_agent_skills_adds_and_records_db_picks(session_factory, config, fake_storage):
+    _seed_marketplace_skill(fake_storage, SKILL_ID, owner=SKILL_TEAM)
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp, "kobo_set_agent_skills", _ctx_for(OWNER_A_EMAIL), agent="ward", add=[SKILL_ID]
+    )
+
+    assert result["added"][0]["id"] == SKILL_ID
+    assert result["added"][0]["sha"]
+    assert result["removed"] == []
+    session = session_factory()
+    try:
+        agent = session.query(Agent).filter_by(name="ward").one()
+        assert agent.skills[0]["name"] == SKILL_ID  # the canary seam, closed
+        assert agent.skills[0]["team"] == SKILL_TEAM
+    finally:
+        session.close()
+
+
+def test_set_agent_skills_remove(session_factory, config, fake_storage):
+    github = _SkillSeedingGitHub(local_skills={f"{SKILL_ID}/SKILL.md": "content"})
+    _seed_agent(
+        session_factory,
+        name="ward",
+        created_by=OWNER_A_EMAIL,
+        group_name=GROUP_A,
+        skills=[{"name": SKILL_ID, "team": SKILL_TEAM, "sha": "abc123", "source": "catalog"}],
+    )
+    app = _app(
+        session_factory, config, groups_resolver=_resolver(), storage=fake_storage, github=github
+    )
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp, "kobo_set_agent_skills", _ctx_for(OWNER_A_EMAIL), agent="ward", remove=[SKILL_ID]
+    )
+
+    assert result["added"] == []
+    assert result["removed"] == [SKILL_ID]
+    session = session_factory()
+    try:
+        agent = session.query(Agent).filter_by(name="ward").one()
+        assert agent.skills == []
+    finally:
+        session.close()
+
+
+def test_set_agent_skills_conflict_is_tool_error(session_factory, config, fake_storage):
+    _seed_marketplace_skill(fake_storage, SKILL_ID, owner=SKILL_TEAM)
+    _seed_agent(
+        session_factory,
+        name="ward",
+        created_by=OWNER_A_EMAIL,
+        group_name=GROUP_A,
+        skills=[{"name": SKILL_ID, "team": SKILL_TEAM, "sha": "abc123", "source": "catalog"}],
+    )
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match=f"already carries a skill named {SKILL_ID!r}"):
+        _call_tool(
+            mcp, "kobo_set_agent_skills", _ctx_for(OWNER_A_EMAIL), agent="ward", add=[SKILL_ID]
+        )
+
+
+def test_set_agent_skills_invisible_agent_not_found(session_factory, config, fake_storage):
+    _seed_marketplace_skill(fake_storage, SKILL_ID, owner=SKILL_TEAM)
+    _seed_agent(session_factory, name="hidden", created_by=OWNER_B_EMAIL, group_name=GROUP_B)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="agent not found"):
+        _call_tool(
+            mcp,
+            "kobo_set_agent_skills",
+            _ctx_for(STRANGER_EMAIL),
+            agent="hidden",
+            add=[SKILL_ID],
+        )
+
+
+def test_set_agent_skills_team_resolved_from_catalog(session_factory, config, fake_storage):
+    # The route needs payload.team: the tool resolves it from the
+    # marketplace catalog entry's owner -- callers pass ids only.
+    other_team = "finance-guild"
+    _seed_marketplace_skill(fake_storage, SKILL_ID, owner=other_team)
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    _call_tool(mcp, "kobo_set_agent_skills", _ctx_for(OWNER_A_EMAIL), agent="ward", add=[SKILL_ID])
+
+    session = session_factory()
+    try:
+        agent = session.query(Agent).filter_by(name="ward").one()
+        assert agent.skills[0]["team"] == other_team
+    finally:
+        session.close()
+
+
+def test_set_agent_skills_ownerless_catalog_entry_resolves_to_shared(
+    session_factory, config, fake_storage
+):
+    _seed_marketplace_skill(fake_storage, SKILL_ID, owner=None)
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    _call_tool(mcp, "kobo_set_agent_skills", _ctx_for(OWNER_A_EMAIL), agent="ward", add=[SKILL_ID])
+
+    session = session_factory()
+    try:
+        agent = session.query(Agent).filter_by(name="ward").one()
+        assert agent.skills[0]["team"] == "shared"
+    finally:
+        session.close()
+
+
+def test_set_agent_skills_unknown_skill_id_raises_before_any_route_call(
+    session_factory, config, fake_storage
+):
+    _seed_marketplace_skill(fake_storage, SKILL_ID, owner=SKILL_TEAM)
+    github = FakeGitHub()
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(
+        session_factory, config, groups_resolver=_resolver(), storage=fake_storage, github=github
+    )
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="no such skill: 'ghost'"):
+        _call_tool(
+            mcp, "kobo_set_agent_skills", _ctx_for(OWNER_A_EMAIL), agent="ward", add=["ghost"]
+        )
+
+    assert github.cloned == []
+    session = session_factory()
+    try:
+        agent = session.query(Agent).filter_by(name="ward").one()
+        assert agent.skills == []
+    finally:
+        session.close()
+
+
+def test_set_agent_skills_catalog_unavailable_raises_tool_error(
+    session_factory, config, fake_storage
+):
+    # fake_storage carries no skills-bucket index at all (only the seeded
+    # personas bucket) -- read_marketplace_catalog answers None, same as a
+    # legacy-dialect bucket or unreadable JSON would (its own docstring).
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="marketplace catalog is unavailable"):
+        _call_tool(
+            mcp, "kobo_set_agent_skills", _ctx_for(OWNER_A_EMAIL), agent="ward", add=[SKILL_ID]
+        )
+
+
+def test_set_agent_skills_storage_transport_failure_wraps_client_error(session_factory, config):
+    storage = FakeStorage(read_error="read_bytes('skills-bucket') failed (403)")
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="did not answer") as exc_info:
+        _call_tool(
+            mcp, "kobo_set_agent_skills", _ctx_for(OWNER_A_EMAIL), agent="ward", add=[SKILL_ID]
+        )
+    assert "403" not in str(exc_info.value)
+    assert SKILLS_BUCKET not in str(exc_info.value)
+
+
+def test_set_agent_skills_partial_failure_leaves_earlier_adds_applied(
+    session_factory, config, fake_storage
+):
+    _seed_marketplace_skill(fake_storage, SKILL_ID, owner=SKILL_TEAM)
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="no such skill: 'ghost'"):
+        _call_tool(
+            mcp,
+            "kobo_set_agent_skills",
+            _ctx_for(OWNER_A_EMAIL),
+            agent="ward",
+            add=[SKILL_ID, "ghost"],
+        )
+
+    session = session_factory()
+    try:
+        agent = session.query(Agent).filter_by(name="ward").one()
+        assert [entry["name"] for entry in agent.skills] == [SKILL_ID]
+    finally:
+        session.close()
