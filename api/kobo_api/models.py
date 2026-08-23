@@ -315,3 +315,48 @@ class GroupRequest(Base):
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class MCPRefreshToken(Base):
+    """One row per live refresh-token `jti` (MCP server arc, Task 3, the
+    design spec's "Token mechanics"): the only one of kobo's four MCP
+    token types that gets persisted -- state/authorization_code/
+    access_token are stateless HS256 JWTs, verified on their own claims
+    alone (`kobo_api.mcp.jwt`), but a refresh token's whole point
+    (rotate-on-use, replay revokes the family) needs a place to remember
+    what already happened to a given jti. See `kobo_api.mcp.refresh_
+    tokens` for the create/consume/revoke logic that reads and writes
+    this table -- this class is just the shape.
+
+    `family_id` links every jti a single OAuth grant has ever rotated
+    through: `create_family` mints it once (a fresh uuid4 hex) for the
+    grant's first jti, and every later rotation inserts its new jti into
+    that same family rather than starting a new one. `email` is the
+    verified Google Workspace email the grant belongs to -- stored here
+    rather than trusted from the caller alone, so `consume` can tell a
+    jti presented for the wrong email apart from a genuine replay (see
+    that function's own docstring). `rotated_at` is set the moment this
+    jti is successfully exchanged for a new one; `revoked_at`/
+    `revoked_reason` are set together, either by a direct revoke or by
+    replay detection, never one without the other.
+
+    This table postdates every other one in this file, but unlike
+    `Agent`/`A2AInvite`'s own added-later columns, it needs no manual
+    ALTER anywhere: a whole new table is exactly what `Base.metadata.
+    create_all` (`kobo_api.db.init_db`) already handles for free on a
+    database that has never seen it -- the ALTER-needed comments
+    elsewhere in this file are only for a new column landing on an
+    EXISTING table; a fresh table needs nothing extra.
+    """
+
+    __tablename__ = "mcp_refresh_tokens"
+
+    jti: Mapped[str] = mapped_column(String(64), primary_key=True)
+    family_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
