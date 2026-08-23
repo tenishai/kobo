@@ -393,6 +393,24 @@ class FakeGitHub:
     (and every step/route test whose HelloStep tail or PATCH/Regenerate
     call reaches `update_agent_card_metadata`) clone and edit in place.
 
+    `clone_tree` (marketplace repo door, Task 1), when given, is a
+    `{relpath: content}` map `clone` writes VERBATIM at `dest` instead of
+    the generated-agent-repo scaffolding above -- the seam for a fake that
+    stands in for a wholly different kind of repo (the org's marketplace
+    tools/skills tree, not an agent's own bundle repo), the same
+    "this knob replaces the generic scaffolding entirely" posture
+    `track_pushed_content`'s `_pushed_content` branch already takes above
+    it. Defaults to `None`, so every pre-existing test (all of which clone
+    an agent repo) is unaffected. Every `commit_push` call snapshots the
+    CURRENT content of `workdir` (same synchronous read-now discipline as
+    `_snapshot_pushed_content`, since a caller's tempdir is typically gone
+    the moment the call that pushed it returns) into `_pushed_trees`; the
+    two test-only helpers below read off the most recent snapshot:
+    `pushed_file(relpath)` returns that path's content (decoded UTF-8), and
+    `push_count` is how many times `commit_push` has been called -- e.g. a
+    validate-then-commit ordering assertion (`push_count == 0`) after a
+    validation failure that raised before ever cloning.
+
     `rename_repo`/`archive_repo` (Task 3: agent destruction's repo step)
     mirror the real `GhCLI`'s own not-found contract: calling either
     against a `repo` not currently in `.repos` raises `ClientError("repo
@@ -441,6 +459,7 @@ class FakeGitHub:
         rename_error: str | None = None,
         archive_error: str | None = None,
         agent_card: dict | None = None,
+        clone_tree: dict[str, str] | None = None,
     ):
         self.repos: set[str] = set(existing_repos) if existing_repos else set()
         self._rename_error = rename_error
@@ -483,6 +502,8 @@ class FakeGitHub:
             else {}
         )
         self._agent_card = dict(agent_card) if agent_card is not None else None
+        self._clone_tree = dict(clone_tree) if clone_tree is not None else None
+        self._pushed_trees: list[dict[str, bytes]] = []
 
         self._head_sha = head_sha
         self._head_sha_sequence = list(head_sha_sequence) if head_sha_sequence else None
@@ -531,6 +552,16 @@ class FakeGitHub:
         self.cloned.append((repo, dest))
         if self._clone_error is not None:
             raise ClientError(self._clone_error)
+
+        if self._clone_tree is not None:
+            # A wholly different repo shape (the marketplace tree, not an
+            # agent's own bundle repo) -- writes exactly this, nothing else
+            # (class docstring's `clone_tree` entry).
+            for rel_path, content in self._clone_tree.items():
+                target = dest / rel_path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+            return
 
         if repo in self._pushed_content:
             # A repo tracked via `track_pushed_content`: model this clone as
@@ -616,12 +647,39 @@ class FakeGitHub:
     def commit_push(self, workdir: Path, message: str) -> bool:
         self.calls.append(f"commit_push:{message}")
         self.pushes.append((workdir, message))
+        self._pushed_trees.append(
+            {
+                p.relative_to(workdir).as_posix(): p.read_bytes()
+                for p in workdir.rglob("*")
+                if p.is_file()
+            }
+        )
         result = self._commit_push_results[
             min(self._commit_push_index, len(self._commit_push_results) - 1)
         ]
         if self._commit_push_index < len(self._commit_push_results) - 1:
             self._commit_push_index += 1
         return result
+
+    def pushed_file(self, relpath: str) -> str:
+        """Content of `relpath` in the most recent `commit_push`'s workdir
+        tree, decoded as UTF-8 text (marketplace repo door, Task 1) -- see
+        the class docstring's `clone_tree` entry. Raises `AssertionError`
+        if `commit_push` was never called, or if its tree never held that
+        path -- a test asserting on the wrong path fails loudly rather than
+        silently reading something misleading.
+        """
+        assert self._pushed_trees, "commit_push was never called"
+        tree = self._pushed_trees[-1]
+        assert relpath in tree, f"{relpath!r} was not pushed (pushed: {sorted(tree)})"
+        return tree[relpath].decode("utf-8")
+
+    @property
+    def push_count(self) -> int:
+        """How many times `commit_push` has been called (marketplace repo
+        door, Task 1) -- e.g. a validate-then-commit ordering assertion
+        that nothing was pushed after a validation failure."""
+        return len(self.pushes)
 
     def open_pr(self, workdir: Path, *, repo: str, branch: str, title: str, body: str) -> str:
         """Records the exact call (`open_pr_calls`, one dict per call) and
