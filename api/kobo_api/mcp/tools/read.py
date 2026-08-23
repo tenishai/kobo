@@ -1,8 +1,11 @@
-"""kobo's four MCP read tools (MCP server arc, Task 7): whoami, list,
-get, and feed. Every one of these is a thin shim over the room's own
-choke points -- `kobo_api.mcp.authz` for visibility/admin, `kobo_api.main`
-for the feed's own flattening pipeline -- never a second implementation
-of logic that already exists and is already tested there.
+"""kobo's read-only MCP tools: the original four from the MCP server arc
+(Task 7) -- whoami, list, get, and feed -- plus two marketplace-catalog
+listers added by the MCP marketplace wave's Task 2 -- `kobo_list_skills`
+and `kobo_list_tools`. Every one of these is a thin shim over the room's
+own choke points -- `kobo_api.mcp.authz` for visibility/admin,
+`kobo_api.main` for the feed's own flattening pipeline, `kobo_api.search`/
+`kobo_api.marketplace` for the two catalogs -- never a second
+implementation of logic that already exists and is already tested there.
 
 Every tool wears `@mcp.tool(annotations=ToolAnnotations(readOnlyHint=
 True))` on the outside and `@audited("kobo_x")` immediately under it --
@@ -30,10 +33,12 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
+from kobo_api.marketplace import MarketplaceError, list_tools
 from kobo_api.mcp import authz
 from kobo_api.mcp.audit import audited
 from kobo_api.mcp.server import get_user_email
 from kobo_api.purpose_tags import decode_tags
+from kobo_api.search import read_marketplace_catalog
 
 # The one error message both agent-scoped tools raise for "doesn't exist"
 # and "exists but you can't see it" alike -- see `kobo_api.mcp.authz.
@@ -45,12 +50,21 @@ _AGENT_NOT_FOUND = "agent not found"
 _SWITCHBOARD_NOT_CONFIGURED = "the switchboard is not configured"
 _SWITCHBOARD_DID_NOT_ANSWER = "The switchboard did not answer. Try again shortly."
 
+# `read_marketplace_catalog` answers "not the marketplace dialect" with a
+# plain `None` rather than a typed error (kobo_api.search's own docstring):
+# no index published at all, a legacy-dialect bucket, or unreadable JSON
+# all collapse to the same signal. `kobo_list_skills` below is the one
+# place that turns that `None` into the caller-facing error every other
+# tool in this module gets from a typed exception instead.
+_CATALOG_UNAVAILABLE = "the marketplace catalog is unavailable"
+
 
 def register(mcp: FastMCP, app: Any) -> None:
-    """Registers the four read tools on `mcp`. Each closes over `app` --
-    the same FastAPI app `kobo_api.mcp.authz.room_request` builds its
-    synthetic `Request` from, and the source of the session factory and
-    switchboard client every tool below reaches through `app.state`.
+    """Registers this module's six read tools on `mcp`. Each closes over
+    `app` -- the same FastAPI app `kobo_api.mcp.authz.room_request` builds
+    its synthetic `Request` from, and the source of the session factory,
+    switchboard client, storage client, and GitHub client every tool
+    below reaches through `app.state`.
     """
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
@@ -233,3 +247,48 @@ def register(mcp: FastMCP, app: Any) -> None:
             entries = entries[-cap:] if cap else []
 
         return {"entries": entries, "truncated": truncated}
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @audited("kobo_list_skills")
+    async def kobo_list_skills(ctx: Context) -> dict:
+        """List every skill in the org marketplace: id, description,
+        when to use it, tags, owning team, version. Before creating a
+        new skill, ALWAYS list and check fit here first -- prefer an
+        existing skill over a near-twin. Any signed-in caller may list.
+        """
+        clients = app.state.clients
+        cfg = app.state.config
+        catalog = read_marketplace_catalog(clients.storage, cfg.skills_bucket)
+        if catalog is None:
+            raise ToolError(_CATALOG_UNAVAILABLE)
+
+        return {
+            "result": [
+                {
+                    "id": skill_id,
+                    "description": entry.get("description", ""),
+                    "when_to_use": entry.get("when_to_use", ""),
+                    "tags": list(entry.get("tags", [])),
+                    "owner": entry.get("owner", ""),
+                    "version": entry.get("version", ""),
+                }
+                for skill_id, entry in sorted(catalog.items())
+            ]
+        }
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @audited("kobo_list_tools")
+    async def kobo_list_tools(ctx: Context) -> dict:
+        """List every tool in the shared tooling catalog: id, name,
+        description, owning team, tags. A new agent should always carry
+        tooling -- see kobo_add_agent_tool and kobo_create_tool. Any
+        signed-in caller may list.
+        """
+        clients = app.state.clients
+        cfg = app.state.config
+        try:
+            tools = list_tools(clients.github, cfg)
+        except MarketplaceError as exc:
+            raise ToolError(str(exc)) from exc
+
+        return {"result": tools}

@@ -33,6 +33,7 @@ No pytest-asyncio in this repo (house convention, `test_mcp_audit.py`):
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from mcp.server.fastmcp import Context
@@ -61,6 +62,7 @@ from tests.fakes import (
     FakeGitHub,
     FakeGojira,
     FakeKubectl,
+    FakeStorage,
 )
 
 PERSONA = "helpful-generalist"
@@ -151,15 +153,16 @@ def config(tmp_path):
     )
 
 
-def _app(session_factory, config, *, groups_resolver=None, cabal=None):
+def _app(session_factory, config, *, groups_resolver=None, cabal=None, storage=None, github=None):
     clients = Clients(
-        github=FakeGitHub(),
+        github=github if github is not None else FakeGitHub(),
         gojira=FakeGojira(),
         cloud=FakeCloud(),
         agent=FakeAgent(),
         kubectl=FakeKubectl(),
         groups=groups_resolver,
         cabal=cabal,
+        storage=storage,
     )
     return create_app(session_factory, config=config, clients=clients)
 
@@ -228,18 +231,28 @@ def _call_tool(mcp, tool_name, ctx, **arguments):
 # --- build_mcp_server / _KoboTokenVerifier / get_user_email ----------------
 
 
-def test_build_mcp_server_registers_the_four_read_tools(session_factory, config):
+def test_build_mcp_server_registers_the_six_read_tools(session_factory, config):
     app = _app(session_factory, config, groups_resolver=_resolver())
 
     mcp = build_mcp_server(app)
 
     # Task 8 adds the six write tools alongside these on the same `mcp` --
-    # this assertion only pins that the four READ tools are still exactly
-    # these four (a superset check, not equality), so this file stays
-    # focused on read-tool registration without needing to track the
-    # write-tools module's own tool set too (see test_mcp_tools_write.py).
+    # this assertion only pins that the six READ tools (the original four
+    # from Task 7 plus the marketplace wave's Task 2 pair, kobo_list_skills/
+    # kobo_list_tools) are still exactly these six (a superset check, not
+    # equality), so this file stays focused on read-tool registration
+    # without needing to track the write-tools module's own tool set too
+    # (see test_mcp_tools_write.py, whose exact-set test tracks the full
+    # registered surface across both files).
     names = {tool.name for tool in mcp._tool_manager.list_tools()}
-    assert {"kobo_whoami", "kobo_list_agents", "kobo_get_agent", "kobo_feed"} <= names
+    assert {
+        "kobo_whoami",
+        "kobo_list_agents",
+        "kobo_get_agent",
+        "kobo_feed",
+        "kobo_list_skills",
+        "kobo_list_tools",
+    } <= names
 
 
 def test_build_mcp_server_configures_audit_with_the_apps_session_factory(session_factory, config):
@@ -706,3 +719,94 @@ def test_feed_upstream_cabal_error_raises_tool_error(session_factory, config, mo
 
     with pytest.raises(ToolError, match="did not answer"):
         _call_tool(mcp, "kobo_feed", _ctx_for(OPERATOR_EMAIL), agent="ward")
+
+
+# --- kobo_list_skills / kobo_list_tools (MCP marketplace wave, Task 2) ------
+
+SKILLS_BUCKET = "skills-bucket"
+
+TOOL_MD = """---
+name: baseline-leakguard
+description: Redacts credential-shaped strings from every reply.
+owner: sre
+tags: [security]
+---
+"""
+
+
+def _marketplace_index_bytes(skills: dict) -> bytes:
+    # Same marketplace-dialect shape kobo_api.search's own fixtures build
+    # (test_search.py's _marketplace_index_bytes) -- a top-level object
+    # with a dict-shaped "skills" mapping and a "count" key, the exact
+    # predicate _is_marketplace_dialect checks for.
+    return json.dumps({"skills": skills, "count": len(skills)}).encode()
+
+
+def _marketplace_storage(skills: dict, *, bucket: str = SKILLS_BUCKET) -> FakeStorage:
+    return FakeStorage(buckets={bucket: {"index.json": (_marketplace_index_bytes(skills), {})}})
+
+
+def test_list_skills_returns_catalog_entries(session_factory, config):
+    storage = _marketplace_storage(
+        {
+            "ptr-primer": {
+                "name": "ptr-primer",
+                "version": "1.0.0",
+                "description": "d",
+                "when_to_use": "w",
+                "tags": ["net"],
+                "owner": "sre",
+            }
+        }
+    )
+    cfg = config.model_copy(update={"skills_bucket": SKILLS_BUCKET})
+    app = _app(session_factory, cfg, groups_resolver=_resolver(), storage=storage)
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(mcp, "kobo_list_skills", _ctx_for(MEMBER_A_EMAIL))
+
+    entry = result["result"][0]
+    assert entry == {
+        "id": "ptr-primer",
+        "description": "d",
+        "when_to_use": "w",
+        "tags": ["net"],
+        "owner": "sre",
+        "version": "1.0.0",
+    }
+
+
+def test_list_skills_raises_tool_error_when_the_catalog_is_unavailable(session_factory, config):
+    # read_marketplace_catalog answers None for a bucket carrying no index
+    # at all (same as a legacy-dialect bucket or unreadable JSON -- see its
+    # own docstring) -- kobo_list_skills must turn that into a ToolError
+    # rather than crashing on a None.items() a few lines later.
+    storage = FakeStorage()
+    cfg = config.model_copy(update={"skills_bucket": SKILLS_BUCKET})
+    app = _app(session_factory, cfg, groups_resolver=_resolver(), storage=storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="marketplace catalog is unavailable"):
+        _call_tool(mcp, "kobo_list_skills", _ctx_for(MEMBER_A_EMAIL))
+
+
+def test_list_tools_reads_the_marketplace_tree(session_factory, config):
+    cfg = config.model_copy(update={"skills_repo": "org-skills"})
+    github = FakeGitHub(clone_tree={"tools/baseline-leakguard/TOOL.md": TOOL_MD})
+    app = _app(session_factory, cfg, groups_resolver=_resolver(), github=github)
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(mcp, "kobo_list_tools", _ctx_for(MEMBER_A_EMAIL))
+
+    assert [t["id"] for t in result["result"]] == ["baseline-leakguard"]
+
+
+def test_list_tools_raises_tool_error_when_the_repo_is_not_configured(session_factory, config):
+    # config.skills_repo is unset on the bare `config` fixture -- list_tools
+    # (kobo_api.marketplace) raises MarketplaceError before ever cloning;
+    # the tool must surface that as a plain ToolError(str(exc)).
+    app = _app(session_factory, config, groups_resolver=_resolver())
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="marketplace repo is not configured"):
+        _call_tool(mcp, "kobo_list_tools", _ctx_for(MEMBER_A_EMAIL))
