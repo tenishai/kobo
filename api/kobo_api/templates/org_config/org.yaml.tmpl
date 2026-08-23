@@ -72,9 +72,11 @@ okta_domain: __KOBO_OKTA_DOMAIN__
 
 # Google OAuth + JWT signing coordinates for kobo's MCP server (MCP server
 # arc, Task 1). Empty oauth_client_id (the default) means the MCP server is
-# off, same as cabal_url above; an enabled server also requires
-# workspace_domain to be set (the org gate on the MCP path) or the room
-# refuses to start. oauth_client_secret_env / jwt_key_env are ENV VAR
-# NAMES, not secret values themselves -- NEVER put a real secret in this or
-# any tracked file.
+# off, same as cabal_url above; an enabled server also requires BOTH
+# workspace_domain (the org gate on the MCP path) AND issuer_base_url (the
+# room's own external base URL, e.g. https://kobo.example, which the OAuth
+# discovery documents and Google redirect URI are built from) to be set, or
+# the room refuses to start. oauth_client_secret_env / jwt_key_env are ENV
+# VAR NAMES, not secret values themselves -- NEVER put a real secret in this
+# or any tracked file.
 mcp: __KOBO_MCP__
