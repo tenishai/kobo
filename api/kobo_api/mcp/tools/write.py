@@ -248,6 +248,16 @@ refuses -- fail closed, matching `kobo_api.main`'s own group-consent gate
 for `kobo_create_agent`'s `group_name` (a resolver that cannot answer
 right now grants nothing, never "assume it's fine").
 
+`kobo_create_tool` carries ONE further gate beside that one, in the same
+before-any-write position (Task 6 review, operator ruled): a `tool_id`
+starting with `marketplace.BASELINE_TOOL_PREFIX` is refused
+(`_BASELINE_PREFIX_RESERVED`) unless `authz.is_admin` says the caller is a
+room operator. Every other tool in the marketplace is opt-in per agent; a
+`baseline-` one is staged into EVERY agent created afterward by
+`kobo_api.steps._stage_baseline_tools`, so publishing one raises the whole
+room's floor of tooling -- that is an operator's call, not a team member's.
+`kobo_create_skill` has no such gate: there is no baseline SKILL pack.
+
 Once membership clears, both tools call straight through with
 `author=email` (the commit message's own attribution, `marketplace.
 create_skill`/`create_tool`'s own docstrings) and translate the two typed
@@ -292,6 +302,7 @@ from pydantic import ValidationError
 
 from kobo_api.clients import ClientError
 from kobo_api.marketplace import (
+    BASELINE_TOOL_PREFIX,
     MarketplaceError,
     create_skill,
     create_tool,
@@ -332,6 +343,15 @@ _SKILL_GONE_FROM_CATALOG_PREFIX = "skill no longer in the catalog:"
 # `kobo_add_agent_tool`'s own source-arbitration gate -- see this module's
 # own docstring section for exactly which shapes this covers.
 _EXACTLY_ONE_SOURCE = "pass exactly one source: tool_id, or filename with content"
+
+# `kobo_create_tool`'s baseline-pack reservation (Task 6 review, operator
+# ruled). Publishing a `baseline-` id is not a team-scoped act like every
+# other tool: `kobo_api.steps._stage_baseline_tools` stages whatever carries
+# that prefix into EVERY agent created afterward, so it changes the room's
+# floor of tooling for everyone. Room operators only.
+_BASELINE_PREFIX_RESERVED = (
+    f"tool ids starting with {BASELINE_TOOL_PREFIX!r} are reserved for room operators"
+)
 
 # `_require_team_membership`'s own fail-closed answer for a `None` resolve
 # (the resolver is unreachable right now, or none is configured at all) --
@@ -910,10 +930,18 @@ def register(mcp: FastMCP, app: Any) -> None:
         anyone browsing the marketplace. The entry lands under YOUR team
         and publishes immediately, org-wide: kobo_list_tools reads the
         marketplace repo directly, so it is visible there right after this
-        commit, with no pipeline to wait on.
+        commit, with no pipeline to wait on. Ids starting with "baseline-"
+        are reserved for room operators: those ship automatically with
+        every new agent, so publishing one changes the whole room.
         """
         email = get_user_email(ctx)
         _require_team_membership(app, email, team)
+        # Beside the membership gate, and like it: before any marketplace
+        # write. See `_BASELINE_PREFIX_RESERVED` for why the pack is
+        # operator-only, and `authz.is_admin` (the same answer
+        # `_require_team_membership` short-circuits on) for who that is.
+        if tool_id.startswith(BASELINE_TOOL_PREFIX) and not authz.is_admin(app, email):
+            raise ToolError(_BASELINE_PREFIX_RESERVED)
         clients = app.state.clients
         cfg = app.state.config
         try:

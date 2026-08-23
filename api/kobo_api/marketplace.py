@@ -27,6 +27,22 @@ class MarketplaceError(Exception):
     pass
 
 
+# Baseline tooling pack (MCP marketplace wave 1, Task 6): a tool in this repo
+# belongs to the pack every NEW agent ships with when its id carries this
+# prefix. The whole selection rule, deliberately a naming convention rather
+# than a new org-config key -- the deployed config loader rejects unknown org
+# keys, so a key would have to land in every room's config file before any
+# room could get a pack at all.
+#
+# It lives HERE, not in either consumer, because the prefix is one rule with
+# two enforcement points that must never drift apart: `kobo_api.steps.
+# _stage_baseline_tools` stages what matches it, and `kobo_api.mcp.tools.
+# write.kobo_create_tool` reserves what matches it for room operators
+# (publishing one is a room-wide act -- it changes what every agent born
+# afterward carries -- not a team-scoped one like any other tool).
+BASELINE_TOOL_PREFIX = "baseline-"
+
+
 def marketplace_repo(config: Config) -> str:
     if not config.skills_repo:
         raise MarketplaceError("the marketplace repo is not configured")

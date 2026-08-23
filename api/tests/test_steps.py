@@ -461,6 +461,11 @@ BASELINE_PROBE_GUARD_PY = (
 
 OTHER_TOOL_PY = '"""Not part of the pack."""\ndef post_draft(draft):\n    return draft\n'
 
+# Unparseable Python: the shape the marketplace's review-gate-free direct-push
+# lane can genuinely leave in that tree, and exactly what the runtime's
+# enforcement loader would refuse (locking every agent that shipped it).
+BROKEN_BASELINE_PY = '"""Broken baseline tool."""\ndef post_draft(draft:\n'
+
 BASELINE_TOOL_MD = (
     "---\nname: baseline-leakguard\ndescription: Redacts credential-shaped strings.\n"
     "owner: sre\ntags: [security]\n---\n"
@@ -498,11 +503,11 @@ def test_stage_baseline_tools_copies_only_prefixed_py_files(config, tmp_path):
     assert github.cloned[0][0] == marketplace_repo(config)
 
 
-def test_stage_baseline_tools_unconfigured_marketplace_warns_and_stages_nothing(
-    config, tmp_path, caplog
-):
-    """An unconfigured `skills_repo` (`MarketplaceError`) is just "no pack",
-    never a failure -- the same swallow-and-warn contract a broken clone gets."""
+def test_stage_baseline_tools_unconfigured_marketplace_is_silent(config, tmp_path, caplog):
+    """A room that never named a skills repo has no pack to miss: no clone,
+    no warning (every create in a dev room would otherwise log one), and
+    nothing staged. The warning is reserved for a marketplace that IS
+    configured and then fails."""
     config.skills_repo = None
     github = _marketplace_github()
     bundle_dir = tmp_path / "repo" / "bundle"
@@ -513,7 +518,83 @@ def test_stage_baseline_tools_unconfigured_marketplace_warns_and_stages_nothing(
     assert staged == []
     assert not (bundle_dir / "tools").exists()
     assert github.cloned == []
+    assert caplog.text == ""
+
+
+def test_stage_baseline_tools_skips_a_file_the_tooling_validator_rejects(
+    config, tmp_path, caplog
+):
+    """The marketplace's publish lane is a direct commit with no review
+    gate, so a file that would fail the runtime's enforcement contract can
+    be sitting in that tree. Staging one would lock EVERY new agent -- so
+    each file is validated independently (mirroring
+    `kobo_api.tooling.import_tooling`) and a rejected one is skipped, never
+    allowed to sink the rest of the pack."""
+    config.skills_repo = "org-skills"
+    github = FakeGitHub(
+        clone_tree={
+            "tools/baseline-leakguard/baseline-leakguard.py": BASELINE_LEAKGUARD_PY,
+            "tools/baseline-broken/baseline-broken.py": BROKEN_BASELINE_PY,
+        }
+    )
+    bundle_dir = tmp_path / "repo" / "bundle"
+
+    with caplog.at_level(logging.WARNING):
+        staged = _stage_baseline_tools(github, config, bundle_dir)
+
+    assert staged == ["baseline-leakguard.py"]
+    assert not (bundle_dir / "tools" / "baseline-broken.py").exists()
     assert "baseline tooling skipped" in caplog.text
+    assert "baseline-broken.py" in caplog.text
+
+
+class _SymlinkMarketplace:
+    """The one marketplace shape `FakeGitHub`'s text-only `clone_tree` can't
+    express: a pack entry that is a SYMLINK pointing out of the clone. Git
+    stores symlinks, so a file in that org-shared tree really can be one --
+    and following it would copy content off the cloning machine straight
+    into an agent's bundle. Only `clone` is ever called on this."""
+
+    def __init__(self, escape_target):
+        self._escape_target = escape_target
+        self.cloned: list = []
+
+    def clone(self, repo, dest):
+        self.cloned.append((repo, dest))
+        entry = dest / "tools" / "baseline-escape"
+        entry.mkdir(parents=True)
+        (entry / "baseline-escape.py").symlink_to(self._escape_target)
+
+
+def test_stage_baseline_tools_never_follows_a_symlink_out_of_the_clone(
+    config, tmp_path, caplog
+):
+    config.skills_repo = "org-skills"
+    secret = tmp_path / "secret.py"
+    secret.write_text('"""Not the marketplace\'s."""\ndef post_draft(draft):\n    return draft\n')
+    github = _SymlinkMarketplace(secret)
+    bundle_dir = tmp_path / "repo" / "bundle"
+
+    with caplog.at_level(logging.WARNING):
+        staged = _stage_baseline_tools(github, config, bundle_dir)
+
+    assert staged == []
+    assert not (bundle_dir / "tools").exists()
+    assert "baseline tooling skipped" in caplog.text
+
+
+def test_stage_baseline_tools_configured_but_unreachable_warns(config, tmp_path, caplog):
+    config.skills_repo = "org-skills"
+    github = _marketplace_github(clone_error="marketplace clone exploded")
+    bundle_dir = tmp_path / "repo" / "bundle"
+
+    with caplog.at_level(logging.WARNING):
+        staged = _stage_baseline_tools(github, config, bundle_dir)
+
+    assert staged == []
+    assert not (bundle_dir / "tools").exists()
+    assert "baseline tooling skipped" in caplog.text
+    assert marketplace_repo(config) in caplog.text
 
 
 # --- RepoStep -----------------------------------------------------------------
@@ -863,6 +944,34 @@ def test_repo_step_skip_baseline_stages_nothing(session_factory, config, fake_st
     assert not (created_src / "bundle" / "tools").exists()
     # The opt-out is checked before the clone: the marketplace is never read.
     assert github.cloned == []
+
+
+def test_repo_step_invalid_baseline_file_is_dropped_and_create_proceeds(
+    session_factory, config, fake_storage, caplog
+):
+    """The end-to-end shape of the validator guard: one unparseable file in
+    the pack must cost that file only. Staging it would ship a bundle the
+    runtime's enforcement loader locks, which fails the create outright at
+    HelloStep -- the create must instead finish with the good tool aboard."""
+    config.skills_repo = "org-skills"
+    session, agent = _make_agent(session_factory)
+    github = FakeGitHub(
+        clone_tree={
+            "tools/baseline-leakguard/baseline-leakguard.py": BASELINE_LEAKGUARD_PY,
+            "tools/baseline-broken/baseline-broken.py": BROKEN_BASELINE_PY,
+        }
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
+
+    with caplog.at_level(logging.WARNING):
+        RepoStep().run(ctx)
+
+    assert agent.repo_full_name == f"{config.github_org}/agent-{AGENT_NAME}"
+    _, created_src = github.created_from_dir[0]
+    assert [p.name for p in (created_src / "bundle" / "tools").iterdir()] == [
+        "baseline-leakguard.py"
+    ]
+    assert "baseline-broken.py" in caplog.text
 
 
 def test_repo_step_marketplace_unreachable_warns_and_proceeds(

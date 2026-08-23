@@ -1861,6 +1861,73 @@ def test_create_tool_non_member_refused(session_factory, config, fake_storage):
     assert fake_github.push_count == 0
 
 
+def test_create_tool_baseline_prefix_refused_for_non_operator(
+    session_factory, config, fake_storage
+):
+    """The baseline pack's reservation (Task 6 review, operator ruling): a
+    `baseline-` id is what every NEW agent then ships automatically
+    (`kobo_api.steps._stage_baseline_tools`), so publishing one is a
+    room-wide act, not a team one. MEMBER_A_EMAIL is a real member of
+    GROUP_A here -- the membership gate passes and this refusal can only
+    come from the prefix gate."""
+    config.skills_repo = "org-skills"
+    fake_github = FakeGitHub()
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="reserved for room operators"):
+        _call_tool(
+            mcp,
+            "kobo_create_tool",
+            _ctx_for(MEMBER_A_EMAIL),
+            tool_id="baseline-leakguard",
+            content=TOOL_PY,
+            team=GROUP_A,
+            description="A guard.",
+        )
+
+    assert fake_github.push_count == 0
+
+
+def test_create_tool_baseline_prefix_allowed_for_operator(
+    session_factory, config, fake_storage
+):
+    """The other side of the reservation: an operator may publish into the
+    pack. OPERATOR_EMAIL isn't in GROUP_A's resolved membership either, so
+    this one call clears BOTH operator exemptions at once."""
+    config.skills_repo = "org-skills"
+    fake_github = FakeGitHub()
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp,
+        "kobo_create_tool",
+        _ctx_for(OPERATOR_EMAIL),
+        tool_id="baseline-leakguard",
+        content=TOOL_PY,
+        team=GROUP_A,
+        description="Redacts secret-shaped strings from every reply.",
+    )
+
+    assert result["commit"]
+    assert (
+        fake_github.pushed_file("tools/baseline-leakguard/baseline-leakguard.py") == TOOL_PY
+    )
+
+
 def test_create_tool_resolver_down_fail_closed(session_factory, config, fake_storage):
     """Mirrors `test_create_skill_resolver_down_fail_closed` for
     `kobo_create_tool` -- same "deleting the gate's call site inside this

@@ -43,7 +43,6 @@ import yaml
 from kobo_api.catalog import _DESCRIPTION_HEADER_RE
 from kobo_api.clients import (
     ClientError,
-    GitHubClient,
     GojiraConflict,
     StorageClient,
     StorageNotFound,
@@ -65,6 +64,7 @@ from kobo_api.metadata import (
 from kobo_api.models import Agent
 from kobo_api.purpose_tags import decode_tags
 from kobo_api.search import read_marketplace_catalog
+from kobo_api.tooling import ToolingError, _validate_content, _validate_filename
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +73,7 @@ log = logging.getLogger(__name__)
 # (above) already makes every annotation in this file a lazy string, so `Ctx`
 # is only ever needed by type checkers, never at import time.
 if TYPE_CHECKING:
+    from kobo_api.clients import GitHubClient
     from kobo_api.provisioner import Ctx
 
 # Gojira onboarding poll cadence: every 5s, up to 300s total (the brief's numbers,
@@ -341,16 +342,6 @@ def _stage_skills(
     return staged
 
 
-# Baseline tooling pack (MCP marketplace wave 1, Task 6): a tool in the org
-# marketplace belongs to the pack when its id carries this prefix -- the whole
-# selection rule, deliberately a naming convention rather than a new org-config
-# key. The deployed config loader rejects unknown org keys, so a key would have
-# to land in every room's config file before any room could get a pack at all;
-# a prefix means a team publishes `baseline-<something>` through the ordinary
-# `kobo_create_tool` door and every agent born after that ships it.
-BASELINE_TOOL_PREFIX = "baseline-"
-
-
 def _stage_baseline_tools(
     github: GitHubClient, config: Config, bundle_dir: Path
 ) -> list[str]:
@@ -358,56 +349,101 @@ def _stage_baseline_tools(
     `bundle_dir/tools/`, returning the staged filenames (sorted).
 
     The pack is every `tools/<id>/<id>.py` in the marketplace repo whose id
-    starts with `BASELINE_TOOL_PREFIX` -- matched by that shape exactly, so a
-    non-baseline tool, a `TOOL.md`, and a stray helper module sitting beside a
-    baseline tool's own entrypoint are all left behind. Files land FLAT in
-    `bundle_dir/tools/` under their own basename (the layout
-    `kobo_api.tooling.upload_tooling_file` and the runtime's enforcement
-    envelope both already expect), never as the per-tool subdirectory the
-    marketplace stores them in: the destination path is built from
-    `src.name` -- a single component off a real directory listing -- so no
-    path in that repo, symlinked or otherwise, can steer a write outside the
-    bundle. Symlinks are skipped outright rather than followed, so a link in
-    the marketplace tree cannot smuggle content from the cloning machine into
-    an agent's bundle.
+    starts with `marketplace.BASELINE_TOOL_PREFIX` -- matched by that shape
+    exactly, so a non-baseline tool, a `TOOL.md`, and a stray helper module
+    sitting beside a baseline tool's own entrypoint are all left behind.
+    Files land FLAT in `bundle_dir/tools/` under their own basename (the
+    layout `kobo_api.tooling.upload_tooling_file` and the runtime's
+    enforcement envelope both already expect), never as the per-tool
+    subdirectory the marketplace stores them in.
 
-    ANY failure is swallowed: an unconfigured marketplace (`MarketplaceError`
-    -- a room that never named a skills repo simply has no pack), a clone that
-    won't complete, an unreadable file. It logs a warning and returns `[]`,
-    because an agent must not fail to exist because the marketplace hiccuped
-    -- the same best-effort posture `kobo_api.metadata.tooling_filenames_for`
-    takes for its own github read. The pack is a head start, not a
-    precondition; a room that wanted it and didn't get it can add the tools
-    through `POST .../tooling` after birth.
+    Every candidate is validated INDEPENDENTLY against the exact same
+    `kobo_api.tooling` checks (`_validate_filename`/`_validate_content`:
+    size/UTF-8/non-empty/ast/import-allowlist/entrypoint) a single upload
+    runs, and a `ToolingError` skips that one file -- mirroring
+    `tooling.import_tooling`'s per-file posture. This is not belt-and-braces:
+    the marketplace publishes by DIRECT COMMIT with no review gate
+    (`kobo_api.marketplace`'s module docstring), so one syntactically broken
+    or non-stdlib-importing file really can be sitting in that tree, and
+    staging it would ship a bundle the runtime's enforcement loader LOCKS --
+    turning one team's bad push into a failed create for every new agent in
+    the room. One bad file costs that file only.
+
+    Containment, on the same "this is a shared repo nobody reviews" footing:
+    every source path must still resolve INSIDE the clone (so a symlink out
+    of the tree can't smuggle content off the cloning machine into an
+    agent's bundle), and the destination is always `dest_dir / src.name` --
+    a single component from a real directory listing -- so no path in that
+    repo can steer a write outside `bundle_dir`.
+
+    Nothing is written until every candidate has been read and validated:
+    a failure partway through collection therefore stages nothing at all,
+    keeping the "skipped" the warning reports literally true.
+
+    A room with no `skills_repo` configured at all returns `[]` silently --
+    it has no marketplace, so there is no pack to miss and nothing worth
+    warning about on every single create. Past that point ANY failure is
+    swallowed into ONE warning and `[]`/a partial list: a clone that won't
+    complete, an unreadable file, a rejected candidate. An agent must not
+    fail to exist because the marketplace hiccuped -- the same best-effort
+    posture `kobo_api.metadata.tooling_filenames_for` takes for its own
+    github read. The pack is a head start, not a precondition; a room that
+    wanted it and didn't get it can add the tools through `POST .../tooling`
+    after birth.
     """
     # Imported here, not at module scope: `kobo_api.marketplace` imports
     # `kobo_api.skills`, which imports THIS module (`_materialize_catalog_
     # skill`) -- a top-level import would be a cycle that fails at import
     # time, since that name is defined below where the import would sit.
-    from kobo_api.marketplace import marketplace_repo
+    from kobo_api.marketplace import BASELINE_TOOL_PREFIX, marketplace_repo
 
-    repo = config.skills_repo or "(no marketplace repo configured)"
+    if not config.skills_repo:
+        return []
+
+    repo = config.skills_repo
+    skipped: list[str] = []
     try:
         repo = marketplace_repo(config)
         with tempfile.TemporaryDirectory() as tmp:
             workdir = Path(tmp)
             github.clone(repo, workdir)
+            resolved_clone = workdir.resolve()
             pattern = f"{BASELINE_TOOL_PREFIX}*/{BASELINE_TOOL_PREFIX}*.py"
-            dest_dir = bundle_dir / "tools"
-            staged: list[str] = []
+
+            collected: list[tuple[str, bytes]] = []
             for src in sorted((workdir / "tools").glob(pattern)):
-                if src.is_symlink() or not src.is_file():
+                if not src.is_file():
+                    skipped.append(f"{src.name} (not a regular file)")
                     continue
-                # mkdir inside the loop, on the first real file: a room whose
-                # marketplace carries no pack at all gets no empty
-                # `bundle/tools/` directory in its bundle either.
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(src, dest_dir / src.name)
-                staged.append(src.name)
-            return sorted(staged)
+                if not src.resolve().is_relative_to(resolved_clone):
+                    skipped.append(f"{src.name} (resolves outside the marketplace clone)")
+                    continue
+                raw = src.read_bytes()
+                try:
+                    _validate_filename(src.name)
+                    _validate_content(src.name, raw)
+                except ToolingError as exc:
+                    skipped.append(f"{src.name} ({exc})")
+                    continue
+                collected.append((src.name, raw))
+
+        # Collection is complete and the clone is gone: writing now means a
+        # failure while READING the marketplace can never leave a half-staged
+        # pack behind (see the docstring).
+        dest_dir = bundle_dir / "tools"
+        for name, raw in collected:
+            # mkdir on the first real file, not up front: a room whose
+            # marketplace carries no pack at all gets no empty
+            # `bundle/tools/` directory in its bundle either.
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            (dest_dir / name).write_bytes(raw)
     except Exception as exc:  # noqa: BLE001 - never fatal, see the docstring
         log.warning("baseline tooling skipped for %s: %s", repo, exc)
         return []
+
+    if skipped:
+        log.warning("baseline tooling skipped for %s: %s", repo, "; ".join(skipped))
+    return [name for name, _raw in collected]
 
 
 class RepoStep:
