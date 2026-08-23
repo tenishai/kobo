@@ -319,6 +319,41 @@ def test_build_mcp_server_registers_the_six_write_tools_alongside_the_read_ones(
     } <= names
 
 
+def test_build_mcp_server_registers_exactly_the_ten_named_tools(
+    session_factory, config, fake_storage
+):
+    """Coverage folded in from Task 8's review: the subset check just
+    above (and its read-tools twin in test_mcp_tools_read.py,
+    `test_build_mcp_server_registers_the_four_read_tools`) each pin only
+    their own file's tools with `<=`, deliberately, so neither file also
+    has to track the other's count -- which means nothing anywhere pins
+    the FULL registered set. This is that missing test: `build_mcp_server`
+    must register EXACTLY these ten tools, no more, no fewer, matching the
+    design's own "Tool surface" table
+    (docs/superpowers/specs/2026-08-22-mcp-server-design.md) one-for-one.
+    A stray extra registration (a copy-paste twin, a leftover experiment)
+    or a dropped one would fail this even though both narrower `<=` checks
+    above would stay green.
+    """
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+
+    mcp = build_mcp_server(app)
+
+    names = {tool.name for tool in mcp._tool_manager.list_tools()}
+    assert names == {
+        "kobo_whoami",
+        "kobo_list_agents",
+        "kobo_get_agent",
+        "kobo_feed",
+        "kobo_create_agent",
+        "kobo_teach",
+        "kobo_chat",
+        "kobo_request_colleague",
+        "kobo_accept_invite",
+        "kobo_wire_slack",
+    }
+
+
 # --- kobo_create_agent --------------------------------------------------------
 
 

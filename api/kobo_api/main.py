@@ -54,6 +54,7 @@ from kobo_api.knowledge import (
     rollout_in_progress,
     save_knowledge_file,
 )
+from kobo_api.mcp.mount import mcp_lifespan, mount_mcp
 from kobo_api.metadata import (
     clean_capability_text,
     commit_card_metadata,
@@ -1400,7 +1401,7 @@ def create_app(
     org: OrgState | None = None,
     iap_jwks_fetcher: Callable[[], dict] | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="kobo-api")
+    app = FastAPI(title="kobo-api", lifespan=mcp_lifespan)
     app.state.config = config
     app.state.clients = clients
     app.state.session_factory = session_factory
@@ -4878,6 +4879,17 @@ def create_app(
         session.commit()
 
         return JSONResponse({"removed": True})
+
+    # --- MCP surface (MCP server arc, Task 9): flag-gated, mounted after
+    # every /api/* route above and BEFORE the SPA static catch-all just
+    # below, so /mcp, /oauth/*, and /.well-known/* win over the SPA
+    # fallback route rather than being swallowed by it. A no-op (returns
+    # False, imports nothing from the mcp SDK or kobo_api.mcp.server/
+    # oauth_as) when config.mcp_enabled is False, the default -- see
+    # kobo_api.mcp.mount's own module docstring for the full mechanism,
+    # including why FastAPI(lifespan=mcp_lifespan) above is what makes the
+    # mounted sub-app's own session-manager lifespan actually run.
+    mount_mcp(app)
 
     # --- Built UI (Task 1): last, so every /api/* route above always wins ---
 
