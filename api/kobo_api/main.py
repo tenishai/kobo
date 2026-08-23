@@ -31,6 +31,7 @@ from kobo_api.clients import (
     _build_task_envelope,
     _build_teach_envelope,
     _extract_relay_reply,
+    _join_text_parts,
     cabal_enabled,
     filter_cabal_event_stream,
 )
@@ -882,22 +883,20 @@ def _caller_display(caller: str) -> str:
 
 
 def _task_message_text(message: object) -> str | None:
-    """The first text part's text out of one a2a Message dict (`{"role":
-    ..., "parts": [{"kind": "text", "text": ...}, ...]}`) -- `None` when
-    `message` isn't a dict, carries no `parts` list, or that list's first
-    entry has no string `"text"`. Deliberately looks ONLY at `parts[0]`,
-    same "authoritative source, no scanning" discipline `_extract_relay_
-    reply` (kobo_api.clients) already holds for this identical wire shape.
+    """ALL text parts of one a2a Message dict (`{"role": ..., "parts":
+    [{"kind": "text", "text": ...}, ...]}`) joined in order -- `_join_text_
+    parts` (kobo_api.clients), the family's join-all-parts contract, so a
+    multi-part message renders whole and a leading non-text part doesn't
+    hide the text behind it. `None` when `message` isn't a dict or nothing
+    text-shaped is present (incl. an empty-string-only text part) -- the
+    flattener emits no line for that, same as a conversation that never
+    completed. Replaced the original `parts[0]`-only read, whose cited
+    "no scanning" precedent in `_extract_relay_reply` had already been
+    retired for this exact truncation tripwire.
     """
     if not isinstance(message, dict):
         return None
-    parts = message.get("parts")
-    if not isinstance(parts, list) or not parts:
-        return None
-    first = parts[0]
-    if isinstance(first, dict) and isinstance(first.get("text"), str):
-        return first["text"]
-    return None
+    return _join_text_parts(message.get("parts")) or None
 
 
 def _flatten_conversation_entries(detail: dict) -> list[dict]:

@@ -786,6 +786,129 @@ def test_feed_ask_survives_the_echo_agent_shape_history_user_only(
     assert reply["text"] == "echo: hi"
 
 
+def test_feed_reply_joins_all_text_parts_of_a_multi_part_message(
+    session_factory, config, monkeypatch
+):
+    """The family's join-all-parts contract (`_join_text_parts`,
+    kobo_api.clients) reaches the terminal feed too: a reply whose
+    `status.message` carries SEVERAL text parts must render them all, in
+    order -- `parts[0]`-only extraction silently truncates the day any
+    a2a-compliant peer (a federated colleague, not this room's own
+    single-part daedalus agents) emits a multi-part reply."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    _seed_agent(session_factory, cfg)
+    summaries = [_feed_summary("t-multi", target="network", caller="agent:ward")]
+    detail = _feed_detail(
+        "t-multi",
+        target="network",
+        caller="agent:ward",
+        created_at="2026-08-23T06:00:00Z",
+        updated_at="2026-08-23T06:00:05Z",
+        ask_text="What's the config?",
+        reply_text="unused-overridden-below",
+    )
+    detail["conversation"]["result"]["status"]["message"]["parts"] = [
+        {"kind": "text", "text": "Part one."},
+        {"kind": "text", "text": "Part two."},
+    ]
+    fake_cabal = FakeCabal(conversations_result=summaries, conversation_results={"t-multi": detail})
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    entries = client.get("/api/colleagues/feed", params={"agent": "ward"}).json()["entries"]
+
+    reply = next(e for e in entries if e["role"] == "reply")
+    assert reply["text"] == "Part one.\nPart two."
+
+
+def test_feed_ask_survives_a_leading_non_text_part(session_factory, config, monkeypatch):
+    """An ask message whose FIRST part is not text (a data part leading, the
+    text behind it) must still put its text on the ask line -- `parts[0]`-only
+    extraction returned None here, which dropped the ask line entirely and
+    rendered the conversation as a reply from nowhere."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    _seed_agent(session_factory, cfg)
+    summaries = [_feed_summary("t-data", target="network", caller="agent:ward")]
+    detail = _feed_detail(
+        "t-data",
+        target="network",
+        caller="agent:ward",
+        created_at="2026-08-23T06:10:00Z",
+        updated_at="2026-08-23T06:10:05Z",
+        ask_text="unused-overridden-below",
+        reply_text="Here's the config.",
+    )
+    detail["conversation"]["result"]["history"][0]["parts"] = [
+        {"kind": "data", "data": {"trace_id": "irrelevant-to-the-feed"}},
+        {"kind": "text", "text": "What's the config?"},
+    ]
+    fake_cabal = FakeCabal(conversations_result=summaries, conversation_results={"t-data": detail})
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    entries = client.get("/api/colleagues/feed", params={"agent": "ward"}).json()["entries"]
+
+    asks = [e["text"] for e in entries if e["role"] == "ask"]
+    assert asks == ["What's the config?"]
+
+
+def test_feed_emits_no_line_for_an_empty_text_reply(session_factory, config, monkeypatch):
+    """A reply whose only text part is the empty string contributes NO line,
+    same as a message with no text-shaped part at all -- pinned deliberately:
+    the pre-join extractor returned "" here and the terminal rendered a blank
+    reply line, which is noise, not conversation content."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    _seed_agent(session_factory, cfg)
+    summaries = [_feed_summary("t-blank", target="network", caller="agent:ward")]
+    detail = _feed_detail(
+        "t-blank",
+        target="network",
+        caller="agent:ward",
+        created_at="2026-08-23T06:20:00Z",
+        updated_at="2026-08-23T06:20:05Z",
+        ask_text="What's the config?",
+        reply_text="unused-overridden-below",
+    )
+    detail["conversation"]["result"]["status"]["message"]["parts"] = [
+        {"kind": "text", "text": ""},
+    ]
+    fake_cabal = FakeCabal(conversations_result=summaries, conversation_results={"t-blank": detail})
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    entries = client.get("/api/colleagues/feed", params={"agent": "ward"}).json()["entries"]
+
+    assert [e["role"] for e in entries] == ["ask"]
+
+
+def test_feed_emits_no_line_for_an_empty_text_ask(session_factory, config, monkeypatch):
+    """The ask-side twin of the empty-text pin above: an ask whose only text
+    part is the empty string contributes no line either -- both directions go
+    through the same extractor, documented symmetrically."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    _seed_agent(session_factory, cfg)
+    summaries = [_feed_summary("t-blank-ask", target="network", caller="agent:ward")]
+    detail = _feed_detail(
+        "t-blank-ask",
+        target="network",
+        caller="agent:ward",
+        created_at="2026-08-23T06:30:00Z",
+        updated_at="2026-08-23T06:30:05Z",
+        ask_text="unused-overridden-below",
+        reply_text="Here's the config.",
+    )
+    detail["conversation"]["result"]["history"][0]["parts"] = [{"kind": "text", "text": ""}]
+    fake_cabal = FakeCabal(
+        conversations_result=summaries, conversation_results={"t-blank-ask": detail}
+    )
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    entries = client.get("/api/colleagues/feed", params={"agent": "ward"}).json()["entries"]
+
+    assert [e["role"] for e in entries] == ["reply"]
+
+
 def test_feed_strips_a_raw_no_prefix_caller_unchanged(session_factory, config, monkeypatch):
     monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
     cfg = _enabled_config(config)
