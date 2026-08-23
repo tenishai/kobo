@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,7 @@ import yaml
 from kobo_api.catalog import _DESCRIPTION_HEADER_RE
 from kobo_api.clients import (
     ClientError,
+    GitHubClient,
     GojiraConflict,
     StorageClient,
     StorageNotFound,
@@ -339,6 +341,75 @@ def _stage_skills(
     return staged
 
 
+# Baseline tooling pack (MCP marketplace wave 1, Task 6): a tool in the org
+# marketplace belongs to the pack when its id carries this prefix -- the whole
+# selection rule, deliberately a naming convention rather than a new org-config
+# key. The deployed config loader rejects unknown org keys, so a key would have
+# to land in every room's config file before any room could get a pack at all;
+# a prefix means a team publishes `baseline-<something>` through the ordinary
+# `kobo_create_tool` door and every agent born after that ships it.
+BASELINE_TOOL_PREFIX = "baseline-"
+
+
+def _stage_baseline_tools(
+    github: GitHubClient, config: Config, bundle_dir: Path
+) -> list[str]:
+    """Copy the org marketplace's baseline tooling pack into
+    `bundle_dir/tools/`, returning the staged filenames (sorted).
+
+    The pack is every `tools/<id>/<id>.py` in the marketplace repo whose id
+    starts with `BASELINE_TOOL_PREFIX` -- matched by that shape exactly, so a
+    non-baseline tool, a `TOOL.md`, and a stray helper module sitting beside a
+    baseline tool's own entrypoint are all left behind. Files land FLAT in
+    `bundle_dir/tools/` under their own basename (the layout
+    `kobo_api.tooling.upload_tooling_file` and the runtime's enforcement
+    envelope both already expect), never as the per-tool subdirectory the
+    marketplace stores them in: the destination path is built from
+    `src.name` -- a single component off a real directory listing -- so no
+    path in that repo, symlinked or otherwise, can steer a write outside the
+    bundle. Symlinks are skipped outright rather than followed, so a link in
+    the marketplace tree cannot smuggle content from the cloning machine into
+    an agent's bundle.
+
+    ANY failure is swallowed: an unconfigured marketplace (`MarketplaceError`
+    -- a room that never named a skills repo simply has no pack), a clone that
+    won't complete, an unreadable file. It logs a warning and returns `[]`,
+    because an agent must not fail to exist because the marketplace hiccuped
+    -- the same best-effort posture `kobo_api.metadata.tooling_filenames_for`
+    takes for its own github read. The pack is a head start, not a
+    precondition; a room that wanted it and didn't get it can add the tools
+    through `POST .../tooling` after birth.
+    """
+    # Imported here, not at module scope: `kobo_api.marketplace` imports
+    # `kobo_api.skills`, which imports THIS module (`_materialize_catalog_
+    # skill`) -- a top-level import would be a cycle that fails at import
+    # time, since that name is defined below where the import would sit.
+    from kobo_api.marketplace import marketplace_repo
+
+    repo = config.skills_repo or "(no marketplace repo configured)"
+    try:
+        repo = marketplace_repo(config)
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = Path(tmp)
+            github.clone(repo, workdir)
+            pattern = f"{BASELINE_TOOL_PREFIX}*/{BASELINE_TOOL_PREFIX}*.py"
+            dest_dir = bundle_dir / "tools"
+            staged: list[str] = []
+            for src in sorted((workdir / "tools").glob(pattern)):
+                if src.is_symlink() or not src.is_file():
+                    continue
+                # mkdir inside the loop, on the first real file: a room whose
+                # marketplace carries no pack at all gets no empty
+                # `bundle/tools/` directory in its bundle either.
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src, dest_dir / src.name)
+                staged.append(src.name)
+            return sorted(staged)
+    except Exception as exc:  # noqa: BLE001 - never fatal, see the docstring
+        log.warning("baseline tooling skipped for %s: %s", repo, exc)
+        return []
+
+
 class RepoStep:
     """Composes the agent's daedalus bundle and pushes it as a new GitHub repo."""
 
@@ -405,6 +476,19 @@ class RepoStep:
         # before/at create_repo_from_dir) — clear it before recomposing.
         shutil.rmtree(compose_dir, ignore_errors=True)
         compose(spec, compose_dir)
+
+        # Baseline tooling pack (Task 6): staged into the just-composed bundle
+        # rather than up beside `_stage_skills` above, for one mechanical
+        # reason -- the rmtree two lines up would wipe anything written into
+        # compose_dir before compose() ran. It still runs before
+        # validate_agent_yaml/create_repo_from_dir, so the pack is part of the
+        # very first push, never a follow-up commit. The return value (the
+        # staged filenames) is deliberately unused: the composed tree itself
+        # is what ships, and `bundle/tools/` in the repo is already the one
+        # source of truth for what tools an agent carries.
+        if not agent.skip_baseline:
+            _stage_baseline_tools(github, config, compose_dir / "bundle")
+
         validate_agent_yaml(compose_dir / "bundle")
 
         github.create_repo_from_dir(repo, compose_dir)

@@ -485,6 +485,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         name: str | None = None,
         skills: list[dict] | None = None,
         tags: list[str] | None = None,
+        skip_baseline: bool = False,
     ) -> dict:
         """Create a new agent in the room -- the same one-click create the
         room's own UI drives. `who_they_are` is the catalog persona id
@@ -495,8 +496,10 @@ def register(mcp: FastMCP, app: Any) -> None:
         omitted, the room's own naming station picks one for you.
         `skills`, when given, is a list of `{"id", "team"}` picks from the
         room's skills catalog; `tags` is a short list of purpose tags.
-        Returns the agent's name and status; watch the room (or
-        `kobo_get_agent`) for its checklist to finish in the background.
+        Every new agent ships the baseline tooling pack (leakguard and
+        probe guard) unless skip_baseline is true. Returns the agent's
+        name and status; watch the room (or `kobo_get_agent`) for its
+        checklist to finish in the background.
         """
         from kobo_api.main import CreateAgentRequest, NameSuggestionsRequest, SkillPick
 
@@ -536,6 +539,7 @@ def register(mcp: FastMCP, app: Any) -> None:
                     skills=[SkillPick(**pick) for pick in (skills or [])],
                     purpose_tags=list(tags or []),
                     group_name=group,
+                    skip_baseline=skip_baseline,
                 )
             except (TypeError, ValidationError) as exc:
                 raise ToolError(f"that request wasn't quite right: {exc}") from exc

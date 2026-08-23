@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -136,6 +137,21 @@ class Agent(Base):
     #   ALTER TABLE agents ADD COLUMN group_name VARCHAR;
     created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     group_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Baseline tooling pack (MCP marketplace wave 1, Task 6): the create-time
+    # opt-out. False (the default, for every agent and every caller who says
+    # nothing) means RepoStep stages the marketplace's `baseline-*` tools into
+    # this agent's composed bundle; True means it ships without them. Read
+    # only at compose time -- flipping it later does not retro-stage anything
+    # (the repo is the source of truth for a live agent's tools, and
+    # POST .../tooling is the path that adds one after birth).
+    # NOT nullable, unlike the columns above it: a boolean gate that could be
+    # NULL would make "did this agent opt out" a three-valued question at
+    # every read. Existing DBs therefore need the default spelled in the
+    # rollout ALTER (fresh DBs get it for free via create_all):
+    #   ALTER TABLE agents ADD COLUMN skip_baseline BOOLEAN NOT NULL DEFAULT 0;
+    skip_baseline: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )

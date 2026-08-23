@@ -14,6 +14,7 @@ than a couple of iterations, so the whole file runs in well under a second.
 from __future__ import annotations
 
 import json
+import logging
 
 import pytest
 import yaml
@@ -21,6 +22,7 @@ import yaml
 from kobo_api.clients import CabalError, ClientError, Clients
 from kobo_api.composer import BundleSpec, compose
 from kobo_api.config import Config, ModelChoice
+from kobo_api.marketplace import marketplace_repo
 from kobo_api.models import Agent
 from kobo_api.provisioner import Ctx
 from kobo_api.steps import (
@@ -34,6 +36,7 @@ from kobo_api.steps import (
     RepoStep,
     StagedSkill,
     _resolve_persona_body,
+    _stage_baseline_tools,
     _stage_skills,
 )
 from tests.fakes import (
@@ -79,6 +82,7 @@ def _make_agent(
     gojira_app_id: int | None = None,
     team: str | None = None,
     purpose_tags: str | None = None,
+    skip_baseline: bool = False,
 ):
     session = session_factory()
     agent = Agent(
@@ -90,6 +94,7 @@ def _make_agent(
         gojira_app_id=gojira_app_id,
         team=team,
         purpose_tags=purpose_tags,
+        skip_baseline=skip_baseline,
     )
     session.add(agent)
     session.commit()
@@ -440,6 +445,77 @@ def test_stage_skills_legacy_fetch_path_byte_untouched(
     assert "list_keys:skills-bucket:shared/word-games/" in fake_storage.calls
 
 
+# --- _stage_baseline_tools ------------------------------------------------------
+
+BASELINE_LEAKGUARD_PY = (
+    '"""Baseline leakguard."""\n'
+    "def post_draft(draft):\n"
+    "    return draft.replace('secret', '[redacted]')\n"
+)
+
+BASELINE_PROBE_GUARD_PY = (
+    '"""Baseline probe guard."""\n'
+    "def post_draft(draft):\n"
+    "    return draft\n"
+)
+
+OTHER_TOOL_PY = '"""Not part of the pack."""\ndef post_draft(draft):\n    return draft\n'
+
+BASELINE_TOOL_MD = (
+    "---\nname: baseline-leakguard\ndescription: Redacts credential-shaped strings.\n"
+    "owner: sre\ntags: [security]\n---\n"
+)
+
+
+def _marketplace_github(**kwargs) -> FakeGitHub:
+    """A FakeGitHub whose clone serves the org marketplace tree: two
+    baseline-prefixed tools, one non-baseline tool, and a TOOL.md beside
+    one of the baseline entries (only the two prefixed `.py` files belong
+    to the pack)."""
+    return FakeGitHub(
+        clone_tree={
+            "tools/baseline-leakguard/TOOL.md": BASELINE_TOOL_MD,
+            "tools/baseline-leakguard/baseline-leakguard.py": BASELINE_LEAKGUARD_PY,
+            "tools/baseline-probe-guard/baseline-probe-guard.py": BASELINE_PROBE_GUARD_PY,
+            "tools/other-tool/other-tool.py": OTHER_TOOL_PY,
+        },
+        **kwargs,
+    )
+
+
+def test_stage_baseline_tools_copies_only_prefixed_py_files(config, tmp_path):
+    config.skills_repo = "org-skills"
+    github = _marketplace_github()
+    bundle_dir = tmp_path / "repo" / "bundle"
+
+    staged = _stage_baseline_tools(github, config, bundle_dir)
+
+    assert staged == ["baseline-leakguard.py", "baseline-probe-guard.py"]
+    # Copied flat into bundle/tools/ by filename -- no per-tool subdirectory,
+    # no TOOL.md, nothing from the non-baseline tool.
+    assert sorted(p.name for p in (bundle_dir / "tools").iterdir()) == staged
+    assert (bundle_dir / "tools" / "baseline-leakguard.py").read_text() == BASELINE_LEAKGUARD_PY
+    assert github.cloned[0][0] == marketplace_repo(config)
+
+
+def test_stage_baseline_tools_unconfigured_marketplace_warns_and_stages_nothing(
+    config, tmp_path, caplog
+):
+    """An unconfigured `skills_repo` (`MarketplaceError`) is just "no pack",
+    never a failure -- the same swallow-and-warn contract a broken clone gets."""
+    config.skills_repo = None
+    github = _marketplace_github()
+    bundle_dir = tmp_path / "repo" / "bundle"
+
+    with caplog.at_level(logging.WARNING):
+        staged = _stage_baseline_tools(github, config, bundle_dir)
+
+    assert staged == []
+    assert not (bundle_dir / "tools").exists()
+    assert github.cloned == []
+    assert "baseline tooling skipped" in caplog.text
+
+
 # --- RepoStep -----------------------------------------------------------------
 
 
@@ -753,6 +829,60 @@ def test_repo_step_compose_raises_without_rmtree_on_stale_skills(tmp_path):
     # Second compose to the same location should raise FileExistsError (without rmtree)
     with pytest.raises(FileExistsError):
         compose(spec, compose_dir)
+
+
+def test_repo_step_stages_baseline_pack_by_default(session_factory, config, fake_storage):
+    """Baseline tooling pack (Task 6): every new agent ships the
+    marketplace's `baseline-*` tools, and nothing else from that tree."""
+    config.skills_repo = "org-skills"
+    session, agent = _make_agent(session_factory)
+    github = _marketplace_github()
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
+
+    RepoStep().run(ctx)
+
+    _, created_src = github.created_from_dir[0]
+    tools_dir = created_src / "bundle" / "tools"
+    assert sorted(p.name for p in tools_dir.iterdir()) == [
+        "baseline-leakguard.py",
+        "baseline-probe-guard.py",
+    ]
+    assert not (tools_dir / "other-tool.py").exists()
+    assert (tools_dir / "baseline-leakguard.py").read_text() == BASELINE_LEAKGUARD_PY
+
+
+def test_repo_step_skip_baseline_stages_nothing(session_factory, config, fake_storage):
+    config.skills_repo = "org-skills"
+    session, agent = _make_agent(session_factory, skip_baseline=True)
+    github = _marketplace_github()
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
+
+    RepoStep().run(ctx)
+
+    _, created_src = github.created_from_dir[0]
+    assert not (created_src / "bundle" / "tools").exists()
+    # The opt-out is checked before the clone: the marketplace is never read.
+    assert github.cloned == []
+
+
+def test_repo_step_marketplace_unreachable_warns_and_proceeds(
+    session_factory, config, fake_storage, caplog
+):
+    """An agent must not fail to exist because the marketplace hiccuped."""
+    config.skills_repo = "org-skills"
+    session, agent = _make_agent(session_factory)
+    github = _marketplace_github(clone_error="marketplace clone exploded")
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
+
+    with caplog.at_level(logging.WARNING):
+        RepoStep().run(ctx)
+
+    expected_repo = f"{config.github_org}/agent-{AGENT_NAME}"
+    assert agent.repo_full_name == expected_repo
+    _, created_src = github.created_from_dir[0]
+    assert (created_src / "bundle" / "agent.yaml").is_file()
+    assert not (created_src / "bundle" / "tools").exists()
+    assert "baseline tooling skipped" in caplog.text
 
 
 # --- OnboardStep ----------------------------------------------------------------

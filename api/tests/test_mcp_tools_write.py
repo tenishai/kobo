@@ -508,6 +508,39 @@ def test_create_agent_name_taken_surfaces_the_routes_own_409(
         )
 
 
+def test_create_agent_passes_skip_baseline(session_factory, config, fake_storage):
+    """Baseline tooling pack (Task 6): the tool's own `skip_baseline` reaches
+    the create route's payload and lands on the row -- and defaults to False
+    (the pack ships) when the caller says nothing about it."""
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    _call_tool(
+        mcp,
+        "kobo_create_agent",
+        _ctx_for(MEMBER_A_EMAIL),
+        who_they_are=PERSONA,
+        group=GROUP_A,
+        name="opted-out",
+        skip_baseline=True,
+    )
+    _call_tool(
+        mcp,
+        "kobo_create_agent",
+        _ctx_for(MEMBER_A_EMAIL),
+        who_they_are=PERSONA,
+        group=GROUP_A,
+        name="default-agent",
+    )
+
+    session = session_factory()
+    try:
+        assert session.query(Agent).filter_by(name="opted-out").one().skip_baseline is True
+        assert session.query(Agent).filter_by(name="default-agent").one().skip_baseline is False
+    finally:
+        session.close()
+
+
 # --- kobo_teach ----------------------------------------------------------------
 
 

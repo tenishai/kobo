@@ -199,6 +199,13 @@ class CreateAgentRequest(BaseModel):
     # the room has named any groups at all; a room that hasn't stays exactly
     # as before B2 -- optional, stored verbatim, unvalidated.
     group_name: str | None = None
+    # Baseline tooling pack (MCP marketplace wave 1, Task 6): the opt-out.
+    # Default False, so every new agent ships the marketplace's `baseline-*`
+    # tools (staged at compose time by `kobo_api.steps._stage_baseline_tools`);
+    # True means this one goes without them. Nothing validates it -- a bool is
+    # a bool -- and it is recorded on the row rather than acted on here, since
+    # the pack is staged by RepoStep, not by this route.
+    skip_baseline: bool = False
 
 
 class NameSuggestionsRequest(BaseModel):
@@ -2280,6 +2287,7 @@ def create_app(
             status=AgentStatus.PENDING,
             created_by=created_by,
             group_name=payload.group_name,
+            skip_baseline=payload.skip_baseline,
         )
         session.add(agent)
         try:
