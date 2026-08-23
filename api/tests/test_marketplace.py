@@ -37,6 +37,14 @@ EXISTING_SKILL_MD = (
     "---\nAlready published.\n"
 )
 
+# An unquoted colon inside a plain scalar value ("uh oh: this breaks yaml")
+# is a classic YAML gotcha: the parser reads the SECOND colon as introducing
+# a nested mapping value where none is legal, so `yaml.safe_load` raises
+# ScannerError ("mapping values are not allowed here") rather than parsing
+# it as a string. One team's malformed frontmatter, authored by hand, is
+# exactly the shape review issue #1 guards against.
+BROKEN_TOOL_MD = "---\nname: broken-tool\ndescription: uh oh: this breaks yaml\nowner: sre\n---\n"
+
 
 @pytest.fixture
 def marketplace_github(config):
@@ -78,6 +86,21 @@ def test_fetch_tool_py_unknown_id_raises(config, marketplace_github):
         fetch_tool_py(marketplace_github, config, "nope")
 
 
+def test_list_tools_skips_malformed_tool_md(config):
+    # The marketplace repo is org-shared: one team's unquoted colon in its
+    # own TOOL.md must not take down the whole catalog for everyone else.
+    config.skills_repo = "org-skills"
+    github = FakeGitHub(
+        clone_tree={
+            "tools/baseline-leakguard/TOOL.md": TOOL_MD,
+            "tools/baseline-leakguard/baseline-leakguard.py": TOOL_PY,
+            "tools/broken-tool/TOOL.md": BROKEN_TOOL_MD,
+        }
+    )
+    tools = list_tools(github, config)
+    assert [t["id"] for t in tools] == ["baseline-leakguard"]
+
+
 def test_create_skill_injects_owner_frontmatter_and_commits(config, marketplace_github):
     sha = create_skill(
         marketplace_github, config,
@@ -109,6 +132,32 @@ def test_create_skill_collision_raises(config, marketplace_github):
             skill_id="existing-skill", content=GOOD_SKILL,
             team="infra-engineering", author="user@example.com",
         )
+
+
+def test_create_skill_collision_when_path_is_a_file(config):
+    # skills/<id> exists but as a plain FILE, not a directory -- the
+    # collision check must still raise the typed MarketplaceError rather
+    # than let a bare FileExistsError escape from mkdir().
+    config.skills_repo = "org-skills"
+    github = FakeGitHub(clone_tree={"skills/blocked": "oops, not a directory\n"})
+    with pytest.raises(MarketplaceError, match="already exists"):
+        create_skill(
+            github, config,
+            skill_id="blocked", content=GOOD_SKILL,
+            team="infra-engineering", author="user@example.com",
+        )
+
+
+def test_create_tool_collision_raises(config, marketplace_github):
+    # marketplace_github's tree already carries tools/baseline-leakguard/*
+    with pytest.raises(MarketplaceError, match="already exists"):
+        create_tool(
+            marketplace_github, config,
+            tool_id="baseline-leakguard", content=TOOL_PY,
+            team="infra-engineering", description="d", tags=[],
+            author="user@example.com",
+        )
+    assert marketplace_github.push_count == 0
 
 
 def test_create_tool_validates_py_before_any_commit(config, marketplace_github):

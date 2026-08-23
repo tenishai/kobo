@@ -59,7 +59,14 @@ def _first_non_blank_line(body: str) -> str:
 
 
 def _render_frontmatter_doc(frontmatter: dict, body: str) -> str:
-    return "---\n" + yaml.safe_dump(frontmatter, sort_keys=False) + "---\n" + body
+    # width=4096 turns off yaml.safe_dump's default 80-column folding
+    # (these files are hand-edited by a person, not a machine-consumed
+    # stream -- folding a long description across lines degrades it for
+    # them) and allow_unicode=True stops it escaping non-ASCII characters
+    # (a name/description/owner/tag with an accent or an emoji should
+    # round-trip as itself, not a \uXXXX escape).
+    dumped = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True, width=4096)
+    return "---\n" + dumped + "---\n" + body
 
 
 def list_tools(github: GitHubClient, config: Config) -> list[dict]:
@@ -67,7 +74,13 @@ def list_tools(github: GitHubClient, config: Config) -> list[dict]:
     `tools/<id>/TOOL.md` in the marketplace repo, sorted by id. A
     directory under `tools/` with no `TOOL.md` is skipped, not an error --
     same "not every dir is a real entry" tolerance `kobo_api.tooling`'s
-    own directory walks use.
+    own directory walks use. A `TOOL.md` that fails to parse (invalid YAML,
+    or a frontmatter block that isn't a mapping) is ALSO skipped rather
+    than raised: this repo is org-shared, so one team's malformed file
+    (an unquoted colon, say) must never take listing down for every other
+    team's tools too -- unlike `create_skill`/`create_tool`, where the
+    caller IS the one team whose own submission failed to parse, and a
+    raise is exactly the right, actionable answer.
     """
     repo = marketplace_repo(config)
     with tempfile.TemporaryDirectory() as tmp:
@@ -84,7 +97,10 @@ def list_tools(github: GitHubClient, config: Config) -> list[dict]:
             tool_md = entry / "TOOL.md"
             if not tool_md.is_file():
                 continue
-            frontmatter, _ = _parse_frontmatter(tool_md.read_text(encoding="utf-8"))
+            try:
+                frontmatter, _ = _parse_frontmatter(tool_md.read_text(encoding="utf-8"))
+            except MarketplaceError:
+                continue
             results.append(
                 {
                     "id": entry.name,
@@ -166,7 +182,11 @@ def create_skill(
         workdir = Path(tmp)
         github.clone(repo, workdir)
         skill_dir = workdir / "skills" / skill_id
-        if skill_dir.is_dir():
+        # .exists(), not .is_dir(): a stray FILE already sitting at this
+        # path (not a real skill directory) must raise the same typed
+        # error here, rather than escape as a bare FileExistsError out of
+        # the mkdir() below.
+        if skill_dir.exists():
             raise MarketplaceError(f"skill {skill_id!r} already exists")
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
@@ -209,7 +229,9 @@ def create_tool(
         workdir = Path(tmp)
         github.clone(repo, workdir)
         tool_dir = workdir / "tools" / tool_id
-        if tool_dir.is_dir():
+        # .exists(), not .is_dir() -- same file-in-the-way reasoning as
+        # create_skill's collision check above.
+        if tool_dir.exists():
             raise MarketplaceError(f"tool {tool_id!r} already exists")
         tool_dir.mkdir(parents=True)
         frontmatter = {
