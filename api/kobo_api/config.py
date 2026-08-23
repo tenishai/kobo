@@ -128,6 +128,25 @@ class MCPConfig(BaseModel):
     # Env var name (never the key value itself) holding the key the MCP
     # server signs its own JWTs with. NEVER put a real key in a tracked file.
     jwt_key_env: str = "KOBO_MCP_JWT_KEY"
+    # This room's own externally-reachable base URL as MCP clients and
+    # Google see it (Task 4's OAuth AS: RFC 8414/9728 well-known documents,
+    # and the redirect_uri kobo registers with Google for its own callback)
+    # -- e.g. "https://kobo.example.org". Deliberately its OWN field rather
+    # than reusing `Config.api_base_url`: that field describes the LOCAL
+    # loopback address the bootstrap CLI/org-status consumers hit (defaults
+    # to 127.0.0.1, and is explicitly NOT org.yaml-settable -- "it
+    # describes *this* machine, not anything the org can hand out," per its
+    # own docstring), whereas this one is exactly the opposite: the
+    # externally-advertised identity an org configures once it knows its
+    # own public hostname, the same "org-supplied later" posture as
+    # `workspace_domain` above. Empty (the default) means "not known yet":
+    # the well-known documents fall back to relative endpoint paths
+    # (`/oauth/authorize` rather than an absolute URL) and the Google
+    # callback redirect_uri falls back to the incoming request's own base
+    # URL -- both fine for local dev/tests, neither sufficient for a real
+    # deployment, which must set this before Google's own redirect_uri
+    # allowlist can ever be satisfied.
+    issuer_base_url: str = ""
 
 
 def vertex_location_for(config: Config, model_id: str) -> str:

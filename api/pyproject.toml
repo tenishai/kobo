@@ -16,6 +16,11 @@ dependencies = [
     "httpx",
     "jsonschema",
     "PyJWT[crypto]",
+    # POST /oauth/token (Task 4) is form-encoded per RFC 6749 -- FastAPI's
+    # Form(...) parameters need this even for plain urlencoded bodies (not
+    # just multipart/form-data), on the FastAPI/Starlette versions pinned
+    # here.
+    "python-multipart",
 ]
 
 [project.optional-dependencies]
