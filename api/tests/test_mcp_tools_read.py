@@ -650,6 +650,40 @@ def test_feed_caps_at_the_callers_limit_when_smaller_than_the_scrollback_cap(
     assert result["entries"][-1]["text"] == "reply 9"
 
 
+@pytest.mark.parametrize("limit", [0, -1, -50])
+def test_feed_non_positive_limit_returns_empty_not_the_whole_feed(
+    session_factory, config, monkeypatch, limit
+):
+    """A zero or negative limit must floor at an empty feed, not slice
+    `entries[-0:]` (Python's -0 == 0) and hand back everything while
+    claiming truncation -- the review-caught inversion of a zero-length ask."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    _seed_agent(session_factory, name="ward")
+    n = 3
+    summaries = [_feed_summary(f"t-{i}", target="network", caller="agent:ward") for i in range(n)]
+    details = {
+        f"t-{i}": _feed_detail(
+            f"t-{i}",
+            target="network",
+            caller="agent:ward",
+            created_at=f"2026-08-19T10:{i:02d}:00Z",
+            updated_at=f"2026-08-19T10:{i:02d}:05Z",
+            ask_text=f"ask {i}",
+            reply_text=f"reply {i}",
+        )
+        for i in range(n)
+    }
+    fake_cabal = FakeCabal(conversations_result=summaries, conversation_results=details)
+    cfg = _enabled_config(config)
+    app = _app(session_factory, cfg, groups_resolver=_resolver(), cabal=fake_cabal)
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(mcp, "kobo_feed", _ctx_for(OPERATOR_EMAIL), agent="ward", limit=limit)
+
+    assert result["entries"] == []
+    assert result["truncated"] is True  # entries existed; the ask asked for none
+
+
 def test_feed_upstream_cabal_error_raises_tool_error(session_factory, config, monkeypatch):
     monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
     _seed_agent(session_factory, name="ward")

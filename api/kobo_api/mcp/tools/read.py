@@ -223,10 +223,13 @@ def register(mcp: FastMCP, app: Any) -> None:
         # `limit` is the caller's own ask (default 50); `_FEED_SCROLLBACK_
         # CAP` (200) is the room's own hard ceiling on flattened entries.
         # Whichever is smaller wins -- a caller may ask for less than the
-        # room's own scrollback, never more.
-        cap = min(limit, _FEED_SCROLLBACK_CAP)
+        # room's own scrollback, never more. `max(0, ...)` floors a
+        # non-positive `limit` at 0: without it, `cap=0` would slice
+        # `entries[-0:]` (Python's -0 == 0) and return the WHOLE feed while
+        # claiming truncation -- the opposite of a zero-length ask.
+        cap = max(0, min(limit, _FEED_SCROLLBACK_CAP))
         truncated = len(entries) > cap
         if truncated:
-            entries = entries[-cap:]
+            entries = entries[-cap:] if cap else []
 
         return {"entries": entries, "truncated": truncated}
