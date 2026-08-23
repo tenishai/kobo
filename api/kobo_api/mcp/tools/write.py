@@ -50,10 +50,11 @@ that already exists and is already tested in `kobo_api.main`. Concretely:
 
 Every route function below returns a `fastapi.responses.JSONResponse` in
 every branch (verified against each route's own source) -- `_parse` reads
-its `.body` (already-serialized JSON bytes) back into a dict, and the two
-status-code translators below (`_agent_route_result` for the seven
-agent-scoped tools, `_create_result` for `kobo_create_agent`) turn that
-status code into either the tool's return value or a `ToolError`.
+its `.body` (already-serialized JSON bytes) back into a dict, and the
+three status-code translators below (`_agent_route_result` for the seven
+agent-scoped tools, `_skill_route_result` for `kobo_set_agent_skills`
+alone, `_create_result` for `kobo_create_agent`) turn that status code
+into either the tool's return value or a `ToolError`.
 
 ## Status -> ToolError translation
 
@@ -70,7 +71,7 @@ exception to this table -- see its own section below.
 | Route status | Tool outcome |
 |---|---|
 | 2xx | success -- parsed body becomes the tool's return dict |
-| 403 or 404 | `ToolError("agent not found")` -- a visible-but-not-owned agent (403, the owner-or-operator gate) must never be told apart from one that plain does not exist (404, the visibility gate) or an invite naming nothing real (`_no_such_invite_404`, also 404). A route that ever answered "not visible" with a 409 would fold in here too, on the identical principle -- none of today's six routes do, but the rule is about the MEANING of the status, not just its number. |
+| 403 or 404 | `ToolError("agent not found")` -- a visible-but-not-owned agent (403, the owner-or-operator gate) must never be told apart from one that plain does not exist (404, the visibility gate) or an invite naming nothing real (`_no_such_invite_404`, also 404). A route that ever answered "not visible" with a 409 would fold in here too, on the identical principle -- none of today's nine routes do, but the rule is about the MEANING of the status, not just its number. |
 | 409 (a real conflict, e.g. "invite is already accepted", "a colleague request ... is already pending", "agent is not ready to ... yet") | `ToolError(<the route's own message>)` -- the caller already has standing here (visibility passed, and for the not-ready case the caller can already see this exact state through `kobo_get_agent`), so the state itself is not a leak; it is the legitimate answer to "why didn't this work." |
 | 422 (validation -- bad input shape, an unknown role, text too long, a malformed Slack token/app id, "an agent cannot request colleague access to itself", ...) | `ToolError(<the route's own message>)` -- this is about the CALLER's own request, not about any hidden resource. |
 | 5xx (switchboard/relay/agent unreachable, Slack wiring failed) | `ToolError` with the house "did not answer, try again" phrasing -- the underlying cause is never echoed, the same generic-error discipline `kobo_api.mcp.tools.read` follows. The write side says "The room did not answer" rather than read's switchboard-specific text, because a write 5xx may come from gojira or Slack, not only the switchboard. |

@@ -96,7 +96,10 @@ def list_tools(github: GitHubClient, config: Config) -> list[dict]:
     (an unquoted colon, say) must never take listing down for every other
     team's tools too -- unlike `create_skill`/`create_tool`, where the
     caller IS the one team whose own submission failed to parse, and a
-    raise is exactly the right, actionable answer.
+    raise is exactly the right, actionable answer. A `TOOL.md` that fails
+    to even DECODE as UTF-8 (one stray latin-1 byte in some other team's
+    file) is skipped on the identical principle, alongside the parse
+    failures above.
     """
     repo = marketplace_repo(config)
     with tempfile.TemporaryDirectory() as tmp:
@@ -115,7 +118,7 @@ def list_tools(github: GitHubClient, config: Config) -> list[dict]:
                 continue
             try:
                 frontmatter, _ = _parse_frontmatter(tool_md.read_text(encoding="utf-8"))
-            except MarketplaceError:
+            except (MarketplaceError, UnicodeDecodeError):
                 continue
             results.append(
                 {
@@ -134,8 +137,11 @@ def fetch_tool_py(github: GitHubClient, config: Config, tool_id: str) -> tuple[s
 
     Raises `MarketplaceError` for an invalid `tool_id` shape (the same
     filename regex `kobo_api.tooling` upload/import use, so a path-
-    traversal-shaped id is rejected before any clone) or when the file
-    isn't there.
+    traversal-shaped id is rejected before any clone), when the file isn't
+    there, or when it fails to decode as UTF-8 -- this module's own
+    contract (module docstring) is that every caller-facing error out of
+    here is a `MarketplaceError`, so a raw `UnicodeDecodeError` from the
+    read below must never escape untyped.
     """
     filename = f"{tool_id}.py"
     try:
@@ -150,7 +156,11 @@ def fetch_tool_py(github: GitHubClient, config: Config, tool_id: str) -> tuple[s
         target = workdir / "tools" / tool_id / filename
         if not target.is_file():
             raise MarketplaceError(f"no such tool: {tool_id!r}")
-        return filename, target.read_text(encoding="utf-8")
+        try:
+            content = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise MarketplaceError(f"tool {tool_id!r} is not valid UTF-8") from exc
+        return filename, content
 
 
 def create_skill(

@@ -86,6 +86,22 @@ def test_fetch_tool_py_unknown_id_raises(config, marketplace_github):
         fetch_tool_py(marketplace_github, config, "nope")
 
 
+def test_fetch_tool_py_invalid_utf8_raises_marketplace_error(config):
+    # MUST-FIX 1b (final review): this module's own contract is "every
+    # caller-facing error out of here is a MarketplaceError" (module
+    # docstring) -- a decode failure on the `.py` read must be wrapped,
+    # never escape as a bare UnicodeDecodeError. Same `tooling_source_files`
+    # raw-bytes seam as the list_tools test above.
+    config.skills_repo = "org-skills"
+    repo = marketplace_repo(config)
+    bad_bytes = b'"""caf\xe9 bug."""\ndef post_draft(d):\n    return d\n'
+    github = FakeGitHub(
+        tooling_source_files={repo: {"tools/bad-tool/bad-tool.py": bad_bytes}}
+    )
+    with pytest.raises(MarketplaceError, match="not valid UTF-8"):
+        fetch_tool_py(github, config, "bad-tool")
+
+
 def test_list_tools_skips_malformed_tool_md(config):
     # The marketplace repo is org-shared: one team's unquoted colon in its
     # own TOOL.md must not take down the whole catalog for everyone else.
@@ -95,6 +111,35 @@ def test_list_tools_skips_malformed_tool_md(config):
             "tools/baseline-leakguard/TOOL.md": TOOL_MD,
             "tools/baseline-leakguard/baseline-leakguard.py": TOOL_PY,
             "tools/broken-tool/TOOL.md": BROKEN_TOOL_MD,
+        }
+    )
+    tools = list_tools(github, config)
+    assert [t["id"] for t in tools] == ["baseline-leakguard"]
+
+
+def test_list_tools_skips_tool_md_that_is_not_valid_utf8(config):
+    # Same "one team's own malformed file must never take the whole
+    # catalog down" tolerance as the YAML-parse-failure test just above,
+    # but for a stray latin-1 byte that fails to even DECODE as UTF-8
+    # (final review, MUST-FIX 1a). `clone_tree` only ever writes plain
+    # `str` (encoded utf-8, always valid), so it cannot seed this shape --
+    # `tooling_source_files` is FakeGitHub's own seam for exactly this
+    # ("the latter is how a test seeds a candidate file that ISN'T valid
+    # UTF-8", that fixture's own docstring): it accepts raw `bytes` and
+    # applies independently of `clone_tree`, so a plain (non-`clone_tree`)
+    # FakeGitHub with the marketplace repo named in this dict still
+    # materializes `tools/` with exactly these two files on top of the
+    # generic scaffolding, which `list_tools` never looks past `tools/`
+    # anyway.
+    config.skills_repo = "org-skills"
+    repo = marketplace_repo(config)
+    bad_bytes = b"---\nname: bad-tool\ndescription: caf\xe9 bug\nowner: sre\n---\n"
+    github = FakeGitHub(
+        tooling_source_files={
+            repo: {
+                "tools/baseline-leakguard/TOOL.md": TOOL_MD,
+                "tools/bad-tool/TOOL.md": bad_bytes,
+            }
         }
     )
     tools = list_tools(github, config)

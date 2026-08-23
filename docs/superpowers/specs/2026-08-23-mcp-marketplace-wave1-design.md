@@ -1,9 +1,10 @@
 # MCP marketplace wave 1 -- skills and tooling on the connector surface
 
-Status: implemented (operator rulings encoded below; two execution-time
+Status: implemented (operator rulings encoded below; three execution-time
 amendments recorded in the ledger: baseline- tool ids are operator-reserved
-at kobo_create_tool, and kobo_set_agent_skills surfaces the two post-gate
-skill-scoped 404 messages verbatim). Wave 1 of the
+at kobo_create_tool, kobo_set_agent_skills surfaces the two post-gate
+skill-scoped 404 messages verbatim, and audited `content` is fully redacted
+via the audit redact set rather than length-capped). Wave 1 of the
 full-marketplace decomposition; waves 2-4 are registered at the bottom and
 are OUT of this spec's scope.
 
@@ -122,7 +123,9 @@ availability, logged loudly, ledgered as such.
   (~5 minutes) rolls over.
 - Audit: args land in the audit log under the existing top-level
   redaction; `content` is destined for an org-visible catalog, so it is
-  not secret-classed, but the log stores it length-capped.
+  not secret-classed, but it still joins `kobo_api.mcp.audit.SENSITIVE_
+  KEYS` (the same redact set `bot_token`/`app_token` use) and is fully
+  redacted in the log, not stored in any form.
 - Resolver down: membership checks fail closed (create refused), same
   posture as the room's group gates.
 

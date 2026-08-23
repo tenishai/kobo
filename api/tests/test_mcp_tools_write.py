@@ -1073,6 +1073,35 @@ def test_set_agent_skills_invisible_agent_not_found(session_factory, config, fak
         )
 
 
+def test_set_agent_skills_non_owner_of_a_visible_agent_raises_agent_not_found(
+    session_factory, config, fake_storage
+):
+    """Final-review pin (MUST-FIX 2): `test_set_agent_skills_invisible_
+    agent_not_found` above only pins the 404 shape (a DIFFERENT group, so
+    the agent is not visible at all). Nothing in this file's own suite
+    pinned the 403 shape -- a caller in the SAME group as the agent (so it
+    IS visible) who is neither the owner nor a room operator -- even
+    though `_agent_route_result`'s own table (A) folds 403 and 404 into
+    the identical byte-for-byte "agent not found" on purpose (the whole
+    point of the anti-enumeration property). Mirrors this file's own
+    `test_wire_slack_non_owner_of_a_visible_agent_raises_agent_not_found`
+    idiom (owner-or-operator confirmation test) for `kobo_set_agent_skills`.
+    """
+    _seed_marketplace_skill(fake_storage, SKILL_ID, owner=SKILL_TEAM)
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="agent not found"):
+        _call_tool(
+            mcp,
+            "kobo_set_agent_skills",
+            _ctx_for(MEMBER_A_EMAIL),
+            agent="ward",
+            add=[SKILL_ID],
+        )
+
+
 def test_set_agent_skills_team_resolved_from_catalog(session_factory, config, fake_storage):
     # The route needs payload.team: the tool resolves it from the
     # marketplace catalog entry's owner -- callers pass ids only.
@@ -1583,6 +1612,38 @@ def test_add_agent_tool_marketplace_transport_failure_is_sanitized(
         )
 
     assert transport_message not in str(exc_info.value)
+
+
+def test_add_agent_tool_marketplace_invalid_utf8_surfaces_as_tool_error(
+    session_factory, config, fake_storage
+):
+    """`fetch_tool_py`'s own UnicodeDecodeError-to-MarketplaceError wrap
+    (final review, MUST-FIX 1b) reaches this tool's `except MarketplaceError`
+    arm the same way every other typed marketplace failure already does,
+    surfacing as a clean `ToolError` rather than an unhandled
+    `UnicodeDecodeError` breaking the call -- one cheap integration proof
+    on top of `test_marketplace.py`'s own unit-level coverage of the wrap
+    itself."""
+    config.skills_repo = "org-skills"
+    filename = f"{TOOL_ID}.py"
+    bad_bytes = b'"""caf\xe9 bug."""\ndef post_draft(d):\n    return d\n'
+    fake_github = FakeGitHub(
+        tooling_source_files={marketplace_repo(config): {f"tools/{TOOL_ID}/{filename}": bad_bytes}}
+    )
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="not valid UTF-8"):
+        _call_tool(
+            mcp, "kobo_add_agent_tool", _ctx_for(OWNER_A_EMAIL), agent="ward", tool_id=TOOL_ID
+        )
 
 
 # --- kobo_create_skill / kobo_create_tool (MCP marketplace wave, Task 5) -----

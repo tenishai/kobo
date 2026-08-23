@@ -316,8 +316,8 @@ def register(mcp: FastMCP, app: Any) -> None:
         """List every tool in the shared tooling catalog: id, name,
         description, owning team, tags. Before creating a new tool,
         ALWAYS list and check fit here first -- prefer an existing tool
-        over a near-twin, see kobo_create_tool. A new agent should always
-        carry tooling -- see kobo_add_agent_tool and kobo_create_tool.
+        over a near-twin. A new agent should always carry tooling; when
+        nothing fits, see kobo_add_agent_tool and kobo_create_tool.
         Any signed-in caller may list.
         """
         clients = app.state.clients
