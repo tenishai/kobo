@@ -21,6 +21,16 @@ dependencies = [
     # just multipart/form-data), on the FastAPI/Starlette versions pinned
     # here.
     "python-multipart",
+    # The official Model Context Protocol Python SDK (MCP server arc, Task 6
+    # onward): Task 6 needs it for the real `ToolError` the audit decorator
+    # raises on a rate-limited call; Task 7 needs it for the server itself.
+    # NOTE: the version resolved here (2.0.0 at the time Task 6 landed)
+    # restructured `mcp.server.fastmcp` -> `mcp.server.mcpserver` and
+    # renamed `FastMCP` -> `MCPServer`, which the MCP server arc's own
+    # design doc still writes against the older `fastmcp` names -- Task 7's
+    # implementer needs to reconcile that drift, not assume the doc's
+    # import paths are current.
+    "mcp>=1.0",
 ]
 
 [project.optional-dependencies]

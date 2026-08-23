@@ -360,3 +360,41 @@ class MCPRefreshToken(Base):
     rotated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     revoked_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class MCPToolCallLog(Base):
+    """One row per MCP tool call attempt (MCP server arc, Task 6): who
+    called what, whether it succeeded, how long it took, and a redacted
+    copy of the arguments it was called with -- the audit trail
+    `kobo_api.mcp.audit.audited` writes on every tool invocation that
+    actually ran. A call the rate limiter refused before the tool ever ran
+    writes no row here at all -- see that module's own docstring for why.
+
+    `redacted_args` is a JSON-encoded object (TEXT column, the same "JSON
+    text in a plain column" idiom `Agent.purpose_tags`/`slack_channels`
+    already use elsewhere in this file), with every key `kobo_api.mcp.
+    audit.SENSITIVE_KEYS` names replaced by a fixed marker before this row
+    is ever written -- this table is safe for an operator to read without
+    risking exposure of whatever secret a caller happened to pass a tool
+    (a Slack bot token, a teach note that happens to paste one). `error`
+    holds the exception's own truncated `str()` and is populated only when
+    `status` is `"error"`.
+
+    This table postdates every other one in this file, same as
+    `MCPRefreshToken` above, so it needs no manual ALTER anywhere: a fresh
+    `Base.metadata.create_all` (`kobo_api.db.init_db`) creates it for free
+    on any database that has never seen it.
+    """
+
+    __tablename__ = "mcp_tool_call_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    tool: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(10), nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    redacted_args: Mapped[str] = mapped_column(Text, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
