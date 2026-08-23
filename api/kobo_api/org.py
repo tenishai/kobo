@@ -60,6 +60,9 @@ ORG_KEYS = frozenset(
         "agent_endpoint_template",
         "groups",
         "okta_domain",
+        # MCP server arc, Task 1 -- mcp is a nested object; org.yaml sets it
+        # as a mapping, same as groups above.
+        "mcp",
     }
 )
 

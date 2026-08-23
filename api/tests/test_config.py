@@ -9,6 +9,7 @@ from kobo_api.config import (
     SHARED_GROUP,
     Config,
     GroupChoice,
+    MCPConfig,
     ModelChoice,
     vertex_location_for,
 )
@@ -525,6 +526,57 @@ def test_group_choice_kind_rejects_unknown_value():
 
     message = str(exc_info.value)
     assert "shared" in message
+
+
+# --- mcp (MCP server arc, Task 1) --------------------------------------------
+
+
+def test_mcp_config_defaults_and_disabled():
+    config = Config()
+    assert config.mcp.oauth_client_id == ""
+    assert config.mcp.oauth_client_secret_env == "KOBO_MCP_GOOGLE_CLIENT_SECRET"
+    assert config.mcp.workspace_domain == ""
+    assert config.mcp.jwt_key_env == "KOBO_MCP_JWT_KEY"
+    assert config.mcp_enabled is False
+
+
+def test_mcp_config_overridable_via_yaml(tmp_path):
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        "mcp:\n"
+        "  oauth_client_id: some-client-id.apps.example.com\n"
+        "  workspace_domain: example.com\n"
+    )
+
+    config = Config.load(yaml_path)
+
+    assert config.mcp.oauth_client_id == "some-client-id.apps.example.com"
+    assert config.mcp.workspace_domain == "example.com"
+    # Fields left out of the overlay still fall back to MCPConfig's own
+    # defaults, same as every other overlay test in this file.
+    assert config.mcp.oauth_client_secret_env == "KOBO_MCP_GOOGLE_CLIENT_SECRET"
+    assert config.mcp.jwt_key_env == "KOBO_MCP_JWT_KEY"
+
+
+def test_mcp_enabled_true_when_oauth_client_id_set():
+    config = Config(
+        mcp=MCPConfig(oauth_client_id="some-client-id", workspace_domain="example.com")
+    )
+    assert config.mcp_enabled is True
+
+
+def test_mcp_enabled_requires_workspace_domain():
+    """An AS with no domain check must refuse to boot, fail-closed -- same
+    "fail loudly at construction" posture as `_admin_groups_must_be_
+    configured_groups` above."""
+    with pytest.raises(ValidationError) as exc_info:
+        Config(mcp=MCPConfig(oauth_client_id="some-client-id"))
+
+    message = str(exc_info.value)
+    assert (
+        "mcp.oauth_client_id is set but mcp.workspace_domain is empty; "
+        "the domain check is the org gate on the MCP path"
+    ) in message
 
 
 def test_config_example_yaml_documents_avatar_keys():

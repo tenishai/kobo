@@ -133,6 +133,7 @@ _ORG_YAML_TOKENS = {
     "agent_endpoint_template": "__KOBO_AGENT_ENDPOINT_TEMPLATE__",
     "groups": "__KOBO_GROUPS__",
     "okta_domain": "__KOBO_OKTA_DOMAIN__",
+    "mcp": "__KOBO_MCP__",
 }
 
 assert set(_ORG_YAML_TOKENS) == ORG_KEYS, (
@@ -171,6 +172,12 @@ def _org_yaml_context(config: Config) -> dict[str, object]:
         "agent_endpoint_template": config.agent_endpoint_template,
         "groups": [{"name": g.name, "okta_groups": list(g.okta_groups)} for g in config.groups],
         "okta_domain": config.okta_domain,
+        "mcp": {
+            "oauth_client_id": config.mcp.oauth_client_id,
+            "oauth_client_secret_env": config.mcp.oauth_client_secret_env,
+            "workspace_domain": config.mcp.workspace_domain,
+            "jwt_key_env": config.mcp.jwt_key_env,
+        },
     }
 
 

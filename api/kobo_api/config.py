@@ -100,6 +100,36 @@ class GroupChoice(BaseModel):
         return self
 
 
+class MCPConfig(BaseModel):
+    """Google OAuth + JWT signing coordinates for kobo's MCP server (MCP
+    server arc, Task 1) -- this block is the config surface later tasks'
+    OAuth authorization server and tool set build on. All plain strings, no
+    validators here: the one coupling rule (an enabled server needs a
+    domain check) needs to see this whole block alongside the rest of
+    `Config`, so it lives on `Config` itself
+    (`_mcp_requires_a_workspace_domain_when_enabled` below) -- same "the
+    validator lives where it can see the whole picture" posture as
+    `admin_groups`' own validator living on `Config`, not `GroupChoice`.
+    """
+
+    # The Google OAuth 2.0 client ID MCP sign-ins authenticate through.
+    # Empty (the default) means the MCP server is off -- see
+    # `Config.mcp_enabled` below, the one place that truthiness is read.
+    oauth_client_id: str = ""
+    # Env var name (never the secret value itself) holding the OAuth client
+    # secret. NEVER put a real secret in this or any tracked file.
+    oauth_client_secret_env: str = "KOBO_MCP_GOOGLE_CLIENT_SECRET"
+    # The Google Workspace domain an MCP sign-in must belong to -- the org
+    # gate on the MCP path. Empty is fine while the server itself is off;
+    # required the moment `oauth_client_id` is set (see the `Config`
+    # validator below for why leaving it empty on an enabled server fails
+    # loudly at construction instead of booting open).
+    workspace_domain: str = ""
+    # Env var name (never the key value itself) holding the key the MCP
+    # server signs its own JWTs with. NEVER put a real key in a tracked file.
+    jwt_key_env: str = "KOBO_MCP_JWT_KEY"
+
+
 def vertex_location_for(config: Config, model_id: str) -> str:
     """The Vertex location `model_id` should run against: its own
     `ModelChoice.location` when the catalog sets one, else
@@ -269,6 +299,20 @@ class Config(BaseModel):
     # unconfigured, same as skills_bucket above; Clients.real gates
     # OktaGroupResolver construction on this too.
     okta_domain: str = ""
+    # Google OAuth + JWT signing coordinates for kobo's MCP server (MCP
+    # server arc, Task 1) -- empty `mcp.oauth_client_id` (the default) means
+    # the MCP server is off, same "absent = feature off" convention as
+    # `cabal_url`/`skills_bucket` above. See `mcp_enabled` and
+    # `_mcp_requires_a_workspace_domain_when_enabled` below.
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
+
+    @property
+    def mcp_enabled(self) -> bool:
+        """Whether the MCP server is wired -- a real Google OAuth app is the
+        one field only an actually-configured server has, so its presence
+        is the switch, same "presence is the switch" posture as
+        `cabal_url`/`skills_bucket` above."""
+        return bool(self.mcp.oauth_client_id)
 
     @field_validator(
         "workdir", "slack_tokens_path", "ui_dist", "github_app_private_key_path",
@@ -334,6 +378,23 @@ class Config(BaseModel):
                     f"groups entry {g.name!r} collides with the reserved "
                     "commons group name (SHARED_GROUP) -- rename it"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _mcp_requires_a_workspace_domain_when_enabled(self) -> Config:
+        """An enabled MCP server (`mcp.oauth_client_id` set) must also set
+        `mcp.workspace_domain` -- the domain check is the org gate on the
+        MCP path. An AS with no domain check must refuse to boot, fail-
+        closed, same "fail loudly at construction" posture as
+        `_admin_groups_must_be_configured_groups` above: a server left able
+        to accept a sign-in from any Google account, not just the org's
+        own, is a config mistake, not a valid state.
+        """
+        if self.mcp.oauth_client_id and not self.mcp.workspace_domain:
+            raise ValueError(
+                "mcp.oauth_client_id is set but mcp.workspace_domain is "
+                "empty; the domain check is the org gate on the MCP path"
+            )
         return self
 
     @classmethod

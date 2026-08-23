@@ -281,6 +281,7 @@ def test_org_keys_is_exactly_the_brief_set():
             "agent_endpoint_template",
             "groups",
             "okta_domain",
+            "mcp",
         }
     )
 
@@ -323,6 +324,32 @@ def test_cabal_keys_round_trip():
     assert org.wired is True
     assert merged.cabal_url == "http://cabal.internal"
     assert merged.agent_endpoint_template == "http://agent-{name}.default.svc.cluster.local"
+
+
+def test_mcp_keys_round_trip():
+    """mcp (MCP server arc, Task 1) is org-scoped exactly like the other
+    feature-gating knobs above -- a client's kobo-config repo points its
+    own MCP server at its own Google OAuth app and Workspace domain. Only
+    the two fields a real client sets are given here; MCPConfig's own
+    defaults fill in the rest on re-validation (mirrors admin_groups/groups
+    re-validation the same way)."""
+    local = Config(org_repo=ORG_REPO)
+    github = FakeGitHub(
+        org_yaml=(
+            "mcp:\n"
+            "  oauth_client_id: some-client-id.apps.example.com\n"
+            "  workspace_domain: example.com\n"
+        )
+    )
+
+    merged, org = load_org_config(local, github)
+
+    assert org.wired is True
+    assert merged.mcp.oauth_client_id == "some-client-id.apps.example.com"
+    assert merged.mcp.workspace_domain == "example.com"
+    assert merged.mcp.oauth_client_secret_env == "KOBO_MCP_GOOGLE_CLIENT_SECRET"
+    assert merged.mcp.jwt_key_env == "KOBO_MCP_JWT_KEY"
+    assert merged.mcp_enabled is True
 
 
 def test_operators_list_round_trips():

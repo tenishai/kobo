@@ -69,3 +69,12 @@ agent_endpoint_template: __KOBO_AGENT_ENDPOINT_TEMPLATE__
 # see anything gated behind it.
 groups: __KOBO_GROUPS__
 okta_domain: __KOBO_OKTA_DOMAIN__
+
+# Google OAuth + JWT signing coordinates for kobo's MCP server (MCP server
+# arc, Task 1). Empty oauth_client_id (the default) means the MCP server is
+# off, same as cabal_url above; an enabled server also requires
+# workspace_domain to be set (the org gate on the MCP path) or the room
+# refuses to start. oauth_client_secret_env / jwt_key_env are ENV VAR
+# NAMES, not secret values themselves -- NEVER put a real secret in this or
+# any tracked file.
+mcp: __KOBO_MCP__

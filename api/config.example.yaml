@@ -178,3 +178,16 @@ github_app_installation_id: ""
 # mint; never logged. NEVER put a real private key in a tracked file —
 # point this at a gitignored path (or a mounted Secret, deployed).
 github_app_private_key_path: null
+
+# Google OAuth + JWT signing coordinates for kobo's MCP server (MCP server
+# arc, Task 1). Empty oauth_client_id (the default) means the MCP server is
+# off. An enabled server (oauth_client_id set) also requires
+# workspace_domain to be set — the domain check is the org gate on the MCP
+# path, and the room refuses to start without it. oauth_client_secret_env /
+# jwt_key_env are ENV VAR NAMES, not secret values themselves — NEVER put a
+# real secret in this or any tracked file.
+mcp:
+  oauth_client_id: ""
+  oauth_client_secret_env: KOBO_MCP_GOOGLE_CLIENT_SECRET
+  workspace_domain: ""
+  jwt_key_env: KOBO_MCP_JWT_KEY
