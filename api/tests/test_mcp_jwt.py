@@ -76,6 +76,43 @@ def test_mint_passes_through_extra_claims():
     assert claims["code_challenge"] == "abc123"
 
 
+# --- mint: reserved claims can't be smuggled through **extra ---------------
+#
+# `typ`, `sub`, and `aud` are already named parameters of `mint`, so Python's
+# own argument binding claims a same-named keyword before `**extra` ever
+# sees it (passing one positionally and by keyword is a plain `TypeError`,
+# not a path through this module's code at all). Only claim names `mint`
+# computes itself -- `iat`, `exp`, `jti` -- can actually arrive via
+# `**extra`, so those are the reachable smuggling attempts to pin here.
+
+
+@pytest.mark.parametrize(
+    "reserved,value",
+    [
+        ("iat", 0),
+        ("exp", 9999999999),
+        ("jti", "smuggled-jti"),
+    ],
+)
+def test_mint_rejects_reserved_extra_claims(reserved, value):
+    with pytest.raises(mcp_jwt.TokenError):
+        mcp_jwt.mint(
+            "access_token", SUB, AUD, 60, key=_key(), **{reserved: value}
+        )
+
+
+def test_mint_still_passes_through_a_benign_extra_claim():
+    """A non-reserved extra claim (family_id, code_challenge, ...) must keep
+    riding through unaffected by the reserved-claims rejection above."""
+    token = mcp_jwt.mint(
+        "refresh_token", SUB, AUD, 60, key=_key(), family_id="fam-1"
+    )
+
+    claims = mcp_jwt.verify(token, "refresh_token", AUD, key=_key())
+
+    assert claims["family_id"] == "fam-1"
+
+
 # --- Rejections -----------------------------------------------------------
 
 
@@ -185,6 +222,43 @@ def test_signing_key_empty_env_var_also_falls_back():
     key = mcp_jwt.signing_key("KOBO_MCP_JWT_KEY")
 
     assert len(key) == 32
+
+
+def test_signing_key_malformed_base64_raises_token_error(monkeypatch):
+    monkeypatch.setenv("KOBO_MCP_JWT_KEY", "not-valid-b64!!")
+
+    with pytest.raises(mcp_jwt.TokenError):
+        mcp_jwt.mint("access_token", SUB, AUD, 60)
+
+
+def test_signing_key_too_short_raises_token_error(monkeypatch):
+    monkeypatch.setenv(
+        "KOBO_MCP_JWT_KEY", base64.b64encode(b"a" * 8).decode()
+    )
+
+    with pytest.raises(mcp_jwt.TokenError):
+        mcp_jwt.signing_key()
+
+
+def test_signing_key_exactly_32_bytes_is_accepted(monkeypatch):
+    raw = b"a" * 32
+    monkeypatch.setenv("KOBO_MCP_JWT_KEY", base64.b64encode(raw).decode())
+
+    assert mcp_jwt.signing_key() == raw
+
+
+# --- verify: any PyJWT failure, not just InvalidTokenError, becomes a
+# TokenError ------------------------------------------------------------
+
+
+def test_verify_wraps_invalid_key_error_as_token_error():
+    """An empty key makes PyJWT raise InvalidKeyError, which is a
+    PyJWTError but NOT an InvalidTokenError -- a `except
+    pyjwt.InvalidTokenError` clause lets it through uncaught."""
+    token = mcp_jwt.mint("access_token", SUB, AUD, 60, key=_key())
+
+    with pytest.raises(mcp_jwt.TokenError):
+        mcp_jwt.verify(token, "access_token", AUD, key=b"")
 
 
 def test_ephemeral_key_path_warns_once_and_round_trips(caplog):

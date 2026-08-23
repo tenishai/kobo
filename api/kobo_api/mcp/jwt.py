@@ -24,6 +24,7 @@ inside this file.
 from __future__ import annotations
 
 import base64
+import binascii
 import logging
 import os
 import secrets
@@ -40,6 +41,8 @@ ACCESS_TTL_S = 900
 REFRESH_TTL_S = 30 * 24 * 3600
 
 _ALGORITHM = "HS256"
+_MIN_KEY_BYTES = 32
+_RESERVED_CLAIMS = frozenset({"typ", "sub", "aud", "iat", "exp", "jti"})
 
 # Process-lifetime fallback key, generated at most once, the first time
 # `signing_key` is asked for a signing env var that turns out to be unset
@@ -65,12 +68,29 @@ def signing_key(env_var: str = "KOBO_MCP_JWT_KEY") -> bytes:
     also finds its own env var missing reuses that same random key rather
     than minting a fresh one per name. A deployed kobo always sets the
     real env var, so this path only ever runs in dev.
+
+    Raises `TokenError` if the env var is set but isn't valid base64, or
+    decodes to fewer than `_MIN_KEY_BYTES` bytes -- a key that short is a
+    misconfiguration, not something to sign tokens with.
     """
     global _ephemeral_key
 
     raw = os.environ.get(env_var, "")
     if raw:
-        return base64.b64decode(raw)
+        try:
+            decoded = base64.b64decode(raw, validate=False)
+        except binascii.Error as exc:
+            raise TokenError(
+                f"{env_var} is not valid base64: {exc}"
+            ) from exc
+
+        if len(decoded) < _MIN_KEY_BYTES:
+            raise TokenError(
+                f"{env_var} decodes to {len(decoded)} bytes, need at least "
+                f"{_MIN_KEY_BYTES}"
+            )
+
+        return decoded
 
     if _ephemeral_key is None:
         _ephemeral_key = secrets.token_bytes(32)
@@ -90,8 +110,19 @@ def mint(
     pass an explicit key to sign against a different one (a caller that
     resolved its own env var via `signing_key(some_env_var)`, or a test).
     Any `extra` keyword claims (a code challenge, a family id, ...) are
-    stamped in verbatim alongside the standard ones.
+    stamped in verbatim alongside the standard ones. Raises `TokenError`
+    if `extra` tries to pass one of the standard claim names (`typ`,
+    `sub`, `aud`, `iat`, `exp`, `jti`) -- a caller reaching for `exp=` is
+    a bug that needs to surface loudly, not one whose value quietly wins
+    against the real expiry below.
     """
+    smuggled = extra.keys() & _RESERVED_CLAIMS
+    if smuggled:
+        raise TokenError(
+            f"extra claims collide with reserved claim names: "
+            f"{sorted(smuggled)}"
+        )
+
     now = int(time.time())
     claims = {
         "typ": typ,
@@ -115,7 +146,9 @@ def verify(token: str, expected_typ: str, aud: str, *, key: bytes | None = None)
     token's own `alg` header), `aud`, and `exp`. `typ` is our own claim,
     not something PyJWT knows about, so it's checked explicitly here,
     after decode. Every failure mode raises `TokenError`, never a bare
-    PyJWT exception.
+    PyJWT exception -- the except clause below is `PyJWTError`, not the
+    narrower `InvalidTokenError`, because `InvalidKeyError` and its
+    siblings are `PyJWTError`s that don't subclass `InvalidTokenError`.
     """
     try:
         claims = pyjwt.decode(
@@ -124,7 +157,7 @@ def verify(token: str, expected_typ: str, aud: str, *, key: bytes | None = None)
             algorithms=[_ALGORITHM],
             audience=aud,
         )
-    except pyjwt.InvalidTokenError as exc:
+    except pyjwt.PyJWTError as exc:
         raise TokenError(f"token failed verification: {exc}") from exc
 
     actual_typ = claims.get("typ")
