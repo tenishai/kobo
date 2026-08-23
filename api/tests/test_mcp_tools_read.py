@@ -233,8 +233,13 @@ def test_build_mcp_server_registers_the_four_read_tools(session_factory, config)
 
     mcp = build_mcp_server(app)
 
+    # Task 8 adds the six write tools alongside these on the same `mcp` --
+    # this assertion only pins that the four READ tools are still exactly
+    # these four (a superset check, not equality), so this file stays
+    # focused on read-tool registration without needing to track the
+    # write-tools module's own tool set too (see test_mcp_tools_write.py).
     names = {tool.name for tool in mcp._tool_manager.list_tools()}
-    assert names == {"kobo_whoami", "kobo_list_agents", "kobo_get_agent", "kobo_feed"}
+    assert {"kobo_whoami", "kobo_list_agents", "kobo_get_agent", "kobo_feed"} <= names
 
 
 def test_build_mcp_server_configures_audit_with_the_apps_session_factory(session_factory, config):

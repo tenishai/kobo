@@ -159,13 +159,10 @@ def build_mcp_server(app: Any) -> FastMCP:
     Verifier` wired to `app`, `AuthSettings` pointed at this room's own
     issuer/resource URLs, `audit.configure`d with `app`'s own session
     factory so every tool call's audit row lands in the room's real DB,
-    and the four read tools registered (this task).
-
-    **Seam for Task 8:** write tools register from their own module the
-    same way read tools do below -- `from kobo_api.mcp.tools import write
-    as write_tools` then `write_tools.register(mcp, app)`, right after
-    `read_tools.register(mcp, app)`. Nothing else about this function
-    changes; the TODO marks the exact spot.
+    the four read tools (Task 7), and the six write tools (Task 8) --
+    `create_agent`/`teach`/`chat`/`request_colleague`/`accept_invite`/
+    `wire_slack`, registered from their own module (`kobo_api.mcp.tools.
+    write`) the same way read tools are, right after them.
 
     **Import deliberately deferred, not just habit:** `kobo_api.mcp.tools.
     read` itself imports `get_user_email` straight off this module
@@ -178,6 +175,7 @@ def build_mcp_server(app: Any) -> FastMCP:
     `sys.modules` by the time `read.py`'s own import runs.
     """
     from kobo_api.mcp.tools import read as read_tools
+    from kobo_api.mcp.tools import write as write_tools
 
     cfg: Config = app.state.config
 
@@ -195,8 +193,6 @@ def build_mcp_server(app: Any) -> FastMCP:
     audit.configure(app.state.session_factory)
 
     read_tools.register(mcp, app)
-    # TODO(Task 8): register the write tools on this same `mcp` --
-    #   from kobo_api.mcp.tools import write as write_tools
-    #   write_tools.register(mcp, app)
+    write_tools.register(mcp, app)
 
     return mcp
