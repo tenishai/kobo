@@ -488,3 +488,162 @@ describe("ColleagueConversations (legibility wave)", () => {
     expect(screen.queryByText("What's the config, relay?")).toBeNull();
   });
 });
+
+// --- Review fix round: day-boundary collapse, chip dead-end escape, null
+// field guards, re-pin on filter transitions, empty-transition reset -------
+
+describe("ColleagueConversations (review fix round)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    FakeEventSource.instances = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("an identical run spanning midnight breaks at the day boundary", async () => {
+    const rep = (ts: string, id: string) => ({ ...ASK_ENTRY, ts, conversation_id: id });
+    stubFetch({
+      "/api/colleagues/feed": {
+        entries: [
+          rep("2026-08-19T23:58:00Z", "m1"),
+          rep("2026-08-20T00:01:00Z", "m2"),
+          rep("2026-08-20T00:03:00Z", "m3"),
+        ],
+        truncated: false,
+      },
+    });
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findAllByText("What's the config?");
+
+    // Two lines: one on the 19th (x1, unbadged), one on the 20th (x2) --
+    // today's repeats are filed under TODAY, never under yesterday's rule.
+    expect(screen.getAllByText("What's the config?")).toHaveLength(2);
+    expect(screen.getByText("2026-08-19")).not.toBeNull();
+    expect(screen.getByText("2026-08-20")).not.toBeNull();
+    expect(screen.getByText("x2")).not.toBeNull();
+    expect(screen.queryByText("x3")).toBeNull();
+  });
+
+  it("the no-match state offers Clear filter, which escapes a dead chip", async () => {
+    const toRelay = {
+      ...ASK_ENTRY,
+      ts: "2026-08-19T11:00:00Z",
+      conversation_id: "r-1",
+      to: "relay",
+      text: "Relay, are you there?",
+    };
+    stubFeedSequence(
+      { entries: [ASK_ENTRY, toRelay], truncated: false },
+      // The refetch loses every "network" conversation (room-window eviction):
+      { entries: [toRelay], truncated: false },
+    );
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("Relay, are you there?");
+
+    await fireEvent.click(screen.getByRole("button", { name: "network" }));
+    expect(screen.getByText("What's the config?")).not.toBeNull();
+
+    // Eviction: the active counterpart vanishes from the feed entirely.
+    FakeEventSource.instances[0].emit("dispatch_success");
+    expect(await screen.findByText("No lines match the filter.")).not.toBeNull();
+    // The chip row is gone (one counterpart left) -- the escape hatch is not.
+    expect(screen.queryByRole("button", { name: "network" })).toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Clear filter" }));
+    expect(await screen.findByText("Relay, are you there?")).not.toBeNull();
+  });
+
+  it("a null counterpart field never crashes the filter", async () => {
+    const nullTo = { ...ASK_ENTRY, to: null as unknown as string };
+    stubFetch({
+      "/api/colleagues/feed": { entries: [nullTo], truncated: false },
+    });
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("What's the config?");
+
+    const box = screen.getByLabelText("Filter conversations") as HTMLInputElement;
+    await fireEvent.input(box, { target: { value: "zzz" } });
+    expect(await screen.findByText("No lines match the filter.")).not.toBeNull();
+
+    await fireEvent.input(box, { target: { value: "config" } });
+    expect(await screen.findByText("What's the config?")).not.toBeNull();
+  });
+
+  it("clearing a chip while pinned re-pins to the true bottom", async () => {
+    const toRelay = {
+      ...ASK_ENTRY,
+      ts: "2026-08-19T11:00:00Z",
+      conversation_id: "r-1",
+      to: "relay",
+      text: "Relay, are you there?",
+    };
+    stubFetch({
+      "/api/colleagues/feed": { entries: [ASK_ENTRY, REPLY_ENTRY, toRelay], truncated: false },
+    });
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("Relay, are you there?");
+
+    const logEl = screen.getByRole("log") as HTMLDivElement;
+    Object.defineProperty(logEl, "scrollHeight", { value: 900, configurable: true });
+    Object.defineProperty(logEl, "clientHeight", { value: 500, configurable: true });
+    Object.defineProperty(logEl, "scrollTop", { value: 0, configurable: true, writable: true });
+
+    const chip = screen.getByRole("button", { name: "network" });
+    await fireEvent.click(chip); // narrow
+    await fireEvent.click(chip); // clear again: rows regrow while pinned
+
+    await waitFor(() => {
+      expect(logEl.scrollTop).toBe(900);
+    });
+  });
+
+  it("a feed that empties out resets the filter state for its return", async () => {
+    // Three acts: entries -> empty (state must reset) -> entries again
+    // (the remounted box must be blank, every line visible).
+    const acts = [
+      { entries: [ASK_ENTRY], truncated: false },
+      { entries: [], truncated: false },
+      { entries: [ASK_ENTRY, REPLY_ENTRY], truncated: false },
+    ];
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/colleagues/feed")) {
+          const act = acts[Math.min(call, acts.length - 1)];
+          call += 1;
+          return new Response(JSON.stringify(act), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      }),
+    );
+
+    renderWithClient(ColleagueConversations, { agentName: "ward" });
+    await screen.findByText("What's the config?");
+
+    const box = screen.getByLabelText("Filter conversations") as HTMLInputElement;
+    await fireEvent.input(box, { target: { value: "zzz-no-match" } });
+    expect(await screen.findByText("No lines match the filter.")).not.toBeNull();
+
+    FakeEventSource.instances[0].emit("dispatch_success");
+    expect(await screen.findByText("No agent conversations yet.")).not.toBeNull();
+
+    FakeEventSource.instances[0].emit("dispatch_success");
+    await screen.findByText("Here's the config.");
+    // The stale query never lay in wait: box blank, every line visible.
+    const returned = screen.getByLabelText("Filter conversations") as HTMLInputElement;
+    expect(returned.value).toBe("");
+    expect(screen.getByText("What's the config?")).not.toBeNull();
+  });
+});

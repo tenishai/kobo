@@ -120,14 +120,30 @@
   }
 
   $effect(() => {
-    // Re-run whenever the entry COUNT changes (a genuine append), not on
-    // every unrelated re-render -- reading `.length` here (rather than the
-    // array itself) is what keeps this effect from firing needlessly.
-    const _count = entries.length;
+    // Re-run whenever the RENDERED row count changes -- a genuine append,
+    // but also a filter or chip transition regrowing the list (review fix:
+    // keying off entries.length left `pinned` stale-true after clearing a
+    // filter, so the next SSE append yanked the scroll without warning).
+    const _count = rows.length;
     if (pinned && screenEl) {
       screenEl.scrollTop = screenEl.scrollHeight;
     }
   });
+
+  $effect(() => {
+    // A feed that empties out resets the filter state: the box and chips
+    // unmount on empty, and stale state must never lie in wait to silently
+    // re-filter the feed's return.
+    if (entries.length === 0 && (filterText !== "" || activeCounterpart !== null)) {
+      filterText = "";
+      activeCounterpart = null;
+    }
+  });
+
+  function clearFilters(): void {
+    filterText = "";
+    activeCounterpart = null;
+  }
 
   /** ISO-8601 timestamp -> its own embedded wall-clock time, `HH:MM:SS` --
    * sliced straight out of the string rather than parsed through `Date` and
@@ -172,7 +188,11 @@
         prev.entry.role === entry.role &&
         prev.entry.from === entry.from &&
         prev.entry.to === entry.to &&
-        prev.entry.text === entry.text
+        prev.entry.text === entry.text &&
+        // A run never crosses midnight: today's repeats must file under
+        // today's date rule, or the collapse would reintroduce the exact
+        // "old scrollback passes as today" confusion the rules fix.
+        dateOf(prev.entry.ts) === dateOf(entry.ts)
       ) {
         prev.count += 1;
         prev.lastTs = entry.ts;
@@ -217,10 +237,13 @@
       if (query === "") {
         return true;
       }
+      // `?? ""` on every field: the feed's shape is a cast, not a runtime
+      // guarantee, and one null field must never take down the whole
+      // $derived (a thrown TypeError here blanks the terminal).
       return (
-        line.entry.text.toLowerCase().includes(query) ||
-        line.entry.from.toLowerCase().includes(query) ||
-        line.entry.to.toLowerCase().includes(query)
+        (line.entry.text ?? "").toLowerCase().includes(query) ||
+        (line.entry.from ?? "").toLowerCase().includes(query) ||
+        (line.entry.to ?? "").toLowerCase().includes(query)
       );
     });
   });
@@ -310,6 +333,13 @@
           {:else if visibleLines.length === 0 && filtering}
             <p class="colleague-terminal__line colleague-terminal__line--empty">
               No lines match the filter.
+              <button
+                type="button"
+                class="colleague-terminal__clear"
+                onclick={clearFilters}
+              >
+                Clear filter
+              </button>
             </p>
           {:else}
             {#each rows as row (row.kind === "date" ? "date:" + row.date : row.line.entry.conversation_id + ":" + row.line.entry.role)}
@@ -474,6 +504,27 @@
     border-radius: 999px;
     color: var(--term-muted);
     font-size: 0.75rem;
+  }
+
+  /* The always-reachable escape hatch: an active chip's counterpart can
+     evict from the feed entirely (room-window churn upstream), taking the
+     chip row with it -- this button lives in the no-match state itself, so
+     a scoping dead-end can always be walked back in place. */
+  .colleague-terminal__clear {
+    margin-left: var(--space-xs);
+    padding: 0 var(--space-sm);
+    border: 1px solid var(--term-border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--term-ink);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+
+  .colleague-terminal__clear:hover {
+    border-color: var(--accent);
+    color: var(--accent);
   }
 
   .colleague-terminal__wrap {
