@@ -1943,6 +1943,11 @@ def create_app(
         Deliberately NOT kobo_api.mcp.tools.write._require_team_membership:
         that gate is the marketplace axis (operator-only "shared") and its
         mutation pins must not churn here. Cross-referenced there.
+
+        Unlike _operator_block/_admin_operator_block there is deliberately
+        NO iap_audience dev-parity arm: operator ruling (persona wave,
+        2026-08-23), named-team filing stays fail-closed even in an
+        IAP-less room; the commons arm covers dev flows.
         """
         if team == "shared":
             return None

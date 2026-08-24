@@ -409,6 +409,26 @@ def test_persona_create_shared_team_passes_with_resolver_down(gate_config, fake_
     assert response.status_code == 201
 
 
+def test_persona_create_shared_team_passes_with_resolver_answering_empty_list(
+    gate_config, fake_storage, tmp_path
+):
+    """Distinct from the resolver-down case above: here the resolver
+    actually ANSWERS for this caller, with an empty list (a real "you are
+    in zero groups" reply, not "I could not resolve you"). The "shared"
+    arm still never looks at it either way -- confirming the short-circuit
+    is on `team == "shared"` alone, not on some reading of the resolver's
+    reply."""
+    resolver = _GroupsStub({STRANGER_EMAIL: []})
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=resolver)
+    payload = {**VALID_PAYLOAD, "team": "shared"}
+
+    response = client.post(
+        "/api/personas", json=payload, headers=_gate_headers(key, email=STRANGER_EMAIL)
+    )
+
+    assert response.status_code == 201
+
+
 def test_persona_create_named_team_member_passes(gate_config, fake_storage, tmp_path):
     resolver = _GroupsStub({MEMBER_EMAIL: ["sre"]})
     client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=resolver)
@@ -446,6 +466,27 @@ def test_persona_create_named_team_unresolvable_403(gate_config, fake_storage, t
     )
 
     assert response.status_code == 403
+
+
+def test_persona_create_named_team_no_resolver_wired_403(gate_config, fake_storage, tmp_path):
+    """`_gate_client`'s own default (`groups_resolver=None`) -- no other
+    gate test above exercises it: `clients.groups` is `None` because no
+    resolver is configured on this room at all, distinct from a resolver
+    that's configured but answers `None`. `_persona_team_gate`'s `resolver
+    = clients.groups if clients is not None else None` /
+    `resolver.groups_for(email) if resolver is not None else None` chain
+    folds this into the exact same fail-closed refusal."""
+    client, key = _gate_client(gate_config, fake_storage, tmp_path)
+    payload = {**VALID_PAYLOAD, "team": "sre"}
+
+    response = client.post(
+        "/api/personas", json=payload, headers=_gate_headers(key, email=STRANGER_EMAIL)
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": "you must be a member of team sre to file a persona under it"
+    }
 
 
 def test_persona_create_named_team_operator_passes(gate_config, fake_storage, tmp_path):
