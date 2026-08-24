@@ -234,8 +234,7 @@ def test_create_persona_422_merged_render_too_many_lines(client):
     create_persona and turned into a 422 by the existing
     `except PersonaError` handler) — not the generic field-name-only
     RequestValidationError copy."""
-    # To exceed 200 lines: use max rules (150) + multi-line what_they_do
-    # that exceeds 201 - (11 fixed + 150 rules) = 41 lines
+    # To exceed 200 lines: 7 template + 41 what_they_do + 3 rules-opener + 150 rules = 201
     multi_line_what = "\n".join(["line"] * 41)
     payload = {**VALID_PAYLOAD, "what_they_do": multi_line_what, "rules": ["ok"] * 150}
 

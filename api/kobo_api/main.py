@@ -209,11 +209,11 @@ class CreateAgentRequest(BaseModel):
 
 
 class NameSuggestionsRequest(BaseModel):
-    """POST /api/agents/name-suggestions body (create flow v2 addendum): the
-    same `who_they_are`/`what_they_do` field names and bounds as
-    `PersonaFields` (kobo_api.personas) — the naming station reads the same
-    persona-shape text the persona builder itself takes, just ahead of a
-    persona actually being committed."""
+    """POST /api/agents/name-suggestions body (create flow v2 addendum): same
+    field names as `PersonaFields` (kobo_api.personas); bounds deliberately
+    tighter (500 vs 49152) since suggestions need only a sketch of what_they_do
+    — the naming station reads the same persona-shape text the persona builder
+    itself takes, just ahead of a persona actually being committed."""
 
     who_they_are: str = Field(min_length=1, max_length=200)
     what_they_do: str = Field(min_length=1, max_length=500)

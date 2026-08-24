@@ -133,9 +133,10 @@ decision is made. No logic is duplicated.
 
 ## Tool surface
 
-Eighteen tools (ten at this spec's writing, six added by the marketplace wave, two by the persona wave), thin shims over already-tested internals. Every tool is
-wrapped in the audit decorator (below); every agent-scoped tool passes
-through the authz shim first. `ToolAnnotations` carry honest
+Eighteen tools (ten at this spec's writing, six added by the marketplace
+wave, two by the persona wave), thin shims over already-tested internals.
+Every tool is wrapped in the audit decorator (below); every agent-scoped
+tool passes through the authz shim first. `ToolAnnotations` carry honest
 `readOnlyHint`/`destructiveHint` values.
 
 | Tool | Params | Gate | Notes |
@@ -168,7 +169,8 @@ picks an existing persona by id.
   SDK's schema introspection sees the real signature — decorator order is
   load-bearing). Per call it: enforces the rate limit, redacts sensitive
   kwargs (`note`, `message`, `tokens`, `secret`-ish keys →
-  `***REDACTED***`), times the call, and fire-and-forgets a row into
+  `***REDACTED***`), truncates non-sensitive values (512-char strings,
+  lists per-element), times the call, and fire-and-forgets a row into
   `mcp_tool_call_log` (`email`, `tool`, `status`, `duration_ms`,
   `redacted_args`, `error` first-500). Audit failures never fail the
   tool call.

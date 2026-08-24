@@ -232,7 +232,7 @@ def _call_tool(mcp, tool_name, ctx, **arguments):
 # --- build_mcp_server / _KoboTokenVerifier / get_user_email ----------------
 
 
-def test_build_mcp_server_registers_the_six_read_tools(session_factory, config):
+def test_build_mcp_server_registers_the_seven_read_tools(session_factory, config):
     app = _app(session_factory, config, groups_resolver=_resolver())
 
     mcp = build_mcp_server(app)

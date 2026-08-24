@@ -1,13 +1,12 @@
 """kobo's read-only MCP tools: the original four from the MCP server arc
 (Task 7) -- whoami, list, get, and feed -- plus two marketplace-catalog
 listers added by the MCP marketplace wave's Task 2 -- `kobo_list_skills`
-and `kobo_list_tools` -- plus the persona wave's Task 4 -- `kobo_list_
-personas`. Every one of these is a thin shim over the room's own choke
-points -- `kobo_api.mcp.authz` for visibility/admin, `kobo_api.main` for
-the feed's own flattening pipeline and the persona search route,
-`kobo_api.search`/`kobo_api.marketplace` for the two marketplace catalogs
--- never a second implementation of logic that already exists and is
-already tested there.
+and `kobo_list_tools` -- plus the persona wave's Task 4 -- `kobo_list_personas`.
+Every one of these is a thin shim over the room's own choke points --
+`kobo_api.mcp.authz` for visibility/admin, `kobo_api.main` for the feed's own
+flattening pipeline and the persona search route, `kobo_api.search`/
+`kobo_api.marketplace` for the two marketplace catalogs -- never a second
+implementation of logic that already exists and is already tested there.
 
 Every tool wears `@mcp.tool(annotations=ToolAnnotations(readOnlyHint=
 True))` on the outside and `@audited("kobo_x")` immediately under it --
@@ -334,10 +333,13 @@ def register(mcp: FastMCP, app: Any) -> None:
         return {"result": tools}
 
     # Deferred import: `_endpoint` is `kobo_api.mcp.tools.write`'s own
-    # helper (see that module's docstring for the full mechanism) --
-    # write.py imports nothing from this module, so no cycle, but this
-    # module IS imported at `kobo_api.mcp.server` load time (from
-    # `register`'s own module-level position in that file), well before
+    # helper (see that module's docstring for the full mechanism) -- a real
+    # read->write->read cycle exists: write.py line ~331 module-level imports
+    # three constants FROM this module (_CATALOG_UNAVAILABLE,
+    # _MARKETPLACE_DID_NOT_ANSWER, _SKILLS_BUCKET_NOT_CONFIGURED). A
+    # module-level import would fail loudly at import time, so this module IS
+    # imported at `kobo_api.mcp.server` load time (from `register`'s own
+    # module-level position in that file), well before
     # `kobo_api.mcp.tools.write` is guaranteed to have finished importing
     # everything it does. Deferring the import to inside `register` (which
     # only ever runs once `build_mcp_server` is actually called) sidesteps
