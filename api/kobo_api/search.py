@@ -234,6 +234,12 @@ def _load_catalog_entries(
                     "tags": list(raw["tags"]),
                     "sha": raw.get("sha", ""),
                     "builtin": bool(raw.get("builtin", False)),
+                    # Carried through, not validated as a required field
+                    # (hardening wave): `ingest_indexes` filters on this key
+                    # after the load, so it has to survive this whitelist or
+                    # the filter would have nothing to read. Absent means
+                    # active, same presence-based rule the index itself uses.
+                    "archived": bool(raw.get("archived", False)),
                 }
             )
         return entries
@@ -411,7 +417,14 @@ def ingest_indexes(
     ensure_fts(engine)
 
     entries_by_kind = {
-        kind: _load_catalog_entries(storage, bucket, prefix, kind)
+        kind: [
+            e
+            for e in _load_catalog_entries(storage, bucket, prefix, kind)
+            # Archived catalog entries (hardening wave, personas today) are
+            # invisible to every search-backed surface: the room list, the
+            # picker, and the MCP list tools all read this table.
+            if not e.get("archived")
+        ]
         for kind, bucket in catalogs.items()
     }
 

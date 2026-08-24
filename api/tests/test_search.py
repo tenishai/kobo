@@ -134,6 +134,31 @@ def test_ingest_indexes_returns_counts(engine, storage):
     assert counts == {"skill": 2, "persona": 1}
 
 
+def test_ingest_drops_archived_entries(engine):
+    storage = FakeStorage(
+        buckets={
+            "personas-bucket": {
+                "index.json": (
+                    _index_bytes(
+                        [
+                            {"id": "active-one", "name": "Active", "description": "d",
+                             "team": "shared", "tags": [], "builtin": False},
+                            {"id": "shelved-one", "name": "Shelved", "description": "d",
+                             "team": "shared", "tags": [], "builtin": False,
+                             "archived": True},
+                        ]
+                    ),
+                    {},
+                )
+            },
+        }
+    )
+    counts = ingest_indexes(engine, storage, {"persona": "personas-bucket"})
+    assert counts == {"persona": 1}
+    ids = [e.id for e in search(engine, "persona", "")]
+    assert ids == ["active-one"]
+
+
 def test_ingest_records_exactly_one_read_per_bucket(engine, storage):
     _ingest(engine, storage)
     assert storage.calls.count("read_bytes:skills-bucket:index.json") == 1

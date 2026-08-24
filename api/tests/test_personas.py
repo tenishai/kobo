@@ -27,6 +27,7 @@ from kobo_api.personas import (
     persona_id,
     render_persona,
     seed_default_personas,
+    set_persona_archived,
 )
 from tests.fakes import FakeStorage
 
@@ -519,3 +520,42 @@ def test_seed_default_personas_merges_with_preexisting_room_authored_entries():
     index = json.loads(storage.read_bytes("personas-bucket", "index.json"))
     ids = {e["id"] for e in index["entries"]}
     assert ids == {"aria-the-assistant", "helpful-generalist"}
+
+
+# --- set_persona_archived (hardening wave: archive, not delete) --------
+
+
+def test_set_persona_archived_flags_and_unflags():
+    storage = FakeStorage()
+    storage.write_bytes("b", "index.json", json.dumps({"entries": [
+        {"id": "wire-probe", "name": "Wire Probe", "description": "d",
+         "team": "shared", "tags": [], "builtin": False},
+    ]}).encode())
+    entry = set_persona_archived(storage, bucket="b", persona_id="wire-probe", archived=True)
+    assert entry["archived"] is True
+    index = json.loads(storage.read_bytes("b", "index.json"))
+    assert index["entries"][0]["archived"] is True
+
+    entry = set_persona_archived(storage, bucket="b", persona_id="wire-probe", archived=False)
+    assert "archived" not in entry
+    index = json.loads(storage.read_bytes("b", "index.json"))
+    assert "archived" not in index["entries"][0]
+
+
+def test_set_persona_archived_unknown_id_raises():
+    storage = FakeStorage()
+    storage.write_bytes("b", "index.json", json.dumps({"entries": []}).encode())
+    with pytest.raises(PersonaError, match="no persona"):
+        set_persona_archived(storage, bucket="b", persona_id="ghost", archived=True)
+
+
+def test_seed_default_personas_preserves_archived_flag():
+    """The resurrect trap: seeding rewrites builtin index entries wholesale
+    every boot; an archived builtin must stay archived across a restart."""
+    storage = FakeStorage()
+    seed_default_personas(storage, bucket="b")
+    set_persona_archived(storage, bucket="b", persona_id="helpful-generalist", archived=True)
+    seed_default_personas(storage, bucket="b")  # the restart
+    index = json.loads(storage.read_bytes("b", "index.json"))
+    entry = next(e for e in index["entries"] if e["id"] == "helpful-generalist")
+    assert entry.get("archived") is True

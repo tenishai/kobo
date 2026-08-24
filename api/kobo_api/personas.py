@@ -282,6 +282,34 @@ def _write_index(storage: StorageClient, bucket: str, prefix: str, entries: list
     )
 
 
+def set_persona_archived(
+    storage: StorageClient,
+    *,
+    bucket: str,
+    prefix: str = "",
+    persona_id: str,
+    archived: bool,
+) -> dict:
+    """Flip one index entry's archived flag (hardening wave: archive, not
+    delete -- the persona.md object is never touched, and unarchive
+    restores full standing). Archived is presence-based: setting True
+    writes `"archived": True`; setting False REMOVES the key, so every
+    pre-archive index file stays valid and absence always means active.
+    Returns the updated entry. Raises PersonaError when `persona_id` is
+    not in the index (no anti-enumeration fold here: the persona catalog
+    is room-readable, honesty wins)."""
+    index = _read_index(storage, bucket, prefix)
+    for entry in index:
+        if entry["id"] == persona_id:
+            if archived:
+                entry["archived"] = True
+            else:
+                entry.pop("archived", None)
+            _write_index(storage, bucket, prefix, index)
+            return entry
+    raise PersonaError(f"no persona with id {persona_id!r}")
+
+
 def create_persona(
     storage: StorageClient,
     *,
@@ -405,6 +433,7 @@ def seed_default_personas(storage: StorageClient, *, bucket: str, prefix: str = 
         # + description are parsed from them) — the id itself is used as
         # the display name, same as how these ship with no other naming
         # convention to draw from.
+        previous = index_by_id.get(info.id)
         index_by_id[info.id] = {
             "id": info.id,
             "name": info.id,
@@ -413,6 +442,11 @@ def seed_default_personas(storage: StorageClient, *, bucket: str, prefix: str = 
             "tags": [],
             "builtin": True,
         }
+        # The resurrect trap (hardening wave): this rewrite runs every
+        # boot; without carrying the flag forward, an archived builtin
+        # would silently return on the next restart.
+        if previous and previous.get("archived"):
+            index_by_id[info.id]["archived"] = True
 
     _write_index(storage, bucket, prefix, list(index_by_id.values()))
     return {"seeded": seeded, "skipped": skipped}
