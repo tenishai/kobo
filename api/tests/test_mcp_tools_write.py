@@ -2209,6 +2209,65 @@ def test_create_persona_named_team_member_passes(session_factory, config, fake_s
     assert result["team"] == "sre"
 
 
+def test_create_persona_with_rules_lands_in_the_rendered_body(
+    session_factory, config, fake_storage
+):
+    """`rules` (optional always/never one-liners) must actually reach the
+    created persona, not just clear validation -- the 201 body never
+    echoes `rules` back (see `create_persona_route`'s own response shape),
+    so this reads the PERSISTED persona.md straight off `fake_storage`,
+    the same way `test_create_persona_shared_lands_and_is_instantly_
+    listable` proves its own create landed via `kobo_list_personas`
+    rather than trusting the return value alone."""
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp,
+        "kobo_create_persona",
+        _ctx_for(MEMBER_A_EMAIL),
+        name="Ledger Keeper",
+        who_they_are="a scrupulous bookkeeper",
+        what_they_do="Track every transaction to the penny.",
+        rules=["always cite the ledger"],
+    )
+
+    assert result["id"] == "ledger-keeper"
+    assert result["team"] == "shared"
+    body = fake_storage.read_bytes(PERSONAS_BUCKET, f"{result['id']}/persona.md").decode()
+    assert "- always cite the ledger" in body
+
+
+def test_create_persona_rules_none_explicit_succeeds(session_factory, config, fake_storage):
+    """WHY this test exists: FastMCP materializes every declared default at
+    call time, so a caller who never mentions `rules` at all still sends
+    `rules=None` into the tool body -- there is no "key omitted" case
+    inside the function, only "rules is None" or "rules is a list".
+    `CreatePersonaRequest.rules` (kobo_api.main/kobo_api.personas) is
+    typed `list[str]` with `Field(default_factory=list)`, NOT
+    `Optional[list[str]]` -- passing `None` straight through raises a
+    pydantic `ValidationError`. `write.py`'s own `rules=rules or []` is
+    the ONLY thing standing between the common, rules-less call and that
+    failure. This test pins that guard directly, with `rules=None` passed
+    explicitly, against a future "simplification" to plain `rules=rules`
+    that would quietly break every rules-less `kobo_create_persona` call."""
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp,
+        "kobo_create_persona",
+        _ctx_for(MEMBER_A_EMAIL),
+        name="Quiet Auditor",
+        who_they_are="an unassuming reviewer",
+        what_they_do="Check the numbers without commentary.",
+        rules=None,
+    )
+
+    assert result["id"] == "quiet-auditor"
+    assert result["team"] == "shared"
+
+
 def test_create_persona_named_team_non_member_toolerror(session_factory, config, fake_storage):
     """THE INHERITANCE PROOF (task 5 mutation check): a caller resolved
     into some OTHER team, naming "sre", must get the route's own 403 copy
@@ -2254,13 +2313,16 @@ def test_create_persona_render_overflow_verbatim(session_factory, config, fake_s
     """The merged render's own 200-line ceiling (kobo_api.personas.
     _check_rendered_size, raised as PersonaError, folded into the route's
     422) surfaces through `_create_result` verbatim -- 201 newline-joined
-    "line" tokens in `what_they_do`, plus the template's own 7 fixed
-    lines, renders to 208."""
+    "line" tokens in `what_they_do` overflow it. Asserts the MESSAGE SHAPE
+    ("renders to <n> lines; the limit is 200", with n > 200) rather than
+    pinning the persona template's own fixed-line count (currently 7): a
+    template change that shifts that count must not break this test, only
+    a change to the 200-line ceiling itself or the message wording should."""
     app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
     mcp = build_mcp_server(app)
     overflowing_what_they_do = "\n".join(["line"] * 201)
 
-    with pytest.raises(ToolError, match="renders to 208 lines; the limit is 200"):
+    with pytest.raises(ToolError, match=r"renders to \d+ lines; the limit is 200") as exc_info:
         _call_tool(
             mcp,
             "kobo_create_persona",
@@ -2269,6 +2331,11 @@ def test_create_persona_render_overflow_verbatim(session_factory, config, fake_s
             who_they_are="a very thorough reviewer",
             what_they_do=overflowing_what_they_do,
         )
+
+    message = str(exc_info.value)
+    assert message.endswith("the limit is 200")
+    reported_lines = int(message.split("renders to ")[1].split(" lines")[0])
+    assert reported_lines > 200
 
 
 def test_create_persona_slug_law_verbatim(session_factory, config, fake_storage):
