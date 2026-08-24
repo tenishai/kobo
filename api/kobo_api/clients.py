@@ -2024,7 +2024,7 @@ _PERSONA_DISTILL_FAILED = "persona distill generation failed"
 
 def _build_persona_distill_prompt(body: str) -> str:
     """Build the persona-distill prompt from `body` (the operator's own
-    ready-made persona document, 1-32768 chars).
+    ready-made persona document, 1-49152 chars).
 
     Deliberately plain string concatenation, never `str.format()` against
     `body` — same brace hazard `_build_persona_draft_prompt` already

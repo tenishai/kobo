@@ -67,7 +67,7 @@ Kobo is opinionated by design:
   as the signed-in user, over the room's own OAuth — no service account, no second permission
   system. Every call resolves the same visibility, ownership, and admin as the UI: check who
   you're signed in as, list and inspect the agents you can see, read an agent's conversation
-  feed, create an agent, teach it, chat with it, run the colleague-invite handshake, and wire
+  feed, browse and create personas, create an agent, teach it, chat with it, run the colleague-invite handshake, and wire
   it to Slack. Browse the org's skills and tooling marketplaces, stage either onto an agent
   you own, and publish new entries under your own team (publishing is instant and org-wide;
   tool publishing runs the same mechanical law the room enforces, and baseline tool ids are

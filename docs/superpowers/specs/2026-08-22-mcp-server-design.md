@@ -133,7 +133,7 @@ decision is made. No logic is duplicated.
 
 ## Tool surface
 
-Ten tools, thin shims over already-tested internals. Every tool is
+Eighteen tools (ten at this spec's writing, six added by the marketplace wave, two by the persona wave), thin shims over already-tested internals. Every tool is
 wrapped in the audit decorator (below); every agent-scoped tool passes
 through the authz shim first. `ToolAnnotations` carry honest
 `readOnlyHint`/`destructiveHint` values.
@@ -156,6 +156,11 @@ stays a human act — not one tool call away from any model), group
 requests, org administration, and the service-auth `on_behalf_of` grant
 (a later arc if headless callers ever need it; the reference pattern has
 a proven shape for it when we do).
+
+**Persona creation via the two-step flow:** `kobo_create_persona` (persona wave) and
+`kobo_create_agent` together replace any free-text persona passing inside `kobo_create_agent`.
+The flow is: call `kobo_create_persona` to register a new persona, then `kobo_create_agent`
+picks an existing persona by id.
 
 ## Audit and rate limit
 

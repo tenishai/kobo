@@ -1,6 +1,6 @@
 # Persona Wave: MCP persona tools, the route team gate, and the persona-authoring skill
 
-**Status:** Approved (brainstorm rulings encoded 2026-08-23)
+**Status:** Implemented (rollout pending)
 **Depends on:** MCP server arc (live), MCP marketplace wave 1 (live, wire-accepted)
 
 ## What this wave ships

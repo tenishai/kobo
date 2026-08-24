@@ -26,7 +26,7 @@ from kobo_api.purpose_tags import normalize_tags
 # what_they_do.
 #
 # _WHAT_MAX is deliberately NOT mirrored to PersonaFields.what_they_do's own
-# bound any more (upload/limits addendum raised that to 32768, to accept
+# bound any more (upload/limits addendum raised that to 49152, to accept
 # long operator-authored text typed/pasted/uploaded straight into the v2
 # preview). This constant governs a different question: how much of the
 # GENERATOR's own draft output gets accepted verbatim before falling back
