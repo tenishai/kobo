@@ -465,6 +465,9 @@ def _require_team_membership(app: Any, email: str, team: str) -> None:
     identically to a resolver that answered `None`) must contain `team`
     exactly; anything else -- unresolvable right now, or resolved but not
     a member -- refuses.
+
+    The persona route's `_persona_team_gate` is the deliberate looser
+    sibling: commons-open, membership only for named teams.
     """
     if authz.is_admin(app, email):
         return

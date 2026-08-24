@@ -1933,12 +1933,47 @@ def create_app(
 
     # --- Persona builder (Task 4): fixed form -> deterministic template ---
 
+    def _persona_team_gate(request: Request, team: str) -> JSONResponse | None:
+        """Persona middle gate (persona-wave spec, operator ruling): team
+        "shared" is the commons -- anyone files there and the resolver is
+        never consulted, mirroring the teamless PersonaBuilder flow exactly.
+        Any OTHER team requires the caller's resolver groups to contain that
+        team exactly; operators are exempt; a missing identity, a missing
+        resolver, or an unresolvable-right-now answer refuses (fail-closed).
+        Deliberately NOT kobo_api.mcp.tools.write._require_team_membership:
+        that gate is the marketplace axis (operator-only "shared") and its
+        mutation pins must not churn here. Cross-referenced there.
+        """
+        if team == "shared":
+            return None
+        if _is_admin(request):
+            return None
+        refusal = JSONResponse(
+            {"error": f"you must be a member of team {team} to file a persona under it"},
+            status_code=403,
+        )
+        email = (getattr(request.state, "iap_email", None) or "").lower()
+        if not email:
+            return refusal
+        clients: Clients | None = request.app.state.clients
+        resolver = clients.groups if clients is not None else None
+        resolved = resolver.groups_for(email) if resolver is not None else None
+        if resolved is None or team not in resolved:
+            return refusal
+        return None
+
     @app.post("/api/personas", status_code=201)
     def create_persona_route(
-        payload: CreatePersonaRequest, session: Session = Depends(get_session)  # noqa: B008
+        payload: CreatePersonaRequest,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         cfg: Config = app.state.config
         clients = app.state.clients
+
+        gate = _persona_team_gate(request, payload.team)
+        if gate is not None:
+            return gate
 
         if clients is None or clients.storage is None or not cfg.personas_bucket:
             return JSONResponse(

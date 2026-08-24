@@ -6,14 +6,18 @@ FakeStorage standing in for GCS — same harness shape as test_api_search.py.
 from __future__ import annotations
 
 import json
+import time
 
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import Clients
 from kobo_api.config import Config
+from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import create_app
 from kobo_api.models import Base
 from kobo_api.persona_draft import (
@@ -55,7 +59,13 @@ VALID_PAYLOAD = {
     "name": "Aria the Assistant",
     "who_they_are": "a calm troubleshooter for billing questions",
     "what_they_do": "Help customers troubleshoot billing issues.",
-    "team": "cs-team",
+    # "shared" (Task 2's team middle gate): every test below that doesn't
+    # care about team-gating posts through the plain `client` fixture with
+    # no identity at all, and must land on the gate's no-membership-required
+    # arm to reach the behavior it actually means to exercise.
+    # test_create_persona_explicit_team_still_honored below overrides this
+    # with a real member identity to prove a NAMED team is honored too.
+    "team": "shared",
 }
 
 
@@ -73,13 +83,22 @@ def _minimal_clients(**kwargs) -> Clients:
     )
 
 
-def _make_client(config: Config, clients: Clients, tmp_path) -> TestClient:
+def _make_client(
+    config: Config, clients: Clients, tmp_path, *, iap_jwks_fetcher=None
+) -> TestClient:
     engine = create_engine(
         f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
     )
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
-    return TestClient(create_app(session_factory, config=config, clients=clients))
+    return TestClient(
+        create_app(
+            session_factory,
+            config=config,
+            clients=clients,
+            iap_jwks_fetcher=iap_jwks_fetcher,
+        )
+    )
 
 
 @pytest.fixture
@@ -119,7 +138,7 @@ def test_create_persona_201(client, fake_storage):
         "id": "aria-the-assistant",
         "name": "Aria the Assistant",
         "description": "a calm troubleshooter for billing questions",
-        "team": "cs-team",
+        "team": "shared",
         # Server-derived (Persona builder v2 — the UI sends no tags at
         # all): the 6 longest non-stopword words out of name + who_they_are
         # + what_they_do, longest first. See test_personas.py's dedicated
@@ -277,11 +296,200 @@ def test_create_persona_omitted_team_defaults_to_shared(client):
     assert response.json()["team"] == "shared"
 
 
-def test_create_persona_explicit_team_still_honored(client):
-    response = client.post("/api/personas", json=VALID_PAYLOAD)
+# --- Team middle gate (Task 2): "shared" stays open, named teams need membership ----
+#
+# This file's other tests above never wire IAP at all (their shared `config`/
+# `client` fixtures carry no `iap_audience`), so identity/resolver behavior
+# is exercised through a dedicated, real-JWT client builder here instead of
+# perturbing those fixtures. Same real-JWT idiom as test_api_grants.py's own
+# copy (ES256, a locally generated keypair, a `jwks_fetcher` test seam) --
+# duplicated locally rather than imported, matching this repo's "don't
+# cross-import test fixtures" convention (see test_mcp_tools_write.py's own
+# module docstring for the same rule stated explicitly).
+
+GATE_AUDIENCE = "test-persona-gate-audience"
+GATE_KID = "test-persona-gate-key"
+MEMBER_EMAIL = "member@example.com"
+STRANGER_EMAIL = "stranger@example.com"
+OPERATOR_EMAIL = "ops@example.com"
+
+
+def _generate_jwk(kid: str = GATE_KID):
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    jwk = jwt.algorithms.ECAlgorithm.to_jwk(private_key.public_key(), as_dict=True)
+    jwk["kid"] = kid
+    jwk["use"] = "sig"
+    jwk["alg"] = "ES256"
+    return private_key, jwk
+
+
+def _sign(private_key, *, email: str | None, kid: str = GATE_KID) -> str:
+    now = int(time.time())
+    claims = {
+        "aud": GATE_AUDIENCE,
+        "iss": IAP_ISSUER,
+        "iat": now,
+        "exp": now + 3600,
+        "sub": "accounts.google.com:1234567890",
+    }
+    if email is not None:
+        claims["email"] = email
+    return jwt.encode(claims, private_key, algorithm="ES256", headers={"kid": kid})
+
+
+def _gate_fetcher(jwk):
+    def fetch():
+        return {"keys": [jwk]}
+
+    return fetch
+
+
+def _gate_headers(private_key, *, email: str | None) -> dict:
+    return {ASSERTION_HEADER: _sign(private_key, email=email)}
+
+
+class _GroupsStub:
+    """Mapping-driven `groups_for` stand-in for the gate's resolver seam --
+    same shape as the other gated-route test files' own local copies (e.g.
+    test_mcp_tools_write.py's `FakeGroupResolver`), duplicated here rather
+    than imported. An email with no entry in `mapping` resolves to `None`
+    (unresolvable / "directory down"), matching `_persona_team_gate`'s own
+    fail-closed reading of a `None` answer.
+    """
+
+    def __init__(self, mapping: dict[str, list[str]] | None = None):
+        self._mapping = dict(mapping) if mapping else {}
+
+    def groups_for(self, email: str) -> list[str] | None:
+        return self._mapping.get(email.lower())
+
+
+@pytest.fixture
+def gate_config(tmp_path):
+    return Config(
+        workdir=tmp_path / "work",
+        skills_bucket="skills-bucket",
+        personas_bucket="personas-bucket",
+        iap_audience=GATE_AUDIENCE,
+        operators=[OPERATOR_EMAIL],
+    )
+
+
+def _gate_client(gate_config, fake_storage, tmp_path, *, groups_resolver=None):
+    private_key, jwk = _generate_jwk()
+    clients = _minimal_clients(storage=fake_storage, groups=groups_resolver)
+    client = _make_client(
+        gate_config, clients, tmp_path, iap_jwks_fetcher=_gate_fetcher(jwk)
+    )
+    return client, private_key
+
+
+def test_persona_create_shared_team_needs_no_membership(gate_config, fake_storage, tmp_path):
+    """team omitted entirely -> 201 even with a resolver that would refuse
+    every team (resolver returning [] or None must not matter on this arm
+    -- the gate never consults it for the default "shared" team)."""
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=_GroupsStub())
+    payload = {k: v for k, v in VALID_PAYLOAD.items() if k != "team"}
+
+    response = client.post(
+        "/api/personas", json=payload, headers=_gate_headers(key, email=STRANGER_EMAIL)
+    )
 
     assert response.status_code == 201
-    assert response.json()["team"] == VALID_PAYLOAD["team"]
+
+
+def test_persona_create_shared_team_passes_with_resolver_down(gate_config, fake_storage, tmp_path):
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=_GroupsStub())
+    payload = {**VALID_PAYLOAD, "team": "shared"}
+
+    response = client.post(
+        "/api/personas", json=payload, headers=_gate_headers(key, email=STRANGER_EMAIL)
+    )
+
+    assert response.status_code == 201
+
+
+def test_persona_create_named_team_member_passes(gate_config, fake_storage, tmp_path):
+    resolver = _GroupsStub({MEMBER_EMAIL: ["sre"]})
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=resolver)
+    payload = {**VALID_PAYLOAD, "team": "sre"}
+
+    response = client.post(
+        "/api/personas", json=payload, headers=_gate_headers(key, email=MEMBER_EMAIL)
+    )
+
+    assert response.status_code == 201
+    assert response.json()["team"] == "sre"
+
+
+def test_persona_create_named_team_non_member_403(gate_config, fake_storage, tmp_path):
+    resolver = _GroupsStub({MEMBER_EMAIL: ["other-team"]})
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=resolver)
+    payload = {**VALID_PAYLOAD, "team": "sre"}
+
+    response = client.post(
+        "/api/personas", json=payload, headers=_gate_headers(key, email=MEMBER_EMAIL)
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": "you must be a member of team sre to file a persona under it"
+    }
+
+
+def test_persona_create_named_team_unresolvable_403(gate_config, fake_storage, tmp_path):
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=_GroupsStub())
+    payload = {**VALID_PAYLOAD, "team": "sre"}
+
+    response = client.post(
+        "/api/personas", json=payload, headers=_gate_headers(key, email=STRANGER_EMAIL)
+    )
+
+    assert response.status_code == 403
+
+
+def test_persona_create_named_team_operator_passes(gate_config, fake_storage, tmp_path):
+    # OPERATOR_EMAIL resolves to no groups at all -- passes purely on
+    # `_is_admin`'s operator-email check, never on team membership.
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=_GroupsStub())
+    payload = {**VALID_PAYLOAD, "team": "sre"}
+
+    response = client.post(
+        "/api/personas", json=payload, headers=_gate_headers(key, email=OPERATOR_EMAIL)
+    )
+
+    assert response.status_code == 201
+
+
+def test_persona_create_named_team_empty_identity_403(gate_config, fake_storage, tmp_path):
+    """A validly signed assertion with no `email` claim at all -- IapMiddleware
+    still stamps `request.state.iap_email = None`, and the gate must refuse
+    (fail-closed) rather than treat a missing identity as harmless."""
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=_GroupsStub())
+    payload = {**VALID_PAYLOAD, "team": "sre"}
+
+    response = client.post(
+        "/api/personas", json=payload, headers=_gate_headers(key, email=None)
+    )
+
+    assert response.status_code == 403
+
+
+def test_create_persona_explicit_team_still_honored(gate_config, fake_storage, tmp_path):
+    """Pre-existing coverage (Persona v3 addendum), moved here and re-wired
+    through a real gated identity now that a named team requires membership
+    (Task 2): a caller who IS a member of "cs-team" still gets that exact
+    team back on the created entry, not silently downgraded to "shared"."""
+    resolver = _GroupsStub({MEMBER_EMAIL: ["cs-team"]})
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=resolver)
+    payload = {**VALID_PAYLOAD, "team": "cs-team"}
+
+    response = client.post(
+        "/api/personas", json=payload, headers=_gate_headers(key, email=MEMBER_EMAIL)
+    )
+
+    assert response.status_code == 201
+    assert response.json()["team"] == "cs-team"
 
 
 # --- POST /api/personas/draft (Persona v3 addendum) ---------------------------------
