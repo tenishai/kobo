@@ -79,6 +79,24 @@ SENSITIVE_KEYS = {
 
 _REDACTED = "***REDACTED***"
 
+# Values are BOUNDED, not name-redacted: the persona wave's what_they_do
+# (49152-char wall) would otherwise land whole in every audit row. Name
+# redaction (SENSITIVE_KEYS) still wins first and redacts the value whole.
+_ARG_TEXT_CAP = 512
+
+
+def _bounded(value: Any) -> Any:
+    """Cap string values at _ARG_TEXT_CAP with an explicit truncation
+    marker; lists are bounded per element (a NEW list -- callers' kwargs
+    are never mutated). Everything else passes through for json.dumps's
+    default=str to handle."""
+    if isinstance(value, str) and len(value) > _ARG_TEXT_CAP:
+        return value[:_ARG_TEXT_CAP] + f"...[truncated {len(value) - _ARG_TEXT_CAP} chars]"
+    if isinstance(value, list):
+        return [_bounded(item) for item in value]
+    return value
+
+
 # Stashed by configure() -- see module docstring for why this is a plain
 # sessionmaker rather than a context manager. None until a real
 # registration (kobo_api.mcp.server, Task 7) or a test calls configure().
@@ -125,7 +143,7 @@ def _redact(kwargs: dict[str, Any]) -> dict[str, Any]:
         if any(sensitive in lowered for sensitive in SENSITIVE_KEYS):
             redacted[key] = _REDACTED
         else:
-            redacted[key] = value
+            redacted[key] = _bounded(value)
     return redacted
 
 

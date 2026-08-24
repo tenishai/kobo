@@ -164,6 +164,33 @@ def test_redact_does_not_mutate_the_input():
     assert kwargs["token"] == "abc"
 
 
+def test_redact_truncates_string_over_cap():
+    long = "x" * 513
+    out = audit._redact({"what_they_do": long})
+    assert out["what_they_do"] == "x" * 512 + "...[truncated 1 chars]"
+
+
+def test_redact_keeps_string_at_exact_cap():
+    out = audit._redact({"what_they_do": "x" * 512})
+    assert out["what_they_do"] == "x" * 512
+
+
+def test_redact_bounds_list_per_element():
+    out = audit._redact({"rules": ["short", "y" * 600]})
+    assert out["rules"] == ["short", "y" * 512 + "...[truncated 88 chars]"]
+
+
+def test_redact_name_redaction_still_wins():
+    out = audit._redact({"note": "z" * 600})
+    assert out["note"] == "***REDACTED***"
+
+
+def test_redact_does_not_mutate_caller_list():
+    rules = ["y" * 600]
+    audit._redact({"rules": rules})
+    assert rules == ["y" * 600]
+
+
 # --- rate_limit.check: window + limit ---------------------------------------
 
 
