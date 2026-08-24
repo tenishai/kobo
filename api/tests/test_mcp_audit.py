@@ -506,3 +506,56 @@ def test_audited_preserves_function_name_and_wrapped():
 
     assert my_tool.__name__ == "my_tool"
     assert my_tool.__wrapped__ is not None
+
+
+# --- _bounded: count cap, dict recursion, depth cap -------------------------
+
+
+def test_bounded_list_at_cap_untouched():
+    value = list(range(64))
+    assert audit._bounded(value) == value
+
+
+def test_bounded_list_over_cap_truncates_with_marker():
+    value = list(range(65))
+    out = audit._bounded(value)
+    assert len(out) == 65  # 64 kept + 1 marker
+    assert out[:64] == list(range(64))
+    assert out[64] == "[+1 more]"
+
+
+def test_bounded_marker_counts_all_dropped():
+    out = audit._bounded(list(range(200)))
+    assert out[64] == "[+136 more]"
+
+
+def test_bounded_recurses_into_dict_values():
+    long = "x" * 600
+    out = audit._bounded({"skills": [{"id": long, "team": "sre"}]})
+    inner = out["skills"][0]["id"]
+    assert inner.startswith("x" * 512)
+    assert "[truncated 88 chars]" in inner
+    assert out["skills"][0]["team"] == "sre"
+
+
+def test_bounded_depth_capped():
+    # Depth trace (see task-3-report.md for the empirical proof): _bounded
+    # is called at depth=0 on the outermost dict, and the dict branch
+    # recurses at depth + 1 for each "k" level. The sentinel condition is
+    # `depth >= _MAX_DEPTH` (8), which is first true after 8 successive
+    # ["k"] lookups from `out` -- not 7.
+    nested: dict = {"k": "v"}
+    for _ in range(12):
+        nested = {"k": nested}
+    out = audit._bounded(nested)
+    probe = out
+    for _ in range(8):
+        probe = probe["k"]
+    assert probe == "[depth capped]"
+
+
+def test_bounded_never_mutates_caller_structures():
+    original = {"rules": [str(i) for i in range(100)], "inner": {"long": "y" * 600}}
+    snapshot = json.loads(json.dumps(original))
+    audit._redact(dict(original))
+    assert original == snapshot

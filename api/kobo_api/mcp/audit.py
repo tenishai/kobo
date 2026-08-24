@@ -84,16 +84,34 @@ _REDACTED = "***REDACTED***"
 # redaction (SENSITIVE_KEYS) still wins first and redacts the value whole.
 _ARG_TEXT_CAP = 512
 
+# Bounding caps (hardening wave): 512 chars per string, 64 elements per
+# list (with an explicit dropped-count marker), 8 levels of nesting. The
+# audit path must never crash, hang, or balloon a tool call, whatever
+# shape a future tool's kwargs take.
+_MAX_LIST_ELEMENTS = 64
+_MAX_DEPTH = 8
 
-def _bounded(value: Any) -> Any:
+
+def _bounded(value: Any, depth: int = 0) -> Any:
     """Cap string values at _ARG_TEXT_CAP with an explicit truncation
-    marker; lists are bounded per element (a NEW list -- callers' kwargs
-    are never mutated). Everything else passes through for json.dumps's
-    default=str to handle."""
+    marker; lists are bounded per element AND per count (first
+    _MAX_LIST_ELEMENTS kept, one "[+N more]" marker appended); dict
+    VALUES are bounded recursively (keys are schema-shaped, not user
+    text). Anything nested past _MAX_DEPTH collapses to a sentinel.
+    Always returns NEW lists/dicts -- callers' kwargs are never mutated.
+    Everything else passes through for json.dumps's default=str."""
+    if depth >= _MAX_DEPTH:
+        return "[depth capped]"
     if isinstance(value, str) and len(value) > _ARG_TEXT_CAP:
         return value[:_ARG_TEXT_CAP] + f"...[truncated {len(value) - _ARG_TEXT_CAP} chars]"
     if isinstance(value, list):
-        return [_bounded(item) for item in value]
+        bounded = [_bounded(item, depth + 1) for item in value[:_MAX_LIST_ELEMENTS]]
+        dropped = len(value) - _MAX_LIST_ELEMENTS
+        if dropped > 0:
+            bounded.append(f"[+{dropped} more]")
+        return bounded
+    if isinstance(value, dict):
+        return {key: _bounded(item, depth + 1) for key, item in value.items()}
     return value
 
 
@@ -137,8 +155,8 @@ def _redact(kwargs: dict[str, Any]) -> dict[str, Any]:
     `SENSITIVE_KEYS` substring replaced by `_REDACTED`; every other key's
     value is bounded (`_bounded`), never passed through unchanged -- a long
     string is capped at `_ARG_TEXT_CAP` with a truncation marker, a list is
-    bounded per element, and everything else passes straight to
-    `json.dumps`'s own `default=str`.
+    bounded per element and per count, a dict per value, and everything
+    else passes straight to `json.dumps`'s own `default=str`.
     """
     redacted: dict[str, Any] = {}
     for key, value in kwargs.items():
