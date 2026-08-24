@@ -11,6 +11,7 @@ from kobo_api.config import (
     GroupChoice,
     MCPConfig,
     ModelChoice,
+    SkillsFrontmatterConfig,
     vertex_location_for,
 )
 
@@ -635,3 +636,23 @@ def test_config_example_yaml_documents_avatar_keys():
     config = Config(**data)
     assert config.avatar_model == "gemini-2.5-flash-image"
     assert config.avatar_location == "us-central1"
+
+
+# --- skills_frontmatter (hardening wave, Task 1) -----
+
+
+def test_skills_frontmatter_defaults_empty():
+    cfg = Config()
+    assert cfg.skills_frontmatter.allowed_profiles == []
+    assert cfg.skills_frontmatter.allowed_tags == []
+
+
+def test_skills_frontmatter_accepts_vocabularies():
+    cfg = Config(
+        skills_frontmatter={
+            "allowed_profiles": ["agent-sdk"],
+            "allowed_tags": ["networking", "agent-ops"],
+        }
+    )
+    assert cfg.skills_frontmatter.allowed_profiles == ["agent-sdk"]
+    assert "agent-ops" in cfg.skills_frontmatter.allowed_tags

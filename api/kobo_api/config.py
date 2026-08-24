@@ -153,6 +153,17 @@ class MCPConfig(BaseModel):
     issuer_base_url: str = ""
 
 
+class SkillsFrontmatterConfig(BaseModel):
+    """Optional vocabularies for the marketplace frontmatter gate
+    (hardening wave). Each configured list adds a subset check in
+    kobo_api.marketplace._validate_skill_frontmatter; an empty list adds
+    nothing, so the gate is fully functional with this block absent and
+    vocabulary drift can never brick publishing."""
+
+    allowed_profiles: list[str] = []
+    allowed_tags: list[str] = []
+
+
 def vertex_location_for(config: Config, model_id: str) -> str:
     """The Vertex location `model_id` should run against: its own
     `ModelChoice.location` when the catalog sets one, else
@@ -328,6 +339,12 @@ class Config(BaseModel):
     # `cabal_url`/`skills_bucket` above. See `mcp_enabled` and
     # `_mcp_requires_a_workspace_domain_when_enabled` below.
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    # Optional vocabularies for the marketplace frontmatter gate (hardening
+    # wave, Task 1) -- kobo_api.marketplace._validate_skill_frontmatter reads
+    # allowed_profiles and allowed_tags. Empty lists (the default) add no
+    # validation, so the gate is fully functional with this block absent and
+    # vocabulary drift can never brick publishing.
+    skills_frontmatter: SkillsFrontmatterConfig = Field(default_factory=SkillsFrontmatterConfig)
 
     @property
     def mcp_enabled(self) -> bool:
