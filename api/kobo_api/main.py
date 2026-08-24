@@ -412,12 +412,12 @@ class PersonaDistillRequest(BaseModel):
     which the generator (or, failing that, a deterministic fallback) pulls
     discovery metadata for the colleague directory — a name, a one-line
     who-they-are, and purpose tags. Mirrors PersonaFields.what_they_do's own
-    1-32768 bound (kobo_api.personas, upload/limits addendum) — same
+    1-49152 bound (kobo_api.personas, upload/limits addendum) — same
     "mirror the bounds, don't cross-import validation" convention
     PersonaDraftRequest.job above already uses, since this IS that same
     persona-body text, just arriving before a job description would."""
 
-    body: str = Field(min_length=1, max_length=32768)
+    body: str = Field(min_length=1, max_length=49152)
 
 
 class AgentMetadataPatch(BaseModel):

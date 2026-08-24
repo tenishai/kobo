@@ -382,14 +382,6 @@ def test_create_persona_appends_to_existing_index_without_disturbing_it():
 # 40-char cap is pinned above.
 
 
-def _rules_for_line_count(n: int) -> list[str]:
-    """`n` one-word rules — with _fields()'s defaults (a rules section, no
-    embedded newlines anywhere), render_persona's output is exactly 11 + n
-    physical lines: 8 fixed lines before the Rules section, 3 more
-    ("", "## Rules", "") to open it, then one line per rule."""
-    return ["ok"] * n
-
-
 def test_create_persona_accepts_exactly_200_lines():
     storage = FakeStorage()
     # render_persona produces 7 fixed lines (before what_they_do), so 200 total requires 193 lines in what_they_do

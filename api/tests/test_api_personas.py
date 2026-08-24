@@ -216,7 +216,7 @@ def test_create_persona_422_merged_render_too_many_lines(client):
     `except PersonaError` handler) — not the generic field-name-only
     RequestValidationError copy."""
     # To exceed 200 lines: use max rules (150) + multi-line what_they_do
-    # that exceeds 201 - (11 fixed + 150 rules) = 40 lines
+    # that exceeds 201 - (11 fixed + 150 rules) = 41 lines
     multi_line_what = "\n".join(["line"] * 41)
     payload = {**VALID_PAYLOAD, "what_they_do": multi_line_what, "rules": ["ok"] * 150}
 
@@ -713,7 +713,7 @@ def test_distill_persona_422_missing_body(config, tmp_path):
 def test_distill_persona_422_body_too_long(config, tmp_path):
     client = _distill_client(config, tmp_path)
 
-    response = client.post("/api/personas/distill", json={"body": "a" * 32769})
+    response = client.post("/api/personas/distill", json={"body": "a" * 49153})
 
     assert response.status_code == 422
 
@@ -721,7 +721,7 @@ def test_distill_persona_422_body_too_long(config, tmp_path):
 def test_distill_persona_200_at_max_length_body(config, tmp_path):
     client = _distill_client(config, tmp_path)
 
-    response = client.post("/api/personas/distill", json={"body": "a" * 32768})
+    response = client.post("/api/personas/distill", json={"body": "a" * 49152})
 
     assert response.status_code == 200
 

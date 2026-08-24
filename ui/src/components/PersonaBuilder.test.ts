@@ -169,7 +169,7 @@ describe("PersonaBuilder - honest new limits (upload/limits addendum)", () => {
         }
         if (url.includes("/api/personas")) {
           return new Response(
-            JSON.stringify({ error: "persona renders to 151 lines; the limit is 150" }),
+            JSON.stringify({ error: "persona renders to 201 lines; the limit is 200" }),
             { status: 422, headers: { "Content-Type": "application/json" } },
           );
         }
@@ -182,7 +182,7 @@ describe("PersonaBuilder - honest new limits (upload/limits addendum)", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Create persona" }));
 
     expect(
-      await screen.findByText("persona renders to 151 lines; the limit is 150"),
+      await screen.findByText("persona renders to 201 lines; the limit is 200"),
     ).not.toBeNull();
   });
 });
