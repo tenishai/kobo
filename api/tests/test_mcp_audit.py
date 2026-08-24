@@ -191,6 +191,22 @@ def test_redact_does_not_mutate_caller_list():
     assert rules == ["y" * 600]
 
 
+def test_redact_handles_none_and_nested_list_values_without_raising():
+    """The exact consumer shapes `kobo_create_persona`'s own `rules:
+    list[str] | None` argument can carry when it reaches `_redact`
+    un-normalized: a bare `None` (the tool's own default, never coerced to
+    `[]` before the audited wrapper sees the raw kwargs) and a list whose
+    own elements are themselves lists (`_bounded`'s per-element recursion
+    applied one level deeper) -- neither shape may raise, and neither is a
+    `SENSITIVE_KEYS` name, so both pass through `_bounded` rather than
+    getting redacted whole."""
+    out = audit._redact({"rules": None, "nested": [["a", "b"], ["c" * 600]]})
+
+    assert out["rules"] is None
+    assert out["nested"][0] == ["a", "b"]
+    assert out["nested"][1] == ["c" * 512 + "...[truncated 88 chars]"]
+
+
 # --- rate_limit.check: window + limit ---------------------------------------
 
 

@@ -134,8 +134,11 @@ def _email_from_ctx(ctx: Any) -> str:
 
 def _redact(kwargs: dict[str, Any]) -> dict[str, Any]:
     """A copy of `kwargs` with every key whose lowercased name contains any
-    `SENSITIVE_KEYS` substring replaced by `_REDACTED`; every other key
-    passes through with its original value unchanged.
+    `SENSITIVE_KEYS` substring replaced by `_REDACTED`; every other key's
+    value is bounded (`_bounded`), never passed through unchanged -- a long
+    string is capped at `_ARG_TEXT_CAP` with a truncation marker, a list is
+    bounded per element, and everything else passes straight to
+    `json.dumps`'s own `default=str`.
     """
     redacted: dict[str, Any] = {}
     for key, value in kwargs.items():

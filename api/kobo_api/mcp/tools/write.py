@@ -286,6 +286,22 @@ replaced.
 already in `kobo_api.mcp.audit.SENSITIVE_KEYS` (added by Task 4 for
 `kobo_add_agent_tool`'s own `content`); both tools below reuse that same
 kwarg name, so it redacts here for free, no new entry needed.
+
+## `kobo_create_persona` (persona wave, Task 5)
+
+Unlike `kobo_create_skill`/`kobo_create_tool` just above, `kobo_create_persona`
+DOES call a real route (`POST /api/personas`, `create_persona_route` in
+`kobo_api.main`) -- the persona door has always had an HTTP surface of its
+own, so this tool is a plain shim exactly like `kobo_create_agent`: table
+(B) (`_create_result`), no existing catalog entry to protect from
+enumeration, every non-2xx status (the route's own 403 team-membership
+refusal, 409 name-taken, 422 slug-law/render-overflow) surfaces verbatim.
+The route's own `_persona_team_gate` -- commons-open for `team="shared"`,
+membership-gated for any other name -- is deliberately NOT this module's
+`_require_team_membership` (that gate's own docstring cross-references
+this one): the persona axis and the marketplace axis are two different
+gates on two different resources, and only the route's own gate fires
+here, never a second implementation of it.
 """
 
 from __future__ import annotations
@@ -482,11 +498,13 @@ def _require_team_membership(app: Any, email: str, team: str) -> None:
 
 
 def register(mcp: FastMCP, app: Any) -> None:
-    """Registers this module's ten write tools on `mcp`. Every route this
+    """Registers this module's eleven write tools on `mcp`. Every route this
     module calls is looked up exactly once, here, at registration time --
     never re-resolved per call. `kobo_create_skill`/`kobo_create_tool`
     (Task 5) call `kobo_api.marketplace` directly and have no route of
-    their own to look up here.
+    their own to look up here; `kobo_create_persona` (persona wave, Task 5)
+    is the exception to that exception -- it looks up a real route, same as
+    every other tool in this module.
     """
     create_agent_endpoint = _endpoint(app, "POST", "/api/agents")
     name_suggestions_endpoint = _endpoint(app, "POST", "/api/agents/name-suggestions")
@@ -499,6 +517,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     add_skill_endpoint = _endpoint(app, "POST", "/api/agents/{name}/skills/catalog")
     remove_skill_endpoint = _endpoint(app, "DELETE", "/api/agents/{name}/skills/{skill_id}")
     add_tool_endpoint = _endpoint(app, "POST", "/api/agents/{name}/tooling")
+    create_persona_endpoint = _endpoint(app, "POST", "/api/personas")
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     @audited("kobo_create_agent")
@@ -972,3 +991,48 @@ def register(mcp: FastMCP, app: Any) -> None:
                 "pipeline in between"
             ),
         }
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @audited("kobo_create_persona")
+    async def kobo_create_persona(
+        ctx: Context,
+        name: str,
+        who_they_are: str,
+        what_they_do: str,
+        rules: list[str] | None = None,
+        team: str = "shared",
+    ) -> dict:
+        """Create a brand-new persona in the room's catalog -- the same
+        create the room's own PersonaBuilder drives. Before creating,
+        run kobo_list_personas and check fit first; prefer an existing
+        persona over a near-twin. `name` becomes the catalog id via the
+        room's slug law (must not already exist). `who_they_are` is ONE
+        line; `what_they_do` is the persona's body; `rules` are optional
+        always/never one-liners. The merged persona renders to at most
+        200 lines and 48KB. `team` defaults to "shared", the commons
+        anyone may file into; naming any other team requires that you
+        are a member of it (a room operator may name any team). The
+        persona is searchable and pickable by kobo_create_agent
+        immediately.
+        """
+        from kobo_api.main import CreatePersonaRequest
+
+        email = get_user_email(ctx)
+        req = authz.room_request(app, email)
+        try:
+            payload = CreatePersonaRequest(
+                name=name,
+                who_they_are=who_they_are,
+                what_they_do=what_they_do,
+                rules=rules or [],
+                team=team,
+            )
+        except (TypeError, ValidationError) as exc:
+            raise ToolError(f"that request wasn't quite right: {exc}") from exc
+
+        session = app.state.session_factory()
+        try:
+            response = create_persona_endpoint(payload=payload, request=req, session=session)
+            return _create_result(response)
+        finally:
+            session.close()

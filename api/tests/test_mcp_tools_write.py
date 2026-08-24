@@ -331,7 +331,7 @@ def test_build_mcp_server_registers_the_six_write_tools_alongside_the_read_ones(
     } <= names
 
 
-def test_build_mcp_server_registers_exactly_the_sixteen_named_tools(
+def test_build_mcp_server_registers_exactly_the_eighteen_named_tools(
     session_factory, config, fake_storage
 ):
     """Coverage folded in from Task 8's review: the subset check just
@@ -340,22 +340,16 @@ def test_build_mcp_server_registers_exactly_the_sixteen_named_tools(
     their own file's tools with `<=`, deliberately, so neither file also
     has to track the other's count -- which means nothing anywhere pins
     the FULL registered set. This is that missing test: `build_mcp_server`
-    must register EXACTLY these sixteen tools, no more, no fewer,
+    must register EXACTLY these eighteen tools, no more, no fewer,
     matching the design's own "Tool surface" table
     (docs/superpowers/specs/2026-08-22-mcp-server-design.md) plus the MCP
     marketplace wave's Task 2 pair (`kobo_list_skills`/`kobo_list_tools`),
-    Task 3's `kobo_set_agent_skills`, Task 4's `kobo_add_agent_tool`, and
-    Task 5's `kobo_create_skill`/`kobo_create_tool`, one-for-one. A stray
-    extra registration (a copy-paste twin, a leftover experiment) or a
-    dropped one would fail this even though both narrower `<=` checks
-    above would stay green.
-
-    Interim bump (persona wave, Task 4): `kobo_list_personas` folded in
-    here as a minimal accommodation -- this test's own name and docstring
-    still say "sixteen"/sixteen-tool math, and the persona wave's own
-    Task 5 is the one that finishes the job (renaming this test and its
-    docstring to eighteen once `kobo_create_persona` lands alongside it,
-    per that task's own brief).
+    Task 3's `kobo_set_agent_skills`, Task 4's `kobo_add_agent_tool`, Task
+    5's `kobo_create_skill`/`kobo_create_tool`, and the persona wave's own
+    `kobo_list_personas` (Task 4) plus `kobo_create_persona` (Task 5), one-
+    for-one. A stray extra registration (a copy-paste twin, a leftover
+    experiment) or a dropped one would fail this even though both
+    narrower `<=` checks above would stay green.
     """
     app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
 
@@ -380,6 +374,7 @@ def test_build_mcp_server_registers_exactly_the_sixteen_named_tools(
         "kobo_add_agent_tool",
         "kobo_create_skill",
         "kobo_create_tool",
+        "kobo_create_persona",
     }
 
 
@@ -2153,3 +2148,170 @@ def test_create_tool_is_marked_not_destructive(session_factory, config, fake_sto
     tool = next(t for t in mcp._tool_manager.list_tools() if t.name == "kobo_create_tool")
 
     assert tool.annotations.destructiveHint is False
+
+
+# --- kobo_create_persona (persona wave, Task 5) ------------------------------
+#
+# Unlike kobo_create_skill/kobo_create_tool just above, this tool calls a
+# REAL route (POST /api/personas, create_persona_route in kobo_api.main) --
+# these tests exist to prove the WIRING and status-code translation
+# (_create_result, table (B), same as kobo_create_agent's own tests
+# further up this file), never to re-prove the persona builder's own
+# business logic -- that's test_api_personas.py's job, exhaustively.
+
+
+def test_create_persona_shared_lands_and_is_instantly_listable(
+    session_factory, config, fake_storage
+):
+    """The commons team needs no membership at all (`_persona_team_gate`'s
+    own no-gate arm) -- the happy path lands under `team="shared"` and,
+    because `create_persona_route` re-ingests with the FULL catalog mapping
+    right after a successful create (kobo_api.main, Task 4 controller
+    decision #1), the new persona is immediately visible to
+    `kobo_list_personas` through this same shim -- no separate refresh
+    call needed."""
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp,
+        "kobo_create_persona",
+        _ctx_for(MEMBER_A_EMAIL),
+        name="Night Auditor",
+        who_they_are="a meticulous overnight reconciler",
+        what_they_do="Reconcile the day's transactions and flag anomalies.",
+    )
+
+    assert result["team"] == "shared"
+    assert result["id"] == "night-auditor"
+
+    listed = _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL))
+    assert any(entry["id"] == result["id"] for entry in listed["result"])
+
+
+def test_create_persona_named_team_member_passes(session_factory, config, fake_storage):
+    """A caller resolved into the claimed team lands under it -- the
+    route's own `_persona_team_gate` membership arm, not a bypass."""
+    resolver = FakeGroupResolver({MEMBER_A_EMAIL: ["sre"]})
+    app = _app(session_factory, config, groups_resolver=resolver, storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp,
+        "kobo_create_persona",
+        _ctx_for(MEMBER_A_EMAIL),
+        name="SRE Sentinel",
+        who_they_are="an on-call reliability engineer",
+        what_they_do="Watch dashboards and page the right team.",
+        team="sre",
+    )
+
+    assert result["team"] == "sre"
+
+
+def test_create_persona_named_team_non_member_toolerror(session_factory, config, fake_storage):
+    """THE INHERITANCE PROOF (task 5 mutation check): a caller resolved
+    into some OTHER team, naming "sre", must get the route's own 403 copy
+    verbatim -- never a bypass, never a generic error. Commenting out
+    `create_persona_route`'s own `_persona_team_gate` call must make this
+    test fail through this shim (recorded in the task report)."""
+    resolver = FakeGroupResolver({MEMBER_A_EMAIL: ["other"]})
+    app = _app(session_factory, config, groups_resolver=resolver, storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(
+        ToolError, match="you must be a member of team sre to file a persona under it"
+    ):
+        _call_tool(
+            mcp,
+            "kobo_create_persona",
+            _ctx_for(MEMBER_A_EMAIL),
+            name="SRE Sentinel",
+            who_they_are="an on-call reliability engineer",
+            what_they_do="Watch dashboards and page the right team.",
+            team="sre",
+        )
+
+
+def test_create_persona_exists_conflict_verbatim(session_factory, config, fake_storage):
+    """`create_persona`'s own `PersonaExists` (kobo_api.personas), folded
+    into the route's 409, surfaces through `_create_result` verbatim."""
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+    kwargs = dict(
+        name="Duplicate Auditor",
+        who_they_are="a careful reviewer",
+        what_they_do="Review submissions for accuracy.",
+    )
+
+    _call_tool(mcp, "kobo_create_persona", _ctx_for(MEMBER_A_EMAIL), **kwargs)
+
+    with pytest.raises(ToolError, match="a persona with that name already exists"):
+        _call_tool(mcp, "kobo_create_persona", _ctx_for(MEMBER_A_EMAIL), **kwargs)
+
+
+def test_create_persona_render_overflow_verbatim(session_factory, config, fake_storage):
+    """The merged render's own 200-line ceiling (kobo_api.personas.
+    _check_rendered_size, raised as PersonaError, folded into the route's
+    422) surfaces through `_create_result` verbatim -- 201 newline-joined
+    "line" tokens in `what_they_do`, plus the template's own 7 fixed
+    lines, renders to 208."""
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+    overflowing_what_they_do = "\n".join(["line"] * 201)
+
+    with pytest.raises(ToolError, match="renders to 208 lines; the limit is 200"):
+        _call_tool(
+            mcp,
+            "kobo_create_persona",
+            _ctx_for(MEMBER_A_EMAIL),
+            name="Overflow Auditor",
+            who_they_are="a very thorough reviewer",
+            what_they_do=overflowing_what_they_do,
+        )
+
+
+def test_create_persona_slug_law_verbatim(session_factory, config, fake_storage):
+    """A name that clears pydantic's own length bound but can't slugify to
+    a valid id (kobo_api.personas.persona_id's own PersonaError, folded
+    into the route's 422) surfaces through `_create_result` verbatim."""
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match=r"could not derive a valid persona id from name: '!!!'"):
+        _call_tool(
+            mcp,
+            "kobo_create_persona",
+            _ctx_for(MEMBER_A_EMAIL),
+            name="!!!",
+            who_they_are="a persona with an unslugifiable name",
+            what_they_do="Do something.",
+        )
+
+
+def test_create_persona_audit_row_bounded(session_factory, config, fake_storage):
+    """`what_they_do` is not a `SENSITIVE_KEYS` name (no "content"/"note"/
+    "message"/... substring in it) so it is never redacted whole -- but it
+    IS value-bounded (Task 3's `_ARG_TEXT_CAP`/`_bounded`), so a 2000-char
+    body must still land in the audit row carrying the truncation marker,
+    never the full text."""
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+    long_what_they_do = "x" * 2000
+
+    _call_tool(
+        mcp,
+        "kobo_create_persona",
+        _ctx_for(MEMBER_A_EMAIL),
+        name="Verbose Auditor",
+        who_they_are="a wordy assistant",
+        what_they_do=long_what_they_do,
+    )
+
+    row = _last_audit_row(session_factory)
+    assert row is not None
+    assert row.tool == "kobo_create_persona"
+    assert row.status == "ok"
+    logged = json.loads(row.redacted_args)
+    assert "...[truncated" in logged["what_they_do"]
+    assert long_what_they_do not in row.redacted_args
