@@ -532,6 +532,123 @@ def test_create_persona_explicit_team_still_honored(gate_config, fake_storage, t
     assert response.json()["team"] == "cs-team"
 
 
+# --- Archive/unarchive routes (hardening wave Task 5) --------------------------------
+#
+# Archive, not delete: persona.md is never touched, only the index entry's
+# `archived` flag flips. The gate has four arms (builtin/commons operator-
+# only, named-team member-or-operator, unknown id 404, catalogs-unwired 503)
+# and two distinct refusal messages -- each test below pins the one arm it
+# targets so removing that branch alone breaks exactly that test.
+
+ARCHIVE_ENTRY = {"id": "wire-probe", "name": "Wire Probe", "description": "a test persona",
+                 "team": "shared", "tags": [], "builtin": False}
+TEAM_ARCHIVE_ENTRY = {"id": "stoic-mentor", "name": "stoic-mentor", "description": "d",
+                      "team": "sre", "tags": [], "builtin": False}
+
+
+def _seed_personas_index(fake_storage, entries: list[dict]) -> None:
+    fake_storage.write_bytes("personas-bucket", "index.json", _index_bytes(entries))
+
+
+def test_archive_shared_persona_operator_200_and_instantly_evicted(
+    gate_config, fake_storage, tmp_path
+):
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=_GroupsStub())
+    _seed_personas_index(fake_storage, [ARCHIVE_ENTRY])
+    response = client.post(
+        "/api/personas/wire-probe/archive", headers=_gate_headers(key, email=OPERATOR_EMAIL)
+    )
+    assert response.status_code == 200
+    assert response.json()["archived"] is True
+    # gate_config wires iap_audience, so IapMiddleware 401s every /api/*
+    # call without a valid assertion -- reads included. An authenticated
+    # header is needed here, or this assertion never reaches the search
+    # route's own behavior at all.
+    search = client.get(
+        "/api/personas/search", headers=_gate_headers(key, email=OPERATOR_EMAIL)
+    )
+    assert "wire-probe" not in [e["id"] for e in search.json()["results"]]
+
+
+def test_archive_shared_persona_non_operator_403(gate_config, fake_storage, tmp_path):
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=_GroupsStub())
+    _seed_personas_index(fake_storage, [ARCHIVE_ENTRY])
+    response = client.post(
+        "/api/personas/wire-probe/archive", headers=_gate_headers(key, email=STRANGER_EMAIL)
+    )
+    assert response.status_code == 403
+    assert "room operator" in response.json()["error"]
+
+
+def test_archive_team_persona_member_200_non_member_403(gate_config, fake_storage, tmp_path):
+    resolver = _GroupsStub({MEMBER_EMAIL: ["sre"]})
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=resolver)
+    _seed_personas_index(fake_storage, [TEAM_ARCHIVE_ENTRY])
+    denied = client.post(
+        "/api/personas/stoic-mentor/archive", headers=_gate_headers(key, email=STRANGER_EMAIL)
+    )
+    assert denied.status_code == 403
+    assert "member of team sre" in denied.json()["error"]
+    allowed = client.post(
+        "/api/personas/stoic-mentor/archive", headers=_gate_headers(key, email=MEMBER_EMAIL)
+    )
+    assert allowed.status_code == 200
+
+
+def test_archive_builtin_operator_only(gate_config, fake_storage, tmp_path):
+    builtin = {**ARCHIVE_ENTRY, "id": "helpful-generalist", "builtin": True}
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=_GroupsStub())
+    _seed_personas_index(fake_storage, [builtin])
+    denied = client.post(
+        "/api/personas/helpful-generalist/archive",
+        headers=_gate_headers(key, email=STRANGER_EMAIL),
+    )
+    assert denied.status_code == 403
+    allowed = client.post(
+        "/api/personas/helpful-generalist/archive",
+        headers=_gate_headers(key, email=OPERATOR_EMAIL),
+    )
+    assert allowed.status_code == 200
+
+
+def test_archive_unknown_id_404(gate_config, fake_storage, tmp_path):
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=_GroupsStub())
+    _seed_personas_index(fake_storage, [])
+    response = client.post(
+        "/api/personas/ghost/archive", headers=_gate_headers(key, email=OPERATOR_EMAIL)
+    )
+    assert response.status_code == 404
+    assert response.json()["error"] == "no persona with that id"
+
+
+def test_unarchive_restores_and_reindexes(gate_config, fake_storage, tmp_path):
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=_GroupsStub())
+    _seed_personas_index(fake_storage, [{**ARCHIVE_ENTRY, "archived": True}])
+    response = client.post(
+        "/api/personas/wire-probe/unarchive", headers=_gate_headers(key, email=OPERATOR_EMAIL)
+    )
+    assert response.status_code == 200
+    assert "archived" not in response.json()
+    search = client.get(
+        "/api/personas/search", headers=_gate_headers(key, email=OPERATOR_EMAIL)
+    )
+    assert "wire-probe" in [e["id"] for e in search.json()["results"]]
+
+
+def test_archived_listing_route(gate_config, fake_storage, tmp_path):
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=_GroupsStub())
+    _seed_personas_index(
+        fake_storage, [ARCHIVE_ENTRY, {**TEAM_ARCHIVE_ENTRY, "archived": True}]
+    )
+    response = client.get(
+        "/api/personas/archived", headers=_gate_headers(key, email=OPERATOR_EMAIL)
+    )
+    assert response.status_code == 200
+    listed = response.json()["personas"]
+    assert [e["id"] for e in listed] == ["stoic-mentor"]
+    assert listed[0]["archived"] is True
+
+
 # --- POST /api/personas/draft (Persona v3 addendum) ---------------------------------
 
 

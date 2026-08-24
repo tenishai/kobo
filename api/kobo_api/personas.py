@@ -258,6 +258,11 @@ def _read_index(storage: StorageClient, bucket: str, prefix: str) -> list[dict]:
     return list(parsed.get("entries", []))
 
 
+read_index = _read_index
+"""Public alias of `_read_index` for route callers outside this module
+(the underscore original stays for in-module callers)."""
+
+
 def _write_index(storage: StorageClient, bucket: str, prefix: str, entries: list[dict]) -> None:
     """Rewrite `<prefix>index.json` with exactly `entries`, sorted by id.
 

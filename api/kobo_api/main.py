@@ -85,7 +85,16 @@ from kobo_api.pairs import (
     sync_dispatch_pairs_best_effort,
 )
 from kobo_api.persona_draft import finalize_distill, finalize_draft
-from kobo_api.personas import PersonaError, PersonaExists, PersonaFields, create_persona
+from kobo_api.personas import (
+    PersonaError,
+    PersonaExists,
+    PersonaFields,
+    create_persona,
+    set_persona_archived,
+)
+from kobo_api.personas import (
+    read_index as personas_read_index,
+)
 from kobo_api.provisioner import (
     PIPELINE,
     STEP_LABELS,
@@ -2024,6 +2033,112 @@ def create_app(
             status_code=201,
         )
 
+    def _persona_archive_gate(request: Request, entry: dict) -> JSONResponse | None:
+        """Who may archive/unarchive (hardening wave rulings): builtin and
+        commons personas are operator-only (no ownership axis exists to
+        check); a team persona takes a member of that team or an operator.
+        The team arm reuses _persona_team_gate's fail-closed resolver
+        logic by delegation, with archive-specific refusal copy."""
+        if entry.get("builtin") or entry.get("team") == "shared":
+            if _is_admin(request):
+                return None
+            return JSONResponse(
+                {"error": "only a room operator can archive a persona filed under the commons"},
+                status_code=403,
+            )
+        gate = _persona_team_gate(request, entry["team"])
+        if gate is None:
+            return None
+        return JSONResponse(
+            {
+                "error": (
+                    f"you must be a member of team {entry['team']} "
+                    "to archive a persona filed under it"
+                )
+            },
+            status_code=403,
+        )
+
+    def _set_archived_route(
+        persona_id: str, request: Request, session: Session, archived: bool
+    ) -> JSONResponse:
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        if clients is None or clients.storage is None or not cfg.personas_bucket:
+            return JSONResponse({"error": "catalogs aren't set up yet"}, status_code=503)
+
+        index = personas_read_index(clients.storage, cfg.personas_bucket, "")
+        entry = next((e for e in index if e["id"] == persona_id), None)
+        if entry is None:
+            return JSONResponse({"error": "no persona with that id"}, status_code=404)
+
+        gate = _persona_archive_gate(request, entry)
+        if gate is not None:
+            return gate
+
+        try:
+            updated = set_persona_archived(
+                clients.storage,
+                bucket=cfg.personas_bucket,
+                persona_id=persona_id,
+                archived=archived,
+            )
+            # Same instant-ingest idiom as create_persona_route: full
+            # kind->bucket mapping, so the flip is visible (or invisible)
+            # in search immediately.
+            engine = session.get_bind()
+            ingest_indexes(engine, clients.storage, configured_catalogs(cfg))
+            app.state.catalog_loaded_at = time.monotonic()
+        except PersonaError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        except ClientError as exc:
+            log.warning("persona archive flip failed: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        return JSONResponse(updated)
+
+    @app.post("/api/personas/{persona_id}/archive")
+    def archive_persona_route(
+        persona_id: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        return _set_archived_route(persona_id, request, session, archived=True)
+
+    @app.post("/api/personas/{persona_id}/unarchive")
+    def unarchive_persona_route(
+        persona_id: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        return _set_archived_route(persona_id, request, session, archived=False)
+
+    # Declared before any GET /api/personas/{persona_id} that might arrive
+    # later: distinct method+path from the archive/unarchive POSTs above
+    # so there's no routing clash today, but a future single-persona GET
+    # would need to sit AFTER this literal path, not before it, or FastAPI
+    # would try to match "archived" as a {persona_id}.
+    @app.get("/api/personas/archived")
+    def archived_personas_route() -> JSONResponse:
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        if clients is None or clients.storage is None or not cfg.personas_bucket:
+            return JSONResponse({"error": "catalogs aren't set up yet"}, status_code=503)
+        index = personas_read_index(clients.storage, cfg.personas_bucket, "")
+        return JSONResponse(
+            {"personas": [e for e in index if e.get("archived")]}
+        )
+
+    def _persona_archived_in_index(persona_id: str) -> bool:
+        """True only when the bucket index carries this id with the
+        archived flag set. Any storage trouble answers False -- the caller
+        then gives the same unknown-persona answer as before this wave."""
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        if clients is None or clients.storage is None or not cfg.personas_bucket:
+            return False
+        try:
+            index = personas_read_index(clients.storage, cfg.personas_bucket, "")
+        except Exception:  # noqa: BLE001 -- failure path must stay quiet
+            return False
+        entry = next((e for e in index if e["id"] == persona_id), None)
+        return bool(entry and entry.get("archived"))
+
     @app.post("/api/personas/draft")
     def draft_persona_route(payload: PersonaDraftRequest) -> JSONResponse:
         """The Persona v3 "describe the job, approve the soul" draft step:
@@ -2273,6 +2388,14 @@ def create_app(
         # personas index, so no team is required (or known) to look one up.
         persona_entry = get_entry(engine, "persona", payload.persona, team=None)
         if persona_entry is None:
+            # Ingest drops archived entries, so an archived pick lands here
+            # exactly like an unknown one. One storage read on this failure
+            # arm buys the honest answer (the persona catalog is
+            # room-readable; no anti-enumeration fold applies).
+            if _persona_archived_in_index(payload.persona):
+                return JSONResponse(
+                    {"error": f"persona {payload.persona!r} is archived"}, status_code=422
+                )
             return JSONResponse(
                 {"error": f"unknown persona: {payload.persona!r}"}, status_code=422
             )

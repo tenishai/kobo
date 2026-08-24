@@ -17,6 +17,7 @@ background thread to make progress, a different clock than the one the
 
 from __future__ import annotations
 
+import json
 import time
 
 import jwt
@@ -282,6 +283,28 @@ def test_create_agent_unknown_persona_returns_422(client):
 
     assert response.status_code == 422
     assert "error" in response.json()
+
+
+def test_create_agent_archived_persona_returns_honest_422(client, fake_storage):
+    # `fake_storage`: this module's conftest-shared FakeStorage fixture
+    # (seeded with the two packaged personas + the sample skill). Append an
+    # archived entry to the index, refresh the catalog so ingest drops it,
+    # then pick it -- the honest 422 arm must fire, not the plain "unknown
+    # persona" one, even though ingest makes the two indistinguishable in
+    # the FTS table itself.
+    index = json.loads(fake_storage.read_bytes("personas-bucket", "index.json"))
+    index["entries"].append(
+        {"id": "shelved-soul", "name": "shelved-soul", "description": "d",
+         "team": "shared", "tags": [], "builtin": False, "archived": True}
+    )
+    fake_storage.write_bytes("personas-bucket", "index.json", json.dumps(index).encode())
+    client.post("/api/catalogs/refresh")
+    response = client.post(
+        "/api/agents",
+        json={"name": AGENT_NAME, "persona": "shelved-soul", "team": TEAM},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"] == "persona 'shelved-soul' is archived"
 
 
 def test_create_agent_unknown_skill_returns_422(client):
