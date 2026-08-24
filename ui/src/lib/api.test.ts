@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
+  archivePersona,
+  archivedPersonas,
   chatWithAgent,
   connectSlack,
   createAgent,
@@ -29,6 +31,7 @@ import {
   saveSlackChannels,
   searchPersonas,
   searchSkills,
+  unarchivePersona,
   uploadAvatar,
 } from "./api";
 
@@ -1051,6 +1054,117 @@ describe("catalog search / teams / persona builder / org status client", () => {
 
     await expect(draftPersona("Does the job.", [])).rejects.toBeInstanceOf(
       ApiError,
+    );
+  });
+
+  it("archivedPersonas GETs /api/personas/archived and unwraps {personas: [...]}", async () => {
+    const personas = [
+      {
+        id: "helper",
+        name: "Helper",
+        description: "a calm, steady presence",
+        team: "shared",
+        tags: ["general"],
+        builtin: true,
+        archived: true,
+      },
+    ];
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ personas }));
+
+    await expect(archivedPersonas()).resolves.toEqual(personas);
+    expect(fetch).toHaveBeenCalledWith("/api/personas/archived");
+  });
+
+  it("archivedPersonas surfaces a 503's {error} message (catalogs not set up)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "catalogs aren't set up yet" },
+        { status: 503, statusText: "Service Unavailable" },
+      ),
+    );
+
+    await expect(archivedPersonas()).rejects.toThrow("catalogs aren't set up yet");
+  });
+
+  it("archivePersona POSTs /api/personas/{id}/archive and returns the updated entry", async () => {
+    const updated = {
+      id: "helper",
+      name: "Helper",
+      description: "a calm, steady presence",
+      team: "shared",
+      tags: ["general"],
+      builtin: true,
+      archived: true,
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(updated));
+
+    await expect(archivePersona("helper")).resolves.toEqual(updated);
+    expect(fetch).toHaveBeenCalledWith("/api/personas/helper/archive", {
+      method: "POST",
+    });
+  });
+
+  it("archivePersona encodes the id in the URL", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({}));
+
+    await archivePersona("a b");
+
+    expect(fetch).toHaveBeenCalledWith("/api/personas/a%20b/archive", {
+      method: "POST",
+    });
+  });
+
+  it("archivePersona surfaces a 403's {error} message naming the gate requirement", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "only a room operator can archive a persona filed under the commons" },
+        { status: 403, statusText: "Forbidden" },
+      ),
+    );
+
+    await expect(archivePersona("helper")).rejects.toThrow(
+      "only a room operator can archive a persona filed under the commons",
+    );
+  });
+
+  it("archivePersona surfaces a 404's {error} message (unknown persona)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "no persona with that id" },
+        { status: 404, statusText: "Not Found" },
+      ),
+    );
+
+    await expect(archivePersona("nope")).rejects.toThrow("no persona with that id");
+  });
+
+  it("unarchivePersona POSTs /api/personas/{id}/unarchive and returns the updated entry, archived key absent", async () => {
+    const updated = {
+      id: "helper",
+      name: "Helper",
+      description: "a calm, steady presence",
+      team: "shared",
+      tags: ["general"],
+      builtin: true,
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(updated));
+
+    await expect(unarchivePersona("helper")).resolves.toEqual(updated);
+    expect(fetch).toHaveBeenCalledWith("/api/personas/helper/unarchive", {
+      method: "POST",
+    });
+  });
+
+  it("unarchivePersona surfaces a 403's {error} message naming the team-membership requirement", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "you must be a member of team growth to archive a persona filed under it" },
+        { status: 403, statusText: "Forbidden" },
+      ),
+    );
+
+    await expect(unarchivePersona("growth-scout")).rejects.toThrow(
+      "you must be a member of team growth to archive a persona filed under it",
     );
   });
 

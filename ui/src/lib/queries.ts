@@ -37,6 +37,11 @@
 //                                                      team picker
 //   ["catalog", "skills", {q, team}]                - a skill catalog search
 //   ["catalog", "personas", {q, team}]              - a persona catalog search
+//   ["personas", "archived"]                        - every archived persona
+//                                                      (hardening wave archive
+//                                                      lane), fetched lazily
+//                                                      behind the "Show
+//                                                      archived" toggle
 //   ["org", "status"]                               - org bootstrap/wiring status
 //   ["whoami"]                                       - the signed-in identity
 //                                                      this room's server has
@@ -77,6 +82,7 @@ import {
   type AgentSlack,
   type AgentSummary,
   type AlreadyRequested,
+  type ArchivedPersona,
   type CatalogEntry,
   type ChatMessage,
   type ColleagueFeed,
@@ -106,6 +112,8 @@ import {
   acceptInvite,
   addCatalogSkill,
   addGrant,
+  archivePersona,
+  archivedPersonas,
   chatWithAgent,
   connectSlack,
   createAgent,
@@ -155,6 +163,7 @@ import {
   searchPersonas,
   searchSkills,
   teachAgent,
+  unarchivePersona,
   uploadAvatar,
   uploadIntake,
   uploadTooling,
@@ -277,6 +286,49 @@ export function personasSearchQuery(q: string, team: string | null) {
     queryFn: () => searchPersonas(q, team),
     staleTime: CATALOG_SEARCH_STALE_MS,
   });
+}
+
+/**
+ * Every archived persona (hardening wave archive lane) — `GET
+ * /api/personas/archived`. Disabled until the "Show archived" toggle is on
+ * (Personas.svelte) — same "don't fetch until a human actually asks to see
+ * it" idiom `slackManifestQuery`'s `opened` flag / `groupRequestsQuery`'s
+ * `enabled` flag both already document in this file: most catalog visits
+ * never open it.
+ */
+export function archivedPersonasQuery(enabled: boolean) {
+  return queryOptions({
+    queryKey: ["personas", "archived"] as const,
+    queryFn: archivedPersonas,
+    enabled,
+  });
+}
+
+/**
+ * Archives a persona (hardening wave archive lane); on success, invalidates
+ * the active persona search (the server's own ingest already excludes an
+ * archived entry — this just catches kobo's own cache up so it drops out of
+ * the catalog immediately) and the archived list (so it shows up there).
+ */
+export function archivePersonaMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: (id: string) => archivePersona(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["catalog", "personas"] });
+      queryClient.invalidateQueries({ queryKey: ["personas", "archived"] });
+    },
+  };
+}
+
+/** Unarchives a persona; same invalidation as `archivePersonaMutation` above. */
+export function unarchivePersonaMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: (id: string) => unarchivePersona(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["catalog", "personas"] });
+      queryClient.invalidateQueries({ queryKey: ["personas", "archived"] });
+    },
+  };
 }
 
 /** Org bootstrap/wiring status, shown on the admin/org-status view. */
@@ -1107,6 +1159,7 @@ export type {
   AgentSlack,
   AgentSummary,
   AlreadyRequested,
+  ArchivedPersona,
   CatalogEntry,
   ChatMessage,
   ColleagueFeed,

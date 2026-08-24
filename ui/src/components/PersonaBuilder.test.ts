@@ -555,6 +555,35 @@ describe("PersonaBuilder - paste their persona + Continue (primary path, compone
   });
 });
 
+describe("PersonaBuilder - naming law microcopy (hardening wave)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("shows the exact naming-law helper text under the Name field, pinned so copy drift is deliberate", async () => {
+    stubFetch({ "/api/personas/draft": DRAFT_RESPONSE, "/api/": {} });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+    await reachStep2();
+
+    const nameField = screen.getByLabelText("Name");
+    const helperText = nameField
+      .closest(".persona-builder__field")
+      ?.querySelector(".persona-builder__help")
+      ?.textContent
+      // Collapse the source's own line-wrapping whitespace (this string is
+      // too long to keep on one physical line in the .svelte file) down to
+      // single spaces before comparing -- an exact-substring check on
+      // words/punctuation, insensitive only to the incidental whitespace a
+      // browser's own `white-space: normal` would collapse identically.
+      ?.replace(/\s+/g, " ")
+      .trim();
+
+    expect(helperText).toContain(
+      'Name the behavior, not a codename: "direct-factual-condensed-mellow" tells a stranger what they get. Trait words, an archetype like "stoic-mentor", or a figure whose mannerisms you want all work; the name is this persona\'s soul at a glance.',
+    );
+  });
+});
+
 describe("PersonaBuilder - naming station warm-up (perf fix: prefetch on Create persona click)", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();

@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, readLocalSkill, type AgentSkill, type CatalogEntry, type GroupRequest, type IntakeFile, type NameSuggestion, type OrgStatus, type ToolingEnforcement, type ToolingListResponse, type Whoami } from "./api";
+import { ApiError, readLocalSkill, type AgentSkill, type ArchivedPersona, type CatalogEntry, type GroupRequest, type IntakeFile, type NameSuggestion, type OrgStatus, type ToolingEnforcement, type ToolingListResponse, type Whoami } from "./api";
 import {
   addCatalogSkillMutation,
   agentSkillsQuery,
+  archivePersonaMutation,
+  archivedPersonasQuery,
   chatMutation,
   colleagueFeedQuery,
   connectSlackMutation,
@@ -39,6 +41,7 @@ import {
   teamsQuery,
   toolingQuery,
   toolingRefetchInterval,
+  unarchivePersonaMutation,
   uploadAvatarMutation,
   uploadIntakeMutation,
   uploadToolingMutation,
@@ -791,6 +794,141 @@ describe("personasSearchQuery", () => {
     );
 
     vi.unstubAllGlobals();
+  });
+});
+
+describe("archivedPersonasQuery (hardening wave archive lane)", () => {
+  it("has queryKey ['personas', 'archived']", () => {
+    expect(archivedPersonasQuery(false).queryKey).toEqual(["personas", "archived"]);
+  });
+
+  it("is disabled until the 'Show archived' toggle is on", () => {
+    expect(archivedPersonasQuery(false).enabled).toBe(false);
+  });
+
+  it("is enabled once the toggle is on", () => {
+    expect(archivedPersonasQuery(true).enabled).toBe(true);
+  });
+
+  it("queryFn GETs /api/personas/archived and unwraps {personas: [...]}", async () => {
+    const personas: ArchivedPersona[] = [
+      {
+        id: "helper",
+        name: "Helper",
+        description: "a calm, steady presence",
+        team: "shared",
+        tags: ["general"],
+        builtin: true,
+        archived: true,
+      },
+    ];
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ personas }),
+    } as Response);
+
+    await expect(
+      callQueryFn<ArchivedPersona[]>(archivedPersonasQuery(true)),
+    ).resolves.toEqual(personas);
+    expect(fetch).toHaveBeenCalledWith("/api/personas/archived");
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("archivePersonaMutation (hardening wave archive lane)", () => {
+  it("mutationFn delegates to archivePersona(id) via POST", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const updated = {
+      id: "helper",
+      name: "Helper",
+      description: "a calm, steady presence",
+      team: "shared",
+      tags: ["general"],
+      builtin: true,
+      archived: true,
+    };
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify(updated),
+    } as Response);
+
+    const queryClient = { invalidateQueries: vi.fn() } as unknown as QueryClient;
+    const mutation = archivePersonaMutation(queryClient);
+
+    await expect(mutation.mutationFn("helper")).resolves.toEqual(updated);
+    expect(fetch).toHaveBeenCalledWith("/api/personas/helper/archive", {
+      method: "POST",
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates both the active persona search and the archived list on success", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = archivePersonaMutation(queryClient);
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(2);
+    expect(invalidateQueries).toHaveBeenNthCalledWith(1, {
+      queryKey: ["catalog", "personas"],
+    });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(2, {
+      queryKey: ["personas", "archived"],
+    });
+  });
+});
+
+describe("unarchivePersonaMutation (hardening wave archive lane)", () => {
+  it("mutationFn delegates to unarchivePersona(id) via POST", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const updated = {
+      id: "helper",
+      name: "Helper",
+      description: "a calm, steady presence",
+      team: "shared",
+      tags: ["general"],
+      builtin: true,
+    };
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify(updated),
+    } as Response);
+
+    const queryClient = { invalidateQueries: vi.fn() } as unknown as QueryClient;
+    const mutation = unarchivePersonaMutation(queryClient);
+
+    await expect(mutation.mutationFn("helper")).resolves.toEqual(updated);
+    expect(fetch).toHaveBeenCalledWith("/api/personas/helper/unarchive", {
+      method: "POST",
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates both the active persona search and the archived list on success, same as archivePersonaMutation", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = unarchivePersonaMutation(queryClient);
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(2);
+    expect(invalidateQueries).toHaveBeenNthCalledWith(1, {
+      queryKey: ["catalog", "personas"],
+    });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(2, {
+      queryKey: ["personas", "archived"],
+    });
   });
 });
 

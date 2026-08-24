@@ -89,3 +89,15 @@ it("formats the getting-started route", () => {
 it("still falls back to dashboard for unknown paths", () => {
   expect(parseHash("#/getting")).toEqual({ page: "dashboard" });
 });
+
+it("parses #/personas", () => {
+  expect(parseHash("#/personas")).toEqual({ page: "personas" });
+});
+
+it("formats the personas route", () => {
+  expect(formatHash({ page: "personas" })).toBe("#/personas");
+});
+
+it("still falls back to dashboard for a near-miss of the personas path", () => {
+  expect(parseHash("#/persona")).toEqual({ page: "dashboard" });
+});

@@ -7,6 +7,7 @@
   // this component only renders whatever state that query is in, same
   // loading/error/populated split Dashboard already uses.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
+  import { derived, writable } from "svelte/store";
   import AccessPanel from "../components/AccessPanel.svelte";
   import ChatPanel from "../components/ChatPanel.svelte";
   import ColleagueConversations from "../components/ColleagueConversations.svelte";
@@ -27,6 +28,7 @@
     agentQuery,
     generateAvatarMutation,
     invitesQuery,
+    personasSearchQuery,
     retryAgentMutation,
     uploadAvatarMutation,
   } from "../lib/queries";
@@ -58,6 +60,37 @@
   // exactly as real as the server's own gate on this route, nothing a
   // client-side flag could fake or fall out of sync with.
   const invites = createQuery(invitesQuery(name));
+
+  // Soul-line (persona-naming law, hardening wave): the composition card's
+  // Persona line used to print the bare persona id (`data.persona`)
+  // plainly. Now it looks the id up in a fresh persona catalog search and
+  // renders `{name} -- {who_they_are}` instead -- the naming law's display
+  // hierarchy made visible on an agent's own page, where the AGENT's name
+  // stays the one real name (the `<h1>` below) and the persona is a
+  // secondary grey line, never a co-equal title. Falls back to the bare id
+  // when the search comes back with no matching entry (an archived or
+  // deleted-from-catalog persona) -- see `personaLine` in the markup below.
+  //
+  // The search term (the agent's own persona id) isn't known until
+  // `$agent.data` first resolves, so this uses the same writable/derived
+  // store idiom SlackPanel's `manifestOpened`/`manifestOptions` documents (a
+  // plain `$derived` options object wouldn't re-fire `createQuery` under the
+  // installed @tanstack/svelte-query adapter) -- `enabled` is overridden
+  // locally here rather than added to `personasSearchQuery` itself, since
+  // every other caller of that shared factory always has a real (possibly
+  // empty) search string in hand already.
+  const personaSearchTerm = writable<string | null>(null);
+  $effect(() => {
+    const data = $agent.data;
+    if (data) {
+      personaSearchTerm.set(data.persona);
+    }
+  });
+  const personaSearchOptions = derived(personaSearchTerm, ($term) => ({
+    ...personasSearchQuery($term ?? "", null),
+    enabled: $term !== null,
+  }));
+  const personaSoul = createQuery(personaSearchOptions);
 
   const retry = createMutation(retryAgentMutation(queryClient, name));
   const generateAvatar = createMutation(generateAvatarMutation(queryClient, name));
@@ -320,11 +353,15 @@
           tabindex="0"
         >
           {#if tab === "overview"}
+            {@const personaMatch = $personaSoul.data?.find((p) => p.id === data.persona) ?? null}
+            {@const personaLine = personaMatch
+              ? `${personaMatch.name} -- ${personaMatch.description}`
+              : data.persona}
             <div class="composition">
               <span class="composition__item">
                 <span class="composition__label">Persona</span>
-                <span class="composition__value">
-                  {data.persona}
+                <span class="composition__value composition__value--persona">
+                  {personaLine}
                   <span class="composition__team-chip">{data.team}</span>
                 </span>
               </span>
@@ -582,6 +619,15 @@
     margin: 0;
     color: var(--muted);
     font-size: 0.8rem;
+  }
+
+  /* Soul-line (persona-naming law): the Persona line reads as a secondary
+     grey line now (name + who-they-are), not the ink-toned, mono-font
+     persona id `.composition__value` renders everywhere else -- the agent's
+     own name (the page's `<h1>`) stays the one real title. */
+  .composition__value--persona {
+    color: var(--muted);
+    font-family: inherit;
   }
 
   .composition__team-chip {

@@ -591,6 +591,56 @@ export async function searchPersonas(
   return data.results;
 }
 
+/** One archived persona (`GET /api/personas/archived`, hardening wave archive
+ * lane) — the same raw index-entry shape `searchPersonas` already projects
+ * into `CatalogEntry`, plus `archived: true`. Archived is presence-based
+ * server-side (`kobo_api.personas.set_persona_archived`): an active entry
+ * never carries the key at all, so this listing only ever carries `true`. */
+export type ArchivedPersona = CatalogEntry & { archived: true };
+
+/**
+ * `GET /api/personas/archived` — every archived persona, ungated (deliberate
+ * parity with `searchPersonas` above, likewise readable by any signed-in
+ * caller regardless of team membership — see `kobo_api.main.
+ * archived_personas_route`'s own doc comment). The active `searchPersonas`
+ * list already excludes anything archived at ingest time, so this is the
+ * only place an archived persona is visible at all — the "Show archived"
+ * toggle's own list.
+ */
+export async function archivedPersonas(): Promise<ArchivedPersona[]> {
+  const res = await fetch("/api/personas/archived");
+  const data = await parse<{ personas: ArchivedPersona[] }>(res);
+  return data.personas;
+}
+
+/**
+ * `POST /api/personas/{id}/archive` — archives one persona (hardening wave:
+ * archive, not delete — the persona.md object is never touched, and
+ * unarchive restores full standing). The gate is server-enforced
+ * (`kobo_api.main._persona_archive_gate`): builtin or team "shared" is
+ * operator-only; any other team takes a member of that team, or an
+ * operator. A refusal surfaces as a 403 `{error}` naming the requirement,
+ * through `parse` same as every other mutation here; 404 for an unknown id,
+ * 502/503 on storage or an unwired catalog.
+ */
+export async function archivePersona(id: string): Promise<ArchivedPersona> {
+  const res = await fetch(`/api/personas/${encodeURIComponent(id)}/archive`, {
+    method: "POST",
+  });
+  return parse<ArchivedPersona>(res);
+}
+
+/** `POST /api/personas/{id}/unarchive` — the reverse of `archivePersona`,
+ * same gate. The returned entry no longer carries `archived` at all
+ * (presence-based flag, popped server-side on unarchive rather than set to
+ * false). */
+export async function unarchivePersona(id: string): Promise<CatalogEntry> {
+  const res = await fetch(`/api/personas/${encodeURIComponent(id)}/unarchive`, {
+    method: "POST",
+  });
+  return parse<CatalogEntry>(res);
+}
+
 export async function fetchTeams(): Promise<string[]> {
   const res = await fetch("/api/catalog/teams");
   const data = await parse<{ teams: string[] }>(res);

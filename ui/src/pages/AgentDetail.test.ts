@@ -84,6 +84,7 @@ describe("AgentDetail tabs", () => {
       "/api/agents/warden/invites": { incoming: [], outgoing: [] },
       "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": READY_AGENT,
+      "/api/personas/search": { results: [] },
       "/api/": {},
     });
   });
@@ -124,6 +125,7 @@ describe("AgentDetail tabs", () => {
       "/api/agents/warden/invites": { incoming: [], outgoing: [] },
       "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": { ...READY_AGENT, status: "provisioning" },
+      "/api/personas/search": { results: [] },
       "/api/": {},
     });
     renderWithClient(AgentDetail);
@@ -161,6 +163,7 @@ describe("AgentDetail tabs", () => {
       "/api/agents/warden/invites": { incoming: [], outgoing: [] },
       "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": { ...READY_AGENT, status: "destroying", destroy_visible: true },
+      "/api/personas/search": { results: [] },
       "/api/": {},
     });
     renderWithClient(AgentDetail);
@@ -186,6 +189,7 @@ describe("AgentDetail tabs", () => {
         steps: [{ name: "clone", label: "Clone the repo", status: "done", error: null }],
         first_reply: "Hello there.",
       },
+      "/api/personas/search": { results: [] },
       "/api/": {},
     });
     renderWithClient(AgentDetail);
@@ -214,6 +218,7 @@ describe("AgentDetail tabs", () => {
         purpose_tags: ["billing", "support"],
         capability: null,
       },
+      "/api/personas/search": { results: [] },
       "/api/": {},
     });
     renderWithClient(AgentDetail);
@@ -245,6 +250,7 @@ describe("AgentDetail tabs", () => {
         ...READY_AGENT,
         capability: "Answers billing questions and escalates refunds.",
       },
+      "/api/personas/search": { results: [] },
       "/api/": {},
     });
     renderWithClient(AgentDetail);
@@ -273,6 +279,7 @@ describe("AgentDetail tabs", () => {
       "/api/agents/warden/invites": { incoming: [], outgoing: [] },
       "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": { ...READY_AGENT, created_by: "owner@example.com" },
+      "/api/personas/search": { results: [] },
       "/api/": {},
     });
     renderWithClient(AgentDetail);
@@ -294,6 +301,7 @@ describe("AgentDetail tabs", () => {
       "/api/agents/warden/invites": { incoming: [], outgoing: [] },
       "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": READY_AGENT,
+      "/api/personas/search": { results: [] },
       "/api/": {},
     });
     renderWithClient(AgentDetail);
@@ -319,6 +327,7 @@ describe("AgentDetail tabs", () => {
         status: "destroying",
         destroy_visible: true,
       },
+      "/api/personas/search": { results: [] },
       "/api/": {},
     });
     renderWithClient(AgentDetail);
@@ -344,6 +353,7 @@ describe("AgentDetail tabs", () => {
       "/api/agents/warden/invites": { incoming: [], outgoing: [] },
       "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": READY_AGENT,
+      "/api/personas/search": { results: [] },
       "/api/": {},
     });
     renderWithClient(AgentDetail);
@@ -372,6 +382,7 @@ describe("AgentDetail tabs", () => {
       "/api/agents/warden/invites": { incoming: [], outgoing: [] },
       "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": { ...READY_AGENT, status: "destroying", destroy_visible: true },
+      "/api/personas/search": { results: [] },
       "/api/": {},
     });
     renderWithClient(AgentDetail);
@@ -424,6 +435,7 @@ describe("AgentDetail tabs", () => {
       "/api/agents/warden/invites": { incoming: [], outgoing: [] },
       "/api/agents/warden/grants": { grants: [] },
       "/api/agents/warden": { ...READY_AGENT, has_avatar: true },
+      "/api/personas/search": { results: [] },
       "/api/": {},
     });
     renderWithClient(AgentDetail);
@@ -494,6 +506,7 @@ describe("AgentDetail tabs", () => {
           "/api/agents/warden/invites": { incoming: [], outgoing: [] },
           "/api/agents/warden/grants": { grants: [] },
           "/api/agents/warden": READY_AGENT,
+          "/api/personas/search": { results: [] },
         };
         for (const [needle, payload] of Object.entries(routes)) {
           if (url.includes(needle)) {
@@ -541,6 +554,106 @@ describe("AgentDetail tabs", () => {
   });
 });
 
+describe("AgentDetail Overview persona soul-line (persona-naming law, hardening wave)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.stubGlobal("EventSource", NoopEventSource);
+    location.hash = "#/agents/warden";
+    window.dispatchEvent(new Event("hashchange"));
+  });
+
+  const BASE_ROUTES = {
+    "/api/colleagues/feed": { entries: [], truncated: false },
+    "/api/agents/warden/knowledge": { files: [] },
+    "/api/agents/warden/intake": { files: [] },
+    "/api/agents/warden/skills": { skills: [] },
+    "/api/agents/warden/tooling": {
+      files: [],
+      enforcement: { attested: false, locked: false, locked_file: null },
+    },
+    "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+    "/api/agents/warden/grants": { grants: [] },
+    "/api/agents/warden": READY_AGENT,
+  };
+
+  it("renders `{name} -- {who_they_are}` once the persona catalog search answers with a matching id", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/personas/search": {
+        results: [
+          {
+            id: "keeper",
+            name: "Keeper",
+            description: "a calm, steady presence who never panics",
+            team: "shared",
+            tags: [],
+            builtin: true,
+          },
+        ],
+      },
+      "/api/": {},
+    });
+    renderWithClient(AgentDetail);
+    await fireEvent.click(await screen.findByRole("tab", { name: "Overview" }));
+
+    const overviewPanel = document.getElementById("panel-overview") as HTMLElement;
+    expect(
+      await within(overviewPanel).findByText("Keeper -- a calm, steady presence who never panics"),
+    ).not.toBeNull();
+  });
+
+  it("falls back to the bare persona id when the search has no entry matching it (an archived or deleted-from-catalog persona) -- picking the right entry by id, not just the first result", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/personas/search": {
+        // A result set that is non-empty but contains no entry for "keeper"
+        // -- pins that the lookup filters by id rather than just grabbing
+        // whatever the search happens to return first.
+        results: [
+          {
+            id: "someone-else",
+            name: "Someone Else",
+            description: "an unrelated persona",
+            team: "shared",
+            tags: [],
+            builtin: true,
+          },
+        ],
+      },
+      "/api/": {},
+    });
+    renderWithClient(AgentDetail);
+    await fireEvent.click(await screen.findByRole("tab", { name: "Overview" }));
+
+    // Wait for the persona search fetch to actually resolve, and for its
+    // result to settle all the way through TanStack Query's cache and
+    // Svelte's own reactivity, before asserting -- the fallback text (the
+    // bare id, "keeper") is ALSO what's on screen during the brief window
+    // before that fetch settles, so a plain `findByText("keeper")` (which
+    // resolves on the FIRST match) would pass on that transient initial
+    // render even under a broken id-matching implementation that naively
+    // grabbed the first search result instead of filtering by id -- never
+    // actually exercising the fallback decision this test means to pin. A
+    // handful of drained macrotask ticks (empirically enough here, and far
+    // cheaper than a fixed real-time sleep) stands in for "wait until the
+    // query has settled" since the component exposes no query-state hook a
+    // test could await directly.
+    await vi.waitFor(() => {
+      expect(
+        vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/api/personas/search")),
+      ).toBe(true);
+    });
+    for (let i = 0; i < 10; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    const overviewPanel = document.getElementById("panel-overview") as HTMLElement;
+    expect(within(overviewPanel).getByText("keeper")).not.toBeNull();
+    expect(within(overviewPanel).queryByText(/Someone Else/)).toBeNull();
+    expect(within(overviewPanel).queryByText(/--/)).toBeNull();
+  });
+});
+
 describe("AgentDetail Access tab (access-control Task C2)", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
@@ -584,6 +697,7 @@ describe("AgentDetail Access tab (access-control Task C2)", () => {
             groups_unavailable: false,
           },
           "/api/agents": { agents: [], groups_unavailable: false },
+          "/api/personas/search": { results: [] },
         };
         for (const [needle, payload] of Object.entries(routes)) {
           if (url.includes(needle)) {

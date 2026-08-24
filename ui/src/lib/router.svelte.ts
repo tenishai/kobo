@@ -11,7 +11,8 @@
 export type Route =
   | { page: "dashboard" }
   | { page: "agent"; name: string }
-  | { page: "getting-started" };
+  | { page: "getting-started" }
+  | { page: "personas" };
 
 const DASHBOARD: Route = { page: "dashboard" };
 
@@ -37,6 +38,9 @@ export function parseHash(hash: string): Route {
   if (segments.length === 1 && segments[0] === "getting-started") {
     return { page: "getting-started" };
   }
+  if (segments.length === 1 && segments[0] === "personas") {
+    return { page: "personas" };
+  }
   if (segments[0] === "agents" && segments.length > 1 && segments[1].length > 0) {
     const raw = segments[1];
     let name: string;
@@ -55,7 +59,13 @@ export function formatHash(route: Route): string {
   if (route.page === "agent") {
     return `#/agents/${encodeURIComponent(route.name)}`;
   }
-  return route.page === "getting-started" ? "#/getting-started" : "#/";
+  if (route.page === "getting-started") {
+    return "#/getting-started";
+  }
+  if (route.page === "personas") {
+    return "#/personas";
+  }
+  return "#/";
 }
 
 function currentHash(): string {
@@ -63,7 +73,10 @@ function currentHash(): string {
 }
 
 /** Flat, mutable shape of the live route state (see `route` below). */
-type RouteState = { page: "dashboard" | "agent" | "getting-started"; name: string | null };
+type RouteState = {
+  page: "dashboard" | "agent" | "getting-started" | "personas";
+  name: string | null;
+};
 
 function toState(parsed: Route): RouteState {
   return { page: parsed.page, name: parsed.page === "agent" ? parsed.name : null };

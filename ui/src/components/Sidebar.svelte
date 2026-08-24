@@ -7,7 +7,7 @@
   import { agentsQuery, whoamiQuery } from "../lib/queries";
 
   let { active, oncreate, onprefetch }: {
-    active: "dashboard" | "agent" | "getting-started";
+    active: "dashboard" | "agent" | "getting-started" | "personas";
     oncreate: () => void;
     onprefetch: () => void;
   } = $props();
@@ -76,6 +76,18 @@
       >
         <span class="sidebar__icon" aria-hidden="true">✦</span>
         <span class="sidebar__label">Getting started</span>
+      </a>
+    </li>
+    <li>
+      <a
+        class="sidebar__link"
+        href={formatHash({ page: "personas" })}
+        aria-current={active === "personas" ? "page" : undefined}
+        aria-label="Personas"
+        title="Personas"
+      >
+        <span class="sidebar__icon" aria-hidden="true">◐</span>
+        <span class="sidebar__label">Personas</span>
       </a>
     </li>
   </ul>

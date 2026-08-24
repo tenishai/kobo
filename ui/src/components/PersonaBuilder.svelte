@@ -604,6 +604,12 @@
         autocomplete="off"
         aria-describedby="persona-builder-name-hint"
       />
+      <p class="persona-builder__help">
+        Name the behavior, not a codename: "direct-factual-condensed-mellow"
+        tells a stranger what they get. Trait words, an archetype like
+        "stoic-mentor", or a figure whose mannerisms you want all work; the
+        name is this persona's soul at a glance.
+      </p>
       <div id="persona-builder-name-hint">
         {#if nameHint}
           <p class="persona-builder__help">{nameHint}</p>
