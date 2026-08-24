@@ -1,6 +1,6 @@
 # Hardening + stewardship wave: marketplace frontmatter gate, audit bounding, persona archive, persona naming
 
-**Status:** Approved (pre-plan)
+**Status:** Implemented (rollout pending)
 **Depends on:** MCP marketplace wave 1 (live, wire-accepted), Persona wave (live, wire-accepted)
 
 ## What this wave ships
@@ -239,3 +239,41 @@ through both the route and the MCP shim; include_archived default-false.
 - `kobo_archive_persona` MCP tool, only on demonstrated connector need.
 - Naming retrofits for pre-law catalog entries (the gemini-one persona):
   archive-and-recreate is the lane, operator's call per entry.
+
+## Execution amendments
+
+Plan-time refinements (deviations from spec letter, same intent, carried
+over verbatim in substance from the plan's own header):
+
+1. Spec said `GET /api/personas` gains `include_archived`. The room has no
+   plain persona list route; every list surface is FTS-catalog-backed
+   (`/api/personas/search`). Realized instead as: ingest drops archived
+   entries (all active-list surfaces clean by construction) plus a new
+   `GET /api/personas/archived` reading the bucket index directly for the
+   UI's archived section.
+2. Spec said archive controls follow "existing persona-management
+   markup". No persona-management view exists. Realized as a new minimal
+   Personas catalog page (Task 7), which also gives the naming-law
+   display hierarchy a home.
+3. The create-agent route already answers 422 "unknown persona" for
+   anything not in the catalog. The honest "is archived" message is
+   produced by checking the bucket index only on that failure arm (one
+   storage read, failure path only).
+
+Amendments discovered during execution, not previously written in the
+spec or plan:
+
+4. `_load_catalog_entries` in `api/kobo_api/search.py` rebuilds a fresh
+   dict per entry and therefore silently drops unknown keys, so the
+   archived filter required an `archived` passthrough there to be
+   anything but dead code. Verified: without it, the filter leaves
+   archived entries in the catalog.
+5. The frontmatter gate also type-checks `description`, a required field
+   the gate asserted but did not originally enforce; a non-string
+   description would otherwise publish as a float, list, or mapping.
+6. The semver pattern uses `[0-9]` rather than `\d`, because `\d` is
+   Unicode-wide in Python and matched non-ASCII digit strings.
+7. `seed_default_personas` preserves an existing entry's archived flag
+   across its wholesale index rewrite; without this, an archived builtin
+   silently returns on the next restart. This was anticipated in the spec
+   as the "resurrect trap" and is now implemented and tested.

@@ -74,6 +74,8 @@ Kobo is opinionated by design:
   tool publishing runs the same mechanical law the room enforces, and baseline tool ids are
   reserved for operators). Every new agent ships with the baseline tooling pack, a leak guard
   and a probe guard, unless created with skip_baseline. Off until the org turns it on.
+  Personas can be archived and restored from the Personas page, and good persona names pass
+  the glance test: a stranger reading the card knows what picking it gets them.
 
 ## Part of a larger platform
 
