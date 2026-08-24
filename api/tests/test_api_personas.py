@@ -555,6 +555,23 @@ def test_archive_shared_persona_operator_200_and_instantly_evicted(
 ):
     client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=_GroupsStub())
     _seed_personas_index(fake_storage, [ARCHIVE_ENTRY])
+    # Prime the catalog BEFORE archiving (Important 2 fix, hardening wave
+    # review): the fixture's fresh personas-bucket ("personas-bucket": {})
+    # means wire-probe was never in the FTS table to begin with, so the
+    # post-archive search assertion below used to prove nothing about THIS
+    # route's own re-ingest -- it passed even with no eviction at all,
+    # because there was nothing to evict. Warming via an explicit refresh,
+    # and confirming the entry is really searchable first, makes the later
+    # eviction assertion load-bearing.
+    warm = client.post(
+        "/api/catalogs/refresh", headers=_gate_headers(key, email=OPERATOR_EMAIL)
+    )
+    assert warm.status_code == 200
+    pre_search = client.get(
+        "/api/personas/search", headers=_gate_headers(key, email=OPERATOR_EMAIL)
+    )
+    assert "wire-probe" in [e["id"] for e in pre_search.json()["results"]]
+
     response = client.post(
         "/api/personas/wire-probe/archive", headers=_gate_headers(key, email=OPERATOR_EMAIL)
     )
@@ -577,7 +594,17 @@ def test_archive_shared_persona_non_operator_403(gate_config, fake_storage, tmp_
         "/api/personas/wire-probe/archive", headers=_gate_headers(key, email=STRANGER_EMAIL)
     )
     assert response.status_code == 403
-    assert "room operator" in response.json()["error"]
+    # Important 1 fix (hardening wave review): full-dict equality, matching
+    # this file's own standard for the create gate's refusal at
+    # test_persona_create_named_team_non_member_403 above. A substring check
+    # ("room operator" in error) doesn't pin which exact string comes back --
+    # two separate mutations (leaking the CREATE gate's "...to file a
+    # persona under it" copy, and swapping in an unrelated ownership-flavored
+    # string) both left that substring assertion green across all 7 archive
+    # tests.
+    assert response.json() == {
+        "error": "only a room operator can archive a persona filed under the commons"
+    }
 
 
 def test_archive_team_persona_member_200_non_member_403(gate_config, fake_storage, tmp_path):
@@ -588,7 +615,12 @@ def test_archive_team_persona_member_200_non_member_403(gate_config, fake_storag
         "/api/personas/stoic-mentor/archive", headers=_gate_headers(key, email=STRANGER_EMAIL)
     )
     assert denied.status_code == 403
-    assert "member of team sre" in denied.json()["error"]
+    # Important 1 fix: same full-dict pin as above, on the named-team arm's
+    # own distinct copy ("...filed under it", not the CREATE gate's "...to
+    # file a persona under it").
+    assert denied.json() == {
+        "error": "you must be a member of team sre to archive a persona filed under it"
+    }
     allowed = client.post(
         "/api/personas/stoic-mentor/archive", headers=_gate_headers(key, email=MEMBER_EMAIL)
     )
@@ -596,19 +628,65 @@ def test_archive_team_persona_member_200_non_member_403(gate_config, fake_storag
 
 
 def test_archive_builtin_operator_only(gate_config, fake_storage, tmp_path):
-    builtin = {**ARCHIVE_ENTRY, "id": "helpful-generalist", "builtin": True}
-    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=_GroupsStub())
+    # Minor 6 fix (hardening wave review): the fixture's team must be
+    # something OTHER than "shared" here, or the gate's other arm
+    # (`entry.get("team") == "shared"`) alone would still route this to the
+    # operator-only branch even with the `builtin` check removed entirely,
+    # masking a mutation on that arm. A resolver that makes MEMBER_EMAIL a
+    # genuine member of the entry's own named team is what isolates it: if
+    # the `builtin` check ever silently dropped out, this non-operator team
+    # member would wrongly pass through the team-gate's membership arm
+    # instead of being refused by the operator-only branch.
+    resolver = _GroupsStub({MEMBER_EMAIL: ["sre"]})
+    builtin = {**ARCHIVE_ENTRY, "id": "helpful-generalist", "builtin": True, "team": "sre"}
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=resolver)
     _seed_personas_index(fake_storage, [builtin])
     denied = client.post(
         "/api/personas/helpful-generalist/archive",
-        headers=_gate_headers(key, email=STRANGER_EMAIL),
+        headers=_gate_headers(key, email=MEMBER_EMAIL),
     )
     assert denied.status_code == 403
+    assert denied.json() == {
+        "error": "only a room operator can archive a persona filed under the commons"
+    }
     allowed = client.post(
         "/api/personas/helpful-generalist/archive",
         headers=_gate_headers(key, email=OPERATOR_EMAIL),
     )
     assert allowed.status_code == 200
+
+
+def test_archive_persona_preserves_existing_skill_entries(gate_config, fake_storage, tmp_path):
+    """Important 3 fix (hardening wave review): mirrors
+    test_create_persona_preserves_existing_skill_entries for the archive
+    route. `ingest_indexes` does a FULL rebuild of every kind it's given, so
+    an archive route that re-ingested with only {"persona": ...} would
+    silently wipe the skills table clean on every single archive. Proven by
+    mutation: main.py:2090 mutated to exactly that persona-only mapping left
+    every other archive/agent/search test green (170 passed), because none
+    of them ever checked the skills side of the route's re-ingest.
+    """
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=_GroupsStub())
+    _seed_personas_index(fake_storage, [ARCHIVE_ENTRY])
+
+    pre = client.get(
+        "/api/skills/search",
+        params={"q": "revi"},
+        headers=_gate_headers(key, email=OPERATOR_EMAIL),
+    )
+    assert pre.json()["results"], "fixture sanity: skill entry should be searchable pre-archive"
+
+    response = client.post(
+        "/api/personas/wire-probe/archive", headers=_gate_headers(key, email=OPERATOR_EMAIL)
+    )
+    assert response.status_code == 200
+
+    post = client.get(
+        "/api/skills/search",
+        params={"q": "revi"},
+        headers=_gate_headers(key, email=OPERATOR_EMAIL),
+    )
+    assert post.json()["results"] == pre.json()["results"]
 
 
 def test_archive_unknown_id_404(gate_config, fake_storage, tmp_path):
@@ -621,9 +699,44 @@ def test_archive_unknown_id_404(gate_config, fake_storage, tmp_path):
     assert response.json()["error"] == "no persona with that id"
 
 
+def test_archive_502_on_storage_read_error(gate_config, tmp_path):
+    """Minor 4 fix (hardening wave review): the route's index read used to
+    sit outside any error handling, so a storage blip surfaced as an
+    unhandled 500 rather than the 502 this route advertises for storage
+    trouble. Mirrors test_create_persona_502_on_storage_error, on the read
+    side rather than the write side.
+    """
+    erroring_storage = FakeStorage(read_error="storage is on fire")
+    client, key = _gate_client(gate_config, erroring_storage, tmp_path,
+                               groups_resolver=_GroupsStub())
+
+    response = client.post(
+        "/api/personas/wire-probe/archive", headers=_gate_headers(key, email=OPERATOR_EMAIL)
+    )
+
+    assert response.status_code == 502
+
+
 def test_unarchive_restores_and_reindexes(gate_config, fake_storage, tmp_path):
     client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=_GroupsStub())
     _seed_personas_index(fake_storage, [{**ARCHIVE_ENTRY, "archived": True}])
+    # Prime the catalog BEFORE unarchiving, while wire-probe is still
+    # archived (Important 2 fix, hardening wave review): this proves the
+    # entry is genuinely excluded from a WARM FTS table (Task 4's
+    # ingest-drops-archived-rows filter) before the flip, not merely absent
+    # because the table was never populated. Without this, mutating away
+    # the unarchive route's own re-ingest entirely (both the ingest_indexes
+    # call AND the catalog_loaded_at bump) was masked by the search route's
+    # own cold-start ingest picking the entry up anyway at search time.
+    warm = client.post(
+        "/api/catalogs/refresh", headers=_gate_headers(key, email=OPERATOR_EMAIL)
+    )
+    assert warm.status_code == 200
+    pre_search = client.get(
+        "/api/personas/search", headers=_gate_headers(key, email=OPERATOR_EMAIL)
+    )
+    assert "wire-probe" not in [e["id"] for e in pre_search.json()["results"]]
+
     response = client.post(
         "/api/personas/wire-probe/unarchive", headers=_gate_headers(key, email=OPERATOR_EMAIL)
     )

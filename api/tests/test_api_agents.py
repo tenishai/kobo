@@ -298,7 +298,11 @@ def test_create_agent_archived_persona_returns_honest_422(client, fake_storage):
          "team": "shared", "tags": [], "builtin": False, "archived": True}
     )
     fake_storage.write_bytes("personas-bucket", "index.json", json.dumps(index).encode())
-    client.post("/api/catalogs/refresh")
+    # Minor 7 fix (hardening wave review): no explicit refresh here -- the
+    # `client` fixture is fresh per test (catalog_loaded_at starts None), so
+    # POST /api/agents's own `_maybe_refresh_catalogs` cold-start ingest
+    # already picks up the entry written just above. An extra refresh call
+    # here was non-load-bearing and its status went unchecked.
     response = client.post(
         "/api/agents",
         json={"name": AGENT_NAME, "persona": "shelved-soul", "team": TEAM},

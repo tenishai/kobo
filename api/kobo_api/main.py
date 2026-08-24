@@ -2067,7 +2067,15 @@ def create_app(
         if clients is None or clients.storage is None or not cfg.personas_bucket:
             return JSONResponse({"error": "catalogs aren't set up yet"}, status_code=503)
 
-        index = personas_read_index(clients.storage, cfg.personas_bucket, "")
+        try:
+            index = personas_read_index(clients.storage, cfg.personas_bucket, "")
+        except ClientError as exc:
+            # Same 502 as the write path below (minor 4 fix, hardening wave
+            # review): this read used to sit outside any error handling, so
+            # a storage blip here surfaced as an unhandled 500 instead of
+            # the 502 this route advertises.
+            log.warning("persona archive index read failed: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=502)
         entry = next((e for e in index if e["id"] == persona_id), None)
         if entry is None:
             return JSONResponse({"error": "no persona with that id"}, status_code=404)
@@ -2115,11 +2123,24 @@ def create_app(
     # would try to match "archived" as a {persona_id}.
     @app.get("/api/personas/archived")
     def archived_personas_route() -> JSONResponse:
+        # Ungated read (hardening wave review, minor 8): deliberate parity
+        # with GET /api/personas/search, which is also readable by any
+        # authenticated caller regardless of team membership. The entries
+        # here carry no fields beyond that search projection plus
+        # "archived", so this is not a new leak class -- a decision, not an
+        # omission.
         cfg: Config = app.state.config
         clients = app.state.clients
         if clients is None or clients.storage is None or not cfg.personas_bucket:
             return JSONResponse({"error": "catalogs aren't set up yet"}, status_code=503)
-        index = personas_read_index(clients.storage, cfg.personas_bucket, "")
+        try:
+            index = personas_read_index(clients.storage, cfg.personas_bucket, "")
+        except ClientError as exc:
+            # Same 502 as the archive/unarchive route's sibling read
+            # (minor 4 fix): a storage blip here must not surface as an
+            # unhandled 500.
+            log.warning("archived persona listing failed: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=502)
         return JSONResponse(
             {"personas": [e for e in index if e.get("archived")]}
         )
@@ -2134,9 +2155,13 @@ def create_app(
             return False
         try:
             index = personas_read_index(clients.storage, cfg.personas_bucket, "")
+            entry = next((e for e in index if e["id"] == persona_id), None)
         except Exception:  # noqa: BLE001 -- failure path must stay quiet
+            # minor 5 fix (hardening wave review): the entry lookup used to
+            # sit outside this try, so a malformed index entry (missing
+            # "id") raised KeyError straight through this create-agent
+            # failure path instead of the docstring's promised False.
             return False
-        entry = next((e for e in index if e["id"] == persona_id), None)
         return bool(entry and entry.get("archived"))
 
     @app.post("/api/personas/draft")
