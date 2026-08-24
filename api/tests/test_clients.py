@@ -27,6 +27,8 @@ from kobo_api.clients import (
     CabalClient,
     CabalError,
     CachedGcloudToken,
+    _google_access_token,
+    _metadata_access_token,
     ChatMessage,
     ClientError,
     Clients,
@@ -2769,9 +2771,96 @@ def test_cached_gcloud_token_fetch_failure_raises_and_later_call_retries():
     assert len(calls) == 2
 
 
-def test_cached_gcloud_token_default_fetch_is_gcloud_print_access_token():
+def test_cached_gcloud_token_default_fetch_is_the_google_access_token_source():
+    # The default is now `_google_access_token` (metadata server first, gcloud
+    # shell-out as the fallback) rather than the bare shell-out: only the
+    # metadata server reports a token's REAL remaining lifetime, which is what
+    # the cache needs to avoid outliving it. See the skew regression below.
     token_provider = CachedGcloudToken()
-    assert token_provider._fetch is _gcloud_print_access_token
+    assert token_provider._fetch is _google_access_token
+
+
+def test_cached_token_never_outlives_a_short_lived_token():
+    """The 2026-08-24 production regression: `gcloud auth print-access-token`
+    returns whatever gcloud already has cached, which may have only minutes
+    left, while this cache pinned it for a fixed 1800s. The room then served
+    an expired bearer token and every GCS call answered 401 Invalid
+    Credentials until the fixed window closed. A fetch that reports its real
+    remaining lifetime must shorten the cache window to match."""
+    calls: list[str] = []
+
+    def fetch() -> tuple[str, int]:
+        calls.append("fetched")
+        return (f"token-{len(calls)}", 600)  # only 10 minutes left
+
+    clock = {"now": 1000.0}
+    token_provider = CachedGcloudToken(fetch=fetch, ttl_s=1800, now=lambda: clock["now"])
+
+    first = token_provider()
+    clock["now"] += 400  # past (600 - margin), still far inside the old 1800s ttl
+    second = token_provider()
+
+    assert len(calls) == 2, "a token with 600s of life must not be cached for 1800s"
+    assert second != first
+
+
+def test_cached_token_unknown_lifetime_falls_back_to_a_conservative_window():
+    """A fetch that reports only a string (the gcloud fallback) tells us
+    nothing about remaining life, so the cache must stay conservative rather
+    than assume a full hour."""
+    calls: list[str] = []
+
+    def fetch() -> str:
+        calls.append("fetched")
+        return f"token-{len(calls)}"
+
+    clock = {"now": 1000.0}
+    token_provider = CachedGcloudToken(fetch=fetch, now=lambda: clock["now"])
+
+    token_provider()
+    clock["now"] += 400
+    token_provider()
+
+    assert len(calls) == 2
+
+
+def test_cached_token_long_lived_token_still_honors_the_ttl_ceiling():
+    """The perf win the cache exists for survives: a genuinely fresh token is
+    still held for the full ttl rather than refetched per call."""
+    calls: list[str] = []
+
+    def fetch() -> tuple[str, int]:
+        calls.append("fetched")
+        return (f"token-{len(calls)}", 3600)
+
+    clock = {"now": 1000.0}
+    token_provider = CachedGcloudToken(fetch=fetch, ttl_s=1800, now=lambda: clock["now"])
+
+    token_provider()
+    clock["now"] += 1700  # inside the ceiling
+    token_provider()
+    assert len(calls) == 1
+
+    clock["now"] += 200  # now past it
+    token_provider()
+    assert len(calls) == 2
+
+
+def test_metadata_access_token_returns_token_and_remaining_life():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Metadata-Flavor"] == "Google"
+        return httpx.Response(200, json={"access_token": "md-token", "expires_in": 2400})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert _metadata_access_token(client) == ("md-token", 2400)
+
+
+def test_metadata_access_token_returns_none_when_unreachable():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("no metadata server here")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert _metadata_access_token(client) is None
 
 
 # --- Name (VertexNameClient) ----------------------------------------------------

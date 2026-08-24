@@ -1613,6 +1613,57 @@ def _gcloud_print_access_token(runner: CommandRunner | None = None) -> str:
     return (runner or CommandRunner()).run(["gcloud", "auth", "print-access-token"])
 
 
+# The GKE/GCE metadata server's token endpoint. Unlike `gcloud auth
+# print-access-token`, it reports `expires_in` -- the token's REAL remaining
+# lifetime -- which is the only way a cache can avoid outliving the token it
+# holds (see CachedGcloudToken's docstring for the production regression this
+# closes).
+_METADATA_TOKEN_URL = (
+    "http://metadata.google.internal/computeMetadata/v1/instance/"
+    "service-accounts/default/token"
+)
+# Refresh this far ahead of a token's stated expiry.
+_TOKEN_EXPIRY_MARGIN_S = 300
+# How long a token whose real lifetime we could NOT learn may be trusted.
+# Deliberately short: the gcloud fallback can hand back a token with only
+# minutes left, and assuming otherwise is exactly what broke the room.
+_UNKNOWN_LIFETIME_TTL_S = 300
+# Never cache for less than this, so a token near expiry cannot turn every
+# call into a fetch.
+_MIN_TOKEN_TTL_S = 30
+
+
+def _metadata_access_token(client: httpx.Client | None = None) -> tuple[str, int] | None:
+    """`(token, seconds-remaining)` from the metadata server, or None when it
+    is not reachable or does not answer usefully (any local dev machine, or a
+    pod without Workload Identity). Never raises: a None answer simply means
+    "ask gcloud instead", and the caller's own failure handling covers the
+    rest."""
+    try:
+        resp = (client or httpx).get(
+            _METADATA_TOKEN_URL,
+            headers={"Metadata-Flavor": "Google"},
+            timeout=5.0,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        return str(data["access_token"]), int(data["expires_in"])
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _google_access_token() -> tuple[str, int] | str:
+    """The room's default access-token source: the metadata server when it
+    answers (returning the real remaining lifetime), otherwise the gcloud
+    shell-out (returning a bare token of unknown lifetime). In the deployed
+    room this also removes the 1-2s shell-out entirely."""
+    from_metadata = _metadata_access_token()
+    if from_metadata is not None:
+        return from_metadata
+    return _gcloud_print_access_token()
+
+
 class CachedGcloudToken:
     """Caches `_gcloud_print_access_token`'s result for `ttl_s` seconds.
 
@@ -1626,8 +1677,18 @@ class CachedGcloudToken:
     this class into all three clients so a token minted for one is reused by
     the others until it goes stale.
 
-    `ttl_s` defaults to 1800s (30 minutes) — half a token's real lifetime,
-    a generous margin against the token actually expiring mid-flight.
+    `ttl_s` (default 1800s) is a CEILING, not the window itself. It used to be
+    the whole story, on the assumption that every fetch returned a fresh
+    hour-long token. That is false, and it broke the room on 2026-08-24:
+    `gcloud auth print-access-token` returns whatever gcloud already has
+    cached, so a fetch can hand back a token with only minutes left. Pinning
+    that for a fixed 1800s meant the room served an EXPIRED bearer token and
+    every GCS call answered 401 Invalid Credentials until the window closed,
+    while the catalog quietly went on serving a stale table. So: when the
+    source reports a real remaining lifetime (the metadata server does), the
+    window is that lifetime minus `_TOKEN_EXPIRY_MARGIN_S`, capped by
+    `ttl_s`; when it does not (the gcloud fallback), the window is the short
+    `_UNKNOWN_LIFETIME_TTL_S` rather than an optimistic guess.
 
     Thread-safe (`threading.Lock`, held across the fetch itself, not just a
     read-then-write of the cached fields): background threads that also
@@ -1643,8 +1704,9 @@ class CachedGcloudToken:
     shape every caller already handles) without this class touching
     `_token`/`_expires_at` at all — a later call simply retries.
 
-    `fetch` and `now` are test seams only (the real `_gcloud_print_access_token`
-    and `time.monotonic` by default) — mirrors `InstallationTokenProvider`'s
+    `fetch` may return either `(token, seconds-remaining)` or a bare token
+    string; `fetch` and `now` are test seams only (the real
+    `_google_access_token` and `time.monotonic` by default), mirroring `InstallationTokenProvider`'s
     own cache/expiry-margin/`now` seam discipline (`kobo_api.github_app`).
     `time.monotonic` (not `time.time`) is deliberate: this cache only ever
     compares against its own earlier reading, so it must be immune to
@@ -1654,7 +1716,7 @@ class CachedGcloudToken:
 
     def __init__(
         self,
-        fetch: Callable[[], str] = _gcloud_print_access_token,
+        fetch: Callable[[], tuple[str, int] | str] = _google_access_token,
         ttl_s: int = 1800,
         now: Callable[[], float] = time.monotonic,
     ):
@@ -1673,9 +1735,22 @@ class CachedGcloudToken:
                 and self._now() < self._expires_at
             ):
                 return self._token
-            token = self._fetch()
+            fetched = self._fetch()
+            if isinstance(fetched, tuple):
+                # The source told us the token's REAL remaining lifetime:
+                # never hold it past that, and keep `ttl_s` as the ceiling so
+                # a long-lived token still costs one fetch per window.
+                token, expires_in = fetched
+                ttl = min(
+                    self._ttl_s,
+                    max(int(expires_in) - _TOKEN_EXPIRY_MARGIN_S, _MIN_TOKEN_TTL_S),
+                )
+            else:
+                # Unknown lifetime (the gcloud fallback): stay conservative.
+                token = fetched
+                ttl = min(self._ttl_s, _UNKNOWN_LIFETIME_TTL_S)
             self._token = token
-            self._expires_at = self._now() + self._ttl_s
+            self._expires_at = self._now() + ttl
             return token
 
 
