@@ -91,16 +91,17 @@ class PersonaFields(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     who_they_are: str = Field(min_length=1, max_length=200)
     # what_they_do's own ceiling (upload/limits addendum) is generous on
-    # purpose: 32768 chars is a sane absolute wall, not the real gate. The
-    # real gate is the MERGED persona.md's own 150-line/32768-byte cap,
+    # purpose: 49152 chars is a sane absolute wall, not the real gate. The
+    # real gate is the MERGED persona.md's own 200-line/49152-byte cap,
     # checked in create_persona against the actual rendered body (see
     # _check_rendered_size) — this Field bound just keeps a single field
     # from being unbounded in isolation.
-    what_they_do: str = Field(min_length=1, max_length=32768)
+    what_they_do: str = Field(min_length=1, max_length=49152)
     # 0-150 optional one-liners ("things they always or never do") — Rules
     # is explicitly optional in the brief, unlike who_they_are/what_they_do.
     # Same story as what_they_do above: 150 items is a sane wall, not the
-    # real gate (that's the merged render's line/byte cap in create_persona).
+    # real gate (that's the merged render's line/byte cap in create_persona —
+    # see comment below, where the real numbers live).
     rules: list[str] = Field(default_factory=list, max_length=150)
 
     @field_validator("who_they_are")
@@ -116,7 +117,7 @@ class PersonaFields(BaseModel):
         """Each rule must be non-empty and a single line (one bullet, one
         line of the rendered body) — no numeric per-rule length cap any
         more (upload/limits addendum dropped the old 200-char ceiling): a
-        long rule is bounded by the merged render's own 150-line/32768-byte
+        long rule is bounded by the merged render's own 200-line/49152-byte
         gate (create_persona), not a per-field lookalike of it."""
         for item in v:
             if not item:
@@ -189,12 +190,12 @@ def render_persona(fields: PersonaFields) -> str:
 
 # The room's real limit on a persona (upload/limits addendum): the MERGED
 # persona.md — render_persona's output, body plus rules section together —
-# tops out at 150 lines and 32768 bytes (32KB, measured on the UTF-8
+# tops out at 200 lines and 49152 bytes (48KB, measured on the UTF-8
 # encoding). Enforced in create_persona against the actual rendered body,
 # never against a per-field lookalike (PersonaFields' own what_they_do/
 # rules bounds above are generous walls, not this real gate).
-_MAX_RENDERED_LINES = 150
-_MAX_RENDERED_BYTES = 32768
+_MAX_RENDERED_LINES = 200
+_MAX_RENDERED_BYTES = 49152
 
 
 def _check_rendered_size(body: str) -> None:
@@ -301,8 +302,8 @@ def create_persona(
     entry survives a persona create).
 
     Raises `PersonaError` if `fields.name` doesn't slugify to a valid id, if
-    that name's rendered persona.md exceeds the room's real ceiling (150
-    lines or 32768 bytes, checked by `_check_rendered_size` against the
+    that name's rendered persona.md exceeds the room's real ceiling (200
+    lines or 49152 bytes, checked by `_check_rendered_size` against the
     ACTUAL rendered body — never a per-field lookalike), or `PersonaExists`
     if the id is already in the index. Tags are derived here
     (`_derive_tags`), not read off `fields` — Persona builder v2 has no

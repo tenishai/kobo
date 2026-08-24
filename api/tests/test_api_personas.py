@@ -215,13 +215,16 @@ def test_create_persona_422_merged_render_too_many_lines(client):
     create_persona and turned into a 422 by the existing
     `except PersonaError` handler) — not the generic field-name-only
     RequestValidationError copy."""
-    payload = {**VALID_PAYLOAD, "rules": ["ok"] * 140}
+    # To exceed 200 lines: use max rules (150) + multi-line what_they_do
+    # that exceeds 201 - (11 fixed + 150 rules) = 40 lines
+    multi_line_what = "\n".join(["line"] * 41)
+    payload = {**VALID_PAYLOAD, "what_they_do": multi_line_what, "rules": ["ok"] * 150}
 
     response = client.post("/api/personas", json=payload)
 
     assert response.status_code == 422
     assert response.json() == {
-        "error": "persona renders to 151 lines; the limit is 150"
+        "error": "persona renders to 201 lines; the limit is 200"
     }
 
 

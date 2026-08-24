@@ -167,7 +167,7 @@ def test_persona_fields_who_they_are_max_length():
 
 def test_persona_fields_what_they_do_accepts_long_content():
     """Upload/limits addendum: what_they_do's old 500-char field cap is
-    gone (the real ceiling is the merged render's 150-line/32768-byte gate
+    gone (the real ceiling is the merged render's 200-line/49152-byte gate
     in create_persona, not a per-field lookalike) — long operator-authored
     text (typed, pasted, or uploaded) is no longer rejected here."""
     fields = _fields(what_they_do="x" * 600)
@@ -176,7 +176,7 @@ def test_persona_fields_what_they_do_accepts_long_content():
 
 def test_persona_fields_what_they_do_max_length():
     with pytest.raises(ValidationError):
-        _fields(what_they_do="x" * 32769)
+        _fields(what_they_do="x" * 49153)
 
 
 def test_persona_fields_name_max_length():
@@ -376,8 +376,8 @@ def test_create_persona_appends_to_existing_index_without_disturbing_it():
 # --- create_persona: the merged render's real size gate (upload/limits addendum) ---
 #
 # The room's real ceiling is the MERGED persona.md — render_persona's output,
-# body plus rules section together — never a per-field lookalike: 150 lines
-# and 32768 bytes, checked against the actual rendered body. These tests pin
+# body plus rules section together — never a per-field lookalike: 200 lines
+# and 49152 bytes, checked against the actual rendered body. These tests pin
 # both boundaries exactly (N ok, N+1 rejected), the same way persona_id's own
 # 40-char cap is pinned above.
 
@@ -390,22 +390,26 @@ def _rules_for_line_count(n: int) -> list[str]:
     return ["ok"] * n
 
 
-def test_create_persona_accepts_exactly_150_lines():
+def test_create_persona_accepts_exactly_200_lines():
     storage = FakeStorage()
-    fields = _fields(rules=_rules_for_line_count(139))
-    assert len(render_persona(fields).splitlines()) == 150
+    # render_persona produces 7 fixed lines (before what_they_do), so 200 total requires 193 lines in what_they_do
+    what_they_do_193_lines = "\n".join(["line"] * 193)
+    fields = _fields(what_they_do=what_they_do_193_lines)
+    assert len(render_persona(fields).splitlines()) == 200
 
     entry = create_persona(storage, bucket="personas-bucket", fields=fields, team="cs-team")
 
     assert entry.id == "aria-the-assistant"
 
 
-def test_create_persona_rejects_151_lines():
+def test_create_persona_rejects_201_lines():
     storage = FakeStorage()
-    fields = _fields(rules=_rules_for_line_count(140))
-    assert len(render_persona(fields).splitlines()) == 151
+    # render_persona produces 7 fixed lines, so 201 total requires 194 lines in what_they_do
+    what_they_do_194_lines = "\n".join(["line"] * 194)
+    fields = _fields(what_they_do=what_they_do_194_lines)
+    assert len(render_persona(fields).splitlines()) == 201
 
-    with pytest.raises(PersonaError, match="persona renders to 151 lines; the limit is 150"):
+    with pytest.raises(PersonaError, match="persona renders to 201 lines; the limit is 200"):
         create_persona(storage, bucket="personas-bucket", fields=fields, team="cs-team")
 
 
@@ -418,23 +422,23 @@ def _what_they_do_for_total_bytes(total: int) -> str:
     return "x" * (total - overhead)
 
 
-def test_create_persona_accepts_exactly_32768_bytes():
+def test_create_persona_accepts_exactly_49152_bytes():
     storage = FakeStorage()
-    fields = _fields(what_they_do=_what_they_do_for_total_bytes(32768))
-    assert len(render_persona(fields).encode()) == 32768
+    fields = _fields(what_they_do=_what_they_do_for_total_bytes(49152))
+    assert len(render_persona(fields).encode()) == 49152
 
     entry = create_persona(storage, bucket="personas-bucket", fields=fields, team="cs-team")
 
     assert entry.id == "aria-the-assistant"
 
 
-def test_create_persona_rejects_32769_bytes():
+def test_create_persona_rejects_49153_bytes():
     storage = FakeStorage()
-    fields = _fields(what_they_do=_what_they_do_for_total_bytes(32769))
-    assert len(render_persona(fields).encode()) == 32769
+    fields = _fields(what_they_do=_what_they_do_for_total_bytes(49153))
+    assert len(render_persona(fields).encode()) == 49153
 
     with pytest.raises(
-        PersonaError, match="persona renders to 32769 bytes; the limit is 32768"
+        PersonaError, match="persona renders to 49153 bytes; the limit is 49152"
     ):
         create_persona(storage, bucket="personas-bucket", fields=fields, team="cs-team")
 

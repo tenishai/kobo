@@ -128,7 +128,7 @@
   // Rules count cap (upload/limits addendum): mirrors PersonaFields.rules'
   // own Field(max_length=150) (kobo_api/personas.py) — the per-rule length
   // cap that used to live beside it is gone (the merged persona.md's own
-  // 150-line/32768-byte gate is the real ceiling now, checked server-side
+  // 200-line/49152-byte gate is the real ceiling now, checked server-side
   // against the actual rendered file, not a per-field lookalike), so this
   // is the only client-side rules number left worth mirroring.
   const RULES_MAX = 150;
