@@ -349,6 +349,13 @@ def test_build_mcp_server_registers_exactly_the_sixteen_named_tools(
     extra registration (a copy-paste twin, a leftover experiment) or a
     dropped one would fail this even though both narrower `<=` checks
     above would stay green.
+
+    Interim bump (persona wave, Task 4): `kobo_list_personas` folded in
+    here as a minimal accommodation -- this test's own name and docstring
+    still say "sixteen"/sixteen-tool math, and the persona wave's own
+    Task 5 is the one that finishes the job (renaming this test and its
+    docstring to eighteen once `kobo_create_persona` lands alongside it,
+    per that task's own brief).
     """
     app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
 
@@ -362,6 +369,7 @@ def test_build_mcp_server_registers_exactly_the_sixteen_named_tools(
         "kobo_feed",
         "kobo_list_skills",
         "kobo_list_tools",
+        "kobo_list_personas",
         "kobo_create_agent",
         "kobo_teach",
         "kobo_chat",

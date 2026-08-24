@@ -45,7 +45,7 @@ from sqlalchemy.orm import sessionmaker
 from kobo_api.clients import Clients
 from kobo_api.config import SHARED_GROUP, Config, GroupChoice, MCPConfig
 from kobo_api.main import create_app
-from kobo_api.mcp import audit, rate_limit
+from kobo_api.mcp import audit, authz, rate_limit
 from kobo_api.mcp.jwt import mint
 from kobo_api.mcp.server import (
     _KoboAccessToken,
@@ -53,6 +53,7 @@ from kobo_api.mcp.server import (
     build_mcp_server,
     get_user_email,
 )
+from kobo_api.mcp.tools.write import _endpoint
 from kobo_api.models import Agent, AgentStatus, AgentStep, Base
 from kobo_api.purpose_tags import encode_tags
 from tests.fakes import (
@@ -868,3 +869,114 @@ def test_list_tools_raises_tool_error_when_the_repo_is_not_configured(session_fa
 
     with pytest.raises(ToolError, match="marketplace repo is not configured"):
         _call_tool(mcp, "kobo_list_tools", _ctx_for(MEMBER_A_EMAIL))
+
+
+# --- kobo_list_personas (persona wave, Task 4) ------------------------------
+
+PERSONAS_BUCKET = "personas-bucket"
+
+
+def _seed_persona(
+    app,
+    session_factory,
+    *,
+    name: str,
+    who_they_are: str = "a calm, capable colleague",
+    what_they_do: str = "Helps out wherever needed.",
+    team: str = "shared",
+    creator_email: str = MEMBER_A_EMAIL,
+) -> dict:
+    """Seeds one persona through the REAL POST /api/personas route -- the
+    same `_endpoint` + `authz.room_request` shim `kobo_api.mcp.tools.write`
+    uses for its own write tools (this module has no write tools of its
+    own, so this helper borrows that module's `_endpoint`), so the
+    persona's ingest (the route's own inline `ingest_indexes` call after a
+    successful create) runs for real and the persona is immediately
+    visible to `/api/personas/search` -- exactly like a real caller
+    creating one through the UI, not a hand-rolled fixture that skips the
+    route's own gates and side effects.
+    """
+    from kobo_api.main import CreatePersonaRequest
+
+    create_persona_endpoint = _endpoint(app, "POST", "/api/personas")
+    payload = CreatePersonaRequest(
+        name=name, who_they_are=who_they_are, what_they_do=what_they_do, team=team
+    )
+    req = authz.room_request(app, creator_email)
+    session = session_factory()
+    try:
+        response = create_persona_endpoint(payload=payload, request=req, session=session)
+    finally:
+        session.close()
+    assert response.status_code == 201, response.body
+    return json.loads(response.body)
+
+
+def _search_personas(app, session_factory, *, q: str = "", team: str | None = None) -> dict:
+    """The route's own answer, called the same way -- through `_endpoint`,
+    not a second implementation -- so the tool's output can be compared
+    against it directly for parity."""
+    search_personas_endpoint = _endpoint(app, "GET", "/api/personas/search")
+    session = session_factory()
+    try:
+        return search_personas_endpoint(q=q, team=team, session=session)
+    finally:
+        session.close()
+
+
+def _personas_app(session_factory, config, **kwargs):
+    cfg = config.model_copy(update={"personas_bucket": PERSONAS_BUCKET})
+    storage = kwargs.pop("storage", None) or FakeStorage(buckets={PERSONAS_BUCKET: {}})
+    return _app(session_factory, cfg, storage=storage, **kwargs)
+
+
+def test_list_personas_mirrors_search_route_shape(session_factory, config):
+    app = _personas_app(session_factory, config, groups_resolver=_resolver())
+    _seed_persona(app, session_factory, name="Aria the Assistant")
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL))
+    route_body = _search_personas(app, session_factory)
+
+    assert result == {"result": route_body["results"]}
+    assert len(result["result"]) == 1
+    assert set(result["result"][0].keys()) == {
+        "id",
+        "name",
+        "description",
+        "team",
+        "tags",
+        "builtin",
+    }
+
+
+def test_list_personas_q_and_team_filter_parity(session_factory, config):
+    app = _personas_app(session_factory, config, groups_resolver=_resolver())
+    _seed_persona(app, session_factory, name="Aria the Assistant", team="shared")
+    _seed_persona(
+        app,
+        session_factory,
+        name="Birch the Builder",
+        team=GROUP_A,
+        creator_email=OWNER_A_EMAIL,
+    )
+    mcp = build_mcp_server(app)
+
+    team_result = _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL), team=GROUP_A)
+    team_route = _search_personas(app, session_factory, team=GROUP_A)
+    assert team_result == {"result": team_route["results"]}
+    assert [p["name"] for p in team_result["result"]] == ["Birch the Builder"]
+
+    q_result = _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL), q="aria")
+    q_route = _search_personas(app, session_factory, q="aria")
+    assert q_result == {"result": q_route["results"]}
+    assert [p["name"] for p in q_result["result"]] == ["Aria the Assistant"]
+
+
+def test_list_personas_result_key_shape(session_factory, config):
+    app = _personas_app(session_factory, config, groups_resolver=_resolver())
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL))
+
+    assert result == {"result": []}

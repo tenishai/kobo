@@ -1,11 +1,13 @@
 """kobo's read-only MCP tools: the original four from the MCP server arc
 (Task 7) -- whoami, list, get, and feed -- plus two marketplace-catalog
 listers added by the MCP marketplace wave's Task 2 -- `kobo_list_skills`
-and `kobo_list_tools`. Every one of these is a thin shim over the room's
-own choke points -- `kobo_api.mcp.authz` for visibility/admin,
-`kobo_api.main` for the feed's own flattening pipeline, `kobo_api.search`/
-`kobo_api.marketplace` for the two catalogs -- never a second
-implementation of logic that already exists and is already tested there.
+and `kobo_list_tools` -- plus the persona wave's Task 4 -- `kobo_list_
+personas`. Every one of these is a thin shim over the room's own choke
+points -- `kobo_api.mcp.authz` for visibility/admin, `kobo_api.main` for
+the feed's own flattening pipeline and the persona search route,
+`kobo_api.search`/`kobo_api.marketplace` for the two marketplace catalogs
+-- never a second implementation of logic that already exists and is
+already tested there.
 
 Every tool wears `@mcp.tool(annotations=ToolAnnotations(readOnlyHint=
 True))` on the outside and `@audited("kobo_x")` immediately under it --
@@ -80,7 +82,7 @@ _MARKETPLACE_DID_NOT_ANSWER = "The marketplace did not answer. Try again shortly
 
 
 def register(mcp: FastMCP, app: Any) -> None:
-    """Registers this module's six read tools on `mcp`. Each closes over
+    """Registers this module's seven read tools on `mcp`. Each closes over
     `app` -- the same FastAPI app `kobo_api.mcp.authz.room_request` builds
     its synthetic `Request` from, and the source of the session factory,
     switchboard client, storage client, and GitHub client every tool
@@ -330,3 +332,35 @@ def register(mcp: FastMCP, app: Any) -> None:
             raise ToolError(_MARKETPLACE_DID_NOT_ANSWER) from exc
 
         return {"result": tools}
+
+    # Deferred import: `_endpoint` is `kobo_api.mcp.tools.write`'s own
+    # helper (see that module's docstring for the full mechanism) --
+    # write.py imports nothing from this module, so no cycle, but this
+    # module IS imported at `kobo_api.mcp.server` load time (from
+    # `register`'s own module-level position in that file), well before
+    # `kobo_api.mcp.tools.write` is guaranteed to have finished importing
+    # everything it does. Deferring the import to inside `register` (which
+    # only ever runs once `build_mcp_server` is actually called) sidesteps
+    # that ordering entirely.
+    from kobo_api.mcp.tools.write import _endpoint
+
+    search_personas_endpoint = _endpoint(app, "GET", "/api/personas/search")
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @audited("kobo_list_personas")
+    async def kobo_list_personas(
+        ctx: Context, q: str = "", team: str | None = None
+    ) -> dict:
+        """List every persona in the room's catalog: id, name,
+        description, owning team, tags, and whether it is a room
+        builtin. Optional q matches name/description; optional team
+        filters to one team. Before creating a new persona, ALWAYS
+        list and check fit here first -- prefer an existing persona
+        over a near-twin. Any signed-in caller may list.
+        """
+        session = app.state.session_factory()
+        try:
+            body = search_personas_endpoint(q=q, team=team, session=session)
+        finally:
+            session.close()
+        return {"result": body["results"]}
