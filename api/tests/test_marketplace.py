@@ -249,19 +249,27 @@ def test_create_skill_completes_version_and_profiles_2026_08_23_brick_regression
 
 
 def test_create_skill_refuses_malformed_version():
+    # Fixture carries lawful tags so version is the ONLY unlawful thing
+    # here. Without tags, the required-field loop fires first on 'tags'
+    # and its message contains the literal word "version" too (it lists
+    # all five required fields), so match="version" would pass on the
+    # wrong refusal. match="three-part semver" is a string only the
+    # semver branch's own message can produce.
     github = FakeGitHub()
-    bad = "---\nversion: 2.oops\n---\nBody.\n"
-    with pytest.raises(MarketplaceError, match="version"):
+    bad = "---\nversion: 2.oops\ntags: [networking]\n---\nBody.\n"
+    with pytest.raises(MarketplaceError, match="three-part semver"):
         create_skill(github, _gate_config(), skill_id="v-bad",
                      content=bad, team="sre", author="a@b.c")
 
 
 def test_create_skill_refuses_float_version_yaml_gotcha():
     """`version: 1.0` parses as a YAML float, not a string. Refused with
-    the field named rather than published unlawfully."""
+    the field named rather than published unlawfully. Same lawful-tags
+    fixture discipline as the malformed-version test above, and the same
+    match="three-part semver" reasoning for why."""
     github = FakeGitHub()
-    bad = "---\nversion: 1.0\n---\nBody.\n"
-    with pytest.raises(MarketplaceError, match="version"):
+    bad = "---\nversion: 1.0\ntags: [networking]\n---\nBody.\n"
+    with pytest.raises(MarketplaceError, match="three-part semver"):
         create_skill(github, _gate_config(), skill_id="v-float",
                      content=bad, team="sre", author="a@b.c")
 
@@ -288,3 +296,67 @@ def test_create_skill_vocab_unconfigured_passes_any_profile():
     create_skill(github, _gate_config(), skill_id="vocab-open",
                  content=content, team="sre", author="a@b.c")
     assert github.pushed_file("skills/vocab-open/SKILL.md")
+
+
+def test_create_skill_refuses_non_ascii_digit_version():
+    """`\\d` is Unicode-wide -- Arabic-Indic digits fullmatch it. The
+    semver check must use `[0-9]` so only ASCII digits count."""
+    github = FakeGitHub()
+    bad = "---\nversion: ١.٠.٠\ntags: [networking]\n---\nBody.\n"
+    with pytest.raises(MarketplaceError, match="three-part semver"):
+        create_skill(github, _gate_config(), skill_id="v-nonascii",
+                     content=bad, team="sre", author="a@b.c")
+
+
+def test_create_skill_refuses_tags_not_a_list():
+    """`tags: networking` (a bare scalar, not a YAML sequence) must be
+    refused by the list-shape check rather than published as a
+    one-character-per-item string or some other coercion."""
+    github = FakeGitHub()
+    bad = "---\ntags: networking\n---\nBody.\n"
+    with pytest.raises(MarketplaceError, match="non-empty list of non-empty strings"):
+        create_skill(github, _gate_config(), skill_id="tags-scalar",
+                     content=bad, team="sre", author="a@b.c")
+
+
+def test_create_skill_refuses_profiles_with_empty_string_element():
+    """A list is present, but one element is the empty string -- the
+    list-shape check must catch a hole in the list, not just a
+    wrong-typed whole value."""
+    github = FakeGitHub()
+    bad = "---\ntags: [networking]\nprofiles: [\"\"]\n---\nBody.\n"
+    with pytest.raises(MarketplaceError, match="non-empty list of non-empty strings"):
+        create_skill(github, _gate_config(), skill_id="profiles-empty-elem",
+                     content=bad, team="sre", author="a@b.c")
+
+
+def test_create_skill_vocab_unknown_tag_refused_when_configured():
+    github = FakeGitHub()
+    cfg = _gate_config(skills_frontmatter={"allowed_tags": ["networking"]})
+    content = "---\ntags: [dns]\n---\nBody.\n"
+    with pytest.raises(MarketplaceError, match="tags"):
+        create_skill(github, cfg, skill_id="vocab-tag-bad",
+                     content=content, team="sre", author="a@b.c")
+
+
+def test_create_skill_vocab_known_tag_passes_when_configured():
+    github = FakeGitHub()
+    cfg = _gate_config(skills_frontmatter={"allowed_tags": ["networking"]})
+    content = "---\ntags: [networking]\n---\nBody.\n"
+    create_skill(github, cfg, skill_id="vocab-tag-good",
+                 content=content, team="sre", author="a@b.c")
+    assert github.pushed_file("skills/vocab-tag-good/SKILL.md")
+
+
+def test_create_skill_refuses_non_string_description():
+    """`description: 1.0` re-parses as a YAML float, not a string, the
+    same type-coercion shape the version YAML gotcha above is refused
+    for. Fixture carries lawful tags so the description type is the ONLY
+    unlawful thing here (see the malformed-version tests' fix for why
+    that matters -- a fixture missing an unrelated required field lets
+    the wrong branch fire first and the test would still pass)."""
+    github = FakeGitHub()
+    bad = "---\ndescription: 1.0\ntags: [networking]\n---\nBody.\n"
+    with pytest.raises(MarketplaceError, match="must be a string"):
+        create_skill(github, _gate_config(), skill_id="d-bad",
+                     content=bad, team="sre", author="a@b.c")

@@ -170,7 +170,7 @@ def fetch_tool_py(github: GitHubClient, config: Config, tool_id: str) -> tuple[s
 # the room enforce the law pre-push. Structural rules are hardcoded here;
 # org-specific vocabularies ride config.skills_frontmatter (each empty
 # list adds no check). Drift stays bounded: the pipeline is the backstop.
-_SEMVER_RE = re.compile(r"\d+\.\d+\.\d+")
+_SEMVER_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 _REQUIRED_SKILL_FIELDS = ("name", "description", "version", "tags", "profiles")
 
 
@@ -195,6 +195,11 @@ def _validate_skill_frontmatter(frontmatter: dict, config: Config) -> None:
                 f"frontmatter is missing required field {field!r} "
                 f"(the publish law requires: {', '.join(_REQUIRED_SKILL_FIELDS)})"
             )
+    description = frontmatter["description"]
+    if not isinstance(description, str):
+        raise MarketplaceError(
+            f"frontmatter description {description!r} must be a string"
+        )
     version = frontmatter["version"]
     if not isinstance(version, str) or not _SEMVER_RE.fullmatch(version):
         raise MarketplaceError(
@@ -228,12 +233,23 @@ def create_skill(
 ) -> str:
     """Publish `skills/<skill_id>/SKILL.md` to the marketplace repo by
     direct commit -- no review gate (module docstring). Validates, in
-    order: the id shape, a frontmatter `owner` that names some OTHER team
-    (a caller may not publish into a team it doesn't claim), and a
-    non-empty body -- all before ever cloning. `name`/`owner` are always
-    set to `skill_id`/`team` on the way out (frontmatter completed, not
-    merely checked); `description` is filled from the body's first
-    non-blank line when the incoming frontmatter doesn't already set one.
+    order, all before ever cloning: the id shape, a frontmatter `owner`
+    that names some OTHER team (a caller may not publish into a team it
+    doesn't claim), the frontmatter law, and a non-empty body.
+
+    `name`/`owner` are always set to `skill_id`/`team` on the way out
+    (frontmatter completed, not merely checked); `description` is filled
+    from the body's first non-blank line when the incoming frontmatter
+    doesn't already set one. `_complete_skill_frontmatter` then fills
+    `version` ("1.0.0") and `profiles` (["agent-sdk"]) the same way when
+    either is absent. `_validate_skill_frontmatter` runs last, against the
+    now-completed frontmatter, and enforces the org publish law (see the
+    module-level comment above `_SEMVER_RE`): `name`, `description`,
+    `version`, `tags`, `profiles` all present; `description` a string and
+    `version` a three-part semver string; `tags`/`profiles` non-empty
+    lists of non-empty strings; and, wherever `config.skills_frontmatter`
+    configures a vocabulary, `tags`/`profiles` values drawn from it.
+    Unlawful frontmatter refuses right here, before any clone.
 
     Returns the pushed commit's local sha (`github.local_head`). Raises
     `MarketplaceError` if `skills/<skill_id>/` already exists in the repo
