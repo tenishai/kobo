@@ -53,6 +53,10 @@ from kobo_api.mcp.server import (
     build_mcp_server,
     get_user_email,
 )
+from kobo_api.mcp.tools.read import (
+    _MARKETPLACE_DID_NOT_ANSWER,
+    _SWITCHBOARD_DID_NOT_ANSWER,
+)
 from kobo_api.mcp.tools.write import _endpoint
 from kobo_api.models import Agent, AgentStatus, AgentStep, Base
 from kobo_api.purpose_tags import encode_tags
@@ -718,7 +722,7 @@ def test_feed_upstream_cabal_error_raises_tool_error(session_factory, config, mo
     app = _app(session_factory, cfg, groups_resolver=_resolver(), cabal=fake_cabal)
     mcp = build_mcp_server(app)
 
-    with pytest.raises(ToolError, match="did not answer"):
+    with pytest.raises(ToolError, match=_SWITCHBOARD_DID_NOT_ANSWER):
         _call_tool(mcp, "kobo_feed", _ctx_for(OPERATOR_EMAIL), agent="ward")
 
 
@@ -828,7 +832,7 @@ def test_list_skills_raises_tool_error_on_a_storage_transport_failure(session_fa
     app = _app(session_factory, cfg, groups_resolver=_resolver(), storage=storage)
     mcp = build_mcp_server(app)
 
-    with pytest.raises(ToolError, match="did not answer") as exc_info:
+    with pytest.raises(ToolError, match=_MARKETPLACE_DID_NOT_ANSWER) as exc_info:
         _call_tool(mcp, "kobo_list_skills", _ctx_for(MEMBER_A_EMAIL))
     assert "403" not in str(exc_info.value)
     assert SKILLS_BUCKET not in str(exc_info.value)
@@ -855,7 +859,7 @@ def test_list_tools_raises_tool_error_on_a_github_transport_failure(session_fact
     app = _app(session_factory, cfg, groups_resolver=_resolver(), github=github)
     mcp = build_mcp_server(app)
 
-    with pytest.raises(ToolError, match="did not answer") as exc_info:
+    with pytest.raises(ToolError, match=_MARKETPLACE_DID_NOT_ANSWER) as exc_info:
         _call_tool(mcp, "kobo_list_tools", _ctx_for(MEMBER_A_EMAIL))
     assert "org-skills" not in str(exc_info.value)
 

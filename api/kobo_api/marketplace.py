@@ -163,6 +163,60 @@ def fetch_tool_py(github: GitHubClient, config: Config, tool_id: str) -> tuple[s
         return filename, content
 
 
+# The publish law (hardening wave): the org publish pipeline validates the
+# WHOLE corpus and uploads nothing when any one skill is unlawful, so an
+# unlawful publish from the room's direct-commit lane bricks every team's
+# publishes until fixed (lived 2026-08-23, ~35 minutes). This gate makes
+# the room enforce the law pre-push. Structural rules are hardcoded here;
+# org-specific vocabularies ride config.skills_frontmatter (each empty
+# list adds no check). Drift stays bounded: the pipeline is the backstop.
+_SEMVER_RE = re.compile(r"\d+\.\d+\.\d+")
+_REQUIRED_SKILL_FIELDS = ("name", "description", "version", "tags", "profiles")
+
+
+def _complete_skill_frontmatter(frontmatter: dict) -> None:
+    """Fill the two lawful defaults, in place: version 1.0.0 (a create is
+    the first version by construction, publishes never overwrite) and
+    profiles [agent-sdk] (the room's lane). Same complete-the-boring-parts
+    philosophy as the name/owner/description completion in create_skill."""
+    if not frontmatter.get("version"):
+        frontmatter["version"] = "1.0.0"
+    if not frontmatter.get("profiles"):
+        frontmatter["profiles"] = ["agent-sdk"]
+
+
+def _validate_skill_frontmatter(frontmatter: dict, config: Config) -> None:
+    """Raise MarketplaceError (field named, expectation stated) when the
+    completed frontmatter would fail the org publish law. Runs AFTER
+    completion, so defaults flow through validation like caller values."""
+    for field in _REQUIRED_SKILL_FIELDS:
+        if not frontmatter.get(field):
+            raise MarketplaceError(
+                f"frontmatter is missing required field {field!r} "
+                f"(the publish law requires: {', '.join(_REQUIRED_SKILL_FIELDS)})"
+            )
+    version = frontmatter["version"]
+    if not isinstance(version, str) or not _SEMVER_RE.fullmatch(version):
+        raise MarketplaceError(
+            f"frontmatter version {version!r} must be a three-part semver string, e.g. \"1.0.0\""
+        )
+    for field in ("tags", "profiles"):
+        value = frontmatter[field]
+        if not isinstance(value, list) or not all(isinstance(i, str) and i for i in value):
+            raise MarketplaceError(
+                f"frontmatter {field} must be a non-empty list of non-empty strings"
+            )
+    law = config.skills_frontmatter
+    for field, allowed in (("profiles", law.allowed_profiles), ("tags", law.allowed_tags)):
+        if not allowed:
+            continue
+        unknown = sorted(set(frontmatter[field]) - set(allowed))
+        if unknown:
+            raise MarketplaceError(
+                f"frontmatter {field} {unknown!r} not in the configured vocabulary {sorted(allowed)!r}"
+            )
+
+
 def create_skill(
     github: GitHubClient,
     config: Config,
@@ -199,6 +253,9 @@ def create_skill(
     frontmatter["owner"] = team
     if not frontmatter.get("description"):
         frontmatter["description"] = _first_non_blank_line(body)
+
+    _complete_skill_frontmatter(frontmatter)
+    _validate_skill_frontmatter(frontmatter, config)
 
     if not body.strip():
         raise MarketplaceError("skill content must have a non-empty body")

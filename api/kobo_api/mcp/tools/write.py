@@ -898,8 +898,12 @@ def register(mcp: FastMCP, app: Any) -> None:
         and check fit first; prefer an existing entry over a near-twin
         rather than publishing a duplicate. `skill_id` becomes the catalog
         id (must not already exist) and `content` is the skill's Markdown
-        body, frontmatter and all; `name`/`owner` in that frontmatter are
-        set to `skill_id`/`team` for you when absent. If you paste an
+        body, frontmatter and all; `name` and `owner` are always set to
+        `skill_id`/`team` for you (overwriting any pasted values), and
+        `description`/`version`/`profiles` are filled with lawful defaults
+        when absent. `tags` is required in the frontmatter and must be a
+        non-empty list; unlawful frontmatter is refused with the field
+        named, never pushed. If you paste an
         existing skill's own frontmatter and it already sets an `owner`
         naming a DIFFERENT team than `team`, that is refused as a
         conflict, never silently overwritten. `team` is the marketplace

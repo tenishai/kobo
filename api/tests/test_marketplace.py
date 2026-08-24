@@ -5,6 +5,7 @@ tree the same way test_tooling.py's import tests seed a source repo
 
 import pytest
 
+from kobo_api.config import Config
 from kobo_api.marketplace import (
     MarketplaceError,
     create_skill,
@@ -31,6 +32,8 @@ TOOL_PY = (
 )
 
 GOOD_SKILL = "# PTR primer\n\nA PTR record maps an IP back to a hostname.\n"
+
+GATED_GOOD_SKILL = "---\ntags: [networking]\n---\n# PTR primer\n\nA PTR record maps an IP back to a hostname.\n"
 
 EXISTING_SKILL_MD = (
     "---\nname: existing-skill\ndescription: Already there.\nowner: sre\n"
@@ -149,7 +152,7 @@ def test_list_tools_skips_tool_md_that_is_not_valid_utf8(config):
 def test_create_skill_injects_owner_frontmatter_and_commits(config, marketplace_github):
     sha = create_skill(
         marketplace_github, config,
-        skill_id="ptr-primer", content=GOOD_SKILL,
+        skill_id="ptr-primer", content=GATED_GOOD_SKILL,
         team="infra-engineering", author="user@example.com",
     )
     assert sha
@@ -174,7 +177,7 @@ def test_create_skill_collision_raises(config, marketplace_github):
     with pytest.raises(MarketplaceError, match="already exists"):
         create_skill(
             marketplace_github, config,
-            skill_id="existing-skill", content=GOOD_SKILL,
+            skill_id="existing-skill", content=GATED_GOOD_SKILL,
             team="infra-engineering", author="user@example.com",
         )
 
@@ -188,7 +191,7 @@ def test_create_skill_collision_when_path_is_a_file(config):
     with pytest.raises(MarketplaceError, match="already exists"):
         create_skill(
             github, config,
-            skill_id="blocked", content=GOOD_SKILL,
+            skill_id="blocked", content=GATED_GOOD_SKILL,
             team="infra-engineering", author="user@example.com",
         )
 
@@ -227,3 +230,61 @@ def test_create_tool_writes_tool_md_and_py(config, marketplace_github):
     md = marketplace_github.pushed_file("tools/my-guard/TOOL.md")
     assert "owner: infra-engineering" in md and "A guard." in md
     assert marketplace_github.pushed_file("tools/my-guard/my-guard.py") == TOOL_PY
+
+
+def _gate_config(**kwargs) -> Config:
+    return Config(github_org="org", skills_repo="skills", **kwargs)
+
+
+def test_create_skill_completes_version_and_profiles_2026_08_23_brick_regression():
+    """The exact 2026-08-23 shape: caller content with no version and no
+    profiles used to publish as-is and brick the whole publish pipeline.
+    Completion now makes it lawful from birth."""
+    github = FakeGitHub()
+    create_skill(github, _gate_config(), skill_id="ptr-primer",
+                 content=GATED_GOOD_SKILL, team="sre", author="a@b.c")
+    pushed = github.pushed_file("skills/ptr-primer/SKILL.md")
+    assert "version: 1.0.0" in pushed
+    assert "profiles:" in pushed and "agent-sdk" in pushed
+
+
+def test_create_skill_refuses_malformed_version():
+    github = FakeGitHub()
+    bad = "---\nversion: 2.oops\n---\nBody.\n"
+    with pytest.raises(MarketplaceError, match="version"):
+        create_skill(github, _gate_config(), skill_id="v-bad",
+                     content=bad, team="sre", author="a@b.c")
+
+
+def test_create_skill_refuses_float_version_yaml_gotcha():
+    """`version: 1.0` parses as a YAML float, not a string. Refused with
+    the field named rather than published unlawfully."""
+    github = FakeGitHub()
+    bad = "---\nversion: 1.0\n---\nBody.\n"
+    with pytest.raises(MarketplaceError, match="version"):
+        create_skill(github, _gate_config(), skill_id="v-float",
+                     content=bad, team="sre", author="a@b.c")
+
+
+def test_create_skill_refuses_missing_tags():
+    github = FakeGitHub()
+    with pytest.raises(MarketplaceError, match="tags"):
+        create_skill(github, _gate_config(), skill_id="no-tags",
+                     content=GOOD_SKILL, team="sre", author="a@b.c")
+
+
+def test_create_skill_vocab_unknown_profile_refused_when_configured():
+    github = FakeGitHub()
+    cfg = _gate_config(skills_frontmatter={"allowed_profiles": ["agent-sdk"]})
+    content = "---\ntags: [networking]\nprofiles: [desktop]\n---\nBody.\n"
+    with pytest.raises(MarketplaceError, match="profiles"):
+        create_skill(github, cfg, skill_id="vocab-bad",
+                     content=content, team="sre", author="a@b.c")
+
+
+def test_create_skill_vocab_unconfigured_passes_any_profile():
+    github = FakeGitHub()
+    content = "---\ntags: [networking]\nprofiles: [desktop]\n---\nBody.\n"
+    create_skill(github, _gate_config(), skill_id="vocab-open",
+                 content=content, team="sre", author="a@b.c")
+    assert github.pushed_file("skills/vocab-open/SKILL.md")

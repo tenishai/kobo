@@ -38,6 +38,7 @@ from kobo_api.main import create_app
 from kobo_api.marketplace import marketplace_repo
 from kobo_api.mcp import audit, rate_limit
 from kobo_api.mcp.server import build_mcp_server
+from kobo_api.mcp.tools.read import _MARKETPLACE_DID_NOT_ANSWER
 from kobo_api.models import (
     INVITE_PENDING,
     A2AInvite,
@@ -1189,7 +1190,7 @@ def test_set_agent_skills_storage_transport_failure_wraps_client_error(session_f
     app = _app(session_factory, config, groups_resolver=_resolver(), storage=storage)
     mcp = build_mcp_server(app)
 
-    with pytest.raises(ToolError, match="did not answer") as exc_info:
+    with pytest.raises(ToolError, match=_MARKETPLACE_DID_NOT_ANSWER) as exc_info:
         _call_tool(
             mcp, "kobo_set_agent_skills", _ctx_for(OWNER_A_EMAIL), agent="ward", add=[SKILL_ID]
         )
@@ -1609,7 +1610,7 @@ def test_add_agent_tool_marketplace_transport_failure_is_sanitized(
     )
     mcp = build_mcp_server(app)
 
-    with pytest.raises(ToolError, match="did not answer") as exc_info:
+    with pytest.raises(ToolError, match=_MARKETPLACE_DID_NOT_ANSWER) as exc_info:
         _call_tool(
             mcp, "kobo_add_agent_tool", _ctx_for(OWNER_A_EMAIL), agent="ward", tool_id=TOOL_ID
         )
@@ -1663,7 +1664,10 @@ def test_add_agent_tool_marketplace_invalid_utf8_surfaces_as_tool_error(
 # marketplace-path tests already do.
 
 NEW_SKILL_ID = "onboarding-faq"
-NEW_SKILL_CONTENT = "# Onboarding FAQ\n\nAnswers the most common onboarding questions.\n"
+NEW_SKILL_CONTENT = (
+    "---\ntags: [onboarding]\n---\n"
+    "# Onboarding FAQ\n\nAnswers the most common onboarding questions.\n"
+)
 
 NEW_TOOL_ID = "redact-guard"
 
@@ -1844,7 +1848,7 @@ def test_create_skill_marketplace_transport_failure_is_sanitized(
     )
     mcp = build_mcp_server(app)
 
-    with pytest.raises(ToolError, match="did not answer") as exc_info:
+    with pytest.raises(ToolError, match=_MARKETPLACE_DID_NOT_ANSWER) as exc_info:
         _call_tool(
             mcp,
             "kobo_create_skill",
@@ -2074,7 +2078,7 @@ def test_create_tool_marketplace_transport_failure_is_sanitized(
     )
     mcp = build_mcp_server(app)
 
-    with pytest.raises(ToolError, match="did not answer") as exc_info:
+    with pytest.raises(ToolError, match=_MARKETPLACE_DID_NOT_ANSWER) as exc_info:
         _call_tool(
             mcp,
             "kobo_create_tool",
