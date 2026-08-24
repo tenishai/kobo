@@ -63,6 +63,9 @@ Kobo is opinionated by design:
 - **Slack**: self-service wiring with a manifest ceremony — the agent answers mentions in
   threads, with long replies chunked at safe boundaries.
 - **Faces**: a generated portrait per agent, or upload your own.
+- **Personas**: the soul an agent is built from. Archive one from the Personas page when it
+  has outlived its use, and restore it later; nothing is destroyed. Good persona names pass
+  the glance test: a stranger reading the card knows what picking it gets them.
 - **MCP**: the room's tools are reachable from MCP clients (claude.ai connectors, Claude Code)
   as the signed-in user, over the room's own OAuth — no service account, no second permission
   system. Every call resolves the same visibility, ownership, and admin as the UI: check who
@@ -74,8 +77,6 @@ Kobo is opinionated by design:
   tool publishing runs the same mechanical law the room enforces, and baseline tool ids are
   reserved for operators). Every new agent ships with the baseline tooling pack, a leak guard
   and a probe guard, unless created with skip_baseline. Off until the org turns it on.
-  Personas can be archived and restored from the Personas page, and good persona names pass
-  the glance test: a stranger reading the card knows what picking it gets them.
 
 ## Part of a larger platform
 
