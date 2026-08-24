@@ -984,3 +984,35 @@ def test_list_personas_result_key_shape(session_factory, config):
     result = _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL))
 
     assert result == {"result": []}
+
+
+def test_list_personas_hides_archived_entries(session_factory, config):
+    """Task 4's `ingest_indexes` (kobo_api/search.py) drops archived
+    entries from the index it builds, and `kobo_list_personas` is
+    search-backed -- so an archived persona must never appear through
+    this tool even though an active one, seeded the same way, does.
+    Archiving goes through the REAL `POST /api/personas/{id}/archive`
+    route (`archive_persona_route` in `kobo_api.main`), called the same
+    `_endpoint` + `authz.room_request` way `_seed_persona` above calls
+    `POST /api/personas` -- the commons-filed persona's own archive gate
+    is operator-only, so the archiving caller here is `OPERATOR_EMAIL`,
+    not the persona's own creator."""
+    app = _personas_app(session_factory, config, groups_resolver=_resolver())
+    active = _seed_persona(app, session_factory, name="Aria the Assistant")
+    archived = _seed_persona(app, session_factory, name="Birch the Builder")
+
+    archive_endpoint = _endpoint(app, "POST", "/api/personas/{persona_id}/archive")
+    req = authz.room_request(app, OPERATOR_EMAIL)
+    session = session_factory()
+    try:
+        archive_response = archive_endpoint(persona_id=archived["id"], request=req, session=session)
+    finally:
+        session.close()
+    assert archive_response.status_code == 200, archive_response.body
+
+    mcp = build_mcp_server(app)
+    result = _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL))
+
+    listed_ids = {entry["id"] for entry in result["result"]}
+    assert active["id"] in listed_ids
+    assert archived["id"] not in listed_ids

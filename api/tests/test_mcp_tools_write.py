@@ -494,6 +494,59 @@ def test_create_agent_unknown_persona_surfaces_the_routes_own_422(
         )
 
 
+def test_create_agent_archived_persona_surfaces_the_routes_own_422(
+    session_factory, config, fake_storage
+):
+    """THE INHERITANCE PROOF for the archived arm (task 6): an archived
+    persona is dropped from the ingested index (Task 4's `ingest_indexes`),
+    so `create_agent_route`'s own lookup misses it exactly like an unknown
+    persona would -- but the route's `_persona_archived_in_index` check
+    (kobo_api.main) then answers the honest, deliberately-not-folded-into-
+    anti-enumeration 422 `persona {id!r} is archived`, and this tool must
+    surface that route message VERBATIM, never the generic "unknown
+    persona" answer. The persona is created and archived through the REAL
+    routes (`kobo_create_persona` for the create, the direct `POST
+    /api/personas/{id}/archive` route -- not an MCP tool, none exists in
+    this module's 18 -- for the archive, called via `_endpoint` +
+    `authz.room_request` the same way this file's other direct-route
+    helpers do), never a hand-rolled fixture that skips the archive
+    route's own gate."""
+    from kobo_api.mcp import authz
+    from kobo_api.mcp.tools.write import _endpoint
+
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    created = _call_tool(
+        mcp,
+        "kobo_create_persona",
+        _ctx_for(MEMBER_A_EMAIL),
+        name="Retiring Reviewer",
+        who_they_are="a reviewer about to be archived",
+        what_they_do="Reviews things, briefly.",
+    )
+    persona_id = created["id"]
+
+    archive_endpoint = _endpoint(app, "POST", "/api/personas/{persona_id}/archive")
+    req = authz.room_request(app, OPERATOR_EMAIL)
+    session = session_factory()
+    try:
+        archive_response = archive_endpoint(persona_id=persona_id, request=req, session=session)
+    finally:
+        session.close()
+    assert archive_response.status_code == 200, archive_response.body
+
+    with pytest.raises(ToolError, match=f"persona {persona_id!r} is archived"):
+        _call_tool(
+            mcp,
+            "kobo_create_agent",
+            _ctx_for(MEMBER_A_EMAIL),
+            who_they_are=persona_id,
+            group=GROUP_A,
+            name="clio",
+        )
+
+
 def test_create_agent_name_taken_surfaces_the_routes_own_409(
     session_factory, config, fake_storage
 ):

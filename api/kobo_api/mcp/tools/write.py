@@ -1009,8 +1009,17 @@ def register(mcp: FastMCP, app: Any) -> None:
         """Create a brand-new persona in the room's catalog -- the same
         create the room's own PersonaBuilder drives. Before creating,
         run kobo_list_personas and check fit first; prefer an existing
-        persona over a near-twin. `name` becomes the catalog id via the
-        room's slug law (must not already exist). `who_they_are` is ONE
+        persona over a near-twin.
+
+        Name the behavior, not a codename: a good persona name passes the
+        glance test (a stranger reading the name plus who_they_are knows
+        what picking it gets them). Prefer lowercase hyphenated trait
+        words ("direct-factual-condensed-mellow"), an archetype plus a
+        qualifier ("stoic-mentor"), or a figure whose mannerisms the
+        persona adopts (mannerisms and tone only, never identity claims).
+
+        `name` becomes the catalog id via the room's slug law (must not
+        already exist). `who_they_are` is ONE
         line; `what_they_do` is the persona's body; `rules` are optional
         always/never one-liners. The merged persona renders to at most
         200 lines and 48KB. `team` defaults to "shared", the commons
