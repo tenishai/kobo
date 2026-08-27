@@ -277,6 +277,110 @@ def test_list_no_agent_param_is_unaffected(session_factory, config, monkeypatch)
     assert [c["task_id"] for c in response.json()["conversations"]] == ["t-1", "t-2", "t-3"]
 
 
+# --- GET /api/colleagues/conversations: thread exclusion (Critical 3 fix) --
+#
+# A thread is a private, initiator-only conversation (operator ruling) that
+# must never surface through this room-wide proxy route -- mirroring
+# `_flatten_conversation_entries`' own exclusion for the colleague feed. The
+# list row shape here (`CabalClient.list_conversations`) carries no
+# `metadata` field at all (only `task_id`/`target_agent`/`caller_agent`/.../
+# `result_snippet`), so each surviving row's full detail is fetched to check
+# for the `metadata.thread` marker -- the same per-row `get_conversation`
+# cost `colleague_feed` already pays for every row it renders.
+
+
+def _thread_tagged_detail(
+    task_id: str, *, target_agent: str, caller_agent: str, thread_id: int = 1
+) -> dict:
+    return {
+        "conversation": {
+            "task_id": task_id,
+            "target_agent": target_agent,
+            "caller_agent": caller_agent,
+            "result": {
+                "status": {
+                    "state": "completed",
+                    "message": {"role": "agent", "parts": [{"kind": "text", "text": "reply"}]},
+                },
+                "history": [{"role": "user", "parts": [{"kind": "text", "text": "ask"}]}],
+                "metadata": {"thread": thread_id},
+            },
+        },
+        "events": [],
+    }
+
+
+_THREAD_ROW = {
+    "task_id": "t-thread",
+    "target_agent": "clio",
+    "target_generation": 1,
+    "caller_agent": "operator:kgreiner@example.com",
+    "state": "completed",
+    "cabal_escalated_from": None,
+    "created_at": "2026-08-19T13:00:00Z",
+    "updated_at": "2026-08-19T13:00:01Z",
+    "result_snippet": "the whole private thread transcript",
+}
+
+
+def test_list_all_true_excludes_a_thread_tagged_conversation(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    fake_cabal = FakeCabal(
+        conversations_result=CONVERSATIONS_FIXTURE + [_THREAD_ROW],
+        conversation_results={
+            "t-thread": _thread_tagged_detail(
+                "t-thread", target_agent="clio", caller_agent="operator:kgreiner@example.com"
+            )
+        },
+    )
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/conversations", params={"all": "true"})
+
+    assert response.status_code == 200
+    assert [c["task_id"] for c in response.json()["conversations"]] == ["t-1", "t-2", "t-3"]
+
+
+def test_list_thread_exclusion_survives_agent_scoping(session_factory, config, monkeypatch):
+    # The thread row's target IS "clio" -- exclusion must win over a
+    # matching ?agent= scope, not just the default/all split.
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    fake_cabal = FakeCabal(
+        conversations_result=[_THREAD_ROW],
+        conversation_results={
+            "t-thread": _thread_tagged_detail(
+                "t-thread", target_agent="clio", caller_agent="operator:kgreiner@example.com"
+            )
+        },
+    )
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get(
+        "/api/colleagues/conversations", params={"all": "true", "agent": "clio"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["conversations"] == []
+
+
+def test_list_thread_check_upstream_failure_is_a_plain_502(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    fake_cabal = FakeCabal(
+        conversations_result=CONVERSATIONS_FIXTURE, conversation_error="boom upstream"
+    )
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/conversations", params={"all": "true"})
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "error": "The switchboard did not answer. Try again shortly."
+    }
+
+
 # --- GET /api/colleagues/conversations/{task_id} ----------------------------
 
 
@@ -390,6 +494,48 @@ def test_detail_no_agent_param_is_unaffected(session_factory, config, monkeypatc
     assert response.json() == detail
 
 
+# --- GET /api/colleagues/conversations/{task_id}: thread exclusion
+# (Critical 3 fix) -----------------------------------------------------------
+#
+# The same not-found answer a bogus task_id gets, never a distinguishable
+# 403/200-with-a-warning -- consistent with the ?agent= scoping's own
+# existence-hiding discipline just above.
+
+
+def test_detail_thread_tagged_conversation_is_the_same_not_found_answer(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    detail = _thread_tagged_detail(
+        "t-1", target_agent="clio", caller_agent="operator:kgreiner@example.com"
+    )
+    fake_cabal = FakeCabal(conversation_result=detail)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/conversations/t-1")
+
+    assert response.status_code == 404
+    assert response.json() == {"error": "no such conversation: 't-1'"}
+
+
+def test_detail_thread_tagged_conversation_is_404_even_when_agent_matches(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    detail = _thread_tagged_detail(
+        "t-1", target_agent="clio", caller_agent="operator:kgreiner@example.com"
+    )
+    fake_cabal = FakeCabal(conversation_result=detail)
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    response = client.get("/api/colleagues/conversations/t-1", params={"agent": "clio"})
+
+    assert response.status_code == 404
+    assert response.json() == {"error": "no such conversation: 't-1'"}
+
+
 # --- GET /api/colleagues/stream ---------------------------------------------
 
 
@@ -465,6 +611,56 @@ def test_stream_no_agent_param_is_unaffected(session_factory, config, monkeypatc
         body = b"".join(response.iter_bytes())
 
     assert body == b"".join(chunks)
+
+
+# --- GET /api/colleagues/stream: thread exclusion (Critical 3 fix) ---------
+#
+# Before this fix, omitting ?agent= skipped filter_cabal_event_stream
+# entirely -- the raw upstream bytes went straight to the browser, thread
+# turns included (full transcript, since a thread turn resends the whole
+# conversation on every relay). The filter now always runs.
+
+
+def _thread_dispatch_start_chunk(
+    task_id: str, *, target: str, caller: str, thread_id: int
+) -> bytes:
+    payload = {
+        "event_type": "dispatch_start",
+        "task_id": task_id,
+        "payload": {"target": target, "caller": caller, "metadata": {"thread": thread_id}},
+    }
+    return f"event: dispatch_start\ndata: {json.dumps(payload)}\n\n".encode()
+
+
+def test_stream_drops_a_thread_tagged_frame_with_no_agent_param(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    thread_frame = _thread_dispatch_start_chunk(
+        "t-thread", target="clio", caller="operator:kgreiner@example.com", thread_id=7
+    )
+    ordinary_frame = _dispatch_start_chunk("t-1", target="clio", caller="agent:iris")
+    fake_cabal = FakeCabal(stream_chunks=[thread_frame, ordinary_frame])
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    with client.stream("GET", "/api/colleagues/stream") as response:
+        body = b"".join(response.iter_bytes())
+
+    assert body == ordinary_frame
+
+
+def test_stream_drops_a_thread_tagged_frame_even_when_agent_matches(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    thread_frame = _thread_dispatch_start_chunk(
+        "t-thread", target="clio", caller="operator:kgreiner@example.com", thread_id=7
+    )
+    fake_cabal = FakeCabal(stream_chunks=[thread_frame])
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+
+    with client.stream("GET", "/api/colleagues/stream", params={"agent": "clio"}) as response:
+        body = b"".join(response.iter_bytes())
+
+    assert body == b""
 
 
 # --- Operator-token-never-leaks proof (all three routes) -------------------

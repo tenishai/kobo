@@ -4940,11 +4940,20 @@ def test_cabal_stream_events_closes_promptly_on_early_cancellation():
 # shape) -- a human/service caller never takes that form.
 
 
-def _dispatch_start_frame(task_id: str, *, target: str | None, caller: str | None) -> bytes:
+def _dispatch_start_frame(
+    task_id: str,
+    *,
+    target: str | None,
+    caller: str | None,
+    metadata: dict | None = None,
+) -> bytes:
+    inner = {"target": target, "caller": caller}
+    if metadata is not None:
+        inner["metadata"] = metadata
     payload = {
         "event_type": "dispatch_start",
         "task_id": task_id,
-        "payload": {"target": target, "caller": caller},
+        "payload": inner,
     }
     return f"event: dispatch_start\ndata: {json.dumps(payload)}\n\n".encode()
 
@@ -4967,6 +4976,13 @@ async def _achunks(chunks: list[bytes]):
 def _filtered(chunks: list[bytes], agent: str) -> list[bytes]:
     async def run() -> list[bytes]:
         return [c async for c in filter_cabal_event_stream(_achunks(chunks), agent)]
+
+    return asyncio.run(run())
+
+
+def _filtered_no_agent(chunks: list[bytes]) -> list[bytes]:
+    async def run() -> list[bytes]:
+        return [c async for c in filter_cabal_event_stream(_achunks(chunks))]
 
     return asyncio.run(run())
 
@@ -5080,6 +5096,56 @@ def test_filter_composes_with_stream_events_end_to_end():
         _dispatch_start_frame("t-1", target="clio", caller="agent:iris"),
         _dispatch_success_frame("t-1"),
     ]
+
+
+# --- filter_cabal_event_stream: thread exclusion (Critical 3 fix) -----------
+#
+# A thread turn's relay stamps `metadata: {"thread": <id>}` on the envelope
+# (`kobo_api.main.post_thread_turn`) -- the switchboard's own dispatch_start
+# event for that task echoes the submitted envelope, `metadata` included,
+# same as `target`/`caller` already do. A thread is a private,
+# initiator-only conversation (operator ruling) and must never reach the
+# SSE stream at all -- regardless of `?agent=` scoping, and even when no
+# `agent` is given at all (the route's own unfiltered-passthrough case
+# before this fix).
+
+
+def test_filter_drops_a_thread_tagged_dispatch_start_with_no_agent_scoping():
+    frame = _dispatch_start_frame(
+        "t-1", target="clio", caller="operator:kgreiner@example.com", metadata={"thread": 7}
+    )
+    assert _filtered_no_agent([frame]) == []
+
+
+def test_filter_forwards_a_non_thread_dispatch_start_with_no_agent_scoping():
+    frame = _dispatch_start_frame("t-1", target="clio", caller="agent:iris")
+    assert _filtered_no_agent([frame]) == [frame]
+
+
+def test_filter_drops_a_later_event_for_a_threads_task_id_with_no_agent_scoping():
+    start = _dispatch_start_frame(
+        "t-1", target="clio", caller="operator:kgreiner@example.com", metadata={"thread": 7}
+    )
+    success = _dispatch_success_frame("t-1")
+    assert _filtered_no_agent([start, success]) == []
+
+
+def test_filter_drops_a_thread_tagged_dispatch_start_even_when_it_matches_the_scoped_agent():
+    # Thread exclusion takes precedence over agent-matching -- a thread turn
+    # relayed to an agent the caller is scoping to must still never surface.
+    frame = _dispatch_start_frame(
+        "t-1", target="clio", caller="operator:kgreiner@example.com", metadata={"thread": 7}
+    )
+    assert _filtered([frame], "clio") == []
+
+
+def test_filter_unrelated_metadata_is_not_mistaken_for_a_thread():
+    # Regression guard, mirrors _flatten_conversation_entries' own: only the
+    # "thread" key trips exclusion.
+    frame = _dispatch_start_frame(
+        "t-1", target="clio", caller="agent:iris", metadata={"something_else": True}
+    )
+    assert _filtered_no_agent([frame]) == [frame]
 
 
 def test_cabal_error_is_a_client_error_subclass():

@@ -3270,18 +3270,64 @@ def _event_matches_agent(
     return False
 
 
+def _event_is_thread(payload: dict, task_threads: dict[str, bool]) -> bool:
+    """Whether one decoded switchboard event belongs to a thread turn
+    (Critical 3 fix, thread exclusion on the SSE stream) -- a thread turn's
+    relay stamps `metadata: {"thread": <id>}` on the envelope
+    (`kobo_api.main.post_thread_turn`), and `dispatch_start`'s own payload
+    echoes that submitted envelope, `metadata` included, same as it already
+    does for `target`/`caller` (`_event_matches_agent` above). Same
+    per-connection memory pattern: only `dispatch_start` ever carries
+    `metadata`, so a later event for the same `task_id` (`dispatch_success`/
+    `dispatch_failure`) consults what an earlier `dispatch_start` in THIS
+    SAME connection already recorded for it.
+
+    A `task_id` this connection never saw a `dispatch_start` for reads as
+    "not a thread" -- the switchboard's own events are ordered start-then-
+    terminal per task, so a genuinely thread-tagged task_id always has its
+    dispatch_start seen first in any connection that observes it at all;
+    there is no window where a terminal event for a real thread arrives
+    with no prior memory of it.
+    """
+    task_id = payload.get("task_id")
+    inner = payload.get("payload")
+    metadata = inner.get("metadata") if isinstance(inner, dict) else None
+    if isinstance(metadata, dict):
+        is_thread = "thread" in metadata
+        if isinstance(task_id, str):
+            task_threads[task_id] = is_thread
+        return is_thread
+    if isinstance(task_id, str) and task_id in task_threads:
+        return task_threads[task_id]
+    return False
+
+
 async def filter_cabal_event_stream(
-    chunks: AsyncIterator[bytes], agent: str
+    chunks: AsyncIterator[bytes], agent: str | None = None
 ) -> AsyncIterator[bytes]:
     """Wrap `CabalClient.stream_events()`'s raw byte passthrough with the
-    colleagues conversation-scoping filter (`?agent=` on `GET /api/
-    colleagues/stream`, kobo_api.main): forwards only frames belonging to a
-    conversation `agent` participates in (`_event_matches_agent` above),
-    plus every frame this filter can't attribute to any one conversation at
-    all -- a bare keepalive comment, or the connection's own "hello" banner
-    -- since those aren't conversation content at all, so scoping to one
-    agent has no bearing on them and dropping them would only break the
-    client's own connection bookkeeping for no privacy benefit.
+    colleagues conversation-scoping filter (`GET /api/colleagues/stream`,
+    kobo_api.main): forwards only frames belonging to a conversation
+    `agent` participates in (`_event_matches_agent` above) when `agent` is
+    given, plus every frame this filter can't attribute to any one
+    conversation at all -- a bare keepalive comment, or the connection's
+    own "hello" banner -- since those aren't conversation content at all,
+    so scoping to one agent has no bearing on them and dropping them would
+    only break the client's own connection bookkeeping for no privacy
+    benefit.
+
+    Critical 3 fix: thread exclusion (`_event_is_thread` above) now runs
+    UNCONDITIONALLY, before any agent scoping and regardless of whether
+    `agent` is given at all -- a thread is a private, initiator-only
+    conversation (operator ruling) that must never reach this stream, the
+    same posture `_flatten_conversation_entries` already takes for the
+    colleague feed. Before this fix, `agent=None` meant the raw upstream
+    bytes were returned completely unwrapped by the route
+    (`stream_colleague_events`), so a thread turn's dispatch events -- full
+    transcript included, since a thread turn resends the whole conversation
+    on every relay -- reached any signed-in caller watching the room-wide
+    stream. The route now always wraps with this filter, `agent=None`
+    simply skipping the agent-match step below.
 
     Buffers raw bytes and re-splits on the SSE frame terminator (a blank
     line, `\\n\\n`) rather than trusting chunk boundaries to line up with
@@ -3295,6 +3341,7 @@ async def filter_cabal_event_stream(
     """
     buffer = b""
     task_participants: dict[str, bool] = {}
+    task_threads: dict[str, bool] = {}
     async for chunk in chunks:
         buffer += chunk
         while b"\n\n" in buffer:
@@ -3302,8 +3349,12 @@ async def filter_cabal_event_stream(
             event_name, payload = _sse_frame_json(frame)
             if payload is None or event_name == "hello":
                 forward = True
-            else:
+            elif _event_is_thread(payload, task_threads):
+                forward = False
+            elif agent is not None:
                 forward = _event_matches_agent(payload, agent, task_participants)
+            else:
+                forward = True
             if forward:
                 yield frame + b"\n\n"
 

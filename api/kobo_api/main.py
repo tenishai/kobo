@@ -955,6 +955,39 @@ def _task_message_text(message: object) -> str | None:
     return _join_text_parts(message.get("parts")) or None
 
 
+def _conversation_detail_is_thread(detail: dict) -> bool:
+    """Whether a `get_conversation`-shaped detail (`{"conversation": {...},
+    "events": [...]}`) belongs to a thread turn: every turn a thread relays
+    stamps `metadata.thread` on its envelope before relaying (`post_thread_
+    turn`), and the switchboard's own completed-Task shape echoes a
+    submitted task's `metadata` back verbatim on `result` -- so a thread's
+    own turns are told apart from ordinary colleague talk by that one
+    marker, never by caller/target shape alone.
+
+    Critical 3 fix (the thread-transcript leak): pulled out of
+    `_flatten_conversation_entries` below so every surface that reads a
+    conversation's full detail can share the identical check -- a thread is
+    a private, initiator-only conversation (operator ruling) and must never
+    surface through ANY of them: the flattened colleague feed (below), the
+    `kobo_feed` MCP tool (shares `_flatten_conversation_entries`), `GET
+    /api/colleagues/conversations/{task_id}` (`get_colleague_conversation`),
+    `GET /api/colleagues/conversations?all=true` (`list_colleague_
+    conversations`, which fetches each surviving row's detail purely to run
+    this check), and the SSE stream (`GET /api/colleagues/stream`, via
+    `kobo_api.clients.filter_cabal_event_stream`'s own independent
+    `_event_is_thread`, since that surface never has a full detail to
+    check against -- only the raw dispatch events).
+    """
+    conv = detail.get("conversation")
+    if not isinstance(conv, dict):
+        return False
+    result = conv.get("result")
+    if not isinstance(result, dict):
+        return False
+    metadata = result.get("metadata")
+    return isinstance(metadata, dict) and "thread" in metadata
+
+
 def _flatten_conversation_entries(detail: dict) -> list[dict]:
     """One `GET /api/colleagues/conversations/{task_id}`-shaped detail,
     flattened into 0-2 chronological terminal entries: the caller's ask
@@ -971,16 +1004,12 @@ def _flatten_conversation_entries(detail: dict) -> list[dict]:
     same party.
 
     Thread tasks (threads arc, Task 9) contribute ZERO lines, same as an
-    incomplete conversation: every turn a thread relays stamps
-    `metadata.thread` on its envelope before relaying (`post_thread_turn`),
-    and the switchboard's own completed-Task shape echoes a submitted
-    task's `metadata` back verbatim on `result` -- so a thread's own turns
-    are told apart from ordinary colleague talk by that one marker, never
-    by caller/target shape alone. A thread is a private, initiator-only
-    conversation (operator ruling) and must never surface in any
-    participant's own colleague feed, whether read via `GET /api/
-    colleagues/feed` or the `kobo_feed` MCP tool -- both share this exact
-    function, so fixing it here closes both surfaces in one place.
+    incomplete conversation (`_conversation_detail_is_thread` above) -- a
+    thread is a private, initiator-only conversation (operator ruling) and
+    must never surface in any participant's own colleague feed, whether
+    read via `GET /api/colleagues/feed` or the `kobo_feed` MCP tool -- both
+    share this exact function, so fixing it here closes both surfaces in
+    one place.
     """
     conv = detail.get("conversation")
     if not isinstance(conv, dict):
@@ -988,8 +1017,7 @@ def _flatten_conversation_entries(detail: dict) -> list[dict]:
     result = conv.get("result")
     if not isinstance(result, dict):
         return []
-    result_metadata = result.get("metadata")
-    if isinstance(result_metadata, dict) and "thread" in result_metadata:
+    if _conversation_detail_is_thread(detail):
         return []
 
     task_id = conv.get("task_id")
@@ -4468,7 +4496,41 @@ def create_app(
             conversations = [
                 c for c in conversations if _conversation_has_participant(c, agent)
             ]
-        return JSONResponse({"conversations": conversations})
+
+        # Thread exclusion (Critical 3 fix, the thread-transcript leak):
+        # this row shape (CabalClient.list_conversations) carries no
+        # `metadata` field at all, so the only way to know a row is a
+        # thread turn is to fetch its full detail and run the same
+        # `_conversation_detail_is_thread` check every other surface
+        # shares -- the same per-row `get_conversation` cost `colleague_
+        # feed` already pays for every row it renders. A thread is a
+        # private, initiator-only conversation (operator ruling) and must
+        # never surface here, regardless of the all/agent filtering above:
+        # `all=true` is exactly the request that used to leak a thread's
+        # own operator-caller row (a bare `all=false` already excludes it,
+        # since a thread relay's caller is `operator:<email>`, never
+        # `agent:...` -- but that's an accident of the default filter, not
+        # a thing to rely on, hence this unconditional final pass).
+        visible: list[dict] = []
+        for row in conversations:
+            task_id = row.get("task_id")
+            if not isinstance(task_id, str):
+                visible.append(row)
+                continue
+            try:
+                detail = clients.cabal.get_conversation(task_id)
+            except (CabalError, httpx.HTTPError) as exc:
+                log.warning(
+                    "colleague conversations thread-check failed for %s: %s", task_id, exc
+                )
+                return JSONResponse(
+                    {"error": "The switchboard did not answer. Try again shortly."},
+                    status_code=502,
+                )
+            if not _conversation_detail_is_thread(detail):
+                visible.append(row)
+
+        return JSONResponse({"conversations": visible})
 
     @app.get("/api/colleagues/conversations/{task_id}")
     def get_colleague_conversation(task_id: str, agent: str | None = None) -> JSONResponse:
@@ -4486,6 +4548,14 @@ def create_app(
                 {"error": "The switchboard did not answer. Try again shortly."},
                 status_code=502,
             )
+
+        if _conversation_detail_is_thread(detail):
+            # Thread exclusion (Critical 3 fix): the same not-found answer
+            # a bogus task_id gets, never a distinguishable 403 or a
+            # 200-with-a-warning -- a thread is a private, initiator-only
+            # conversation (operator ruling) that must never surface here,
+            # for any caller, regardless of ?agent=.
+            return JSONResponse({"error": f"no such conversation: {task_id!r}"}, status_code=404)
 
         if agent is not None and not _conversation_has_participant(
             detail.get("conversation") or {}, agent
@@ -4531,8 +4601,19 @@ def create_app(
         clients), dropping every frame that isn't attributable to a
         conversation `agent` participates in before it ever reaches the
         browser -- see that function's own docstring for exactly how
-        "attributable" is decided. Omitted entirely, the stream is
-        untouched, byte-for-byte, exactly as before this feature.
+        "attributable" is decided.
+
+        Critical 3 fix (thread leak): `filter_cabal_event_stream` now runs
+        UNCONDITIONALLY, `agent` passed through as-is (`None` when
+        omitted) -- it always excludes thread-tagged events regardless of
+        `agent`, and additionally scopes to `agent`'s own conversations
+        when given. Before this fix, omitting `?agent=` skipped the
+        wrapper entirely, so every thread turn's dispatch events -- full
+        transcript included, since a thread turn resends the whole
+        conversation on every relay -- reached this stream unfiltered for
+        any signed-in caller. The stream is no longer byte-for-byte
+        untouched when `agent` is omitted: thread-tagged frames are always
+        stripped now, the one exception to "otherwise untouched."
         """
         cfg: Config = app.state.config
         clients = app.state.clients
@@ -4541,8 +4622,7 @@ def create_app(
             return gate
 
         chunks = clients.cabal.stream_events()
-        if agent is not None:
-            chunks = filter_cabal_event_stream(chunks, agent)
+        chunks = filter_cabal_event_stream(chunks, agent)
         return StreamingResponse(chunks, media_type="text/event-stream")
 
     @app.get("/api/colleagues/feed")
