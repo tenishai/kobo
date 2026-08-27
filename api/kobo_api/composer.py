@@ -400,19 +400,31 @@ def _colleagues_md(spec: BundleSpec) -> str:
     Point-in-time: refreshed on delivery. list_colleagues stays the live
     read, ask_colleague stays the action.
 
-    The two closing paragraphs (standing-knowledge arc, Task 7) are the
-    suggest-a-colleague behavior instruction and its attribution
-    counterpart -- observed live 2026-08-27: asked to "figure out what a
-    psc is", a fresh agent silently asked a colleague, presented the answer
-    as its own, and next turn claimed it came from training data. Not a lie
-    by intent: the colleague hop is invisible in the replayed history, so
-    the agent genuinely cannot remember it happened. Naming the colleague
-    at answer time -- both when SUGGESTING one and when attributing an
-    answer to one already consulted -- is the only fix that survives
-    statelessness. Present unconditionally (not just in the `others`
-    branch): a roomful of zero colleagues today may gain one after the
-    refresh lane delivers a fresh roster, and the instruction should
-    already be standing when that happens.
+    The three closing paragraphs are the consult-first doctrine, its
+    own-field/uncovered-subject boundary, and the attribution counterpart.
+    History, because each sentence closes a specific observed failure:
+
+    - 2026-08-27 (psc incident): a fresh agent silently asked a colleague,
+      presented the answer as its own, and next turn claimed it came from
+      training data. Not a lie by intent: the colleague hop is invisible in
+      the replayed history, so the agent genuinely cannot remember it
+      happened. Naming the colleague at answer time is the only fix that
+      survives statelessness -- the attribution paragraph.
+    - 2026-08-27 (operator ruling, later the same day): the first cut of
+      this instruction said "offer to bring them in" and "do not ask them
+      silently" -- and an agent asked about PSC answered from training data
+      and was satisfied with that. The ruling: the sin in the psc incident
+      was the SILENCE, never the consulting. An agent's general model
+      knowledge is what any assistant anywhere would tell anyone; the whole
+      value of this room is answers scoped to how THIS organization does
+      things, which live with the colleague whose field it is. So the
+      default flipped: for organization questions in a colleague's field,
+      consult first and attribute, rather than suggest-and-wait.
+
+    Present unconditionally (not just in the `others` branch): a roomful of
+    zero colleagues today may gain one after the refresh lane delivers a
+    fresh roster, and the instruction should already be standing when that
+    happens.
     """
     others = [c for c in spec.colleagues if c["name"] != spec.name]
     lines = ["## Your colleagues", ""]
@@ -428,8 +440,8 @@ def _colleagues_md(spec: BundleSpec) -> str:
         lines.append(
             "These are the other agents you can reach, and what each is for. "
             "When a question is squarely in someone else's field and outside "
-            "yours, say so and name them rather than guessing. Match on what "
-            "they are for, not on whose name you happen to remember."
+            "yours, ask them rather than guessing. Match on what they are "
+            "for, not on whose name you happen to remember."
         )
         lines.append("")
         for c in others:
@@ -441,12 +453,24 @@ def _colleagues_md(spec: BundleSpec) -> str:
             )
     lines.append("")
     lines.append(
-        "When a question is squarely in a colleague's field and outside "
-        "yours, say so plainly, name the colleague whose capability fits, "
-        "and offer to bring them in. Do not ask them silently on the "
-        "user's behalf, and do not guess at an answer you do not have. "
-        "\"I don't know yet, but {name} works on exactly this\" is a good "
-        "answer."
+        "You are one specialist in a room of specialists, deployed for one "
+        "specific organization. Your own model knowledge is what any "
+        "assistant anywhere would say to anyone; it is not how this "
+        "organization does things. For a question about this "
+        "organization's own setup (its infrastructure, services, tooling, "
+        "teams, or process) that sits in a colleague's field rather than "
+        "yours, consult that colleague with ask_colleague FIRST and answer "
+        "from what they say, naming them in your reply. Do not answer an "
+        "organization question from general knowledge while a colleague "
+        "who owns that subject is reachable."
+    )
+    lines.append("")
+    lines.append(
+        "Questions squarely in your own field you answer yourself; that "
+        "is what you are for. When no reachable colleague covers a "
+        "subject, you may fall back on general knowledge, but say so "
+        "plainly: label the answer as general practice, not as how this "
+        "organization does it."
     )
     lines.append("")
     lines.append(

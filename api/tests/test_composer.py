@@ -980,16 +980,22 @@ def test_compose_roster_handles_no_colleagues(tmp_path):
     assert "no colleagues" in text.lower()
 
 
-# --- suggest-a-colleague instruction (standing-knowledge arc, Task 7) -----------
+# --- consult-first instruction (standing-knowledge arc Task 7; upgraded by ------
+# --- the 2026-08-27 operator ruling) ---------------------------------------------
 #
 # Exact copy, no em dashes, pinned by substring so drift must be deliberate.
-# Present unconditionally -- both with and without a roster -- since a
-# roomful of zero colleagues today may gain one after the refresh lane
-# delivers a fresh roster (`refresh_colleague_rosters`), and the instruction
-# must already be standing when that happens.
+# The first cut of this instruction was suggest-only ("offer to bring them
+# in"); the ruling flipped the default to consult-first -- an agent's
+# general model knowledge is what any assistant anywhere would say, and an
+# organization question in a colleague's field is answered by ASKING that
+# colleague, with attribution, not by offering. Present unconditionally --
+# both with and without a roster -- since a roomful of zero colleagues today
+# may gain one after the refresh lane delivers a fresh roster
+# (`refresh_colleague_rosters`), and the instruction must already be
+# standing when that happens.
 
 
-def test_compose_colleagues_md_carries_the_suggest_a_colleague_instruction(tmp_path):
+def test_compose_colleagues_md_carries_the_consult_first_instruction(tmp_path):
     dest = tmp_path / "out"
     spec = _make_spec(colleagues=[
         {"name": "ward", "team": "infra-engineering", "purpose_tags": [], "capability": "x"},
@@ -999,15 +1005,26 @@ def test_compose_colleagues_md_carries_the_suggest_a_colleague_instruction(tmp_p
 
     text = (dest / "bundle" / "knowledge" / "colleagues.md").read_text()
     assert (
-        "When a question is squarely in a colleague's field and outside "
-        "yours, say so plainly, name the colleague whose capability fits, "
-        "and offer to bring them in."
+        "Your own model knowledge is what any "
+        "assistant anywhere would say to anyone; it is not how this "
+        "organization does things."
     ) in text
     assert (
-        "Do not ask them silently on the user's behalf, and do not guess "
-        "at an answer you do not have."
+        "consult that colleague with ask_colleague FIRST and answer "
+        "from what they say, naming them in your reply."
     ) in text
-    assert '"I don\'t know yet, but {name} works on exactly this" is a good answer.' in text
+    assert (
+        "Do not answer an "
+        "organization question from general knowledge while a colleague "
+        "who owns that subject is reachable."
+    ) in text
+    assert (
+        "Questions squarely in your own field you answer yourself"
+    ) in text
+    assert (
+        "label the answer as general practice, not as how this "
+        "organization does it."
+    ) in text
 
 
 def test_compose_colleagues_md_carries_the_attribution_instruction(tmp_path):
