@@ -131,8 +131,8 @@ functioning correctly," which no reasoning process would match to a GCP
 hosting question.
 
 Fix: the roster (name, team, purpose tags, capability, one line each)
-is placed in the agent's context by the composer, refreshed on the same
-delivery path as its other bundle content, so the agent knows who exists
+is placed in the agent's context by the composer, written once at agent
+creation alongside the rest of the bundle, so the agent knows who exists
 and what they are for without spending a tool call. `list_colleagues`
 remains for an explicit re-read; `ask_colleague` remains the action.
 
@@ -142,8 +142,9 @@ also ask X"), capability-scoped participation, and shared threads all
 build on this and are specified separately.
 
 Staleness is accepted for this arc: the roster is a point-in-time snapshot
-refreshed on delivery, and `list_colleagues` remains the live read. The
-discovery arc decides whether it needs to be pushed on change.
+taken once, at agent creation, and `list_colleagues` remains the live
+read. There is no refresh lane today (see the Execution amendments below);
+the discovery arc decides whether one is needed.
 
 ### 2.4 The 502, which is not yet diagnosed
 
@@ -237,3 +238,16 @@ Decisions made during execution, not previously written in the spec or plan:
    cut from `main` rather than the previously pinned feature branch, because
    that branch had already merged upstream. The runtime pin moves to the new
    branch's commit at rollout.
+6. **There is no refresh lane, corrected from an earlier, inaccurate
+   description.** Section 2.3 above previously said the roster is
+   "refreshed on the same delivery path as its other bundle content,"
+   which overstated what was built. In fact `compose()` (which writes both
+   `self.md` and `colleagues.md`) has exactly one caller,
+   `kobo_api.steps.RepoStep`, which runs once, at agent creation. Nothing
+   re-composes an existing agent's bundle. Concretely: `self.md` and
+   `colleagues.md` are frozen at creation time; an agent already live when
+   this arc shipped does not gain either file, and never will, without
+   being recreated outright or having the two files seeded manually
+   through the knowledge editor. A refresh lane (recompose-and-redeliver
+   on some trigger, e.g. roster change) is registered as follow-up work,
+   not built here.
