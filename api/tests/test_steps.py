@@ -26,6 +26,8 @@ from kobo_api.marketplace import marketplace_repo
 from kobo_api.models import Agent, AgentStatus
 from kobo_api.provisioner import Ctx
 from kobo_api.steps import (
+    HELLO_RETRY_ATTEMPTS,
+    HELLO_RETRY_BACKOFF_S,
     ONBOARD_REPROVISION_GRACE_POLLS,
     POLL_INTERVAL_S,
     POLL_TIMEOUT_S,
@@ -1690,6 +1692,126 @@ def test_hello_step_relay_malformed_reply_fails_the_step_retryable(
         HelloStep().run(ctx)
 
     assert agent.first_reply is None
+
+
+# --- HelloStep retry (live incident 2026-08-27): fresh-identity propagation window --
+#
+# A brand-new agent's minutes-old service account / workload-identity binding
+# can still be propagating when HelloStep makes first contact; a manual Retry
+# always cleared it untouched. These pin the automatic absorption: two
+# failures then a success ends DONE, three failures ends FAILED with the
+# final error, and the backoff between attempts uses the module's own
+# `_sleep` seam (never a real sleep here) rather than `time.sleep` directly.
+
+
+class _FlakyAgent:
+    """`hello()` raises `ClientError(error)` for the first `fail_times`
+    calls, then returns `reply`: scripts the "fails, fails, then a retry
+    succeeds" shape the live incident actually showed, which the shared
+    `FakeAgent.hello_error` (a constant, every call) can't express."""
+
+    def __init__(
+        self,
+        *,
+        fail_times: int,
+        error: str = "google-auth: 403 minting token",
+        reply: str = "hello yourself",
+    ):
+        self._fail_times = fail_times
+        self._error = error
+        self._reply = reply
+        self.calls: list[tuple[str, str, str]] = []
+
+    def hello(self, namespace: str, service: str, text: str) -> str:
+        self.calls.append((namespace, service, text))
+        if len(self.calls) <= self._fail_times:
+            raise ClientError(self._error)
+        return self._reply
+
+    def fetch_card(self, namespace: str, service: str) -> dict:
+        return {}
+
+
+class _FlakyCabal:
+    """`relay()` counterpart to `_FlakyAgent`, for pinning that the retry
+    wraps the relay path too, not just the legacy direct path."""
+
+    def __init__(self, *, fail_times: int, error: str = "switchboard unreachable"):
+        self._fail_times = fail_times
+        self._error = error
+        self.relay_calls: list[dict] = []
+
+    def relay(self, name: str, task_envelope: dict) -> dict:
+        self.relay_calls.append({"name": name, "task_envelope": task_envelope})
+        if len(self.relay_calls) <= self._fail_times:
+            raise CabalError(self._error)
+        return {"status": {"message": {"parts": [{"text": "hi from the switchboard"}]}}}
+
+
+def _hello_sleep_recorder(monkeypatch):
+    import kobo_api.steps as steps_module
+
+    sleep_calls: list[int] = []
+    monkeypatch.setattr(steps_module, "_sleep", sleep_calls.append)
+    return sleep_calls
+
+
+def test_hello_step_retries_direct_path_and_succeeds_after_two_failures(
+    session_factory, config, fake_storage, monkeypatch
+):
+    """Pin: two failures then a success ends DONE (the step returns
+    normally), the reply from the successful attempt is recorded, and the
+    backoff seam fired exactly twice (once between attempts 1-2, once
+    between 2-3, never after the final success)."""
+    sleep_calls = _hello_sleep_recorder(monkeypatch)
+    flaky_agent = _FlakyAgent(fail_times=2)
+    ctx, agent = _hello_ctx(session_factory, config, fake_storage, agent_client=flaky_agent)
+
+    detail = HelloStep().run(ctx)  # must not raise
+
+    assert agent.first_reply == "hello yourself"
+    assert "hello yourself" in detail
+    assert len(flaky_agent.calls) == HELLO_RETRY_ATTEMPTS == 3
+    assert sleep_calls == [HELLO_RETRY_BACKOFF_S, HELLO_RETRY_BACKOFF_S]
+
+
+def test_hello_step_exhausts_retries_and_fails_with_the_last_error(
+    session_factory, config, fake_storage, monkeypatch
+):
+    """Pin: three failures ends FAILED with the final error recorded,
+    unchanged shape: still a plain `ClientError` (same as an unretried
+    failure always raised), not wrapped or swallowed, after exactly
+    `HELLO_RETRY_ATTEMPTS` attempts (not more, not fewer)."""
+    sleep_calls = _hello_sleep_recorder(monkeypatch)
+    flaky_agent = _FlakyAgent(fail_times=3, error="google-auth: 403 minting token")
+    ctx, agent = _hello_ctx(session_factory, config, fake_storage, agent_client=flaky_agent)
+
+    with pytest.raises(ClientError, match="google-auth: 403 minting token"):
+        HelloStep().run(ctx)
+
+    assert agent.first_reply is None
+    assert len(flaky_agent.calls) == HELLO_RETRY_ATTEMPTS == 3
+    assert sleep_calls == [HELLO_RETRY_BACKOFF_S, HELLO_RETRY_BACKOFF_S]
+
+
+def test_hello_step_retries_the_relay_path_too_and_succeeds(
+    session_factory, config, fake_storage, monkeypatch
+):
+    """The retry wraps whichever contact path is selected, pinned here on
+    the relay path (the incident's own wording: "on a relay failure,
+    retries with backoff") so the loop isn't accidentally scoped to only
+    the legacy direct path."""
+    sleep_calls = _hello_sleep_recorder(monkeypatch)
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _hello_cabal_enabled_config(config)
+    flaky_cabal = _FlakyCabal(fail_times=2)
+    ctx, agent = _hello_ctx(session_factory, cfg, fake_storage, cabal=flaky_cabal)
+
+    HelloStep().run(ctx)  # must not raise
+
+    assert agent.first_reply == "hi from the switchboard"
+    assert len(flaky_cabal.relay_calls) == HELLO_RETRY_ATTEMPTS == 3
+    assert sleep_calls == [HELLO_RETRY_BACKOFF_S, HELLO_RETRY_BACKOFF_S]
 
 
 # --- HelloStep capability tail: directory resync (colleagues switchboard plan, ----

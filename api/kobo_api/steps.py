@@ -117,6 +117,16 @@ ONBOARD_REPROVISION_GRACE_POLLS = 6
 # lands or the second-failure raise fires.
 BUILD_RERUN_STALE_GRACE_POLLS = 3
 
+# HelloStep's fresh-identity propagation window (live incident 2026-08-27): a
+# brand-new agent's minutes-old service account and workload-identity binding
+# can still be propagating when first contact is made, surfacing as a
+# transient ClientError/CabalError (observed as a google-auth 403 minting a
+# token, relayed to the operator as a 502) that a manual Retry always clears
+# untouched. Three attempts, ~20s apart, absorb that window automatically
+# instead of leaving it to a human click.
+HELLO_RETRY_ATTEMPTS = 3
+HELLO_RETRY_BACKOFF_S = 20
+
 # Module-level sleep seam: tests monkeypatch this to a no-op so a 300s/5s (or
 # 600s/10s) poll loop — or a deliberately-triggered timeout, which walks the
 # whole loop — never actually blocks. Referenced as a bare name inside each
@@ -1325,40 +1335,63 @@ def _earn_capability(ctx: Ctx) -> None:
                 )
 
 
-class HelloStep:
-    """First contact: says hello to the freshly-deployed agent, either
-    directly over its a2a endpoint (via `ctx.clients.agent.hello`, the
+def _make_first_contact(ctx: Ctx, hello_text: str) -> str:
+    """One attempt at first contact, via whichever path is selected:
+    directly over the agent's a2a endpoint (`ctx.clients.agent.hello`, the
     legacy path) or, when the switchboard is wired, by relaying the same
-    a2a task envelope through it (`ctx.clients.cabal.relay`) — the "one-
-    click" pipeline's last step.
+    a2a task envelope through it (`ctx.clients.cabal.relay`).
 
     Contact path selection (colleagues switchboard plan, Task 4b): when
     `cabal_enabled(ctx.config)` is true AND `ctx.clients.cabal` is actually
-    wired (either gate alone isn't enough — same two-gate discipline the
+    wired (either gate alone isn't enough, same two-gate discipline the
     chat route already uses), the relay path builds the exact same task
     envelope shape `_build_task_envelope` produces (never a forked shape)
-    and reads the reply back through `_extract_relay_reply` — the identical
+    and reads the reply back through `_extract_relay_reply`, the identical
     helper the chat route uses (`kobo_api.clients`), so the two callers can
-    never drift on how a relayed reply is read. A relay failure (a
-    `CabalError` from `relay` itself, or from `_extract_relay_reply` on a
-    malformed reply) is not caught here: it propagates up to the engine's
-    own per-step try/except, failing this step exactly the way a direct-
-    path `ClientError` from `hello()` already does — same retryable
-    semantics, no special case for the relay path. This ordering only works
-    because `DirectoryStep` now runs BEFORE this step (Task 4b's reorder):
-    the agent is already registered in the switchboard's directory by the
-    time first contact needs to ride its relay.
+    never drift on how a relayed reply is read. When the switchboard isn't
+    wired, the direct path runs completely unchanged: byte-identical to
+    before Task 4b, Global Constraints' "org keys optional = feature off =
+    legacy behavior".
 
-    When the switchboard isn't wired, the direct path runs completely
-    unchanged — byte-identical to before this task, Global Constraints'
-    "org keys optional = feature off = legacy behavior".
+    Raises `ClientError` (a `CabalError` from `relay` itself or from
+    `_extract_relay_reply` on a malformed reply is a subclass) on failure;
+    `HelloStep.run` is this function's only caller and is what retries it.
+    """
+    agent = ctx.agent
+    if cabal_enabled(ctx.config) and ctx.clients.cabal is not None:
+        envelope = _build_task_envelope([{"role": "user", "text": hello_text}])
+        raw = ctx.clients.cabal.relay(agent.name, envelope)
+        return _extract_relay_reply(raw)
+    return ctx.clients.agent.hello(namespace=agent.name, service=agent.name, text=hello_text)
+
+
+class HelloStep:
+    """First contact: says hello to the freshly-deployed agent, the "one-
+    click" pipeline's last step. Contact itself is one attempt of
+    `_make_first_contact` (see there for the direct-vs-relay path
+    selection); this class's own job is retrying that attempt and, once it
+    succeeds, running the capability tail.
+
+    Retry (live incident 2026-08-27): a brand-new agent's minutes-old
+    service account and workload-identity binding can still be propagating
+    when first contact is made, so a `ClientError`/`CabalError` here, on
+    either path, gets up to `HELLO_RETRY_ATTEMPTS` tries, `HELLO_RETRY_
+    BACKOFF_S` apart (the module's own `_sleep` seam, never a real sleep in
+    a test), before it's left to propagate up to the engine's own per-step
+    try/except: failing this step exactly the way an uncaught `ClientError`
+    from `hello()` always has, same retryable semantics, just absorbing a
+    known transient window first instead of making the operator click Retry
+    for it by hand. This ordering only works because `DirectoryStep` now
+    runs BEFORE this step (Task 4b's reorder): the agent is already
+    registered in the switchboard's directory by the time first contact
+    needs to ride its relay.
 
     Its tail (`_earn_capability`, persona-metadata plan Task 3, extended by
     Task 4b's directory resync) generates this agent's capability sentence
     and pushes it to its card. Wrapped in its own defensive try/except here
     too (belt-and-suspenders on top of `_earn_capability`'s own internal
     boundaries) so that even a bug in that code path could never turn a
-    successful first contact into a failed HelloStep — capability
+    successful first contact into a failed HelloStep: capability
     generation must never block readiness.
     """
 
@@ -1369,14 +1402,24 @@ class HelloStep:
         agent = ctx.agent
         hello_text = "hello! how did you get here?"
 
-        if cabal_enabled(ctx.config) and ctx.clients.cabal is not None:
-            envelope = _build_task_envelope([{"role": "user", "text": hello_text}])
-            raw = ctx.clients.cabal.relay(agent.name, envelope)
-            reply = _extract_relay_reply(raw)
-        else:
-            reply = ctx.clients.agent.hello(
-                namespace=agent.name, service=agent.name, text=hello_text
-            )
+        reply: str | None = None
+        for attempt in range(1, HELLO_RETRY_ATTEMPTS + 1):
+            try:
+                reply = _make_first_contact(ctx, hello_text)
+                break
+            except ClientError:
+                if attempt == HELLO_RETRY_ATTEMPTS:
+                    raise
+                log.warning(
+                    "hello attempt %d/%d failed for agent %s, retrying in "
+                    "%ds (fresh-identity propagation window)",
+                    attempt,
+                    HELLO_RETRY_ATTEMPTS,
+                    agent.name,
+                    HELLO_RETRY_BACKOFF_S,
+                    exc_info=True,
+                )
+                _sleep(HELLO_RETRY_BACKOFF_S)
         agent.first_reply = reply
 
         try:
