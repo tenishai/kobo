@@ -1031,10 +1031,16 @@ def test_grant_bucket_prefix_write_also_issues_an_unconditioned_bucket_wide_list
         "gs://kobo-memory-replicas",
         "--member", "serviceAccount:agent-clio@example-project.iam.gserviceaccount.com",
         "--role", "roles/storage.legacyBucketReader",
+        "--condition", "None",
     ]
-    # Unconditioned: no --condition flag anywhere in the second call --
-    # list is bucket-wide by design, never scoped to one agent's prefix.
-    assert "--condition" not in runner.calls[1]
+    # Explicitly unconditioned: the first call above already put a
+    # conditional binding on this policy, so gcloud's conditional-binding
+    # semantics require every later add-iam-policy-binding to state its
+    # condition explicitly -- omitting the flag makes gcloud PROMPT
+    # ("Binding condition:"), and run non-interactively (subprocess, no
+    # TTY, as this client always is) an unanswered prompt is an ERROR, not
+    # a default. `--condition=None` is gcloud's own token for "explicitly
+    # no condition", not this codebase's convention.
 
 
 def test_gsa_email_for_composes_without_any_gcloud_call():

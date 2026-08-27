@@ -947,11 +947,20 @@ class GcloudClient:
         # (an actual litestream restore against a live replica) remains
         # the one live proof this unblocks the replicate loop; this binding
         # is the fix that drill would otherwise catch missing.
+        # The conditioned objectAdmin binding above means this policy now
+        # holds a conditional binding, so gcloud's own conditional-binding
+        # semantics require every subsequent add-iam-policy-binding call to
+        # state its condition explicitly -- omitting the flag makes gcloud
+        # PROMPT ("Binding condition:") instead of defaulting, and this
+        # runs non-interactively (subprocess, no TTY), so an unanswered
+        # prompt is a hang-turned-ERROR, not a default. `--condition=None`
+        # is gcloud's own token for "explicitly no condition".
         self._runner.run(
             [
                 self._gcloud, "storage", "buckets", "add-iam-policy-binding", f"gs://{bucket}",
                 "--member", f"serviceAccount:{gsa_email}",
                 "--role", "roles/storage.legacyBucketReader",
+                "--condition", "None",
             ]
         )
 
