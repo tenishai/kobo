@@ -937,6 +937,20 @@ def test_compose_roster_omits_the_agent_itself(tmp_path):
     assert "kestrel" not in text.split("## Your colleagues")[1]
 
 
+def test_compose_roster_names_the_snapshot_staleness(tmp_path):
+    """The roster is written at assembly and (until the refresh lane
+    ships) never updated; the copy must say so, or an agent will
+    confidently suggest a colleague who has since been destroyed."""
+    dest = tmp_path / "out"
+    spec = _make_spec(colleagues=[
+        {"name": "ward", "team": "infra-engineering", "purpose_tags": [], "capability": "x"},
+    ])
+    compose(spec, dest)
+    text = (dest / "bundle" / "knowledge" / "colleagues.md").read_text()
+    assert "snapshot from when you were assembled" in text
+    assert "list_colleagues" in text
+
+
 def test_compose_roster_handles_no_colleagues(tmp_path):
     dest = tmp_path / "out"
     spec = _make_spec(colleagues=[])

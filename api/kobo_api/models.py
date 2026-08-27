@@ -210,8 +210,12 @@ class A2AInvite(Base):
     (main.py's list/detail routes resolve the name against the CURRENT
     `agents` table at read time, treating a name with no matching row as
     "that agent is gone" rather than raising), and a destroyed endpoint
-    simply drops out of `allowed_pairs`'s own READY-agent query on its own,
-    with no cascade/cleanup step needed here.
+    simply drops out of `allowed_pairs`'s own READY-agent query on its own.
+
+    Destroy DOES clean these rows now (cleanup arc, 2026-08-26): the
+    forget step deletes every invite naming the departing agent in either
+    direction, so the outlive-the-row grace above only ever spans an
+    in-flight destroy, not a departed agent's afterlife.
     """
 
     __tablename__ = "a2a_invites"

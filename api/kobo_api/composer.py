@@ -356,6 +356,12 @@ def _colleagues_md(spec: BundleSpec) -> str:
     read, ask_colleague stays the action."""
     others = [c for c in spec.colleagues if c["name"] != spec.name]
     lines = ["## Your colleagues", ""]
+    lines.append(
+        "This roster is a snapshot from when you were assembled; colleagues "
+        "may have joined or left the room since. When it matters, confirm "
+        "with the list_colleagues tool, which always answers live."
+    )
+    lines.append("")
     if not others:
         lines.append("You have no colleagues in the room yet.")
     else:

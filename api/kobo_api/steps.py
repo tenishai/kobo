@@ -471,8 +471,11 @@ def _colleague_roster(session, agent: Agent) -> list[dict]:
         .filter(A2AInvite.from_agent == agent.name, A2AInvite.status == INVITE_ACCEPTED)
         .all()
     }
+    # Sorted by name so the composed colleagues.md is deterministic:
+    # DB order varies run to run, and a nondeterministic bundle file makes
+    # every recompose look like a content change in the repo diff.
     roster = []
-    for other in ready_others:
+    for other in sorted(ready_others, key=lambda a: a.name):
         if implicitly_paired(agent.group_name, other.group_name) or other.name in accepted_targets:
             roster.append(
                 {

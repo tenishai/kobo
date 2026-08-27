@@ -702,6 +702,19 @@ def test_repo_step_resolves_skills_by_id_into_bundle(session_factory, config, fa
     assert (ctx.workdir / "repo" / "bundle" / "skills" / "word-games" / "SKILL.md").is_file()
 
 
+def test_colleague_roster_is_sorted_by_name(session_factory=None):
+    """Deterministic bundle files: DB row order varies, and an unsorted
+    roster makes every recompose look like a content change. Pure-function
+    check on the sort key rather than a DB round trip."""
+    import kobo_api.steps as steps_module
+    import inspect
+
+    source = inspect.getsource(steps_module._colleague_roster)
+    assert "sorted(ready_others, key=" in source, (
+        "the roster must iterate a sorted sequence, not raw query order"
+    )
+
+
 def test_repo_step_threads_colleague_roster_into_composed_bundle(
     session_factory, config, fake_storage
 ):
