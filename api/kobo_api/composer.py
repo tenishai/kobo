@@ -57,6 +57,16 @@ class BundleSpec:
     # construction across the test suite that predates this pair keeps
     # working unchanged.
     team: str = "shared"
+    # The agent's ACL namespace (`kobo_api.models.Agent.group_name`'s own
+    # docstring): DISTINCT from `team` above -- `team` is the skills-catalog
+    # capability axis, `group` is the access-control namespace, and "the two
+    # must never be conflated." `_self_md` below renders both as separate,
+    # honestly-labelled facts; a prior version of this module conflated them
+    # by rendering `team`'s value under the label "group" and carrying no
+    # group fact at all. None (the default) means every pre-existing
+    # `BundleSpec(...)` construction keeps composing unchanged; `_self_md`
+    # reads it with its own "ungrouped" fallback for that None case.
+    group: str | None = None
     purpose_tags: list[str] = field(default_factory=list)
     # Switchboard (cabal) base URL, threaded straight from `Config.cabal_url`
     # (colleagues switchboard arc, Task 4). Presence alone is the composer's
@@ -309,19 +319,29 @@ def _self_md(spec: BundleSpec) -> str:
     project it ran in, an agent asked a colleague about ITSELF, and that
     colleague asked it back. Self-targeting was already blocked; what was
     missing is facts about itself and the instruction not to delegate
-    questions about itself."""
+    questions about itself.
+
+    Group and team are rendered as two separate, honestly-labelled facts:
+    `spec.group` is the ACL namespace, `spec.team` is the skills-catalog
+    capability axis (`kobo_api.models.Agent.group_name`'s own docstring --
+    "the two must never be conflated"). A prior version of this function
+    rendered `spec.team`'s value under the "your group" label and carried
+    no group fact at all, so every agent confidently misreported its own
+    group -- this is what closes that gap.
+    """
     tags = ", ".join(spec.purpose_tags) if spec.purpose_tags else "none"
     return (
         "## Who you are\n"
-        f"You are {spec.name}. Your group is {spec.team}. "
+        f"You are {spec.name}. Your group is {spec.group or 'ungrouped'}. "
+        f"Your team is {spec.team}. "
         f"Your purpose tags are: {tags}.\n"
         f"What you are for: {spec.capability or 'not yet distilled'}.\n"
         "\n"
         "The rule: questions about you are yours to answer: your name, your "
-        "group, what you are for, what you remember. Never ask a colleague "
-        "about yourself. When you genuinely do not have a fact about "
-        "yourself, say \"I don't know yet\" and stop, rather than asking "
-        "someone else to answer it for you.\n"
+        "group, your team, what you are for, what you remember. Never ask a "
+        "colleague about yourself. When you genuinely do not have a fact "
+        "about yourself, say \"I don't know yet\" and stop, rather than "
+        "asking someone else to answer it for you.\n"
     )
 
 

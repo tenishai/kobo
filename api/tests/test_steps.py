@@ -23,7 +23,7 @@ from kobo_api.clients import CabalError, ClientError, Clients
 from kobo_api.composer import BundleSpec, compose
 from kobo_api.config import Config, ModelChoice
 from kobo_api.marketplace import marketplace_repo
-from kobo_api.models import Agent
+from kobo_api.models import Agent, AgentStatus
 from kobo_api.provisioner import Ctx
 from kobo_api.steps import (
     ONBOARD_REPROVISION_GRACE_POLLS,
@@ -81,6 +81,7 @@ def _make_agent(
     repo_full_name: str | None = None,
     gojira_app_id: int | None = None,
     team: str | None = None,
+    group_name: str | None = None,
     purpose_tags: str | None = None,
     skip_baseline: bool = False,
 ):
@@ -93,6 +94,7 @@ def _make_agent(
         repo_full_name=repo_full_name,
         gojira_app_id=gojira_app_id,
         team=team,
+        group_name=group_name,
         purpose_tags=purpose_tags,
         skip_baseline=skip_baseline,
     )
@@ -653,6 +655,31 @@ def test_repo_step_defaults_team_to_shared_when_row_team_is_none(
     assert card["metadata"]["team"] == "shared"
 
 
+def test_repo_step_threads_group_name_into_spec_group(
+    session_factory, config, fake_storage, monkeypatch
+):
+    """Access-control arc: `agent.group_name` (the ACL namespace,
+    `kobo_api.models.Agent.group_name`'s own docstring says it is DISTINCT
+    from `team` and "the two must never be conflated") must reach
+    `BundleSpec.group` untouched -- composer tests (`test_composer.py`'s own
+    `test_compose_writes_self_card_knowledge`) pin that `_self_md` then
+    renders it as its own, separately-labelled fact rather than reusing
+    `team`'s value."""
+    session, agent = _make_agent(
+        session_factory, team="acme-team", group_name="acme-acl"
+    )
+    github = FakeGitHub()
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
+
+    captured: dict = {}
+    _spy_compose(monkeypatch, captured)
+
+    RepoStep().run(ctx)
+
+    assert captured["spec"].group == "acme-acl"
+    assert captured["spec"].team == "acme-team"
+
+
 def test_repo_step_substitutes_persona_name_placeholder(session_factory, config, fake_storage):
     session, agent = _make_agent(session_factory, name="sam")
     github = FakeGitHub()
@@ -673,6 +700,43 @@ def test_repo_step_resolves_skills_by_id_into_bundle(session_factory, config, fa
     RepoStep().run(ctx)
 
     assert (ctx.workdir / "repo" / "bundle" / "skills" / "word-games" / "SKILL.md").is_file()
+
+
+def test_repo_step_threads_colleague_roster_into_composed_bundle(
+    session_factory, config, fake_storage
+):
+    """Standing-knowledge arc, Task 5: `_colleague_roster(ctx.session, agent)`
+    must actually reach the composed bundle's `knowledge/colleagues.md` --
+    nothing else in the suite pins this threading (composer tests exercise
+    `_colleagues_md` directly against a hand-built `BundleSpec.colleagues`
+    list, never through RepoStep). Deleting `colleagues=_colleague_roster(...)`
+    from RepoStep's `BundleSpec` construction would leave every other test
+    green while every new agent silently got "no colleagues in the room
+    yet". Seeds a second, READY agent sharing this agent's (non-shared)
+    ACL group -- `implicitly_paired` (via `_colleague_roster`) is what makes
+    that agent visible in the roster."""
+    session, agent = _make_agent(session_factory, group_name="acme-acl")
+    colleague = Agent(
+        name="ward",
+        persona=PERSONA,
+        model_id=MODEL_ID,
+        skills=[],
+        status=AgentStatus.READY,
+        group_name="acme-acl",
+        capability="keeps the workshop's digital info safe",
+    )
+    session.add(colleague)
+    session.commit()
+
+    github = FakeGitHub()
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
+
+    RepoStep().run(ctx)
+
+    _, created_src = github.created_from_dir[0]
+    text = (created_src / "bundle" / "knowledge" / "colleagues.md").read_text()
+    assert "ward" in text
+    assert "keeps the workshop's digital info safe" in text
 
 
 def test_repo_step_unknown_skill_id_raises_clear_message(session_factory, config, fake_storage):

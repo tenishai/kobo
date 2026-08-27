@@ -29,6 +29,7 @@ def _make_spec(
     *,
     name: str = "sam",
     team: str = "shared",
+    group: str | None = None,
     purpose_tags: list[str] | None = None,
     capability: str | None = None,
     colleagues: list[dict] | None = None,
@@ -43,6 +44,7 @@ def _make_spec(
         vertex_project="example-model-project",
         vertex_location="us-east5",
         team=team,
+        group=group,
         purpose_tags=purpose_tags if purpose_tags is not None else [],
         capability=capability,
         colleagues=colleagues if colleagues is not None else [],
@@ -878,13 +880,21 @@ def test_compose_persona_written_verbatim(tmp_path):
 
 
 def test_compose_writes_self_card_knowledge(tmp_path):
+    """Pins group and team as two separate, honestly-labelled facts.
+    Regression: self.md once rendered `spec.team` mislabeled as "your
+    group" and carried no group fact at all -- `group_name` is the ACL
+    namespace (`kobo_api.models.Agent.group_name`'s own docstring), distinct
+    from `team` (the skills-catalog capability axis); the two must never be
+    conflated, including in what the agent is told about itself."""
     dest = tmp_path / "out"
-    spec = _make_spec(name="kestrel")
+    spec = _make_spec(name="kestrel", team="growth", group="growth-eng-acl")
 
     compose(spec, dest)
 
     text = (dest / "bundle" / "knowledge" / "self.md").read_text()
     assert "kestrel" in text
+    assert "Your group is growth-eng-acl." in text
+    assert "Your team is growth." in text
     # the standing instruction, pinned by content so a future edit is deliberate
     assert "questions about you are yours to answer" in text
     assert "I don't know yet" in text

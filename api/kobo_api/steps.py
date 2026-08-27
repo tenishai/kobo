@@ -537,6 +537,12 @@ class RepoStep:
             # CreateAgentRequest.team already falls back to) and purpose_tags
             # through to the baked agent-card.json's metadata block.
             team=agent.team or "shared",
+            # Access control (access-control arc, Task A2): the agent row's
+            # own ACL namespace (`Agent.group_name`'s own docstring: DISTINCT
+            # from `team` above, "the two must never be conflated") threaded
+            # through untouched so `_self_md` can report it as its own,
+            # separately-labelled fact rather than reusing `team`'s value.
+            group=agent.group_name,
             purpose_tags=decode_tags(agent.purpose_tags),
             # Switchboard (cabal) base URL (Task 4): when configured, gates
             # the a2a auth block at compose time — presence of cabal_url is
