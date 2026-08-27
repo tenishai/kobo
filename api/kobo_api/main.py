@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import re
@@ -1412,6 +1413,29 @@ def _deploy_platform_check(clients: Clients | None, cluster: str) -> dict:
     return {"id": check_id, "label": label, "ok": True, "detail": f"connected to {cluster}"}
 
 
+def _chat_context_id(agent_name: str, messages: list[dict]) -> str:
+    """Derive a stable-per-conversation id for the switchboard's loop guard
+    (colleague-loops arc, Task 3): the guard groups hops by contextId, so
+    every hop belonging to one human<->agent conversation must carry the
+    same value, or the guard sees a fresh conversation on every turn and
+    stays inert.
+
+    Nothing already in scope at the chat route carries a conversation
+    identity to reuse -- `ChatRequest` has no session/thread id, and the UI
+    resends the whole transcript on every turn (`kobo_api` UI's ChatPanel)
+    rather than tracking one server-side. So this derives one
+    deterministically from the agent's own name plus the conversation's
+    anchor turn (`messages[0]`), which stays the same across that
+    conversation's later turns -- unlike the last message, which changes
+    every turn, or the whole `messages` list, which grows every turn.
+    Same conversation, same id; a different conversation (a different
+    opening turn) gets a different one.
+    """
+    anchor = messages[0]["text"] if messages else ""
+    digest = hashlib.sha256(f"{agent_name}:{anchor}".encode()).hexdigest()
+    return f"chat-{agent_name}-{digest}"
+
+
 def get_session(request: Request) -> Iterator[Session]:
     """Dependency yielding a SQLAlchemy session bound to the app's session factory."""
     session_factory: sessionmaker[Session] = request.app.state.session_factory
@@ -2669,7 +2693,8 @@ def create_app(
         # client on a room that isn't enabled, must both still take the
         # legacy direct path below, completely unchanged).
         if cabal_enabled(cfg) and clients.cabal is not None:
-            envelope = _build_task_envelope(converse_messages)
+            context_id = _chat_context_id(agent.name, converse_messages)
+            envelope = _build_task_envelope(converse_messages, context_id=context_id)
             try:
                 raw = clients.cabal.relay(agent.name, envelope)
                 reply = _extract_relay_reply(raw)

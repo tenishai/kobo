@@ -1415,11 +1415,13 @@ def test_chat_relay_envelope_matches_the_shared_builder_verbatim(
     verbatim rather than fork the shape. Pinned by freezing `uuid4` (the
     envelope's only non-deterministic field) and comparing the envelope the
     relay actually receives against calling that same builder directly with
-    the same messages.
+    the same messages and the same route-derived contextId (colleague-loops
+    arc, Task 3: `_chat_context_id`, kobo_api.main).
     """
     import uuid
 
     from kobo_api.clients import _build_task_envelope
+    from kobo_api.main import _chat_context_id
 
     monkeypatch.setattr(uuid, "uuid4", lambda: uuid.UUID(int=0))
     monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
@@ -1437,7 +1439,8 @@ def test_chat_relay_envelope_matches_the_shared_builder_verbatim(
 
     client.post(f"/api/agents/{AGENT_NAME}/chat", json={"messages": messages})
 
-    expected_envelope = _build_task_envelope(messages)
+    expected_context_id = _chat_context_id(AGENT_NAME, messages)
+    expected_envelope = _build_task_envelope(messages, context_id=expected_context_id)
     assert fake_cabal.relay_calls[0]["task_envelope"] == expected_envelope
 
 

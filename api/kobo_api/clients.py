@@ -981,7 +981,9 @@ def _to_a2a_message(message: ChatMessage) -> dict:
     }
 
 
-def _build_task_envelope(messages: list[ChatMessage]) -> dict:
+def _build_task_envelope(
+    messages: list[ChatMessage], *, context_id: str | None = None
+) -> dict:
     """Build the a2a task envelope for `messages`, in the switchboard's own
     dialect (live-verified against the deployed switchboard): the Task
     model requires a `status` field, and its convention is that
@@ -991,9 +993,16 @@ def _build_task_envelope(messages: list[ChatMessage]) -> dict:
     A single message (the common case, e.g. `HelloStep`'s first-contact
     turn) has no prior turns, so `history` comes back `[]`; the message
     itself lands entirely in `status.message`.
+
+    `context_id`, when given, is stamped onto the envelope as `contextId`
+    (colleague-loops arc, Task 3): the switchboard's loop guard groups hops
+    by contextId and is default-on, but without a caller-supplied id every
+    hop looks like a fresh conversation and the guard is inert. Absent when
+    not supplied, so the direct path and `HelloStep`'s first-contact turn
+    keep their exact envelope.
     """
     *prior, current = messages
-    return {
+    envelope = {
         "kind": "task",
         "id": f"chat-{uuid.uuid4().hex}",
         "status": {
@@ -1002,6 +1011,13 @@ def _build_task_envelope(messages: list[ChatMessage]) -> dict:
         },
         "history": [_to_a2a_message(message) for message in prior],
     }
+    # The switchboard's loop guard groups hops by contextId and is default-on;
+    # without a caller-supplied id every hop looks like a fresh conversation
+    # and the guard is inert. Absent when not supplied, so the direct path
+    # and first-contact keep their exact envelope.
+    if context_id is not None:
+        envelope["contextId"] = context_id
+    return envelope
 
 
 def _build_teach_envelope(note: str, filename: str) -> dict:

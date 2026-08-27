@@ -1516,6 +1516,27 @@ def test_build_task_envelope_shape_multi_turn():
     ]
 
 
+def test_build_task_envelope_carries_context_id_when_given():
+    env = _build_task_envelope([{"role": "user", "text": "hi"}], context_id="ctx-abc")
+    assert env["contextId"] == "ctx-abc"
+
+
+def test_build_task_envelope_omits_context_id_by_default():
+    """The direct path and HelloStep must keep their exact envelope."""
+    env = _build_task_envelope([{"role": "user", "text": "hi"}])
+    assert "contextId" not in env
+
+
+def test_relay_envelope_context_id_is_the_key_the_switchboard_reads():
+    """Contract pin. The switchboard's guard reads exactly "contextId".
+    daedalus copies this key onto colleague hops (tools/colleagues.py).
+    If this key is ever renamed, the loop guard silently stops working
+    and no other test notices."""
+    env = _build_task_envelope([{"role": "user", "text": "hi"}], context_id="ctx-1")
+    assert "contextId" in env, "the guard reads contextId; any other spelling is inert"
+    assert env["contextId"] == "ctx-1"
+
+
 def test_build_teach_envelope_is_a_marked_single_message_task():
     envelope = _build_teach_envelope("Taught in chat.\n\nA fact.\n", "chat-20260820-a.md")
     assert envelope["kind"] == "task"
