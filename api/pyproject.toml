@@ -32,6 +32,15 @@ dependencies = [
     # surface intact; adopting 2.0's rename would discard every verified
     # gotcha for an unproven API. Revisit as its own arc if 2.x is wanted.
     "mcp>=1.15,<2",
+    # Resilience arc (Task 11): the schema used to evolve by `create_all`
+    # plus a hand-written `ALTER TABLE` run by an operator -- alembic is the
+    # migration path a real Postgres deployment needs; SQLite stays on
+    # `create_all` for local dev and tests (kobo_api.db.init_db), unchanged.
+    "alembic",
+    # Resilience arc (Task 12): the Postgres driver `sqlalchemy.create_engine`
+    # needs whenever `db_url` names a `postgresql(+psycopg2)://` scheme --
+    # SQLite (the default) needs no driver of its own beyond stdlib sqlite3.
+    "psycopg2-binary",
 ]
 
 [project.optional-dependencies]
