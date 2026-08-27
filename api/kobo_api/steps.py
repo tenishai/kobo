@@ -61,7 +61,8 @@ from kobo_api.metadata import (
     skill_descriptions_for_agent,
     tooling_filenames_for,
 )
-from kobo_api.models import Agent
+from kobo_api.models import INVITE_ACCEPTED, A2AInvite, Agent, AgentStatus
+from kobo_api.pairs import implicitly_paired
 from kobo_api.purpose_tags import decode_tags
 from kobo_api.search import read_marketplace_catalog
 from kobo_api.tooling import ToolingError, _validate_content, _validate_filename
@@ -446,6 +447,44 @@ def _stage_baseline_tools(
     return [name for name, _raw in collected]
 
 
+def _colleague_roster(session, agent: Agent) -> list[dict]:
+    """The room's own view of who `agent` may reach, for the composed
+    bundle's standing colleague knowledge (Task 5). Same underlying rule as
+    `kobo_api.pairs.allowed_pairs` -- same non-`SHARED_GROUP` group (via the
+    one shared predicate, `implicitly_paired`), plus an ACCEPTED invite
+    where `agent` is the inviter -- but `allowed_pairs` itself isn't
+    reusable here: it only ever considers READY agents as callers, and
+    `agent` is never READY yet at compose time (RepoStep runs early in the
+    provisioning pipeline, well before the READY flip). Only READY agents
+    are considered as TARGETS, same as `allowed_pairs`: a colleague this
+    agent can't actually dispatch to yet (still provisioning, or failed)
+    doesn't belong in a "who you can reach" roster.
+    """
+    ready_others = (
+        session.query(Agent)
+        .filter(Agent.status == AgentStatus.READY, Agent.name != agent.name)
+        .all()
+    )
+    accepted_targets = {
+        invite.to_agent
+        for invite in session.query(A2AInvite)
+        .filter(A2AInvite.from_agent == agent.name, A2AInvite.status == INVITE_ACCEPTED)
+        .all()
+    }
+    roster = []
+    for other in ready_others:
+        if implicitly_paired(agent.group_name, other.group_name) or other.name in accepted_targets:
+            roster.append(
+                {
+                    "name": other.name,
+                    "team": other.team,
+                    "purpose_tags": decode_tags(other.purpose_tags),
+                    "capability": other.capability,
+                }
+            )
+    return roster
+
+
 class RepoStep:
     """Composes the agent's daedalus bundle and pushes it as a new GitHub repo."""
 
@@ -504,6 +543,17 @@ class RepoStep:
             # the composer's own gate for whether the transport carries
             # auth credentials (issuer/audience/jwks_url).
             cabal_url=config.cabal_url,
+            # Self-card knowledge (standing-knowledge arc, Task 4): almost
+            # always None here -- capability is "earned" later, well after
+            # this first (and only) compose, by regenerate_agent_metadata --
+            # but threaded rather than left unset so a future second compose
+            # path doesn't silently drop it.
+            capability=agent.capability,
+            # Colleague roster (standing-knowledge arc, Task 5): the room's
+            # own view of who this agent may reach, computed fresh at
+            # compose time (see `_colleague_roster`'s own docstring for why
+            # `kobo_api.pairs.allowed_pairs` itself isn't reusable here).
+            colleagues=_colleague_roster(ctx.session, agent),
         )
 
         compose_dir = ctx.workdir / "repo"

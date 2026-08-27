@@ -34,13 +34,6 @@ _VENDOR_SCHEMA_PATH = Path(__file__).parent / "vendor" / "bundle.schema.json"
 # sees it (jsonschema has no notion of shell-style parameter expansion).
 _AGENT_MODEL_DEFAULT_RE = re.compile(r"\$\{AGENT_MODEL:-([^}]*)\}")
 
-_GOTCHAS_MD = (
-    "## Deployment chain\n"
-    "You were assembled in the kobo assembly room and deployed through the\n"
-    "platform chain: repo, onboarding, build, deploy, first contact. If someone\n"
-    "asks how you got here, tell them that.\n"
-)
-
 
 class ComposeError(Exception):
     """Raised when a composed bundle's agent.yaml fails schema validation."""
@@ -75,6 +68,24 @@ class BundleSpec:
     # `BundleSpec(...)` construction (and every call site that never learns
     # about this field) keeps composing byte-identical output.
     cabal_url: str | None = None
+    # The agent's own distilled capability (self-card knowledge, standing-
+    # knowledge arc, Task 4): already on the Agent row (`agent.capability`,
+    # persona-metadata plan) but never before threaded onto BundleSpec --
+    # `_agent_card` below always hardcodes an empty string for the baked
+    # agent-card.json (capability is "earned" later, well after compose
+    # time), so this is a genuinely new field, not a rename of one that was
+    # already here. None (the default) means every pre-existing
+    # `BundleSpec(...)` construction keeps composing unchanged; `_self_md`
+    # below reads it with its own "not yet distilled" fallback for exactly
+    # that None case, which is what a freshly composed agent always is.
+    capability: str | None = None
+    # The colleague roster (standing-knowledge arc, Task 5): the room's own
+    # view of who this agent may reach, as plain dicts shaped
+    # `{"name", "team", "purpose_tags", "capability"}` -- matching daedalus's
+    # own `_format_colleague` shape so the standing knowledge and the live
+    # `list_colleagues` tool read alike. Defaulted empty so every
+    # pre-existing `BundleSpec(...)` construction keeps composing unchanged.
+    colleagues: list[dict] = field(default_factory=list)
 
 
 # --- agent.yaml rendering ----------------------------------------------------
@@ -290,6 +301,59 @@ def _render_agent_yaml(spec: BundleSpec) -> str:
         # regex-based edit depends on.
         width=1000,
     )
+
+
+def _self_md(spec: BundleSpec) -> str:
+    """Standing self-knowledge, same lane `_GOTCHAS_MD` used to occupy (the
+    wire shows agents quote that lane verbatim). Issue #5: asked which
+    project it ran in, an agent asked a colleague about ITSELF, and that
+    colleague asked it back. Self-targeting was already blocked; what was
+    missing is facts about itself and the instruction not to delegate
+    questions about itself."""
+    tags = ", ".join(spec.purpose_tags) if spec.purpose_tags else "none"
+    return (
+        "## Who you are\n"
+        f"You are {spec.name}. Your group is {spec.team}. "
+        f"Your purpose tags are: {tags}.\n"
+        f"What you are for: {spec.capability or 'not yet distilled'}.\n"
+        "\n"
+        "The rule: questions about you are yours to answer: your name, your "
+        "group, what you are for, what you remember. Never ask a colleague "
+        "about yourself. When you genuinely do not have a fact about "
+        "yourself, say \"I don't know yet\" and stop, rather than asking "
+        "someone else to answer it for you.\n"
+    )
+
+
+def _colleagues_md(spec: BundleSpec) -> str:
+    """The roster, as standing knowledge rather than a tool call. The data
+    was always available (daedalus's list_colleagues already formats name,
+    team, purpose tags and capability) but only if the model chose to call
+    it, and issue #5 shows it skipping that and asking a test fixture a GCP
+    question. Knowing who exists is not a tool call.
+
+    Point-in-time: refreshed on delivery. list_colleagues stays the live
+    read, ask_colleague stays the action."""
+    others = [c for c in spec.colleagues if c["name"] != spec.name]
+    lines = ["## Your colleagues", ""]
+    if not others:
+        lines.append("You have no colleagues in the room yet.")
+    else:
+        lines.append(
+            "These are the other agents you can reach, and what each is for. "
+            "When a question is squarely in someone else's field and outside "
+            "yours, say so and name them rather than guessing. Match on what "
+            "they are for, not on whose name you happen to remember."
+        )
+        lines.append("")
+        for c in others:
+            tags = ", ".join(c.get("purpose_tags") or []) or "none"
+            lines.append(
+                f"- {c['name']} (team: {c.get('team') or 'unspecified'}), "
+                f"purpose tags: {tags}. "
+                f"What they are for: {c.get('capability') or 'not yet distilled'}"
+            )
+    return "\n".join(lines) + "\n"
 
 
 def _agent_card(spec: BundleSpec) -> dict:
@@ -884,7 +948,8 @@ def compose(spec: BundleSpec, dest: Path) -> None:
         dest/bundle/agent.yaml
         dest/bundle/agent-card.json
         dest/bundle/persona.md
-        dest/bundle/knowledge/gotchas.md
+        dest/bundle/knowledge/self.md
+        dest/bundle/knowledge/colleagues.md
         dest/bundle/skills/<id>/**   (one materialized tree per spec.skills
                                       entry — see `_materialize_skill`)
     """
@@ -897,7 +962,8 @@ def compose(spec: BundleSpec, dest: Path) -> None:
 
     knowledge_dir = bundle_dir / "knowledge"
     knowledge_dir.mkdir(parents=True, exist_ok=True)
-    (knowledge_dir / "gotchas.md").write_text(_GOTCHAS_MD)
+    (knowledge_dir / "self.md").write_text(_self_md(spec))
+    (knowledge_dir / "colleagues.md").write_text(_colleagues_md(spec))
 
     if spec.skills:
         skills_dir = bundle_dir / "skills"

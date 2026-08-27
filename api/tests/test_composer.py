@@ -27,13 +27,16 @@ _RUNTIME_IMAGE = "registry.example/agents/daedalus-runtime:latest"
 def _make_spec(
     skills: list[StagedSkill] | None = None,
     *,
+    name: str = "sam",
     team: str = "shared",
     purpose_tags: list[str] | None = None,
+    capability: str | None = None,
+    colleagues: list[dict] | None = None,
     cabal_url: str | None = None,
 ) -> BundleSpec:
     return BundleSpec(
-        name="sam",
-        persona_body="You are sam, a helpful assistant.\n",
+        name=name,
+        persona_body=f"You are {name}, a helpful assistant.\n",
         model_id="vertex_ai/claude-sonnet-4-5",
         skills=skills or [],
         runtime_image=_RUNTIME_IMAGE,
@@ -41,6 +44,8 @@ def _make_spec(
         vertex_location="us-east5",
         team=team,
         purpose_tags=purpose_tags if purpose_tags is not None else [],
+        capability=capability,
+        colleagues=colleagues if colleagues is not None else [],
         cabal_url=cabal_url,
     )
 
@@ -74,7 +79,8 @@ def test_compose_writes_exact_file_set_without_skills(tmp_path):
         Path("bundle/agent.yaml"),
         Path("bundle/agent-card.json"),
         Path("bundle/persona.md"),
-        Path("bundle/knowledge/gotchas.md"),
+        Path("bundle/knowledge/self.md"),
+        Path("bundle/knowledge/colleagues.md"),
     }
 
 
@@ -90,7 +96,8 @@ def test_compose_writes_exact_file_set_with_skills(tmp_path):
         Path("bundle/agent.yaml"),
         Path("bundle/agent-card.json"),
         Path("bundle/persona.md"),
-        Path("bundle/knowledge/gotchas.md"),
+        Path("bundle/knowledge/self.md"),
+        Path("bundle/knowledge/colleagues.md"),
         Path("bundle/skills/echo/SKILL.md"),
         Path("bundle/skills/echo/reference.py"),
     }
@@ -870,17 +877,64 @@ def test_compose_persona_written_verbatim(tmp_path):
     assert (dest / "bundle" / "persona.md").read_text() == spec.persona_body
 
 
-def test_compose_knowledge_gotchas_content(tmp_path):
+def test_compose_writes_self_card_knowledge(tmp_path):
     dest = tmp_path / "out"
+    spec = _make_spec(name="kestrel")
 
-    compose(_make_spec(), dest)
+    compose(spec, dest)
 
-    assert (dest / "bundle" / "knowledge" / "gotchas.md").read_text() == (
-        "## Deployment chain\n"
-        "You were assembled in the kobo assembly room and deployed through the\n"
-        "platform chain: repo, onboarding, build, deploy, first contact. If someone\n"
-        "asks how you got here, tell them that.\n"
+    text = (dest / "bundle" / "knowledge" / "self.md").read_text()
+    assert "kestrel" in text
+    # the standing instruction, pinned by content so a future edit is deliberate
+    assert "questions about you are yours to answer" in text
+    assert "I don't know yet" in text
+
+
+def test_compose_writes_colleague_roster(tmp_path):
+    dest = tmp_path / "out"
+    spec = _make_spec(
+        colleagues=[
+            {
+                "name": "ward",
+                "team": "infra-engineering",
+                "purpose_tags": ["security"],
+                "capability": "keeps our workshop's digital info safe",
+            },
+        ]
     )
+
+    compose(spec, dest)
+
+    text = (dest / "bundle" / "knowledge" / "colleagues.md").read_text()
+    assert "ward" in text
+    assert "keeps our workshop's digital info safe" in text
+
+
+def test_compose_roster_omits_the_agent_itself(tmp_path):
+    dest = tmp_path / "out"
+    spec = _make_spec(
+        name="kestrel",
+        colleagues=[
+            {"name": "kestrel", "team": "vidai", "purpose_tags": [], "capability": "x"},
+            {"name": "ward", "team": "infra-engineering", "purpose_tags": [], "capability": "y"},
+        ],
+    )
+
+    compose(spec, dest)
+
+    text = (dest / "bundle" / "knowledge" / "colleagues.md").read_text()
+    assert "ward" in text
+    assert "kestrel" not in text.split("## Your colleagues")[1]
+
+
+def test_compose_roster_handles_no_colleagues(tmp_path):
+    dest = tmp_path / "out"
+    spec = _make_spec(colleagues=[])
+
+    compose(spec, dest)
+
+    text = (dest / "bundle" / "knowledge" / "colleagues.md").read_text()
+    assert "no colleagues" in text.lower()
 
 
 # --- Dockerfile ------------------------------------------------------------------
