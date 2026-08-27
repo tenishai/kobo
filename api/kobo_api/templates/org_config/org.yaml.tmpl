@@ -21,6 +21,11 @@ runtime_image: __KOBO_RUNTIME_IMAGE__
 # Agent techne databases replicate continuously to this bucket; empty means
 # replication is off and composed bundles carry no supervision.
 memory_replica_bucket: __KOBO_MEMORY_REPLICA_BUCKET__
+
+# The room's own in-cluster base URL, as deployed agents reach it -- powers
+# the github.open_pr tool (the PR broker). Empty = agents get no github
+# tools at all.
+broker_url: __KOBO_BROKER_URL__
 gcp_project: __KOBO_GCP_PROJECT__
 vertex_project: __KOBO_VERTEX_PROJECT__
 vertex_location: __KOBO_VERTEX_LOCATION__

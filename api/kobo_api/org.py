@@ -50,6 +50,7 @@ ORG_KEYS = frozenset(
         # (MCP + catalogs) on the next boot. A Config field an org should
         # set is not org-settable until it is named HERE.
         "memory_replica_bucket",
+        "broker_url",
         "gcp_project",
         "vertex_project",
         "vertex_location",

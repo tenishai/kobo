@@ -109,6 +109,11 @@ class BundleSpec:
     # (there is no such fuller check today -- the bucket name is the whole
     # contract).
     memory_replica_bucket: str = ""
+    # The room's own in-cluster base URL (org key broker_url) -- when set
+    # alongside cabal_url, the composed tools block gains the github
+    # sidecar (daedalus GitHubSpec: broker_url/token_env/self) and
+    # github.open_pr joins the allow list. Empty = no github block at all.
+    broker_url: str = ""
 
 
 # --- agent.yaml rendering ----------------------------------------------------
@@ -234,15 +239,30 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
     """
     if not spec.cabal_url:
         return _FlowDict(provider="none", allow=[])
-    return _FlowDict(
+    allow = list(_COLLEAGUES_TOOLS_ALLOW)
+    block = _FlowDict(
         provider="colleagues",
-        allow=_FlowList(_COLLEAGUES_TOOLS_ALLOW),
+        allow=None,  # placed below, once the github arm has decided
         colleagues=_FlowDict(
             url=_DoubleQuoted(spec.cabal_url),
             token_env=CABAL_COLLEAGUE_TOKEN_ENV,
             self=_DoubleQuoted(spec.name),
         ),
     )
+    # The github sidecar (agent PR broker spec): rides ALONGSIDE the
+    # colleagues provider (daedalus composes the two), gated on BOTH
+    # coordinates -- the broker route authenticates the agent by the same
+    # colleague JWT the cabal wiring issues, so a broker with no
+    # switchboard could never authenticate anyone.
+    if spec.broker_url:
+        allow.append("github.open_pr")
+        block["github"] = _FlowDict(
+            broker_url=_DoubleQuoted(spec.broker_url),
+            token_env=CABAL_COLLEAGUE_TOKEN_ENV,
+            self=_DoubleQuoted(spec.name),
+        )
+    block["allow"] = _FlowList(allow)
+    return block
 
 
 def _approvals_gates(spec: BundleSpec) -> list | _FlowList:

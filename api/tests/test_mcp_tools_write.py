@@ -376,6 +376,9 @@ def test_build_mcp_server_registers_exactly_the_eighteen_named_tools(
         "kobo_create_skill",
         "kobo_create_tool",
         "kobo_create_persona",
+        "kobo_request_repo_access",
+        "kobo_list_repo_access",
+        "kobo_decide_repo_access",
     }
 
 
@@ -507,7 +510,7 @@ def test_create_agent_archived_persona_surfaces_the_routes_own_422(
     persona" answer. The persona is created and archived through the REAL
     routes (`kobo_create_persona` for the create, the direct `POST
     /api/personas/{id}/archive` route -- not an MCP tool, none exists in
-    this module's 18 -- for the archive, called via `_endpoint` +
+    this module's 21 -- for the archive, called via `_endpoint` +
     `authz.room_request` the same way this file's other direct-route
     helpers do), never a hand-rolled fixture that skips the archive
     route's own gate."""
@@ -2439,3 +2442,83 @@ def test_create_persona_audit_row_bounded(session_factory, config, fake_storage)
     logged = json.loads(row.redacted_args)
     assert "...[truncated" in logged["what_they_do"]
     assert long_what_they_do not in row.redacted_args
+
+
+# --- the repo-access trio (agent PR broker spec, 2026-08-27) ---------------------
+
+
+def _broker_app(session_factory, config, fake_storage, tmp_path):
+    """An app with the PR broker configured, so the three repo-access tools'
+    routes answer instead of 503ing."""
+    key = tmp_path / "pr-app.pem"
+    key.write_text("not-a-real-key")
+    config = config.model_copy(
+        update={
+            "pr_app_id": "1",
+            "pr_app_installation_id": "2",
+            "pr_app_private_key_path": key,
+        }
+    )
+    return _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+
+
+def test_request_then_list_then_decide_roundtrip(
+    session_factory, config, fake_storage, tmp_path
+):
+    app = _broker_app(session_factory, config, fake_storage, tmp_path)
+    _seed_agent(session_factory, name="ward", created_by=MEMBER_A_EMAIL, group_name=GROUP_A)
+    mcp = build_mcp_server(app)
+
+    requested = _call_tool(
+        mcp,
+        "kobo_request_repo_access",
+        _ctx_for(MEMBER_A_EMAIL),
+        agent="ward",
+        repositories=["acme/tools", "acme/docs"],
+    )
+    assert [r["status"] for r in requested["requested"]] == ["requested", "requested"]
+
+    queue = _call_tool(
+        mcp, "kobo_list_repo_access", _ctx_for(MEMBER_A_EMAIL), status="requested"
+    )
+    assert len(queue["results"]) == 2
+
+    decided = _call_tool(
+        mcp,
+        "kobo_decide_repo_access",
+        _ctx_for(OPERATOR_EMAIL),
+        ids=[r["id"] for r in requested["requested"]],
+        decision="approved",
+    )
+    assert [r["status"] for r in decided["decided"]] == ["approved", "approved"]
+
+
+def test_request_repo_access_validates_shape(
+    session_factory, config, fake_storage, tmp_path
+):
+    app = _broker_app(session_factory, config, fake_storage, tmp_path)
+    _seed_agent(session_factory, name="ward", created_by=MEMBER_A_EMAIL, group_name=GROUP_A)
+    mcp = build_mcp_server(app)
+    with pytest.raises(ToolError):
+        _call_tool(
+            mcp,
+            "kobo_request_repo_access",
+            _ctx_for(MEMBER_A_EMAIL),
+            agent="ward",
+            repositories=["not-a-repo-shape"],
+        )
+
+
+def test_decide_repo_access_validates_decision_vocabulary(
+    session_factory, config, fake_storage, tmp_path
+):
+    app = _broker_app(session_factory, config, fake_storage, tmp_path)
+    mcp = build_mcp_server(app)
+    with pytest.raises(ToolError):
+        _call_tool(
+            mcp,
+            "kobo_decide_repo_access",
+            _ctx_for(OPERATOR_EMAIL),
+            ids=[1],
+            decision="maybe",
+        )

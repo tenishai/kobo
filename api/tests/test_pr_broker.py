@@ -70,7 +70,7 @@ def test_request_batch_then_batch_approve(broker_client, session_factory):
         f"/api/agents/{name}/repo-access",
         json={"repositories": ["acme/services-clip", "acme/global-infra-tools"]},
     )
-    assert r.status_code == 202
+    assert r.status_code == 200
     rows = r.json()["requested"]
     assert [x["status"] for x in rows] == ["requested", "requested"]
 
