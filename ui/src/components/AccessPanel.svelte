@@ -54,29 +54,29 @@
   // the routed agent changes, same reasoning as every other panel in this
   // room (ChatPanel/SlackPanel/ToolingPanel).
   // svelte-ignore state_referenced_locally
-  const invites = createQuery(invitesQuery(agentName));
+  const invites = createQuery(() => (invitesQuery(agentName)));
   // svelte-ignore state_referenced_locally
-  const grants = createQuery(grantsQuery(agentName));
+  const grants = createQuery(() => (grantsQuery(agentName)));
   // svelte-ignore state_referenced_locally
-  const requestable = createQuery(requestableQuery(agentName));
+  const requestable = createQuery(() => (requestableQuery(agentName)));
   // svelte-ignore state_referenced_locally
-  const acceptMutation = createMutation(acceptInviteMutation(queryClient, agentName));
+  const acceptMutation = createMutation(() => (acceptInviteMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
-  const declineMutation = createMutation(declineInviteMutation(queryClient, agentName));
+  const declineMutation = createMutation(() => (declineInviteMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
-  const revokeMutation = createMutation(revokeInviteMutation(queryClient, agentName));
+  const revokeMutation = createMutation(() => (revokeInviteMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
-  const addGrant = createMutation(addGrantMutation(queryClient, agentName));
+  const addGrant = createMutation(() => (addGrantMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
-  const removeGrant = createMutation(removeGrantMutation(queryClient, agentName));
-  const requestAccess = createMutation(createInviteMutation(queryClient));
+  const removeGrant = createMutation(() => (removeGrantMutation(queryClient, agentName)));
+  const requestAccess = createMutation(() => (createInviteMutation(queryClient)));
 
   const incomingPending = $derived(
-    ($invites.data?.incoming ?? []).filter((invite) => invite.status === "pending"),
+    (invites.data?.incoming ?? []).filter((invite) => invite.status === "pending"),
   );
-  const teamPairs = $derived($invites.data?.team_pairs ?? []);
+  const teamPairs = $derived(invites.data?.team_pairs ?? []);
   const acceptedPairs = $derived(
-    [...($invites.data?.incoming ?? []), ...($invites.data?.outgoing ?? [])].filter(
+    [...(invites.data?.incoming ?? []), ...(invites.data?.outgoing ?? [])].filter(
       (invite) => invite.status === "accepted",
     ),
   );
@@ -84,11 +84,11 @@
   let inviteActionError = $state<string | null>(null);
 
   function handleAccept(id: number): void {
-    if ($acceptMutation.isPending) {
+    if (acceptMutation.isPending) {
       return;
     }
     inviteActionError = null;
-    $acceptMutation.mutate(id, {
+    acceptMutation.mutate(id, {
       onError: (err: unknown) => {
         inviteActionError = errorMessage(err, "Couldn't accept that request. Try again.");
       },
@@ -96,11 +96,11 @@
   }
 
   function handleDecline(id: number): void {
-    if ($declineMutation.isPending) {
+    if (declineMutation.isPending) {
       return;
     }
     inviteActionError = null;
-    $declineMutation.mutate(id, {
+    declineMutation.mutate(id, {
       onError: (err: unknown) => {
         inviteActionError = errorMessage(err, "Couldn't decline that request. Try again.");
       },
@@ -108,11 +108,11 @@
   }
 
   function handleRevoke(id: number): void {
-    if ($revokeMutation.isPending) {
+    if (revokeMutation.isPending) {
       return;
     }
     inviteActionError = null;
-    $revokeMutation.mutate(id, {
+    revokeMutation.mutate(id, {
       onError: (err: unknown) => {
         inviteActionError = errorMessage(err, "Couldn't revoke that. Try again.");
       },
@@ -134,11 +134,11 @@
   }
 
   function handleRequestAccess(toAgentName: string): void {
-    if ($requestAccess.isPending) {
+    if (requestAccess.isPending) {
       return;
     }
     inviteActionError = null;
-    $requestAccess.mutate(
+    requestAccess.mutate(
       { fromAgent: agentName, toAgent: toAgentName },
       {
         onError: (err: unknown) => {
@@ -153,7 +153,7 @@
   let grantEmail = $state("");
   let grantError = $state<string | null>(null);
 
-  const canAddGrant = $derived(!frozen && !$addGrant.isPending && grantEmail.trim().length > 0);
+  const canAddGrant = $derived(!frozen && !addGrant.isPending && grantEmail.trim().length > 0);
 
   function handleAddGrant(event: SubmitEvent): void {
     event.preventDefault();
@@ -162,7 +162,7 @@
     }
     const email = grantEmail.trim();
     grantError = null;
-    $addGrant.mutate(email, {
+    addGrant.mutate(email, {
       onSuccess: () => {
         grantEmail = "";
       },
@@ -173,11 +173,11 @@
   }
 
   function handleRemoveGrant(email: string): void {
-    if ($removeGrant.isPending) {
+    if (removeGrant.isPending) {
       return;
     }
     grantError = null;
-    $removeGrant.mutate(email, {
+    removeGrant.mutate(email, {
       onError: (err: unknown) => {
         grantError = errorMessage(err, "Couldn't remove that person. Try again.");
       },
@@ -194,12 +194,11 @@
   // `nameSuggestionParams`): the installed svelte-query adapter only
   // re-derives a query's options from an actual Svelte store, never a
   // `$derived` value it would freeze at first render.
-  const peopleSearchTerm = writable("");
-  const peopleSearchOptions = derived(peopleSearchTerm, ($q) => peopleSearchQuery($q));
-  const peopleResults = createQuery(peopleSearchOptions);
+  let peopleSearchTerm = $state("");
+  const peopleResults = createQuery(() => (peopleSearchQuery(peopleSearchTerm)));
 
   const commitPeopleSearch = debounced((value: string) => {
-    peopleSearchTerm.set(value);
+    peopleSearchTerm = value;
   }, 250);
 
   $effect(() => {
@@ -222,8 +221,8 @@
     suggestionsDismissed = false;
   }
 
-  const suggestions = $derived($peopleResults.data?.people ?? []);
-  const directoryUnavailable = $derived($peopleResults.data?.unavailable === true);
+  const suggestions = $derived(peopleResults.data?.people ?? []);
+  const directoryUnavailable = $derived(peopleResults.data?.unavailable === true);
   const showSuggestions = $derived(
     !suggestionsDismissed && grantEmail.trim().length >= 2 && suggestions.length > 0,
   );
@@ -276,7 +275,7 @@
           {/if}
         </div>
         <button type="submit" class="access-panel__grant-submit" disabled={frozen || !canAddGrant}>
-          {$addGrant.isPending ? "Adding…" : "Add"}
+          {addGrant.isPending ? "Adding…" : "Add"}
         </button>
       </div>
       {#if directoryUnavailable}
@@ -289,24 +288,24 @@
       {/if}
     </form>
 
-    {#if $grants.isPending}
+    {#if grants.isPending}
       <Skeleton rows={2} />
-    {:else if $grants.isError}
+    {:else if grants.isError}
       <ErrorState
-        message={errorMessage($grants.error, "Couldn't load who has access.")}
-        onretry={() => $grants.refetch()}
+        message={errorMessage(grants.error, "Couldn't load who has access.")}
+        onretry={() => grants.refetch()}
       />
-    {:else if $grants.data.length === 0}
+    {:else if grants.data.length === 0}
       <EmptyState message="Nobody has been individually granted access yet." />
     {:else}
       <ul class="access-panel__list">
-        {#each $grants.data as grant (grant.email)}
+        {#each grants.data as grant (grant.email)}
           <li class="access-panel__row">
             <span class="access-panel__row-name">{grant.email}</span>
             <button
               type="button"
               class="access-panel__row-remove"
-              disabled={frozen || $removeGrant.isPending}
+              disabled={frozen || removeGrant.isPending}
               aria-label={`Remove ${grant.email}`}
               onclick={() => handleRemoveGrant(grant.email)}
             >
@@ -321,12 +320,12 @@
   <section class="access-panel__section" aria-labelledby="access-agents-heading">
     <h2 id="access-agents-heading" class="access-panel__heading">Agents</h2>
 
-    {#if $invites.isPending}
+    {#if invites.isPending}
       <Skeleton rows={2} />
-    {:else if $invites.isError}
+    {:else if invites.isError}
       <ErrorState
-        message={errorMessage($invites.error, "Couldn't load colleague requests.")}
-        onretry={() => $invites.refetch()}
+        message={errorMessage(invites.error, "Couldn't load colleague requests.")}
+        onretry={() => invites.refetch()}
       />
     {:else}
       {#if inviteActionError}
@@ -346,7 +345,7 @@
                   <button
                     type="button"
                     class="access-panel__accept"
-                    disabled={frozen || $acceptMutation.isPending}
+                    disabled={frozen || acceptMutation.isPending}
                     aria-label={`Accept ${invite.from_agent}`}
                     onclick={() => handleAccept(invite.id)}
                   >
@@ -355,7 +354,7 @@
                   <button
                     type="button"
                     class="access-panel__decline"
-                    disabled={frozen || $declineMutation.isPending}
+                    disabled={frozen || declineMutation.isPending}
                     aria-label={`Decline ${invite.from_agent}`}
                     onclick={() => handleDecline(invite.id)}
                   >
@@ -370,18 +369,18 @@
 
       <div class="access-panel__subsection">
         <h3 class="access-panel__subheading">Request access to another team's agent</h3>
-        {#if $requestable.isPending}
+        {#if requestable.isPending}
           <Skeleton rows={2} />
-        {:else if $requestable.isError}
+        {:else if requestable.isError}
           <ErrorState
-            message={errorMessage($requestable.error, "Couldn't load other agents.")}
-            onretry={() => $requestable.refetch()}
+            message={errorMessage(requestable.error, "Couldn't load other agents.")}
+            onretry={() => requestable.refetch()}
           />
-        {:else if ($requestable.data?.requestable ?? []).length === 0 && ($requestable.data?.already ?? []).length === 0}
+        {:else if (requestable.data?.requestable ?? []).length === 0 && (requestable.data?.already ?? []).length === 0}
           <EmptyState message="No other agents to request access from yet." />
         {:else}
           <ul class="access-panel__list">
-            {#each $requestable.data?.requestable ?? [] as candidate (candidate.name)}
+            {#each requestable.data?.requestable ?? [] as candidate (candidate.name)}
               <li class="access-panel__row">
                 <div class="access-panel__requestable-info">
                   <span class="access-panel__row-name">{candidate.name}</span>
@@ -393,7 +392,7 @@
                 <button
                   type="button"
                   class="access-panel__request-button"
-                  disabled={frozen || $requestAccess.isPending}
+                  disabled={frozen || requestAccess.isPending}
                   aria-label={`Request access to ${candidate.name}`}
                   onclick={() => handleRequestAccess(candidate.name)}
                 >
@@ -401,7 +400,7 @@
                 </button>
               </li>
             {/each}
-            {#each $requestable.data?.already ?? [] as entry (entry.name)}
+            {#each requestable.data?.already ?? [] as entry (entry.name)}
               <li class="access-panel__row">
                 <span class="access-panel__row-name">{entry.name}</span>
                 <span class="access-panel__state-chip">{entry.status}</span>
@@ -433,7 +432,7 @@
                   <button
                     type="button"
                     class="access-panel__revoke"
-                    disabled={frozen || $revokeMutation.isPending}
+                    disabled={frozen || revokeMutation.isPending}
                     aria-label={`Revoke ${invite.from_agent} and ${invite.to_agent.name}`}
                     onclick={() => handleRevoke(invite.id)}
                   >

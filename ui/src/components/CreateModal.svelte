@@ -105,11 +105,11 @@
   let { open, onclose }: { open: boolean; onclose: () => void } = $props();
 
   const queryClient = useQueryClient();
-  const models = createQuery(modelsQuery());
-  const teams = createQuery(teamsQuery());
-  const groups = createQuery(groupsQuery());
-  const orgStatus = createQuery(orgStatusQuery());
-  const mutation = createMutation(createAgentMutation(queryClient));
+  const models = createQuery(() => (modelsQuery()));
+  const teams = createQuery(() => (teamsQuery()));
+  const groups = createQuery(() => (groupsQuery()));
+  const orgStatus = createQuery(() => (orgStatusQuery()));
+  const mutation = createMutation(() => (createAgentMutation(queryClient)));
 
   let name = $state("");
   // `null` means "no explicit choice yet" — the effective value falls back
@@ -121,7 +121,7 @@
   let submitError = $state<string | null>(null);
 
   const selectedPersona = $derived(personaOverride ?? "");
-  const selectedModel = $derived(modelOverride ?? $models.data?.default ?? "");
+  const selectedModel = $derived(modelOverride ?? models.data?.default ?? "");
 
   // --- Name: client-side check, only rendered once there's something to
   // say about it (an empty field isn't "invalid", it's just empty) --------
@@ -180,14 +180,11 @@
   // --- Persona search / builder -------------------------------------------
 
   let personaQ = $state("");
-  const personaSearchTerm = writable("");
-  const personaSearchOptions = derived(personaSearchTerm, ($q) =>
-    personasSearchQuery($q, null),
-  );
-  const personas = createQuery(personaSearchOptions);
+  let personaSearchTerm = $state("");
+  const personas = createQuery(() => (personasSearchQuery(personaSearchTerm, null)));
 
   const commitPersonaSearch = debounced((value: string) => {
-    personaSearchTerm.set(value);
+    personaSearchTerm = value;
   }, 250);
 
   $effect(() => {
@@ -208,7 +205,7 @@
    * verbatim — see `kobo_api.personas` — for every persona this room knows
    * about, catalog-shipped or user-authored). Set at the exact moment a
    * persona is picked (both branches below), never re-derived later by
-   * looking the id back up in `$personas.data`: that list is itself a
+   * looking the id back up in `personas.data`: that list is itself a
    * debounced search result that can lag a beat behind a just-created
    * persona (createPersonaMutation's own cache invalidation hasn't
    * necessarily resolved yet), so re-deriving would risk racing it.
@@ -256,7 +253,7 @@
     selectPersona(persona, purposeTags);
     builderOpen = false;
     personaQ = "";
-    personaSearchTerm.set("");
+    personaSearchTerm = "";
     toast.success("Persona ready");
   }
 
@@ -282,10 +279,7 @@
     whoTheyAre: "",
     whatTheyDo: "",
   });
-  const nameSuggestionsOptions = derived(nameSuggestionParams, ($p) =>
-    nameSuggestionsQuery($p.whoTheyAre, $p.whatTheyDo),
-  );
-  const nameSuggestions = createQuery(nameSuggestionsOptions);
+  const nameSuggestions = createQuery(() => (nameSuggestionsQuery(nameSuggestionParams.whoTheyAre, nameSuggestionParams.whatTheyDo)));
 
   // A persona commit — a first pick, a builder create, or picking a
   // *different* persona than before — feeds the naming query its who/what
@@ -316,7 +310,7 @@
   // A generator/route failure falls back to the classic input regardless of
   // which mode the user was in — the addendum's own error-state contract,
   // not something "name it yourself" alone should have to be clicked for.
-  const showManualName = $derived(nameMode === "manual" || $nameSuggestions.isError);
+  const showManualName = $derived(nameMode === "manual" || nameSuggestions.isError);
 
   // Focus the name input when entering manual mode (a11y: keyboard/SR users
   // must land on the input, not dropped to body).
@@ -340,8 +334,8 @@
    * doesn't survive a reroll — the offered set just changed out from under
    * it. */
   async function handleReroll(): Promise<void> {
-    const before = ($nameSuggestions.data ?? []).map((s) => s.name);
-    const result = await $nameSuggestions.refetch();
+    const before = (nameSuggestions.data ?? []).map((s) => s.name);
+    const result = await nameSuggestions.refetch();
     const after = (result.data ?? []).map((s) => s.name);
     rerollNote =
       before.length > 0 &&
@@ -363,10 +357,7 @@
     q: "",
     team: null,
   });
-  const skillsSearchOptions = derived(skillSearchParams, ($params) =>
-    skillsSearchQuery($params.q, $params.team),
-  );
-  const skills = createQuery(skillsSearchOptions);
+  const skills = createQuery(() => (skillsSearchQuery(skillSearchParams.q, skillSearchParams.team)));
 
   const commitSkillSearch = debounced(
     (value: { q: string; team: string | null }) => {
@@ -396,14 +387,14 @@
   const SKILLS_SHOWN_CAP = 6;
 
   const visibleSkills = $derived(
-    $skills.data === undefined
+    skills.data === undefined
       ? []
       : skillShowAll
-        ? $skills.data
-        : $skills.data.slice(0, SKILLS_SHOWN_CAP),
+        ? skills.data
+        : skills.data.slice(0, SKILLS_SHOWN_CAP),
   );
   const skillsShowMoreCount = $derived(
-    Math.max(0, ($skills.data?.length ?? 0) - SKILLS_SHOWN_CAP),
+    Math.max(0, (skills.data?.length ?? 0) - SKILLS_SHOWN_CAP),
   );
 
   type SelectedSkill = { id: string; team: string; name: string };
@@ -498,7 +489,7 @@
    * (`handleGroupSelect`), or by the modal's own "fresh form every open"
    * effect below. */
   let groupRequestConfirmed = $state(false);
-  const requestGroup = createMutation(requestGroupMutation());
+  const requestGroup = createMutation(() => (requestGroupMutation()));
 
   function handleGroupSelect(value: string): void {
     groupValue = value;
@@ -510,11 +501,11 @@
 
   function handleGroupRequestSubmit(): void {
     const name = groupRequestName.trim();
-    if (name.length === 0 || $requestGroup.isPending) {
+    if (name.length === 0 || requestGroup.isPending) {
       return;
     }
     groupRequestError = null;
-    $requestGroup.mutate(
+    requestGroup.mutate(
       { groupName: name, note: groupRequestNote.trim() || undefined },
       {
         onSuccess: () => {
@@ -581,7 +572,7 @@
   // --- Unwired / empty catalogs --------------------------------------------
 
   function checkFailed(checkId: string): boolean {
-    return $orgStatus.data?.checks.some((c) => c.id === checkId && !c.ok) ?? false;
+    return orgStatus.data?.checks.some((c) => c.id === checkId && !c.ok) ?? false;
   }
 
   // `undefined` (still loading, or the query hasn't resolved) never counts
@@ -589,12 +580,12 @@
   // state on every open before org status has even loaded once. Only a
   // confirmed `wired === false`, or a confirmed failing check, does.
   const personasUnwired = $derived(
-    $orgStatus.data !== undefined &&
-      ($orgStatus.data.wired === false || checkFailed("personas-seeded")),
+    orgStatus.data !== undefined &&
+      (orgStatus.data.wired === false || checkFailed("personas-seeded")),
   );
   const skillsUnwired = $derived(
-    $orgStatus.data !== undefined &&
-      ($orgStatus.data.wired === false || checkFailed("skills-index")),
+    orgStatus.data !== undefined &&
+      (orgStatus.data.wired === false || checkFailed("skills-index")),
   );
 
   const UNWIRED_MESSAGE = "Catalogs aren't set up yet. Ask whoever runs your room.";
@@ -614,7 +605,7 @@
       modelOverride = null;
       submitError = null;
       personaQ = "";
-      personaSearchTerm.set("");
+      personaSearchTerm = "";
       builderOpen = false;
       selectedPersonaMeta = null;
       nameMode = "cards";
@@ -637,7 +628,7 @@
   });
 
   const canSubmit = $derived(
-    $models.data !== undefined &&
+    models.data !== undefined &&
       nameLocallyValid &&
       availability.status === "available" &&
       !personasUnwired &&
@@ -645,7 +636,7 @@
       selectedPersona !== "" &&
       selectedModel !== "" &&
       (!groupOptionsAvailable || groupChosen) &&
-      !$mutation.isPending,
+      !mutation.isPending,
   );
 
   function handleSubmit(event: SubmitEvent): void {
@@ -655,7 +646,7 @@
     }
     submitError = null;
     const createdName = name;
-    $mutation.mutate(
+    mutation.mutate(
       {
         name: createdName,
         persona: selectedPersona,
@@ -756,19 +747,19 @@
             />
           </div>
 
-          {#if $personas.isPending}
+          {#if personas.isPending}
             <Skeleton rows={2} />
-          {:else if $personas.isError}
+          {:else if personas.isError}
             <ErrorState
-              message={errorMessage($personas.error, "Couldn't load personas.")}
-              onretry={() => $personas.refetch()}
+              message={errorMessage(personas.error, "Couldn't load personas.")}
+              onretry={() => personas.refetch()}
             />
           {:else}
             <div class="persona-list">
-              {#if $personas.data.length === 0 && personaQ.length > 0}
+              {#if personas.data.length === 0 && personaQ.length > 0}
                 <p class="create-form__help">Nothing matches your search.</p>
               {/if}
-              {#each $personas.data as persona (persona.id)}
+              {#each personas.data as persona (persona.id)}
                 <label
                   class="persona-card"
                   class:persona-card--selected={persona.id === selectedPersona}
@@ -820,7 +811,7 @@
       {#if !personaCommitted}
         <p class="station__hint">Pick a persona first.</p>
       {:else if showManualName}
-        {#if $nameSuggestions.isError}
+        {#if nameSuggestions.isError}
           <p class="create-form__help">
             Couldn't come up with name ideas right now. Name it yourself below.
           </p>
@@ -844,7 +835,7 @@
             Lowercase letters, numbers, and hyphens. 2-24 characters.
           </p>
           {@render nameStatus()}
-          {#if nameMode === "manual" && $nameSuggestions.data !== undefined && !$nameSuggestions.isError}
+          {#if nameMode === "manual" && nameSuggestions.data !== undefined && !nameSuggestions.isError}
             <button
               type="button"
               class="naming-actions__back"
@@ -854,7 +845,7 @@
             </button>
           {/if}
         </div>
-      {:else if $nameSuggestions.isPending}
+      {:else if nameSuggestions.isPending}
         <div class="name-cards" aria-hidden="true">
           {#each { length: 5 } as _, i (i)}
             <div class="name-card name-card--skeleton">
@@ -868,7 +859,7 @@
         <p class="sr-only" role="status">Loading name suggestions…</p>
       {:else}
         <div class="name-cards" role="radiogroup" aria-label="Suggested names">
-          {#each $nameSuggestions.data as card (card.name)}
+          {#each nameSuggestions.data as card (card.name)}
             <label
               class="name-card"
               class:name-card--selected={card.name === selectedCardName}
@@ -899,9 +890,9 @@
             type="button"
             class="naming-actions__reroll"
             onclick={handleReroll}
-            disabled={$nameSuggestions.isFetching}
+            disabled={nameSuggestions.isFetching}
           >
-            {$nameSuggestions.isFetching ? "Asking again…" : "Offer more"}
+            {nameSuggestions.isFetching ? "Asking again…" : "Offer more"}
           </button>
           <button
             type="button"
@@ -984,14 +975,14 @@
             </div>
           </div>
 
-          {#if $skills.isPending}
+          {#if skills.isPending}
             <Skeleton rows={2} />
-          {:else if $skills.isError}
+          {:else if skills.isError}
             <ErrorState
-              message={errorMessage($skills.error, "Couldn't load skills.")}
-              onretry={() => $skills.refetch()}
+              message={errorMessage(skills.error, "Couldn't load skills.")}
+              onretry={() => skills.refetch()}
             />
-          {:else if $skills.data.length === 0}
+          {:else if skills.data.length === 0}
             <p class="create-form__help">
               {skillQ.length > 0 ? "Nothing matches your search." : "No skills in the catalog yet"}
             </p>
@@ -1119,10 +1110,10 @@
               <button
                 type="button"
                 class="group-request__submit"
-                disabled={groupRequestName.trim().length === 0 || $requestGroup.isPending}
+                disabled={groupRequestName.trim().length === 0 || requestGroup.isPending}
                 onclick={handleGroupRequestSubmit}
               >
-                {$requestGroup.isPending ? "Requesting…" : "Request it"}
+                {requestGroup.isPending ? "Requesting…" : "Request it"}
               </button>
             </div>
           {/if}
@@ -1194,12 +1185,12 @@
 
       <div class="create-form__field">
         <label class="create-form__label" for="create-model">Model</label>
-        {#if $models.isPending}
+        {#if models.isPending}
           <Skeleton rows={1} />
-        {:else if $models.isError}
+        {:else if models.isError}
           <ErrorState
-            message={errorMessage($models.error, "Couldn't load models.")}
-            onretry={() => $models.refetch()}
+            message={errorMessage(models.error, "Couldn't load models.")}
+            onretry={() => models.refetch()}
           />
         {:else}
           <select
@@ -1209,7 +1200,7 @@
             onchange={(event) =>
               (modelOverride = (event.currentTarget as HTMLSelectElement).value)}
           >
-            {#each $models.data.models as model (model.id)}
+            {#each models.data.models as model (model.id)}
               <option value={model.id}>{model.label}</option>
             {/each}
           </select>
@@ -1227,7 +1218,7 @@
           Cancel
         </button>
         <button type="submit" class="create-form__submit" disabled={!canSubmit}>
-          {$mutation.isPending ? "Creating…" : "Create agent"}
+          {mutation.isPending ? "Creating…" : "Create agent"}
         </button>
       </div>
     </div>

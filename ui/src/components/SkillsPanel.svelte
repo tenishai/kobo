@@ -57,24 +57,23 @@
   // remounts this component via `{#key route.name}` whenever the routed
   // agent changes, so this prop is fixed for the component's entire lifetime.
   // svelte-ignore state_referenced_locally
-  const skills = createQuery(agentSkillsQuery(agentName));
+  const skills = createQuery(() => (agentSkillsQuery(agentName)));
   // svelte-ignore state_referenced_locally
-  const teams = createQuery(teamsQuery());
+  const teams = createQuery(() => (teamsQuery()));
   // svelte-ignore state_referenced_locally
-  const addCatalog = createMutation(addCatalogSkillMutation(queryClient, agentName));
+  const addCatalog = createMutation(() => (addCatalogSkillMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
-  const saveMutation = createMutation(saveLocalSkillMutation(queryClient, agentName));
+  const saveMutation = createMutation(() => (saveLocalSkillMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
-  const deleteMutation = createMutation(deleteSkillMutation(queryClient, agentName));
+  const deleteMutation = createMutation(() => (deleteSkillMutation(queryClient, agentName)));
 
   // --- Delivery chip (copied pattern from MemoryPanel; see its doc comment
   // and the module comment above for the full rationale) -------------------
 
   const DELIVERED_CLEAR_MS = 5000;
 
-  const deliverySha = writable<string | null>(null);
-  const deliveryOptions = derived(deliverySha, ($sha) => deliveryQuery(agentName, $sha));
-  const delivery = createQuery(deliveryOptions);
+  let deliverySha = $state<string | null>(null);
+  const delivery = createQuery(() => (deliveryQuery(agentName, deliverySha)));
 
   let clearTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -83,15 +82,15 @@
       clearTimeout(clearTimer);
       clearTimer = undefined;
     }
-    deliverySha.set(sha);
+    deliverySha = sha;
   }
 
   $effect(() => {
-    if ($delivery.data?.state !== "delivered") {
+    if (delivery.data?.state !== "delivered") {
       return;
     }
     clearTimer = setTimeout(() => {
-      deliverySha.set(null);
+      deliverySha = null;
       clearTimer = undefined;
     }, DELIVERED_CLEAR_MS);
     return () => {
@@ -105,13 +104,13 @@
   type DeliveryView = { tone: "pending" | "ok" | "fail"; text: string };
 
   const deliveryView = $derived.by((): DeliveryView => {
-    if ($delivery.isError) {
+    if (delivery.isError) {
       return {
         tone: "fail",
-        text: errorMessage($delivery.error, "Couldn't check on your changes."),
+        text: errorMessage(delivery.error, "Couldn't check on your changes."),
       };
     }
-    const data = $delivery.data;
+    const data = delivery.data;
     if (data === undefined) {
       return { tone: "pending", text: "Delivering changes…" };
     }
@@ -150,10 +149,7 @@
     q: "",
     team: null,
   });
-  const catalogSearchOptions = derived(catalogSearchParams, ($params) =>
-    skillsSearchQuery($params.q, $params.team),
-  );
-  const catalogResults = createQuery(catalogSearchOptions);
+  const catalogResults = createQuery(() => (skillsSearchQuery(catalogSearchParams.q, catalogSearchParams.team)));
 
   const commitCatalogSearch = debounced((value: { q: string; team: string | null }) => {
     catalogSearchParams.set(value);
@@ -184,7 +180,7 @@
   }
 
   function alreadyCarried(skillName: string): boolean {
-    return $skills.data?.some((s) => s.name === skillName) ?? false;
+    return skills.data?.some((s) => s.name === skillName) ?? false;
   }
 
   function handleAddFromCatalog(entry: CatalogEntry): void {
@@ -193,7 +189,7 @@
     }
     catalogError = null;
     pendingCatalogAdd = entry.name;
-    $addCatalog.mutate(
+    addCatalog.mutate(
       { skillName: entry.name, team: entry.team },
       {
         onSuccess: (result) => {
@@ -394,7 +390,7 @@
     }
     const skillId = target.kind === "edit" ? target.skill.name : filename;
     modalError = null;
-    $saveMutation.mutate(
+    saveMutation.mutate(
       { skillId, content },
       {
         onSuccess: (result) => {
@@ -414,7 +410,7 @@
     }
     const skillId = target.skill.name;
     modalError = null;
-    $deleteMutation.mutate(skillId, {
+    deleteMutation.mutate(skillId, {
       onSuccess: (result) => {
         beginDelivery(result.sha);
         closeModal();
@@ -442,18 +438,18 @@
     </div>
   </div>
 
-  {#if $skills.isPending}
+  {#if skills.isPending}
     <Skeleton rows={3} />
-  {:else if $skills.isError}
+  {:else if skills.isError}
     <ErrorState
-      message={errorMessage($skills.error, "Couldn't load this agent's skills.")}
-      onretry={() => $skills.refetch()}
+      message={errorMessage(skills.error, "Couldn't load this agent's skills.")}
+      onretry={() => skills.refetch()}
     />
-  {:else if $skills.data.length === 0}
+  {:else if skills.data.length === 0}
     <EmptyState message="Nothing here yet. Add a skill from the catalog or write a guardrail." />
   {:else}
     <ul class="skills-panel__list">
-      {#each $skills.data as skill (skill.name)}
+      {#each skills.data as skill (skill.name)}
         <li class="skill-row">
           <span class="skill-row__body">
             <span class="skill-row__name">{skill.name}</span>
@@ -510,8 +506,8 @@
             (catalogTeamFilter = (event.currentTarget as HTMLSelectElement).value)}
         >
           <option value="">All teams</option>
-          {#if $teams.data}
-            {#each $teams.data as t (t)}
+          {#if teams.data}
+            {#each teams.data as t (t)}
               <option value={t}>{t}</option>
             {/each}
           {/if}
@@ -522,20 +518,20 @@
         <p class="skills-panel__catalog-error" role="alert">{catalogError}</p>
       {/if}
 
-      {#if $catalogResults.isPending}
+      {#if catalogResults.isPending}
         <Skeleton rows={2} />
-      {:else if $catalogResults.isError}
+      {:else if catalogResults.isError}
         <ErrorState
-          message={errorMessage($catalogResults.error, "Couldn't load the skills catalog.")}
-          onretry={() => $catalogResults.refetch()}
+          message={errorMessage(catalogResults.error, "Couldn't load the skills catalog.")}
+          onretry={() => catalogResults.refetch()}
         />
-      {:else if $catalogResults.data.length === 0}
+      {:else if catalogResults.data.length === 0}
         <p class="skills-panel__catalog-help">
           {catalogQ.length > 0 ? "Nothing matches your search." : "No skills in the catalog yet."}
         </p>
       {:else}
         <ul class="skills-panel__catalog-list">
-          {#each $catalogResults.data as entry (entry.id)}
+          {#each catalogResults.data as entry (entry.id)}
             {@const already = alreadyCarried(entry.name)}
             {@const pending = pendingCatalogAdd === entry.name}
             <li class="catalog-row">
@@ -567,7 +563,7 @@
     </div>
   {/if}
 
-  {#if $deliverySha !== null}
+  {#if deliverySha !== null}
     <div
       class="skills-panel__delivery skills-panel__delivery--{deliveryView.tone}"
       role="status"
@@ -596,10 +592,10 @@
         <button
           type="button"
           class="skills-modal__danger"
-          disabled={frozen || $deleteMutation.isPending}
+          disabled={frozen || deleteMutation.isPending}
           onclick={handleDelete}
         >
-          {$deleteMutation.isPending ? "Removing…" : "Remove"}
+          {deleteMutation.isPending ? "Removing…" : "Remove"}
         </button>
       </div>
     {:else if t.kind === "edit" && editLoad.status !== "ready"}
@@ -633,10 +629,10 @@
         <button
           type="button"
           class="skills-modal__primary"
-          disabled={frozen || $saveMutation.isPending}
+          disabled={frozen || saveMutation.isPending}
           onclick={handleSave}
         >
-          {$saveMutation.isPending ? "Saving…" : "Save"}
+          {saveMutation.isPending ? "Saving…" : "Save"}
         </button>
       </div>
     {:else}

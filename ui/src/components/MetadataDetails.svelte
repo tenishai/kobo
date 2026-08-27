@@ -58,29 +58,26 @@
   // whenever the routed agent changes, same reasoning as every other
   // panel's own mutation setup.
   // svelte-ignore state_referenced_locally
-  const patchMutation = createMutation(patchMetadataMutation(queryClient, agentName));
+  const patchMutation = createMutation(() => (patchMetadataMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
-  const regenerateMutation = createMutation(
-    regenerateMetadataMutation(queryClient, agentName),
-  );
+  const regenerateMutation = createMutation(() => (regenerateMetadataMutation(queryClient, agentName),));
 
   let open = $state(false);
 
   // --- Team-options query, gated on `open` (lazy) --------------------------
 
-  const teamOptionsOpen = writable(false);
-  const teamOptionsOptions = derived(teamOptionsOpen, ($open) => ({
+  let teamOptionsOpen = $state(false);
+  const teamOptions = createQuery(() => (({
     ...teamOptionsQuery(),
-    enabled: $open,
-  }));
-  const teamOptions = createQuery(teamOptionsOptions);
+    enabled: teamOptionsOpen,
+  })));
 
   // Always includes the agent's CURRENT team, even before the query
   // resolves (or if that team isn't among the current skill-owner pool —
   // an already-recorded custom team must still show up selected, same
   // reasoning the create station's picker documents for its own escape).
   const teamPickerOptions = $derived.by((): string[] => {
-    const data = $teamOptions.data;
+    const data = teamOptions.data;
     const pool = new Set<string>(data ? [data.default, ...data.teams] : ["shared"]);
     pool.add(team);
     return [...pool];
@@ -107,7 +104,7 @@
     if (frozen) {
       return;
     }
-    teamOptionsOpen.set(true);
+    teamOptionsOpen = true;
     teamMode = "select";
     teamValue = team;
     teamOther = "";
@@ -159,7 +156,7 @@
 
   const canSave = $derived(
     !frozen &&
-      !$patchMutation.isPending &&
+      !patchMutation.isPending &&
       effectiveTeam.length > 0 &&
       !capabilityOverCap,
   );
@@ -168,9 +165,8 @@
 
   const DELIVERED_CLEAR_MS = 5000;
 
-  const deliverySha = writable<string | null>(null);
-  const deliveryOptions = derived(deliverySha, ($sha) => deliveryQuery(agentName, $sha));
-  const delivery = createQuery(deliveryOptions);
+  let deliverySha = $state<string | null>(null);
+  const delivery = createQuery(() => (deliveryQuery(agentName, deliverySha)));
 
   let clearTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -179,15 +175,15 @@
       clearTimeout(clearTimer);
       clearTimer = undefined;
     }
-    deliverySha.set(sha);
+    deliverySha = sha;
   }
 
   $effect(() => {
-    if ($delivery.data?.state !== "delivered") {
+    if (delivery.data?.state !== "delivered") {
       return;
     }
     clearTimer = setTimeout(() => {
-      deliverySha.set(null);
+      deliverySha = null;
       clearTimer = undefined;
     }, DELIVERED_CLEAR_MS);
     return () => {
@@ -201,13 +197,13 @@
   type DeliveryView = { tone: "pending" | "ok" | "fail"; text: string };
 
   const deliveryView = $derived.by((): DeliveryView => {
-    if ($delivery.isError) {
+    if (delivery.isError) {
       return {
         tone: "fail",
-        text: errorMessage($delivery.error, "Couldn't check on your changes."),
+        text: errorMessage(delivery.error, "Couldn't check on your changes."),
       };
     }
-    const data = $delivery.data;
+    const data = delivery.data;
     if (data === undefined) {
       return { tone: "pending", text: "Delivering changes…" };
     }
@@ -245,7 +241,7 @@
     if (trimmedCapability.length > 0) {
       body.capability = trimmedCapability;
     }
-    $patchMutation.mutate(body, {
+    patchMutation.mutate(body, {
       onSuccess: (result) => {
         teamMode = "select";
         teamValue = result.team;
@@ -260,11 +256,11 @@
   }
 
   function handleRegenerate(): void {
-    if (frozen || $regenerateMutation.isPending) {
+    if (frozen || regenerateMutation.isPending) {
       return;
     }
     regenerateError = null;
-    $regenerateMutation.mutate(undefined, {
+    regenerateMutation.mutate(undefined, {
       onSuccess: (result) => {
         capabilityDraft = result.capability ?? "";
         beginDelivery(result.sha);
@@ -391,10 +387,10 @@
         <button
           type="button"
           class="metadata-form__regenerate"
-          disabled={frozen || $regenerateMutation.isPending}
+          disabled={frozen || regenerateMutation.isPending}
           onclick={handleRegenerate}
         >
-          {$regenerateMutation.isPending ? "Regenerating…" : "Regenerate"}
+          {regenerateMutation.isPending ? "Regenerating…" : "Regenerate"}
         </button>
       </div>
       {#if regenerateError}
@@ -420,12 +416,12 @@
         Cancel
       </button>
       <button type="submit" class="metadata-form__save" disabled={!canSave}>
-        {$patchMutation.isPending ? "Saving…" : "Save"}
+        {patchMutation.isPending ? "Saving…" : "Save"}
       </button>
     </div>
   </form>
 
-  {#if $deliverySha !== null}
+  {#if deliverySha !== null}
     <div
       class="metadata-form__delivery metadata-form__delivery--{deliveryView.tone}"
       role="status"

@@ -43,7 +43,7 @@
   // agent changes, so this prop is fixed for the component's entire
   // lifetime, same reasoning as ChatPanel/SlackPanel's own mutations.
   // svelte-ignore state_referenced_locally
-  const destroy = createMutation(destroyAgentMutation(queryClient, agentName));
+  const destroy = createMutation(() => (destroyAgentMutation(queryClient, agentName)));
 
   let typedName = $state("");
   let destroyError = $state<string | null>(null);
@@ -51,11 +51,11 @@
   const armed = $derived(typedName === agentName);
 
   function handleDestroy(): void {
-    if (!armed || $destroy.isPending) {
+    if (!armed || destroy.isPending) {
       return;
     }
     destroyError = null;
-    $destroy.mutate(undefined, {
+    destroy.mutate(undefined, {
       onError: (err: unknown) => {
         destroyError = errorMessage(err, "Couldn't destroy this agent. Try again.");
       },
@@ -63,11 +63,11 @@
   }
 
   function handleDestroyAgain(): void {
-    if ($destroy.isPending) {
+    if (destroy.isPending) {
       return;
     }
     destroyError = null;
-    $destroy.mutate(undefined, {
+    destroy.mutate(undefined, {
       onError: (err: unknown) => {
         destroyError = errorMessage(err, "Couldn't destroy this agent. Try again.");
       },
@@ -89,10 +89,10 @@
     <button
       type="button"
       class="danger-zone__destroy"
-      disabled={$destroy.isPending}
+      disabled={destroy.isPending}
       onclick={handleDestroyAgain}
     >
-      {$destroy.isPending ? "Destroying…" : "Destroy again"}
+      {destroy.isPending ? "Destroying…" : "Destroy again"}
     </button>
   {:else}
     <p class="danger-zone__copy">
@@ -114,10 +114,10 @@
     <button
       type="button"
       class="danger-zone__destroy"
-      disabled={!armed || $destroy.isPending}
+      disabled={!armed || destroy.isPending}
       onclick={handleDestroy}
     >
-      {$destroy.isPending ? "Destroying…" : "Destroy this agent"}
+      {destroy.isPending ? "Destroying…" : "Destroy this agent"}
     </button>
   {/if}
 

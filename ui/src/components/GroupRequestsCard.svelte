@@ -27,28 +27,27 @@
   import ErrorState from "./ErrorState.svelte";
   import Skeleton from "./Skeleton.svelte";
 
-  const whoami = createQuery(whoamiQuery());
-  const pendingCount = $derived($whoami.data?.pending_group_requests);
+  const whoami = createQuery(() => (whoamiQuery()));
+  const pendingCount = $derived(whoami.data?.pending_group_requests);
   const visible = $derived(pendingCount !== undefined && pendingCount > 0);
 
-  const expanded = writable(false);
-  const requestsOptions = derived(expanded, ($expanded) => groupRequestsQuery($expanded));
-  const requests = createQuery(requestsOptions);
+  let expanded = $state(false);
+  const requests = createQuery(() => (groupRequestsQuery(expanded)));
 
   function toggleExpanded(): void {
     expanded.update((value) => !value);
   }
 
   const queryClient = useQueryClient();
-  const decide = createMutation(decideGroupRequestMutation(queryClient));
+  const decide = createMutation(() => (decideGroupRequestMutation(queryClient)));
   let decideError = $state<string | null>(null);
 
   function handleDecide(id: number, action: "done" | "declined"): void {
-    if ($decide.isPending) {
+    if (decide.isPending) {
       return;
     }
     decideError = null;
-    $decide.mutate(
+    decide.mutate(
       { id, action },
       {
         onError: (err: unknown) => {
@@ -65,27 +64,27 @@
       type="button"
       class="group-requests-card__toggle"
       onclick={toggleExpanded}
-      aria-expanded={$expanded}
+      aria-expanded={expanded}
     >
       Group requests: {pendingCount} pending
     </button>
 
-    {#if $expanded}
-      {#if $requests.isPending}
+    {#if expanded}
+      {#if requests.isPending}
         <Skeleton rows={2} />
-      {:else if $requests.isError}
+      {:else if requests.isError}
         <ErrorState
-          message={errorMessage($requests.error, "Couldn't load group requests.")}
-          onretry={() => $requests.refetch()}
+          message={errorMessage(requests.error, "Couldn't load group requests.")}
+          onretry={() => requests.refetch()}
         />
-      {:else if $requests.data.length === 0}
+      {:else if requests.data.length === 0}
         <EmptyState message="No pending requests right now." />
       {:else}
         {#if decideError}
           <p class="group-requests-card__error" role="alert">{decideError}</p>
         {/if}
         <ul class="group-requests-card__list">
-          {#each $requests.data as request (request.id)}
+          {#each requests.data as request (request.id)}
             <li class="group-requests-card__row">
               <div class="group-requests-card__info">
                 <span class="group-requests-card__name">{request.group_name}</span>
@@ -100,7 +99,7 @@
                 <button
                   type="button"
                   class="group-requests-card__done"
-                  disabled={$decide.isPending}
+                  disabled={decide.isPending}
                   aria-label={`Mark ${request.group_name} done`}
                   onclick={() => handleDecide(request.id, "done")}
                 >
@@ -109,7 +108,7 @@
                 <button
                   type="button"
                   class="group-requests-card__decline"
-                  disabled={$decide.isPending}
+                  disabled={decide.isPending}
                   aria-label={`Decline ${request.group_name}`}
                   onclick={() => handleDecide(request.id, "declined")}
                 >

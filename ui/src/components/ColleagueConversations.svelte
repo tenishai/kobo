@@ -51,20 +51,20 @@
   // the routed agent changes, same reasoning as every other panel in this
   // room (ChatPanel/SlackPanel/ToolingPanel/AccessPanel).
   // svelte-ignore state_referenced_locally
-  const feed = createQuery(colleagueFeedQuery(agentName));
+  const feed = createQuery(() => (colleagueFeedQuery(agentName)));
 
   const switchboardDisabled = $derived(
-    $feed.isError && $feed.error instanceof ApiError && $feed.error.status === 409,
+    feed.isError && feed.error instanceof ApiError && feed.error.status === 409,
   );
 
-  const entries = $derived($feed.data?.entries ?? []);
+  const entries = $derived(feed.data?.entries ?? []);
 
   const EVENT_NAMES = ["hello", "dispatch_start", "dispatch_success", "dispatch_failure"];
 
   let streamActive = $state(false);
 
   $effect(() => {
-    if (!streamActive && $feed.data !== undefined) {
+    if (!streamActive && feed.data !== undefined) {
       streamActive = true;
     }
   });
@@ -290,12 +290,12 @@
       </div>
     {/if}
 
-    {#if $feed.isPending}
+    {#if feed.isPending}
       <p class="colleague-terminal__status">Loading…</p>
-    {:else if $feed.isError}
+    {:else if feed.isError}
       <ErrorState
-        message={errorMessage($feed.error, "Couldn't load colleague conversations.")}
-        onretry={() => $feed.refetch()}
+        message={errorMessage(feed.error, "Couldn't load colleague conversations.")}
+        onretry={() => feed.refetch()}
       />
     {:else}
       <div class="colleague-terminal__wrap">
@@ -355,7 +355,7 @@
           </button>
         {/if}
       </div>
-      {#if $feed.data?.truncated}
+      {#if feed.data?.truncated}
         <p class="colleague-terminal__truncated">
           Only the most recent 200 lines are shown.
         </p>

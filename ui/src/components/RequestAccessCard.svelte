@@ -22,8 +22,8 @@
 
   let { toAgentName }: { toAgentName: string } = $props();
 
-  const agents = createQuery(agentsQuery());
-  const whoami = createQuery(whoamiQuery());
+  const agents = createQuery(() => (agentsQuery()));
+  const whoami = createQuery(() => (whoamiQuery()));
 
   const myAgents = $derived.by(() => {
     const email = $whoami.data?.email;
@@ -31,7 +31,7 @@
       return [];
     }
     const lower = email.toLowerCase();
-    return ($agents.data?.agents ?? []).filter(
+    return (agents.data?.agents ?? []).filter(
       (agent) => agent.created_by !== null && agent.created_by.toLowerCase() === lower,
     );
   });
@@ -52,19 +52,19 @@
   });
 
   const queryClient = useQueryClient();
-  const requestAccess = createMutation(createInviteMutation(queryClient));
+  const requestAccess = createMutation(() => (createInviteMutation(queryClient)));
 
   let requestError = $state<string | null>(null);
   let requestSent = $state(false);
 
   function handleSubmit(event: SubmitEvent): void {
     event.preventDefault();
-    if (selectedFromAgent === null || $requestAccess.isPending) {
+    if (selectedFromAgent === null || requestAccess.isPending) {
       return;
     }
     requestError = null;
     requestSent = false;
-    $requestAccess.mutate(
+    requestAccess.mutate(
       { fromAgent: selectedFromAgent, toAgent: toAgentName },
       {
         onSuccess: () => {
@@ -81,7 +81,7 @@
 <div class="request-access" aria-labelledby="request-access-heading">
   <h2 id="request-access-heading" class="request-access__heading">Request colleague access</h2>
 
-  {#if $whoami.isPending || $agents.isPending}
+  {#if $whoami.isPending || agents.isPending}
     <p class="request-access__status">Loading your agents…</p>
   {:else if myAgents.length === 0}
     <p class="request-access__copy">

@@ -98,17 +98,17 @@
   // the routed agent changes, so this prop is fixed for the component's
   // entire lifetime.
   // svelte-ignore state_referenced_locally
-  const knowledge = createQuery(knowledgeQuery(agentName));
+  const knowledge = createQuery(() => (knowledgeQuery(agentName)));
   // svelte-ignore state_referenced_locally
-  const saveMutation = createMutation(saveKnowledgeMutation(queryClient, agentName));
+  const saveMutation = createMutation(() => (saveKnowledgeMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
-  const deleteMutation = createMutation(deleteKnowledgeMutation(queryClient, agentName));
+  const deleteMutation = createMutation(() => (deleteKnowledgeMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
-  const intake = createQuery(intakeQuery(agentName));
+  const intake = createQuery(() => (intakeQuery(agentName)));
   // svelte-ignore state_referenced_locally
-  const uploadMutation = createMutation(uploadIntakeMutation(queryClient, agentName));
+  const uploadMutation = createMutation(() => (uploadIntakeMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
-  const intakeDeleteMutation = createMutation(deleteIntakeMutation(queryClient, agentName));
+  const intakeDeleteMutation = createMutation(() => (deleteIntakeMutation(queryClient, agentName)));
 
   // --- Delivery chip (shared by knowledge save/delete and intake upload) --
 
@@ -117,9 +117,8 @@
   // store rather than `$state`.
   const DELIVERED_CLEAR_MS = 5000;
 
-  const deliverySha = writable<string | null>(null);
-  const deliveryOptions = derived(deliverySha, ($sha) => deliveryQuery(agentName, $sha));
-  const delivery = createQuery(deliveryOptions);
+  let deliverySha = $state<string | null>(null);
+  const delivery = createQuery(() => (deliveryQuery(agentName, deliverySha)));
 
   // Handle of the pending "clear the chip" timeout, if any. Not reactive
   // state on purpose — it's bookkeeping for `beginDelivery`/the effect
@@ -136,15 +135,15 @@
       clearTimeout(clearTimer);
       clearTimer = undefined;
     }
-    deliverySha.set(sha);
+    deliverySha = sha;
   }
 
   $effect(() => {
-    if ($delivery.data?.state !== "delivered") {
+    if (delivery.data?.state !== "delivered") {
       return;
     }
     clearTimer = setTimeout(() => {
-      deliverySha.set(null);
+      deliverySha = null;
       clearTimer = undefined;
     }, DELIVERED_CLEAR_MS);
     return () => {
@@ -194,13 +193,13 @@
   type DeliveryView = { tone: "pending" | "ok" | "fail"; text: string };
 
   const deliveryView = $derived.by((): DeliveryView => {
-    if ($delivery.isError) {
+    if (delivery.isError) {
       return {
         tone: "fail",
-        text: errorMessage($delivery.error, "Couldn't check on your changes."),
+        text: errorMessage(delivery.error, "Couldn't check on your changes."),
       };
     }
-    const data = $delivery.data;
+    const data = delivery.data;
     if (data === undefined) {
       return { tone: "pending", text: "Delivering changes…" };
     }
@@ -322,7 +321,7 @@
     if (!/^[a-z]/.test(filename)) {
       return "Must start with a letter.";
     }
-    if ($knowledge.data?.some((file) => file.name === `${filename}.md`)) {
+    if (knowledge.data?.some((file) => file.name === `${filename}.md`)) {
       return "There's already a memory file with this name.";
     }
     return null;
@@ -371,7 +370,7 @@
     }
     const targetFilename = target.kind === "edit" ? target.file.name : `${filename}.md`;
     modalError = null;
-    $saveMutation.mutate(
+    saveMutation.mutate(
       { filename: targetFilename, content },
       {
         onSuccess: (result) => {
@@ -391,7 +390,7 @@
     }
     const targetFilename = target.file.name;
     modalError = null;
-    $deleteMutation.mutate(targetFilename, {
+    deleteMutation.mutate(targetFilename, {
       onSuccess: (result) => {
         handleWriteResult(result);
         closeModal();
@@ -438,12 +437,12 @@
     if (intakeFilename.length === 0 || !INTAKE_FILENAME_RE.test(intakeFilename)) {
       return null;
     }
-    const match = $intake.data?.find((file) => file.name === intakeFilename);
+    const match = intake.data?.find((file) => file.name === intakeFilename);
     return match ?? null;
   });
 
   const canUpload = $derived.by((): boolean => {
-    if ($uploadMutation.isPending) {
+    if (uploadMutation.isPending) {
       return false;
     }
     if (intakeFilename.length === 0 || intakeFilenameError !== null) {
@@ -503,7 +502,7 @@
       return;
     }
     uploadError = null;
-    $uploadMutation.mutate(
+    uploadMutation.mutate(
       { filename: intakeFilename, content: intakeContent },
       {
         onSuccess: (result) => {
@@ -544,7 +543,7 @@
     }
     const targetName = removeTarget.name;
     removeError = null;
-    $intakeDeleteMutation.mutate(targetName, {
+    intakeDeleteMutation.mutate(targetName, {
       onSuccess: (result) => {
         if (removeNoteTimer !== undefined) {
           clearTimeout(removeNoteTimer);
@@ -591,7 +590,7 @@
   // newest-first without `IntakeFile` needing a real timestamp field.
   const CHAT_NOTE_RE = /^chat-\d{8}-.*\.md$/;
 
-  const orderedIntakeFiles = $derived([...($intake.data ?? [])].reverse());
+  const orderedIntakeFiles = $derived([...(intake.data ?? [])].reverse());
   const otherIntakeFiles = $derived(
     orderedIntakeFiles.filter((file) => !CHAT_NOTE_RE.test(file.name)),
   );
@@ -640,18 +639,18 @@
     learn on its own from ordinary conversation.
   </p>
 
-  {#if $knowledge.isPending}
+  {#if knowledge.isPending}
     <Skeleton rows={3} />
-  {:else if $knowledge.isError}
+  {:else if knowledge.isError}
     <ErrorState
-      message={errorMessage($knowledge.error, "Couldn't load what this agent knows.")}
-      onretry={() => $knowledge.refetch()}
+      message={errorMessage(knowledge.error, "Couldn't load what this agent knows.")}
+      onretry={() => knowledge.refetch()}
     />
-  {:else if $knowledge.data.length === 0}
+  {:else if knowledge.data.length === 0}
     <EmptyState message="Nothing here yet. Add the first thing your agent should know." />
   {:else}
     <ul class="memory-panel__list">
-      {#each $knowledge.data as file (file.name)}
+      {#each knowledge.data as file (file.name)}
         <li class="memory-row">
           <button type="button" class="memory-row__open" disabled={frozen} onclick={() => openEdit(file)}>
             <span class="memory-panel__sr-only">Edit </span>
@@ -759,7 +758,7 @@
       {/if}
 
       <button type="submit" class="intake-form__submit" disabled={frozen || !canUpload}>
-        {$uploadMutation.isPending ? "Uploading…" : "Upload"}
+        {uploadMutation.isPending ? "Uploading…" : "Upload"}
       </button>
     </form>
 
@@ -790,14 +789,14 @@
       </li>
     {/snippet}
 
-    {#if $intake.isPending}
+    {#if intake.isPending}
       <Skeleton rows={3} />
-    {:else if $intake.isError}
+    {:else if intake.isError}
       <ErrorState
-        message={errorMessage($intake.error, "Couldn't load this agent's files.")}
-        onretry={() => $intake.refetch()}
+        message={errorMessage(intake.error, "Couldn't load this agent's files.")}
+        onretry={() => intake.refetch()}
       />
-    {:else if $intake.data.length === 0}
+    {:else if intake.data.length === 0}
       <EmptyState message="Nothing here yet. Upload a file for your agent to learn from." />
     {:else}
       {#if otherIntakeFiles.length > 0}
@@ -838,7 +837,7 @@
     {/if}
   </section>
 
-  {#if $deliverySha !== null}
+  {#if deliverySha !== null}
     <div
       class="memory-panel__delivery memory-panel__delivery--{deliveryView.tone}"
       role="status"
@@ -871,10 +870,10 @@
         <button
           type="button"
           class="memory-modal__danger"
-          disabled={frozen || $deleteMutation.isPending}
+          disabled={frozen || deleteMutation.isPending}
           onclick={handleDelete}
         >
-          {$deleteMutation.isPending ? "Removing…" : "Remove"}
+          {deleteMutation.isPending ? "Removing…" : "Remove"}
         </button>
       </div>
     {:else if reviewing}
@@ -901,10 +900,10 @@
         <button
           type="button"
           class="memory-modal__primary"
-          disabled={frozen || $saveMutation.isPending}
+          disabled={frozen || saveMutation.isPending}
           onclick={handleSave}
         >
-          {$saveMutation.isPending ? "Saving…" : "Save"}
+          {saveMutation.isPending ? "Saving…" : "Save"}
         </button>
       </div>
     {:else}
@@ -988,10 +987,10 @@
       <button
         type="button"
         class="intake-modal__danger"
-        disabled={frozen || $intakeDeleteMutation.isPending}
+        disabled={frozen || intakeDeleteMutation.isPending}
         onclick={handleRemove}
       >
-        {$intakeDeleteMutation.isPending ? "Removing…" : "Remove"}
+        {intakeDeleteMutation.isPending ? "Removing…" : "Remove"}
       </button>
     </div>
   {/if}
