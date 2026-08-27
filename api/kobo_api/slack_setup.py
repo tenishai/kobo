@@ -66,13 +66,32 @@ _BACKGROUND_COLOR = "#3d2f5b"
 _BOT_SCOPES = [
     "app_mentions:read",
     "channels:history",
+    # Private channels (2026-08-27 operator feedback): history alone reads
+    # messages, but resolving the channel itself (conversations.info on a
+    # G-prefixed id) needs the matching :read scope -- without it an agent
+    # invited into a private channel can hear but not orient.
     "groups:history",
+    "groups:read",
+    "channels:read",
+    # Direct and group DMs, the other half of the same feedback: people
+    # expect to DM an agent, not only @-mention it in channels.
+    "im:history",
+    "im:read",
+    "im:write",
+    "mpim:history",
+    "mpim:read",
     "chat:write",
     "reactions:read",
     "reactions:write",
 ]
 
-_BOT_EVENTS = ["app_mention", "message.channels", "message.groups"]
+_BOT_EVENTS = [
+    "app_mention",
+    "message.channels",
+    "message.groups",
+    "message.im",
+    "message.mpim",
+]
 
 
 def render_manifest(agent_name: str, persona_first_line: str) -> dict:

@@ -72,6 +72,13 @@ def test_render_manifest_scopes_byte_equal_to_constraint():
         "app_mentions:read",
         "channels:history",
         "groups:history",
+        "groups:read",
+        "channels:read",
+        "im:history",
+        "im:read",
+        "im:write",
+        "mpim:history",
+        "mpim:read",
         "chat:write",
         "reactions:read",
         "reactions:write",
@@ -82,7 +89,13 @@ def test_render_manifest_settings_and_events_exact():
     manifest = render_manifest("echo", "A friendly test agent.")
     assert manifest["settings"] == {
         "event_subscriptions": {
-            "bot_events": ["app_mention", "message.channels", "message.groups"]
+            "bot_events": [
+                "app_mention",
+                "message.channels",
+                "message.groups",
+                "message.im",
+                "message.mpim",
+            ]
         },
         "interactivity": {"is_enabled": False},
         "org_deploy_enabled": False,
