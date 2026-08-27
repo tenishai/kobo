@@ -43,6 +43,13 @@ ORG_KEYS = frozenset(
         "personas_bucket",
         "gojira_cluster",
         "runtime_image",
+        # Agent memory replication target (resilience arc). The lesson that
+        # put this comment here: Task 14 added the Config FIELD but not this
+        # allowlist entry, and one unrecognized org.yaml key unwires ALL org
+        # config, so setting the key in org.yaml degraded the whole room
+        # (MCP + catalogs) on the next boot. A Config field an org should
+        # set is not org-settable until it is named HERE.
+        "memory_replica_bucket",
         "gcp_project",
         "vertex_project",
         "vertex_location",

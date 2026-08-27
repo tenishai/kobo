@@ -134,6 +134,7 @@ _ORG_YAML_TOKENS = {
     "groups": "__KOBO_GROUPS__",
     "okta_domain": "__KOBO_OKTA_DOMAIN__",
     "mcp": "__KOBO_MCP__",
+    "memory_replica_bucket": "__KOBO_MEMORY_REPLICA_BUCKET__",
 }
 
 assert set(_ORG_YAML_TOKENS) == ORG_KEYS, (
@@ -155,6 +156,7 @@ def _org_yaml_context(config: Config) -> dict[str, object]:
         "personas_bucket": _personas_bucket_name(config),
         "gojira_cluster": config.gojira_cluster,
         "runtime_image": config.runtime_image,
+        "memory_replica_bucket": config.memory_replica_bucket,
         "gcp_project": config.gcp_project,
         "vertex_project": config.vertex_project,
         "vertex_location": config.vertex_location,

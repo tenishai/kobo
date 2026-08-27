@@ -84,6 +84,7 @@ def test_render_org_yaml_golden_with_computed_defaults():
         "personas_bucket": "acme-corp-personas",
         "gojira_cluster": "acme-cluster",
         "runtime_image": "registry.example/agents/daedalus-runtime:v1",
+        "memory_replica_bucket": "",
         "gcp_project": "acme-project",
         "vertex_project": "acme-models",
         "vertex_location": "us-east5",

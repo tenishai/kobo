@@ -18,6 +18,9 @@ skills_bucket: __KOBO_SKILLS_BUCKET__
 personas_bucket: __KOBO_PERSONAS_BUCKET__
 gojira_cluster: __KOBO_GOJIRA_CLUSTER__
 runtime_image: __KOBO_RUNTIME_IMAGE__
+# Agent techne databases replicate continuously to this bucket; empty means
+# replication is off and composed bundles carry no supervision.
+memory_replica_bucket: __KOBO_MEMORY_REPLICA_BUCKET__
 gcp_project: __KOBO_GCP_PROJECT__
 vertex_project: __KOBO_VERTEX_PROJECT__
 vertex_location: __KOBO_VERTEX_LOCATION__
