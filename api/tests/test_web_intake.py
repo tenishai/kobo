@@ -28,6 +28,7 @@ from tests.fakes import (
     FAKE_DOCKERFILE_OLD_IMAGE,
     FAKE_LOCAL_HEAD_DEFAULT,
     FakeAgent,
+    FakeCabal,
     FakeCloud,
     FakeGitHub,
     FakeGojira,
@@ -103,7 +104,7 @@ def config(tmp_path):
     return Config(workdir=tmp_path / "work")
 
 
-def _make_client(session_factory, config, *, github=None, kubectl=None):
+def _make_client(session_factory, config, *, github=None, kubectl=None, cabal=None):
     return TestClient(
         create_app(
             session_factory,
@@ -115,8 +116,22 @@ def _make_client(session_factory, config, *, github=None, kubectl=None):
                 agent=FakeAgent(),
                 kubectl=kubectl if kubectl is not None else FakeKubectl(),
                 storage=FakeStorage(),
+                cabal=cabal,
             ),
         )
+    )
+
+
+def _enabled_config(config):
+    """Same switchboard-on config shape as test_web_teach.py's own
+    `_enabled_config`: both org config keys set. Combined with the
+    `CABAL_OPERATOR_TOKEN` env var (set per-test via monkeypatch) and a
+    wired `clients.cabal`, this is what flips `cabal_enabled(cfg)` true."""
+    return config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": "http://agent-{name}.default.svc.cluster.local",
+        }
     )
 
 
@@ -227,7 +242,7 @@ def test_upload_intake_route_creates_commits_and_returns_sha(session_factory, co
     )
 
     assert response.status_code == 200
-    assert response.json() == {"sha": SHA}
+    assert response.json() == {"sha": SHA, "mode": "archive"}
     assert github.captured_intake == {"notes.md": "new content"}
     assert github.pushes[-1][1] == "kobo: add intake/notes.md"
 
@@ -264,7 +279,16 @@ def test_upload_intake_route_rewrites_dockerfile_to_configured_runtime_image(
     )
 
 
-def test_upload_intake_route_accepts_txt_extension(session_factory, config):
+def test_upload_intake_route_rejects_txt_extension_for_the_memory_lane(session_factory, config):
+    # Fast-memory-lane (arc3c Task 4): intake uploads now relay through the
+    # daedalus runtime's "teach" system task, which only accepts filenames
+    # matching `^[a-z0-9][a-z0-9-]{0,39}\.md$` (daedalus.memory.teach.
+    # _FILENAME_RE) -- no ".txt". A ".txt" upload used to succeed via the
+    # plain archive-only path; it no longer can, since it could never
+    # actually ride the lane it now always attempts first. Refused here,
+    # unconditionally (even with no switchboard wired at all), rather than
+    # silently degrading to an archive-lane "success" the fast lane could
+    # never have delivered.
     github = _CapturingGitHub()
     client = _make_client(session_factory, config, github=github)
     _seed_agent(session_factory, config)
@@ -274,8 +298,9 @@ def test_upload_intake_route_accepts_txt_extension(session_factory, config):
         json={"filename": "transcript.txt", "content": "hello"},
     )
 
-    assert response.status_code == 200
-    assert github.captured_intake == {"transcript.txt": "hello"}
+    assert response.status_code == 422
+    assert "invalid intake filename" in response.json()["error"]
+    assert github.pushes == []
 
 
 def test_upload_intake_route_invalid_filename_returns_422(session_factory, config):
@@ -359,6 +384,192 @@ def test_upload_intake_route_client_error_returns_502(session_factory, config):
 
     assert response.status_code == 502
     assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
+
+
+# --- POST /api/agents/{name}/intake: switchboard relay, instant lane --------
+#
+# Fast-memory-lane (arc3c Task 4): a memory upload now relays through the
+# switchboard first (reusing teach's own "teach" system task -- there is no
+# separate "intake" marker on the runtime side) and only falls back to
+# today's synchronous archive lane on ANY miss, same shape as teach/knowledge.
+# The one wrinkle intake has that teach doesn't: the filename comes straight
+# from the caller, so it must clear the runtime's own naming rule BEFORE any
+# relay is attempted -- see the rejection tests at the end of this section.
+
+
+def test_upload_intake_instant_lane_relays_and_archives_in_background(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    relay_result = {
+        "status": {
+            "state": "completed",
+            "message": {"parts": [{"text": "noted, thanks"}]},
+        }
+    }
+    fake_cabal = FakeCabal(relay_result=relay_result)
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/intake",
+        json={"filename": "notes.md", "content": "remember this"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"mode": "instant"}
+
+    # BackgroundTasks run after the response completes but before
+    # TestClient.post() returns control here -- the archive commit (via the
+    # same `_archive_teach_note` helper teach's own instant lane uses) has
+    # already happened by this point.
+    assert github.captured_intake == {"notes.md": "remember this"}
+
+    assert len(fake_cabal.relay_calls) == 1
+    envelope = fake_cabal.relay_calls[0]["task_envelope"]
+    assert envelope["metadata"] == {"system_task": "teach", "filename": "notes.md"}
+    # Both lanes agree on content: the relayed text is byte-for-byte what the
+    # background archive committed.
+    assert (
+        envelope["status"]["message"]["parts"][0]["text"]
+        == github.captured_intake["notes.md"]
+    )
+
+
+def test_upload_intake_falls_back_to_archive_when_relay_fails(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    fake_cabal = FakeCabal(relay_error="switchboard unreachable")
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/intake",
+        json={"filename": "notes.md", "content": "remember this"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"sha": SHA, "mode": "archive"}
+    assert len(fake_cabal.relay_calls) == 1
+    assert github.captured_intake == {"notes.md": "remember this"}
+
+
+def test_upload_intake_falls_back_when_agent_reply_is_failed_task(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    fake_cabal = FakeCabal(relay_result={"status": {"state": "failed"}})
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/intake",
+        json={"filename": "notes.md", "content": "remember this"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"sha": SHA, "mode": "archive"}
+    assert github.captured_intake == {"notes.md": "remember this"}
+
+
+def test_upload_intake_without_cabal_is_archive_mode(session_factory, config):
+    github = _CapturingGitHub()
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/intake",
+        json={"filename": "notes.md", "content": "remember this"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"sha": SHA, "mode": "archive"}
+
+
+def test_upload_intake_background_archive_failure_is_logged_not_surfaced(
+    session_factory, config, monkeypatch, caplog
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    relay_result = {
+        "status": {
+            "state": "completed",
+            "message": {"parts": [{"text": "noted, thanks"}]},
+        }
+    }
+    fake_cabal = FakeCabal(relay_result=relay_result)
+    client = _make_client(session_factory, cfg, github=_RaisingGitHub(), cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    with caplog.at_level("WARNING"):
+        response = client.post(
+            f"/api/agents/{AGENT_NAME}/intake",
+            json={"filename": "notes.md", "content": "remember this"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "instant"
+    assert "teach archive commit failed" in caplog.text
+
+
+# --- POST /api/agents/{name}/intake: the room-side filename rule check -----
+#
+# The runtime's own teach-lane filename rule
+# (`^[a-z0-9][a-z0-9-]{0,39}\.md$`, daedalus.memory.teach._FILENAME_RE) is
+# stricter on extension than kobo's own INTAKE_FILENAME_RE (.md only, no
+# .txt) -- a mismatch teach's auto-generated filenames never hit, but a
+# caller-supplied intake filename can. The room checks this BEFORE any
+# relay is attempted, so a filename the runtime would refuse is refused
+# here first, with a message naming the rule, rather than wasting a relay
+# round trip (or worse, silently degrading to an archive-lane "success" for
+# content the fast lane could never actually have delivered).
+
+
+def test_upload_intake_bad_fast_lane_filename_refused_before_any_relay_attempt(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    fake_cabal = FakeCabal()
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/intake",
+        json={"filename": "transcript.txt", "content": "hello"},
+    )
+
+    assert response.status_code == 422
+    assert "invalid intake filename" in response.json()["error"]
+    # The pin: the relay is never even attempted for a filename the runtime
+    # would refuse -- this is a room-side refusal, not a degraded lane.
+    assert fake_cabal.relay_calls == []
+    assert github.pushes == []
+
+
+def test_upload_intake_uppercase_filename_refused_before_any_relay_attempt(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    fake_cabal = FakeCabal()
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/intake",
+        json={"filename": "Notes.md", "content": "hello"},
+    )
+
+    assert response.status_code == 422
+    assert "invalid intake filename" in response.json()["error"]
+    assert fake_cabal.relay_calls == []
 
 
 # --- DELETE /api/agents/{name}/intake/{filename} -----------------------------

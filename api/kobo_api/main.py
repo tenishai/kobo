@@ -452,6 +452,17 @@ class AgentMetadataPatch(BaseModel):
 # git's own short-to-full hex sha range.
 KNOWLEDGE_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
+# The daedalus runtime's own teach-lane filename rule
+# (`daedalus.memory.teach._FILENAME_RE`, mirrored byte-for-byte here,
+# fast-memory-lane arc3c Task 4): lowercase letters, digits, and hyphens, at
+# most 40 chars before the extension, ending in ".md". An intake upload now
+# relays through that lane's "teach" system task, so a filename this rule
+# would refuse must be refused before any relay is attempted -- see
+# `upload_intake`'s own comment for why this can't just be left to
+# `kobo_api.intake.INTAKE_FILENAME_RE` (looser on extension, admitting
+# ".txt", but stricter on the leading character).
+_INTAKE_FAST_LANE_FILENAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}\.md$")
+
 # Slack channel id shape (Global Constraints, P2c plan): format-only — never
 # a semantic check that the channel actually exists (that's Slack's job when
 # the agent tries to post to it). The rendered manifest's scopes/events
@@ -3386,6 +3397,7 @@ def create_app(
         name: str,
         payload: IntakeUploadPayload,
         request: Request,
+        background_tasks: BackgroundTasks,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(session, request, name)
@@ -3395,7 +3407,62 @@ def create_app(
         if gate is not None:
             return gate
 
+        # Fast-memory-lane (arc3c Task 4): a memory upload now relays
+        # through the switchboard first, reusing teach's own "teach" system
+        # task below (`_build_teach_envelope`/`_archive_teach_note`) rather
+        # than a new marker -- there is no separate "intake" marker on the
+        # runtime side, and an intake upload is exactly teach's own
+        # "append-only operator note" shape, just with a caller-chosen
+        # filename instead of an auto-generated one.
+        #
+        # That caller-chosen filename is the one wrinkle teach itself never
+        # has: kobo's own INTAKE_FILENAME_RE additionally accepts a ".txt"
+        # extension the runtime's teach-lane filename rule
+        # (`^[a-z0-9][a-z0-9-]{0,39}\.md$`, daedalus.memory.teach.
+        # _FILENAME_RE) does not. Unlike knowledge's own filename (a strict
+        # subset of that runtime rule, so no divergence is possible there),
+        # a ".txt" upload here would sail past kobo's own validation, get
+        # refused by the runtime, and then silently "succeed" via the
+        # archive-lane fallback below -- a delivery the fast lane could
+        # never actually have made. So this is checked HERE, before any
+        # relay is attempted (and unconditionally, not just when the
+        # switchboard happens to be wired), refusing early with a message
+        # naming the rule rather than letting that mismatch through.
+        if not _INTAKE_FAST_LANE_FILENAME_RE.match(payload.filename):
+            return JSONResponse(
+                {
+                    "error": (
+                        f"invalid intake filename: {payload.filename!r}. Use "
+                        "lowercase letters, digits, and hyphens, ending in .md."
+                    )
+                },
+                status_code=422,
+            )
+
         cfg: Config = app.state.config
+        clients = app.state.clients
+        if cabal_enabled(cfg) and clients.cabal is not None:
+            envelope = _build_teach_envelope(payload.content, payload.filename)
+            try:
+                raw = clients.cabal.relay(agent.name, envelope)
+                if _teach_task_not_completed(raw):
+                    raise CabalError("agent reply was not a completed task")
+                _extract_relay_reply(raw)
+            except (CabalError, httpx.HTTPError, ValueError) as exc:
+                # Same catch set as teach_agent's own relay above: ANY
+                # instant-lane miss degrades to the archive lane below, so
+                # an intake upload never 502s during a delivery window.
+                log.warning(
+                    "intake upload relay failed for agent %s, archive lane instead: %s",
+                    name,
+                    exc,
+                )
+            else:
+                background_tasks.add_task(
+                    _archive_teach_note, agent.repo_full_name, payload.filename, payload.content
+                )
+                return JSONResponse({"mode": "instant"})
+
         try:
             sha = upload_intake_file(
                 app.state.clients.github,
@@ -3412,7 +3479,7 @@ def create_app(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
-        return JSONResponse({"sha": sha})
+        return JSONResponse({"sha": sha, "mode": "archive"})
 
     @app.delete("/api/agents/{name}/intake/{filename}")
     def delete_intake(
