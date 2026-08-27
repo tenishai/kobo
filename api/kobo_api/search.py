@@ -1,7 +1,16 @@
-"""FTS5 catalog search (Phase A Task 3): every configured catalog's
-`index.json` object, ingested into one SQLite FTS5 table and queried by kind
-("skill", "persona", and any further kind a caller's `catalogs` mapping
-names), with an optional team filter.
+"""Catalog search (Phase A Task 3; ported off SQLite-only FTS5, resilience
+arc Task 12): every configured catalog's `index.json` object, ingested into
+one `catalog_fts` table and queried by kind ("skill", "persona", and any
+further kind a caller's `catalogs` mapping names), with an optional team
+filter.
+
+Two backends, selected at runtime by `engine`'s own dialect (the room's
+existing `db_url` -- no new config key): SQLite's FTS5 virtual table with
+`MATCH`, and Postgres's plain table with an on-the-fly `to_tsvector`/
+`to_tsquery` full-text match. Both are exercised by the exact same test
+module (`tests/test_search.py`) against whichever engine its own `engine`
+fixture is pointed at. `ensure_fts` picks the right `CREATE TABLE` shape for
+whichever engine it's given.
 
 Ingestion is deliberately atomic, idempotent, and kind-generic:
 `ingest_indexes` reads and fully validates every catalog in its `catalogs`
@@ -9,15 +18,20 @@ mapping *before* touching the table at all, so a malformed index in one
 bucket can never leave the table half-rebuilt, and adding a new catalog kind
 is just one more mapping entry — nothing here needs reworking. `ensure_fts`
 (called by every entry point here, ingestion or query) means a fresh
-database with no FTS table yet behaves exactly like an empty one rather than
-raising — a never-ingested search is just `[]`, not an error.
+database with no catalog table yet behaves exactly like an empty one rather
+than raising — a never-ingested search is just `[]`, not an error.
 
-The MATCH string `search()` builds from a caller's `q` is never string-
-interpolated: every token is quoted and its embedded quotes doubled per
-FTS5's own escaping rule (`_escape_match_token`), then passed to SQLite as a
-single bound parameter. That's what makes an adversarial `q` like
-`foo" OR 1` land as a harmless literal phrase search instead of injected FTS5
-query syntax.
+The match query `search()` builds from a caller's `q` is never string-
+interpolated: every token is individually escaped and quoted (FTS5's own
+quoting rule for SQLite, `_escape_match_token`; Postgres's quoted-lexeme
+tsquery syntax for Postgres, `_escape_tsquery_lexeme`), then the WHOLE
+built string is passed to the database as a single bound parameter -- never
+spliced into the SQL text itself. That is what makes an adversarial `q` like
+`foo" OR 1` (or one with unbalanced parens, a stray dash, or an embedded
+quote) land as a harmless literal-term search on either engine instead of
+injected query syntax: FTS5's `MATCH` and Postgres's `to_tsquery` each have
+their own tiny query language, and quoting is how each one is told "this is
+data, not an operator."
 """
 
 from __future__ import annotations
@@ -62,21 +76,50 @@ class CatalogEntry:
     builtin: bool = False
 
 
+def _is_postgres(engine: Engine) -> bool:
+    """Whether `engine` targets Postgres -- the one runtime switch this
+    whole module branches on, read straight off `engine`'s own dialect
+    (itself derived from the room's existing `db_url` at `create_engine`
+    time, `kobo_api.db.make_engine`). No new config key: the SAME url that
+    already selects everything else about the engine selects this too.
+    """
+    return engine.dialect.name == "postgresql"
+
+
+_SQLITE_CREATE_FTS_SQL = (
+    "CREATE VIRTUAL TABLE IF NOT EXISTS catalog_fts USING fts5("
+    "id, name, description, team, tags, "
+    "kind UNINDEXED, sha UNINDEXED, builtin UNINDEXED)"
+)
+
+# Postgres has no virtual-table concept: a plain table holds the same eight
+# columns FTS5's virtual table does, and `search()`'s non-blank branch below
+# builds a `to_tsvector`/`to_tsquery` match on the fly from the indexed
+# columns (id/name/description/team/tags) rather than maintaining a stored,
+# indexed tsvector column -- correctness over the catalog's actual size
+# (low thousands of rows at most) never needs a materialized index here.
+_POSTGRES_CREATE_TABLE_SQL = (
+    "CREATE TABLE IF NOT EXISTS catalog_fts ("
+    "id TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL, "
+    "team TEXT NOT NULL, tags TEXT NOT NULL, kind TEXT NOT NULL, "
+    "sha TEXT NOT NULL, builtin BOOLEAN NOT NULL)"
+)
+
+
 def ensure_fts(engine: Engine) -> None:
-    """Create the `catalog_fts` virtual table if it isn't there yet.
+    """Create the `catalog_fts` table if it isn't there yet, in whichever
+    shape `engine`'s own dialect needs (SQLite's FTS5 virtual table, or a
+    plain table for Postgres's on-the-fly full-text match).
 
     Idempotent (IF NOT EXISTS) and cheap enough to call unconditionally from
     every entry point in this module — ingestion and every query function —
     so none of them can ever hit "no such table" on a fresh database.
     """
     with engine.begin() as conn:
-        conn.execute(
-            text(
-                "CREATE VIRTUAL TABLE IF NOT EXISTS catalog_fts USING fts5("
-                "id, name, description, team, tags, "
-                "kind UNINDEXED, sha UNINDEXED, builtin UNINDEXED)"
-            )
-        )
+        if _is_postgres(engine):
+            conn.execute(text(_POSTGRES_CREATE_TABLE_SQL))
+        else:
+            conn.execute(text(_SQLITE_CREATE_FTS_SQL))
 
 
 # Catalog-index path precedence (fix round 2, whole-arc review): a real
@@ -482,15 +525,65 @@ def _build_match(q: str) -> str:
     return " ".join(_escape_match_token(token) for token in q.split())
 
 
+def _escape_tsquery_lexeme(token: str) -> str:
+    """`token` as a Postgres tsquery quoted-lexeme, prefix-matched: embedded
+    single quotes doubled per tsquery's own quoted-lexeme escape rule (the
+    same doubling trick `_escape_match_token` uses for FTS5's double
+    quotes), the whole thing wrapped in single quotes and given a trailing
+    `:*` prefix marker.
+
+    A quoted lexeme in `to_tsquery`'s own tiny query language is parsed as
+    literal text, not as the operator grammar (`&`/`|`/`!`/`(`/`)`): a
+    quoted operand containing multiple words (because the raw token itself
+    had punctuation the text-search parser splits on -- an unbalanced paren,
+    an embedded quote) becomes a phrase/adjacency match (`<->`) across those
+    words rather than a boolean expression, and an operand with no
+    recognizable words at all (a bare `-`) becomes an empty, always-no-match
+    tsquery. Either way, nothing derived from `token` can ever widen the
+    query into matching an unrelated row the way an unescaped `OR` would --
+    verified directly against a real Postgres instance while this module was
+    written (see the resilience arc's Task 12 report for the transcript).
+    """
+    return "'" + token.replace("'", "''") + "':*"
+
+
+def _build_tsquery(q: str) -> str:
+    """Implicit-AND tsquery string from `q`'s whitespace-separated tokens,
+    each independently escaped and prefix-starred -- the Postgres mirror of
+    `_build_match` above. Built entirely in Python and handed to
+    `to_tsquery` as ONE bound parameter value (`search()`'s `:match`), never
+    string-interpolated into the SQL text itself, so `to_tsquery`'s own
+    mini-language never sees anything from `q` as unescaped operator syntax."""
+    return " & ".join(_escape_tsquery_lexeme(token) for token in q.split())
+
+
+# The full-text match target for the Postgres path: the same four indexed
+# columns FTS5 indexes (id, name, description, team, tags -- kind/sha/builtin
+# are UNINDEXED there and excluded here too), concatenated and tokenized on
+# the fly with the 'simple' text-search configuration. 'simple' deliberately
+# skips English stemming/stopword removal (unlike Postgres's 'english'
+# default): FTS5's own default tokenizer does no stemming either, just word
+# splitting and casefolding, and matching that behavior is what keeps a
+# prefix search like "revi" -> "review" working the same way on both engines
+# without one backend's stemmer changing which prefixes hit.
+_POSTGRES_TSVECTOR_EXPR = (
+    "to_tsvector('simple', id || ' ' || name || ' ' || description || "
+    "' ' || team || ' ' || tags)"
+)
+
+
 def search(
     engine: Engine, kind: str, q: str, team: str | None = None, limit: int = 50
 ) -> list[CatalogEntry]:
     """Entries of `kind`, optionally filtered to `team`, matching `q`.
 
     Blank/whitespace-only `q` returns everything of `kind` (team-filtered),
-    ordered by name — the "browse" case. A non-blank `q` runs a ranked FTS5
-    MATCH built from its tokens (see `_build_match`), ordered by
-    `bm25(catalog_fts)` ascending (lower is more relevant).
+    ordered by name -- the "browse" case, identical on both engines. A
+    non-blank `q` runs a ranked full-text match built from its tokens: FTS5
+    `MATCH` ordered by `bm25(catalog_fts)` ascending (lower is more
+    relevant) on SQLite, or `to_tsvector`/`to_tsquery` ordered by
+    `ts_rank(...)` descending (higher is more relevant) on Postgres -- same
+    "best match first" result ordering, opposite raw score direction.
     """
     ensure_fts(engine)
     q = q.strip()
@@ -502,6 +595,19 @@ def search(
             sql += " AND team = :team"
             params["team"] = team
         sql += " ORDER BY name LIMIT :limit"
+    elif _is_postgres(engine):
+        params["match"] = _build_tsquery(q)
+        sql = (
+            f"SELECT {_COLUMNS} FROM catalog_fts WHERE "
+            f"{_POSTGRES_TSVECTOR_EXPR} @@ to_tsquery('simple', :match) AND kind = :kind"
+        )
+        if team is not None:
+            sql += " AND team = :team"
+            params["team"] = team
+        sql += (
+            f" ORDER BY ts_rank({_POSTGRES_TSVECTOR_EXPR}, "
+            "to_tsquery('simple', :match)) DESC LIMIT :limit"
+        )
     else:
         params["match"] = _build_match(q)
         sql = f"SELECT {_COLUMNS} FROM catalog_fts WHERE catalog_fts MATCH :match AND kind = :kind"

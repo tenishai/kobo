@@ -1,14 +1,28 @@
-"""Unit tests for kobo_api.search: FTS5 ingestion + the query functions built
-on top of it, exercised against `FakeStorage` (tests/fakes.py) — no real GCS
-or network involved anywhere.
+"""Unit tests for kobo_api.search: catalog ingestion + the query functions
+built on top of it, exercised against `FakeStorage` (tests/fakes.py) — no
+real GCS or network involved anywhere.
+
+Dual-engine (resilience arc, Task 12): every test in this module runs
+against whichever backend the `engine` fixture below hands it. By default
+(no `POSTGRES_TEST_URL` set) that's the exact same per-test SQLite file this
+module has always used — every existing assertion here is completely
+unaffected. Setting `POSTGRES_TEST_URL` to a real Postgres connection string
+switches the WHOLE module's `engine` fixture to that database instead
+(dropping `catalog_fts` between tests for isolation, since a real Postgres
+instance is long-lived rather than a fresh tmp_path file per test), so the
+identical test bodies — hostile-input escaping included — prove the
+Postgres full-text path (`kobo_api.search`'s `to_tsvector`/`to_tsquery`
+branch) behaves the same as the SQLite FTS5 path they were written against.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 
 import pytest
+from sqlalchemy import text
 
 from kobo_api.clients import ClientError
 from kobo_api.db import make_engine
@@ -25,6 +39,13 @@ from kobo_api.search import (
     teams,
 )
 from tests.fakes import FakeStorage
+
+# Resilience arc (Task 12): the env-var skip-if-absent seam this module's
+# Postgres proof runs through. Chosen over a testcontainers dependency
+# deliberately -- it needs no new test-only package, and a room without
+# docker (or without network access to pull an image) still runs this whole
+# module unchanged against SQLite; see the module docstring above.
+POSTGRES_TEST_URL = os.environ.get("POSTGRES_TEST_URL", "").strip()
 
 
 def _index_bytes(entries: list[dict]) -> bytes:
@@ -66,7 +87,21 @@ PERSONA_ENTRIES = [
 
 @pytest.fixture
 def engine(tmp_path):
-    return make_engine(f"sqlite:///{tmp_path}/search.db")
+    if POSTGRES_TEST_URL:
+        pg_engine = make_engine(POSTGRES_TEST_URL)
+        # A real Postgres instance persists across tests (unlike the
+        # per-test tmp_path SQLite file below), so each test gets a clean
+        # slate by dropping whatever the previous test's `ensure_fts`/
+        # `ingest_indexes` left behind -- `ensure_fts` recreates it on the
+        # very first call any test in this module makes.
+        with pg_engine.begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS catalog_fts"))
+        try:
+            yield pg_engine
+        finally:
+            pg_engine.dispose()
+    else:
+        yield make_engine(f"sqlite:///{tmp_path}/search.db")
 
 
 @pytest.fixture
@@ -243,12 +278,36 @@ def test_search_ranked_prefix_match_orders_by_relevance(engine):
     assert [e.id for e in results] == ["widget-pro", "alpha"]
 
 
-def test_search_hostile_q_is_escaped_not_injected(engine, storage):
+# The hostile-input contract (resilience arc, Task 12): whatever `q` a
+# caller sends, it must land as a literal term against BOTH backends' query
+# engines -- never as FTS5 MATCH syntax, never as Postgres tsquery syntax.
+# A naive f-string-built query (on either engine) would either blow up with
+# a syntax error or, worse, let a bare `OR` widen the query to match every
+# row. This exact set of cases -- the original `OR`-injection case plus
+# unbalanced parens, a stray leading dash, and an embedded quote -- is the
+# contract every backend's escaper must satisfy; extend this list, never
+# shrink it.
+HOSTILE_QUERIES = [
+    'foo" OR 1',
+    "foo(bar",
+    "foo)bar",
+    "-foo",
+    "foo'bar",
+]
+
+
+@pytest.mark.parametrize(
+    "hostile_q",
+    HOSTILE_QUERIES,
+    ids=["or-injection", "unbalanced-open-paren", "unbalanced-close-paren", "stray-dash", "embedded-quote"],
+)
+def test_search_hostile_q_is_escaped_not_injected(engine, storage, hostile_q):
     _ingest(engine, storage)
-    # A naive f-string MATCH build would either blow up with an FTS5 syntax
-    # error or, worse, let `OR 1` widen the query to match every row.
-    # Escaping quotes keeps this a literal (zero-hit) phrase search instead.
-    results = search(engine, "skill", 'foo" OR 1')
+    # None of these strings appear anywhere in the seeded fixture data, so a
+    # correctly escaped literal-term search always comes back empty -- the
+    # failure mode this guards against is a widened match (every row) or a
+    # raised query-syntax error, not a false positive on real content.
+    results = search(engine, "skill", hostile_q)
     assert results == []
 
 
