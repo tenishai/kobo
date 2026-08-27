@@ -337,6 +337,76 @@ class GroupRequest(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class Thread(Base):
+    """A shared, multi-agent conversation (threads arc, Task 8): every
+    participant sees the same messages, but the thread itself is a room
+    object the initiating human owns, not a colleague pairing between the
+    agents in it.
+
+    `initiator_email` is the verified IAP email that created the thread
+    (`request.state.iap_email`, same "captured once at create time" idiom
+    `Agent.created_by`/`A2AInvite.requested_by` already establish) -- but
+    unlike those two, this field is also the room's ONLY visibility check
+    for the thread (operator ruling: "a thread is readable by its
+    initiator and by nobody else," no owner-or-operator carve-out the way
+    every other gate in this room grants). Nullable for the same
+    IAP-disabled reason `created_by` is: with no verified email ever
+    available, a room that never turned IAP on (local dev, most of this
+    test suite) still needs to create and read back its own threads.
+
+    Participants live in `ThreadParticipant` below rather than as a JSON
+    column here, matching this file's own relational convention for a
+    one-to-many collection (`AgentStep` off `Agent`) rather than reaching
+    for `Agent.skills`'s JSON-column shortcut, since a participant needs
+    its own identity to query against (`kobo_api.pairs.implicitly_paired`/
+    `A2AInvite` lookups when a new one joins) rather than being an opaque
+    blob the room only ever reads back whole.
+
+    This table postdates every other one in this file, but -- same as
+    `MCPRefreshToken`/`MCPToolCallLog` below -- needs no manual ALTER
+    anywhere at rollout: a whole new table is exactly what `Base.metadata.
+    create_all` (`kobo_api.db.init_db`) already handles for free on a
+    database that has never seen it.
+    """
+
+    __tablename__ = "threads"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    initiator_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    participants: Mapped[list[ThreadParticipant]] = relationship(
+        back_populates="thread", order_by="ThreadParticipant.id"
+    )
+
+
+class ThreadParticipant(Base):
+    """One agent's seat in a `Thread` (threads arc, Task 8). Row order
+    (`id`, the insertion order) is the turn order every thread-turn relay
+    walks -- sequential, never a fan-out, and never the same agent twice in
+    one turn, which the unique constraint below makes a schema-level
+    guarantee rather than a caller-side promise.
+
+    `agent_name` is a plain string, not a foreign key to `agents.id` --
+    same "free-text handle, not a hard reference" shape `A2AInvite.
+    from_agent`/`to_agent` already establish, for the identical reason: a
+    thread must be able to outlive a participant that is later destroyed
+    long enough to render an honest history, rather than cascading the
+    delete or raising a foreign-key error.
+    """
+
+    __tablename__ = "thread_participants"
+    __table_args__ = (UniqueConstraint("thread_id", "agent_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    thread_id: Mapped[int] = mapped_column(ForeignKey("threads.id"), nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(63), nullable=False)
+
+    thread: Mapped[Thread] = relationship(back_populates="participants")
+
+
 class MCPRefreshToken(Base):
     """One row per live refresh-token `jti` (MCP server arc, Task 3, the
     design spec's "Token mechanics"): the only one of kobo's four MCP

@@ -77,6 +77,8 @@ from kobo_api.models import (
     AgentStatus,
     AgentUserGrant,
     GroupRequest,
+    Thread,
+    ThreadParticipant,
 )
 from kobo_api.namegen import SUGGESTION_COUNT, finalize_suggestions
 from kobo_api.org import OrgState, load_org_config
@@ -262,6 +264,21 @@ class GrantCreateRequest(BaseModel):
     agent."""
 
     email: str
+
+
+class ThreadCreateRequest(BaseModel):
+    """POST /api/threads body (threads arc, Task 8): the single agent the
+    initiator names to start the thread, a bare name resolved server-side
+    the same way every other agent-scoped route names one."""
+
+    agent: str
+
+
+class ThreadParticipantRequest(BaseModel):
+    """POST /api/threads/{id}/participants body (threads arc, Task 8): the
+    agent being added to an already-created thread."""
+
+    agent: str
 
 
 class GroupRequestCreate(BaseModel):
@@ -943,6 +960,7 @@ def _flatten_conversation_entries(detail: dict) -> list[dict]:
     terminal color a line by direction (outgoing vs incoming) and read
     right as a real back-and-forth rather than two lines both "from" the
     same party.
+
     """
     conv = detail.get("conversation")
     if not isinstance(conv, dict):
@@ -5268,6 +5286,204 @@ def create_app(
             _sync_dispatch_pairs(session)
 
         return JSONResponse(_invite_repr(session, invite))
+
+    # --- Threads: a shared, multi-agent conversation (threads arc, Tasks 8-9) ---
+    #
+    # Operator rulings (law): the initiating human accepts an agent's
+    # suggestion or adds participants directly; same-group agents join a
+    # thread freely; a cross-group agent needs an EXISTING accepted
+    # `A2AInvite` with every agent already in the thread (reusing the
+    # consent model `kobo_api.pairs.implicitly_paired`/`A2AInvite` already
+    # establish -- no new consent concept); a thread is readable by its
+    # INITIATOR ONLY and appears in no agent's colleague feed; turns are
+    # delivered to participants in sequence (never a fan-out), each seeing
+    # every message that came before, and an agent never answers twice in
+    # one turn.
+    #
+    # `_thread_or_404`/`_initiator_or_404` are the one gate every thread
+    # route below shares: a missing thread id and a real thread this
+    # caller did not start answer with the IDENTICAL 404 body, never a
+    # distinguishable 403 -- the ruling's whole point, mirroring
+    # `_no_such_invite_404`'s own "no standing on this side" fold above.
+
+    def _no_such_thread_404(thread_id: int) -> JSONResponse:
+        return JSONResponse({"error": f"no such thread: {thread_id}"}, status_code=404)
+
+    def _thread_or_404(session: Session, thread_id: int) -> Thread | JSONResponse:
+        thread = session.get(Thread, thread_id)
+        if thread is None:
+            return _no_such_thread_404(thread_id)
+        return thread
+
+    def _initiator_or_404(thread: Thread, request: Request) -> JSONResponse | None:
+        """None when `request`'s caller is `thread`'s own initiator; the
+        thread's own not-found body otherwise -- NEVER a distinguishable
+        403, and NEVER an operator carve-out (operator ruling: "a thread is
+        readable by its initiator and by nobody else" -- unlike every
+        owner-or-operator gate elsewhere in this file, there is no `_is_
+        admin` escape hatch here on purpose). A member of a participating
+        agent's own group who is not the initiator, or a room operator who
+        is not the initiator, learns nothing beyond "no such thread" --
+        proven by this room's own test law as the negative case first.
+
+        IAP-disabled short-circuits to allowed, the same escape hatch every
+        other gate in this file takes ("the room trusts its perimeter only
+        when it has one"): with no verified identity ever available,
+        `initiator_email` is never recorded meaningfully either, so without
+        this a room that never turned IAP on (local dev, most of this test
+        suite) could never read back a thread it just created.
+        """
+        cfg: Config = request.app.state.config
+        if not cfg.iap_audience:
+            return None
+        email = (getattr(request.state, "iap_email", None) or "").lower()
+        if email and thread.initiator_email and email == thread.initiator_email.lower():
+            return None
+        return _no_such_thread_404(thread.id)
+
+    def _thread_participants(session: Session, thread_id: int) -> list[ThreadParticipant]:
+        return (
+            session.query(ThreadParticipant)
+            .filter_by(thread_id=thread_id)
+            .order_by(ThreadParticipant.id)
+            .all()
+        )
+
+    def _thread_repr(session: Session, thread: Thread) -> dict:
+        return {
+            "id": thread.id,
+            "initiator_email": thread.initiator_email,
+            "created_at": thread.created_at.isoformat(),
+            "participants": [p.agent_name for p in _thread_participants(session, thread.id)],
+        }
+
+    def _thread_consented(session: Session, a: Agent, b: Agent) -> bool:
+        """Whether `a` and `b` may share a thread: same-group agents join
+        freely (`kobo_api.pairs.implicitly_paired`, the exact predicate
+        `allowed_pairs`'s own same-group rule uses), or an ACCEPTED
+        `A2AInvite` already exists between them in EITHER direction -- an
+        accepted invite is mutual consent to talk at all, so which side
+        originally asked does not matter here the way it does for
+        `allowed_pairs`'s own directional dispatch pairs. No new consent
+        concept: this is the identical predicate `create_invite`'s own
+        redundant-invite check and `list_requestable_agents` already share.
+        """
+        if implicitly_paired(a.group_name, b.group_name):
+            return True
+        accepted = (
+            session.query(A2AInvite)
+            .filter(A2AInvite.status == INVITE_ACCEPTED)
+            .filter(
+                (
+                    (A2AInvite.from_agent == a.name) & (A2AInvite.to_agent == b.name)
+                )
+                | (
+                    (A2AInvite.from_agent == b.name) & (A2AInvite.to_agent == a.name)
+                )
+            )
+            .first()
+        )
+        return accepted is not None
+
+    def _add_thread_participant(
+        session: Session, thread: Thread, agent: Agent
+    ) -> JSONResponse | None:
+        """The shared body `create_thread`/`add_thread_participant` below
+        both use to seat one agent: not-ready refuses, an already-seated
+        agent is a no-op 409, and every OTHER current participant must be
+        consent-compatible with the new one (`_thread_consented`) before
+        the row is ever inserted. Returns None on success (the row is
+        already added, not yet committed) or the JSONResponse a route
+        should return immediately.
+        """
+        if agent.status != AgentStatus.READY:
+            return JSONResponse(
+                {"error": "agent is not ready to join a thread"}, status_code=409
+            )
+
+        existing = _thread_participants(session, thread.id)
+        if any(p.agent_name == agent.name for p in existing):
+            return JSONResponse(
+                {"error": f"{agent.name} is already in this thread"}, status_code=409
+            )
+
+        for participant in existing:
+            other = session.query(Agent).filter_by(name=participant.agent_name).first()
+            if other is None:
+                continue
+            if not _thread_consented(session, agent, other):
+                return JSONResponse(
+                    {
+                        "error": (
+                            f"{agent.name} and {other.name} are not connected. "
+                            "Accept a colleague invite between them first."
+                        )
+                    },
+                    status_code=422,
+                )
+
+        session.add(ThreadParticipant(thread_id=thread.id, agent_name=agent.name))
+        return None
+
+    @app.post("/api/threads", status_code=201)
+    def create_thread(
+        payload: ThreadCreateRequest,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Start a new thread naming one agent the caller can see (threads
+        arc, Task 8). Open to any signed-in user who can see that agent --
+        same posture `chat_with_agent`'s own docstring precedent takes for
+        teach/chat, never an ownership gate -- since a thread is the
+        initiator's own space to manage, not a mutation of the agent
+        itself.
+        """
+        agent = _visible_agent_or_404(session, request, payload.agent)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        thread = Thread(initiator_email=getattr(request.state, "iap_email", None))
+        session.add(thread)
+        session.flush()
+
+        gate = _add_thread_participant(session, thread, agent)
+        if gate is not None:
+            return gate
+
+        session.commit()
+        return JSONResponse(_thread_repr(session, thread), status_code=201)
+
+    @app.post("/api/threads/{thread_id}/participants", status_code=201)
+    def add_thread_participant(
+        thread_id: int,
+        payload: ThreadParticipantRequest,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Add one more agent to an already-created thread -- the
+        initiator's own call only (`_initiator_or_404`), naming an agent
+        the initiator can see (`_visible_agent_or_404`, the room's one
+        visibility choke point, anti-enumeration copy included) that is
+        consent-compatible with every agent already seated
+        (`_add_thread_participant`).
+        """
+        thread = _thread_or_404(session, thread_id)
+        if isinstance(thread, JSONResponse):
+            return thread
+        gate = _initiator_or_404(thread, request)
+        if gate is not None:
+            return gate
+
+        agent = _visible_agent_or_404(session, request, payload.agent)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        gate = _add_thread_participant(session, thread, agent)
+        if gate is not None:
+            return gate
+
+        session.commit()
+        return JSONResponse(_thread_repr(session, thread), status_code=201)
 
     # --- Admin: on-demand dispatch-pairs resync (final-review fix round,
     # HIGH-2b) ---------------------------------------------------------------
