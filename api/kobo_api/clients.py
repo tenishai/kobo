@@ -1020,15 +1020,25 @@ def _build_task_envelope(
     return envelope
 
 
-def _build_teach_envelope(note: str, filename: str) -> dict:
-    """The teach system task (fast-memory-lane spec): a normal
-    single-message task envelope whose metadata carries the marker the
-    daedalus runtime intercepts pre-model. `note` is byte-for-byte the
-    content the background archive commits to bundle/intake/<filename>,
-    so both lanes agree on the content sha."""
-    envelope = _build_task_envelope([{"role": "user", "text": note}])
-    envelope["metadata"] = {"system_task": "teach", "filename": filename}
+def _build_system_task_envelope(
+    marker: str, text: str, *, metadata: dict | None = None
+) -> dict:
+    """A single-message task envelope carrying a system-task marker the
+    daedalus runtime intercepts pre-model. `marker` names the lane
+    (`teach`, `knowledge`, `tool`); `metadata` carries whatever that lane
+    needs alongside it. The fast memory lane proved this shape for teach;
+    every other instant write rides the same rail rather than opening a
+    second door into the agent."""
+    envelope = _build_task_envelope([{"role": "user", "text": text}])
+    envelope["metadata"] = {"system_task": marker, **(metadata or {})}
     return envelope
+
+
+def _build_teach_envelope(note: str, filename: str) -> dict:
+    """The teach system task (fast-memory-lane spec). `note` is byte-for-byte
+    the content the background archive commits to bundle/intake/<filename>,
+    so both lanes agree on the content sha."""
+    return _build_system_task_envelope("teach", note, metadata={"filename": filename})
 
 
 def _join_text_parts(parts: object) -> str:

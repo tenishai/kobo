@@ -53,6 +53,7 @@ from kobo_api.clients import (
     StorageNotFound,
     VertexImageClient,
     VertexNameClient,
+    _build_system_task_envelope,
     _build_task_envelope,
     _build_teach_envelope,
     _extract_json_array,
@@ -1547,6 +1548,19 @@ def test_build_teach_envelope_is_a_marked_single_message_task():
         "system_task": "teach",
         "filename": "chat-20260820-a.md",
     }
+
+
+def test_system_task_envelope_carries_the_marker_and_extra_metadata():
+    env = _build_system_task_envelope("knowledge", "body text", metadata={"filename": "a.md"})
+    assert env["metadata"] == {"system_task": "knowledge", "filename": "a.md"}
+    assert env["status"]["message"]["parts"][0]["text"] == "body text"
+
+
+def test_teach_envelope_output_is_unchanged_by_the_refactor():
+    """The runtime intercepts on this exact shape; a drift here silently
+    breaks the lane that already works."""
+    env = _build_teach_envelope("the note", "note-name.md")
+    assert env["metadata"] == {"system_task": "teach", "filename": "note-name.md"}
 
 
 def test_post_task_sends_envelope_and_extracts_reply():
