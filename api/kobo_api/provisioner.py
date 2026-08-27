@@ -18,6 +18,26 @@ Steps themselves arrived in Tasks 6-8 (`kobo_api.steps`); the engine itself
 is exercised in `tests/test_engine.py` against toy steps, while `PIPELINE`
 (the real, assembled step order) and `STEP_LABELS` below are exercised
 end-to-end through the fake platform clients in `tests/test_api_agents.py`.
+
+Two processes, one database (resilience arc, Task 13): this module's own
+`run_pipeline` docstring already warned that calling it twice concurrently
+for the same `agent_id` races the same `AgentStep` rows -- true even within
+one process, but a hard requirement once more than one API replica can be
+running (the retry route's own agent-status flip is a check-then-act read
+that only serializes threads sharing one interpreter, not two OS processes
+reading the DB at nearly the same instant). `_claim_step` below is the fix:
+before a step actually runs, the engine flips its row PENDING -> RUNNING with
+one conditional `UPDATE ... WHERE status = 'pending'`, checking the rowcount
+rather than trusting an ORM attribute set. Exactly one of two racing
+processes ever sees rowcount > 0; the other sees 0 and returns without
+executing the step (or touching the agent's status) a second time -- the
+first process's own run carries the pipeline through to completion. Plain
+SQL, not an engine-specific advisory lock: the same conditional UPDATE is
+valid on SQLite and Postgres, so no branch is needed for either backend
+(see `tests/test_engine.py`'s two-real-process test for the proof, run
+against a shared SQLite file -- SQLite's own file locking is sufficient to
+prove the claim's SQL is correct under real concurrent writers; nothing here
+is SQLite-specific).
 """
 
 from __future__ import annotations
@@ -29,6 +49,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session, sessionmaker
 
 from kobo_api.clients import Clients
@@ -81,6 +102,33 @@ def _get_or_create_step(session: Session, agent_id: int, name: str) -> AgentStep
     return step_row
 
 
+def _claim_step(session: Session, step_id: int) -> bool:
+    """Atomically flip AgentStep `step_id` from PENDING to RUNNING with one
+    conditional `UPDATE ... WHERE status = 'pending'`, rather than an ORM
+    attribute set followed by a plain commit (the row-level claim Task 13
+    needs: two processes racing to run the same agent's pipeline must never
+    both execute the same step).
+
+    Returns True iff THIS call's UPDATE actually matched (and thus claimed)
+    the row. False means the row was not PENDING by the time this ran --
+    already RUNNING (another runner got there first) or already terminal --
+    and the caller must NOT execute the step itself.
+
+    Plain SQL, valid identically on SQLite and Postgres (no dialect-specific
+    locking primitive): whichever of two concurrent callers' UPDATE actually
+    lands first wins the row, deterministically, regardless of the two
+    processes' relative timing -- the database's own write serialization is
+    what makes this safe, not anything held in either process's memory.
+    """
+    result = session.execute(
+        update(AgentStep)
+        .where(AgentStep.id == step_id, AgentStep.status == StepStatus.PENDING)
+        .values(status=StepStatus.RUNNING, started_at=datetime.now(UTC))
+    )
+    session.commit()
+    return result.rowcount > 0
+
+
 def _run_pipeline_body(
     session_factory: sessionmaker[Session],
     agent_id: int,
@@ -121,9 +169,21 @@ def _run_pipeline_body(
                     session.commit()
                     continue
 
-                step_row.status = StepStatus.RUNNING
-                step_row.started_at = datetime.now(UTC)
-                session.commit()
+                if not _claim_step(session, step_row.id):
+                    # Another runner (a second process, most likely a
+                    # double-retry racing the agent-status check in the API
+                    # route -- see this module's own docstring) already
+                    # claimed this step. Back off without executing it a
+                    # second time or touching the agent's status any
+                    # further; whichever runner actually won the claim is
+                    # the one that carries this pipeline through to
+                    # completion.
+                    log.info(
+                        "run_pipeline: step %r for agent %s was already "
+                        "claimed by another runner -- stopping this run",
+                        step.name, agent_id,
+                    )
+                    return
 
                 try:
                     step.run(ctx)

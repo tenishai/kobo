@@ -5,9 +5,17 @@ defined here — real steps arrive in Tasks 6-8.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import time
 from dataclasses import dataclass
+from pathlib import Path
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import Clients
+from kobo_api.db import init_db
 from kobo_api.models import Agent, AgentStatus, AgentStep, StepStatus
 from kobo_api.provisioner import reset_failed_steps, run_pipeline, sweep_interrupted
 from tests.fakes import FakeCabal
@@ -532,3 +540,206 @@ def test_ready_flip_completes_even_when_dispatch_pairs_sync_fails(
 
     agent, _ = _load(session_factory, agent_id)
     assert agent.status == AgentStatus.READY
+
+
+# --- Two processes, one database (Task 13: the step engine under two
+# processes) --------------------------------------------------------------
+#
+# `run_pipeline`'s own docstring already admits it: "Not safe to call twice
+# concurrently for the same agent_id ... callers must serialize that
+# themselves." The retry route (kobo_api.main.retry_agent) tries to close
+# that window by flipping the agent to PROVISIONING synchronously before
+# firing the pipeline thread -- but that flip is itself a check-then-act
+# read of `agent.status` followed by a plain write, which only serializes
+# two THREADS in the same process. Two REPLICA PODS (two OS processes, one
+# SQLite file or one shared Postgres) can both read FAILED before either
+# commits PROVISIONING, and both go on to call `run_pipeline` for the same
+# agent_id -- exactly the scenario this test spawns for real, as two actual
+# subprocesses, rather than two threads sharing one interpreter (which would
+# prove nothing about cross-process safety: threads already serialize on the
+# GIL for anything short of real I/O).
+#
+# The worker script below is standalone (not a pytest module) precisely so
+# it can be launched via `subprocess.Popen([sys.executable, ...])` as a
+# genuinely separate process with its own interpreter, its own SQLAlchemy
+# engine, and its own connection to the one shared SQLite file -- proving
+# whatever claim/lock kobo_api.provisioner uses is enforced by the DATABASE,
+# not by anything held in a single process's memory.
+
+_CLAIM_RACE_WORKER = '''\
+import sys
+import time
+from pathlib import Path
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from kobo_api.clients import Clients
+from kobo_api.config import Config
+from kobo_api.provisioner import run_pipeline
+
+
+class DoneAlreadyStep:
+    """Stands in for a step this agent already completed before either
+    worker process starts -- if either process's engine ever re-executes
+    this (a step-loop bug, not the claim bug this test targets), raising
+    surfaces it immediately as a FAILED agent the parent test's own
+    assertions catch."""
+
+    name = "step-a"
+    label = "step-a"
+
+    def run(self, ctx):
+        raise AssertionError("step-a is already DONE and must never run again")
+
+
+class SlowMarkerStep:
+    """The contested step: records that it started (so the parent test can
+    wait for worker A to have actually claimed it before starting worker B),
+    then optionally sleeps (worker A only) to hold the claim open across
+    worker B's own attempt, then appends one line to a marker file every
+    successful run is expected to write EXACTLY ONCE across both workers."""
+
+    name = "step-b"
+    label = "step-b"
+
+    def __init__(self, marker_path, started_path, sleep_s):
+        self.marker_path = marker_path
+        self.started_path = started_path
+        self.sleep_s = sleep_s
+
+    def run(self, ctx):
+        import os
+
+        Path(self.started_path).write_text("started\\n")
+        if self.sleep_s:
+            time.sleep(self.sleep_s)
+        with open(self.marker_path, "a") as f:
+            f.write(f"ran:{os.getpid()}\\n")
+        return "ok"
+
+
+def main() -> None:
+    db_path, agent_id, marker_path, started_path, sleep_s, workdir = sys.argv[1:7]
+    engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    config = Config(workdir=Path(workdir))
+    clients = Clients(github=None, gojira=None, cloud=None, agent=None, kubectl=None)
+    steps = [DoneAlreadyStep(), SlowMarkerStep(marker_path, started_path, float(sleep_s))]
+
+    thread = run_pipeline(
+        session_factory, int(agent_id), config=config, clients=clients, steps=steps
+    )
+    thread.join(timeout=30)
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+def _wait_for_file(path: Path, timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"timed out waiting for {path} to appear")
+
+
+def test_two_processes_racing_a_failed_steps_resume_run_it_exactly_once(tmp_path):
+    """Two real OS processes, one shared SQLite file, both calling
+    `run_pipeline` for the SAME already-reset agent at (nearly) the same
+    time: the contested step must execute EXACTLY ONCE, and both processes
+    must exit cleanly with the agent landing in a single consistent final
+    state (READY, the step DONE) -- never both racing to run it, and never
+    one of them crashing or wedging the agent.
+
+    Deterministic without hair-trigger timing: worker A's step body writes
+    its own "started" marker BEFORE sleeping, and worker B is only launched
+    once that marker exists -- so by the time worker B's own pipeline loop
+    reads the step's row, it is already RUNNING (claimed by A), not PENDING.
+    Against the current (pre-fix) engine, RUNNING is not in the loop's
+    skip-set (only DONE/SKIPPED are), so worker B re-executes the step
+    anyway -- a second `ran:<pid>` line in the marker file, the double-
+    execution bug this test is written to catch. The fix must make worker
+    B's own claim attempt fail (rowcount 0) and back off instead.
+    """
+    db_path = tmp_path / "kobo.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    init_db(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    session = session_factory()
+    agent = Agent(
+        name="agent-two-proc", persona="helpful-generalist",
+        model_id="vertex_ai/claude-sonnet-4-5",
+    )
+    session.add(agent)
+    session.commit()
+    agent_id = agent.id
+    # Pre-seed the ledger as if a prior run already finished step-a and
+    # failed on step-b, then `reset_failed_steps` already ran (the retry
+    # route's own sequence) -- step-b is PENDING, exactly the state both
+    # worker processes below race to claim.
+    session.add(AgentStep(agent_id=agent_id, name="step-a", status=StepStatus.DONE))
+    session.add(AgentStep(agent_id=agent_id, name="step-b", status=StepStatus.PENDING))
+    session.commit()
+    session.close()
+
+    worker_script = tmp_path / "claim_race_worker.py"
+    worker_script.write_text(_CLAIM_RACE_WORKER)
+    marker_path = tmp_path / "marker.txt"
+    started_a = tmp_path / "started-a.txt"
+    started_b = tmp_path / "started-b.txt"
+    workdir_a = tmp_path / "work-a"
+    workdir_b = tmp_path / "work-b"
+
+    proc_b = None
+    proc_a = subprocess.Popen(
+        [
+            sys.executable, str(worker_script), str(db_path), str(agent_id),
+            str(marker_path), str(started_a), "1.5", str(workdir_a),
+        ],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    try:
+        # Wait until A has actually claimed step-b (its row is RUNNING in
+        # the DB) before starting B -- the deterministic ordering the
+        # docstring above explains.
+        _wait_for_file(started_a, timeout=10)
+
+        proc_b = subprocess.Popen(
+            [
+                sys.executable, str(worker_script), str(db_path), str(agent_id),
+                str(marker_path), str(started_b), "0", str(workdir_b),
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        out_b, _ = proc_b.communicate(timeout=30)
+        out_a, _ = proc_a.communicate(timeout=30)
+    finally:
+        for p in (proc_a, proc_b):
+            if p is not None and p.poll() is None:
+                p.kill()
+
+    assert proc_a.returncode == 0, f"worker A crashed:\n{out_a}"
+    assert proc_b.returncode == 0, f"worker B crashed:\n{out_b}"
+
+    marker_lines = marker_path.read_text().splitlines() if marker_path.exists() else []
+    assert len(marker_lines) == 1, (
+        f"step-b ran {len(marker_lines)} time(s) across the two processes "
+        f"(expected exactly 1): {marker_lines}\nworker A output:\n{out_a}\n"
+        f"worker B output:\n{out_b}"
+    )
+
+    session = session_factory()
+    agent = session.get(Agent, agent_id)
+    rows = {s.name: s for s in agent.steps}
+    assert agent.status == AgentStatus.READY
+    assert agent.error is None
+    assert rows["step-a"].status == StepStatus.DONE
+    assert rows["step-b"].status == StepStatus.DONE
+    session.close()
