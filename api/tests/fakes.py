@@ -1120,6 +1120,13 @@ class FakeKubectl:
     `deployment_status_error`, when set, raises `ClientError(deployment_status_error)`
     instead — the seam for exercising `rollout_in_progress`'s conservative
     probe-failure-reads-as-False behavior from the chat route's side.
+
+    `restart_deploy` (arc3d Task 5, the tooling fast lane's own nudge)
+    records every call into `restarts` (kept separate from `.calls`, same
+    reason as `secrets_applied` above) as `(namespace, deploy)`.
+    `restart_error`, when set, raises `ClientError(restart_error)` instead,
+    the seam for exercising the tooling route's own "restart request
+    failed, log it, don't surface it" handling.
     """
 
     def __init__(
@@ -1132,6 +1139,7 @@ class FakeKubectl:
         apply_secret_error: str | None = None,
         deployment_status: dict[tuple[str, str], dict] | None = None,
         deployment_status_error: str | None = None,
+        restart_error: str | None = None,
     ):
         self._rollout_result = rollout_result
         self._env_names = dict(env_names) if env_names else {}
@@ -1140,8 +1148,13 @@ class FakeKubectl:
         self._apply_secret_error = apply_secret_error
         self._deployment_status = dict(deployment_status) if deployment_status else {}
         self._deployment_status_error = deployment_status_error
+        self._restart_error = restart_error
         self.calls: list[tuple[str, str]] = []
         self.secrets_applied: list[tuple[str, str, dict[str, str]]] = []
+        # restart_deploy's own call record (Task 5's tooling fast lane) --
+        # deliberately NOT `.calls`, which pre-existing tests assert on
+        # exactly for rollout_ok alone (see the class docstring above).
+        self.restarts: list[tuple[str, str]] = []
 
     def rollout_ok(self, namespace: str, deploy: str, timeout_s: int = 180) -> bool:
         self.calls.append((namespace, deploy))
@@ -1167,6 +1180,11 @@ class FakeKubectl:
         if self._deployment_status_error is not None:
             raise ClientError(self._deployment_status_error)
         return self._deployment_status.get((namespace, deploy), FAKE_DEPLOYMENT_STATUS_SETTLED)
+
+    def restart_deploy(self, namespace: str, deploy: str) -> None:
+        if self._restart_error is not None:
+            raise ClientError(self._restart_error)
+        self.restarts.append((namespace, deploy))
 
 
 class FakeSlack:

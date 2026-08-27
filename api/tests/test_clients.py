@@ -1098,6 +1098,26 @@ def test_deploy_image_argv_and_value():
     ]
 
 
+def test_restart_deploy_argv():
+    # The tooling fast lane's own nudge (arc3d Task 5): a delivered tool's
+    # overlay write is inert until the enforcement loader re-runs, which
+    # only happens at boot -- this is the exact command that makes that
+    # boot happen.
+    runner = RecordingRunner()
+    client = KubectlCLI(runner=runner)
+    client.restart_deploy("clio", "clio")
+    assert runner.calls == [
+        ["kubectl", "-n", "clio", "rollout", "restart", "deploy/clio"]
+    ]
+
+
+def test_restart_deploy_propagates_client_error():
+    runner = RecordingRunner(results=[(1, "", "deployments.apps \"clio\" not found")])
+    client = KubectlCLI(runner=runner)
+    with pytest.raises(ClientError):
+        client.restart_deploy("clio", "clio")
+
+
 # --- image_tag (digest-pinned deploy fix, live incident) -----------------------
 #
 # The platform's regenerated CI now applies Deployment images pinned BY
@@ -5518,6 +5538,21 @@ def test_fake_kubectl_satisfies_protocol():
     assert fake.rollout_ok("clio", "clio") is True
     assert fake.calls == [("clio", "clio")]
     assert fake.deploy_image("clio", "clio")
+    assert fake.restart_deploy("clio", "clio") is None
+
+
+def test_fake_kubectl_restart_deploy_records_calls():
+    fake = FakeKubectl()
+    fake.restart_deploy("clio", "clio")
+    fake.restart_deploy("clio", "clio")
+    assert fake.restarts == [("clio", "clio"), ("clio", "clio")]
+
+
+def test_fake_kubectl_restart_deploy_error_knob():
+    fake = FakeKubectl(restart_error="deployments.apps \"clio\" not found")
+    with pytest.raises(ClientError):
+        fake.restart_deploy("clio", "clio")
+    assert fake.restarts == []
 
 
 def test_fake_kubectl_live_spec_defaults_match_happy_path():

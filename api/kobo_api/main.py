@@ -134,6 +134,8 @@ from kobo_api.steps import _resolve_persona_body
 from kobo_api.teach import format_note, note_filename
 from kobo_api.tooling import (
     ToolingError,
+    _validate_content,
+    _validate_filename,
     delete_tooling_file,
     import_tooling,
     list_tooling,
@@ -3710,6 +3712,68 @@ def create_app(
     # write path (import_tooling) that pulls every matching file out of some
     # OTHER repo's folder in one delivery. See kobo_api.tooling's module
     # docstring for the full honesty-guarantee reasoning.
+    #
+    # Fast tooling lane (arc3d Task 5): a single-file upload now relays
+    # through the switchboard first (system_task "tool") before ever
+    # touching the repo, same instant-lane/archive-lane shape as
+    # knowledge/intake above. Two things are different from those, both
+    # from the brief's own ruling ("tools are delivered fast but loaded at
+    # boot, no hot-reload into a running process"):
+    #
+    #   1. Validation runs BEFORE even checking whether the switchboard is
+    #      wired, using the exact same `_validate_filename`/`_validate_
+    #      content` the archive lane's own `upload_tooling_file` already
+    #      calls internally (reused here, not reimplemented, per the
+    #      module docstring's own invitation: "any later per-agent write
+    #      path" picks these up for free). A tool that fails is refused
+    #      before any delivery is attempted, cabal wired or not; the
+    #      runtime re-runs this SAME mechanical contract itself before
+    #      writing (a ported copy, daedalus.memory.tooling: the fast lane
+    #      skips CI by definition, so kobo's own validation here is never
+    #      the runtime's only line of defense).
+    #   2. A successful instant delivery is not the end of the story the
+    #      way a knowledge/intake write is: the tool lands on the agent's
+    #      persistent overlay directory, but the enforcement loader only
+    #      reads it at boot, so this also requests exactly one rollout
+    #      restart (`_request_tool_restart`) and the response says so in
+    #      plain copy rather than claiming the tool is already active.
+    # `import_tooling` (multi-file) is unchanged: it stays archive-only.
+
+    def _archive_tooling_upload(repo: str, filename: str, content: str) -> None:
+        """The tool upload's background archive lane: only ever runs after
+        the relay above already reported the write completed, and the runtime
+        has already re-validated and written the file into its own overlay
+        directory, so this commit is purely a repo-side mirror of it for
+        history/CI parity. Failure is logged, never surfaced: the tool
+        already landed on the agent's volume; only the repo's own copy is
+        missing until a later upload lands it."""
+        try:
+            upload_tooling_file(
+                app.state.clients.github,
+                repo,
+                filename,
+                content,
+                runtime_image=app.state.config.runtime_image,
+            )
+        except Exception as exc:
+            log.warning(
+                "tooling archive commit failed for %s (%s): %s", repo, filename, exc
+            )
+
+    def _request_tool_restart(agent_name: str) -> None:
+        """Ask the platform to roll the agent's Deployment so the
+        enforcement loader picks up the newly delivered overlay tool at its
+        next boot: the fast lane is delivery only, never a hot reload.
+        Failure is logged, never surfaced: the tool is already on the
+        agent's volume either way; only the restart that would load it
+        might need a manual nudge (a later upload, or an unrelated
+        deploy, will still pick it up)."""
+        try:
+            app.state.clients.kubectl.restart_deploy(agent_name, agent_name)
+        except ClientError as exc:
+            log.warning(
+                "tooling restart request failed for agent %s: %s", agent_name, exc
+            )
 
     @app.get("/api/agents/{name}/tooling")
     def list_tooling_route(
@@ -3755,6 +3819,7 @@ def create_app(
         name: str,
         payload: ToolingUploadPayload,
         request: Request,
+        background_tasks: BackgroundTasks,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(session, request, name)
@@ -3764,7 +3829,54 @@ def create_app(
         if gate is not None:
             return gate
 
+        # Refused BEFORE any delivery is attempted, cabal wired or not (see
+        # the section comment above): the same validator upload_tooling_file
+        # calls internally for the archive lane, just run here first so an
+        # invalid tool is never even relayed.
+        try:
+            _validate_filename(payload.filename)
+            _validate_content(payload.filename, payload.content.encode("utf-8"))
+        except ToolingError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+
         cfg: Config = app.state.config
+        clients = app.state.clients
+        if cabal_enabled(cfg) and clients.cabal is not None:
+            envelope = _build_system_task_envelope(
+                "tool", payload.content, metadata={"filename": payload.filename}
+            )
+            try:
+                raw = clients.cabal.relay(agent.name, envelope)
+                if _teach_task_not_completed(raw):
+                    raise CabalError("agent reply was not a completed task")
+                _extract_relay_reply(raw)
+            except (CabalError, httpx.HTTPError, ValueError) as exc:
+                # Same catch set as every other fast-lane caller: ANY
+                # instant-lane miss degrades to the archive lane below, so
+                # a tooling upload never 502s during a delivery window.
+                log.warning(
+                    "tooling upload relay failed for agent %s, archive lane instead: %s",
+                    name,
+                    exc,
+                )
+            else:
+                background_tasks.add_task(
+                    _archive_tooling_upload,
+                    agent.repo_full_name,
+                    payload.filename,
+                    payload.content,
+                )
+                _request_tool_restart(agent.name)
+                return JSONResponse(
+                    {
+                        "mode": "instant",
+                        "message": (
+                            "Tool delivered. It will be active after your "
+                            "agent's next restart."
+                        ),
+                    }
+                )
+
         try:
             sha = upload_tooling_file(
                 app.state.clients.github,
@@ -3781,7 +3893,7 @@ def create_app(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
-        return JSONResponse({"sha": sha})
+        return JSONResponse({"sha": sha, "mode": "archive"})
 
     @app.post("/api/agents/{name}/tooling/import")
     def import_tooling_route(

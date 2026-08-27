@@ -850,10 +850,12 @@ def register(mcp: FastMCP, app: Any) -> None:
         tooling checks before it lands: a top-level `pre_task` or
         `post_draft` hook, no import beyond the standard library. You must
         own `agent` (or be a room operator), and `agent` must be READY.
-        Returns the staged file's name and the sha of the repo's head
-        afterward -- the route's own commit when the content actually
-        changed anything, or the head already there when it was
-        byte-identical to what this agent already had staged.
+        Returns the staged file's name; either `sha` (the repo's head after
+        the route's own commit, or the head already there when the content
+        was byte-identical to what this agent already had staged) or, when
+        the agent is reachable right now, `mode: "instant"` plus a `message`
+        saying the tool arrives on the agent's next restart -- fast
+        delivery is never a hot reload.
         """
         from kobo_api.main import ToolingUploadPayload
 
@@ -867,6 +869,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         email = get_user_email(ctx)
         req = authz.room_request(app, email)
         session = app.state.session_factory()
+        background_tasks = BackgroundTasks()
         try:
             if tool_id is not None:
                 clients = app.state.clients
@@ -882,13 +885,24 @@ def register(mcp: FastMCP, app: Any) -> None:
                 name=agent,
                 payload=ToolingUploadPayload(filename=filename, content=content),
                 request=req,
+                background_tasks=background_tasks,
                 session=session,
             )
             body = _agent_route_result(response)
+            # Mirrors kobo_teach above: runs whatever the fast lane's
+            # instant success queued (the background archive commit) --
+            # nothing here re-implements `_archive_tooling_upload`, this
+            # just runs it.
+            await background_tasks()
         finally:
             session.close()
 
-        return {"filename": filename, "sha": body.get("sha")}
+        return {
+            "filename": filename,
+            "sha": body.get("sha"),
+            "mode": body.get("mode"),
+            "message": body.get("message"),
+        }
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     @audited("kobo_create_skill")

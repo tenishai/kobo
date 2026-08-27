@@ -1280,6 +1280,19 @@ class KubectlClient(Protocol):
         """
         ...
 
+    def restart_deploy(self, namespace: str, deploy: str) -> None:
+        """Ask kubectl to roll the Deployment's pods now (`kubectl rollout
+        restart`).
+
+        Used by the tooling fast lane (kobo_api.main's tooling upload route,
+        arc3d Task 5): a fast-delivered tool lands on the agent's persistent
+        volume immediately, but the runtime's enforcement loader only
+        re-reads its tools directories at boot -- no hot reload into the
+        running process. This is the exact nudge that makes the boot
+        happen, requested once per successful delivery.
+        """
+        ...
+
 
 def image_tag(image: str) -> str | None:
     """The tag of a container image reference, or None when it has none.
@@ -1352,6 +1365,11 @@ class KubectlCLI:
             [self._kubectl, "-n", namespace, "get", "deploy", deploy, "-o", "json"]
         )
         return json.loads(out)
+
+    def restart_deploy(self, namespace: str, deploy: str) -> None:
+        self._runner.run(
+            [self._kubectl, "-n", namespace, "rollout", "restart", f"deploy/{deploy}"]
+        )
 
     def apply_secret(self, namespace: str, name: str, literals: dict[str, str]) -> None:
         literal_args = [f"--from-literal={key}={value}" for key, value in literals.items()]

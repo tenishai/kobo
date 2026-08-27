@@ -27,6 +27,7 @@ from tests.fakes import (
     FAKE_DOCKERFILE_OLD_IMAGE,
     FAKE_LOCAL_HEAD_DEFAULT,
     FakeAgent,
+    FakeCabal,
     FakeCloud,
     FakeGitHub,
     FakeGojira,
@@ -104,7 +105,7 @@ def config(tmp_path):
     return Config(workdir=tmp_path / "work")
 
 
-def _make_client(session_factory, config, *, github=None, kubectl=None, agent=None):
+def _make_client(session_factory, config, *, github=None, kubectl=None, agent=None, cabal=None):
     return TestClient(
         create_app(
             session_factory,
@@ -116,8 +117,22 @@ def _make_client(session_factory, config, *, github=None, kubectl=None, agent=No
                 agent=agent if agent is not None else FakeAgent(),
                 kubectl=kubectl if kubectl is not None else FakeKubectl(),
                 storage=FakeStorage(),
+                cabal=cabal,
             ),
         )
+    )
+
+
+def _enabled_config(config):
+    """Same switchboard-on config shape as test_api_knowledge.py's own
+    `_enabled_config`: both org config keys set. Combined with the
+    `CABAL_OPERATOR_TOKEN` env var (set per-test via monkeypatch) and a
+    wired `clients.cabal`, this is what flips `cabal_enabled(cfg)` true."""
+    return config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": "http://agent-{name}.default.svc.cluster.local",
+        }
     )
 
 
@@ -357,7 +372,7 @@ def test_upload_tooling_route_creates_commits_and_returns_sha(session_factory, c
     )
 
     assert response.status_code == 200
-    assert response.json() == {"sha": SHA}
+    assert response.json() == {"sha": SHA, "mode": "archive"}
     assert github.captured_tools == {"orchestrator.py": VALID_PY}
     assert github.pushes[-1][1] == "kobo: add tools/orchestrator.py"
 
@@ -568,6 +583,225 @@ def test_upload_tooling_route_client_error_returns_502(session_factory, config):
 
     assert response.status_code == 502
     assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
+
+
+# --- POST /api/agents/{name}/tooling: fast lane (arc3d Task 5) ---------------
+#
+# Tools ride the same instant-lane/archive-lane shape teach/knowledge/intake
+# already proved, with two wrinkles the brief calls out: the response tells
+# the caller the tool only arrives on restart (no hot reload), and a
+# successful instant delivery also requests exactly one rollout restart so
+# the enforcement loader's next boot actually picks the file up.
+
+
+def test_upload_tooling_route_instant_lane_relays_archives_and_restarts_once(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    kubectl = FakeKubectl()
+    relay_result = {
+        "status": {
+            "state": "completed",
+            "message": {"parts": [{"text": "kept, thanks"}]},
+        }
+    }
+    fake_cabal = FakeCabal(relay_result=relay_result)
+    client = _make_client(session_factory, cfg, github=github, kubectl=kubectl, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/tooling",
+        json={"filename": "orchestrator.py", "content": VALID_PY},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "instant"
+    # Plain copy, not jargon: the UI can tell the caller the truth honestly.
+    assert "restart" in body["message"].lower()
+
+    # BackgroundTasks run after the response completes but before
+    # TestClient.post() returns control here.
+    assert github.captured_tools == {"orchestrator.py": VALID_PY}
+    assert github.pushes[-1][1] == "kobo: add tools/orchestrator.py"
+
+    assert len(fake_cabal.relay_calls) == 1
+    envelope = fake_cabal.relay_calls[0]["task_envelope"]
+    assert envelope["metadata"] == {"system_task": "tool", "filename": "orchestrator.py"}
+    assert envelope["status"]["message"]["parts"][0]["text"] == VALID_PY
+
+    # Exactly one restart requested, for this one delivery.
+    assert kubectl.restarts == [(AGENT_NAME, AGENT_NAME)]
+
+
+def test_upload_tooling_route_falls_back_to_archive_when_relay_fails(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    kubectl = FakeKubectl()
+    fake_cabal = FakeCabal(relay_error="switchboard unreachable")
+    client = _make_client(session_factory, cfg, github=github, kubectl=kubectl, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/tooling",
+        json={"filename": "orchestrator.py", "content": VALID_PY},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"sha": SHA, "mode": "archive"}
+    assert len(fake_cabal.relay_calls) == 1
+    assert github.captured_tools == {"orchestrator.py": VALID_PY}
+    # The archive lane's own rebuild is what eventually loads the tool here
+    # -- no separate rollout-restart nudge is needed or requested.
+    assert kubectl.restarts == []
+
+
+def test_upload_tooling_route_falls_back_when_agent_reply_is_failed_task(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    kubectl = FakeKubectl()
+    fake_cabal = FakeCabal(relay_result={"status": {"state": "failed"}})
+    client = _make_client(session_factory, cfg, github=github, kubectl=kubectl, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/tooling",
+        json={"filename": "orchestrator.py", "content": VALID_PY},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"sha": SHA, "mode": "archive"}
+    assert kubectl.restarts == []
+
+
+def test_upload_tooling_route_invalid_content_refused_before_any_relay(
+    session_factory, config, monkeypatch
+):
+    """The security-adjacent kobo-side test: a tool failing the room's own
+    validation must never even reach the switchboard -- refused before any
+    delivery is attempted, cabal wired or not."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    kubectl = FakeKubectl()
+    fake_cabal = FakeCabal()
+    client = _make_client(session_factory, cfg, github=github, kubectl=kubectl, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/tooling",
+        json={
+            "filename": "tool.py",
+            "content": "import httpx\n\n\ndef post_draft(draft):\n    return draft\n",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"] == (
+        "tooling file imports beyond the standard library on line 1: httpx"
+    )
+    assert fake_cabal.relay_calls == []
+    assert github.pushes == []
+    assert kubectl.restarts == []
+
+
+def test_upload_tooling_route_bad_filename_refused_before_any_relay(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    fake_cabal = FakeCabal()
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/tooling",
+        json={"filename": "Not-Valid.py", "content": VALID_PY},
+    )
+
+    assert response.status_code == 422
+    assert "invalid tooling filename" in response.json()["error"]
+    assert fake_cabal.relay_calls == []
+
+
+def test_upload_tooling_route_without_cabal_is_archive_mode(session_factory, config):
+    github = _CapturingGitHub()
+    kubectl = FakeKubectl()
+    client = _make_client(session_factory, config, github=github, kubectl=kubectl)
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/tooling",
+        json={"filename": "orchestrator.py", "content": VALID_PY},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"sha": SHA, "mode": "archive"}
+    assert kubectl.restarts == []
+
+
+def test_upload_tooling_route_background_archive_failure_is_logged_not_surfaced(
+    session_factory, config, monkeypatch, caplog
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    relay_result = {
+        "status": {
+            "state": "completed",
+            "message": {"parts": [{"text": "kept, thanks"}]},
+        }
+    }
+    fake_cabal = FakeCabal(relay_result=relay_result)
+    # _RaisingGitHub's clone() raises ClientError -- the background archive
+    # commit fails, but the instant-lane response has already gone out.
+    client = _make_client(session_factory, cfg, github=_RaisingGitHub(), cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    with caplog.at_level("WARNING"):
+        response = client.post(
+            f"/api/agents/{AGENT_NAME}/tooling",
+            json={"filename": "orchestrator.py", "content": VALID_PY},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "instant"
+    assert "tooling archive commit failed" in caplog.text
+
+
+def test_upload_tooling_route_restart_failure_is_logged_not_surfaced(
+    session_factory, config, monkeypatch, caplog
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    kubectl = FakeKubectl(restart_error="deployments.apps \"clio\" not found")
+    relay_result = {
+        "status": {
+            "state": "completed",
+            "message": {"parts": [{"text": "kept, thanks"}]},
+        }
+    }
+    fake_cabal = FakeCabal(relay_result=relay_result)
+    client = _make_client(session_factory, cfg, github=github, kubectl=kubectl, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    with caplog.at_level("WARNING"):
+        response = client.post(
+            f"/api/agents/{AGENT_NAME}/tooling",
+            json={"filename": "orchestrator.py", "content": VALID_PY},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "instant"
+    assert "restart" in caplog.text.lower()
 
 
 # --- POST /api/agents/{name}/tooling/import -----------------------------------
