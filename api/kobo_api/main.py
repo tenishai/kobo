@@ -28,6 +28,7 @@ from kobo_api.clients import (
     CabalError,
     ClientError,
     StorageNotFound,
+    _build_system_task_envelope,
     _build_task_envelope,
     _build_teach_envelope,
     _extract_relay_reply,
@@ -2890,6 +2891,49 @@ def create_app(
     # (access-control Task A3 fix round 1: the initial route sweep missed
     # both of these, so a stranger could overwrite or delete another
     # agent's knowledge files -- list_knowledge stays a plain read).
+    #
+    # Fast-memory-lane (arc3c Task 3): both routes now relay through the
+    # switchboard first (system_task "knowledge") before ever touching the
+    # repo, mirroring teach_agent's own instant-lane/archive-lane structure
+    # below (main.py's `_teach_task_not_completed`/`_archive_teach_note`)
+    # byte-for-byte -- reused rather than reimplemented, since the
+    # not-completed check and catch set are marker-agnostic. Unlike intake
+    # (Task 4), neither route needs an upfront filename pre-check: kobo's
+    # own KNOWLEDGE_FILENAME_RE (letter-first, .md-only) is already a strict
+    # SUBSET of the runtime's `^[a-z0-9][a-z0-9-]{0,39}\.md$` (digit-first
+    # additionally allowed) -- anything kobo's own `_validate_filename`
+    # would accept, the runtime accepts too, so there is no filename the
+    # archive lane would silently succeed on that the relay would have
+    # refused.
+
+    def _archive_knowledge_save(repo: str, filename: str, content: str) -> None:
+        """The knowledge write's background archive lane: only ever runs
+        after the relay above already reported the write "completed" -- the
+        runtime has already retired `filename`'s old entries and stored the
+        new content, so this commit is purely a repo-side mirror of it.
+        Failure is logged, never surfaced, same posture as teach's
+        `_archive_teach_note` below: the memory already landed live: only
+        the repo's own copy is missing until a later save lands it."""
+        try:
+            save_knowledge_file(app.state.clients.github, repo, filename, content)
+        except Exception as exc:
+            log.warning(
+                "knowledge archive commit failed for %s (%s): %s", repo, filename, exc
+            )
+
+    def _archive_knowledge_delete(repo: str, filename: str) -> None:
+        """The knowledge delete's background archive lane: only ever runs
+        after the relay above already reported the delete "completed" --
+        the runtime has already retired every entry the ledger had for
+        `filename` and dropped its ledger row, so this commit purely
+        mirrors that removal in the repo. Failure is logged, never
+        surfaced, same posture as `_archive_knowledge_save` above."""
+        try:
+            delete_knowledge_file(app.state.clients.github, repo, filename)
+        except Exception as exc:
+            log.warning(
+                "knowledge archive delete failed for %s (%s): %s", repo, filename, exc
+            )
 
     @app.get("/api/agents/{name}/knowledge")
     def list_knowledge(
@@ -2917,6 +2961,7 @@ def create_app(
         filename: str,
         payload: KnowledgeSavePayload,
         request: Request,
+        background_tasks: BackgroundTasks,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(session, request, name)
@@ -2925,6 +2970,32 @@ def create_app(
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
+
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        if cabal_enabled(cfg) and clients.cabal is not None:
+            envelope = _build_system_task_envelope(
+                "knowledge", payload.content, metadata={"filename": filename}
+            )
+            try:
+                raw = clients.cabal.relay(agent.name, envelope)
+                if _teach_task_not_completed(raw):
+                    raise CabalError("agent reply was not a completed task")
+                _extract_relay_reply(raw)
+            except (CabalError, httpx.HTTPError, ValueError) as exc:
+                # Same catch set as teach_agent's own relay above: ANY
+                # instant-lane miss degrades to the archive lane below, so
+                # a knowledge save never 502s during a delivery window.
+                log.warning(
+                    "knowledge save relay failed for agent %s, archive lane instead: %s",
+                    name,
+                    exc,
+                )
+            else:
+                background_tasks.add_task(
+                    _archive_knowledge_save, agent.repo_full_name, filename, payload.content
+                )
+                return JSONResponse({"mode": "instant"})
 
         try:
             sha = save_knowledge_file(
@@ -2938,13 +3009,14 @@ def create_app(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
-        return JSONResponse({"sha": sha})
+        return JSONResponse({"sha": sha, "mode": "archive"})
 
     @app.delete("/api/agents/{name}/knowledge/{filename}")
     def delete_knowledge(
         name: str,
         filename: str,
         request: Request,
+        background_tasks: BackgroundTasks,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         agent = _ready_agent_or_error(session, request, name)
@@ -2953,6 +3025,34 @@ def create_app(
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
+
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        if cabal_enabled(cfg) and clients.cabal is not None:
+            # DELETE_KEY on the runtime side (daedalus.memory.teach.
+            # DELETE_KEY) is exactly the string "delete" -- a different
+            # spelling here would silently fall back to a write instead of
+            # a delete, so this key is pinned verbatim in
+            # test_delete_knowledge_instant_lane_relays_and_archives_in_background.
+            envelope = _build_system_task_envelope(
+                "knowledge", "", metadata={"filename": filename, "delete": True}
+            )
+            try:
+                raw = clients.cabal.relay(agent.name, envelope)
+                if _teach_task_not_completed(raw):
+                    raise CabalError("agent reply was not a completed task")
+                _extract_relay_reply(raw)
+            except (CabalError, httpx.HTTPError, ValueError) as exc:
+                log.warning(
+                    "knowledge delete relay failed for agent %s, archive lane instead: %s",
+                    name,
+                    exc,
+                )
+            else:
+                background_tasks.add_task(
+                    _archive_knowledge_delete, agent.repo_full_name, filename
+                )
+                return JSONResponse({"mode": "instant"})
 
         try:
             sha = delete_knowledge_file(
@@ -2981,7 +3081,7 @@ def create_app(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
-        return JSONResponse({"sha": sha})
+        return JSONResponse({"sha": sha, "mode": "archive"})
 
     @app.get("/api/agents/{name}/knowledge/delivery/{sha}")
     def knowledge_delivery(

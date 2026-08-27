@@ -28,6 +28,7 @@ from kobo_api.models import Agent, AgentStatus, Base
 from tests.fakes import (
     FAKE_LOCAL_HEAD_DEFAULT,
     FakeAgent,
+    FakeCabal,
     FakeCloud,
     FakeGitHub,
     FakeGojira,
@@ -105,7 +106,7 @@ def config(tmp_path):
     return Config(workdir=tmp_path / "work")
 
 
-def _make_client(session_factory, config, *, github=None, kubectl=None):
+def _make_client(session_factory, config, *, github=None, kubectl=None, cabal=None):
     return TestClient(
         create_app(
             session_factory,
@@ -116,8 +117,22 @@ def _make_client(session_factory, config, *, github=None, kubectl=None):
                 cloud=FakeCloud(),
                 agent=FakeAgent(),
                 kubectl=kubectl if kubectl is not None else FakeKubectl(),
+                cabal=cabal,
             ),
         )
+    )
+
+
+def _enabled_config(config):
+    """Same switchboard-on config shape as test_web_teach.py's own
+    `_enabled_config`: both org config keys set. Combined with the
+    `CABAL_OPERATOR_TOKEN` env var (set per-test via monkeypatch) and a
+    wired `clients.cabal`, this is what flips `cabal_enabled(cfg)` true."""
+    return config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": "http://agent-{name}.default.svc.cluster.local",
+        }
     )
 
 
@@ -211,7 +226,7 @@ def test_save_knowledge_creates_file_commits_and_returns_sha(session_factory, co
     )
 
     assert response.status_code == 200
-    assert response.json() == {"sha": FAKE_LOCAL_HEAD_DEFAULT}
+    assert response.json() == {"sha": FAKE_LOCAL_HEAD_DEFAULT, "mode": "archive"}
     assert github.captured_knowledge == {"gotchas.md": "new content"}
     assert github.pushes[-1][1] == "kobo: update knowledge/gotchas.md"
 
@@ -319,7 +334,7 @@ def test_delete_knowledge_removes_file_commits_and_returns_sha(session_factory, 
     response = client.delete(f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md")
 
     assert response.status_code == 200
-    assert response.json() == {"sha": FAKE_LOCAL_HEAD_DEFAULT}
+    assert response.json() == {"sha": FAKE_LOCAL_HEAD_DEFAULT, "mode": "archive"}
     assert github.captured_knowledge == {"keep.md": "stay"}
     assert github.pushes[-1][1] == "kobo: remove knowledge/gotchas.md"
 
@@ -380,6 +395,273 @@ def test_delete_knowledge_client_error_returns_502(session_factory, config):
 
     assert response.status_code == 502
     assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
+
+
+# --- PUT/DELETE knowledge: switchboard relay, instant lane (fast-memory-lane,
+# arc3c Task 3) -----------------------------------------------------------
+#
+# Knowledge edits now ride the same fast lane teach already proved
+# (test_web_teach.py's own "instant lane" section): the write/delete relays
+# through the switchboard first (system_task "knowledge") and only falls
+# back to today's synchronous archive lane on ANY miss -- a CabalError, an
+# httpx transport error, a malformed reply, or a well-formed reply whose
+# task status isn't exactly "completed". Same
+# `cabal_enabled(config) and clients.cabal is not None` gate as teach/chat.
+
+
+def test_save_knowledge_instant_lane_relays_and_archives_in_background(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    relay_result = {
+        "status": {
+            "state": "completed",
+            "message": {"parts": [{"text": "learned, thanks"}]},
+        }
+    }
+    fake_cabal = FakeCabal(relay_result=relay_result)
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.put(
+        f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md", json={"content": "new content"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"mode": "instant"}
+
+    # BackgroundTasks run after the response completes but before
+    # TestClient.put() returns control here -- the archive commit has
+    # already happened by this point.
+    assert github.captured_knowledge == {"gotchas.md": "new content"}
+    assert github.pushes[-1][1] == "kobo: update knowledge/gotchas.md"
+
+    assert len(fake_cabal.relay_calls) == 1
+    envelope = fake_cabal.relay_calls[0]["task_envelope"]
+    assert envelope["metadata"] == {"system_task": "knowledge", "filename": "gotchas.md"}
+    # Both lanes agree on content: the relayed text is byte-for-byte what the
+    # background archive committed.
+    assert (
+        envelope["status"]["message"]["parts"][0]["text"]
+        == github.captured_knowledge["gotchas.md"]
+    )
+
+
+def test_save_knowledge_falls_back_to_archive_when_relay_fails(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    fake_cabal = FakeCabal(relay_error="switchboard unreachable")
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.put(
+        f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md", json={"content": "new content"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"sha": SHA, "mode": "archive"}
+    assert len(fake_cabal.relay_calls) == 1
+    assert github.captured_knowledge == {"gotchas.md": "new content"}
+
+
+def test_save_knowledge_falls_back_when_agent_reply_is_failed_task(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    fake_cabal = FakeCabal(relay_result={"status": {"state": "failed"}})
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.put(
+        f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md", json={"content": "new content"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"sha": SHA, "mode": "archive"}
+    assert github.captured_knowledge == {"gotchas.md": "new content"}
+
+
+def test_save_knowledge_without_cabal_is_archive_mode(session_factory, config):
+    github = _CapturingGitHub()
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+
+    response = client.put(
+        f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md", json={"content": "new content"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"sha": SHA, "mode": "archive"}
+
+
+def test_save_knowledge_background_archive_failure_is_logged_not_surfaced(
+    session_factory, config, monkeypatch, caplog
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    relay_result = {
+        "status": {
+            "state": "completed",
+            "message": {"parts": [{"text": "learned, thanks"}]},
+        }
+    }
+    fake_cabal = FakeCabal(relay_result=relay_result)
+    # _RaisingGitHub's clone() raises ClientError -- the background archive
+    # commit fails, but the instant-lane response has already gone out as
+    # 200 by the time it runs.
+    client = _make_client(session_factory, cfg, github=_RaisingGitHub(), cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    with caplog.at_level("WARNING"):
+        response = client.put(
+            f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md", json={"content": "new content"}
+        )
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "instant"
+    assert "knowledge archive commit failed" in caplog.text
+
+
+def test_delete_knowledge_instant_lane_relays_and_archives_in_background(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub(knowledge_files={"gotchas.md": "bye", "keep.md": "stay"})
+    relay_result = {
+        "status": {
+            "state": "completed",
+            "message": {"parts": [{"text": "forgotten, thanks"}]},
+        }
+    }
+    fake_cabal = FakeCabal(relay_result=relay_result)
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.delete(f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md")
+
+    assert response.status_code == 200
+    assert response.json() == {"mode": "instant"}
+
+    # BackgroundTasks run after the response completes but before
+    # TestClient.delete() returns control here -- the archive removal has
+    # already happened by this point: after a fast-lane delete, the repo
+    # file is gone (the runtime no longer recalling its facts is the
+    # runtime's own already-tested territory, per the brief).
+    assert github.captured_knowledge == {"keep.md": "stay"}
+    assert github.pushes[-1][1] == "kobo: remove knowledge/gotchas.md"
+
+    assert len(fake_cabal.relay_calls) == 1
+    envelope = fake_cabal.relay_calls[0]["task_envelope"]
+    # Pin the exact delete-flag key: DELETE_KEY="delete" on the runtime side
+    # (daedalus.memory.teach.DELETE_KEY) -- a different spelling here would
+    # silently fall back to a write instead of a delete.
+    assert envelope["metadata"] == {
+        "system_task": "knowledge",
+        "filename": "gotchas.md",
+        "delete": True,
+    }
+
+
+def test_delete_knowledge_falls_back_to_archive_when_relay_fails(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub(knowledge_files={"gotchas.md": "bye", "keep.md": "stay"})
+    fake_cabal = FakeCabal(relay_error="switchboard unreachable")
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.delete(f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md")
+
+    assert response.status_code == 200
+    assert response.json() == {"sha": SHA, "mode": "archive"}
+    assert len(fake_cabal.relay_calls) == 1
+    assert github.captured_knowledge == {"keep.md": "stay"}
+
+
+def test_delete_knowledge_falls_back_when_agent_reply_is_failed_task(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub(knowledge_files={"gotchas.md": "bye", "keep.md": "stay"})
+    fake_cabal = FakeCabal(relay_result={"status": {"state": "failed"}})
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.delete(f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md")
+
+    assert response.status_code == 200
+    assert response.json() == {"sha": SHA, "mode": "archive"}
+    assert github.captured_knowledge == {"keep.md": "stay"}
+
+
+def test_delete_knowledge_without_cabal_is_archive_mode(session_factory, config):
+    github = _CapturingGitHub(knowledge_files={"gotchas.md": "bye", "keep.md": "stay"})
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+
+    response = client.delete(f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md")
+
+    assert response.status_code == 200
+    assert response.json() == {"sha": SHA, "mode": "archive"}
+
+
+def test_delete_knowledge_still_404s_on_missing_file_even_with_cabal_enabled(
+    session_factory, config, monkeypatch
+):
+    # A relay against a filename the runtime has no ledger row for replies
+    # with a failed task (see daedalus's apply_knowledge_delete), which
+    # degrades to the archive lane exactly like any other miss -- the
+    # archive lane's own not-found check is what actually produces the 404,
+    # unchanged from today.
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = FakeGitHub(knowledge_files={"keep.md": "stay"})
+    fake_cabal = FakeCabal(relay_result={"status": {"state": "failed"}})
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.delete(f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md")
+
+    assert response.status_code == 404
+    assert response.json() == {"error": "no such knowledge file: 'gotchas.md'"}
+    assert github.pushes == []
+
+
+def test_delete_knowledge_background_archive_failure_is_logged_not_surfaced(
+    session_factory, config, monkeypatch, caplog
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    relay_result = {
+        "status": {
+            "state": "completed",
+            "message": {"parts": [{"text": "forgotten, thanks"}]},
+        }
+    }
+    fake_cabal = FakeCabal(relay_result=relay_result)
+    # _RaisingGitHub's clone() raises ClientError -- the background archive
+    # delete fails, but the instant-lane response has already gone out as
+    # 200 by the time it runs.
+    client = _make_client(session_factory, cfg, github=_RaisingGitHub(), cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    with caplog.at_level("WARNING"):
+        response = client.delete(f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md")
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "instant"
+    assert "knowledge archive delete failed" in caplog.text
 
 
 # --- GET /api/agents/{name}/knowledge/delivery/{sha} --------------------------------
