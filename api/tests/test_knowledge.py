@@ -146,6 +146,37 @@ def test_save_knowledge_file_accepts_content_at_exact_byte_cap():
     assert github.captured_knowledge == {"gotchas.md": exact}
 
 
+# --- save_knowledge_file: archive_only (skip-ci archive commits) -----------
+#
+# Mirrors kobo_api.intake.upload_intake_file's archive_only exactly (same
+# commit-message marker): a knowledge save that only mirrors a note the
+# instant lane already relayed live must not trigger the agent repo's
+# generated CI -- that rebuild-and-Recreate-redeploy would be pure downtime
+# for content the pod already has. The degraded synchronous lane (no relay
+# reached the agent) never passes archive_only -- that commit IS the
+# delivery, so it must keep CI, unchanged from before this parameter
+# existed.
+
+
+def test_save_knowledge_file_archive_only_skips_ci():
+    github = _CapturingGitHub()
+    save_knowledge_file(github, "acme/agent-clio", "gotchas.md", "content", archive_only=True)
+    assert github.pushes[-1][1] == "kobo: archive knowledge/gotchas.md [skip ci]"
+
+
+def test_save_knowledge_file_archive_only_false_never_emits_skip_ci():
+    github = _CapturingGitHub()
+    save_knowledge_file(github, "acme/agent-clio", "gotchas.md", "content", archive_only=False)
+    assert github.pushes[-1][1] == "kobo: update knowledge/gotchas.md"
+    assert "[skip ci]" not in github.pushes[-1][1]
+
+
+def test_save_knowledge_file_archive_only_defaults_false():
+    github = _CapturingGitHub()
+    save_knowledge_file(github, "acme/agent-clio", "gotchas.md", "content")
+    assert "[skip ci]" not in github.pushes[-1][1]
+
+
 # --- delete_knowledge_file -------------------------------------------------------
 
 
@@ -177,6 +208,33 @@ def test_delete_knowledge_file_rejects_bad_filename():
     with pytest.raises(KnowledgeError):
         delete_knowledge_file(github, "acme/agent-clio", "../escape.md")
     assert github.pushes == []
+
+
+# --- delete_knowledge_file: archive_only (skip-ci archive commits) ---------
+#
+# Same fix, delete side: the instant lane's archive delete only mirrors a
+# removal the runtime already retired live -- must not trigger CI. The
+# degraded synchronous lane (the delete itself IS the delivery) never
+# passes archive_only.
+
+
+def test_delete_knowledge_file_archive_only_skips_ci():
+    github = _CapturingGitHub(knowledge_files={"gotchas.md": "bye"})
+    delete_knowledge_file(github, "acme/agent-clio", "gotchas.md", archive_only=True)
+    assert github.pushes[-1][1] == "kobo: archive knowledge/gotchas.md [skip ci]"
+
+
+def test_delete_knowledge_file_archive_only_false_never_emits_skip_ci():
+    github = _CapturingGitHub(knowledge_files={"gotchas.md": "bye"})
+    delete_knowledge_file(github, "acme/agent-clio", "gotchas.md", archive_only=False)
+    assert github.pushes[-1][1] == "kobo: remove knowledge/gotchas.md"
+    assert "[skip ci]" not in github.pushes[-1][1]
+
+
+def test_delete_knowledge_file_archive_only_defaults_false():
+    github = _CapturingGitHub(knowledge_files={"gotchas.md": "bye"})
+    delete_knowledge_file(github, "acme/agent-clio", "gotchas.md")
+    assert "[skip ci]" not in github.pushes[-1][1]
 
 
 # --- delivery_state -------------------------------------------------------------

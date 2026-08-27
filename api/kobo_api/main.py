@@ -2967,9 +2967,19 @@ def create_app(
         new content, so this commit is purely a repo-side mirror of it.
         Failure is logged, never surfaced, same posture as teach's
         `_archive_teach_note` below: the memory already landed live: only
-        the repo's own copy is missing until a later save lands it."""
+        the repo's own copy is missing until a later save lands it.
+
+        Critical 2 fix: archive_only=True -- the runtime already has this
+        content live, so rebuilding the agent's image for it would be pure
+        downtime bought for nothing (the Recreate-strategy Deployment
+        hard-rotates the pod on every push). The degraded synchronous lane
+        below in save_knowledge (no relay ever reached the agent) calls
+        save_knowledge_file directly without archive_only -- that commit
+        IS the delivery, so it must keep CI."""
         try:
-            save_knowledge_file(app.state.clients.github, repo, filename, content)
+            save_knowledge_file(
+                app.state.clients.github, repo, filename, content, archive_only=True
+            )
         except Exception as exc:
             log.warning(
                 "knowledge archive commit failed for %s (%s): %s", repo, filename, exc
@@ -2981,9 +2991,15 @@ def create_app(
         the runtime has already retired every entry the ledger had for
         `filename` and dropped its ledger row, so this commit purely
         mirrors that removal in the repo. Failure is logged, never
-        surfaced, same posture as `_archive_knowledge_save` above."""
+        surfaced, same posture as `_archive_knowledge_save` above.
+
+        Critical 2 fix: archive_only=True, same reasoning as the save side
+        -- the degraded synchronous lane below in delete_knowledge keeps
+        CI, since that delete IS the delivery."""
         try:
-            delete_knowledge_file(app.state.clients.github, repo, filename)
+            delete_knowledge_file(
+                app.state.clients.github, repo, filename, archive_only=True
+            )
         except Exception as exc:
             log.warning(
                 "knowledge archive delete failed for %s (%s): %s", repo, filename, exc

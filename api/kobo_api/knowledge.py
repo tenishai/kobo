@@ -79,7 +79,14 @@ def read_knowledge(github: GitHubClient, repo: str) -> list[KnowledgeFile]:
         ]
 
 
-def save_knowledge_file(github: GitHubClient, repo: str, filename: str, content: str) -> str:
+def save_knowledge_file(
+    github: GitHubClient,
+    repo: str,
+    filename: str,
+    content: str,
+    *,
+    archive_only: bool = False,
+) -> str:
     """Write (or overwrite) `bundle/knowledge/<filename>` and push it.
 
     Returns the pushed commit's local sha (`github.local_head`) — a fresh
@@ -89,6 +96,22 @@ def save_knowledge_file(github: GitHubClient, repo: str, filename: str, content:
     returns `local_head`: the caller's subsequent delivery check then reports
     "delivered" immediately, which is the truthful answer — the live image
     already matches, because nothing changed.
+
+    `archive_only` (Critical 2 fix, the rebuild-per-memory-save cost):
+    mirrors `kobo_api.intake.upload_intake_file`'s `archive_only` exactly,
+    same commit-message marker. `kobo_api.main._archive_knowledge_save`
+    calls this ONLY after the fast-memory-lane relay has already reported
+    the write "completed" — the runtime has already stored the new content
+    live, so this commit is purely a repo-side mirror of it. Every agent
+    repo's generated CI runs build-and-deploy on every push, and the
+    Deployment uses the Recreate strategy, which hard-rotates the pod — a
+    rebuild bought for content the pod already has is pure downtime, not a
+    real delivery. `archive_only=True` marks the commit `[skip ci]`, which
+    GitHub Actions honors natively on push events. The default `False`
+    leaves every pre-existing caller unaffected, in particular the
+    degraded synchronous lane in `kobo_api.main.save_knowledge` (no relay
+    ever reached the agent, so this commit itself IS the delivery — it
+    must keep CI).
     """
     _validate_filename(filename)
     _validate_content(content)
@@ -98,16 +121,30 @@ def save_knowledge_file(github: GitHubClient, repo: str, filename: str, content:
         knowledge_dir = workdir / "bundle" / "knowledge"
         knowledge_dir.mkdir(parents=True, exist_ok=True)
         (knowledge_dir / filename).write_text(content, encoding="utf-8")
-        github.commit_push(workdir, f"kobo: update knowledge/{filename}")
+        if archive_only:
+            message = f"kobo: archive knowledge/{filename} [skip ci]"
+        else:
+            message = f"kobo: update knowledge/{filename}"
+        github.commit_push(workdir, message)
         return github.local_head(workdir)
 
 
-def delete_knowledge_file(github: GitHubClient, repo: str, filename: str) -> str:
+def delete_knowledge_file(
+    github: GitHubClient, repo: str, filename: str, *, archive_only: bool = False
+) -> str:
     """Remove `bundle/knowledge/<filename>` and push the removal.
 
     Raises `KnowledgeError` if the file isn't there to delete — a stale UI
     state (someone else already deleted it) is a real error here, unlike
     read_knowledge's empty-directory case, since there's no removal to push.
+
+    `archive_only`: same Critical 2 fix as `save_knowledge_file`, delete
+    side. `kobo_api.main._archive_knowledge_delete` calls this ONLY after
+    the fast-memory-lane relay has already reported the delete
+    "completed" — the runtime has already retired the entry live, so this
+    commit purely mirrors that removal in the repo and must not trigger a
+    rebuild. The default `False` leaves the degraded synchronous lane (the
+    delete itself IS the delivery) unaffected.
     """
     _validate_filename(filename)
     with tempfile.TemporaryDirectory() as tmp:
@@ -117,7 +154,11 @@ def delete_knowledge_file(github: GitHubClient, repo: str, filename: str) -> str
         if not target.is_file():
             raise KnowledgeError(f"knowledge file not found: {filename}")
         target.unlink()
-        github.commit_push(workdir, f"kobo: remove knowledge/{filename}")
+        if archive_only:
+            message = f"kobo: archive knowledge/{filename} [skip ci]"
+        else:
+            message = f"kobo: remove knowledge/{filename}"
+        github.commit_push(workdir, message)
         return github.local_head(workdir)
 
 

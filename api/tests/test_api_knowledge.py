@@ -434,9 +434,13 @@ def test_save_knowledge_instant_lane_relays_and_archives_in_background(
 
     # BackgroundTasks run after the response completes but before
     # TestClient.put() returns control here -- the archive commit has
-    # already happened by this point.
+    # already happened by this point. Critical 2 fix: the background
+    # archive commit carries archive_only=True (the runtime already has
+    # this content live -- rebuilding the image for it would be pure
+    # downtime), so the commit message marks itself [skip ci], same
+    # marker as kobo_api.intake.upload_intake_file's archive_only.
     assert github.captured_knowledge == {"gotchas.md": "new content"}
-    assert github.pushes[-1][1] == "kobo: update knowledge/gotchas.md"
+    assert github.pushes[-1][1] == "kobo: archive knowledge/gotchas.md [skip ci]"
 
     assert len(fake_cabal.relay_calls) == 1
     envelope = fake_cabal.relay_calls[0]["task_envelope"]
@@ -554,9 +558,11 @@ def test_delete_knowledge_instant_lane_relays_and_archives_in_background(
     # TestClient.delete() returns control here -- the archive removal has
     # already happened by this point: after a fast-lane delete, the repo
     # file is gone (the runtime no longer recalling its facts is the
-    # runtime's own already-tested territory, per the brief).
+    # runtime's own already-tested territory, per the brief). Critical 2
+    # fix: this background archive delete carries archive_only=True, same
+    # skip-ci marker as the save side.
     assert github.captured_knowledge == {"keep.md": "stay"}
-    assert github.pushes[-1][1] == "kobo: remove knowledge/gotchas.md"
+    assert github.pushes[-1][1] == "kobo: archive knowledge/gotchas.md [skip ci]"
 
     assert len(fake_cabal.relay_calls) == 1
     envelope = fake_cabal.relay_calls[0]["task_envelope"]
