@@ -58,7 +58,7 @@ def test_routes_answer_503_when_broker_unconfigured(client):
     assert client.post(
         "/api/repo-access/decide", json={"ids": [1], "decision": "approved"}
     ).status_code == 503
-    assert client.post("/api/agents/x/github-token").status_code == 503
+    assert client.post("/broker/agents/x/github-token").status_code == 503
 
 
 # --- request + batch decide ----------------------------------------------------
@@ -140,7 +140,7 @@ def test_request_against_unknown_agent_404s(broker_client):
 
 def test_token_route_401s_without_a_bearer(broker_client, session_factory):
     name = _agent(session_factory)
-    assert broker_client.post(f"/api/agents/{name}/github-token").status_code == 401
+    assert broker_client.post(f"/broker/agents/{name}/github-token").status_code == 401
 
 
 def test_token_route_404s_with_zero_approvals(
@@ -153,7 +153,7 @@ def test_token_route_404s_with_zero_approvals(
     name = _agent(session_factory)
     monkeypatch.setattr(main_mod, "verify_agent_token", lambda *a, **k: None)
     r = broker_client.post(
-        f"/api/agents/{name}/github-token", headers={"Authorization": "Bearer x"}
+        f"/broker/agents/{name}/github-token", headers={"Authorization": "Bearer x"}
     )
     assert r.status_code == 404
 
@@ -182,7 +182,7 @@ def test_token_route_mints_scoped_to_approved_rows_only(
 
     monkeypatch.setattr(main_mod, "mint_scoped_token", fake_mint)
     r = broker_client.post(
-        f"/api/agents/{name}/github-token", headers={"Authorization": "Bearer x"}
+        f"/broker/agents/{name}/github-token", headers={"Authorization": "Bearer x"}
     )
     assert r.status_code == 200
     assert calls["repositories"] == ["acme/a"]  # wall 2: approved rows only
@@ -202,7 +202,7 @@ def test_token_route_401s_when_verification_fails(
 
     monkeypatch.setattr(main_mod, "verify_agent_token", refuse)
     r = broker_client.post(
-        f"/api/agents/{name}/github-token", headers={"Authorization": "Bearer x"}
+        f"/broker/agents/{name}/github-token", headers={"Authorization": "Bearer x"}
     )
     assert r.status_code == 401
 

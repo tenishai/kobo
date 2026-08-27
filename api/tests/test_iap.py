@@ -471,7 +471,7 @@ def test_enabled_ui_dist_paths_require_the_header_too(session_factory, iap_confi
 
 
 def test_is_exempt_covers_the_mcp_roots_and_healthz_but_not_lookalikes():
-    assert EXEMPT_PREFIXES == ("/mcp", "/oauth", "/.well-known")
+    assert EXEMPT_PREFIXES == ("/mcp", "/oauth", "/.well-known", "/broker")
     # exact healthz (unchanged behavior)
     assert _is_exempt("/api/healthz") is True
     # the MCP roots, exact and as prefixes

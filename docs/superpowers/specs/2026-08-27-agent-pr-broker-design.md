@@ -66,7 +66,9 @@ One row per (agent, repository) grant request:
   queue; also drives the agent's Access tab section.
 - `POST /api/repo-access/decide` (operator only): body
   `{ids: [..], decision: "approved" | "revoked"}` -- the batch gate.
-- `POST /api/agents/{name}/github-token` -- THE BROKER. Caller is the AGENT
+- `POST /broker/agents/{name}/github-token` -- THE BROKER. Its own
+  IAP-exempt root (the /mcp doctrine: a root that carries its own auth),
+  reachable in-cluster only -- the external ingress never routes /broker. Caller is the AGENT
   itself, not a human: authenticated by its cabal-issued colleague JWT
   (Authorization: Bearer), verified against the switchboard's own JWKS --
   the exact issuer/audience/jwks_url the composer already bakes into every

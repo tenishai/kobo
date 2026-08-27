@@ -48,10 +48,14 @@ EXEMPT_PATHS = frozenset({"/api/healthz"})
 # the app's own middleware would 401 them before routing, defeating the split.
 # Safe when the MCP server is flag-OFF too: those roots then have no routes,
 # so an exempted request simply 404s (leaks nothing) instead of 401ing.
+# /broker (agent PR broker, 2026-08-27 spec) carries its own auth the same
+# way: the route verifies the calling AGENT's cabal-issued JWT itself, and
+# its callers are in-cluster agents reaching the pod's service directly --
+# the external ingress never routes this root at all.
 # Matched on a segment boundary (exact, or prefix + "/") so "/oauth" never
 # exempts a lookalike like "/oauthx" -- the same boundary discipline the
 # OAuth redirect-URI allowlist uses.
-EXEMPT_PREFIXES = ("/mcp", "/oauth", "/.well-known")
+EXEMPT_PREFIXES = ("/mcp", "/oauth", "/.well-known", "/broker")
 
 
 def _normalize(path: str) -> str:

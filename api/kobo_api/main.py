@@ -3087,7 +3087,7 @@ def create_app(
             }
         )
 
-    @app.post("/api/agents/{name}/github-token")
+    @app.post("/broker/agents/{name}/github-token")
     def mint_agent_github_token(  # noqa: B008
         name: str,
         request: Request,
