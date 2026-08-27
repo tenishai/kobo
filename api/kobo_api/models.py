@@ -488,3 +488,43 @@ class MCPToolCallLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
+
+
+class RepoAccess(Base):
+    """One row per (agent, repository) PR-access grant request (agent PR
+    broker, 2026-08-27 spec). The room-side HALF of the two-wall token
+    model: the GitHub App installation's own repo list is the outer wall,
+    and these rows -- only ever the APPROVED ones -- are the inner one the
+    broker pins each minted token's `repositories` to.
+
+    Lifecycle: requested -> approved | revoked, decided in BATCH by the
+    operator set (2026-08-27 ruling 1: the kobo owner group approves, many
+    repos at once). Revoked rows stay put as the audit trail; a re-request
+    flips the same row back to requested rather than growing a duplicate.
+    Statuses live in REPO_ACCESS_STATUSES; `repository` is always
+    "owner/name".
+
+    Postdates every table in this file, so `Base.metadata.create_all`
+    (`kobo_api.db.init_db`) creates it for free -- same no-ALTER-needed
+    convention `MCPToolCallLog` documents above.
+    """
+
+    __tablename__ = "repo_access"
+    __table_args__ = (UniqueConstraint("agent_name", "repository"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    repository: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="requested")
+    requested_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    decided_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+REPO_ACCESS_REQUESTED = "requested"
+REPO_ACCESS_APPROVED = "approved"
+REPO_ACCESS_REVOKED = "revoked"
+REPO_ACCESS_STATUSES = (REPO_ACCESS_REQUESTED, REPO_ACCESS_APPROVED, REPO_ACCESS_REVOKED)

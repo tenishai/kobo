@@ -11,7 +11,7 @@ import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, Query, Request, Response
@@ -67,6 +67,11 @@ from kobo_api.metadata import (
 )
 from kobo_api.models import (
     GROUP_REQUEST_DECLINED,
+    REPO_ACCESS_APPROVED,
+    REPO_ACCESS_REQUESTED,
+    REPO_ACCESS_REVOKED,
+    REPO_ACCESS_STATUSES,
+    RepoAccess,
     GROUP_REQUEST_DONE,
     GROUP_REQUEST_PENDING,
     INVITE_ACCEPTED,
@@ -106,6 +111,7 @@ from kobo_api.provisioner import (
     run_pipeline,
     sweep_interrupted,
 )
+from kobo_api.pr_broker import BrokerAuthError, mint_scoped_token, verify_agent_token
 from kobo_api.purpose_tags import clean_tags, decode_tags, encode_tags
 from kobo_api.search import (
     CATALOG_TTL_S,
@@ -339,6 +345,29 @@ class IntakeUploadPayload(BaseModel):
 
     filename: str
     content: str
+
+
+class RepoAccessRequest(BaseModel):
+    """POST .../repo-access body: the owner's batch of repositories (agent
+    PR broker spec, ruling 1 -- many at once, never one-at-a-time-only).
+    Each entry must be "owner/name"."""
+
+    repositories: list[str] = Field(min_length=1, max_length=50)
+
+    @field_validator("repositories")
+    @classmethod
+    def _owner_slash_name(cls, v: list[str]) -> list[str]:
+        for repo in v:
+            if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+                raise ValueError(f"not an owner/name repository: {repo!r}")
+        return v
+
+
+class RepoAccessDecision(BaseModel):
+    """POST /api/repo-access/decide body: the operator's BATCH decision."""
+
+    ids: list[int] = Field(min_length=1, max_length=200)
+    decision: Literal["approved", "revoked"]
 
 
 class TeachPayload(BaseModel):
@@ -1204,6 +1233,24 @@ def _admin_operator_block(request: Request, config: Config) -> JSONResponse | No
         return None
     return JSONResponse(
         {"error": "Syncing the switchboard is operator-only on this room"}, status_code=403
+    )
+
+
+def _repo_access_operator_block(request: Request, config: Config) -> JSONResponse | None:
+    """None when the caller may decide repo-access requests (agent PR broker
+    spec, 2026-08-27 ruling 1: the room's operator set -- the kobo owner
+    group -- approves, in batch); a 403 body otherwise. Same semantics
+    family as `_operator_block`/`_admin_operator_block` above, kept as its
+    own function for the same reason those are: the copy names its own
+    action."""
+    if not config.operators and not config.admin_groups:
+        return None
+    if not config.iap_audience:
+        return None
+    if _is_admin(request):
+        return None
+    return JSONResponse(
+        {"error": "Deciding repo access is operator-only on this room"}, status_code=403
     )
 
 
@@ -2889,6 +2936,213 @@ def create_app(
         # state this call put the agent into (about to re-provision), never
         # a value re-read after the pipeline thread is already running.
         return JSONResponse({"name": name, "status": AgentStatus.PROVISIONING}, status_code=202)
+
+    # --- Agent PR broker (2026-08-27 spec): repo access + scoped tokens ---------
+
+    def _pr_broker_off(config: Config) -> JSONResponse | None:
+        """None when all three pr_app_* config values are set; the 503 body
+        otherwise -- the same absent-equals-off convention as cabal_url,
+        answered before any gate so an unconfigured room never leaks
+        whether a given agent or repo exists on these routes."""
+        if config.pr_app_id and config.pr_app_installation_id and config.pr_app_private_key_path:
+            return None
+        return JSONResponse(
+            {"error": "the PR broker is not configured on this room"}, status_code=503
+        )
+
+    @app.post("/api/agents/{name}/repo-access", status_code=202)
+    def request_repo_access(  # noqa: B008
+        name: str,
+        payload: RepoAccessRequest,
+        request: Request,
+        session: Session = Depends(get_session),
+    ) -> JSONResponse:
+        off = _pr_broker_off(app.state.config)
+        if off is not None:
+            return off
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+
+        email = (getattr(request.state, "iap_email", None) or "").lower()
+        rows = []
+        for repository in payload.repositories:
+            existing = (
+                session.query(RepoAccess)
+                .filter(
+                    RepoAccess.agent_name == agent.name,
+                    RepoAccess.repository == repository,
+                )
+                .one_or_none()
+            )
+            if existing is not None and existing.status == REPO_ACCESS_APPROVED:
+                # Already approved: asking again must never demote a live
+                # grant back to requested.
+                rows.append(existing)
+                continue
+            if existing is not None:
+                # Re-request (including a revoked row coming back): same
+                # row, fresh request stamp, decision cleared.
+                existing.status = REPO_ACCESS_REQUESTED
+                existing.requested_by = email
+                existing.requested_at = datetime.now(UTC)
+                existing.decided_by = None
+                existing.decided_at = None
+                rows.append(existing)
+                continue
+            row = RepoAccess(
+                agent_name=agent.name, repository=repository, requested_by=email
+            )
+            session.add(row)
+            rows.append(row)
+        session.commit()
+        return JSONResponse(
+            {
+                "requested": [
+                    {"id": r.id, "repository": r.repository, "status": r.status}
+                    for r in rows
+                ]
+            },
+            status_code=202,
+        )
+
+    @app.get("/api/repo-access")
+    def list_repo_access(  # noqa: B008
+        request: Request,
+        status: str | None = None,
+        session: Session = Depends(get_session),
+    ) -> JSONResponse:
+        off = _pr_broker_off(app.state.config)
+        if off is not None:
+            return off
+        query = session.query(RepoAccess)
+        if status is not None:
+            if status not in REPO_ACCESS_STATUSES:
+                return JSONResponse(
+                    {"error": f"status must be one of {', '.join(REPO_ACCESS_STATUSES)}"},
+                    status_code=422,
+                )
+            query = query.filter(RepoAccess.status == status)
+        # Scoped to what the caller can see: rows for visible agents only,
+        # the same anti-enumeration discipline as the agent list itself.
+        visible_agents, _ = _visible_agents(session, request)
+        visible = {a.name for a in visible_agents}
+        rows = [r for r in query.order_by(RepoAccess.requested_at).all() if r.agent_name in visible]
+        return JSONResponse(
+            {
+                "results": [
+                    {
+                        "id": r.id,
+                        "agent": r.agent_name,
+                        "repository": r.repository,
+                        "status": r.status,
+                        "requested_by": r.requested_by,
+                        "decided_by": r.decided_by,
+                    }
+                    for r in rows
+                ]
+            }
+        )
+
+    @app.post("/api/repo-access/decide")
+    def decide_repo_access(  # noqa: B008
+        payload: RepoAccessDecision,
+        request: Request,
+        session: Session = Depends(get_session),
+    ) -> JSONResponse:
+        """The BATCH gate (2026-08-27 ruling 1): the operator set decides
+        many rows in one call -- approve and revoke both land here."""
+        off = _pr_broker_off(app.state.config)
+        if off is not None:
+            return off
+        gate = _repo_access_operator_block(request, app.state.config)
+        if gate is not None:
+            return gate
+
+        email = (getattr(request.state, "iap_email", None) or "").lower()
+        decided = []
+        for row_id in payload.ids:
+            row = session.get(RepoAccess, row_id)
+            if row is None:
+                return JSONResponse(
+                    {"error": f"no repo-access row {row_id}"}, status_code=404
+                )
+            row.status = (
+                REPO_ACCESS_APPROVED if payload.decision == "approved" else REPO_ACCESS_REVOKED
+            )
+            row.decided_by = email
+            row.decided_at = datetime.now(UTC)
+            decided.append(row)
+        session.commit()
+        return JSONResponse(
+            {
+                "decided": [
+                    {"id": r.id, "agent": r.agent_name, "repository": r.repository,
+                     "status": r.status}
+                    for r in decided
+                ]
+            }
+        )
+
+    @app.post("/api/agents/{name}/github-token")
+    def mint_agent_github_token(  # noqa: B008
+        name: str,
+        request: Request,
+        session: Session = Depends(get_session),
+    ) -> JSONResponse:
+        """THE BROKER (2026-08-27 spec): the caller is the AGENT itself,
+        authenticated by its cabal-issued colleague JWT -- never a human
+        session. Wall 2: the minted token's `repositories` is pinned to
+        exactly this agent's APPROVED rows. 404 for an unknown agent AND
+        for one with zero approvals -- an agent with no grants must not be
+        distinguishable from one that does not exist, the same
+        anti-enumeration answer every agent route gives."""
+        config: Config = app.state.config
+        off = _pr_broker_off(config)
+        if off is not None:
+            return off
+        if not config.cabal_url:
+            return JSONResponse(
+                {"error": "the PR broker requires the switchboard"}, status_code=503
+            )
+
+        authorization = request.headers.get("authorization", "")
+        bearer = authorization.removeprefix("Bearer ").strip()
+        if not bearer:
+            return JSONResponse({"error": "agent token required"}, status_code=401)
+        try:
+            verify_agent_token(config.cabal_url, bearer, name)
+        except BrokerAuthError:
+            return JSONResponse({"error": "agent token was not accepted"}, status_code=401)
+
+        approved = (
+            session.query(RepoAccess)
+            .filter(
+                RepoAccess.agent_name == name,
+                RepoAccess.status == REPO_ACCESS_APPROVED,
+            )
+            .order_by(RepoAccess.repository)
+            .all()
+        )
+        if not approved:
+            return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
+
+        try:
+            minted = mint_scoped_token(
+                app_id=config.pr_app_id,
+                installation_id=config.pr_app_installation_id,
+                private_key_path=config.pr_app_private_key_path,
+                repositories=[r.repository for r in approved],
+            )
+        except ClientError:
+            return JSONResponse(
+                {"error": "the token mint did not answer. Try again shortly."},
+                status_code=502,
+            )
+        return JSONResponse(minted)
 
     # --- Destroy (Task 4): the resumable four-step teardown ledger --------------
 

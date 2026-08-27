@@ -325,6 +325,16 @@ class Config(BaseModel):
     # Path to the App's PEM-encoded private key. Read lazily on first token
     # mint, never logged. NEVER put a real key in a tracked file.
     github_app_private_key_path: Path | None = None
+    # The agent PR broker's OWN GitHub App (the org's PR app, 2026-08-27
+    # spec) -- a second, deliberately separate app identity from the room's
+    # repo-management app above: this one's tokens reach OTHER TEAMS' repos
+    # (scoped per agent by the broker), so its blast radius is never mixed
+    # with the app that owns the agent-* repos. All three set = broker
+    # routes live; any one empty/unset = 503, the same absent-equals-off
+    # convention as cabal_url.
+    pr_app_id: str = ""
+    pr_app_installation_id: str = ""
+    pr_app_private_key_path: Path | None = None
     # The ACL axis (access-control arc, Task B1) — distinct from `team` (the
     # skills-catalog-derived capability axis; kobo_api.groups' module
     # docstring covers the fail-closed contract this feeds). Each entry's
@@ -367,6 +377,7 @@ class Config(BaseModel):
 
     @field_validator(
         "workdir", "slack_tokens_path", "ui_dist", "github_app_private_key_path",
+        "pr_app_private_key_path",
         mode="before",
     )
     @classmethod
