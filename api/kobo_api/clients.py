@@ -742,9 +742,20 @@ class CloudClient(Protocol):
         """Grant `gsa_email` write access to objects under `prefix` in
         `bucket` -- and nothing wider -- for agent memory replication
         (resilience arc, Task 14). Scoped by an IAM condition on the object
-        name prefix, never a bucket-wide role: one agent's replicated
-        techne database must never be reachable by another agent's own
-        identity, even though every agent replicates into the same bucket.
+        name prefix, never a bucket-wide role for READ/WRITE: one agent's
+        replicated techne database must never be reachable by another
+        agent's own identity, even though every agent replicates into the
+        same bucket.
+
+        Important 9 fix: ALSO grants a second, unconditioned, bucket-wide,
+        list-only binding (`roles/storage.legacyBucketReader`) -- `storage.
+        objects.list` cannot be scoped by the same per-prefix condition
+        (it is a bucket-level permission with no per-object `resource.name`
+        to test), and litestream needs it to list its replica prefix's
+        existing generations on startup. Room-wide for list only, never
+        for read/write: no identity gains access to another agent's
+        replicated data through this second grant beyond enumerating
+        object names.
         """
         ...
 
@@ -917,6 +928,30 @@ class GcloudClient:
                 "--member", f"serviceAccount:{gsa_email}",
                 "--role", "roles/storage.objectAdmin",
                 "--condition", f"expression={condition_expression},title={condition_title}",
+            ]
+        )
+        # Important 9 fix (paired with Critical 4, the composed replication
+        # wrapper): `storage.objects.list` is a BUCKET-level permission --
+        # it has no per-object `resource.name` to test, so the conditioned
+        # grant above (which only covers get/create/delete-shaped object
+        # operations against names matching the condition) denies it
+        # outright, and litestream's replicate loop needs to list its
+        # replica prefix's existing generations on startup to resume
+        # correctly. A second, UNCONDITIONED binding grants exactly that:
+        # `roles/storage.legacyBucketReader` (list-only, no object read/
+        # write of its own) at the bucket level -- room-wide, since list
+        # cannot be scoped narrower than the bucket, but still nothing
+        # wider than list: no agent's identity gains read or write access
+        # to another agent's replicated data through this second grant,
+        # only the ability to enumerate object names. The restore drill
+        # (an actual litestream restore against a live replica) remains
+        # the one live proof this unblocks the replicate loop; this binding
+        # is the fix that drill would otherwise catch missing.
+        self._runner.run(
+            [
+                self._gcloud, "storage", "buckets", "add-iam-policy-binding", f"gs://{bucket}",
+                "--member", f"serviceAccount:{gsa_email}",
+                "--role", "roles/storage.legacyBucketReader",
             ]
         )
 

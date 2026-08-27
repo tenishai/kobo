@@ -1011,6 +1011,15 @@ class FakeCloud:
 
     def grant_bucket_prefix_write(self, gsa_email: str, bucket: str, prefix: str) -> None:
         self.calls.append(f"grant_bucket_prefix_write:{gsa_email}:{bucket}:{prefix}")
+        # Important 9 fix (paired with Critical 4): the real GcloudClient
+        # issues a SECOND, unconditioned, bucket-wide, list-only binding
+        # alongside the conditioned per-prefix write grant above -- a
+        # per-prefix condition alone denies storage.objects.list, which
+        # litestream needs to discover what generations already exist in
+        # its replica prefix on startup. Recorded as its own call (bucket
+        # only, no prefix -- this grant is never agent-scoped) so a step
+        # test can pin both bindings from one AccessStep call.
+        self.calls.append(f"grant_bucket_list:{gsa_email}:{bucket}")
 
 
 class FakeAgent:

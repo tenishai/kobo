@@ -990,6 +990,53 @@ def test_delete_gsa_permission_denied_raises():
     assert len(runner.calls) == 1  # never got to (or attempted) delete
 
 
+# --- grant_bucket_prefix_write (resilience arc, Task 14; Important 9 fix) ---
+#
+# A per-prefix conditioned roles/storage.objectAdmin binding alone denies
+# storage.objects.list -- list is a bucket-level operation, not scopable by
+# the object-name CEL condition the way get/create/delete are -- and
+# litestream needs to list its replica prefix's existing generations on
+# startup. This method now issues TWO bindings: the original conditioned
+# per-prefix write grant, plus an unconditioned, bucket-wide, list-only
+# roles/storage.legacyBucketReader grant.
+
+
+def test_grant_bucket_prefix_write_issues_conditioned_object_admin_binding():
+    runner = RecordingRunner()
+    client = GcloudClient("example-project", runner=runner)
+    client.grant_bucket_prefix_write(
+        "agent-clio@example-project.iam.gserviceaccount.com", "kobo-memory-replicas", "clio/"
+    )
+    assert runner.calls[0] == [
+        "gcloud", "storage", "buckets", "add-iam-policy-binding",
+        "gs://kobo-memory-replicas",
+        "--member", "serviceAccount:agent-clio@example-project.iam.gserviceaccount.com",
+        "--role", "roles/storage.objectAdmin",
+        "--condition",
+        "expression="
+        'resource.name.startsWith("projects/_/buckets/kobo-memory-replicas/objects/clio/")'
+        ",title=agent-memory-replica-clio",
+    ]
+
+
+def test_grant_bucket_prefix_write_also_issues_an_unconditioned_bucket_wide_list_binding():
+    runner = RecordingRunner()
+    client = GcloudClient("example-project", runner=runner)
+    client.grant_bucket_prefix_write(
+        "agent-clio@example-project.iam.gserviceaccount.com", "kobo-memory-replicas", "clio/"
+    )
+    assert len(runner.calls) == 2
+    assert runner.calls[1] == [
+        "gcloud", "storage", "buckets", "add-iam-policy-binding",
+        "gs://kobo-memory-replicas",
+        "--member", "serviceAccount:agent-clio@example-project.iam.gserviceaccount.com",
+        "--role", "roles/storage.legacyBucketReader",
+    ]
+    # Unconditioned: no --condition flag anywhere in the second call --
+    # list is bucket-wide by design, never scoped to one agent's prefix.
+    assert "--condition" not in runner.calls[1]
+
+
 def test_gsa_email_for_composes_without_any_gcloud_call():
     # Pure composition (destroy-access, kobo_api.destroy, needs the SAME
     # email ensure_gsa would return, without creating anything) — never

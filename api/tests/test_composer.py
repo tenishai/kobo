@@ -1190,6 +1190,20 @@ def test_compose_carries_replication_supervision_when_bucket_configured(tmp_path
     entrypoint = (dest / "entrypoint.sh").read_text()
     assert "litestream replicate" in entrypoint
     assert "-exec" in entrypoint
+    # Critical 4 fix: this ENTRYPOINT replaces the base runtime image's own
+    # (docker rule: a new ENTRYPOINT resets the base image's CMD), so "$*"
+    # here is always empty -- there is nothing for litestream's -exec to
+    # inherit, and even a preserved CMD would just exec the /bundle
+    # directory path, not a runnable command. The child command is
+    # hardcoded instead: the base image's own entrypoint script
+    # (daedalus docker/Dockerfile's ENTRYPOINT) invoked with its own
+    # default bundle arg, exactly what the base image's ENTRYPOINT+CMD
+    # would have run had this image never overridden either.
+    assert (
+        'exec litestream replicate -config /etc/litestream.yml '
+        '-exec "/usr/local/bin/entrypoint.sh /bundle"'
+    ) in entrypoint
+    assert "$*" not in entrypoint
 
     litestream_yml = (dest / "litestream.yml").read_text()
     assert "/techne/techne.db" in litestream_yml

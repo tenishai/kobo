@@ -1771,6 +1771,7 @@ def test_access_step_grants_memory_replica_prefix_when_bucket_configured(
         f"bind_workload_identity:{expected_email}:{AGENT_NAME}/agent-{AGENT_NAME}",
         f"add_to_group:{expected_email}:{cfg.model_group}",
         f"grant_bucket_prefix_write:{expected_email}:kobo-memory-replicas:{AGENT_NAME}/",
+        f"grant_bucket_list:{expected_email}:kobo-memory-replicas",
     ]
 
 
@@ -1786,7 +1787,12 @@ def test_access_step_grants_prefix_scoped_to_this_agents_own_name(session_factor
     AccessStep().run(ctx)
 
     expected_email = f"agent-rae@{cfg.gcp_project}.iam.gserviceaccount.com"
-    assert cloud.calls[-1] == f"grant_bucket_prefix_write:{expected_email}:kobo-memory-replicas:rae/"
+    # The write grant stays prefix-scoped to this agent's own name; the
+    # trailing list grant (Important 9 fix, below) is bucket-wide by
+    # design (list is not scopable by object-name condition), so it names
+    # only the bucket, never the agent's prefix.
+    assert cloud.calls[-2] == f"grant_bucket_prefix_write:{expected_email}:kobo-memory-replicas:rae/"
+    assert cloud.calls[-1] == f"grant_bucket_list:{expected_email}:kobo-memory-replicas"
 
 
 def test_access_step_no_memory_replica_grant_when_bucket_unset(session_factory, config):
@@ -1807,6 +1813,37 @@ def test_access_step_no_memory_replica_grant_when_bucket_unset(session_factory, 
         f"add_to_group:{expected_email}:{config.model_group}",
     ]
     assert not any(c.startswith("grant_bucket_prefix_write") for c in cloud.calls)
+    assert not any(c.startswith("grant_bucket_list") for c in cloud.calls)
+
+
+def test_access_step_memory_replica_grant_includes_bucket_level_list_access(
+    session_factory, config
+):
+    """Important 9 fix (paired with Critical 4): a per-prefix conditioned
+    `roles/storage.objectAdmin` grant alone denies `storage.objects.list`
+    -- list is a bucket-level operation, not scopable by the object-name
+    CEL condition the way get/create/delete are -- and litestream needs
+    to list the replica prefix's existing generations on startup. The
+    grant now ALSO includes an unconditioned, bucket-wide, list-only
+    `roles/storage.legacyBucketReader` binding, issued in the same
+    `grant_bucket_prefix_write` call AccessStep already made -- widening
+    list access room-wide (every agent's GSA can list the bucket's object
+    names) while keeping read/write itself conditioned to each agent's
+    own prefix. The restore drill remains the live proof this actually
+    unblocks litestream; this test only pins that AccessStep asks for
+    both bindings."""
+    cfg = config.model_copy(update={"memory_replica_bucket": "kobo-memory-replicas"})
+    session, agent = _make_agent(session_factory)
+    cloud = FakeCloud(project=cfg.gcp_project)
+    ctx = _make_ctx(session, agent, cfg, _clients(cloud=cloud))
+
+    AccessStep().run(ctx)
+
+    expected_email = f"agent-{AGENT_NAME}@{cfg.gcp_project}.iam.gserviceaccount.com"
+    assert cloud.calls[-2:] == [
+        f"grant_bucket_prefix_write:{expected_email}:kobo-memory-replicas:{AGENT_NAME}/",
+        f"grant_bucket_list:{expected_email}:kobo-memory-replicas",
+    ]
 
 
 # --- HelloStep (persona-metadata plan, Task 3: capability earned + card lockstep) --

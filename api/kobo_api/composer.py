@@ -525,8 +525,21 @@ _ENTRYPOINT_SH = (
     "# while the runtime's own command runs as its supervised child -- if\n"
     "# that child exits, litestream exits too (an agent with a dead\n"
     "# runtime should not keep \"replicating\" nothing).\n"
+    "#\n"
+    "# Critical 4 fix: this ENTRYPOINT REPLACES the base runtime image's\n"
+    "# own (docker rule: declaring a new ENTRYPOINT resets the base\n"
+    "# image's CMD to nothing), so this script receives no positional\n"
+    "# arguments at all to hand off to litestream's -exec, and even a\n"
+    "# preserved CMD would just hand -exec the bare /bundle directory\n"
+    "# path, not a runnable command. The child is hardcoded instead: the\n"
+    "# base image's own entrypoint script (daedalus docker/Dockerfile's\n"
+    "# ENTRYPOINT, /usr/local/bin/entrypoint.sh) invoked with its own\n"
+    "# default bundle argument -- exactly the command the base image's\n"
+    "# ENTRYPOINT+CMD would have run had this image never overridden\n"
+    "# either.\n"
     "set -e\n"
-    'exec litestream replicate -config /etc/litestream.yml -exec "$*"\n'
+    'exec litestream replicate -config /etc/litestream.yml '
+    '-exec "/usr/local/bin/entrypoint.sh /bundle"\n'
 )
 
 
