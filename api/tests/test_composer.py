@@ -1194,7 +1194,7 @@ def test_compose_carries_replication_supervision_when_bucket_configured(tmp_path
     # either can't read the root-owned tarball or silently runs the whole
     # agent as root.
     assert "litestream-v0.3.13-linux-amd64.tar.gz" in dockerfile
-    assert dockerfile.index("USER root\n") < dockerfile.index("ADD ")
+    assert dockerfile.index("USER root\n") < dockerfile.index("\nADD https://")
     assert dockerfile.index("USER agent\n") < dockerfile.index("ENTRYPOINT ")
     assert dockerfile.index("RUN chmod +x /entrypoint.sh") < dockerfile.index("USER agent\n")
 
