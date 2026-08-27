@@ -1186,6 +1186,17 @@ def test_compose_carries_replication_supervision_when_bucket_configured(tmp_path
     assert "COPY litestream.yml /etc/litestream.yml" in dockerfile
     assert "COPY entrypoint.sh /entrypoint.sh" in dockerfile
     assert 'ENTRYPOINT ["/entrypoint.sh"]' in dockerfile
+    # 2026-08-27, the drill's first real image build caught both of these:
+    # the release ASSET name carries the v prefix too (the un-prefixed
+    # spelling 404s at ADD), and the runtime image runs nonroot (USER
+    # agent), so the install needs a root window and must hand the image
+    # back to the runtime's own user before ENTRYPOINT -- anything else
+    # either can't read the root-owned tarball or silently runs the whole
+    # agent as root.
+    assert "litestream-v0.3.13-linux-amd64.tar.gz" in dockerfile
+    assert dockerfile.index("USER root\n") < dockerfile.index("ADD ")
+    assert dockerfile.index("USER agent\n") < dockerfile.index("ENTRYPOINT ")
+    assert dockerfile.index("RUN chmod +x /entrypoint.sh") < dockerfile.index("USER agent\n")
 
     entrypoint = (dest / "entrypoint.sh").read_text()
     assert "litestream replicate" in entrypoint

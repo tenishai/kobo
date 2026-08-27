@@ -492,7 +492,9 @@ def _agent_card(spec: BundleSpec) -> dict:
 _LITESTREAM_VERSION = "0.3.13"
 _LITESTREAM_RELEASE_URL = (
     "https://github.com/benbjohnson/litestream/releases/download/"
-    f"v{_LITESTREAM_VERSION}/litestream-{_LITESTREAM_VERSION}-linux-amd64.tar.gz"
+    # The release ASSET carries the v prefix too (litestream-v0.3.13-...),
+    # not just the tag -- the un-prefixed spelling 404s at image build.
+    f"v{_LITESTREAM_VERSION}/litestream-v{_LITESTREAM_VERSION}-linux-amd64.tar.gz"
 )
 
 _MEMORY_REPLICA_DOCKERFILE_BLOCK = (
@@ -503,12 +505,19 @@ _MEMORY_REPLICA_DOCKERFILE_BLOCK = (
     "# supervised by the entrypoint below -- litestream replicates\n"
     "# techne.db to object storage continuously while the runtime's own\n"
     "# command runs as its supervised child.\n"
+    "# The runtime image runs as its own nonroot user (USER agent in the\n"
+    "# daedalus Dockerfile): ADD lands the tarball root-owned mode 600 and\n"
+    "# /usr/local/bin is not agent-writable, so the install needs a root\n"
+    "# window -- and must hand the image back to that same user after,\n"
+    "# or the runtime's whole nonroot posture silently widens to root.\n"
+    "USER root\n"
     f"ADD {_LITESTREAM_RELEASE_URL} /tmp/litestream.tar.gz\n"
     "RUN tar -C /usr/local/bin -xzf /tmp/litestream.tar.gz litestream "
     "&& rm /tmp/litestream.tar.gz\n"
     "COPY litestream.yml /etc/litestream.yml\n"
     "COPY entrypoint.sh /entrypoint.sh\n"
     "RUN chmod +x /entrypoint.sh\n"
+    "USER agent\n"
     'ENTRYPOINT ["/entrypoint.sh"]\n'
 )
 
