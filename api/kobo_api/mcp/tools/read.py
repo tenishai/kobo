@@ -344,7 +344,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     # everything it does. Deferring the import to inside `register` (which
     # only ever runs once `build_mcp_server` is actually called) sidesteps
     # that ordering entirely.
-    from kobo_api.mcp.tools.write import _endpoint
+    from kobo_api.mcp.tools.write import _endpoint, _off_loop
 
     search_personas_endpoint = _endpoint(app, "GET", "/api/personas/search")
 
@@ -362,7 +362,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         """
         session = app.state.session_factory()
         try:
-            body = search_personas_endpoint(q=q, team=team, session=session)
+            body = await _off_loop(search_personas_endpoint, q=q, team=team, session=session)
         finally:
             session.close()
         return {"result": body["results"]}

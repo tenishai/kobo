@@ -308,7 +308,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from functools import partial
 from typing import Any
+
+import anyio.to_thread
 
 from fastapi import BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -360,6 +363,20 @@ _SKILL_GONE_FROM_CATALOG_PREFIX = "skill no longer in the catalog:"
 # `kobo_add_agent_tool`'s own source-arbitration gate -- see this module's
 # own docstring section for exactly which shapes this covers.
 _EXACTLY_ONE_SOURCE = "pass exactly one source: tool_id, or filename with content"
+
+
+async def _off_loop(fn: Callable, /, **kwargs: Any) -> Any:
+    """Run one of main.py's sync route functions in a worker thread.
+
+    Every tool below wraps a sync route function; awaited directly from an
+    async tool body those run ON the event loop, freezing the whole room --
+    healthz included -- for the call's full duration. A chat that fans out
+    to a colleague chain holds the loop for minutes, the liveness probe
+    times out, and kubelet kills the pod (the 2026-08-27 exit-137). This
+    one hop restores exactly what the HTTP layer gives these same
+    functions: FastAPI runs sync routes in this same anyio threadpool.
+    """
+    return await anyio.to_thread.run_sync(partial(fn, **kwargs))
 
 # `kobo_create_tool`'s baseline-pack reservation (Task 6 review, operator
 # ruled). Publishing a `baseline-` id is not a team-scoped act like every
@@ -587,7 +604,7 @@ def register(mcp: FastMCP, app: Any) -> None:
             except (TypeError, ValidationError) as exc:
                 raise ToolError(f"that request wasn't quite right: {exc}") from exc
 
-            response = create_agent_endpoint(payload=payload, request=req, session=session)
+            response = await _off_loop(create_agent_endpoint,payload=payload, request=req, session=session)
         finally:
             session.close()
 
@@ -614,7 +631,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         session = app.state.session_factory()
         background_tasks = BackgroundTasks()
         try:
-            response = teach_endpoint(
+            response = await _off_loop(teach_endpoint,
                 name=agent,
                 payload=TeachPayload(text=note),
                 request=req,
@@ -646,7 +663,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         req = authz.room_request(app, email)
         session = app.state.session_factory()
         try:
-            response = chat_endpoint(
+            response = await _off_loop(chat_endpoint,
                 name=agent,
                 payload=ChatRequest(messages=[ChatMessagePayload(role="user", text=message)]),
                 request=req,
@@ -673,7 +690,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         req = authz.room_request(app, email)
         session = app.state.session_factory()
         try:
-            response = create_invite_endpoint(
+            response = await _off_loop(create_invite_endpoint,
                 name=agent,
                 payload=InviteCreateRequest(to_agent=colleague),
                 request=req,
@@ -704,7 +721,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         req = authz.room_request(app, email)
         session = app.state.session_factory()
         try:
-            response = accept_invite_endpoint(invite_id=invite_id, request=req, session=session)
+            response = await _off_loop(accept_invite_endpoint,invite_id=invite_id, request=req, session=session)
         finally:
             session.close()
 
@@ -810,7 +827,7 @@ def register(mcp: FastMCP, app: Any) -> None:
                     if entry is None:
                         raise ToolError(f"no such skill: {skill_id!r}")
 
-                    response = add_skill_endpoint(
+                    response = await _off_loop(add_skill_endpoint,
                         name=agent,
                         payload=CatalogSkillPayload(name=skill_id, team=_skill_team(entry)),
                         request=req,
@@ -820,7 +837,7 @@ def register(mcp: FastMCP, app: Any) -> None:
                     added.append({"id": skill_id, "sha": body.get("sha")})
 
             for skill_id in remove or []:
-                response = remove_skill_endpoint(
+                response = await _off_loop(remove_skill_endpoint,
                     name=agent, skill_id=skill_id, request=req, session=session
                 )
                 _skill_route_result(response)
@@ -881,7 +898,7 @@ def register(mcp: FastMCP, app: Any) -> None:
                 except ClientError as exc:
                     raise ToolError(_MARKETPLACE_DID_NOT_ANSWER) from exc
 
-            response = add_tool_endpoint(
+            response = await _off_loop(add_tool_endpoint,
                 name=agent,
                 payload=ToolingUploadPayload(filename=filename, content=content),
                 request=req,
@@ -1059,7 +1076,7 @@ def register(mcp: FastMCP, app: Any) -> None:
 
         session = app.state.session_factory()
         try:
-            response = create_persona_endpoint(payload=payload, request=req, session=session)
+            response = await _off_loop(create_persona_endpoint,payload=payload, request=req, session=session)
             return _create_result(response)
         finally:
             session.close()
