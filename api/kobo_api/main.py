@@ -2695,6 +2695,12 @@ def create_app(
         if cabal_enabled(cfg) and clients.cabal is not None:
             context_id = _chat_context_id(agent.name, converse_messages)
             envelope = _build_task_envelope(converse_messages, context_id=context_id)
+            # Wall time of the relay itself (502 instrumentation): the
+            # intermittent 502's cause is not established, and elapsed time is
+            # the discriminating signal between a slow model chain and an
+            # immediate transport failure. Read once here so the except block
+            # below can report it.
+            relay_started_at = time.monotonic()
             try:
                 raw = clients.cabal.relay(agent.name, envelope)
                 reply = _extract_relay_reply(raw)
@@ -2707,7 +2713,13 @@ def create_app(
                 # but-parseable reply (`_extract_relay_reply` above), land
                 # here and get the same fixed, plain copy; the real cause is
                 # only ever logged, never echoed to the caller.
-                log.warning("chat relay failed for agent %s: %s", name, exc)
+                log.warning(
+                    "chat relay failed for agent %s after %.3fs (%s): %s",
+                    name,
+                    time.monotonic() - relay_started_at,
+                    type(exc).__name__,
+                    exc,
+                )
                 if rollout_in_progress(
                     clients.kubectl, namespace=agent.name, deploy=agent.name
                 ):

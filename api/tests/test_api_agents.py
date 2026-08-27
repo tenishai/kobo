@@ -18,6 +18,7 @@ background thread to make progress, a different clock than the one the
 from __future__ import annotations
 
 import json
+import re
 import time
 
 import jwt
@@ -1711,6 +1712,39 @@ def test_chat_relay_failure_with_probe_error_keeps_switchboard_copy(
 
     assert response.status_code == 502
     assert response.json() == {"error": "The switchboard did not answer. Try again shortly."}
+
+
+def test_chat_relay_failure_logs_exception_type_and_elapsed_seconds(
+    session_factory, config, fake_github, fake_gojira, fake_agent, monkeypatch, caplog
+):
+    """Task 8 (502 instrumentation): the root cause of the intermittent
+    502 isn't established yet, so the relay-failure log line must carry
+    enough to characterize the next live one -- the exception TYPE and the
+    elapsed wall time of the relay call -- without logging message content,
+    which stays out of this path on purpose."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    fake_cabal = FakeCabal(relay_error="switchboard unreachable")
+    client = _client_with_cabal(
+        session_factory, cfg, fake_github, fake_gojira, fake_agent, fake_cabal
+    )
+    _seed_agent(session_factory, cfg)
+
+    # Deliberately NOT patching time.monotonic: `main_module.time` IS the
+    # stdlib module, so patching its attribute swaps the clock for every
+    # consumer in the process (httpx, threading, pytest itself) and hangs
+    # the run. Assert the SHAPE of the duration instead, which is what the
+    # instrumentation actually promises.
+    with caplog.at_level("WARNING"):
+        response = client.post(
+            f"/api/agents/{AGENT_NAME}/chat",
+            json={"messages": [{"role": "user", "text": "do not log this text"}]},
+        )
+
+    assert response.status_code == 502
+    assert "CabalError" in caplog.text
+    assert re.search(r"after \d+\.\d{3}s", caplog.text), caplog.text
+    assert "do not log this text" not in caplog.text
 
 
 # --- model_label fold-in ------------------------------------------------------------
