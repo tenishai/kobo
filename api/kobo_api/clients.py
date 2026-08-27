@@ -738,6 +738,16 @@ class CloudClient(Protocol):
         """
         ...
 
+    def grant_bucket_prefix_write(self, gsa_email: str, bucket: str, prefix: str) -> None:
+        """Grant `gsa_email` write access to objects under `prefix` in
+        `bucket` -- and nothing wider -- for agent memory replication
+        (resilience arc, Task 14). Scoped by an IAM condition on the object
+        name prefix, never a bucket-wide role: one agent's replicated
+        techne database must never be reachable by another agent's own
+        identity, even though every agent replicates into the same bucket.
+        """
+        ...
+
 
 def gsa_email(name: str, project: str) -> str:
     """The GSA email convention for a GCP service account: `{name}@{project}.iam.gserviceaccount.com`.
@@ -887,6 +897,28 @@ class GcloudClient:
         # the SAME email `ensure_gsa` would have returned, without creating
         # a GSA, so both sides can never drift apart.
         return gsa_email(name, self._project)
+
+    def grant_bucket_prefix_write(self, gsa_email: str, bucket: str, prefix: str) -> None:
+        # A CEL condition on the object name, not a plain (unconditional)
+        # IAM binding: `roles/storage.objectAdmin` granted bucket-wide would
+        # let this agent's identity read/write every OTHER agent's
+        # replicated database too. `resource.name` for a GCS object is
+        # `projects/_/buckets/<bucket>/objects/<object>` (the literal
+        # "projects/_/" segment is GCS's own IAM condition convention, not
+        # this project's id), so `startsWith(...prefix)` scopes the grant to
+        # exactly this agent's own namespace and nothing wider.
+        condition_title = f"agent-memory-replica-{prefix.rstrip('/')}"
+        condition_expression = (
+            f'resource.name.startsWith("projects/_/buckets/{bucket}/objects/{prefix}")'
+        )
+        self._runner.run(
+            [
+                self._gcloud, "storage", "buckets", "add-iam-policy-binding", f"gs://{bucket}",
+                "--member", f"serviceAccount:{gsa_email}",
+                "--role", "roles/storage.objectAdmin",
+                "--condition", f"expression={condition_expression},title={condition_title}",
+            ]
+        )
 
 
 # --- Agent (a2a chat over a kubectl port-forward) -----------------------------

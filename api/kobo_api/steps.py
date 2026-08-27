@@ -794,6 +794,11 @@ class RepoStep:
             # compose time (see `_colleague_roster`'s own docstring for why
             # `kobo_api.pairs.allowed_pairs` itself isn't reusable here).
             colleagues=_colleague_roster(ctx.session, agent),
+            # Agent memory replication (resilience arc, Task 14): threaded
+            # straight from org config -- empty means off, and `compose()`
+            # emits no supervision at all in that case (see BundleSpec's own
+            # field docstring).
+            memory_replica_bucket=config.memory_replica_bucket,
         )
 
         compose_dir = ctx.workdir / "repo"
@@ -958,7 +963,9 @@ class OnboardStep:
 
 
 class AccessStep:
-    """Grants the agent's GSA workload identity and model-group membership."""
+    """Grants the agent's GSA workload identity, model-group membership,
+    and (resilience arc, Task 14) write access to its own agent-memory
+    replica prefix when the room has one configured."""
 
     name = "access"
     label = "Model access"
@@ -972,6 +979,16 @@ class AccessStep:
         email = cloud.ensure_gsa(gsa_name)
         cloud.bind_workload_identity(email, namespace=agent.name, ksa=gsa_name)
         cloud.add_to_group(email, config.model_group)
+        if config.memory_replica_bucket:
+            # Agent memory replication (Task 14): write access to THIS
+            # agent's own prefix and nothing wider -- the same per-agent
+            # namespace (`{agent.name}/`) `kobo_api.composer._litestream_
+            # config` targets, so the entrypoint's litestream process can
+            # actually write what it's configured to replicate to, and
+            # never anything outside its own agent's namespace.
+            cloud.grant_bucket_prefix_write(
+                email, config.memory_replica_bucket, f"{agent.name}/"
+            )
         return f"granted model access to {email}"
 
 

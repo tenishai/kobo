@@ -1747,6 +1747,68 @@ def test_access_step_calls_fakes_in_order_with_short_gsa_name(session_factory, c
     assert (expected_email, config.model_group) in cloud.group_members
 
 
+# --- AccessStep: agent memory replication grant (resilience arc, Task 14) --------
+#
+# The agent's service account gets write access to a per-agent replica
+# prefix and nothing wider, granted by this step -- mirroring the exact
+# ensure_gsa/bind_workload_identity/add_to_group shape above, just one more
+# call, gated on `config.memory_replica_bucket` (empty = feature off).
+
+
+def test_access_step_grants_memory_replica_prefix_when_bucket_configured(
+    session_factory, config
+):
+    cfg = config.model_copy(update={"memory_replica_bucket": "kobo-memory-replicas"})
+    session, agent = _make_agent(session_factory)
+    cloud = FakeCloud(project=cfg.gcp_project)
+    ctx = _make_ctx(session, agent, cfg, _clients(cloud=cloud))
+
+    AccessStep().run(ctx)
+
+    expected_email = f"agent-{AGENT_NAME}@{cfg.gcp_project}.iam.gserviceaccount.com"
+    assert cloud.calls == [
+        f"ensure_gsa:agent-{AGENT_NAME}",
+        f"bind_workload_identity:{expected_email}:{AGENT_NAME}/agent-{AGENT_NAME}",
+        f"add_to_group:{expected_email}:{cfg.model_group}",
+        f"grant_bucket_prefix_write:{expected_email}:kobo-memory-replicas:{AGENT_NAME}/",
+    ]
+
+
+def test_access_step_grants_prefix_scoped_to_this_agents_own_name(session_factory, config):
+    """Two different agents against the SAME configured bucket must be
+    granted two DIFFERENT prefixes -- never a bucket-wide grant either
+    agent's identity could use to reach the other's replica."""
+    cfg = config.model_copy(update={"memory_replica_bucket": "kobo-memory-replicas"})
+    session, agent = _make_agent(session_factory, name="rae")
+    cloud = FakeCloud(project=cfg.gcp_project)
+    ctx = _make_ctx(session, agent, cfg, _clients(cloud=cloud))
+
+    AccessStep().run(ctx)
+
+    expected_email = f"agent-rae@{cfg.gcp_project}.iam.gserviceaccount.com"
+    assert cloud.calls[-1] == f"grant_bucket_prefix_write:{expected_email}:kobo-memory-replicas:rae/"
+
+
+def test_access_step_no_memory_replica_grant_when_bucket_unset(session_factory, config):
+    """Off arm: pinned as part of the same call-order assertion the
+    original AccessStep test above already makes -- when the bucket is
+    unset, the call list is EXACTLY the pre-Task-14 three calls, nothing
+    appended."""
+    session, agent = _make_agent(session_factory)
+    cloud = FakeCloud(project=config.gcp_project)
+    ctx = _make_ctx(session, agent, config, _clients(cloud=cloud))
+
+    AccessStep().run(ctx)
+
+    expected_email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    assert cloud.calls == [
+        f"ensure_gsa:agent-{AGENT_NAME}",
+        f"bind_workload_identity:{expected_email}:{AGENT_NAME}/agent-{AGENT_NAME}",
+        f"add_to_group:{expected_email}:{config.model_group}",
+    ]
+    assert not any(c.startswith("grant_bucket_prefix_write") for c in cloud.calls)
+
+
 # --- HelloStep (persona-metadata plan, Task 3: capability earned + card lockstep) --
 
 HELLO_REPO = "acme/agent-clio"

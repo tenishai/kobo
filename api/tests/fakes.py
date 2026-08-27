@@ -1009,6 +1009,9 @@ class FakeCloud:
         # helper, so the two clients cannot drift apart on this format.
         return gsa_email(name, self._project)
 
+    def grant_bucket_prefix_write(self, gsa_email: str, bucket: str, prefix: str) -> None:
+        self.calls.append(f"grant_bucket_prefix_write:{gsa_email}:{bucket}:{prefix}")
+
 
 class FakeAgent:
     """hello()/converse() return a canned or scripted reply and record every

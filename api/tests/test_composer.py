@@ -34,6 +34,7 @@ def _make_spec(
     capability: str | None = None,
     colleagues: list[dict] | None = None,
     cabal_url: str | None = None,
+    memory_replica_bucket: str = "",
 ) -> BundleSpec:
     return BundleSpec(
         name=name,
@@ -49,6 +50,7 @@ def _make_spec(
         capability=capability,
         colleagues=colleagues if colleagues is not None else [],
         cabal_url=cabal_url,
+        memory_replica_bucket=memory_replica_bucket,
     )
 
 
@@ -1131,6 +1133,89 @@ def test_compose_dockerfile_matches_runtime_image(tmp_path):
         f"FROM {_RUNTIME_IMAGE}\n"
         "COPY bundle/ /bundle\n"
     )
+
+
+# --- Agent memory replication (resilience arc, Task 14) --------------------------
+#
+# Every agent is born with its techne database replicating continuously to
+# object storage. A sidecar container cannot ride the composed bundle (the
+# pod spec belongs to the platform, not the room), so replication runs
+# INSIDE the agent container, supervised by the entrypoint of the composed
+# image -- the lever is the Dockerfile the room already writes. Gated on
+# `spec.memory_replica_bucket` alone (a `BundleSpec` field, threaded from
+# `Config.memory_replica_bucket` by `kobo_api.steps.RepoStep`), the same
+# presence-alone gate `cabal_url` already establishes elsewhere in this
+# module -- empty/unset means the feature is off and composed bundles carry
+# no supervision at all, pinned by the "both arms" tests below.
+
+
+def test_compose_carries_no_replication_supervision_when_bucket_unset(tmp_path):
+    """Off arm: byte-identical to the pre-Task-14 shape, pinned above --
+    no litestream.yml, no entrypoint.sh, and the plain (no ENTRYPOINT)
+    Dockerfile, whether the field is left at its default or passed
+    explicitly as an empty string."""
+    default_dest = tmp_path / "default"
+    explicit_dest = tmp_path / "explicit"
+
+    compose(_make_spec(), default_dest)
+    compose(_make_spec(memory_replica_bucket=""), explicit_dest)
+
+    for dest in (default_dest, explicit_dest):
+        assert (dest / "Dockerfile").read_text() == (
+            "# Agent image: the shared runtime plus this agent's bundle.\n"
+            f"FROM {_RUNTIME_IMAGE}\n"
+            "COPY bundle/ /bundle\n"
+        )
+        assert not (dest / "litestream.yml").exists()
+        assert not (dest / "entrypoint.sh").exists()
+
+
+def test_compose_carries_replication_supervision_when_bucket_configured(tmp_path):
+    """On arm: the composed Dockerfile installs litestream, copies in its
+    config and an entrypoint wrapper, and overrides ENTRYPOINT to run that
+    wrapper -- litestream replicate wrapping (not replacing) whatever
+    command the runtime image itself would otherwise run."""
+    dest = tmp_path / "out"
+
+    compose(_make_spec(name="kestrel", memory_replica_bucket="kobo-memory-replicas"), dest)
+
+    dockerfile = (dest / "Dockerfile").read_text()
+    assert f"FROM {_RUNTIME_IMAGE}" in dockerfile
+    assert "COPY bundle/ /bundle" in dockerfile
+    assert "litestream" in dockerfile.lower()
+    assert "COPY litestream.yml /etc/litestream.yml" in dockerfile
+    assert "COPY entrypoint.sh /entrypoint.sh" in dockerfile
+    assert 'ENTRYPOINT ["/entrypoint.sh"]' in dockerfile
+
+    entrypoint = (dest / "entrypoint.sh").read_text()
+    assert "litestream replicate" in entrypoint
+    assert "-exec" in entrypoint
+
+    litestream_yml = (dest / "litestream.yml").read_text()
+    assert "/techne/techne.db" in litestream_yml
+    assert "kobo-memory-replicas" in litestream_yml
+    # Per-agent prefix: this agent's own name, never another agent's data or
+    # the bucket root -- the same namespace the access-step grant (Task 14,
+    # tests/test_steps.py) scopes its IAM condition to.
+    assert "kestrel/" in litestream_yml
+
+
+def test_compose_replication_prefix_is_per_agent(tmp_path):
+    """Two different agents against the SAME configured bucket get two
+    DIFFERENT replica prefixes -- proof this isn't a shared, bucket-wide
+    path any agent's replica could collide with another's."""
+    dest_a = tmp_path / "a"
+    dest_b = tmp_path / "b"
+
+    compose(_make_spec(name="alpha", memory_replica_bucket="shared-bucket"), dest_a)
+    compose(_make_spec(name="beta", memory_replica_bucket="shared-bucket"), dest_b)
+
+    yml_a = (dest_a / "litestream.yml").read_text()
+    yml_b = (dest_b / "litestream.yml").read_text()
+    assert "alpha/" in yml_a
+    assert "beta/" not in yml_a
+    assert "beta/" in yml_b
+    assert "alpha/" not in yml_b
 
 
 # --- staged skill copy (Task 5: bucket catalogs replace git-archive pinning) ------

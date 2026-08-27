@@ -96,6 +96,19 @@ class BundleSpec:
     # `list_colleagues` tool read alike. Defaulted empty so every
     # pre-existing `BundleSpec(...)` construction keeps composing unchanged.
     colleagues: list[dict] = field(default_factory=list)
+    # Agent memory replication (resilience arc, Task 14): the object-storage
+    # bucket this agent's techne database replicates to continuously from
+    # birth, threaded straight from `Config.memory_replica_bucket` by
+    # `kobo_api.steps.RepoStep`. Empty (the default) means the feature is
+    # off -- `compose()` below emits no litestream.yml, no entrypoint.sh,
+    # and no Dockerfile ENTRYPOINT override, byte-identical to every
+    # pre-existing `BundleSpec(...)` construction across the test suite.
+    # Presence alone is the gate, same posture `cabal_url` above already
+    # takes: this field describes the bundle's own shape, not whether some
+    # fuller "is replication actually wired" check would also want to see
+    # (there is no such fuller check today -- the bucket name is the whole
+    # contract).
+    memory_replica_bucket: str = ""
 
 
 # --- agent.yaml rendering ----------------------------------------------------
@@ -467,20 +480,98 @@ def _agent_card(spec: BundleSpec) -> dict:
     }
 
 
+# Agent memory replication (resilience arc, Task 14): litestream release
+# fetched by tag directly into the image rather than a multi-stage `COPY
+# --from=` (which would need a second `FROM` line) -- `_DOCKERFILE_FROM_RE`
+# below (and every caller of `update_dockerfile_runtime_image`, which
+# re-pins a REPO'S OWN Dockerfile after compose time) assumes exactly one
+# `FROM` line exists; a second one would make that re-pin silently target
+# the wrong stage. Keeping a single `FROM` line -- the runtime image's own
+# -- regardless of whether replication is on is a load-bearing invariant of
+# this module, not just this feature's own preference.
+_LITESTREAM_VERSION = "0.3.13"
+_LITESTREAM_RELEASE_URL = (
+    "https://github.com/benbjohnson/litestream/releases/download/"
+    f"v{_LITESTREAM_VERSION}/litestream-{_LITESTREAM_VERSION}-linux-amd64.tar.gz"
+)
+
+_MEMORY_REPLICA_DOCKERFILE_BLOCK = (
+    "\n"
+    "# Agent memory replication (resilience arc, Task 14): a sidecar\n"
+    "# container cannot ride this bundle (the pod spec belongs to the\n"
+    "# platform, not the room), so replication runs INSIDE this image,\n"
+    "# supervised by the entrypoint below -- litestream replicates\n"
+    "# techne.db to object storage continuously while the runtime's own\n"
+    "# command runs as its supervised child.\n"
+    f"ADD {_LITESTREAM_RELEASE_URL} /tmp/litestream.tar.gz\n"
+    "RUN tar -C /usr/local/bin -xzf /tmp/litestream.tar.gz litestream "
+    "&& rm /tmp/litestream.tar.gz\n"
+    "COPY litestream.yml /etc/litestream.yml\n"
+    "COPY entrypoint.sh /entrypoint.sh\n"
+    "RUN chmod +x /entrypoint.sh\n"
+    'ENTRYPOINT ["/entrypoint.sh"]\n'
+)
+
+# The techne PVC mount path (matches kobo_api.steps.WireStep's own
+# `PVC_YAML_TEMPLATE`, mounted at `/techne`) and the sqlite file daedalus's
+# techne memory provider writes there -- litestream.yml's `dbs[0].path`
+# below must name the exact same file that mount actually holds.
+_TECHNE_DB_PATH = "/techne/techne.db"
+
+_ENTRYPOINT_SH = (
+    "#!/bin/sh\n"
+    "# Agent memory replication supervision (resilience arc, Task 14):\n"
+    "# litestream replicates techne.db to object storage continuously\n"
+    "# while the runtime's own command runs as its supervised child -- if\n"
+    "# that child exits, litestream exits too (an agent with a dead\n"
+    "# runtime should not keep \"replicating\" nothing).\n"
+    "set -e\n"
+    'exec litestream replicate -config /etc/litestream.yml -exec "$*"\n'
+)
+
+
+def _litestream_config(spec: BundleSpec) -> str:
+    """The litestream config for `spec`'s own agent: one sqlite db
+    (techne.db, at the PVC mount path every agent's runtime already has),
+    replicated to `spec.memory_replica_bucket` under a PER-AGENT prefix
+    (`spec.name`) -- never the bucket root, and never another agent's
+    prefix, so the write access `kobo_api.steps.AccessStep` grants this
+    agent's own service account (scoped to that same prefix) can never
+    reach a sibling agent's replica.
+    """
+    return (
+        "dbs:\n"
+        f"  - path: {_TECHNE_DB_PATH}\n"
+        "    replicas:\n"
+        "      - type: gcs\n"
+        f"        bucket: {spec.memory_replica_bucket}\n"
+        f"        path: {spec.name}/techne\n"
+    )
+
+
 def _dockerfile(spec: BundleSpec) -> str:
+    if not spec.memory_replica_bucket:
+        return (
+            "# Agent image: the shared runtime plus this agent's bundle.\n"
+            f"FROM {spec.runtime_image}\n"
+            "COPY bundle/ /bundle\n"
+        )
     return (
         "# Agent image: the shared runtime plus this agent's bundle.\n"
         f"FROM {spec.runtime_image}\n"
         "COPY bundle/ /bundle\n"
+        f"{_MEMORY_REPLICA_DOCKERFILE_BLOCK}"
     )
 
 
 # Matches a Dockerfile's `FROM <image>` line (this module's own template,
-# `_dockerfile` above, writes exactly one) anywhere in the file, not just its
-# first line — a leading comment line (as that template has) is not itself a
-# FROM line. Captures the `FROM` keyword plus the whitespace that follows it,
-# so the replacement can preserve that prefix byte-for-byte and only swap the
-# image-ref token itself.
+# `_dockerfile` above, writes exactly one -- see the memory-replication
+# constants above for why that invariant is deliberately preserved even with
+# replication on) anywhere in the file, not just its first line — a leading
+# comment line (as that template has) is not itself a FROM line. Captures
+# the `FROM` keyword plus the whitespace that follows it, so the replacement
+# can preserve that prefix byte-for-byte and only swap the image-ref token
+# itself.
 _DOCKERFILE_FROM_RE = re.compile(r"^(FROM[ \t]+)\S+", re.MULTILINE)
 
 
@@ -1042,6 +1133,8 @@ def compose(spec: BundleSpec, dest: Path) -> None:
         dest/bundle/knowledge/colleagues.md
         dest/bundle/skills/<id>/**   (one materialized tree per spec.skills
                                       entry — see `_materialize_skill`)
+        dest/litestream.yml          (only when spec.memory_replica_bucket)
+        dest/entrypoint.sh           (only when spec.memory_replica_bucket)
     """
     bundle_dir = dest / "bundle"
     bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -1062,6 +1155,10 @@ def compose(spec: BundleSpec, dest: Path) -> None:
             _materialize_skill(skill, skills_dir / skill.id)
 
     (dest / "Dockerfile").write_text(_dockerfile(spec))
+
+    if spec.memory_replica_bucket:
+        (dest / "litestream.yml").write_text(_litestream_config(spec))
+        (dest / "entrypoint.sh").write_text(_ENTRYPOINT_SH)
 
 
 def validate_agent_yaml(bundle_dir: Path) -> None:

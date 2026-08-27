@@ -224,6 +224,17 @@ class Config(BaseModel):
     skills_repo: str | None = None
     skills_bucket: str = ""
     personas_bucket: str = ""
+    # Agent memory replication (resilience arc, Task 14): the object-storage
+    # bucket every composed agent's techne database replicates to
+    # continuously from birth, under a per-agent prefix (the agent's own
+    # name) kobo_api.steps.AccessStep grants write access to and nothing
+    # wider -- same "absent = feature off" convention as skills_bucket/
+    # personas_bucket above. Empty (the default) means the feature is off
+    # room-wide: kobo_api.composer.compose emits no litestream.yml, no
+    # entrypoint.sh, and no Dockerfile ENTRYPOINT override for any agent,
+    # and AccessStep grants nothing extra -- a composed bundle is
+    # byte-identical to one composed before this feature existed.
+    memory_replica_bucket: str = ""
     # WIF provider + service account identity the org's own skills-publish
     # pipeline (if any) runs as. skills_publish_external True means that
     # pipeline is external to kobo — kobo must never install or modify
