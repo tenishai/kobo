@@ -260,6 +260,37 @@ Reuse `_colleague_roster`'s existing visibility rule; do not write a second one.
 
 ---
 
+### Task 6b (kobo): hello survives fresh-identity propagation
+
+**Files:**
+- Modify: `api/kobo_api/steps.py` (the hello step)
+- Test: `api/tests/test_steps.py`
+
+**Observed live 2026-08-27:** a brand-new agent failed its FINAL provisioning
+step (hello, the first-contact relay) with a 502, and the operator had to click
+Retry. Diagnosed on the pod: google-auth 403 minting a token, because the
+agent's minutes-old service account and workload-identity binding had not
+finished IAM propagation. The retry succeeded untouched. Fresh-identity
+propagation is a KNOWN window; one automatic retry absorbs it invisibly.
+
+- [ ] **Step 1: Failing test**
+
+The hello step, on a relay failure, retries with backoff (3 attempts, roughly
+20s apart, using the step engine's own clock seam if one exists; do NOT
+`time.sleep` in a test) and succeeds when a later attempt succeeds. A hello
+that fails all attempts still fails the step with the last error, unchanged
+shape. Pin: two failures then a success ends DONE; three failures ends FAILED
+with the final error recorded.
+
+- [ ] **Step 2: Implement, GREEN, commit**
+
+Scope: the HELLO step only. Other relay callers (chat, teach) have their own
+fallback semantics and are not in play during provisioning.
+
+`fix(steps): hello retries through the fresh-identity propagation window`
+
+---
+
 ## ARC 4: DISCOVERY AND SHARED THREADS
 
 ### Task 7 (kobo): the suggest-a-colleague instruction
@@ -278,9 +309,36 @@ so plainly, name the colleague whose capability fits, and offer to bring
 them in. Do not ask them silently on the user's behalf, and do not guess
 at an answer you do not have. "I don't know yet, but {name} works on
 exactly this" is a good answer.
+
+When a colleague's answer informs yours, say so and name them. You will
+not remember the consultation next turn (colleague exchanges are not in
+your replayed history), so the attribution in your reply is the only
+record you get: without it you will later misremember their work as your
+own knowledge.
 ```
 
-Pin the copy by exact substring so drift must be deliberate.
+Pin both paragraphs by exact substring so drift must be deliberate.
+
+**Why the second paragraph exists, observed live 2026-08-27:** asked to
+"figure out what a psc is", a fresh agent silently asked a colleague, presented
+the answer as its own, and next turn claimed it came from training data. Not a
+lie by intent: the colleague hop is invisible in the replayed history, so the
+agent genuinely cannot remember it happened. Attribution at answer time is the
+only fix that survives statelessness.
+
+- [ ] **Step 1b: The origin line moves into self.md (operator ruling 2026-08-27)**
+
+The deployment-chain fact returns, in the self-card rather than a separate
+gotchas file. Append to `_self_md`'s body, exact copy:
+
+```
+You were assembled in the kobo assembly room and deployed through the
+platform chain: repo, onboarding, build, deploy, first contact. If someone
+asks how you got here, that is the answer.
+```
+
+Pin by substring in the existing self-card test. The operator liked agents
+knowing their origin; what he ruled out was a whole file of it.
 
 - [ ] **Step 2: Capability fallback**
 
