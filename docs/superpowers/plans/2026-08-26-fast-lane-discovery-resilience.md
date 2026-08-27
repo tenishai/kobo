@@ -39,7 +39,7 @@
 - `api/kobo_api/search.py`: FTS5 to Postgres full-text
 - `api/kobo_api/models.py` + a new migrations directory
 - `api/kobo_api/config.py`: `db_url` already exists; no new key needed
-- `api/kobo_api/composer.py`: the memory replication sidecar in the composed bundle
+- `api/kobo_api/composer.py`: memory replication supervision in the composed Dockerfile/entrypoint (a sidecar cannot ride the bundle; the pod spec belongs to the platform)
 
 ---
 
@@ -119,7 +119,7 @@ git diff --cached --name-only | xargs grep -l -f .superpowers/sdd/vendor-names.t
 
 **Interfaces:**
 - Consumes: Task 1's envelope shape (`metadata.system_task`).
-- Produces: `KNOWLEDGE_MARKER = "knowledge"` and `TOOL_MARKER = "tool"` beside `TEACH_MARKER`; a dispatch that routes on the marker; `apply_knowledge(text, filename, db_path) -> TeachResult` reusing `apply_teach`'s store call, provenance, and `intake_state` ledger stamp.
+- Produces: `KNOWLEDGE_MARKER = "knowledge"` and `TOOL_MARKER = "tool"` beside `TEACH_MARKER`; a dispatch that routes on the marker; `apply_knowledge(text, filename, db_path) -> TeachResult` reusing `apply_teach`'s store call, provenance, and `intake_state` ledger stamp, with REPLACEMENT semantics: before storing, retire the entries recorded in the ledger for this filename's earlier sha (the ledger already maps sha to filename to entry ids), then stamp the new sha; and `apply_knowledge_delete(filename, db_path)`, which retires the file's entries and removes its ledger row. Teach stays append-only and untouched.
 
 **Why knowledge reuses apply_teach's internals:** the seeder's parity test already pins that teach and the boot seeder produce identical entries from identical bytes. Knowledge is the same content shape (an `## H2`-sectioned markdown file) written by a different route, so it must produce identical entries too, and reusing the same store path is what guarantees that rather than a second implementation that drifts.
 
@@ -128,6 +128,8 @@ git diff --cached --name-only | xargs grep -l -f .superpowers/sdd/vendor-names.t
 In the existing teach test module, mirroring its fixtures:
 - A `knowledge`-marked task stores entries identical to what `apply_teach` produces for the same bytes.
 - Its sha lands in the `intake_state` ledger, so the boot seeder will not re-ingest it.
+- EDITING a file retires the old version's entries: after a second write of the same filename with different content, the old fact is no longer recalled and the new one is. This is the test that distinguishes knowledge from teach; write it first.
+- DELETE retires all of the file's entries and removes its ledger row.
 - An unknown marker is refused, and the refusal does NOT fall through to the model.
 - The existing teach tests still pass unchanged (the refactor must not move teach's behavior).
 
@@ -172,6 +174,8 @@ Expected: FAIL, the route commits synchronously and reports no mode.
 
 Mirror `teach_agent`'s structure (main.py:3487-3512) exactly: the `cabal_enabled(cfg) and clients.cabal is not None` gate, the same catch set including the not-completed check, the background archive on success, and the synchronous archive fallback on any miss. Do not invent a different degradation path.
 
+The DELETE route rides the same lane with a delete flag in the envelope metadata, mapped to `apply_knowledge_delete` on the runtime side. Its archive half removes the file from the repo as it does today. Pin: after a fast-lane delete, the runtime no longer recalls the file's facts, and the repo file is gone.
+
 - [ ] **Step 4: GREEN, full suite, commit**
 
 `feat(knowledge): knowledge edits ride the fast lane instead of a rebuild`
@@ -201,6 +205,8 @@ Commit: `feat(intake): memory uploads ride the fast lane`
 
 **The ruling this task encodes:** tools are delivered fast but loaded at boot. No hot-reload into a running process.
 
+**The persistence trap this task must not fall into:** the agent's `/bundle` comes from the image and resets on every restart; only the agent's own volume persists (mounted at `/techne` in live pods). A tool written into the live bundle would be erased by the very restart meant to load it. Fast-delivered tools therefore land in a persistent OVERLAY directory on the agent volume; the enforcement loader loads image-bundle tools first, then overlay tools, at boot only; and an overlay filename that collides with an image-bundle tool (the baseline pack above all) is refused at write AND skipped with a loud log at load, or the lane becomes a door for silently replacing enforcement hooks. Pin all three: persistence across restart, boot-only load, no shadowing.
+
 - [ ] **Step 1: kobo side, failing tests first**
 
 - A tool upload is validated by the room (the existing tooling contract) and then delivered over the fast lane.
@@ -210,8 +216,9 @@ Commit: `feat(intake): memory uploads ride the fast lane`
 - [ ] **Step 2: daedalus side, failing tests first**
 
 - **The runtime re-validates the tool itself before writing it.** The fast lane skips CI by definition, so the runtime must not trust that validation already happened. A tool that fails the tooling contract is refused at the runtime even when the room is bypassed. This is the security-critical test of this task: write it first and make sure it fails for the right reason.
-- A valid tool is written into the agent's live bundle tools directory.
-- The enforcement loader is NOT re-entered; loading still happens only at boot.
+- A valid tool is written into the overlay directory on the agent volume, never the image bundle, and survives a simulated restart (the file is still there when the loader runs again).
+- An overlay tool whose filename collides with an image-bundle tool is refused at write; one planted directly on disk is skipped at load with a loud log. Both halves tested.
+- The enforcement loader loads image tools then overlay tools, at boot only; it is NOT re-entered on delivery.
 
 - [ ] **Step 3: Implement both halves**
 
@@ -317,6 +324,7 @@ When an agent's capability text is empty, the roster line falls back to its purp
 - [ ] **Step 1: Failing tests**
 
 - A turn is delivered to participants in sequence, each seeing the messages that came before, so a later answer can build on an earlier one. Not a parallel fan-out.
+- Every relay for a thread passes the thread's id as `context_id` to `_build_task_envelope` (the parameter kept for exactly this caller), so the loop guard groups a thread's hops under one real key. Pin: the envelope's `contextId` equals the thread id.
 - **A thread is readable by its initiator and by nobody else** (operator ruling). Specifically: a member of a participating agent's own group who is not the initiator gets the room's not-found answer. Write this negative test first; it is the ruling's whole point.
 - The thread does not appear in any participant's conversation feed.
 - An agent is never asked to answer twice within one turn.
@@ -420,9 +428,9 @@ Prefer a row-level claim over an advisory lock unless the test shows otherwise; 
 - Modify: `api/kobo_api/composer.py`
 - Test: `api/tests/test_composer.py`
 
-Every agent is born with its techne database replicating continuously to object storage, using the switchboard's sidecar pattern but targeting object storage rather than a neighbouring volume in the same zone.
+Every agent is born with its techne database replicating continuously to object storage. A sidecar container cannot ride the bundle (the pod spec belongs to the platform, not the room), so replication runs INSIDE the agent container, supervised by the entrypoint of the composed image: the Dockerfile the room already writes is the lever. The agent's service account gets write access to a per-agent replica prefix and nothing wider, granted by the access step.
 
-- [ ] **Step 1: Failing test that a composed bundle carries the replication config**
+- [ ] **Step 1: Failing test that the composed Dockerfile/entrypoint carries the replication supervision, and that the access step grants the per-agent prefix**
 
 - [ ] **Step 2: Implement, GREEN, commit**
 

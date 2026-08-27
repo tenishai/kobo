@@ -52,26 +52,51 @@ writes techne directly; the repo archives in the background; the seeder's sha
 ledger keeps convergence honest across the next natural rebuild. This is the
 existing arc applied to two more routes, not a new mechanism.
 
+An edit is not an append, and the lane must say so. Teach is additive: new
+entries, a sha stamped in the ledger. A knowledge EDIT replaces a file whose
+earlier version already produced entries, and a DELETE removes one. The
+seeder's own ledger already records which entries each ingested file produced
+(sha, filename, entry ids), which is exactly the machinery replacement needs:
+the runtime handler retires the entries recorded for that filename's earlier
+sha, stores the new content, and stamps the new sha. Delete retires the
+entries and removes the ledger row. If in-process retirement proves unsafe,
+the honest fallback for destructive edits is the archive lane with its
+existing copy, stated plainly in the UI, never a partial fast lane that
+leaves ghost entries behind.
+
 ### 3.2 Tools: fast delivery, boot-time load
 
 Tools are code. They reach the agent the same fast way, but they are not
-injected into a running process:
+injected into a running process, and they cannot be written into the image's
+bundle either: the container filesystem resets to the image on every restart,
+so a tool written there would vanish at exactly the moment it was supposed to
+load. The image bundle stays read-only truth; fast-delivered tools land in a
+persistent overlay directory on the agent's own volume, beside its memory.
 
 1. kobo validates the tool (the existing tooling contract: size, UTF-8,
    non-empty, ast parse, import allowlist, entrypoint shape).
-2. It is delivered to the agent's live bundle over the fast lane.
-3. **The runtime re-validates it before writing.** The fast lane skips CI by
-   definition, so the runtime cannot assume validation already happened.
-4. The pod restarts to pick it up. Seconds to a minute, against minutes for
-   commit plus CI plus image plus rollout.
-
-The enforcement loader is untouched: it still loads tools once, at boot.
+2. It is delivered over the fast lane. **The runtime re-validates it before
+   writing** (the fast lane skips CI by definition, so the runtime cannot
+   assume validation already happened) and writes it to the overlay, never
+   the image bundle.
+3. The pod restarts. At boot the enforcement loader loads image-bundle tools
+   first, then overlay tools. Loading still happens exactly once, at boot.
+4. **The overlay may never shadow an image tool.** An overlay file whose name
+   collides with an image-bundle tool, the baseline pack above all, is
+   refused at write AND skipped with a loud log at load. Without this rule
+   the fast lane would be a door for silently replacing the room's
+   enforcement hooks.
+5. The background archive commits the tool to the repo, so the next natural
+   rebuild bakes it into the image and the overlay copy becomes redundant.
 
 ### 3.3 The refresh lane, which is also arc 4's foundation
 
 The same delivery path carries regenerated standing knowledge. When the roster
 changes (an agent is created, destroyed, or its capability is distilled), the
-room regenerates `colleagues.md` for the affected agents and delivers it.
+room regenerates `colleagues.md` for the affected agents and delivers it. The
+same lane redelivers an agent's own `self.md` when its capability distills
+after birth, so its self-knowledge does not stay frozen at "not yet
+distilled".
 
 Scope discipline: "affected agents" means agents that can see the changed
 agent, computed with the same visibility rule the roster itself uses. A room
@@ -132,6 +157,12 @@ wave, on the runtime side). A shared thread introduces an explicit participant
 set, which permits the structural check that guard cannot make: an agent is
 never asked to answer twice in one turn, and the thread's participant list is
 the authority on who is in it.
+
+A thread also has what plain chat lacks: a real conversation identity. Every
+relay for a thread passes the thread's own id as the envelope's context id,
+using the parameter the room kept for exactly this caller. The guard then
+groups a thread's hops under one honest key, with none of the false merges
+that made the room drop its derived chat id.
 
 ## Testing
 

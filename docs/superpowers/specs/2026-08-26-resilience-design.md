@@ -74,13 +74,21 @@ this must be answered rather than deferred.
 
 ### 5.2 Agent memory backup
 
-Every agent's techne database replicates continuously off-cluster, using the
-switchboard's proven sidecar pattern but targeting object storage rather than a
-neighbouring volume in the same zone.
+Every agent's techne database replicates continuously off-cluster, borrowing
+the switchboard's proven continuous-replication pattern but targeting object
+storage rather than a neighbouring volume in the same zone.
 
-This is per-agent, so it belongs in the bundle the room composes rather than
-being applied by hand: a new agent is born with its memory already protected.
-Existing agents gain it on their next natural rebuild.
+This is per-agent, and the pod's shape belongs to the platform, not the room:
+the room composes the bundle and the Dockerfile, and that is the lever it
+actually has. A sidecar container cannot ride the bundle. So replication runs
+inside the agent's container, supervised by the runtime entrypoint from the
+composed image, replicating the techne database on the agent's volume to
+object storage under a per-agent prefix. The agent's own service account gets
+write access to that prefix and nothing wider, granted by the same access
+step that provisions the rest of its identity.
+
+A new agent is born with its memory already protected. Existing agents gain
+it on their next natural rebuild.
 
 ### 5.3 A restore that has actually been performed
 
@@ -89,7 +97,11 @@ run end to end, that proves the chain:
 
 1. Restore the room's database to a new instance.
 2. Re-provision an agent from its repo. The room already knows how; that is the
-   eight-step checklist it runs at creation.
+   eight-step checklist it runs at creation. One honest caveat: that checklist
+   was built to CREATE agents, not to adopt them, so its repo step will refuse
+   a repo that already exists. Closing that gap is part of this deliverable,
+   because a restore that needs hand-editing is not a drill anyone runs at
+   three in the morning.
 3. Reattach that agent's memory from its replica.
 4. Ask the restored agent something only its memory knows, and get it right.
 
@@ -116,8 +128,12 @@ substitute.
    room's other secrets are.
 2. Migration runs against a copy first, and the drill is performed on that copy
    before anything touches the live room.
-3. Cutover is a config change plus a restart, with the SQLite file retained
-   read-only until the drill has been repeated against the live instance.
+3. Cutover copies the live rows (agents, steps, invites, refresh tokens, the
+   audit log); the search table is not copied, it is re-ingested from the
+   buckets. Refresh tokens ride along so every connector survives the move
+   without re-authorizing. Then a config change plus a restart, with the
+   SQLite file retained read-only until the drill has been repeated against
+   the live instance.
 4. Memory replication ships in the bundle and reaches agents on rebuild.
 
 ## Registered, not built here
