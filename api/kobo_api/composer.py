@@ -328,6 +328,11 @@ def _self_md(spec: BundleSpec) -> str:
     rendered `spec.team`'s value under the "your group" label and carried
     no group fact at all, so every agent confidently misreported its own
     group -- this is what closes that gap.
+
+    The closing paragraph (operator ruling 2026-08-27, Step 1b) is the
+    deployment-chain fact that used to live in a standalone gotchas file --
+    the operator liked agents knowing their origin, what he ruled out was a
+    whole file of it, so it moves here, into the self-card, instead.
     """
     tags = ", ".join(spec.purpose_tags) if spec.purpose_tags else "none"
     return (
@@ -342,7 +347,34 @@ def _self_md(spec: BundleSpec) -> str:
         "colleague about yourself. When you genuinely do not have a fact "
         "about yourself, say \"I don't know yet\" and stop, rather than "
         "asking someone else to answer it for you.\n"
+        "\n"
+        "You were assembled in the kobo assembly room and deployed through "
+        "the platform chain: repo, onboarding, build, deploy, first contact. "
+        "If someone asks how you got here, that is the answer.\n"
     )
+
+
+def _colleague_capability_line(c: dict) -> str:
+    """The "What they are for" fragment for one colleague roster entry
+    (capability fallback chain, standing-knowledge arc, Task 7): capability
+    text first, falling back to purpose tags when it's empty, and to skills
+    when THOSE are also empty -- "not yet distilled" only when all three are
+    empty. An agent nobody can match on any of the three is invisible to
+    the suggest-a-colleague feature below, which is why this fallback is
+    required rather than nice to have: a colleague whose capability has not
+    yet been earned (every agent, at birth) must still be describable well
+    enough to name and suggest.
+    """
+    capability = c.get("capability")
+    if capability:
+        return capability
+    purpose_tags = c.get("purpose_tags") or []
+    if purpose_tags:
+        return ", ".join(purpose_tags)
+    skills = c.get("skills") or []
+    if skills:
+        return ", ".join(skills)
+    return "not yet distilled"
 
 
 def _colleagues_md(spec: BundleSpec) -> str:
@@ -353,7 +385,22 @@ def _colleagues_md(spec: BundleSpec) -> str:
     question. Knowing who exists is not a tool call.
 
     Point-in-time: refreshed on delivery. list_colleagues stays the live
-    read, ask_colleague stays the action."""
+    read, ask_colleague stays the action.
+
+    The two closing paragraphs (standing-knowledge arc, Task 7) are the
+    suggest-a-colleague behavior instruction and its attribution
+    counterpart -- observed live 2026-08-27: asked to "figure out what a
+    psc is", a fresh agent silently asked a colleague, presented the answer
+    as its own, and next turn claimed it came from training data. Not a lie
+    by intent: the colleague hop is invisible in the replayed history, so
+    the agent genuinely cannot remember it happened. Naming the colleague
+    at answer time -- both when SUGGESTING one and when attributing an
+    answer to one already consulted -- is the only fix that survives
+    statelessness. Present unconditionally (not just in the `others`
+    branch): a roomful of zero colleagues today may gain one after the
+    refresh lane delivers a fresh roster, and the instruction should
+    already be standing when that happens.
+    """
     others = [c for c in spec.colleagues if c["name"] != spec.name]
     lines = ["## Your colleagues", ""]
     lines.append(
@@ -377,8 +424,25 @@ def _colleagues_md(spec: BundleSpec) -> str:
             lines.append(
                 f"- {c['name']} (team: {c.get('team') or 'unspecified'}), "
                 f"purpose tags: {tags}. "
-                f"What they are for: {c.get('capability') or 'not yet distilled'}"
+                f"What they are for: {_colleague_capability_line(c)}"
             )
+    lines.append("")
+    lines.append(
+        "When a question is squarely in a colleague's field and outside "
+        "yours, say so plainly, name the colleague whose capability fits, "
+        "and offer to bring them in. Do not ask them silently on the "
+        "user's behalf, and do not guess at an answer you do not have. "
+        "\"I don't know yet, but {name} works on exactly this\" is a good "
+        "answer."
+    )
+    lines.append("")
+    lines.append(
+        "When a colleague's answer informs yours, say so and name them. "
+        "You will not remember the consultation next turn (colleague "
+        "exchanges are not in your replayed history), so the attribution "
+        "in your reply is the only record you get: without it you will "
+        "later misremember their work as your own knowledge."
+    )
     return "\n".join(lines) + "\n"
 
 

@@ -900,6 +900,23 @@ def test_compose_writes_self_card_knowledge(tmp_path):
     assert "I don't know yet" in text
 
 
+def test_compose_self_card_carries_the_origin_line(tmp_path):
+    """Step 1b (operator ruling 2026-08-27): the deployment-chain fact
+    returns in the self-card rather than a standalone gotchas file. Pinned
+    by exact substring, byte-for-byte, so drift must be deliberate."""
+    dest = tmp_path / "out"
+    spec = _make_spec(name="kestrel")
+
+    compose(spec, dest)
+
+    text = (dest / "bundle" / "knowledge" / "self.md").read_text()
+    assert (
+        "You were assembled in the kobo assembly room and deployed through "
+        "the platform chain: repo, onboarding, build, deploy, first contact."
+    ) in text
+    assert "If someone asks how you got here, that is the answer." in text
+
+
 def test_compose_writes_colleague_roster(tmp_path):
     dest = tmp_path / "out"
     spec = _make_spec(
@@ -959,6 +976,146 @@ def test_compose_roster_handles_no_colleagues(tmp_path):
 
     text = (dest / "bundle" / "knowledge" / "colleagues.md").read_text()
     assert "no colleagues" in text.lower()
+
+
+# --- suggest-a-colleague instruction (standing-knowledge arc, Task 7) -----------
+#
+# Exact copy, no em dashes, pinned by substring so drift must be deliberate.
+# Present unconditionally -- both with and without a roster -- since a
+# roomful of zero colleagues today may gain one after the refresh lane
+# delivers a fresh roster (`refresh_colleague_rosters`), and the instruction
+# must already be standing when that happens.
+
+
+def test_compose_colleagues_md_carries_the_suggest_a_colleague_instruction(tmp_path):
+    dest = tmp_path / "out"
+    spec = _make_spec(colleagues=[
+        {"name": "ward", "team": "infra-engineering", "purpose_tags": [], "capability": "x"},
+    ])
+
+    compose(spec, dest)
+
+    text = (dest / "bundle" / "knowledge" / "colleagues.md").read_text()
+    assert (
+        "When a question is squarely in a colleague's field and outside "
+        "yours, say so plainly, name the colleague whose capability fits, "
+        "and offer to bring them in."
+    ) in text
+    assert (
+        "Do not ask them silently on the user's behalf, and do not guess "
+        "at an answer you do not have."
+    ) in text
+    assert '"I don\'t know yet, but {name} works on exactly this" is a good answer.' in text
+
+
+def test_compose_colleagues_md_carries_the_attribution_instruction(tmp_path):
+    dest = tmp_path / "out"
+    spec = _make_spec(colleagues=[])
+
+    compose(spec, dest)
+
+    text = (dest / "bundle" / "knowledge" / "colleagues.md").read_text()
+    assert (
+        "When a colleague's answer informs yours, say so and name them."
+    ) in text
+    assert (
+        "You will not remember the consultation next turn (colleague "
+        "exchanges are not in your replayed history), so the attribution "
+        "in your reply is the only record you get: without it you will "
+        "later misremember their work as your own knowledge."
+    ) in text
+
+
+def test_compose_colleagues_md_instruction_copy_has_no_em_dashes(tmp_path):
+    dest = tmp_path / "out"
+    spec = _make_spec(colleagues=[
+        {"name": "ward", "team": "infra-engineering", "purpose_tags": [], "capability": "x"},
+    ])
+
+    compose(spec, dest)
+
+    text = (dest / "bundle" / "knowledge" / "colleagues.md").read_text()
+    assert "—" not in text
+
+
+# --- capability fallback chain (standing-knowledge arc, Task 7, Step 2) --------
+#
+# capability -> purpose_tags -> skills -> "not yet distilled". An agent
+# nobody can match on any of the three is invisible to the suggest-a-
+# colleague feature, which is why the fallback is required rather than
+# nice to have.
+
+
+def test_colleague_roster_line_uses_capability_when_present(tmp_path):
+    dest = tmp_path / "out"
+    spec = _make_spec(colleagues=[
+        {
+            "name": "ward",
+            "team": "infra-engineering",
+            "purpose_tags": ["security"],
+            "capability": "keeps our workshop's digital info safe",
+            "skills": ["firewall-config"],
+        },
+    ])
+
+    compose(spec, dest)
+
+    text = (dest / "bundle" / "knowledge" / "colleagues.md").read_text()
+    assert "What they are for: keeps our workshop's digital info safe" in text
+
+
+def test_colleague_roster_line_falls_back_to_purpose_tags_when_capability_empty(tmp_path):
+    dest = tmp_path / "out"
+    spec = _make_spec(colleagues=[
+        {
+            "name": "ward",
+            "team": "infra-engineering",
+            "purpose_tags": ["security", "networking"],
+            "capability": None,
+            "skills": ["firewall-config"],
+        },
+    ])
+
+    compose(spec, dest)
+
+    text = (dest / "bundle" / "knowledge" / "colleagues.md").read_text()
+    assert "What they are for: security, networking" in text
+
+
+def test_colleague_roster_line_falls_back_to_skills_when_capability_and_tags_empty(tmp_path):
+    dest = tmp_path / "out"
+    spec = _make_spec(colleagues=[
+        {
+            "name": "ward",
+            "team": "infra-engineering",
+            "purpose_tags": [],
+            "capability": None,
+            "skills": ["firewall-config", "incident-response"],
+        },
+    ])
+
+    compose(spec, dest)
+
+    text = (dest / "bundle" / "knowledge" / "colleagues.md").read_text()
+    assert "What they are for: firewall-config, incident-response" in text
+
+
+def test_colleague_roster_line_is_not_yet_distilled_when_all_three_are_empty(tmp_path):
+    dest = tmp_path / "out"
+    spec = _make_spec(colleagues=[
+        {
+            "name": "ward",
+            "team": "infra-engineering",
+            "purpose_tags": [],
+            "capability": None,
+            "skills": [],
+        },
+    ])
+
+    compose(spec, dest)
+
+    text = (dest / "bundle" / "knowledge" / "colleagues.md").read_text()
+    assert "What they are for: not yet distilled" in text
 
 
 # --- Dockerfile ------------------------------------------------------------------
