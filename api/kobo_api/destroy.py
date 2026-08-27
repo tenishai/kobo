@@ -51,6 +51,7 @@ from kobo_api.directory import retire_directory
 from kobo_api.models import A2AInvite, Agent, AgentStatus, AgentStep, StepStatus
 from kobo_api.pairs import sync_dispatch_pairs_best_effort
 from kobo_api.provisioner import _get_or_create_step
+from kobo_api.steps import refresh_colleague_rosters
 
 if TYPE_CHECKING:
     from kobo_api.clients import Clients
@@ -410,6 +411,21 @@ def _run_destroy_body(
             log.warning("run_destroy: agent %s not found, nothing to destroy", agent_id)
             return
 
+        # Captured as plain values now, before "destroy-forget" (below)
+        # deletes this row outright: the roster-refresh call at that branch
+        # needs the departing agent's own name/group to ask "who could see
+        # it", and `kobo_api.steps.refresh_colleague_rosters`/`_agents_who_
+        # can_see` deliberately take these as plain values rather than an
+        # `Agent` instance for exactly this reason (see their docstrings) --
+        # by the time that branch runs, this agent's status is already
+        # DESTROYING (set just below, and possibly already set by the route
+        # before this function ever ran), so a fresh read of `agent.name`/
+        # `agent.group_name` off the ORM object would still work today, but
+        # would stop working the moment the row is actually deleted a few
+        # lines later.
+        departing_name = agent.name
+        departing_group_name = agent.group_name
+
         try:
             agent.status = AgentStatus.DESTROYING
             agent.error = None
@@ -466,6 +482,29 @@ def _run_destroy_body(
                     # switchboard hiccup undo this step's already-committed
                     # deletion).
                     sync_dispatch_pairs_best_effort(clients, config, session)
+                    # Roster refresh lane (Task 6): redeliver colleagues.md
+                    # to every agent that could see the now-departed agent
+                    # (using its name/group captured above, before this
+                    # very step deleted its row) -- their next fresh
+                    # `_colleague_roster` read naturally excludes it, since
+                    # its row is already gone. Best-effort and switchboard-
+                    # gated internally; this outer try/except is belt-and-
+                    # suspenders so a bug in the refresh path can never
+                    # undo this step's already-committed deletion.
+                    try:
+                        refresh_colleague_rosters(
+                            clients,
+                            config,
+                            session,
+                            name=departing_name,
+                            group_name=departing_group_name,
+                        )
+                    except Exception:
+                        log.warning(
+                            "roster refresh failed after agent %s was destroyed",
+                            departing_name,
+                            exc_info=True,
+                        )
                     return
 
                 log.info("destroy step %r done for agent %s: %s", name, agent_id, detail)

@@ -119,6 +119,7 @@ def _seed_agent(
     purpose_tags=None,
     capability=None,
     skills=None,
+    group_name=None,
 ):
     session = session_factory()
     session.add(
@@ -132,6 +133,25 @@ def _seed_agent(
             purpose_tags=encode_tags(purpose_tags) if purpose_tags is not None else None,
             capability=capability,
             skills=skills or [],
+            group_name=group_name,
+        )
+    )
+    session.commit()
+    session.close()
+
+
+def _seed_colleague(session_factory, name: str, *, group_name: str | None) -> None:
+    """A second, READY agent (never `AGENT_NAME`) for the roster-refresh
+    tests below -- `_seed_agent` above always names its row `AGENT_NAME`,
+    so a colleague needs its own row built directly."""
+    session = session_factory()
+    session.add(
+        Agent(
+            name=name,
+            persona=PERSONA,
+            model_id="vertex_ai/claude-sonnet-4-5",
+            status=AgentStatus.READY,
+            group_name=group_name,
         )
     )
     session.commit()
@@ -530,6 +550,78 @@ def test_regenerate_metadata_directory_sync_failure_does_not_change_response_or_
     assert response.status_code == 200
     assert response.json()["capability"] == "Freshly regenerated sentence."
     assert "directory sync failed" in caplog.text
+
+
+# --- Regenerate: roster refresh lane (fast-lane + discovery arc, Task 6) ----
+#
+# `regenerate_agent_metadata` is the other place (besides HelloStep's own
+# tail) capability actually DISTILLS -- `generate_capability` runs above,
+# not a caller-typed string. Both refresh halves spec 3.3 names should fire:
+# the room's regenerated view reaches affected colleagues, and the agent's
+# own self.md is redelivered to itself.
+
+
+def test_regenerate_metadata_redelivers_roster_and_self_md_without_cross_group_delivery(
+    session_factory, config, monkeypatch
+):
+    """The load-bearing negative test, at the regenerate route: a room with
+    agents in two groups must not cross-deliver."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    fake_cabal = FakeCabal(
+        relay_result={"status": {"state": "completed", "message": {"parts": [{"text": "ok"}]}}}
+    )
+    fake_name = FakeName(capability="Freshly regenerated sentence.")
+    client = _make_client(session_factory, cfg, name=fake_name, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg, capability="Stale sentence.", group_name="acme-acl")
+    _seed_colleague(session_factory, "same-group", group_name="acme-acl")
+    _seed_colleague(session_factory, "other-group", group_name="orbit-acl")
+
+    response = client.post(f"/api/agents/{AGENT_NAME}/metadata/regenerate")
+
+    assert response.status_code == 200
+    filenames_by_target: dict[str, set[str]] = {}
+    for call in fake_cabal.relay_calls:
+        filenames_by_target.setdefault(call["name"], set()).add(
+            call["task_envelope"]["metadata"]["filename"]
+        )
+    assert filenames_by_target.get("same-group") == {"colleagues.md"}
+    assert "other-group" not in filenames_by_target
+    assert filenames_by_target.get(AGENT_NAME) == {"self.md"}
+
+
+def test_regenerate_metadata_roster_refresh_failure_does_not_change_response_or_status(
+    session_factory, config, monkeypatch, caplog
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    fake_cabal = FakeCabal(relay_error="switchboard unreachable")
+    fake_name = FakeName(capability="Freshly regenerated sentence.")
+    client = _make_client(session_factory, cfg, name=fake_name, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg, capability="Stale sentence.", group_name="acme-acl")
+    _seed_colleague(session_factory, "same-group", group_name="acme-acl")
+
+    with caplog.at_level("WARNING"):
+        response = client.post(f"/api/agents/{AGENT_NAME}/metadata/regenerate")
+
+    assert response.status_code == 200
+    assert response.json()["capability"] == "Freshly regenerated sentence."
+    assert "roster refresh relay failed" in caplog.text
+
+
+def test_regenerate_metadata_disabled_switchboard_never_attempts_a_roster_refresh(
+    session_factory, config
+):
+    fake_cabal = FakeCabal()
+    fake_name = FakeName(capability="Freshly regenerated sentence.")
+    client = _make_client(session_factory, config, name=fake_name, cabal=fake_cabal)
+    _seed_agent(session_factory, config, capability="Stale sentence.", group_name="acme-acl")
+    _seed_colleague(session_factory, "same-group", group_name="acme-acl")
+
+    response = client.post(f"/api/agents/{AGENT_NAME}/metadata/regenerate")
+
+    assert response.status_code == 200
+    assert fake_cabal.relay_calls == []
 
 
 def test_regenerate_metadata_persona_lookup_failure_returns_502(session_factory, config):

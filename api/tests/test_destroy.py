@@ -816,6 +816,79 @@ def test_run_destroy_completes_even_when_dispatch_pairs_sync_fails(
     session.close()
 
 
+# --- roster refresh after destroy-forget (fast-lane + discovery arc, Task 6) --
+
+
+def test_run_destroy_redelivers_roster_without_cross_group_delivery(
+    session_factory, config, monkeypatch
+):
+    """Global Constraints' load-bearing negative test, at the destroy-engine
+    level: a room with agents in two groups must not cross-deliver. A
+    same-group survivor and an unrelated-group survivor both exist; once
+    the agent is destroyed, only the same-group survivor's colleagues.md is
+    redelivered, and the redelivered roster no longer names the departed
+    agent."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    agent_id = _seed_agent(session_factory, status=AgentStatus.READY, group_name="growth")
+    _seed_agent(session_factory, name="same-group", status=AgentStatus.READY, group_name="growth")
+    _seed_agent(session_factory, name="other-group", status=AgentStatus.READY, group_name="orbit")
+    fake_cabal = FakeCabal(
+        relay_result={"status": {"state": "completed", "message": {"parts": [{"text": "ok"}]}}}
+    )
+
+    thread = run_destroy(session_factory, agent_id, _clients(cabal=fake_cabal), cfg)
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+
+    delivered_to = [
+        call["name"]
+        for call in fake_cabal.relay_calls
+        if call["task_envelope"]["metadata"].get("filename") == "colleagues.md"
+    ]
+    assert "same-group" in delivered_to
+    assert "other-group" not in delivered_to
+
+    same_group_call = next(call for call in fake_cabal.relay_calls if call["name"] == "same-group")
+    delivered_text = same_group_call["task_envelope"]["status"]["message"]["parts"][0]["text"]
+    assert AGENT_NAME not in delivered_text
+
+
+def test_run_destroy_does_not_redeliver_roster_when_cabal_disabled(session_factory, config):
+    agent_id = _seed_agent(session_factory, status=AgentStatus.READY, group_name="growth")
+    _seed_agent(session_factory, name="same-group", status=AgentStatus.READY, group_name="growth")
+    fake_cabal = FakeCabal()
+
+    thread = run_destroy(session_factory, agent_id, _clients(cabal=fake_cabal), config)
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+
+    assert fake_cabal.relay_calls == []
+
+
+def test_run_destroy_roster_refresh_failure_does_not_block_forget(
+    session_factory, config, monkeypatch
+):
+    """Best-effort, no rebuild fallback (Global Constraints): a relay
+    failure during the post-destroy roster refresh is logged and swallowed
+    -- destroy-forget's own row deletion has already committed by the time
+    this refresh runs, and a switchboard hiccup here must never undo it or
+    crash the destroy thread."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    agent_id = _seed_agent(session_factory, status=AgentStatus.READY, group_name="growth")
+    _seed_agent(session_factory, name="same-group", status=AgentStatus.READY, group_name="growth")
+    fake_cabal = FakeCabal(relay_error="switchboard unreachable")
+
+    thread = run_destroy(session_factory, agent_id, _clients(cabal=fake_cabal), cfg)
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+
+    session = session_factory()
+    assert session.get(Agent, agent_id) is None
+    session.close()
+
+
 def test_run_destroy_self_service_slack_records_note_and_completes_step(
     session_factory, config, caplog
 ):

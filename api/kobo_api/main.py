@@ -130,7 +130,7 @@ from kobo_api.slack_state import (
     encode_channels,
 )
 from kobo_api.static_ui import mount_ui
-from kobo_api.steps import _resolve_persona_body
+from kobo_api.steps import _resolve_persona_body, refresh_after_capability_distill
 from kobo_api.teach import format_note, note_filename
 from kobo_api.tooling import (
     ToolingError,
@@ -4301,6 +4301,25 @@ def create_app(
         # Best-effort switchboard resync, same call/reasoning as the PATCH
         # route above.
         _sync_directory_best_effort(clients, cfg, agent)
+        # Roster refresh lane (Task 6): this route is the other place (besides
+        # HelloStep's own tail, kobo_api.steps._earn_capability) capability
+        # actually DISTILLS -- `generate_capability` ran just above, not a
+        # caller-typed string (contrast the PATCH route above, which never
+        # triggers this). The room's regenerated view of this agent reaches
+        # every viewer who can see it, and its own self.md is redelivered to
+        # itself. Best-effort and switchboard-gated internally; wrapped here
+        # too since, unlike the pipeline's background thread, an uncaught
+        # exception in a request handler would turn this already-committed
+        # regenerate into a 500 instead of the 200 it earned.
+        try:
+            refresh_after_capability_distill(clients, cfg, session, agent)
+        except Exception:
+            log.warning(
+                "roster/self-knowledge refresh failed for agent %s after capability "
+                "regenerated",
+                agent.name,
+                exc_info=True,
+            )
         return JSONResponse(
             {"team": team, "purpose_tags": tags, "capability": capability, "sha": sha}
         )

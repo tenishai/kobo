@@ -20,10 +20,10 @@ import pytest
 import yaml
 
 from kobo_api.clients import CabalError, ClientError, Clients
-from kobo_api.composer import BundleSpec, compose
+from kobo_api.composer import BundleSpec, _colleagues_md, _self_md, compose
 from kobo_api.config import Config, ModelChoice
 from kobo_api.marketplace import marketplace_repo
-from kobo_api.models import Agent, AgentStatus
+from kobo_api.models import INVITE_ACCEPTED, A2AInvite, Agent, AgentStatus
 from kobo_api.provisioner import Ctx
 from kobo_api.steps import (
     HELLO_RETRY_ATTEMPTS,
@@ -37,9 +37,14 @@ from kobo_api.steps import (
     OnboardStep,
     RepoStep,
     StagedSkill,
+    _agents_who_can_see,
+    _render_colleagues_md,
+    _render_self_md,
     _resolve_persona_body,
     _stage_baseline_tools,
     _stage_skills,
+    refresh_after_capability_distill,
+    refresh_colleague_rosters,
 )
 from tests.fakes import (
     FakeAgent,
@@ -752,6 +757,368 @@ def test_repo_step_threads_colleague_roster_into_composed_bundle(
     text = (created_src / "bundle" / "knowledge" / "colleagues.md").read_text()
     assert "ward" in text
     assert "keeps the workshop's digital info safe" in text
+
+
+# --- Roster refresh lane (fast-lane + discovery arc, Task 6) -----------------
+#
+# `_agents_who_can_see` is `_colleague_roster`'s own visibility rule, walked
+# backwards: given a changed agent's name/group, who currently has it in
+# their own roster. `refresh_colleague_rosters` is what actually redelivers a
+# freshly rendered `colleagues.md` to each of those viewers over the fast
+# lane. The negative case is load-bearing: a room with agents in two
+# different (non-shared) groups must never cross-deliver between them absent
+# an accepted invite.
+
+
+def _ready_agent(session, name, *, group_name=None, capability=None):
+    agent = Agent(
+        name=name,
+        persona=PERSONA,
+        model_id=MODEL_ID,
+        skills=[],
+        status=AgentStatus.READY,
+        group_name=group_name,
+        capability=capability,
+    )
+    session.add(agent)
+    session.commit()
+    return agent
+
+
+def _make_invite(session, *, from_agent, to_agent, status=INVITE_ACCEPTED):
+    invite = A2AInvite(from_agent=from_agent, to_agent=to_agent, status=status)
+    session.add(invite)
+    session.commit()
+    return invite
+
+
+class _PartialFailCabal:
+    """A relay double whose outcome varies by target name -- the shared
+    `FakeCabal`'s own `relay_error`/`relay_result` are both uniform across
+    every call, which can't express "this target misses, that one
+    succeeds" in one test. Mirrors this file's own `_FlakyCabal` precedent
+    (HelloStep retry section) for a case the shared fake can't cover."""
+
+    def __init__(self, *, fail_for: set[str]):
+        self._fail_for = fail_for
+        self.relay_calls: list[dict] = []
+
+    def relay(self, name: str, task_envelope: dict) -> dict:
+        self.relay_calls.append({"name": name, "task_envelope": task_envelope})
+        if name in self._fail_for:
+            raise CabalError("relay failed: switchboard unreachable")
+        return {"status": {"state": "completed", "message": {"parts": [{"text": "ok"}]}}}
+
+
+# --- _agents_who_can_see: the reversed visibility rule -----------------------
+
+
+def test_agents_who_can_see_same_group_ready_agent(session_factory):
+    session, target = _make_agent(session_factory, name="target", group_name="acme-acl")
+    target.status = AgentStatus.READY
+    session.commit()
+    _ready_agent(session, "viewer", group_name="acme-acl")
+
+    result = _agents_who_can_see(session, name=target.name, group_name=target.group_name)
+
+    assert [a.name for a in result] == ["viewer"]
+
+
+def test_agents_who_can_see_cross_group_without_invite_is_empty(session_factory):
+    """The load-bearing negative half: two different (non-shared) groups,
+    no invite between them -- the reversed rule must find nobody."""
+    session, target = _make_agent(session_factory, name="target", group_name="acme-acl")
+    target.status = AgentStatus.READY
+    session.commit()
+    _ready_agent(session, "stranger", group_name="orbit-acl")
+
+    result = _agents_who_can_see(session, name=target.name, group_name=target.group_name)
+
+    assert result == []
+
+
+def test_agents_who_can_see_accepted_invite_from_viewer_grants_visibility(session_factory):
+    """Directional: an invite the VIEWER sent to the target, accepted,
+    means the viewer can now see it even across a group boundary."""
+    session, target = _make_agent(session_factory, name="target", group_name="acme-acl")
+    target.status = AgentStatus.READY
+    session.commit()
+    _ready_agent(session, "viewer", group_name="orbit-acl")
+    _make_invite(session, from_agent="viewer", to_agent="target", status=INVITE_ACCEPTED)
+
+    result = _agents_who_can_see(session, name=target.name, group_name=target.group_name)
+
+    assert [a.name for a in result] == ["viewer"]
+
+
+def test_agents_who_can_see_reverse_invite_direction_grants_nothing(session_factory):
+    """The other direction of the same invite (target invited someone else)
+    must not grant that someone else visibility of the target -- only an
+    invite the VIEWER itself sent does."""
+    session, target = _make_agent(session_factory, name="target", group_name="acme-acl")
+    target.status = AgentStatus.READY
+    session.commit()
+    _ready_agent(session, "someone", group_name="orbit-acl")
+    _make_invite(session, from_agent="target", to_agent="someone", status=INVITE_ACCEPTED)
+
+    result = _agents_who_can_see(session, name=target.name, group_name=target.group_name)
+
+    assert result == []
+
+
+def test_agents_who_can_see_pending_invite_grants_nothing(session_factory):
+    session, target = _make_agent(session_factory, name="target", group_name="acme-acl")
+    target.status = AgentStatus.READY
+    session.commit()
+    _ready_agent(session, "viewer", group_name="orbit-acl")
+    _make_invite(session, from_agent="viewer", to_agent="target", status="pending")
+
+    result = _agents_who_can_see(session, name=target.name, group_name=target.group_name)
+
+    assert result == []
+
+
+def test_agents_who_can_see_excludes_non_ready_viewers(session_factory):
+    session, target = _make_agent(session_factory, name="target", group_name="acme-acl")
+    target.status = AgentStatus.READY
+    session.commit()
+    provisioning = Agent(
+        name="still-provisioning",
+        persona=PERSONA,
+        model_id=MODEL_ID,
+        skills=[],
+        status=AgentStatus.PROVISIONING,
+        group_name="acme-acl",
+    )
+    session.add(provisioning)
+    session.commit()
+
+    result = _agents_who_can_see(session, name=target.name, group_name=target.group_name)
+
+    assert result == []
+
+
+def test_agents_who_can_see_ungrouped_target_has_no_implicit_viewers(session_factory):
+    """`implicitly_paired` never matches a None group on either side -- two
+    ungrouped agents are not implicitly connected to each other."""
+    session, target = _make_agent(session_factory, name="target", group_name=None)
+    target.status = AgentStatus.READY
+    session.commit()
+    _ready_agent(session, "viewer", group_name=None)
+
+    result = _agents_who_can_see(session, name=target.name, group_name=target.group_name)
+
+    assert result == []
+
+
+def test_agents_who_can_see_still_correct_once_target_is_no_longer_ready(session_factory):
+    """The exact case the destroy hook relies on: by the time it asks this
+    question, the departing agent's own status has already flipped away
+    from READY -- this function must still correctly report who could see
+    it, since it never reads the target's own status, only compares
+    against its name/group."""
+    session, target = _make_agent(session_factory, name="target", group_name="acme-acl")
+    target.status = AgentStatus.DESTROYING
+    session.commit()
+    _ready_agent(session, "viewer", group_name="acme-acl")
+
+    result = _agents_who_can_see(session, name=target.name, group_name=target.group_name)
+
+    assert [a.name for a in result] == ["viewer"]
+
+
+# --- refresh_colleague_rosters: the actual redelivery ------------------------
+
+
+def test_refresh_colleague_rosters_does_not_cross_deliver_between_two_groups(
+    session_factory, config, monkeypatch
+):
+    """Global Constraints' load-bearing negative test: a room with agents in
+    two groups must not cross-deliver. A same-group viewer gets the
+    refresh; a viewer in an unrelated group, with no invite, never does."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _hello_cabal_enabled_config(config)
+    session, target = _make_agent(session_factory, name="target", group_name="acme-acl")
+    target.status = AgentStatus.READY
+    session.commit()
+    _ready_agent(session, "same-group", group_name="acme-acl")
+    _ready_agent(session, "other-group", group_name="orbit-acl")
+    fake_cabal = FakeCabal(
+        relay_result={"status": {"state": "completed", "message": {"parts": [{"text": "ok"}]}}}
+    )
+    clients = _clients(cabal=fake_cabal)
+
+    refresh_colleague_rosters(
+        clients, cfg, session, name=target.name, group_name=target.group_name
+    )
+
+    delivered_to = [call["name"] for call in fake_cabal.relay_calls]
+    assert delivered_to == ["same-group"]
+    assert "other-group" not in delivered_to
+
+
+def test_refresh_colleague_rosters_envelope_shape_and_content(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _hello_cabal_enabled_config(config)
+    session, target = _make_agent(session_factory, name="target", group_name="acme-acl")
+    target.status = AgentStatus.READY
+    target.capability = "fixes things"
+    session.commit()
+    _ready_agent(session, "viewer", group_name="acme-acl")
+    fake_cabal = FakeCabal(
+        relay_result={"status": {"state": "completed", "message": {"parts": [{"text": "ok"}]}}}
+    )
+    clients = _clients(cabal=fake_cabal)
+
+    refresh_colleague_rosters(
+        clients, cfg, session, name=target.name, group_name=target.group_name
+    )
+
+    assert len(fake_cabal.relay_calls) == 1
+    call = fake_cabal.relay_calls[0]
+    assert call["name"] == "viewer"
+    envelope = call["task_envelope"]
+    assert envelope["metadata"] == {"system_task": "knowledge", "filename": "colleagues.md"}
+    delivered_text = envelope["status"]["message"]["parts"][0]["text"]
+    assert "target" in delivered_text
+    assert "fixes things" in delivered_text
+    # Byte-for-byte the same render a fresh compose would produce for this
+    # exact roster (`_render_colleagues_md`/`_colleague_roster`, the same
+    # functions RepoStep itself calls at birth).
+    from kobo_api.steps import _colleague_roster
+
+    viewer = session.query(Agent).filter_by(name="viewer").one()
+    assert delivered_text == _render_colleagues_md(viewer, _colleague_roster(session, viewer))
+
+
+def test_refresh_colleague_rosters_one_viewer_miss_does_not_block_the_rest(
+    session_factory, config, monkeypatch, caplog
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _hello_cabal_enabled_config(config)
+    session, target = _make_agent(session_factory, name="target", group_name="acme-acl")
+    target.status = AgentStatus.READY
+    session.commit()
+    _ready_agent(session, "flaky-viewer", group_name="acme-acl")
+    _ready_agent(session, "steady-viewer", group_name="acme-acl")
+    cabal = _PartialFailCabal(fail_for={"flaky-viewer"})
+    clients = _clients(cabal=cabal)
+
+    with caplog.at_level("WARNING"):
+        refresh_colleague_rosters(
+            clients, cfg, session, name=target.name, group_name=target.group_name
+        )
+
+    delivered_to = sorted(call["name"] for call in cabal.relay_calls)
+    assert delivered_to == ["flaky-viewer", "steady-viewer"]
+    assert "roster refresh relay failed" in caplog.text
+
+
+def test_refresh_colleague_rosters_no_op_when_switchboard_disabled(session_factory, config):
+    session, target = _make_agent(session_factory, name="target", group_name="acme-acl")
+    target.status = AgentStatus.READY
+    session.commit()
+    _ready_agent(session, "viewer", group_name="acme-acl")
+    fake_cabal = FakeCabal()
+    clients = _clients(cabal=fake_cabal)
+
+    refresh_colleague_rosters(
+        clients, config, session, name=target.name, group_name=target.group_name
+    )
+
+    assert fake_cabal.relay_calls == []
+
+
+def test_refresh_colleague_rosters_no_op_when_cabal_client_missing(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _hello_cabal_enabled_config(config)
+    session, target = _make_agent(session_factory, name="target", group_name="acme-acl")
+    target.status = AgentStatus.READY
+    session.commit()
+    _ready_agent(session, "viewer", group_name="acme-acl")
+    clients = _clients(cabal=None)
+
+    # Must not raise (no AttributeError off a None cabal client).
+    refresh_colleague_rosters(
+        clients, cfg, session, name=target.name, group_name=target.group_name
+    )
+
+
+def test_refresh_colleague_rosters_never_touches_github(session_factory, config, monkeypatch):
+    """The fast lane, not a rebuild (Global Constraints): `clients.github`
+    is None here -- if this function ever fell back to composing or
+    pushing a repo, it would raise on the first attribute access rather
+    than silently succeeding."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _hello_cabal_enabled_config(config)
+    session, target = _make_agent(session_factory, name="target", group_name="acme-acl")
+    target.status = AgentStatus.READY
+    session.commit()
+    _ready_agent(session, "viewer", group_name="acme-acl")
+    fake_cabal = FakeCabal(
+        relay_result={"status": {"state": "completed", "message": {"parts": [{"text": "ok"}]}}}
+    )
+    clients = _clients(github=None, cabal=fake_cabal)
+
+    refresh_colleague_rosters(  # must not raise
+        clients, cfg, session, name=target.name, group_name=target.group_name
+    )
+
+    assert len(fake_cabal.relay_calls) == 1
+
+
+# --- refresh_after_capability_distill: self.md plus the roster half ----------
+
+
+def test_refresh_after_capability_distill_redelivers_self_md_and_roster(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _hello_cabal_enabled_config(config)
+    session, agent = _make_agent(
+        session_factory, name="distilled", group_name="acme-acl", team="widgets"
+    )
+    agent.status = AgentStatus.READY
+    agent.capability = "fixes things"
+    session.commit()
+    _ready_agent(session, "colleague", group_name="acme-acl")
+    fake_cabal = FakeCabal(
+        relay_result={"status": {"state": "completed", "message": {"parts": [{"text": "ok"}]}}}
+    )
+    clients = _clients(cabal=fake_cabal)
+
+    refresh_after_capability_distill(clients, cfg, session, agent)
+
+    filenames = {call["task_envelope"]["metadata"]["filename"]: call for call in fake_cabal.relay_calls}
+    assert set(filenames) == {"self.md", "colleagues.md"}
+    # self.md went to the agent itself, colleagues.md to the colleague who
+    # can see it -- never swapped.
+    self_call = next(c for c in fake_cabal.relay_calls if c["name"] == "distilled")
+    roster_call = next(c for c in fake_cabal.relay_calls if c["name"] == "colleague")
+    assert self_call["task_envelope"]["metadata"]["filename"] == "self.md"
+    assert roster_call["task_envelope"]["metadata"]["filename"] == "colleagues.md"
+    self_text = self_call["task_envelope"]["status"]["message"]["parts"][0]["text"]
+    assert "fixes things" in self_text
+    assert self_text == _render_self_md(agent)
+
+
+def test_refresh_after_capability_distill_no_op_when_switchboard_disabled(
+    session_factory, config
+):
+    session, agent = _make_agent(session_factory, name="distilled", group_name="acme-acl")
+    agent.status = AgentStatus.READY
+    agent.capability = "fixes things"
+    session.commit()
+    fake_cabal = FakeCabal()
+    clients = _clients(cabal=fake_cabal)
+
+    refresh_after_capability_distill(clients, config, session, agent)
+
+    assert fake_cabal.relay_calls == []
 
 
 def test_repo_step_unknown_skill_id_raises_clear_message(session_factory, config, fake_storage):
@@ -1590,7 +1957,14 @@ def test_hello_step_relays_through_the_switchboard_when_enabled(
     HelloStep().run(ctx)
 
     assert agent.first_reply == "hi from the switchboard"
-    assert len(fake_cabal.relay_calls) == 1
+    # relay_calls[0] is HelloStep's own first-contact relay; relay_calls[1]
+    # is the capability-distill self.md refresh tail (Task 6) firing right
+    # after -- same `clients.cabal`, a second, distinct relay call. This
+    # canned `relay_result` carries no "state" key, so that second call
+    # reads as not-completed and is logged and swallowed, same discipline
+    # as any other roster-refresh miss (see test_refresh_after_capability_
+    # distill_* for that path's own dedicated coverage).
+    assert len(fake_cabal.relay_calls) == 2
     assert fake_cabal.relay_calls[0]["name"] == agent.name
     # the legacy direct path never runs when the relay handles first contact
     assert fake_agent_client.calls == []
@@ -1810,7 +2184,12 @@ def test_hello_step_retries_the_relay_path_too_and_succeeds(
     HelloStep().run(ctx)  # must not raise
 
     assert agent.first_reply == "hi from the switchboard"
-    assert len(flaky_cabal.relay_calls) == HELLO_RETRY_ATTEMPTS == 3
+    # The first HELLO_RETRY_ATTEMPTS calls are hello's own first-contact
+    # retries (two failures then a success); the capability-distill self.md
+    # refresh tail (Task 6) fires one further, distinct relay call right
+    # after, over this same `clients.cabal` -- not itself a hello attempt,
+    # so it is not counted against HELLO_RETRY_ATTEMPTS.
+    assert len(flaky_cabal.relay_calls) == HELLO_RETRY_ATTEMPTS + 1 == 4
     assert sleep_calls == [HELLO_RETRY_BACKOFF_S, HELLO_RETRY_BACKOFF_S]
 
 

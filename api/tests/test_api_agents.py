@@ -816,6 +816,131 @@ def test_create_agent_pipeline_materializes_staged_skill_and_persona_body(client
     assert "{name}" not in persona_md
 
 
+# --- Roster refresh lane (fast-lane + discovery arc, Task 6) -----------------
+#
+# The create-READY flip end to end: once the new agent reaches READY, every
+# OTHER agent that can see it (same non-shared group, or an accepted invite)
+# gets a redelivered `colleagues.md` over the fast lane. The negative half is
+# the one that matters (Global Constraints): a room with agents in two
+# different groups must never cross-deliver between them.
+
+
+def _client_with_cabal_and_storage(
+    session_factory, config, fake_github, fake_gojira, fake_agent, fake_storage, cabal
+):
+    return TestClient(
+        create_app(
+            session_factory,
+            config=config,
+            clients=Clients(
+                github=fake_github,
+                gojira=fake_gojira,
+                cloud=FakeCloud(),
+                agent=fake_agent,
+                kubectl=FakeKubectl(),
+                storage=fake_storage,
+                cabal=cabal,
+            ),
+        )
+    )
+
+
+def _colleagues_deliveries(fake_cabal):
+    """Every relay call in `fake_cabal.relay_calls` that carries a
+    `colleagues.md` knowledge system task, keyed by the target agent name
+    it was relayed to."""
+    return [
+        call["name"]
+        for call in fake_cabal.relay_calls
+        if call["task_envelope"].get("metadata", {}).get("filename") == "colleagues.md"
+    ]
+
+
+def test_create_agent_ready_flip_redelivers_roster_without_cross_group_delivery(
+    session_factory, config, fake_github, fake_gojira, fake_agent, fake_storage, monkeypatch
+):
+    """Global Constraints' load-bearing negative test, exercised through the
+    real pipeline end to end: a room with agents in two groups must not
+    cross-deliver. A same-group READY agent and an unrelated-group READY
+    agent both pre-exist; once the newly created agent reaches READY, only
+    the same-group agent's colleagues.md is redelivered."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_cabal_config(config)
+    fake_cabal = FakeCabal(
+        relay_result={"status": {"state": "completed", "message": {"parts": [{"text": "ok"}]}}}
+    )
+    client = _client_with_cabal_and_storage(
+        session_factory, cfg, fake_github, fake_gojira, fake_agent, fake_storage, fake_cabal
+    )
+    session = session_factory()
+    session.add(
+        Agent(
+            name="same-group",
+            persona=PERSONA,
+            model_id="vertex_ai/claude-sonnet-4-5",
+            status=AgentStatus.READY,
+            group_name="acme-acl",
+        )
+    )
+    session.add(
+        Agent(
+            name="other-group",
+            persona=PERSONA,
+            model_id="vertex_ai/claude-sonnet-4-5",
+            status=AgentStatus.READY,
+            group_name="orbit-acl",
+        )
+    )
+    session.commit()
+    session.close()
+
+    response = client.post(
+        "/api/agents",
+        json={"name": AGENT_NAME, "persona": PERSONA, "group_name": "acme-acl"},
+    )
+    assert response.status_code == 201
+
+    body = _poll_until(client, AGENT_NAME, {"ready", "failed"})
+    assert body["status"] == "ready"
+
+    delivered_to = _colleagues_deliveries(fake_cabal)
+    assert "same-group" in delivered_to
+    assert "other-group" not in delivered_to
+
+
+def test_create_agent_ready_flip_does_not_redeliver_when_switchboard_disabled(
+    session_factory, config, fake_github, fake_gojira, fake_agent, fake_storage
+):
+    """Default config/clients (no cabal org keys, no cabal client): the
+    refresh is a no-op, same as every other fast-lane caller."""
+    fake_cabal = FakeCabal()
+    client = _client_with_cabal_and_storage(
+        session_factory, config, fake_github, fake_gojira, fake_agent, fake_storage, fake_cabal
+    )
+    session = session_factory()
+    session.add(
+        Agent(
+            name="same-group",
+            persona=PERSONA,
+            model_id="vertex_ai/claude-sonnet-4-5",
+            status=AgentStatus.READY,
+            group_name="acme-acl",
+        )
+    )
+    session.commit()
+    session.close()
+
+    response = client.post(
+        "/api/agents",
+        json={"name": AGENT_NAME, "persona": PERSONA, "group_name": "acme-acl"},
+    )
+    assert response.status_code == 201
+
+    body = _poll_until(client, AGENT_NAME, {"ready", "failed"})
+    assert body["status"] == "ready"
+    assert fake_cabal.relay_calls == []
+
+
 # --- GET /api/agents ---------------------------------------------------------------
 
 

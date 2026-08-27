@@ -44,6 +44,7 @@ from kobo_api.steps import (
     OnboardStep,
     RepoStep,
     WireStep,
+    refresh_colleague_rosters,
 )
 
 log = logging.getLogger(__name__)
@@ -154,6 +155,24 @@ def _run_pipeline_body(
                 # notice. Fail-soft and skip-when-unwired, same as every
                 # other trigger of this shared helper.
                 sync_dispatch_pairs_best_effort(clients, config, session)
+                # Roster refresh lane (Task 6): redeliver colleagues.md to
+                # every agent that can now see this newly-READY agent --
+                # never to every agent in the room (spec 3.3's scope
+                # discipline). Best-effort and switchboard-gated internally
+                # (kobo_api.steps.refresh_colleague_rosters); this outer
+                # try/except is belt-and-suspenders so a bug in the refresh
+                # path can never turn an otherwise-successful provision
+                # into a failure this late.
+                try:
+                    refresh_colleague_rosters(
+                        clients, config, session, name=agent.name, group_name=agent.group_name
+                    )
+                except Exception:
+                    log.warning(
+                        "roster refresh failed after agent %s went READY",
+                        agent.name,
+                        exc_info=True,
+                    )
         except Exception as exc:
             # Engine-level failure: anything outside a step's own run() (workdir
             # mkdir, a commit, ...). Steps have a FAILED row to resume from; this

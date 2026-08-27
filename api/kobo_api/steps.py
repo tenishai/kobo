@@ -38,21 +38,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import httpx
 import yaml
 
 from kobo_api.catalog import _DESCRIPTION_HEADER_RE
 from kobo_api.clients import (
+    CabalError,
     ClientError,
     GojiraConflict,
     StorageClient,
     StorageNotFound,
+    _build_system_task_envelope,
     _build_task_envelope,
     _extract_relay_reply,
     cabal_enabled,
     gsa_email,
 )
 from kobo_api.colleagues import deliver_pass
-from kobo_api.composer import BundleSpec, compose, validate_agent_yaml
+from kobo_api.composer import BundleSpec, _colleagues_md, _self_md, compose, validate_agent_yaml
 from kobo_api.config import Config, vertex_location_for
 from kobo_api.directory import sync_directory
 from kobo_api.metadata import (
@@ -74,7 +77,7 @@ log = logging.getLogger(__name__)
 # (above) already makes every annotation in this file a lazy string, so `Ctx`
 # is only ever needed by type checkers, never at import time.
 if TYPE_CHECKING:
-    from kobo_api.clients import GitHubClient
+    from kobo_api.clients import Clients, GitHubClient
     from kobo_api.provisioner import Ctx
 
 # Gojira onboarding poll cadence: every 5s, up to 300s total (the brief's numbers,
@@ -496,6 +499,224 @@ def _colleague_roster(session, agent: Agent) -> list[dict]:
                 }
             )
     return roster
+
+
+# --- Roster refresh lane (fast-lane + discovery arc, Task 6) -----------------
+#
+# `_colleague_roster` above answers "who can THIS agent reach" at compose
+# time, once, at birth. The functions below are its mirror image, answering
+# "who can reach THIS agent" at any later point, so that when the room's own
+# view of an agent changes (it goes READY, it is destroyed, its capability
+# distills), every OTHER agent who could already see it gets a freshly
+# rendered `colleagues.md` over the fast lane instead of carrying a stale one
+# until its own next rebuild -- spec `docs/superpowers/specs/2026-08-26-fast-
+# lane-and-discovery-design.md` section 3.3.
+
+
+def _agents_who_can_see(session, *, name: str, group_name: str | None) -> list[Agent]:
+    """The reverse of `_colleague_roster`'s own visibility rule: every READY
+    agent, other than `name` itself, that would list `name` in its own
+    colleague roster right now. Same two-part predicate `_colleague_roster`
+    applies (implicit group pairing via `implicitly_paired`, or an ACCEPTED
+    invite the viewer itself sent TO `name`) -- reused verbatim, just walked
+    in the other direction: the viewer varies here, `name`/`group_name` are
+    the fixed anchor, rather than the other way around. No second visibility
+    rule is written; this is the same one, inverted.
+
+    Takes `name`/`group_name` as plain values rather than an `Agent`
+    instance, deliberately: a destroy caller must ask this question using
+    the departing agent's own name/group captured BEFORE its status leaves
+    READY. This function never reads the target's own status at all (only
+    compares against it), which is exactly why it stays correct even after
+    that flip -- `_colleague_roster` itself only ever lists READY TARGETS,
+    so calling it (or checking membership in its output) after the flip
+    would wrongly report that nobody could see the departing agent, when a
+    moment earlier several agents could.
+    """
+    candidates = (
+        session.query(Agent)
+        .filter(Agent.status == AgentStatus.READY, Agent.name != name)
+        .all()
+    )
+    accepted_from = {
+        invite.from_agent
+        for invite in session.query(A2AInvite)
+        .filter(A2AInvite.to_agent == name, A2AInvite.status == INVITE_ACCEPTED)
+        .all()
+    }
+    return [
+        viewer
+        for viewer in candidates
+        if implicitly_paired(viewer.group_name, group_name) or viewer.name in accepted_from
+    ]
+
+
+def _relay_reply_not_completed(raw: object) -> bool:
+    """True unless `raw` is a well-formed relayed task whose status state is
+    exactly "completed". Deliberately duplicated from `kobo_api.main`'s
+    identically-behaved `_teach_task_not_completed` rather than imported --
+    that function is a closure nested inside `create_app` (not reachable
+    from this module), and its own docstring already establishes the
+    precedent that this specific check is meant to be copied to each new
+    caller rather than shared, the same way `_extract_relay_reply` is
+    shared but this narrower bool check is not."""
+    task: object = raw
+    if isinstance(raw, dict):
+        if isinstance(raw.get("task"), dict):
+            task = raw["task"]
+        elif isinstance(raw.get("result"), dict):
+            task = raw["result"]
+
+    if not isinstance(task, dict):
+        return True
+
+    status = task.get("status")
+    if not isinstance(status, dict):
+        return True
+
+    return status.get("state") != "completed"
+
+
+def _render_colleagues_md(viewer: Agent, roster: list[dict]) -> str:
+    """Render `colleagues.md` for `viewer` from `roster` (its own freshly
+    computed `_colleague_roster`), via the identical composer function that
+    renders it at birth (`kobo_api.composer._colleagues_md`) -- so a
+    redelivered file is byte-for-byte what a fresh compose would produce
+    for the same roster. Every `BundleSpec` field below other than `name`/
+    `colleagues` is unused by `_colleagues_md` (confirmed by reading it) and
+    filled with a throwaway placeholder purely to satisfy the dataclass's
+    required fields; none of it is ever rendered."""
+    spec = BundleSpec(
+        name=viewer.name,
+        persona_body="",
+        model_id=viewer.model_id,
+        skills=[],
+        runtime_image="",
+        vertex_project="",
+        vertex_location="",
+        colleagues=roster,
+    )
+    return _colleagues_md(spec)
+
+
+def _render_self_md(agent: Agent) -> str:
+    """Render `self.md` for `agent` from its OWN current row, via the
+    identical composer function that renders it at birth (`kobo_api.
+    composer._self_md`) -- so a redelivery after capability distills is
+    byte-for-byte what a fresh compose would produce. Same throwaway-
+    placeholder posture as `_render_colleagues_md` for every `BundleSpec`
+    field `_self_md` never reads."""
+    spec = BundleSpec(
+        name=agent.name,
+        persona_body="",
+        model_id=agent.model_id,
+        skills=[],
+        runtime_image="",
+        vertex_project="",
+        vertex_location="",
+        team=agent.team or "shared",
+        group=agent.group_name,
+        purpose_tags=decode_tags(agent.purpose_tags),
+        capability=agent.capability,
+    )
+    return _self_md(spec)
+
+
+def _deliver_knowledge_refresh(
+    clients: Clients, target_name: str, filename: str, content: str
+) -> bool:
+    """One best-effort `knowledge` system-task delivery of `content` under
+    `filename` to `target_name`'s own switchboard channel -- the shared
+    delivery mechanics both `refresh_colleague_rosters` (per affected
+    viewer, `filename="colleagues.md"`) and the capability-distill self.md
+    redelivery (`filename="self.md"`) ride. The runtime's own retire-then-
+    store semantics for a `knowledge` task REPLACE the file's prior entries
+    with this render, a clean replace rather than an append.
+
+    Returns True on a confirmed-completed reply, False on ANY miss (a
+    transport error, a non-2xx `CabalError`, or a well-formed-but-not-
+    completed reply) -- logged here, never raised, so one target's miss
+    never stops a caller from trying the next one. Global Constraints (Task
+    6): this is the ONE fast-lane caller in this room with no rebuild
+    fallback on a miss -- see `refresh_colleague_rosters`'s docstring for
+    why that is the correct discipline here specifically.
+
+    Callers are responsible for the `cabal_enabled(config) and clients.
+    cabal is not None` gate; this function assumes `clients.cabal` is
+    already wired.
+    """
+    envelope = _build_system_task_envelope(
+        "knowledge", content, metadata={"filename": filename}
+    )
+    try:
+        raw = clients.cabal.relay(target_name, envelope)
+        if _relay_reply_not_completed(raw):
+            raise CabalError("agent reply was not a completed task")
+        _extract_relay_reply(raw)
+    except (CabalError, httpx.HTTPError, ValueError) as exc:
+        log.warning(
+            "roster refresh relay failed for agent %s (%s): %s", target_name, filename, exc
+        )
+        return False
+    return True
+
+
+def refresh_colleague_rosters(
+    clients: Clients, config: Config, session, *, name: str, group_name: str | None
+) -> None:
+    """Best-effort roster refresh (Task 6, the roster refresh lane): when
+    `name`'s presence in the room changes (it just went READY, it is
+    departing via destroy-forget, or its capability just distilled),
+    redeliver a freshly rendered `colleagues.md` to every agent that can
+    currently see it (`_agents_who_can_see`, the same visibility rule
+    `_colleague_roster` itself applies, reversed) -- never to every agent in
+    the room (spec 3.3's scope discipline: "a room with N agents does not
+    redeliver to all N on every change").
+
+    Callers pass `name`/`group_name` as plain values, not an `Agent`
+    instance, matching `_agents_who_can_see`'s own contract -- a destroy
+    caller must capture the departing agent's name/group BEFORE its status
+    leaves READY (see that function's docstring for why).
+
+    BEST-EFFORT ONLY, over the relay, with NO rebuild fallback: unlike the
+    knowledge/teach/tooling fast lanes, a miss here is logged and skipped,
+    never escalated to a repo commit plus CI rebuild. A stale roster
+    already self-describes as a point-in-time snapshot (`_colleagues_md`'s
+    own disclaimer text), and paying a full commit-plus-CI-rebuild for a
+    single roster line changing is exactly the cost this refresh lane
+    exists to remove -- falling back to one here would silently reintroduce
+    it. One viewer's miss never blocks refreshing the rest.
+
+    A no-op when the switchboard isn't configured/wired (`cabal_enabled
+    (config) and clients.cabal is not None`, the same two-gate every other
+    fast-lane caller in this room checks) -- no relay is even attempted.
+    """
+    if not (cabal_enabled(config) and clients.cabal is not None):
+        return
+    for viewer in _agents_who_can_see(session, name=name, group_name=group_name):
+        content = _render_colleagues_md(viewer, _colleague_roster(session, viewer))
+        _deliver_knowledge_refresh(clients, viewer.name, "colleagues.md", content)
+
+
+def refresh_after_capability_distill(
+    clients: Clients, config: Config, session, agent: Agent
+) -> None:
+    """Both refresh halves spec 3.3 names for the capability-distill
+    trigger: `agent`'s regenerated view reaches every viewer who can see it
+    (`refresh_colleague_rosters` -- the colleagues.md line naming `agent`'s
+    capability just changed for each of them), AND `agent`'s own `self.md`
+    is redelivered to itself, so its self-knowledge does not stay frozen at
+    "not yet distilled" forever once the real sentence exists.
+
+    Same best-effort, no-rebuild-fallback, switchboard-gated discipline as
+    `refresh_colleague_rosters` for both halves -- see its docstring.
+    """
+    refresh_colleague_rosters(
+        clients, config, session, name=agent.name, group_name=agent.group_name
+    )
+    if not (cabal_enabled(config) and clients.cabal is not None):
+        return
+    _deliver_knowledge_refresh(clients, agent.name, "self.md", _render_self_md(agent))
 
 
 class RepoStep:
@@ -1254,22 +1475,25 @@ def _earn_capability(ctx: Ctx) -> None:
     and swallowed; HelloStep's own reply is already recorded on `ctx.agent`
     by the time this runs and nothing this function does can undo that.
 
-    Three independent boundaries, deliberately: generation (persona body +
+    Four independent boundaries, deliberately: generation (persona body +
     skill descriptions + tooling filenames -> one capability string) is one
     unit — any failure there leaves `agent.capability` untouched (null,
     unless a prior earn/PATCH/Regenerate already set it). Once generation
-    succeeds, `agent.capability` is stored on the row immediately — the row
-    is the room's own truth — and ONLY THEN is the card commit attempted,
-    in its own boundary: a failure there leaves the just-stored capability
-    in place but the card uncommitted (logged), since delivery is
-    best-effort and a later Regenerate can always retry it. This ordering
-    is why `tooling_filenames_for` swallows its own github-side failures
-    internally (never propagating into the generation boundary) —
+    succeeds, `agent.capability` is stored on the row immediately (the row
+    is the room's own truth), and ONLY THEN is the roster/self.md refresh
+    below fired, in its own boundary, before the card commit is even
+    attempted: neither redelivery reads or waits on the GitHub card, so
+    there is no reason to gate one on the other. The card commit is a
+    further, independent boundary: a failure there leaves the just-stored
+    capability in place but the card uncommitted (logged), since delivery
+    is best-effort and a later Regenerate can always retry it. This
+    ordering is why `tooling_filenames_for` swallows its own github-side
+    failures internally (never propagating into the generation boundary);
     otherwise a broken GitHub client would prevent generation (and the row
     store) from ever happening at all, when the only thing it should
     actually block is the card commit.
 
-    A third, best-effort tail (colleagues switchboard plan, Task 4b): only
+    A fourth, best-effort tail (colleagues switchboard plan, Task 4b): only
     after that card commit actually SUCCEEDS, and only when the switchboard
     is configured, re-run `kobo_api.directory.sync_directory` so the
     directory's own copy of the card picks up the capability line
@@ -1305,6 +1529,25 @@ def _earn_capability(ctx: Ctx) -> None:
         return
 
     agent.capability = capability
+
+    try:
+        # Roster refresh lane (Task 6): the room's regenerated view of this
+        # agent (its colleagues.md line, and its own self.md) reaches
+        # everyone affected the moment capability distills -- own boundary,
+        # ahead of the card commit below, since neither redelivery touches
+        # GitHub at all. Best-effort and switchboard-gated internally;
+        # this outer try/except is belt-and-suspenders against a coding
+        # bug in the refresh path itself, matching every other boundary
+        # here (capability generation must never block readiness).
+        refresh_after_capability_distill(ctx.clients, ctx.config, ctx.session, agent)
+    except Exception:
+        log.warning(
+            "roster/self-knowledge refresh failed for agent %s after capability "
+            "distilled; affected rosters and this agent's self.md may be stale "
+            "until the next change",
+            agent.name,
+            exc_info=True,
+        )
 
     try:
         commit_card_metadata(
