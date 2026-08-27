@@ -281,6 +281,15 @@ class ThreadParticipantRequest(BaseModel):
     agent: str
 
 
+class ThreadTurnRequest(BaseModel):
+    """POST /api/threads/{id}/turns body (threads arc, Task 9): the same
+    `{"role", "text"}` message shape `ChatRequest` uses for a single-agent
+    chat, since a thread turn is that same mechanic run once per
+    participant in sequence rather than once against a single agent."""
+
+    messages: list[ChatMessagePayload]
+
+
 class GroupRequestCreate(BaseModel):
     """POST /api/group-requests body (shared-group + group-requests wave):
     `group_name` names a directory group `cfg.groups` doesn't know about
@@ -961,12 +970,26 @@ def _flatten_conversation_entries(detail: dict) -> list[dict]:
     right as a real back-and-forth rather than two lines both "from" the
     same party.
 
+    Thread tasks (threads arc, Task 9) contribute ZERO lines, same as an
+    incomplete conversation: every turn a thread relays stamps
+    `metadata.thread` on its envelope before relaying (`post_thread_turn`),
+    and the switchboard's own completed-Task shape echoes a submitted
+    task's `metadata` back verbatim on `result` -- so a thread's own turns
+    are told apart from ordinary colleague talk by that one marker, never
+    by caller/target shape alone. A thread is a private, initiator-only
+    conversation (operator ruling) and must never surface in any
+    participant's own colleague feed, whether read via `GET /api/
+    colleagues/feed` or the `kobo_feed` MCP tool -- both share this exact
+    function, so fixing it here closes both surfaces in one place.
     """
     conv = detail.get("conversation")
     if not isinstance(conv, dict):
         return []
     result = conv.get("result")
     if not isinstance(result, dict):
+        return []
+    result_metadata = result.get("metadata")
+    if isinstance(result_metadata, dict) and "thread" in result_metadata:
         return []
 
     task_id = conv.get("task_id")
@@ -5484,6 +5507,117 @@ def create_app(
 
         session.commit()
         return JSONResponse(_thread_repr(session, thread), status_code=201)
+
+    @app.get("/api/threads/{thread_id}")
+    def get_thread(
+        thread_id: int, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Thread detail: readable by its initiator, and by nobody else
+        (operator ruling) -- a participating agent's own group member who
+        is not the initiator gets the identical not-found answer a
+        genuinely missing thread id gets, never a distinguishable 403.
+        """
+        thread = _thread_or_404(session, thread_id)
+        if isinstance(thread, JSONResponse):
+            return thread
+        gate = _initiator_or_404(thread, request)
+        if gate is not None:
+            return gate
+        return JSONResponse(_thread_repr(session, thread))
+
+    @app.post("/api/threads/{thread_id}/turns")
+    def post_thread_turn(
+        thread_id: int,
+        payload: ThreadTurnRequest,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Deliver one turn to every thread participant IN SEQUENCE (never
+        a fan-out): the first participant sees exactly `payload.messages`;
+        each later participant sees that plus every reply already given
+        THIS turn, so a later answer can build on an earlier one. Every
+        relay's envelope carries `contextId` = the thread's own id (so the
+        switchboard's loop guard groups a thread's hops under one real
+        key -- `_build_task_envelope`'s `context_id` parameter, unused
+        until this caller) and `metadata.thread` = the thread's id, which
+        marks the task so `_flatten_conversation_entries` excludes it from
+        every participant's own colleague feed (a thread is a private,
+        initiator-only conversation, never colleague small talk).
+
+        Initiator-only, same not-found-not-403 gate every other thread
+        route takes. Each participant appears in `ThreadParticipant` at
+        most once (the table's own unique constraint), and this loop walks
+        that list exactly once in id order, so no agent is ever asked to
+        answer twice within one turn.
+        """
+        thread = _thread_or_404(session, thread_id)
+        if isinstance(thread, JSONResponse):
+            return thread
+        gate = _initiator_or_404(thread, request)
+        if gate is not None:
+            return gate
+
+        messages = payload.messages
+        if not messages:
+            return JSONResponse({"error": "messages must not be empty"}, status_code=422)
+        for message in messages:
+            if message.role not in CHAT_MESSAGE_ROLES:
+                return JSONResponse(
+                    {"error": f"unknown role: {message.role!r}"}, status_code=422
+                )
+            if not message.text:
+                return JSONResponse(
+                    {"error": "message text must not be empty"}, status_code=422
+                )
+            if len(message.text) > CHAT_MESSAGE_TEXT_MAX_LEN:
+                return JSONResponse(
+                    {
+                        "error": (
+                            f"message text exceeds {CHAT_MESSAGE_TEXT_MAX_LEN} characters"
+                        )
+                    },
+                    status_code=422,
+                )
+        if messages[-1].role != "user":
+            return JSONResponse(
+                {"error": "last message must have role 'user'"}, status_code=422
+            )
+
+        participants = _thread_participants(session, thread.id)
+        if not participants:
+            return JSONResponse(
+                {"error": "this thread has no participants yet"}, status_code=409
+            )
+
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        gate = _colleagues_gate(cfg, clients)
+        if gate is not None:
+            return gate
+
+        transcript = [{"role": m.role, "text": m.text} for m in messages]
+        replies: list[dict] = []
+        for participant in participants:
+            envelope = _build_task_envelope(transcript, context_id=str(thread.id))
+            envelope["metadata"] = {"thread": thread.id}
+            try:
+                raw = clients.cabal.relay(participant.agent_name, envelope)
+                reply_text = _extract_relay_reply(raw)
+            except (CabalError, httpx.HTTPError, ValueError) as exc:
+                log.warning(
+                    "thread turn relay failed for thread %s agent %s: %s",
+                    thread.id,
+                    participant.agent_name,
+                    exc,
+                )
+                return JSONResponse(
+                    {"error": "The switchboard did not answer. Try again shortly."},
+                    status_code=502,
+                )
+            transcript.append({"role": "agent", "text": reply_text})
+            replies.append({"agent": participant.agent_name, "text": reply_text})
+
+        return JSONResponse({"replies": replies})
 
     # --- Admin: on-demand dispatch-pairs resync (final-review fix round,
     # HIGH-2b) ---------------------------------------------------------------

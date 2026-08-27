@@ -8,6 +8,13 @@ Operator rulings (law) this file pins:
   EXISTING accepted `A2AInvite` with every agent already seated -- the same
   consent model `kobo_api.pairs`/`A2AInvite` already establish, no new
   concept.
+- A thread is readable by its INITIATOR ONLY and appears in no agent's
+  feed. The negative case -- a member of a participating agent's own group
+  who is NOT the initiator gets the room's not-found answer -- is the
+  ruling's whole point and is written first, per this arc's test law.
+- Turns are delivered to participants in sequence (never a fan-out), each
+  seeing the messages that came before, and an agent never answers twice
+  in one turn.
 
 Same real-JWT idiom test_api_invites.py/test_web_visibility.py use: a
 locally generated ES256 keypair signs the assertion, verified through the
@@ -30,10 +37,11 @@ from sqlalchemy.orm import sessionmaker
 from kobo_api.clients import Clients
 from kobo_api.config import Config, GroupChoice
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
-from kobo_api.main import create_app
+from kobo_api.main import _flatten_conversation_entries, create_app
 from kobo_api.models import INVITE_ACCEPTED, A2AInvite, Agent, AgentStatus, Base
 from tests.fakes import (
     FakeAgent,
+    FakeCabal,
     FakeCloud,
     FakeGitHub,
     FakeGojira,
@@ -43,6 +51,7 @@ from tests.fakes import (
 PERSONA = "helpful-generalist"
 MODEL_ID = "vertex_ai/claude-sonnet-4-5"
 REPO_TEMPLATE = "acme/agent-{name}"
+ENDPOINT_TEMPLATE = "http://agent-{name}.default.svc.cluster.local"
 
 OPERATOR_EMAIL = "ops@example.com"
 INITIATOR_EMAIL = "initiator@example.com"
@@ -56,6 +65,8 @@ GROUPS = [
     GroupChoice(name="growth", okta_group="okta-growth"),
     GroupChoice(name="payments-eng", okta_group="okta-payments"),
 ]
+
+CANNED_REPLY_TEXT = "Here's my take."
 
 
 class FakeGroupResolver:
@@ -123,6 +134,8 @@ def config(tmp_path):
         operators=[OPERATOR_EMAIL],
         iap_audience=AUDIENCE,
         groups=GROUPS,
+        cabal_url="http://cabal.internal",
+        agent_endpoint_template=ENDPOINT_TEMPLATE,
     )
 
 
@@ -131,6 +144,7 @@ def _make_client(
     config,
     *,
     groups_resolver=None,
+    cabal=None,
     iap_jwks_fetcher,
 ) -> TestClient:
     return TestClient(
@@ -144,6 +158,7 @@ def _make_client(
                 agent=FakeAgent(),
                 kubectl=FakeKubectl(),
                 groups=groups_resolver,
+                cabal=cabal,
             ),
             iap_jwks_fetcher=iap_jwks_fetcher,
         )
@@ -179,6 +194,15 @@ def _seed_invite(session_factory, *, from_agent: str, to_agent: str, status: str
     session.add(A2AInvite(from_agent=from_agent, to_agent=to_agent, status=status))
     session.commit()
     session.close()
+
+
+def _relay_result(text: str) -> dict:
+    return {
+        "status": {
+            "state": "completed",
+            "message": {"role": "agent", "parts": [{"kind": "text", "text": text}]},
+        },
+    }
 
 
 # --- Task 8: thread creation and participation ------------------------------
@@ -370,3 +394,366 @@ def test_adding_an_already_seated_agent_is_409(session_factory, config):
 
     assert response.status_code == 409
 
+
+# --- Task 9: thread visibility -----------------------------------------------
+#
+# The negative case first, per this arc's own test law: it is the ruling's
+# whole point.
+
+
+def test_thread_read_by_a_same_group_member_who_is_not_the_initiator_is_not_found(
+    session_factory, config
+):
+    """Operator ruling: a thread is readable by its initiator and by
+    nobody else. GROUP_MEMBER_EMAIL shares agent "a"'s own group (growth),
+    so ordinary group-derived visibility lets them see "a" freely -- but
+    they did not initiate this thread, and must get the SAME not-found
+    answer a bogus thread id gets, never a 403 that would confirm the
+    thread is real."""
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver(
+        {INITIATOR_EMAIL: ["growth"], GROUP_MEMBER_EMAIL: ["growth"]}
+    )
+    client = _make_client(session_factory, config, groups_resolver=resolver, iap_jwks_fetcher=_fetcher(jwk))
+    _seed_agent(session_factory, name="a", group_name="growth")
+    thread_id = client.post(
+        "/api/threads", json={"agent": "a"}, headers=_headers(private_key, email=INITIATOR_EMAIL)
+    ).json()["id"]
+
+    response = client.get(
+        f"/api/threads/{thread_id}", headers=_headers(private_key, email=GROUP_MEMBER_EMAIL)
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"error": f"no such thread: {thread_id}"}
+    # Not a visibility gap: this same caller can see agent "a" itself just fine.
+    agent_response = client.get(
+        "/api/agents/a", headers=_headers(private_key, email=GROUP_MEMBER_EMAIL)
+    )
+    assert agent_response.status_code == 200
+
+
+def test_thread_read_by_an_operator_who_is_not_the_initiator_is_also_not_found(
+    session_factory, config
+):
+    """No operator carve-out: unlike every owner-or-operator gate elsewhere
+    in this room, the ruling says "by nobody else," full stop."""
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver({INITIATOR_EMAIL: ["growth"]})
+    client = _make_client(session_factory, config, groups_resolver=resolver, iap_jwks_fetcher=_fetcher(jwk))
+    _seed_agent(session_factory, name="a", group_name="growth")
+    thread_id = client.post(
+        "/api/threads", json={"agent": "a"}, headers=_headers(private_key, email=INITIATOR_EMAIL)
+    ).json()["id"]
+
+    response = client.get(
+        f"/api/threads/{thread_id}", headers=_headers(private_key, email=OPERATOR_EMAIL)
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"error": f"no such thread: {thread_id}"}
+
+
+def test_thread_read_by_its_own_initiator_succeeds(session_factory, config):
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver({INITIATOR_EMAIL: ["growth"]})
+    client = _make_client(session_factory, config, groups_resolver=resolver, iap_jwks_fetcher=_fetcher(jwk))
+    _seed_agent(session_factory, name="a", group_name="growth")
+    thread_id = client.post(
+        "/api/threads", json={"agent": "a"}, headers=_headers(private_key, email=INITIATOR_EMAIL)
+    ).json()["id"]
+
+    response = client.get(
+        f"/api/threads/{thread_id}", headers=_headers(private_key, email=INITIATOR_EMAIL)
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["participants"] == ["a"]
+    assert body["initiator_email"] == INITIATOR_EMAIL
+
+
+def test_thread_read_for_an_unknown_id_is_404(session_factory, config):
+    private_key, jwk = _generate_jwk()
+    client = _make_client(session_factory, config, iap_jwks_fetcher=_fetcher(jwk))
+
+    response = client.get("/api/threads/999999", headers=_headers(private_key, email=INITIATOR_EMAIL))
+
+    assert response.status_code == 404
+    assert response.json() == {"error": "no such thread: 999999"}
+
+
+# --- Task 9: turn delivery ----------------------------------------------------
+
+
+def test_turn_relays_to_participants_in_sequence_each_seeing_prior_messages(
+    session_factory, config, monkeypatch
+):
+    """Not a parallel fan-out: the first participant sees only the human's
+    own message; the second sees that message PLUS the first participant's
+    reply from earlier in this same turn, so a later answer can build on an
+    earlier one."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver({INITIATOR_EMAIL: ["growth"]})
+    fake_cabal = FakeCabal(relay_result=_relay_result(CANNED_REPLY_TEXT))
+    client = _make_client(
+        session_factory, config, groups_resolver=resolver, cabal=fake_cabal, iap_jwks_fetcher=_fetcher(jwk)
+    )
+    _seed_agent(session_factory, name="a", group_name="growth")
+    _seed_agent(session_factory, name="b", group_name="growth")
+    thread_id = client.post(
+        "/api/threads", json={"agent": "a"}, headers=_headers(private_key, email=INITIATOR_EMAIL)
+    ).json()["id"]
+    client.post(
+        f"/api/threads/{thread_id}/participants",
+        json={"agent": "b"},
+        headers=_headers(private_key, email=INITIATOR_EMAIL),
+    )
+
+    response = client.post(
+        f"/api/threads/{thread_id}/turns",
+        json={"messages": [{"role": "user", "text": "what do you both think?"}]},
+        headers=_headers(private_key, email=INITIATOR_EMAIL),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "replies": [
+            {"agent": "a", "text": CANNED_REPLY_TEXT},
+            {"agent": "b", "text": CANNED_REPLY_TEXT},
+        ]
+    }
+
+    # Sequential, not fan-out: exactly one relay call per participant, in
+    # participant (seat) order, and no agent answers twice.
+    assert [call["name"] for call in fake_cabal.relay_calls] == ["a", "b"]
+
+    first_envelope = fake_cabal.relay_calls[0]["task_envelope"]
+    second_envelope = fake_cabal.relay_calls[1]["task_envelope"]
+
+    # "a" sees only the human's own message.
+    assert first_envelope["history"] == []
+    assert first_envelope["status"]["message"]["parts"][0]["text"] == "what do you both think?"
+
+    # "b" sees the human's message in history, PLUS "a"'s reply as the
+    # current turn -- proof that a later participant sees what came before.
+    assert [m["parts"][0]["text"] for m in second_envelope["history"]] == [
+        "what do you both think?"
+    ]
+    assert second_envelope["status"]["message"]["role"] == "agent"
+    assert second_envelope["status"]["message"]["parts"][0]["text"] == CANNED_REPLY_TEXT
+
+
+def test_turn_relay_envelope_context_id_equals_the_thread_id(session_factory, config, monkeypatch):
+    """Every relay for a thread passes the thread's own id as `context_id`
+    to `_build_task_envelope`, so the switchboard's loop guard groups a
+    thread's hops under one real key."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver({INITIATOR_EMAIL: ["growth"]})
+    fake_cabal = FakeCabal(relay_result=_relay_result(CANNED_REPLY_TEXT))
+    client = _make_client(
+        session_factory, config, groups_resolver=resolver, cabal=fake_cabal, iap_jwks_fetcher=_fetcher(jwk)
+    )
+    _seed_agent(session_factory, name="a", group_name="growth")
+    _seed_agent(session_factory, name="b", group_name="growth")
+    thread_id = client.post(
+        "/api/threads", json={"agent": "a"}, headers=_headers(private_key, email=INITIATOR_EMAIL)
+    ).json()["id"]
+    client.post(
+        f"/api/threads/{thread_id}/participants",
+        json={"agent": "b"},
+        headers=_headers(private_key, email=INITIATOR_EMAIL),
+    )
+
+    client.post(
+        f"/api/threads/{thread_id}/turns",
+        json={"messages": [{"role": "user", "text": "hello both"}]},
+        headers=_headers(private_key, email=INITIATOR_EMAIL),
+    )
+
+    assert len(fake_cabal.relay_calls) == 2
+    for call in fake_cabal.relay_calls:
+        assert call["task_envelope"]["contextId"] == str(thread_id)
+
+
+def test_turn_by_a_non_initiator_is_not_found_and_never_relayed(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver({INITIATOR_EMAIL: ["growth"], STRANGER_EMAIL: []})
+    fake_cabal = FakeCabal(relay_result=_relay_result(CANNED_REPLY_TEXT))
+    client = _make_client(
+        session_factory, config, groups_resolver=resolver, cabal=fake_cabal, iap_jwks_fetcher=_fetcher(jwk)
+    )
+    _seed_agent(session_factory, name="a", group_name="growth")
+    thread_id = client.post(
+        "/api/threads", json={"agent": "a"}, headers=_headers(private_key, email=INITIATOR_EMAIL)
+    ).json()["id"]
+
+    response = client.post(
+        f"/api/threads/{thread_id}/turns",
+        json={"messages": [{"role": "user", "text": "hi"}]},
+        headers=_headers(private_key, email=STRANGER_EMAIL),
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"error": f"no such thread: {thread_id}"}
+    assert fake_cabal.relay_calls == []
+
+
+def test_turn_relay_failure_is_a_plain_502(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver({INITIATOR_EMAIL: ["growth"]})
+    fake_cabal = FakeCabal(relay_error="switchboard unreachable")
+    client = _make_client(
+        session_factory, config, groups_resolver=resolver, cabal=fake_cabal, iap_jwks_fetcher=_fetcher(jwk)
+    )
+    _seed_agent(session_factory, name="a", group_name="growth")
+    thread_id = client.post(
+        "/api/threads", json={"agent": "a"}, headers=_headers(private_key, email=INITIATOR_EMAIL)
+    ).json()["id"]
+
+    response = client.post(
+        f"/api/threads/{thread_id}/turns",
+        json={"messages": [{"role": "user", "text": "hi"}]},
+        headers=_headers(private_key, email=INITIATOR_EMAIL),
+    )
+
+    assert response.status_code == 502
+
+
+# --- Task 9: feed exclusion ---------------------------------------------------
+
+
+def test_flatten_conversation_entries_excludes_a_thread_tagged_conversation():
+    """Direct, discriminating unit test of the filter itself: a completed
+    conversation whose result carries `metadata.thread` contributes zero
+    feed lines, mirroring the existing "incomplete conversation" early
+    return this function already makes."""
+    detail = {
+        "conversation": {
+            "task_id": "t-1",
+            "target_agent": "a",
+            "caller_agent": "operator:initiator@example.com",
+            "created_at": "2026-08-27T00:00:00Z",
+            "updated_at": "2026-08-27T00:00:01Z",
+            "result": {
+                "status": {
+                    "state": "completed",
+                    "message": {"role": "agent", "parts": [{"kind": "text", "text": "reply"}]},
+                },
+                "history": [{"role": "user", "parts": [{"kind": "text", "text": "ask"}]}],
+                "metadata": {"thread": 7},
+            },
+        },
+        "events": [],
+    }
+
+    assert _flatten_conversation_entries(detail) == []
+
+
+def test_flatten_conversation_entries_unrelated_metadata_is_not_mistaken_for_a_thread():
+    """Regression guard: a completed conversation's result may legitimately
+    carry other metadata one day; only the `thread` key trips exclusion."""
+    detail = {
+        "conversation": {
+            "task_id": "t-1",
+            "target_agent": "a",
+            "caller_agent": "agent:b",
+            "created_at": "2026-08-27T00:00:00Z",
+            "updated_at": "2026-08-27T00:00:01Z",
+            "result": {
+                "status": {
+                    "state": "completed",
+                    "message": {"role": "agent", "parts": [{"kind": "text", "text": "reply"}]},
+                },
+                "history": [{"role": "user", "parts": [{"kind": "text", "text": "ask"}]}],
+                "metadata": {"something_else": True},
+            },
+        },
+        "events": [],
+    }
+
+    assert len(_flatten_conversation_entries(detail)) == 2
+
+
+def test_thread_turn_does_not_appear_in_a_participants_colleague_feed(session_factory, config, monkeypatch):
+    """The thread does not appear in any participant's conversation feed
+    (operator ruling): a thread turn's relay stamps `metadata.thread`
+    (`post_thread_turn`), and once the switchboard has recorded that
+    conversation, `GET /api/colleagues/feed` for the participant must show
+    nothing from it."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver({INITIATOR_EMAIL: ["growth"]})
+    fake_cabal = FakeCabal(relay_result=_relay_result(CANNED_REPLY_TEXT))
+    client = _make_client(
+        session_factory, config, groups_resolver=resolver, cabal=fake_cabal, iap_jwks_fetcher=_fetcher(jwk)
+    )
+    _seed_agent(session_factory, name="a", group_name="growth")
+    thread_id = client.post(
+        "/api/threads", json={"agent": "a"}, headers=_headers(private_key, email=INITIATOR_EMAIL)
+    ).json()["id"]
+
+    turn_response = client.post(
+        f"/api/threads/{thread_id}/turns",
+        json={"messages": [{"role": "user", "text": "what's up"}]},
+        headers=_headers(private_key, email=INITIATOR_EMAIL),
+    )
+    assert turn_response.status_code == 200, turn_response.text
+    # The relay really did carry the thread marker -- the mechanism the
+    # switchboard's own persisted record depends on to be filterable.
+    assert fake_cabal.relay_calls[0]["task_envelope"]["metadata"] == {"thread": thread_id}
+
+    # Simulate what the switchboard now has recorded for that relay: a
+    # completed conversation whose result echoes the same metadata this
+    # room's own relay stamped on the way in.
+    fake_cabal._conversations_result = [
+        {
+            "task_id": "t-thread-1",
+            "target_agent": "a",
+            "target_generation": 1,
+            "caller_agent": f"operator:{INITIATOR_EMAIL}",
+            "state": "completed",
+            "cabal_escalated_from": None,
+            "created_at": "2026-08-27T00:00:00Z",
+            "updated_at": "2026-08-27T00:00:01Z",
+            "result_snippet": CANNED_REPLY_TEXT,
+        }
+    ]
+    fake_cabal._conversation_results = {
+        "t-thread-1": {
+            "conversation": {
+                "task_id": "t-thread-1",
+                "target_agent": "a",
+                "caller_agent": f"operator:{INITIATOR_EMAIL}",
+                "created_at": "2026-08-27T00:00:00Z",
+                "updated_at": "2026-08-27T00:00:01Z",
+                "result": {
+                    "status": {
+                        "state": "completed",
+                        "message": {
+                            "role": "agent",
+                            "parts": [{"kind": "text", "text": CANNED_REPLY_TEXT}],
+                        },
+                    },
+                    "history": [
+                        {"role": "user", "parts": [{"kind": "text", "text": "what's up"}]},
+                    ],
+                    "metadata": {"thread": thread_id},
+                },
+            },
+            "events": [],
+        }
+    }
+
+    feed_response = client.get(
+        "/api/colleagues/feed",
+        params={"agent": "a"},
+        headers=_headers(private_key, email=INITIATOR_EMAIL),
+    )
+
+    assert feed_response.status_code == 200
+    assert feed_response.json() == {"entries": [], "truncated": False}
