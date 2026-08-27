@@ -42,12 +42,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, sessionmaker
 
 from kobo_api.clients import ClientError, cabal_enabled
 from kobo_api.config import Config
 from kobo_api.directory import retire_directory
-from kobo_api.models import Agent, AgentStatus, AgentStep, StepStatus
+from kobo_api.models import A2AInvite, Agent, AgentStatus, AgentStep, StepStatus
 from kobo_api.pairs import sync_dispatch_pairs_best_effort
 from kobo_api.provisioner import _get_or_create_step
 
@@ -324,13 +325,20 @@ def _destroy_directory(ctx: DestroyCtx) -> str:
 
 def _destroy_forget(ctx: DestroyCtx) -> str:
     """Delete every one of this agent's step rows (including this very
-    step's own, already committed as RUNNING by the caller) and the agent
-    row itself, in one transaction. Terminal: nothing survives this call to
-    mark DONE afterward — see `_run_destroy_body`'s `destroy-forget`
-    special case.
+    step's own, already committed as RUNNING by the caller), the colleague
+    invites naming it in either direction, and the agent row itself, all in
+    one transaction. Terminal: nothing survives this call to mark DONE
+    afterward. See `_run_destroy_body`'s `destroy-forget` special case.
     """
     session = ctx.session
     agent = ctx.agent
+    # Colleague invites are rows this step owns too (cleanup arc): destroy
+    # used to leave them behind, so a destroyed agent kept appearing in
+    # live agents' invite lists. Both directions, matched on the agent's
+    # NAME, which is what the invite columns store.
+    session.query(A2AInvite).filter(
+        or_(A2AInvite.from_agent == agent.name, A2AInvite.to_agent == agent.name)
+    ).delete(synchronize_session=False)
     session.query(AgentStep).filter_by(agent_id=agent.id).delete()
     session.delete(agent)
     session.commit()

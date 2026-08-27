@@ -35,7 +35,7 @@ from kobo_api.destroy import (
     _is_repo_not_found,
     run_destroy,
 )
-from kobo_api.models import Agent, AgentStatus, AgentStep, StepStatus
+from kobo_api.models import A2AInvite, Agent, AgentStatus, AgentStep, StepStatus
 from tests.fakes import FakeCabal, FakeCloud, FakeGitHub, FakeGojira, FakeSlack
 
 AGENT_NAME = "clio"
@@ -668,6 +668,29 @@ def test_destroy_forget_deletes_step_rows_and_the_agent_row(session_factory, con
     assert detail == "forgotten"
     assert session.get(Agent, agent_id) is None
     assert session.query(AgentStep).filter_by(agent_id=agent_id).count() == 0
+    session.close()
+
+
+def test_destroy_forget_deletes_invites_in_both_directions(session_factory, config):
+    """Destroy's forget step owns row deletion; colleague invites naming the
+    departing agent are rows it used to leave behind. All three surviving
+    production rows referenced destroyed agents."""
+    session, agent = _make_ctx_agent(session_factory)
+    departing_to_other = A2AInvite(from_agent=agent.name, to_agent="other")
+    other_to_departing = A2AInvite(from_agent="other", to_agent=agent.name)
+    other_to_unrelated = A2AInvite(from_agent="other", to_agent="unrelated")
+    session.add_all([departing_to_other, other_to_departing, other_to_unrelated])
+    session.commit()
+    unrelated_id = other_to_unrelated.id
+
+    ctx = _ctx(session, agent, config)
+    detail = _destroy_forget(ctx)
+
+    assert detail == "forgotten"
+    remaining = session.query(A2AInvite).all()
+    remaining_ids = {row.id for row in remaining}
+    assert unrelated_id in remaining_ids
+    assert len(remaining) == 1
     session.close()
 
 
