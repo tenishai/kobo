@@ -978,6 +978,13 @@ def test_compose_roster_handles_no_colleagues(tmp_path):
 
     text = (dest / "bundle" / "knowledge" / "colleagues.md").read_text()
     assert "no colleagues" in text.lower()
+    # 2026-08-27 ruling, second half: a lone agent answers freely from its
+    # own knowledge -- the consult-first doctrine binds once colleagues
+    # exist, never before.
+    assert (
+        "Until you do, every "
+        "question is yours: answer from your own knowledge and memory."
+    ) in text
 
 
 # --- consult-first instruction (standing-knowledge arc Task 7; upgraded by ------
@@ -1012,6 +1019,10 @@ def test_compose_colleagues_md_carries_the_consult_first_instruction(tmp_path):
     assert (
         "consult that colleague with ask_colleague FIRST and answer "
         "from what they say, naming them in your reply."
+    ) in text
+    assert (
+        "When in doubt "
+        "whether a question concerns them, lean toward asking"
     ) in text
     assert (
         "Do not answer an "

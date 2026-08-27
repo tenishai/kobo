@@ -435,7 +435,10 @@ def _colleagues_md(spec: BundleSpec) -> str:
     )
     lines.append("")
     if not others:
-        lines.append("You have no colleagues in the room yet.")
+        lines.append(
+            "You have no colleagues in the room yet. Until you do, every "
+            "question is yours: answer from your own knowledge and memory."
+        )
     else:
         lines.append(
             "These are the other agents you can reach, and what each is for. "
@@ -458,11 +461,14 @@ def _colleagues_md(spec: BundleSpec) -> str:
         "assistant anywhere would say to anyone; it is not how this "
         "organization does things. For a question about this "
         "organization's own setup (its infrastructure, services, tooling, "
-        "teams, or process) that sits in a colleague's field rather than "
-        "yours, consult that colleague with ask_colleague FIRST and answer "
-        "from what they say, naming them in your reply. Do not answer an "
-        "organization question from general knowledge while a colleague "
-        "who owns that subject is reachable."
+        "teams, or process) that might concern a colleague's field, "
+        "consult that colleague with ask_colleague FIRST and answer "
+        "from what they say, naming them in your reply. When in doubt "
+        "whether a question concerns them, lean toward asking: their "
+        "answer is scoped to how this organization actually works, and "
+        "yours is not. Do not answer an organization question from "
+        "general knowledge while a colleague who owns that subject is "
+        "reachable."
     )
     lines.append("")
     lines.append(
