@@ -56,6 +56,7 @@ from kobo_api.knowledge import (
     rollout_in_progress,
     save_knowledge_file,
 )
+from kobo_api.marketplace import BASELINE_TOOL_PREFIX
 from kobo_api.mcp.mount import mcp_lifespan, mount_mcp
 from kobo_api.metadata import (
     clean_capability_text,
@@ -139,6 +140,7 @@ from kobo_api.tooling import (
     _validate_content,
     _validate_filename,
     delete_tooling_file,
+    existing_tool_filenames,
     import_tooling,
     list_tooling,
     upload_tooling_file,
@@ -3923,6 +3925,46 @@ def create_app(
             _validate_content(payload.filename, payload.content.encode("utf-8"))
         except ToolingError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
+
+        # Shadowing refusal (Important 7 fix): a filename colliding with
+        # either the reserved baseline-tooling-pack namespace or a file
+        # already sitting in THIS agent's own composed bundle/tools/ is
+        # refused here, before any relay or archive write is attempted --
+        # same "before any delivery" discipline as the mechanical checks
+        # just above. Without this, an upload naming an existing file (a
+        # baseline hook, or an earlier upload) would silently overwrite it
+        # -- the fallback-overwrites-hook hole: a collision now never
+        # reaches the archive lane at all. The cheap check runs first
+        # (no network call); the repo listing only runs if that passes.
+        if payload.filename.startswith(BASELINE_TOOL_PREFIX):
+            return JSONResponse(
+                {
+                    "error": (
+                        f"{payload.filename!r} is in the baseline tooling pack's "
+                        f"reserved {BASELINE_TOOL_PREFIX!r} namespace. Choose a "
+                        "different filename."
+                    )
+                },
+                status_code=422,
+            )
+        try:
+            existing = existing_tool_filenames(app.state.clients.github, agent.repo_full_name)
+        except ClientError as exc:
+            log.warning("tooling shadow-check failed for %s: %s", name, exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
+            )
+        if payload.filename in existing:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"a tool named {payload.filename!r} already exists in this "
+                        "agent's bundle. Choose a different filename, or delete "
+                        "the existing one first."
+                    )
+                },
+                status_code=422,
+            )
 
         cfg: Config = app.state.config
         clients = app.state.clients

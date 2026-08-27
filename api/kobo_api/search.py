@@ -19,7 +19,7 @@ bucket can never leave the table half-rebuilt, and adding a new catalog kind
 is just one more mapping entry — nothing here needs reworking. `ensure_fts`
 (called by every entry point here, ingestion or query) means a fresh
 database with no catalog table yet behaves exactly like an empty one rather
-than raising — a never-ingested search is just `[]`, not an error.
+than raising -- a never-ingested search is just `[]`, not an error.
 
 The match query `search()` builds from a caller's `q` is never string-
 interpolated: every token is individually escaped and quoted (FTS5's own
@@ -527,10 +527,25 @@ def _build_match(q: str) -> str:
 
 def _escape_tsquery_lexeme(token: str) -> str:
     """`token` as a Postgres tsquery quoted-lexeme, prefix-matched: embedded
-    single quotes doubled per tsquery's own quoted-lexeme escape rule (the
-    same doubling trick `_escape_match_token` uses for FTS5's double
-    quotes), the whole thing wrapped in single quotes and given a trailing
-    `:*` prefix marker.
+    backslashes doubled, THEN embedded single quotes doubled -- both per
+    tsquery's own quoted-lexeme escape rule (backslash is the escape
+    character for that syntax, so it must be escaped first, before it can
+    interact with the quote-doubling below), then the whole thing wrapped
+    in single quotes and given a trailing `:*` prefix marker.
+
+    Important 5 fix (a real Postgres 500): without the backslash doubling,
+    a token ending in an odd number of backslashes -- as plain as a single
+    trailing `\\` -- left that backslash sitting directly before the
+    closing quote this function appends, e.g. `'foo\\':*`. Postgres' own
+    tsquery parser reads that backslash as escaping the quote character
+    right after it, not as closing the literal, so the quoted lexeme never
+    terminates and `to_tsquery` raises a genuine syntax error -- an
+    unhandled exception, a 500, not a safely-empty result. Doubling every
+    backslash first (`\\` -> `\\\\`) means a trailing backslash always
+    escapes ANOTHER backslash, never our closing quote, the same fix
+    `_escape_match_token` never needed because FTS5's quoted-phrase syntax
+    has no such escape convention (a bare backslash there is just a
+    literal character).
 
     A quoted lexeme in `to_tsquery`'s own tiny query language is parsed as
     literal text, not as the operator grammar (`&`/`|`/`!`/`(`/`)`): a
@@ -544,7 +559,8 @@ def _escape_tsquery_lexeme(token: str) -> str:
     verified directly against a real Postgres instance while this module was
     written (see the resilience arc's Task 12 report for the transcript).
     """
-    return "'" + token.replace("'", "''") + "':*"
+    escaped = token.replace("\\", "\\\\").replace("'", "''")
+    return "'" + escaped + "':*"
 
 
 def _build_tsquery(q: str) -> str:

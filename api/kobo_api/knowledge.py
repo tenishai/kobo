@@ -101,16 +101,16 @@ def save_knowledge_file(
     mirrors `kobo_api.intake.upload_intake_file`'s `archive_only` exactly,
     same commit-message marker. `kobo_api.main._archive_knowledge_save`
     calls this ONLY after the fast-memory-lane relay has already reported
-    the write "completed" — the runtime has already stored the new content
+    the write "completed" -- the runtime has already stored the new content
     live, so this commit is purely a repo-side mirror of it. Every agent
     repo's generated CI runs build-and-deploy on every push, and the
-    Deployment uses the Recreate strategy, which hard-rotates the pod — a
+    Deployment uses the Recreate strategy, which hard-rotates the pod -- a
     rebuild bought for content the pod already has is pure downtime, not a
     real delivery. `archive_only=True` marks the commit `[skip ci]`, which
     GitHub Actions honors natively on push events. The default `False`
     leaves every pre-existing caller unaffected, in particular the
     degraded synchronous lane in `kobo_api.main.save_knowledge` (no relay
-    ever reached the agent, so this commit itself IS the delivery — it
+    ever reached the agent, so this commit itself IS the delivery -- it
     must keep CI).
     """
     _validate_filename(filename)
@@ -141,7 +141,7 @@ def delete_knowledge_file(
     `archive_only`: same Critical 2 fix as `save_knowledge_file`, delete
     side. `kobo_api.main._archive_knowledge_delete` calls this ONLY after
     the fast-memory-lane relay has already reported the delete
-    "completed" — the runtime has already retired the entry live, so this
+    "completed" -- the runtime has already retired the entry live, so this
     commit purely mirrors that removal in the repo and must not trigger a
     rebuild. The default `False` leaves the degraded synchronous lane (the
     delete itself IS the delivery) unaffected.

@@ -284,22 +284,34 @@ def test_search_ranked_prefix_match_orders_by_relevance(engine):
 # A naive f-string-built query (on either engine) would either blow up with
 # a syntax error or, worse, let a bare `OR` widen the query to match every
 # row. This exact set of cases -- the original `OR`-injection case plus
-# unbalanced parens, a stray leading dash, and an embedded quote -- is the
-# contract every backend's escaper must satisfy; extend this list, never
-# shrink it.
+# unbalanced parens, a stray leading dash, an embedded quote, and a
+# trailing backslash (Important 5 fix: an unescaped backslash right
+# before `_escape_tsquery_lexeme`'s closing quote escapes that quote in
+# Postgres' own tsquery quoted-lexeme syntax, a real 500 -- SQLite/FTS5
+# has no such escape convention, so it already returned `[]` for this case
+# even before the fix) -- is the contract every backend's escaper must
+# satisfy; extend this list, never shrink it.
 HOSTILE_QUERIES = [
     'foo" OR 1',
     "foo(bar",
     "foo)bar",
     "-foo",
     "foo'bar",
+    "foo\\",
 ]
 
 
 @pytest.mark.parametrize(
     "hostile_q",
     HOSTILE_QUERIES,
-    ids=["or-injection", "unbalanced-open-paren", "unbalanced-close-paren", "stray-dash", "embedded-quote"],
+    ids=[
+        "or-injection",
+        "unbalanced-open-paren",
+        "unbalanced-close-paren",
+        "stray-dash",
+        "embedded-quote",
+        "embedded-backslash",
+    ],
 )
 def test_search_hostile_q_is_escaped_not_injected(engine, storage, hostile_q):
     _ingest(engine, storage)

@@ -580,7 +580,7 @@ def _dockerfile(spec: BundleSpec) -> str:
 # Matches a Dockerfile's `FROM <image>` line (this module's own template,
 # `_dockerfile` above, writes exactly one -- see the memory-replication
 # constants above for why that invariant is deliberately preserved even with
-# replication on) anywhere in the file, not just its first line — a leading
+# replication on) anywhere in the file, not just its first line -- a leading
 # comment line (as that template has) is not itself a FROM line. Captures
 # the `FROM` keyword plus the whitespace that follows it, so the replacement
 # can preserve that prefix byte-for-byte and only swap the image-ref token

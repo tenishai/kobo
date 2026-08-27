@@ -3,34 +3,34 @@
   // conversation from THIS agent's own chat context, loop in further
   // participants the caller can see, and drive it one turn at a time.
   // Always mounted inside the Chat tab's own tabpanel (AgentDetail),
-  // alongside ChatPanel and ColleagueConversations — same "gated on ready
+  // alongside ChatPanel and ColleagueConversations -- same "gated on ready
   // by the tab trigger, not by this component" posture ChatPanel's own doc
   // comment documents; `frozen` (destroying/destroy_failed) disables every
   // control here the same way it does there.
   //
-  // A thread carries no persisted message log server-side — `GET /api/
+  // A thread carries no persisted message log server-side -- `GET /api/
   // threads/{id}` (kobo_api.main._thread_repr) returns only id/
-  // initiator_email/created_at/participants, never a transcript — so, same
+  // initiator_email/created_at/participants, never a transcript -- so, same
   // as ChatPanel's own single-agent chat, the turn-by-turn exchange below is
   // local component state: `sendTranscript` resends the FULL transcript so
   // far on every turn, and a page refresh starts a fresh thread. `thread`
   // itself (the id + participant list) is likewise never fetched back after
-  // creation — `createThread`/`addThreadParticipant` both already return the
+  // creation -- `createThread`/`addThreadParticipant` both already return the
   // fresh shape, so there is nothing left to re-GET for this surface.
   //
   // The "suggest a colleague" behavior (`api/kobo_api/composer.py`'s own
   // "name a colleague whose capability fits" instruction) is plain text in
-  // an agent's own reply — there is no structured suggestion on the wire for
+  // an agent's own reply -- there is no structured suggestion on the wire for
   // this component to parse. What this panel offers instead, per the
   // brief's own ruling, is a plain "Add participant" picker of every OTHER
   // ready agent the caller can see: reads the exact same `agentsQuery()` the
   // dashboard and RequestAccessCard already use (server-filtered to
   // visibility, access-control Task B2), filtered here, client-side, to drop
-  // whoever's already seated — purely a display nicety, since the server's
+  // whoever's already seated -- purely a display nicety, since the server's
   // own `_add_thread_participant` is the real gate either way.
   //
   // Add-participant refusals (not-ready, already seated, no shared consent,
-  // not-found) surface as a toast, not an inline form error — the brief's
+  // not-found) surface as a toast, not an inline form error -- the brief's
   // own call: adding a participant is a quiet aside to the conversation, not
   // the main flow a blocking form error would interrupt. A start-thread or
   // turn-send failure, by contrast, blocks the thing the caller is actually
@@ -64,7 +64,7 @@
   let input = $state("");
   let error = $state<string | null>(null);
   // Same "a 422 can never succeed unchanged" distinction ChatPanel's own
-  // `retryable` documents — shared across both phases (starting the thread,
+  // `retryable` documents -- shared across both phases (starting the thread,
   // sending a turn) since they never overlap: `thread` is null for the
   // first, set for the second.
   let retryable = $state(true);
@@ -93,7 +93,7 @@
 
   let selectedParticipant = $state<string | null>(null);
 
-  // Keeps the picker's selection pointed at a real option — same
+  // Keeps the picker's selection pointed at a real option -- same
   // seed-then-reseed shape RequestAccessCard's own `selectedFromAgent`
   // effect documents, so a stale pick (the list changed underneath it, or
   // the just-picked agent got seated) never lingers as a phantom selection.

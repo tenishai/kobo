@@ -472,6 +472,17 @@ def _colleague_roster(session, agent: Agent) -> list[dict]:
     are considered as TARGETS, same as `allowed_pairs`: a colleague this
     agent can't actually dispatch to yet (still provisioning, or failed)
     doesn't belong in a "who you can reach" roster.
+
+    Important 6 fix: `skills` is now populated too -- `composer.py`'s
+    `_colleague_capability_line` falls back capability -> purpose_tags ->
+    skills -> "not yet distilled", but this dict carried no "skills" key at
+    all, so that third fallback level was permanently unreachable no matter
+    how bare a colleague's roster entry was. Sourced from `other.skills`,
+    the same JSON-column shape `_stage_skills` documents (a list of
+    `{"name": ..., "team": ..., "sha": ...}` dicts, or a `{"source":
+    "local", ...}` entry for a local skill) -- just the names, pick order
+    preserved, never re-sorted (the fallback only ever joins them into one
+    line; pick order is as meaningful an order as any).
     """
     ready_others = (
         session.query(Agent)
@@ -496,6 +507,9 @@ def _colleague_roster(session, agent: Agent) -> list[dict]:
                     "team": other.team,
                     "purpose_tags": decode_tags(other.purpose_tags),
                     "capability": other.capability,
+                    "skills": [
+                        entry["name"] for entry in (other.skills or []) if entry.get("name")
+                    ],
                 }
             )
     return roster

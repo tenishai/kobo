@@ -249,6 +249,26 @@ def _validate_source_path(source_path: str) -> None:
         raise ToolingError(f"invalid source path: {source_path!r}")
 
 
+def existing_tool_filenames(github: GitHubClient, repo: str) -> set[str]:
+    """The bare filenames currently sitting in `repo`'s `bundle/tools/`
+    directory (Important 7 fix, kobo-side shadowing refusal) -- a cheap,
+    kubectl/agent-probe-free companion to `list_tooling` below, which also
+    derives per-file "delivered" status and probes the running pod's card
+    (`_probe_enforcement`), work a same-name collision check has no need
+    for. One clone, one directory listing, nothing else.
+
+    Empty when there's no `bundle/tools/` directory at all, same empty-dir
+    convention as `list_tooling`/`kobo_api.intake.list_intake`.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        workdir = Path(tmp)
+        github.clone(repo, workdir)
+        tools_dir = workdir / "bundle" / "tools"
+        if not tools_dir.is_dir():
+            return set()
+        return {p.name for p in tools_dir.iterdir() if p.is_file()}
+
+
 def upload_tooling_file(
     github: GitHubClient,
     repo: str,

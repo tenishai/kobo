@@ -53,22 +53,64 @@ def test_baseline_migration_applies_to_empty_sqlite_db_and_matches_current_model
     _assert_baseline_matches_models(f"sqlite:///{db_path}")
 
 
-@pytest.mark.skipif(
-    not POSTGRES_TEST_URL,
-    reason="POSTGRES_TEST_URL not set; skipping the real-Postgres migration proof",
-)
-def test_baseline_migration_applies_to_empty_postgres_db_and_matches_current_models():
-    engine = create_engine(POSTGRES_TEST_URL)
+def _drop_everything_postgres(db_url: str) -> None:
+    """A fresh slate for a migration proof run against a real, long-lived
+    Postgres instance (unlike SQLite's fresh tmp_path file per test): drop
+    every table `Base.metadata`'s own models track, alembic's own
+    version-tracking table, AND `catalog_fts` (M10 fix).
+
+    `catalog_fts` (`kobo_api.search.ensure_fts`'s own Postgres table) is
+    created OUTSIDE `Base.metadata`/alembic's tracked schema entirely, so
+    it was never one of the tables this loop dropped -- an ordering flake
+    against a shared `POSTGRES_TEST_URL`: whichever test module happens to
+    run `test_search.py`'s Postgres path first leaves `catalog_fts`
+    sitting in the database, and `compare_metadata` below then reports a
+    spurious "table exists in the DB but not in the models" diff that has
+    nothing to do with the actual migration under test. This module has no
+    business being sensitive to what `test_search.py` did or didn't run
+    first, so the fresh slate now covers `catalog_fts` explicitly too.
+    """
+    engine = create_engine(db_url)
     try:
         with engine.begin() as conn:
-            # A fresh slate for this proof run: drop every table alembic's
-            # own baseline (plus its own version-tracking table) would
-            # otherwise collide with on a second run against the same
-            # long-lived scratch database.
-            for table in (*reversed(Base.metadata.sorted_tables), "alembic_version"):
+            for table in (
+                *reversed(Base.metadata.sorted_tables), "alembic_version", "catalog_fts",
+            ):
                 name = table if isinstance(table, str) else table.name
                 conn.execute(text(f'DROP TABLE IF EXISTS "{name}" CASCADE'))
     finally:
         engine.dispose()
 
+
+@pytest.mark.skipif(
+    not POSTGRES_TEST_URL,
+    reason="POSTGRES_TEST_URL not set; skipping the real-Postgres migration proof",
+)
+def test_baseline_migration_applies_to_empty_postgres_db_and_matches_current_models():
+    _drop_everything_postgres(POSTGRES_TEST_URL)
+    _assert_baseline_matches_models(POSTGRES_TEST_URL)
+
+
+@pytest.mark.skipif(
+    not POSTGRES_TEST_URL,
+    reason="POSTGRES_TEST_URL not set; skipping the real-Postgres migration proof",
+)
+def test_baseline_migration_fresh_slate_survives_a_leftover_catalog_fts_table():
+    """M10 fix, the discriminating regression test: simulates the exact
+    ordering that flaked -- `catalog_fts` already sitting in the database
+    (as if `test_search.py`'s own Postgres path ran first against this
+    same shared `POSTGRES_TEST_URL`) -- and proves the fresh slate this
+    module now runs drops it too, so `compare_metadata` stays clean
+    regardless of what ran here before."""
+    from kobo_api.search import ensure_fts
+
+    engine = create_engine(POSTGRES_TEST_URL)
+    try:
+        ensure_fts(engine)
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT to_regclass('catalog_fts')")).scalar() is not None
+    finally:
+        engine.dispose()
+
+    _drop_everything_postgres(POSTGRES_TEST_URL)
     _assert_baseline_matches_models(POSTGRES_TEST_URL)

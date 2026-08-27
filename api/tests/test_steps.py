@@ -38,6 +38,7 @@ from kobo_api.steps import (
     RepoStep,
     StagedSkill,
     _agents_who_can_see,
+    _colleague_roster,
     _render_colleagues_md,
     _render_self_md,
     _resolve_persona_body,
@@ -722,6 +723,44 @@ def test_colleague_roster_is_sorted_by_name(session_factory=None):
     )
 
 
+def test_colleague_roster_includes_skills_for_the_capability_fallback_chain(
+    session_factory, config
+):
+    """Important 6 fix: composer.py's `_colleague_capability_line` falls
+    back capability -> purpose_tags -> skills -> "not yet distilled", but
+    `_colleague_roster` emitted no "skills" key at all -- that third
+    fallback level was permanently unreachable no matter how bare a
+    colleague's roster entry was. Populated from `Agent.skills`'s own
+    JSON-column shape (a list of `{"name": ..., "team": ..., "sha": ...}`
+    dicts -- `_stage_skills`'s own docstring), just the names, pick order
+    preserved."""
+    session, agent = _make_agent(session_factory, group_name="acme-acl")
+    colleague = Agent(
+        name="ward",
+        persona=PERSONA,
+        model_id=MODEL_ID,
+        skills=[dict(WORD_GAMES_SKILL), {"name": "code-review", "team": "shared", "sha": "x"}],
+        status=AgentStatus.READY,
+        group_name="acme-acl",
+        capability="",
+        purpose_tags=None,
+    )
+    session.add(colleague)
+    session.commit()
+
+    roster = _colleague_roster(session, agent)
+
+    assert roster == [
+        {
+            "name": "ward",
+            "team": None,
+            "purpose_tags": [],
+            "capability": "",
+            "skills": ["word-games", "code-review"],
+        }
+    ]
+
+
 def test_repo_step_threads_colleague_roster_into_composed_bundle(
     session_factory, config, fake_storage
 ):
@@ -987,8 +1026,6 @@ def test_refresh_colleague_rosters_envelope_shape_and_content(
     # Byte-for-byte the same render a fresh compose would produce for this
     # exact roster (`_render_colleagues_md`/`_colleague_roster`, the same
     # functions RepoStep itself calls at birth).
-    from kobo_api.steps import _colleague_roster
-
     viewer = session.query(Agent).filter_by(name="viewer").one()
     assert delivered_text == _render_colleagues_md(viewer, _colleague_roster(session, viewer))
 

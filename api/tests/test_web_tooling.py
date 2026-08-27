@@ -76,9 +76,29 @@ class _CapturingGitHub(FakeGitHub):
 class _RaisingGitHub(FakeGitHub):
     """A GitHubClient whose `clone` raises `ClientError` — the 502 guard's
     fixture. `clone` is the first call every tooling.py operation makes, so
-    overriding just it covers every route's github-side 502 path."""
+    overriding just it covers every route's github-side 502 path.
+
+    `succeed_first_n_clones` (Important 7 fix follow-on), when > 0, lets the
+    first N `clone()` calls succeed normally (delegating to FakeGitHub's
+    own) before raising on every call after that -- needed by the
+    background-archive-failure test below: the upload route's shadow-
+    collision check (`existing_tool_filenames`) now clones once,
+    synchronously, in the FOREGROUND before the fast lane even relays, so
+    that clone must succeed for the instant-lane response to go out at all;
+    it's the SEPARATE background-archive clone that test wants to fail.
+    Default 0 preserves every other call site's original "clone always
+    raises" behavior unchanged."""
+
+    def __init__(self, *, succeed_first_n_clones: int = 0, **kwargs):
+        super().__init__(**kwargs)
+        self._succeed_first_n_clones = succeed_first_n_clones
+        self._clone_calls = 0
 
     def clone(self, repo: str, dest: Path) -> None:
+        self._clone_calls += 1
+        if self._clone_calls <= self._succeed_first_n_clones:
+            super().clone(repo, dest)
+            return
         raise ClientError("gh: rate limited")
 
 
@@ -732,6 +752,87 @@ def test_upload_tooling_route_bad_filename_refused_before_any_relay(
     assert fake_cabal.relay_calls == []
 
 
+def test_upload_tooling_route_baseline_prefixed_filename_refused_before_any_relay(
+    session_factory, config, monkeypatch
+):
+    """Important 7 fix (kobo-side shadowing refusal): the `baseline-*`
+    namespace is reserved for the marketplace's baseline tooling pack
+    (`kobo_api.marketplace.BASELINE_TOOL_PREFIX`, staged into every
+    non-opted-out agent's own `bundle/tools/` at compose time) -- refused
+    before any relay or archive write, cabal wired or not, so an upload can
+    never silently overwrite a baseline hook file (the fallback-overwrites-
+    hook hole this closes: a collision never even reaches the archive
+    lane)."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub()
+    fake_cabal = FakeCabal()
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/tooling",
+        json={"filename": "baseline-guardrail.py", "content": VALID_PY},
+    )
+
+    assert response.status_code == 422
+    assert "baseline" in response.json()["error"].lower()
+    assert fake_cabal.relay_calls == []
+    assert github.pushes == []
+
+
+def test_upload_tooling_route_existing_bundle_filename_refused_before_any_relay(
+    session_factory, config, monkeypatch
+):
+    """Same refusal, the other collision source named by the fix: a
+    filename that already names a file in THIS agent's own composed
+    `bundle/tools/` -- whether that file arrived via the baseline pack or
+    an earlier upload -- must never be silently overwritten either."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub(tooling_files={"orchestrator.py": VALID_PY})
+    fake_cabal = FakeCabal()
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/tooling",
+        json={"filename": "orchestrator.py", "content": VALID_PY},
+    )
+
+    assert response.status_code == 422
+    assert "orchestrator.py" in response.json()["error"]
+    assert fake_cabal.relay_calls == []
+    # Only the read-only listing clone happened -- no write was ever
+    # attempted against the collision.
+    assert github.pushes == []
+
+
+def test_upload_tooling_route_non_colliding_filename_still_proceeds(
+    session_factory, config, monkeypatch
+):
+    """Regression guard: the collision check must not over-refuse -- an
+    upload naming a file that ISN'T already in the bundle, alongside other
+    files that already are, still proceeds normally."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub(tooling_files={"baseline-guard.py": VALID_PY})
+    fake_cabal = FakeCabal()
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/tooling",
+        json={"filename": "orchestrator.py", "content": VALID_PY},
+    )
+
+    assert response.status_code == 200
+    assert github.captured_tools == {
+        "baseline-guard.py": VALID_PY,
+        "orchestrator.py": VALID_PY,
+    }
+
+
 def test_upload_tooling_route_without_cabal_is_archive_mode(session_factory, config):
     github = _CapturingGitHub()
     kubectl = FakeKubectl()
@@ -760,9 +861,13 @@ def test_upload_tooling_route_background_archive_failure_is_logged_not_surfaced(
         }
     }
     fake_cabal = FakeCabal(relay_result=relay_result)
-    # _RaisingGitHub's clone() raises ClientError -- the background archive
-    # commit fails, but the instant-lane response has already gone out.
-    client = _make_client(session_factory, cfg, github=_RaisingGitHub(), cabal=fake_cabal)
+    # succeed_first_n_clones=1: the shadow-collision check's own foreground
+    # clone succeeds (so the instant-lane relay is even reached), but the
+    # SEPARATE background archive clone that follows still raises
+    # ClientError -- the commit fails, but the instant-lane response has
+    # already gone out.
+    github = _RaisingGitHub(succeed_first_n_clones=1)
+    client = _make_client(session_factory, cfg, github=github, cabal=fake_cabal)
     _seed_agent(session_factory, cfg)
 
     with caplog.at_level("WARNING"):
