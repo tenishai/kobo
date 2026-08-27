@@ -1,6 +1,6 @@
 # Cleanup and colleague correctness (arcs 1 and 2)
 
-**Status:** Approved (pre-plan)
+**Status:** Implemented (rollout pending)
 **Depends on:** Hardening + stewardship wave (live), colleagues switchboard arc (live), fast memory lane (live)
 **Repos touched:** kobo, daedalus runtime. Cabal is deliberately unchanged (see 2.2).
 
@@ -203,3 +203,37 @@ needs:
 - Capability quality: scoping participation by capability makes capability
   text load-bearing, and it is currently auto-distilled and sometimes
   empty. The discovery arc must address this.
+
+## Execution amendments
+
+Decisions made during execution, not previously written in the spec or plan:
+
+1. **The chat context id is derived, not carried.** No existing conversation
+   identity was in scope at the chat route, so the id is deterministic:
+   `chat-{agent}-{sha256(agent:first-message)}`. The teach envelope call
+   site was deliberately skipped: teach is intercepted pre-model by the
+   runtime and never reaches a colleague hop, so threading an id there
+   would buy nothing. Known limit: if a very long conversation is trimmed
+   by the UI, the anchor message changes and one conversation splits into
+   two contexts, weakening the guard.
+2. **The roster's visibility rule reuses a predicate, not the helper.**
+   `allowed_pairs` could not be called directly because it requires the
+   caller to be READY, which a mid-provisioning agent never is at compose
+   time. The roster reuses that helper's `implicitly_paired` predicate plus
+   a direct ACCEPTED-invite query, which mirrors the same rule.
+3. **`gotchas.md` was deleted rather than kept beside `self.md`** (operator
+   ruling). No test anywhere asserted the old deployment-chain first-contact
+   phrasing, so removing it broke nothing. New agents no longer recite the
+   deployment chain on first contact, which is the intended outcome.
+4. **The orphan sweep's list was corrected twice against live state.** The
+   original audit named agents as orphaned on the strength of their service
+   accounts alone, without checking for namespaces; several turned out to
+   have running deployments and were excluded by the sweep's own filters.
+   One further agent was excluded entirely because its namespace is shared
+   with a newly deployed agent belonging to another person, and its image is
+   what that live pod would pull on restart. The report-then-confirm design
+   is what caught both.
+5. **The runtime half shipped on its own branch.** The daedalus change was
+   cut from `main` rather than the previously pinned feature branch, because
+   that branch had already merged upstream. The runtime pin moves to the new
+   branch's commit at rollout.
