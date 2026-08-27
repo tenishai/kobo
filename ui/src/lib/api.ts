@@ -834,11 +834,20 @@ export async function listKnowledge(name: string): Promise<KnowledgeFile[]> {
   return data.files;
 }
 
+/**
+ * `PUT /api/agents/{name}/knowledge/{filename}` (fast-memory-lane,
+ * arc3c Task 3): relays through the switchboard first, same instant-lane/
+ * archive-lane shape `teachAgent` above documents. `mode: "instant"` (the
+ * relay landed live) carries NO `sha` at all -- there is nothing to poll
+ * `fetchDeliveryState` for, since the write already happened, not through a
+ * rebuild. `mode: "archive"` (or a pre-fast-lane server that never sends
+ * `mode`) carries the pushed commit's `sha` as before.
+ */
 export async function saveKnowledgeFile(
   name: string,
   filename: string,
   content: string,
-): Promise<{ sha: string }> {
+): Promise<{ sha?: string; mode?: "instant" | "archive" }> {
   const res = await fetch(
     `/api/agents/${encodeURIComponent(name)}/knowledge/${encodeURIComponent(filename)}`,
     {
@@ -847,18 +856,20 @@ export async function saveKnowledgeFile(
       body: JSON.stringify({ content }),
     },
   );
-  return parse<{ sha: string }>(res);
+  return parse<{ sha?: string; mode?: "instant" | "archive" }>(res);
 }
 
+/** `DELETE /api/agents/{name}/knowledge/{filename}` -- same instant-lane/
+ * archive-lane response shape as `saveKnowledgeFile` above. */
 export async function deleteKnowledgeFile(
   name: string,
   filename: string,
-): Promise<{ sha: string }> {
+): Promise<{ sha?: string; mode?: "instant" | "archive" }> {
   const res = await fetch(
     `/api/agents/${encodeURIComponent(name)}/knowledge/${encodeURIComponent(filename)}`,
     { method: "DELETE" },
   );
-  return parse<{ sha: string }>(res);
+  return parse<{ sha?: string; mode?: "instant" | "archive" }>(res);
 }
 
 export async function fetchDeliveryState(
@@ -975,18 +986,27 @@ export async function listIntake(name: string): Promise<IntakeFile[]> {
 
 /** Uploads (creates or overwrites) one intake file. Unlike knowledge/skill
  * saves, the filename travels in the request body, not the URL path — this
- * is a one-shot upload, not an edit of a named existing resource. */
+ * is a one-shot upload, not an edit of a named existing resource.
+ *
+ * Fast-memory-lane (arc3c Task 4): filenames must satisfy the runtime's own
+ * teach-lane rule (lowercase letters/digits/hyphens, 40 chars max, `.md`
+ * only) — the server checks this unconditionally, before ever touching the
+ * repo, so a `.txt` upload the older, looser server-side rule used to admit
+ * now 422s immediately. Same instant-lane/archive-lane response shape as
+ * `saveKnowledgeFile`/`teachAgent`: `mode: "instant"` carries NO `sha` (the
+ * write already landed live), `mode: "archive"` carries the pushed commit's
+ * `sha`. */
 export async function uploadIntake(
   name: string,
   filename: string,
   content: string,
-): Promise<{ sha: string }> {
+): Promise<{ sha?: string; mode?: "instant" | "archive" }> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/intake`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ filename, content }),
   });
-  return parse<{ sha: string }>(res);
+  return parse<{ sha?: string; mode?: "instant" | "archive" }>(res);
 }
 
 /** Removes an intake file's source upload. `note` is the server's

@@ -172,4 +172,143 @@ describe("MemoryPanel", () => {
       ).not.toBeNull();
     });
   });
+
+  // Fast-memory-lane fix: knowledge saves/deletes and intake uploads all
+  // ride the fast lane now (backend commits fafee93/0fe90f4), returning
+  // `{"mode": "instant"}` with NO `sha` on success. Before this fix,
+  // `handleSave`/`handleDelete`/`handleUpload` called `beginDelivery(result.
+  // sha)` unconditionally, which would have started polling
+  // `/knowledge/delivery/undefined` for an instant response — these tests
+  // prove that never happens, and that the panel still tells the user
+  // something landed.
+  describe("instant memory lane (fast-memory-lane fix)", () => {
+    function jsonResponse(body: unknown, status = 200): Response {
+      return new Response(JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    it("an instant-mode intake upload shows the in-place notice without ever polling delivery", async () => {
+      const urls: string[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = String(input);
+          urls.push(url);
+          if (url.includes("/api/agents/warden/intake") && init?.method === "POST") {
+            return jsonResponse({ filename: "instant-note.md", mode: "instant" });
+          }
+          if (url.includes("/api/agents/warden/knowledge")) {
+            return jsonResponse({ files: [] });
+          }
+          if (url.includes("/api/agents/warden/intake")) {
+            return jsonResponse({ files: [] });
+          }
+          return jsonResponse({});
+        }),
+      );
+
+      renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
+
+      await fireEvent.input(await screen.findByLabelText("File name"), {
+        target: { value: "instant-note.md" },
+      });
+      await fireEvent.input(screen.getByLabelText("Content"), {
+        target: { value: "hello there" },
+      });
+      await fireEvent.click(screen.getByRole("button", { name: "Upload" }));
+
+      expect(await screen.findByText("Changes are in place")).not.toBeNull();
+      expect(urls.some((u) => u.includes("/delivery/"))).toBe(false);
+    });
+
+    it("an instant-mode knowledge save shows the in-place notice without ever polling delivery", async () => {
+      const urls: string[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = String(input);
+          urls.push(url);
+          if (url.includes("/api/agents/warden/knowledge/") && init?.method === "PUT") {
+            return jsonResponse({ mode: "instant" });
+          }
+          if (url.includes("/api/agents/warden/knowledge")) {
+            return jsonResponse({ files: [] });
+          }
+          if (url.includes("/api/agents/warden/intake")) {
+            return jsonResponse({ files: [] });
+          }
+          return jsonResponse({});
+        }),
+      );
+
+      renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
+
+      await fireEvent.click(await screen.findByRole("button", { name: "Add memory" }));
+      await fireEvent.input(screen.getByLabelText("Name"), {
+        target: { value: "instant-note" },
+      });
+      await fireEvent.input(screen.getByLabelText("What it knows"), {
+        target: { value: "hello there" },
+      });
+      await fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+      await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      expect(await screen.findByText("Changes are in place")).not.toBeNull();
+      expect(urls.some((u) => u.includes("/delivery/"))).toBe(false);
+    });
+
+    it("an instant-mode knowledge delete shows the in-place notice without ever polling delivery", async () => {
+      const urls: string[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = String(input);
+          urls.push(url);
+          if (url.includes("/api/agents/warden/knowledge/") && init?.method === "DELETE") {
+            return jsonResponse({ mode: "instant" });
+          }
+          if (url.includes("/api/agents/warden/knowledge")) {
+            return jsonResponse({ files: [{ name: "foo.md", content: "bar" }] });
+          }
+          if (url.includes("/api/agents/warden/intake")) {
+            return jsonResponse({ files: [] });
+          }
+          return jsonResponse({});
+        }),
+      );
+
+      renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
+
+      await fireEvent.click(await screen.findByRole("button", { name: "Remove foo" }));
+      await fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+
+      expect(await screen.findByText("Changes are in place")).not.toBeNull();
+      expect(urls.some((u) => u.includes("/delivery/"))).toBe(false);
+    });
+  });
+
+  // Intake filenames are .md only now (the fast lane's own unconditional
+  // gate, `kobo_api.main._INTAKE_FAST_LANE_FILENAME_RE`, refuses a `.txt`
+  // upload before it ever reaches the repo) — the picker's copy needs to
+  // stop advertising a `.txt` option it can no longer actually deliver.
+  describe("intake filenames are .md only (fast lane rule)", () => {
+    it("the file picker only advertises .md", async () => {
+      renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
+      const fileInput = await screen.findByLabelText("Choose file");
+      expect(fileInput.getAttribute("accept")).toBe(".md");
+    });
+
+    it("flags a .txt filename with the .md-only rule and never mentions .txt", async () => {
+      renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
+      const filenameInput = await screen.findByLabelText("File name");
+      await fireEvent.input(filenameInput, { target: { value: "notes.txt" } });
+
+      expect(
+        await screen.findByText("Use lowercase letters, numbers, and hyphens, ending in .md."),
+      ).not.toBeNull();
+      expect(screen.queryByText(/\.txt/)).toBeNull();
+    });
+  });
 });

@@ -2,8 +2,13 @@
   // What a deployed agent knows from the start (`bundle/knowledge/*.md` in
   // its repo, P2b), plus — in the "Teach from a file" subsection below —
   // one-shot uploads for the agent to learn from once (`bundle/intake/*.md`
-  // or `*.txt` in its repo): a runtime seeder ingests these into the
-  // agent's actual memory exactly once, at boot (a later task); this
+  // in its repo -- the fast-memory-lane's unconditional filename gate,
+  // `kobo_api.main._INTAKE_FAST_LANE_FILENAME_RE`, refuses anything else
+  // before an upload ever reaches the archive lane's own looser `.txt`-
+  // admitting `kobo_api.intake.INTAKE_FILENAME_RE`, so `.md` is the only
+  // extension that can actually succeed here now): a runtime seeder
+  // ingests these into the agent's actual memory exactly once, at boot (a
+  // later task); this
   // subsection is only the upload/list/remove plumbing, plus showing each
   // file's pending/ingested status (derived fresh from git ancestry by the
   // server on every list call — see `kobo_api.intake.list_intake`'s
@@ -54,6 +59,18 @@
   // is sha-generic, so whichever flow's mutation resolves most recently just
   // calls `beginDelivery(result.sha)` and the chip tracks that sha exactly
   // as if this panel only ever did one kind of thing.
+  //
+  // Instant lane (knowledge saves/deletes and intake uploads all ride the
+  // fast lane now, `kobo_api.main`'s knowledge/upload_intake routes): a
+  // relay that lands returns `{"mode": "instant"}` with NO `sha` at all --
+  // there is nothing to poll `deliveryQuery` for, since the write already
+  // happened live, not through a rebuild. `handleWriteResult` below is
+  // every one of those three call sites' shared landing point: `"instant"`
+  // flashes `instantNotice` (the SAME "Changes are in place" copy the
+  // polled chip ends on, just shown immediately instead of arrived-at),
+  // anything else falls through to `beginDelivery` exactly as before. Same
+  // shape TeachModal's own `mode === "instant"` branch already takes for
+  // the identical response contract on `POST .../teach`.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { derived, writable } from "svelte/store";
   import EmptyState from "./EmptyState.svelte";
@@ -137,6 +154,42 @@
       }
     };
   });
+
+  // Instant lane: a fast-lane write already landed live, so there is no
+  // sha to poll `deliveryQuery` for at all (see the module doc comment
+  // above). `instantNotice` flashes the exact same "in place" copy the
+  // polled chip ends on, for the same `DELIVERED_CLEAR_MS` window, but
+  // shown immediately rather than arrived at through polling -- plain
+  // `$state`, not a store, since nothing here drives a query the way
+  // `deliverySha` does.
+  let instantNotice = $state(false);
+  let instantNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function showInstantNotice(): void {
+    if (instantNoticeTimer !== undefined) {
+      clearTimeout(instantNoticeTimer);
+    }
+    instantNotice = true;
+    instantNoticeTimer = setTimeout(() => {
+      instantNotice = false;
+      instantNoticeTimer = undefined;
+    }, DELIVERED_CLEAR_MS);
+  }
+
+  /** Every knowledge-save/knowledge-delete/intake-upload `onSuccess` lands
+   * here instead of calling `beginDelivery` directly: `mode: "instant"`
+   * (no `sha` at all) flashes `instantNotice`; anything else (the archive
+   * lane, or an older server that never sent `mode`) falls through to
+   * `beginDelivery` exactly as before this fast lane existed. */
+  function handleWriteResult(result: { sha?: string; mode?: string }): void {
+    if (result.mode === "instant") {
+      showInstantNotice();
+      return;
+    }
+    if (result.sha !== undefined) {
+      beginDelivery(result.sha);
+    }
+  }
 
   type DeliveryView = { tone: "pending" | "ok" | "fail"; text: string };
 
@@ -322,7 +375,7 @@
       { filename: targetFilename, content },
       {
         onSuccess: (result) => {
-          beginDelivery(result.sha);
+          handleWriteResult(result);
           closeModal();
         },
         onError: (err: unknown) => {
@@ -340,7 +393,7 @@
     modalError = null;
     $deleteMutation.mutate(targetFilename, {
       onSuccess: (result) => {
-        beginDelivery(result.sha);
+        handleWriteResult(result);
         closeModal();
       },
       onError: (err: unknown) => {
@@ -356,9 +409,12 @@
   // round trip, not a separate rule of its own.
   const INTAKE_MAX_BYTES = 262_144;
 
-  // Same shape as `kobo_api.intake.INTAKE_FILENAME_RE`: a lowercase letter,
-  // then lowercase/digit/hyphen (40 chars max), ending in .md or .txt.
-  const INTAKE_FILENAME_RE = /^[a-z][a-z0-9-]{0,39}\.(md|txt)$/;
+  // Mirrors the fast lane's own unconditional gate, `kobo_api.main.
+  // _INTAKE_FAST_LANE_FILENAME_RE`, not the looser (and, since that gate
+  // runs first and always, now effectively unreachable) `.txt`-admitting
+  // `kobo_api.intake.INTAKE_FILENAME_RE`: a lowercase letter or digit,
+  // then lowercase/digit/hyphen (40 chars max), ending in .md only.
+  const INTAKE_FILENAME_RE = /^[a-z0-9][a-z0-9-]{0,39}\.md$/;
 
   let intakeFilename = $state("");
   let intakeContent = $state("");
@@ -373,7 +429,7 @@
       return null; // nothing to say about an empty field yet
     }
     if (!INTAKE_FILENAME_RE.test(intakeFilename)) {
-      return "Use lowercase letters, numbers, and hyphens, ending in .md or .txt.";
+      return "Use lowercase letters, numbers, and hyphens, ending in .md.";
     }
     return null;
   });
@@ -451,7 +507,7 @@
       { filename: intakeFilename, content: intakeContent },
       {
         onSuccess: (result) => {
-          beginDelivery(result.sha);
+          handleWriteResult(result);
           intakeFilename = "";
           intakeContent = "";
         },
@@ -633,7 +689,7 @@
             id="intake-file"
             class="intake-form__file-input"
             type="file"
-            accept=".md,.txt"
+            accept=".md"
             onchange={handleFileSelect}
             aria-describedby="intake-file-status"
             disabled={frozen}
@@ -661,7 +717,7 @@
           aria-invalid={intakeFilenameError !== null}
           disabled={frozen}
         />
-        <p class="intake-form__help">lowercase-with-dashes, .md or .txt</p>
+        <p class="intake-form__help">lowercase-with-dashes, .md only</p>
         <div id="intake-filename-status">
           {#if intakeFilenameError}
             <p class="intake-form__status intake-form__status--error" role="alert">
@@ -792,6 +848,10 @@
         <span class="memory-panel__delivery-dot pulse" aria-hidden="true"></span>
       {/if}
       <span>{deliveryView.text}</span>
+    </div>
+  {:else if instantNotice}
+    <div class="memory-panel__delivery memory-panel__delivery--ok" role="status" aria-live="polite">
+      <span>Changes are in place</span>
     </div>
   {/if}
 </section>
