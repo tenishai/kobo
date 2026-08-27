@@ -1388,3 +1388,93 @@ export async function searchPeople(q: string): Promise<PeopleSearchResult> {
   const res = await fetch(`/api/people/search?q=${encodeURIComponent(q)}`);
   return parse<PeopleSearchResult>(res);
 }
+
+// --- Threads (threads arc, Tasks 8-10): a shared multi-agent conversation --
+// the initiator starts, seats further participants into, and drives one
+// turn at a time. A thread carries no persisted message log of its own --
+// `GET /api/threads/{id}` (unused here; nothing in this surface ever needs
+// to re-fetch a thread's metadata after creating/seating it, since both of
+// those routes already hand back the fresh `Thread`) returns only id/
+// initiator_email/created_at/participants, never a transcript -- so, same
+// as `chatWithAgent`'s own single-agent chat, the turn-by-turn exchange is
+// local component state: each `postThreadTurn` call resends the FULL
+// transcript so far, and the caller is the one place any of it is ever
+// remembered.
+
+/** A thread's own metadata (`kobo_api.main._thread_repr`) -- both
+ * `createThread` and `addThreadParticipant` return this shape fresh on
+ * success, `participants` already reflecting the just-seated agent. */
+export type Thread = {
+  id: number;
+  initiator_email: string | null;
+  created_at: string;
+  participants: string[];
+};
+
+/** `POST /api/threads`: starts a new thread naming one agent the caller can
+ * see -- open to any signed-in caller, never an ownership gate (a thread is
+ * the initiator's own space, not a mutation of the named agent itself).
+ * 409 when that agent isn't ready yet, the room's own anti-enumeration 404
+ * when the caller can't see it at all -- both surfaced as an `ApiError`
+ * through `parse`, same as every other mutation in this file. */
+export async function createThread(agent: string): Promise<Thread> {
+  const res = await fetch("/api/threads", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent }),
+  });
+  return parse<Thread>(res);
+}
+
+/** `POST /api/threads/{id}/participants`: seats one more agent into an
+ * already-created thread -- the thread's own initiator only. A caller who
+ * didn't start `threadId` gets the identical not-found body a bogus id
+ * gets (never a distinguishable 403); an agent the caller can't see gets
+ * the room's own anti-enumeration 404; a cross-group agent with no accepted
+ * invite already standing toward every current participant, an already-
+ * seated agent, or a not-ready agent all 409/422 with a plain-language
+ * reason. Every one of those surfaces as an `ApiError` through `parse` --
+ * the caller (`ThreadPanel`) shows that message as a toast rather than an
+ * inline error, since adding a participant is a quiet aside to the
+ * conversation, not the main flow a form error would block. */
+export async function addThreadParticipant(threadId: number, agent: string): Promise<Thread> {
+  const res = await fetch(`/api/threads/${encodeURIComponent(String(threadId))}/participants`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent }),
+  });
+  return parse<Thread>(res);
+}
+
+/** One participant's answer to a thread turn (`kobo_api.main.post_thread_
+ * turn`'s own `replies` entries) -- `agent` is the bare name that answered,
+ * always one of `Thread.participants`. */
+export type ThreadReply = { agent: string; text: string };
+
+/**
+ * `POST /api/threads/{id}/turns`: delivers one turn to every participant IN
+ * SEQUENCE, each seeing every message in `messages` plus every reply
+ * already given earlier in this same turn -- `messages` is the FULL
+ * transcript so far (this caller's own messages, `role: "user"`, interleaved
+ * with every participant's past replies, `role: "agent"`), the exact same
+ * "resend everything every time" contract `chatWithAgent` above already
+ * documents, since a thread turn is that same mechanic run once per
+ * participant instead of once against a single agent. The last entry in
+ * `messages` must be `role: "user"` (a fresh ask), or the server 422s.
+ * Initiator-only, same not-found-not-403 gate `addThreadParticipant`
+ * documents; 409 when the thread has no participants yet; 502 (copy: "The
+ * switchboard did not answer. Try again shortly.") on a relay failure to
+ * ANY participant, matching how far the sequence actually got being
+ * unrecoverable mid-turn.
+ */
+export async function postThreadTurn(
+  threadId: number,
+  messages: ChatMessage[],
+): Promise<{ replies: ThreadReply[] }> {
+  const res = await fetch(`/api/threads/${encodeURIComponent(String(threadId))}/turns`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages }),
+  });
+  return parse<{ replies: ThreadReply[] }>(res);
+}

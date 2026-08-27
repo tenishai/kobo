@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
+  addThreadParticipant,
   archivePersona,
   archivedPersonas,
   chatWithAgent,
   connectSlack,
   createAgent,
   createPersona,
+  createThread,
   decideGroupRequest,
   deleteKnowledgeFile,
   draftPersona,
@@ -25,6 +27,7 @@ import {
   listAgents,
   listKnowledge,
   patchAgentMetadata,
+  postThreadTurn,
   regenerateAgentMetadata,
   requestGroup,
   saveKnowledgeFile,
@@ -1460,6 +1463,132 @@ describe("fetchColleagueFeed", () => {
     await expect(fetchColleagueFeed("ward")).rejects.toMatchObject({
       status: 404,
     });
+  });
+});
+
+describe("threads (Tasks 8-10)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("createThread POSTs {agent} to /api/threads and returns the thread", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({
+        id: 7,
+        initiator_email: "kai@example.com",
+        created_at: "2026-08-27T00:00:00+00:00",
+        participants: ["ward"],
+      }),
+    );
+
+    await expect(createThread("ward")).resolves.toEqual({
+      id: 7,
+      initiator_email: "kai@example.com",
+      created_at: "2026-08-27T00:00:00+00:00",
+      participants: ["ward"],
+    });
+
+    expect(fetch).toHaveBeenCalledWith("/api/threads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent: "ward" }),
+    });
+  });
+
+  it("createThread surfaces a 409's {error} message", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({ error: "agent is not ready" }, { status: 409, statusText: "Conflict" }),
+    );
+
+    await expect(createThread("ward")).rejects.toThrow("agent is not ready");
+  });
+
+  it("addThreadParticipant POSTs {agent} to /api/threads/{id}/participants and returns the thread", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({
+        id: 7,
+        initiator_email: "kai@example.com",
+        created_at: "2026-08-27T00:00:00+00:00",
+        participants: ["ward", "clio"],
+      }),
+    );
+
+    await expect(addThreadParticipant(7, "clio")).resolves.toEqual({
+      id: 7,
+      initiator_email: "kai@example.com",
+      created_at: "2026-08-27T00:00:00+00:00",
+      participants: ["ward", "clio"],
+    });
+
+    expect(fetch).toHaveBeenCalledWith("/api/threads/7/participants", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent: "clio" }),
+    });
+  });
+
+  it("addThreadParticipant surfaces a 404 (not the initiator, or an unknown thread) with the identical body's message", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({ error: "no such thread: 7" }, { status: 404, statusText: "Not Found" }),
+    );
+
+    await expect(addThreadParticipant(7, "clio")).rejects.toThrow("no such thread: 7");
+  });
+
+  it("addThreadParticipant surfaces a 422 consent refusal message", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "clio and ward are not connected. Accept a colleague invite between them first." },
+        { status: 422, statusText: "Unprocessable Entity" },
+      ),
+    );
+
+    await expect(addThreadParticipant(7, "clio")).rejects.toThrow(
+      "clio and ward are not connected. Accept a colleague invite between them first.",
+    );
+  });
+
+  it("postThreadTurn POSTs {messages} to /api/threads/{id}/turns and returns {replies}", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({
+        replies: [
+          { agent: "ward", text: "Here's my take." },
+          { agent: "clio", text: "Agreed, and also..." },
+        ],
+      }),
+    );
+
+    const messages = [{ role: "user" as const, text: "What do you two think?" }];
+
+    await expect(postThreadTurn(7, messages)).resolves.toEqual({
+      replies: [
+        { agent: "ward", text: "Here's my take." },
+        { agent: "clio", text: "Agreed, and also..." },
+      ],
+    });
+
+    expect(fetch).toHaveBeenCalledWith("/api/threads/7/turns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages }),
+    });
+  });
+
+  it("postThreadTurn surfaces a 502 when the switchboard did not answer", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "The switchboard did not answer. Try again shortly." },
+        { status: 502, statusText: "Bad Gateway" },
+      ),
+    );
+
+    await expect(
+      postThreadTurn(7, [{ role: "user", text: "hi" }]),
+    ).rejects.toThrow("The switchboard did not answer. Try again shortly.");
   });
 });
 

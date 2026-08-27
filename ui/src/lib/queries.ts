@@ -71,6 +71,13 @@
 //                                                      fetched lazily once
 //                                                      the admin card is
 //                                                      expanded
+//
+// Threads (threads arc, Tasks 8-10) have no queryOptions/queryKey of their
+// own: `GET /api/threads/{id}` returns only id/initiator_email/created_at/
+// participants, never a transcript, so a thread's turn-by-turn exchange is
+// local component state, same posture `chatMutation`'s own doc comment
+// documents for single-agent chat. See `createThreadMutation`/
+// `addThreadParticipantMutation`/`postThreadTurnMutation` below.
 
 import { queryOptions, type QueryClient } from "@tanstack/svelte-query";
 import {
@@ -105,6 +112,8 @@ import {
   type RequestableResult,
   type TeamOptions,
   type TeamPair,
+  type Thread,
+  type ThreadReply,
   type ToolingEnforcement,
   type ToolingFile,
   type ToolingListResponse,
@@ -112,6 +121,7 @@ import {
   acceptInvite,
   addCatalogSkill,
   addGrant,
+  addThreadParticipant,
   archivePersona,
   archivedPersonas,
   chatWithAgent,
@@ -119,6 +129,7 @@ import {
   createAgent,
   createInvite,
   createPersona,
+  createThread,
   decideGroupRequest,
   declineInvite,
   deleteIntake,
@@ -151,6 +162,7 @@ import {
   listSkills,
   listTooling,
   patchAgentMetadata,
+  postThreadTurn,
   regenerateAgentMetadata,
   removeGrant,
   requestGroup,
@@ -1149,6 +1161,59 @@ export function colleagueFeedQuery(agent: string) {
   });
 }
 
+// --- Threads (threads arc, Task 10): a shared multi-agent conversation ----
+// started from an agent's own chat context. No query/cache invalidation on
+// any of the three mutations below -- same "nothing in the query cache to
+// invalidate" reasoning `chatMutation` above documents, since a thread's
+// turn-by-turn exchange is local component state (see the module doc
+// comment's own note on this), not something any `queryOptions` here reads
+// back.
+
+/**
+ * Starts a new thread naming one agent (`ThreadPanel`'s own "Start a shared
+ * thread" affordance) -- `POST /api/threads`. Open to any signed-in caller
+ * who can see `agent`, never an ownership gate on it (a thread is the
+ * initiator's own space, not a mutation of the named agent).
+ */
+export function createThreadMutation() {
+  return {
+    mutationFn: (agent: string) => createThread(agent),
+  };
+}
+
+/**
+ * Seats one more agent into an already-created thread -- `POST /api/
+ * threads/{id}/participants`. Both `threadId` and `agent` travel with
+ * `mutate`, not bound into the factory, the same "neither side is fixed for
+ * the mounted component's lifetime" reasoning `createInviteMutation` above
+ * documents -- here because a thread's id doesn't exist until
+ * `createThreadMutation` above has already resolved, well after this
+ * mutation is created. A refusal (not-found, not-ready, no shared consent,
+ * already seated) surfaces as an `ApiError`; `ThreadPanel` shows that as a
+ * toast per the threads arc's own ruling, not an inline form error.
+ */
+export function addThreadParticipantMutation() {
+  return {
+    mutationFn: ({ threadId, agent }: { threadId: number; agent: string }) =>
+      addThreadParticipant(threadId, agent),
+  };
+}
+
+/**
+ * Delivers one turn to a thread's seated participants, in sequence -- `POST
+ * /api/threads/{id}/turns`. Same "both travel with mutate" shape as
+ * `addThreadParticipantMutation` above; `messages` is the FULL transcript
+ * so far (this caller's own asks plus every participant's past replies),
+ * the same "resend everything, the server has no memory of past turns"
+ * contract `chatMutation` documents for single-agent chat.
+ */
+export function postThreadTurnMutation() {
+  return {
+    mutationFn: ({ threadId, messages }: { threadId: number; messages: ChatMessage[] }) =>
+      postThreadTurn(threadId, messages),
+  };
+}
+
 // Re-exported so consumers of the query factories don't need a separate
 // import from api.ts just to type their component-level state.
 export type {
@@ -1182,6 +1247,8 @@ export type {
   RequestableResult,
   TeamOptions,
   TeamPair,
+  Thread,
+  ThreadReply,
   ToolingEnforcement,
   ToolingFile,
   ToolingListResponse,

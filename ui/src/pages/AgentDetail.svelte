@@ -22,6 +22,7 @@
   import SlackPanel from "../components/SlackPanel.svelte";
   import StatusBadge from "../components/StatusBadge.svelte";
   import StepChecklist from "../components/StepChecklist.svelte";
+  import ThreadPanel from "../components/ThreadPanel.svelte";
   import ToolingPanel from "../components/ToolingPanel.svelte";
   import { ApiError, errorMessage } from "../lib/api";
   import {
@@ -483,6 +484,7 @@
             {/if}
           {:else if tab === "chat"}
             <ChatPanel agentName={data.name} frozen={isFrozen(data.status)} />
+            <ThreadPanel agentName={data.name} frozen={isFrozen(data.status)} />
             <ColleagueConversations agentName={data.name} />
           {:else if tab === "memory"}
             <MemoryPanel agentName={data.name} frozen={isFrozen(data.status)} />

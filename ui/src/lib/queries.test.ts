@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiError, readLocalSkill, type AgentSkill, type ArchivedPersona, type CatalogEntry, type GroupRequest, type IntakeFile, type NameSuggestion, type OrgStatus, type ToolingEnforcement, type ToolingListResponse, type Whoami } from "./api";
 import {
   addCatalogSkillMutation,
+  addThreadParticipantMutation,
   agentSkillsQuery,
   archivePersonaMutation,
   archivedPersonasQuery,
@@ -9,6 +10,7 @@ import {
   colleagueFeedQuery,
   connectSlackMutation,
   createPersonaMutation,
+  createThreadMutation,
   decideGroupRequestMutation,
   deleteIntakeMutation,
   deleteKnowledgeMutation,
@@ -28,6 +30,7 @@ import {
   orgStatusQuery,
   patchMetadataMutation,
   personasSearchQuery,
+  postThreadTurnMutation,
   regenerateMetadataMutation,
   requestGroupMutation,
   retryAgentMutation,
@@ -2012,5 +2015,115 @@ describe("decideGroupRequestMutation (shared-group + group-requests wave)", () =
     expect(invalidateQueries).toHaveBeenCalledTimes(2);
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["group-requests"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["whoami"] });
+  });
+});
+
+describe("createThreadMutation (threads arc, Task 10)", () => {
+  it("mutationFn delegates to createThread(agent)", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      statusText: "Created",
+      text: async () =>
+        JSON.stringify({
+          id: 7,
+          initiator_email: "kai@example.com",
+          created_at: "2026-08-27T00:00:00+00:00",
+          participants: ["ward"],
+        }),
+    } as Response);
+
+    const mutation = createThreadMutation();
+
+    await expect(mutation.mutationFn("ward")).resolves.toEqual({
+      id: 7,
+      initiator_email: "kai@example.com",
+      created_at: "2026-08-27T00:00:00+00:00",
+      participants: ["ward"],
+    });
+    expect(fetch).toHaveBeenCalledWith("/api/threads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent: "ward" }),
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("has no onSuccess/cache invalidation -- a thread has no query cache entry", () => {
+    const mutation = createThreadMutation();
+    expect((mutation as { onSuccess?: unknown }).onSuccess).toBeUndefined();
+  });
+});
+
+describe("addThreadParticipantMutation (threads arc, Task 10)", () => {
+  it("mutationFn({threadId, agent}) delegates to addThreadParticipant(threadId, agent)", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      statusText: "Created",
+      text: async () =>
+        JSON.stringify({
+          id: 7,
+          initiator_email: "kai@example.com",
+          created_at: "2026-08-27T00:00:00+00:00",
+          participants: ["ward", "clio"],
+        }),
+    } as Response);
+
+    const mutation = addThreadParticipantMutation();
+
+    await expect(mutation.mutationFn({ threadId: 7, agent: "clio" })).resolves.toEqual({
+      id: 7,
+      initiator_email: "kai@example.com",
+      created_at: "2026-08-27T00:00:00+00:00",
+      participants: ["ward", "clio"],
+    });
+    expect(fetch).toHaveBeenCalledWith("/api/threads/7/participants", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent: "clio" }),
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("has no onSuccess/cache invalidation -- a thread has no query cache entry", () => {
+    const mutation = addThreadParticipantMutation();
+    expect((mutation as { onSuccess?: unknown }).onSuccess).toBeUndefined();
+  });
+});
+
+describe("postThreadTurnMutation (threads arc, Task 10)", () => {
+  it("mutationFn({threadId, messages}) delegates to postThreadTurn(threadId, messages)", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({ replies: [{ agent: "ward", text: "Here's my take." }] }),
+    } as Response);
+
+    const mutation = postThreadTurnMutation();
+    const messages = [{ role: "user" as const, text: "What do you think?" }];
+
+    await expect(mutation.mutationFn({ threadId: 7, messages })).resolves.toEqual({
+      replies: [{ agent: "ward", text: "Here's my take." }],
+    });
+    expect(fetch).toHaveBeenCalledWith("/api/threads/7/turns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages }),
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("has no onSuccess/cache invalidation -- a thread has no query cache entry", () => {
+    const mutation = postThreadTurnMutation();
+    expect((mutation as { onSuccess?: unknown }).onSuccess).toBeUndefined();
   });
 });
