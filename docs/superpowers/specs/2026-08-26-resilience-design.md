@@ -1,6 +1,6 @@
 # Resilience: Postgres, agent memory, and a restore that has been performed (arc 5)
 
-**Status:** Approved (pre-plan)
+**Status:** Implemented (code complete; provisioning and drill pending)
 **Depends on:** nothing in the fast-lane and discovery arc. Deliberately independent, and can proceed alongside it.
 **Repos touched:** kobo, plus cluster and cloud configuration.
 
@@ -144,3 +144,23 @@ substitute.
   actual scale-out is its own change with its own testing.
 - The switchboard's own same-zone replication target, which has the same
   weakness this arc fixes for the room and the agents.
+
+## Execution amendments
+
+1. Postgres in tests rides a POSTGRES_TEST_URL seam (skip-with-reason when
+   absent); the search module and the migration baseline were proven
+   against a real Postgres during execution.
+2. The escaping contract gained a backslash input after review found the
+   Postgres path 500ing on it; hostile inputs are engine-parameterized and
+   pass on both engines.
+3. The step engine's two-process safety is a plain-SQL row-level claim,
+   proven by a test that spawns two real processes against one database.
+4. Replication runs in-container via a wrapper that hardcodes the runtime
+   child command (an entrypoint override resets the base image's CMD, so
+   nothing may rely on it). The per-agent grant is two bindings: a
+   prefix-conditioned object write plus an unconditioned bucket-level
+   list, the second stating --condition=None explicitly because gcloud
+   refuses to guess once a policy holds any conditional binding.
+5. The restore drill remains the live proof and has NOT run yet; the
+   feature ships dark behind the optional memory_replica_bucket key, and
+   composed bundles are byte-identical to before when it is unset.

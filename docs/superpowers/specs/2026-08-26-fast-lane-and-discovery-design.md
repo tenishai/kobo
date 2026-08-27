@@ -1,6 +1,6 @@
 # Fast lane and smart discovery (arcs 3 and 4)
 
-**Status:** Approved (pre-plan)
+**Status:** Implemented (rollout pending)
 **Depends on:** Fast memory lane (live), colleagues switchboard (live), access control (live), cleanup + colleague correctness (rolled 2026-08-26)
 **Repos touched:** kobo, daedalus runtime, cabal (participation only). Specced alongside, but separate from, the resilience arc.
 
@@ -200,3 +200,38 @@ House law: RED first, gates mutation-pinned. Specific pins this work needs:
 - Automatic participant removal when a thread's topic drifts.
 - Any change to how capability text is distilled. This arc consumes capability
   and reports when it is missing; improving the distillation is its own work.
+
+## Execution amendments
+
+1. The system-task rail now carries three markers (teach, knowledge, tool)
+   plus a delete flag whose key is exactly `delete`; kobo and the runtime
+   pin the spellings on both sides.
+2. Knowledge REPLACE retires prior entries from BOTH ledgers, the intake
+   ledger and the boot seeder's own, after review proved intake-only
+   retirement left seeded facts live as ghosts. Deletes leave a small
+   tombstone entry (the memory store never hard-deletes).
+3. The seeder gained a staleness protocol (lane and previous-sha columns,
+   tombstone rows) so a pod restart on a stale image can never revert a
+   fast-lane edit or resurrect a fast-lane delete. Repo-direct edits that
+   genuinely rebuild in still win.
+4. Instant-lane archive commits skip CI on knowledge, intake, and teach
+   alike; the degraded lane keeps CI because there the commit IS the
+   delivery. Consequence, accepted: image bundles drift from live memory
+   between natural rebuilds, which is what the staleness protocol exists
+   to make safe.
+5. Tools land in an overlay under the agent volume's memory home; the
+   shadow refusal exists on BOTH sides (kobo refuses before relay, the
+   runtime refuses at write and skips loudly at load).
+6. The hello retry wraps both first-contact paths (relay and direct),
+   since IAM propagation is not transport-specific.
+7. The roster refresh is best-effort relay only, never a rebuild; misses
+   are logged. Capability distill also redelivers self.md. The roster
+   carries a skills line so the capability fallback chain is reachable.
+8. Thread exclusion covers the feed, the MCP feed, the conversations list
+   (including all=true), the conversation detail (not-found), and the SSE
+   stream. The SSE half requires the switchboard to echo task metadata
+   into its published events, which shipped as a switchboard change on
+   its own branch; until that deploys, thread frames on the stream carry
+   metadata only, never transcript content.
+9. Intake uploads now refuse non-md filenames at the room (they were
+   previously accepted and silently never ingested).

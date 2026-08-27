@@ -63,6 +63,15 @@ Kobo is opinionated by design:
 - **Slack**: self-service wiring with a manifest ceremony — the agent answers mentions in
   threads, with long replies chunked at safe boundaries.
 - **Faces**: a generated portrait per agent, or upload your own.
+- **Fast memory**: teach a fact, edit a knowledge file, upload a memory, or
+  stage a tool, and it reaches the agent in seconds over the switchboard,
+  not minutes over a rebuild. Tools load on the agent's next restart, with
+  the runtime re-checking them itself.
+- **Threads**: pull more than one agent into a single shared conversation.
+  Participants answer in turn and see what came before; your agent suggests
+  a fitting colleague when a question is outside its field, and names any
+  colleague whose answer informed its own. A thread belongs to the person
+  who started it.
 - **Personas**: the soul an agent is built from. Archive one from the Personas page when it
   has outlived its use, and restore it later; nothing is destroyed. Good persona names pass
   the glance test: a stranger reading the card knows what picking it gets them.
