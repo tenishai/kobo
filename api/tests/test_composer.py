@@ -1894,3 +1894,15 @@ def test_tools_block_ignores_broker_url_without_cabal(tmp_path):
     compose(_make_spec(name="kestrel", broker_url="http://kobo.example.com"), dest)
     text = (dest / "bundle" / "agent.yaml").read_text()
     assert "github" not in text
+
+
+def test_self_md_teaches_skills_are_procedures(tmp_path):
+    """2026-08-28, from a live exchange: an agent listed its seeded skills
+    from recall, then told its operator they were 'not loaded as callable
+    functions'. Skills are procedures in memory; the self-card says so."""
+    dest = tmp_path / "out"
+    compose(_make_spec(name="kestrel"), dest)
+    text = (dest / "bundle" / "knowledge" / "self.md").read_text()
+    assert "Your skills are PROCEDURES seeded into your memory, never tools" in text
+    assert "recall that procedure and follow" in text
+    assert "say which step and ask for that capability" in text
