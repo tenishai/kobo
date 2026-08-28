@@ -1999,6 +1999,62 @@ def create_app(
             ]
         }
 
+    # Recommendation keyword extraction (create-flow polish, 2026-08-28):
+    # small and deliberately dumb -- lowercase words of 4+ letters, minus a
+    # tiny stopword list, deduped in order, capped. The FTS does the real
+    # ranking; this just picks what to ask it about.
+    _RECOMMEND_STOPWORDS = frozenset(
+        "this that with from your yours their they them have has been will "
+        "would should could about into over under never always exactly "
+        "before after every each when what where which whose ranks against "
+        "judging".split()
+    )
+    _RECOMMEND_TERM_CAP = 12
+    _RECOMMEND_RESULTS = 5
+
+    @app.get("/api/skills/recommended")
+    def recommend_skills(  # noqa: B008
+        who: str = "",
+        what: str = "",
+        session: Session = Depends(get_session),
+    ) -> dict:
+        """Top skills for a persona (create-flow polish, 2026-08-28): the
+        persona's own text, keyword-extracted and OR-matched against the
+        skills catalog -- one single-token ranked FTS query per keyword
+        (both engines' query builders are implicit-AND, so OR semantics
+        live here as a merge), scored by how many keywords hit each skill,
+        first-hit rank as the tiebreak."""
+        engine = session.get_bind()
+        _maybe_refresh_catalogs(app, engine)
+        words = re.findall(r"[a-z][a-z0-9-]{3,}", f"{who} {what}".lower())
+        terms = []
+        for word in words:
+            if word not in _RECOMMEND_STOPWORDS and word not in terms:
+                terms.append(word)
+            if len(terms) >= _RECOMMEND_TERM_CAP:
+                break
+        scores: dict[str, list] = {}
+        for term in terms:
+            for rank, entry in enumerate(catalog_search(engine, "skill", term, limit=5)):
+                key = f"{entry.team}/{entry.id}"
+                if key not in scores:
+                    scores[key] = [0, rank, entry]
+                scores[key][0] += 1
+        ranked = sorted(scores.values(), key=lambda v: (-v[0], v[1]))
+        return {
+            "results": [
+                {
+                    "id": e.id,
+                    "name": e.name,
+                    "description": e.description,
+                    "team": e.team,
+                    "tags": e.tags,
+                    "sha": e.sha,
+                }
+                for _, _, e in ranked[:_RECOMMEND_RESULTS]
+            ]
+        }
+
     @app.get("/api/personas/search")
     def search_personas(
         q: str = "", team: str | None = None, session: Session = Depends(get_session)  # noqa: B008

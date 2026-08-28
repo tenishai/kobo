@@ -139,19 +139,10 @@ def test_create_persona_201(client, fake_storage):
         "name": "Aria the Assistant",
         "description": "a calm troubleshooter for billing questions",
         "team": "shared",
-        # Server-derived (Persona builder v2 — the UI sends no tags at
-        # all): the 6 longest non-stopword words out of name + who_they_are
-        # + what_they_do, longest first. See test_personas.py's dedicated
-        # `_derive_tags` tests for the algorithm itself; this just pins that
-        # the route wires it through end to end.
-        "tags": [
-            "troubleshooter",
-            "troubleshoot",
-            "assistant",
-            "questions",
-            "customers",
-            "billing",
-        ],
+        # Create-flow polish (2026-08-28): supplied-only tags -- this
+        # payload sends none, so the entry carries none. The retired
+        # derivation used to invent six from the persona's own text.
+        "tags": [],
         "builtin": False,
     }
     assert "write_bytes:personas-bucket:aria-the-assistant/persona.md" in fake_storage.calls

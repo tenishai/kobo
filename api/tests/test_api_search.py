@@ -48,6 +48,24 @@ SKILL_ENTRIES = [
         "sha": "abc123",
         "builtin": False,
     },
+    {
+        "id": "terraform-check",
+        "name": "Terraform check",
+        "description": "Validates terraform plans against policy",
+        "team": "sre",
+        "tags": ["terraform", "infrastructure"],
+        "sha": "def456",
+        "builtin": False,
+    },
+    {
+        "id": "word-games",
+        "name": "Word games",
+        "description": "Plays word games with the user",
+        "team": "shared",
+        "tags": ["fun"],
+        "sha": "ghi789",
+        "builtin": False,
+    },
 ]
 
 PERSONA_ENTRIES = [
@@ -184,7 +202,7 @@ def test_catalog_teams_route(client):
     response = client.get("/api/catalog/teams")
 
     assert response.status_code == 200
-    assert response.json() == {"teams": ["shared"]}
+    assert response.json() == {"teams": ["shared", "sre"]}
 
 
 def test_refresh_route_returns_counts(client):
@@ -194,7 +212,7 @@ def test_refresh_route_returns_counts(client):
     # HTTP response shape stays the plural skills/personas keys even though
     # ingest_indexes itself now returns kind-keyed counts internally (Task 3
     # fix round 1 extensibility refactor) — the route translates.
-    assert response.json() == {"skills": 1, "personas": 1}
+    assert response.json() == {"skills": 3, "personas": 1}
 
 
 def test_ttl_refresh_runs_once_for_two_immediate_calls(client, fake_storage):
@@ -652,7 +670,7 @@ def test_teams_route_default_fixture_shape(client):
     response = client.get("/api/teams")
 
     assert response.status_code == 200
-    assert response.json() == {"teams": ["shared"], "default": "shared"}
+    assert response.json() == {"teams": ["shared", "sre"], "default": "shared"}
 
 
 def test_teams_route_reflects_owner_derived_teams_sorted(config, tmp_path):
@@ -727,7 +745,7 @@ def test_teams_route_excludes_persona_only_teams(config, tmp_path):
     response = client.get("/api/teams")
 
     assert response.status_code == 200
-    assert response.json() == {"teams": ["shared"], "default": "shared"}
+    assert response.json() == {"teams": ["shared", "sre"], "default": "shared"}
 
 
 def test_teams_route_never_ingested_still_returns_default(config, tmp_path):
@@ -788,3 +806,31 @@ def test_search_skills_response_includes_owner_derived_team(config, tmp_path):
             }
         ]
     }
+
+
+
+# --- skills recommendation (create-flow polish, 2026-08-28) ---------------------
+
+
+def test_recommend_skills_ranks_by_keyword_hits(client):
+    """A persona about terraform review recommends BOTH matching skills --
+    the terraform skill and the review skill -- and never the word-games
+    one its text shares no keyword with."""
+    response = client.get(
+        "/api/skills/recommended",
+        params={
+            "who": "an infrastructure change reviewer",
+            "what": "You review terraform plans and pull requests before anything merges.",
+        },
+    )
+    assert response.status_code == 200
+    ids = [r["id"] for r in response.json()["results"]]
+    assert "terraform-check" in ids
+    assert "code-review" in ids
+    assert "word-games" not in ids
+
+
+def test_recommend_skills_empty_persona_recommends_nothing(client):
+    response = client.get("/api/skills/recommended", params={"who": "", "what": ""})
+    assert response.status_code == 200
+    assert response.json() == {"results": []}

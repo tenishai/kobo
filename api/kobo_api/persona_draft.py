@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 
-from kobo_api.personas import PersonaError, PersonaFields, _derive_tags, persona_id
+from kobo_api.personas import PersonaError, PersonaFields, persona_id
 from kobo_api.purpose_tags import normalize_tags
 
 # _NAME_MAX/_WHO_MAX mirror PersonaFields' real Field bounds (kobo_api.
@@ -26,16 +26,16 @@ from kobo_api.purpose_tags import normalize_tags
 # what_they_do.
 #
 # _WHAT_MAX is deliberately NOT mirrored to PersonaFields.what_they_do's own
-# bound any more (upload/limits addendum raised that to 49152, to accept
-# long operator-authored text typed/pasted/uploaded straight into the v2
-# preview). This constant governs a different question: how much of the
-# GENERATOR's own draft output gets accepted verbatim before falling back
-# to the job-derived text (`_fallback_what`) — the drafted what_they_do is
-# meant to stay a concise, model-written paragraph, not grow to the room's
-# full persona.md ceiling. Kept at its original value on purpose.
+# bound (49152). This constant governs how much of the GENERATOR's own
+# draft output gets accepted verbatim before falling back to the
+# job-derived text (`_fallback_what`). Create-flow polish (2026-08-28):
+# the draft is now a FULL working brief (the prompt asks for 40-120 lines
+# of handbook-depth markdown), so the bound sits at 12000 chars — room for
+# every reasonable draft, still comfortably under the render ceiling that
+# create_persona enforces for real.
 _NAME_MAX = 60
 _WHO_MAX = 200
-_WHAT_MAX = 500
+_WHAT_MAX = 12000
 
 # purpose_tags (persona-metadata plan, Task 2): the draft's own cap, narrower
 # than the create route's MAX_CREATE_TAGS (kobo_api.purpose_tags) — a
@@ -159,26 +159,13 @@ def _fallback_what(job: str) -> str:
 
 
 def _fallback_tags(name: str, who: str, what: str) -> list[str]:
-    """Fallback tier for purpose_tags (Persona v3 / persona-metadata plan):
-    "the persona's own tags" — the SAME server-side derivation
-    `create_persona` already runs for every persona
-    (`kobo_api.personas._derive_tags`), applied to THIS draft's own
-    finalized `name`/`who_they_are`/`what_they_do` (whichever tier those
-    themselves landed on — model or job-derived), never a second, separate
-    guess from the raw job text. Normalized (`kobo_api.purpose_tags.
-    normalize_tags`, defense-in-depth — `_derive_tags` already hands back
-    lowercase, deduped words) and capped at `_DRAFT_TAG_CAP`.
-
-    `name`/`who`/`what` are assumed already PersonaFields-valid (and `name`
-    already `persona_id`-valid) — true of every value `finalize_draft`
-    could hand this function, whether extracted-and-validated from the
-    model or produced by `_fallback_name`/`_fallback_who`/`_fallback_what`
-    themselves, so constructing `PersonaFields` and slugifying `name` here
-    never raises.
-    """
-    fields = PersonaFields(name=name, who_they_are=who, what_they_do=what)
-    slug = persona_id(name)
-    return normalize_tags(_derive_tags(fields, slug))[:_DRAFT_TAG_CAP]
+    """Fallback tier for purpose_tags: EMPTY (create-flow polish,
+    2026-08-28). The retired tier noun-derived tags from the persona text
+    and produced entries like "embarrassment" at scale — an empty tag list
+    is honest; a derived one lied. Tags come from the model's draft or the
+    human's hand, or not at all. The arguments stay so every call site
+    reads unchanged."""
+    return []
 
 
 def _extract_field(

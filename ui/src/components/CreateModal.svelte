@@ -96,6 +96,7 @@
     orgStatusQuery,
     personasSearchQuery,
     requestGroupMutation,
+    recommendedSkillsQuery,
     skillsSearchQuery,
     teamsQuery,
   } from "../lib/queries";
@@ -358,6 +359,15 @@
     team: null,
   });
   const skills = createQuery(() => (skillsSearchQuery(skillSearchParams.q, skillSearchParams.team)));
+
+  // Recommended-for-this-persona strip (create-flow polish, 2026-08-28):
+  // fed by the committed persona's own description and tags -- the same
+  // meta the naming station reads -- and disabled until one is committed.
+  const recommendedSkills = createQuery(() =>
+    (recommendedSkillsQuery(
+      selectedPersonaMeta?.description ?? "",
+      (selectedPersonaMeta?.purposeTags ?? []).join(" "),
+    )));
 
   const commitSkillSearch = debounced(
     (value: { q: string; team: string | null }) => {
@@ -946,6 +956,30 @@
             </div>
           {/if}
 
+          {#if recommendedSkills.data && recommendedSkills.data.length > 0}
+            <div class="create-form__field">
+              <span class="create-form__label">Recommended for this persona</span>
+              <div class="skill-list skill-list--recommended">
+                {#each recommendedSkills.data as skill (skillKey(skill.id, skill.team))}
+                  <label class="skill-item">
+                    <input
+                      type="checkbox"
+                      checked={selectedSkills.has(skillKey(skill.id, skill.team))}
+                      onchange={() => toggleSkill(skill)}
+                    />
+                    <span class="skill-item__body">
+                      <span class="skill-item__head">
+                        <span class="skill-item__name">{skill.name}</span>
+                        <span class="catalog-badge">{skill.team}</span>
+                      </span>
+                      <span class="skill-item__description">{skill.description}</span>
+                    </span>
+                  </label>
+                {/each}
+              </div>
+            </div>
+          {/if}
+
           <div class="create-form__field">
             <label class="create-form__label" for="skill-search">Search skills</label>
             <div class="catalog-search__row">
@@ -975,7 +1009,11 @@
             </div>
           </div>
 
-          {#if skills.isPending}
+          {#if skillQ.trim().length === 0}
+            <!-- Search-first (create-flow polish): no browse wall. The
+                 recommended strip above carries the defaults; everything
+                 else is one search away. -->
+          {:else if skills.isPending}
             <Skeleton rows={2} />
           {:else if skills.isError}
             <ErrorState
@@ -1005,15 +1043,7 @@
                 </label>
               {/each}
             </div>
-            {#if skillsShowMoreCount > 0}
-              <button
-                type="button"
-                class="skills-show-more"
-                onclick={() => (skillShowAll = true)}
-              >
-                Show {skillsShowMoreCount} more
-              </button>
-            {/if}
+
           {/if}
         {/if}
       </fieldset>

@@ -1124,6 +1124,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         what_they_do: str,
         rules: list[str] | None = None,
         team: str = "shared",
+        purpose_tags: list[str] | None = None,
     ) -> dict:
         """Create a brand-new persona in the room's catalog -- the same
         create the room's own PersonaBuilder drives. Before creating,
@@ -1158,6 +1159,7 @@ def register(mcp: FastMCP, app: Any) -> None:
                 what_they_do=what_they_do,
                 rules=rules or [],
                 team=team,
+                purpose_tags=purpose_tags or [],
             )
         except (TypeError, ValidationError) as exc:
             raise ToolError(f"that request wasn't quite right: {exc}") from exc

@@ -949,6 +949,7 @@ describe("catalog search / teams / persona builder / org status client", () => {
       who_they_are: "an unflappable network detective who's seen every outage twice",
       what_they_do: "helps with things",
       rules: ["no secrets"],
+      purpose_tags: [],
     };
     const created = {
       id: "helper",
@@ -984,6 +985,7 @@ describe("catalog search / teams / persona builder / org status client", () => {
         who_they_are: "a calm assistant",
         what_they_do: "helps",
         rules: [],
+      purpose_tags: [],
       }),
     ).rejects.toThrow("a persona with that name already exists");
   });
@@ -1002,6 +1004,7 @@ describe("catalog search / teams / persona builder / org status client", () => {
         who_they_are: "a calm assistant",
         what_they_do: "helps",
         rules: [],
+      purpose_tags: [],
       }),
     ).rejects.toThrow("catalogs aren't set up yet");
   });

@@ -416,6 +416,7 @@
       who_they_are: whoTheyAre,
       what_they_do: whatTheyDo,
       rules,
+      purpose_tags: draftedPurposeTags,
     };
     mutation.mutate(body, {
       onSuccess: (created) => {

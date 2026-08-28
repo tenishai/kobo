@@ -22,7 +22,6 @@ from kobo_api.personas import (
     PersonaError,
     PersonaExists,
     PersonaFields,
-    _derive_tags,
     create_persona,
     persona_id,
     render_persona,
@@ -229,80 +228,16 @@ def test_persona_fields_no_longer_accepts_tags():
 # --- tag derivation (Persona builder v2: auto-derived, field hidden) -------
 
 
-def test_derive_tags_stopwords_longest_first_cap_six_and_dedup():
-    """The addendum's own example phrase for Who-they-are, run through the
-    real derivation: stopwords (including contraction remnants like "who's"
-    splitting into "who" + "s") are dropped, repeated words ("network" and
-    "detective" each appear twice across name/who/what) are de-duplicated
-    to one entry, and the result is the 6 longest survivors, ties broken by
-    first occurrence."""
-    fields = PersonaFields(
-        name="Network Detective",
-        who_they_are="an unflappable network detective who's seen every outage twice",
-        what_they_do="Investigate incidents and write clear postmortems for the team.",
-    )
-
-    tags = _derive_tags(fields, "network-detective")
-
-    assert tags == [
-        "unflappable",
-        "investigate",
-        "postmortems",
-        "detective",
-        "incidents",
-        "network",
-    ]
-
-
-def test_derive_tags_falls_back_to_persona_slug_when_everything_is_a_stopword():
-    fields = PersonaFields(name="The Of And", who_they_are="a an the", what_they_do="to of in")
-
-    tags = _derive_tags(fields, "the-of-and")
-
-    assert tags == ["the-of-and"]
-
-
-def test_derive_tags_skips_words_that_cannot_themselves_be_valid_tags():
-    """A word starting with a digit can't pass the same tag shape rule
-    (`_TAG_RE`) client-supplied tags always had to — it's dropped from the
-    candidate pool rather than ever reaching the persona's tags."""
-    fields = PersonaFields(
-        name="Visualist",
-        who_they_are="a 3d specialist for architecture visuals",
-        what_they_do="Produce renders and walkthroughs for client review.",
-    )
-
-    tags = _derive_tags(fields, "fallback-slug")
-
-    assert "3d" not in tags
-    assert "specialist" in tags
-
-
-def test_derive_tags_never_empty():
-    fields = PersonaFields(name="X", who_they_are="of the a", what_they_do="to in on")
-
-    tags = _derive_tags(fields, "x")
-
-    assert len(tags) >= 1
-
-
-# --- create_persona -------------------------------------------------------
-
-
 def test_create_persona_writes_body_and_index_with_exact_keys_and_metadata():
     storage = FakeStorage()
     fields = _fields()
 
     entry = create_persona(storage, bucket="personas-bucket", fields=fields, team="cs-team")
 
-    expected_tags = [
-        "troubleshooter",
-        "assistant",
-        "questions",
-        "customers",
-        "problems",
-        "billing",
-    ]
+    # Create-flow polish (2026-08-28): tags are supplied-only -- _fields()
+    # passes none, so the entry carries none. The retired derivation used
+    # to invent six from the persona's own nouns.
+    expected_tags = []
 
     assert entry.kind == "persona"
     assert entry.id == "aria-the-assistant"

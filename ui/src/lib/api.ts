@@ -112,6 +112,9 @@ export type PersonaForm = {
   who_they_are: string;
   what_they_do: string;
   rules: string[];
+  /** Create-flow polish (2026-08-28): tags persist from the draft or the
+   * hand -- the server no longer derives any. */
+  purpose_tags: string[];
 };
 
 /** The Persona v3 "describe the job, approve the soul" draft step's result
@@ -1494,6 +1497,18 @@ export interface BuildLog {
 
 /** The tail of the agent repo's most recent build log (build-log viewer,
  * 2026-08-27 feedback). Owner-or-operator on the server. */
+/** Top skills for a persona (create-flow polish, 2026-08-28): the server
+ * keyword-matches the persona's own text against the skills catalog. */
+export async function fetchRecommendedSkills(
+  who: string,
+  what: string,
+): Promise<CatalogEntry[]> {
+  const params = new URLSearchParams({ who, what });
+  const res = await fetch(`/api/skills/recommended?${params}`);
+  const data = await parse<{ results: CatalogEntry[] }>(res);
+  return data.results;
+}
+
 export async function fetchBuildLog(name: string): Promise<BuildLog> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/build-log`);
   return parse<BuildLog>(res);

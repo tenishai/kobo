@@ -1147,6 +1147,7 @@ describe("createPersonaMutation", () => {
       who_they_are: "an unflappable network detective who's seen every outage twice",
       what_they_do: "helps with things",
       rules: [],
+      purpose_tags: [],
     };
     const created = {
       id: "helper",

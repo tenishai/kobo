@@ -161,8 +161,8 @@ def test_fallback_what_is_job_verbatim():
 
 
 def test_fallback_what_clamped_to_persona_fields_bound():
-    long_job = "a" * 600
-    assert len(_fallback_what(long_job)) <= 500
+    long_job = "a" * 12600
+    assert len(_fallback_what(long_job)) <= 12000
 
 
 # --- finalize_draft: all-valid passthrough ------------------------------------
@@ -323,7 +323,7 @@ def test_finalize_draft_bad_what_they_do_falls_back_alone():
     raw = {
         "name": "billing-buddy",
         "who_they_are": "a calm troubleshooter for billing questions",
-        "what_they_do": "x" * 501,  # over PersonaFields.what_they_do's 500-char bound
+        "what_they_do": "x" * 12001,  # over the draft-acceptance bound (12000)
     }
 
     result = finalize_draft(raw, job=JOB)
@@ -482,28 +482,6 @@ def test_finalize_draft_purpose_tags_fallback_uses_finalized_fields_not_job():
 
 
 # --- _fallback_tags -------------------------------------------------------------
-
-
-def test_fallback_tags_derives_from_persona_own_fields_and_caps_at_five():
-    # Manually traced against personas._derive_tags' own algorithm (every
-    # lowercase word from name+who+what, minus stopwords, deduped,
-    # longest-first, stable on ties): "a"/"for" are stopwords; the
-    # remaining words rank troubleshooter(14), questions/customers(9,
-    # first-seen order), billing/resolve/quickly(7), issues(6),
-    # buddy/helps(5), calm(4) — capped at 5 here (the draft's own cap,
-    # narrower than _derive_tags' own cap of 6).
-    tags = _fallback_tags(NAME, WHO, WHAT)
-
-    assert tags == ["troubleshooter", "questions", "customers", "billing", "resolve"]
-
-
-def test_fallback_tags_matches_derive_tags_normalized_and_capped():
-    from kobo_api.personas import _derive_tags
-
-    fields = PersonaFields(name=NAME, who_they_are=WHO, what_they_do=WHAT)
-    expected = normalize_tags(_derive_tags(fields, persona_id(NAME)))[:5]
-
-    assert _fallback_tags(NAME, WHO, WHAT) == expected
 
 
 def test_fallback_tags_never_exceeds_five():
@@ -846,3 +824,10 @@ def test_finalize_distill_all_non_string_purpose_tags_falls_back_to_empty():
     result = finalize_distill(raw, body=DISTILL_BODY)
 
     assert result["purpose_tags"] == []
+
+
+def test_fallback_tags_are_honestly_empty():
+    """Create-flow polish (2026-08-28): the noun-derivation tier is retired
+    -- it produced tags like "embarrassment" at scale. No model tags and no
+    human tags means NO tags."""
+    assert _fallback_tags(NAME, WHO, WHAT) == []

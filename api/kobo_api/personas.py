@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, field_validator
 from kobo_api.catalog import _parse_persona_file
 from kobo_api.clients import StorageClient, StorageNotFound
 from kobo_api.search import CatalogEntry
+from kobo_api.purpose_tags import normalize_tags
 
 # A persona id: lowercase, starts with a letter, up to 40 chars of
 # letters/digits/hyphens after that (trailing hyphens are fine — see
@@ -82,11 +83,13 @@ class PersonaExists(Exception):
 class PersonaFields(BaseModel):
     """The Persona builder v2 form (addendum): four fields, down from
     seven. Role/Purpose/Tone/Tone-note/Boundaries/Tags are gone — Rules
-    absorbs Boundaries' job (a short list of always/never one-liners), and
-    tags are no longer client-supplied at all (see `_derive_tags`, called
-    from `create_persona`, never from here — this model has no `tags`
-    field, so there's nothing for a caller to smuggle a client-authored
-    value through as)."""
+    absorbs Boundaries' job (a short list of always/never one-liners).
+
+    purpose_tags returned 2026-08-28 (create-flow polish), DELIBERATE this
+    time: noun-derivation (`_derive_tags`, retired) produced tags like
+    "embarrassment" at scale, so tags now come only from the model's draft
+    or the human's hand — normalized and capped at create, empty when
+    neither supplied. An empty tag list is honest; a derived one lied."""
 
     name: str = Field(min_length=1, max_length=60)
     who_they_are: str = Field(min_length=1, max_length=200)
@@ -97,6 +100,9 @@ class PersonaFields(BaseModel):
     # _check_rendered_size) — this Field bound just keeps a single field
     # from being unbounded in isolation.
     what_they_do: str = Field(min_length=1, max_length=49152)
+    # Create-flow polish (2026-08-28): supplied by the draft flow or the
+    # human, never derived. Normalized/capped in create_persona.
+    purpose_tags: list[str] = Field(default_factory=list, max_length=10)
     # 0-150 optional one-liners ("things they always or never do") — Rules
     # is explicitly optional in the brief, unlike who_they_are/what_they_do.
     # Same story as what_they_do above: 150 items is a sane wall, not the
@@ -194,6 +200,11 @@ def render_persona(fields: PersonaFields) -> str:
 # encoding). Enforced in create_persona against the actual rendered body,
 # never against a per-field lookalike (PersonaFields' own what_they_do/
 # rules bounds above are generous walls, not this real gate).
+# Tag cap at create (create-flow polish, 2026-08-28): supplied tags only,
+# normalized, at most this many kept — mirrors the create route's own cap
+# posture rather than trusting the wire shape.
+_TAG_CAP = 8
+
 _MAX_RENDERED_LINES = 200
 _MAX_RENDERED_BYTES = 49152
 
@@ -215,36 +226,6 @@ def _check_rendered_size(body: str) -> None:
         raise PersonaError(
             f"persona renders to {byte_count} bytes; the limit is {_MAX_RENDERED_BYTES}"
         )
-
-
-def _derive_tags(fields: PersonaFields, slug: str) -> list[str]:
-    """Auto-derive 1-6 persona tags server-side (Persona builder v2
-    addendum: tags are no longer a form field at all — the UI sends none).
-
-    Every lowercase alphanumeric word out of Name + Who-they-are +
-    What-they-do (`_WORD_RE`) is a candidate, minus `_STOPWORDS`, minus
-    anything that couldn't itself pass as a tag (`_TAG_RE` — must start
-    with a letter, max 24 chars, the exact shape client-supplied tags were
-    always required to have back when there was a tags field at all),
-    de-duplicated (first occurrence wins), then sorted longest-word-first —
-    `sorted(..., reverse=True)` is still a *stable* sort, so same-length
-    words keep that first-occurrence order rather than reversing too — and
-    capped at 6.
-
-    If NONE of that survives (every word in the source text was a
-    stopword), the persona's own slug is the fallback tag, truncated to the
-    same 24-char cap: `slug` is already lowercase alphanumeric-or-hyphen and
-    always starts with a letter (`PERSONA_ID_RE`), so `slug[:24]` is always
-    `_TAG_RE`-valid — guaranteeing at least one tag either way.
-    """
-    text = f"{fields.name} {fields.who_they_are} {fields.what_they_do}".lower()
-    seen: dict[str, None] = {}
-    for word in _WORD_RE.findall(text):
-        if word in _STOPWORDS or not _TAG_RE.fullmatch(word):
-            continue
-        seen.setdefault(word, None)
-    ranked = sorted(seen, key=len, reverse=True)
-    return ranked[:6] if ranked else [slug[:24]]
 
 
 def _read_index(storage: StorageClient, bucket: str, prefix: str) -> list[dict]:
@@ -338,9 +319,9 @@ def create_persona(
     that name's rendered persona.md exceeds the room's real ceiling (200
     lines or 49152 bytes, checked by `_check_rendered_size` against the
     ACTUAL rendered body — never a per-field lookalike), or `PersonaExists`
-    if the id is already in the index. Tags are derived here
-    (`_derive_tags`), not read off `fields` — Persona builder v2 has no
-    client-supplied tags field at all.
+    if the id is already in the index. Tags are `fields.purpose_tags`,
+    normalized and capped — never derived (create-flow polish, 2026-08-28;
+    `_derive_tags` is retired).
     """
     id_ = persona_id(fields.name)
 
@@ -358,7 +339,7 @@ def create_persona(
         content_type="text/markdown",
     )
 
-    tags = _derive_tags(fields, id_)
+    tags = normalize_tags(fields.purpose_tags)[:_TAG_CAP]
     index.append(
         {
             "id": id_,

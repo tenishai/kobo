@@ -144,6 +144,7 @@ import {
   fetchGroupRequests,
   fetchGroups,
   fetchModels,
+  fetchRecommendedSkills,
   fetchNameSuggestions,
   fetchOrgStatus,
   fetchRequestable,
@@ -287,6 +288,18 @@ export function skillsSearchQuery(q: string, team: string | null) {
     queryKey: ["catalog", "skills", { q, team }] as const,
     queryFn: () => searchSkills(q, team),
     staleTime: CATALOG_SEARCH_STALE_MS,
+  });
+}
+
+/** Recommended skills for a committed persona (create-flow polish,
+ * 2026-08-28). Key carries the persona text so a different persona pick
+ * refetches; disabled until there is any text to match on. */
+export function recommendedSkillsQuery(who: string, what: string) {
+  return queryOptions({
+    queryKey: ["catalog", "skills", "recommended", { who, what }] as const,
+    queryFn: () => fetchRecommendedSkills(who, what),
+    enabled: who.trim().length > 0 || what.trim().length > 0,
+    staleTime: 60_000,
   });
 }
 
