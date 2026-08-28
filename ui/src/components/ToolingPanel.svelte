@@ -68,12 +68,12 @@
   // agent changes, so this prop is fixed for the component's entire
   // lifetime.
   // svelte-ignore state_referenced_locally
-  const tooling = createQuery(toolingQuery(agentName));
+  const tooling = createQuery(() => (toolingQuery(agentName)));
   // svelte-ignore state_referenced_locally
-  const uploadMutation = createMutation(uploadToolingMutation(queryClient, agentName));
+  const uploadMutation = createMutation(() => (uploadToolingMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
   // svelte-ignore state_referenced_locally
-  const deleteMutation = createMutation(deleteToolingMutation(queryClient, agentName));
+  const deleteMutation = createMutation(() => (deleteToolingMutation(queryClient, agentName)));
 
   // --- Enforcement banner (Task 4: card probe + banner graduation) --------
   // (see the module doc comment above for the three-state precedence)
@@ -85,7 +85,7 @@
     "Stored and delivered, not yet enforced. Enforcement arrives with the runtime's next upgrade.";
 
   const bannerView = $derived.by((): BannerView => {
-    const enforcement = $tooling.data?.enforcement;
+    const enforcement = tooling.data?.enforcement;
     if (enforcement?.locked) {
       return {
         tone: "fail",
@@ -103,9 +103,8 @@
 
   const DELIVERED_CLEAR_MS = 5000;
 
-  const deliverySha = writable<string | null>(null);
-  const deliveryOptions = derived(deliverySha, ($sha) => deliveryQuery(agentName, $sha));
-  const delivery = createQuery(deliveryOptions);
+  let deliverySha = $state<string | null>(null);
+  const delivery = createQuery(() => (deliveryQuery(agentName, deliverySha)));
 
   let clearTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -114,15 +113,15 @@
       clearTimeout(clearTimer);
       clearTimer = undefined;
     }
-    deliverySha.set(sha);
+    deliverySha = sha;
   }
 
   $effect(() => {
-    if ($delivery.data?.state !== "delivered") {
+    if (delivery.data?.state !== "delivered") {
       return;
     }
     clearTimer = setTimeout(() => {
-      deliverySha.set(null);
+      deliverySha = null;
       clearTimer = undefined;
     }, DELIVERED_CLEAR_MS);
     return () => {
@@ -136,13 +135,13 @@
   type DeliveryView = { tone: "pending" | "ok" | "fail"; text: string };
 
   const deliveryView = $derived.by((): DeliveryView => {
-    if ($delivery.isError) {
+    if (delivery.isError) {
       return {
         tone: "fail",
-        text: errorMessage($delivery.error, "Couldn't check on your changes."),
+        text: errorMessage(delivery.error, "Couldn't check on your changes."),
       };
     }
-    const data = $delivery.data;
+    const data = delivery.data;
     if (data === undefined) {
       return { tone: "pending", text: "Delivering changes…" };
     }
@@ -195,7 +194,7 @@
   });
 
   const canUpload = $derived.by((): boolean => {
-    if ($uploadMutation.isPending) {
+    if (uploadMutation.isPending) {
       return false;
     }
     if (uploadFilename.length === 0 || uploadFilenameError !== null) {
@@ -242,7 +241,7 @@
       return;
     }
     uploadError = null;
-    $uploadMutation.mutate(
+    uploadMutation.mutate(
       { filename: uploadFilename, content: uploadContent },
       {
         onSuccess: (result) => {
@@ -265,14 +264,14 @@
   let removeError = $state<string | null>(null);
 
   function handleRemove(file: ToolingFile): void {
-    if ($deleteMutation.isPending) {
+    if (deleteMutation.isPending) {
       return;
     }
     if (!window.confirm(`Remove ${file.name}? This can't be undone.`)) {
       return;
     }
     removeError = null;
-    $deleteMutation.mutate(file.name, {
+    deleteMutation.mutate(file.name, {
       onSuccess: (result) => {
         beginDelivery(result.sha);
       },
@@ -380,25 +379,25 @@
     {/if}
 
     <button type="submit" class="tooling-form__submit" disabled={frozen || !canUpload}>
-      {$uploadMutation.isPending ? "Uploading…" : "Upload"}
+      {uploadMutation.isPending ? "Uploading…" : "Upload"}
     </button>
   </form>
 
-  {#if $tooling.isPending}
+  {#if tooling.isPending}
     <Skeleton rows={3} />
-  {:else if $tooling.isError}
+  {:else if tooling.isError}
     <ErrorState
-      message={errorMessage($tooling.error, "Couldn't load this agent's tooling files.")}
-      onretry={() => $tooling.refetch()}
+      message={errorMessage(tooling.error, "Couldn't load this agent's tooling files.")}
+      onretry={() => tooling.refetch()}
     />
-  {:else if $tooling.data.files.length === 0}
+  {:else if tooling.data.files.length === 0}
     <EmptyState message="Nothing here yet. Upload a file to govern this agent." />
   {:else}
     {#if removeError}
       <p class="tooling-panel__remove-error" role="alert">{removeError}</p>
     {/if}
     <ul class="tooling-panel__list">
-      {#each $tooling.data.files as file (file.name)}
+      {#each tooling.data.files as file (file.name)}
         <li class="tooling-row">
           <span class="tooling-row__body">
             <span class="tooling-row__name">{file.name}</span>
@@ -421,7 +420,7 @@
           <button
             type="button"
             class="tooling-row__remove"
-            disabled={frozen || $deleteMutation.isPending}
+            disabled={frozen || deleteMutation.isPending}
             aria-label={`Remove ${file.name}`}
             onclick={() => handleRemove(file)}
           >
@@ -432,7 +431,7 @@
     </ul>
   {/if}
 
-  {#if $deliverySha !== null}
+  {#if deliverySha !== null}
     <div
       class="tooling-panel__delivery tooling-panel__delivery--{deliveryView.tone}"
       role="status"

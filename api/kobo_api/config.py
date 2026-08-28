@@ -335,6 +335,12 @@ class Config(BaseModel):
     pr_app_id: str = ""
     pr_app_installation_id: str = ""
     pr_app_private_key_path: Path | None = None
+    # The room's OWN in-cluster base URL, as deployed AGENTS reach it -- the
+    # PR broker's client half (daedalus's github sidecar) calls
+    # {broker_url}/broker/... with the agent's colleague JWT. Org-settable
+    # (an infra coordinate like cabal_url); empty = the composer emits no
+    # github block at all.
+    broker_url: str = ""
     # The ACL axis (access-control arc, Task B1) — distinct from `team` (the
     # skills-catalog-derived capability axis; kobo_api.groups' module
     # docstring covers the fail-closed contract this feeds). Each entry's

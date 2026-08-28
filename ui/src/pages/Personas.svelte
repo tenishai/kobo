@@ -36,22 +36,21 @@
   } from "../lib/queries";
   import { toast } from "../lib/toast.svelte";
 
-  const active = createQuery(personasSearchQuery("", null));
+  const active = createQuery(() => (personasSearchQuery("", null)));
 
-  const showArchived = writable(false);
-  const archivedOptions = derived(showArchived, ($shown) => archivedPersonasQuery($shown));
-  const archived = createQuery(archivedOptions);
+  let showArchived = $state(false);
+  const archived = createQuery(() => (archivedPersonasQuery(showArchived)));
 
   function toggleArchived(): void {
-    showArchived.update((value) => !value);
+    showArchived = !showArchived;
   }
 
   const queryClient = useQueryClient();
-  const archiveMutation = createMutation(archivePersonaMutation(queryClient));
-  const unarchiveMutation = createMutation(unarchivePersonaMutation(queryClient));
+  const archiveMutation = createMutation(() => (archivePersonaMutation(queryClient)));
+  const unarchiveMutation = createMutation(() => (unarchivePersonaMutation(queryClient)));
 
   function handleArchive(id: string): void {
-    $archiveMutation.mutate(id, {
+    archiveMutation.mutate(id, {
       onError: (error: unknown) => {
         toast.error(
           "Couldn't archive that persona",
@@ -62,7 +61,7 @@
   }
 
   function handleUnarchive(id: string): void {
-    $unarchiveMutation.mutate(id, {
+    unarchiveMutation.mutate(id, {
       onError: (error: unknown) => {
         toast.error(
           "Couldn't unarchive that persona",
@@ -80,44 +79,44 @@
       type="button"
       class="personas-page__toggle"
       onclick={toggleArchived}
-      aria-expanded={$showArchived}
+      aria-expanded={showArchived}
     >
-      {$showArchived ? "Hide archived" : "Show archived"}
+      {showArchived ? "Hide archived" : "Show archived"}
     </button>
   </div>
 
-  {#if $active.isPending}
+  {#if active.isPending}
     <Skeleton rows={3} />
-  {:else if $active.isError}
+  {:else if active.isError}
     <ErrorState
-      message={errorMessage($active.error, "Couldn't load personas.")}
-      onretry={() => $active.refetch()}
+      message={errorMessage(active.error, "Couldn't load personas.")}
+      onretry={() => active.refetch()}
     />
-  {:else if $active.data.length === 0}
+  {:else if active.data.length === 0}
     <EmptyState message="No personas yet." />
   {:else}
     <ul class="persona-list">
-      {#each $active.data as persona (persona.id)}
+      {#each active.data as persona (persona.id)}
         {@render personaCard(persona, "archive")}
       {/each}
     </ul>
   {/if}
 
-  {#if $showArchived}
+  {#if showArchived}
     <div class="personas-page__archived">
       <h2 class="personas-page__archived-title">Archived</h2>
-      {#if $archived.isPending}
+      {#if archived.isPending}
         <Skeleton rows={2} />
-      {:else if $archived.isError}
+      {:else if archived.isError}
         <ErrorState
-          message={errorMessage($archived.error, "Couldn't load archived personas.")}
-          onretry={() => $archived.refetch()}
+          message={errorMessage(archived.error, "Couldn't load archived personas.")}
+          onretry={() => archived.refetch()}
         />
-      {:else if $archived.data.length === 0}
+      {:else if archived.data.length === 0}
         <EmptyState message="No archived personas." />
       {:else}
         <ul class="persona-list">
-          {#each $archived.data as persona (persona.id)}
+          {#each archived.data as persona (persona.id)}
             {@render personaCard(persona, "unarchive")}
           {/each}
         </ul>
@@ -147,7 +146,7 @@
       <button
         type="button"
         class="persona-card__action"
-        disabled={$archiveMutation.isPending}
+        disabled={archiveMutation.isPending}
         onclick={() => handleArchive(persona.id)}
       >
         Archive
@@ -156,7 +155,7 @@
       <button
         type="button"
         class="persona-card__action"
-        disabled={$unarchiveMutation.isPending}
+        disabled={unarchiveMutation.isPending}
         onclick={() => handleUnarchive(persona.id)}
       >
         Unarchive

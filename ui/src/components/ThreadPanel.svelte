@@ -72,21 +72,21 @@
   let inputEl: HTMLTextAreaElement | undefined = $state();
 
   // svelte-ignore state_referenced_locally
-  const startMutation = createMutation(createThreadMutation());
+  const startMutation = createMutation(() => (createThreadMutation()));
   // svelte-ignore state_referenced_locally
-  const addParticipantMutation = createMutation(addThreadParticipantMutation());
+  const addParticipantMutation = createMutation(() => (addThreadParticipantMutation()));
   // svelte-ignore state_referenced_locally
-  const turnMutation = createMutation(postThreadTurnMutation());
+  const turnMutation = createMutation(() => (postThreadTurnMutation()));
   // svelte-ignore state_referenced_locally
-  const agents = createQuery(agentsQuery());
+  const agents = createQuery(() => (agentsQuery()));
 
   const canSend = $derived(
-    thread !== null && input.trim().length > 0 && !$turnMutation.isPending,
+    thread !== null && input.trim().length > 0 && !turnMutation.isPending,
   );
 
   const eligibleAgents = $derived.by(() => {
     const seated = new Set(thread?.participants ?? []);
-    return ($agents.data?.agents ?? []).filter(
+    return (agents.data?.agents ?? []).filter(
       (agent) => agent.status === "ready" && !seated.has(agent.name),
     );
   });
@@ -127,11 +127,11 @@
   }
 
   function handleStart(): void {
-    if ($startMutation.isPending) {
+    if (startMutation.isPending) {
       return;
     }
     error = null;
-    $startMutation.mutate(agentName, {
+    startMutation.mutate(agentName, {
       onSuccess: (result) => {
         thread = result;
       },
@@ -143,12 +143,12 @@
 
   function handleAddParticipant(event: SubmitEvent): void {
     event.preventDefault();
-    if (thread === null || selectedParticipant === null || $addParticipantMutation.isPending) {
+    if (thread === null || selectedParticipant === null || addParticipantMutation.isPending) {
       return;
     }
     const threadId = thread.id;
     const agent = selectedParticipant;
-    $addParticipantMutation.mutate(
+    addParticipantMutation.mutate(
       { threadId, agent },
       {
         onSuccess: (result) => {
@@ -173,7 +173,7 @@
     }
     const threadId = thread.id;
     error = null;
-    $turnMutation.mutate(
+    turnMutation.mutate(
       { threadId, messages: toChatMessages(entries) },
       {
         onSuccess: (result) => {
@@ -208,7 +208,7 @@
 
   function handleSend(): void {
     const text = input.trim();
-    if (text.length === 0 || $turnMutation.isPending || thread === null) {
+    if (text.length === 0 || turnMutation.isPending || thread === null) {
       return;
     }
     input = "";
@@ -218,7 +218,7 @@
   }
 
   function handleRetry(): void {
-    if ($turnMutation.isPending) {
+    if (turnMutation.isPending) {
       return;
     }
     sendTranscript(transcript);
@@ -246,10 +246,10 @@
     <button
       type="button"
       class="thread-panel__start"
-      disabled={frozen || $startMutation.isPending}
+      disabled={frozen || startMutation.isPending}
       onclick={handleStart}
     >
-      {$startMutation.isPending ? "Starting…" : "Start a shared thread"}
+      {startMutation.isPending ? "Starting…" : "Start a shared thread"}
     </button>
   {:else}
     <ul class="thread-panel__participants" aria-label="Thread participants">
@@ -260,7 +260,7 @@
 
     <form class="thread-panel__add-form" onsubmit={handleAddParticipant}>
       <label class="thread-panel__add-label" for="thread-add-participant">Add participant</label>
-      {#if $agents.isPending}
+      {#if agents.isPending}
         <p class="thread-panel__hint">Loading agents…</p>
       {:else if eligibleAgents.length === 0}
         <p class="thread-panel__hint">No other agents to add right now.</p>
@@ -279,9 +279,9 @@
           <button
             type="submit"
             class="thread-panel__add-submit"
-            disabled={frozen || selectedParticipant === null || $addParticipantMutation.isPending}
+            disabled={frozen || selectedParticipant === null || addParticipantMutation.isPending}
           >
-            {$addParticipantMutation.isPending ? "Adding…" : "Add"}
+            {addParticipantMutation.isPending ? "Adding…" : "Add"}
           </button>
         </div>
       {/if}
@@ -302,7 +302,7 @@
           <p class="thread-bubble__text">{entry.text}</p>
         </div>
       {/each}
-      {#if $turnMutation.isPending}
+      {#if turnMutation.isPending}
         <div class="thread-bubble thread-bubble--agent thread-bubble--pending">
           <p class="thread-bubble__text">
             <span class="thread-panel__thinking-dot pulse" aria-hidden="true"></span>
@@ -319,7 +319,7 @@
           <button
             type="button"
             class="thread-panel__retry"
-            disabled={frozen || $turnMutation.isPending}
+            disabled={frozen || turnMutation.isPending}
             onclick={handleRetry}
           >
             Try again
@@ -347,7 +347,7 @@
         disabled={frozen || !canSend}
         onclick={handleSend}
       >
-        {$turnMutation.isPending ? "Sending…" : "Send"}
+        {turnMutation.isPending ? "Sending…" : "Send"}
       </button>
     </div>
   {/if}

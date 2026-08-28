@@ -35,6 +35,7 @@ def _make_spec(
     colleagues: list[dict] | None = None,
     cabal_url: str | None = None,
     memory_replica_bucket: str = "",
+    broker_url: str = "",
 ) -> BundleSpec:
     return BundleSpec(
         name=name,
@@ -51,6 +52,7 @@ def _make_spec(
         colleagues=colleagues if colleagues is not None else [],
         cabal_url=cabal_url,
         memory_replica_bucket=memory_replica_bucket,
+        broker_url=broker_url,
     )
 
 
@@ -1855,3 +1857,40 @@ def test_bundle_loads_with_real_daedalus_if_available(tmp_path):
     assert bundle.spec.transports[0].kind == "a2a"
     assert bundle.spec.transports[0].options() == {"host": "0.0.0.0", "port": 8080}
     del daedalus  # only imported to prove importorskip's module handle works
+
+
+# --- github sidecar (agent PR broker spec, 2026-08-27) ---------------------------
+
+
+def test_tools_block_gains_github_sidecar_when_broker_url_set(tmp_path):
+    dest = tmp_path / "out"
+    compose(
+        _make_spec(
+            name="kestrel",
+            cabal_url="http://cabal.example.com",
+            broker_url="http://kobo.example.com",
+        ),
+        dest,
+    )
+    text = (dest / "bundle" / "agent.yaml").read_text()
+    assert "github.open_pr" in text
+    assert 'broker_url: "http://kobo.example.com"' in text
+    assert "token_env: CABAL_COLLEAGUE_TOKEN" in text
+    assert 'self: "kestrel"' in text
+
+
+def test_tools_block_carries_no_github_without_broker_url(tmp_path):
+    """cabal alone (today's every agent): byte-for-byte no github anywhere."""
+    dest = tmp_path / "out"
+    compose(_make_spec(name="kestrel", cabal_url="http://cabal.example.com"), dest)
+    text = (dest / "bundle" / "agent.yaml").read_text()
+    assert "github" not in text
+
+
+def test_tools_block_ignores_broker_url_without_cabal(tmp_path):
+    """A broker with no switchboard could never authenticate an agent (the
+    broker verifies the cabal-issued JWT), so the sidecar never composes."""
+    dest = tmp_path / "out"
+    compose(_make_spec(name="kestrel", broker_url="http://kobo.example.com"), dest)
+    text = (dest / "bundle" / "agent.yaml").read_text()
+    assert "github" not in text

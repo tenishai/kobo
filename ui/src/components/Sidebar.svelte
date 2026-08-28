@@ -17,7 +17,7 @@
   // not on every Sidebar mount. Server-verified identity only — the footer
   // just displays what `/api/whoami` already decided, never derives
   // authority itself.
-  const whoami = createQuery(whoamiQuery());
+  const whoami = createQuery(() => (whoamiQuery()));
 
   // The Kobo identity ruling ("the pulse"): the hammer mark pulses while
   // any agent is under construction. Same `["agents"]` query key Dashboard
@@ -27,9 +27,9 @@
   // status.ts's `isTerminal`/`anyAgentActive` (which also count a
   // destroy-in-flight as non-terminal): only the two statuses that actually
   // mean "under construction" count here.
-  const agents = createQuery(agentsQuery());
+  const agents = createQuery(() => (agentsQuery()));
   const building = $derived(
-    ($agents.data?.agents ?? []).some(
+    (agents.data?.agents ?? []).some(
       (agent) => agent.status === "pending" || agent.status === "provisioning",
     ),
   );
@@ -105,8 +105,8 @@
     <span class="sidebar__create-glyph" aria-hidden="true">+</span>
   </button>
 
-  {#if $whoami.data?.email}
-    <p class="sidebar__whoami" title={$whoami.data.email}>{$whoami.data.email}</p>
+  {#if whoami.data?.email}
+    <p class="sidebar__whoami" title={whoami.data.email}>{whoami.data.email}</p>
   {/if}
 </nav>
 

@@ -109,13 +109,13 @@
   } = $props();
 
   const queryClient = useQueryClient();
-  const draftMutation = createMutation(draftPersonaMutation());
+  const draftMutation = createMutation(() => (draftPersonaMutation()));
   // Persona-first station addendum: fired in the background the moment the
   // operator hands over a ready-made persona document (paste or upload) and
   // clicks Continue - never blocks the advance to step 2, see
   // `continueWithPersonaBody` below.
-  const distillMutation = createMutation(distillPersonaMutation());
-  const mutation = createMutation(createPersonaMutation(queryClient));
+  const distillMutation = createMutation(() => (distillPersonaMutation()));
+  const mutation = createMutation(() => (createPersonaMutation(queryClient)));
 
   let step = $state<"draft" | "preview">("draft");
 
@@ -158,7 +158,7 @@
     trimmedJob.length > 0 &&
       trimmedJob.length <= 500 &&
       rules.length <= RULES_MAX &&
-      !$draftMutation.isPending,
+      !draftMutation.isPending,
   );
 
   /** Mirrors MemoryPanel.svelte's own `handleFileSelect` idiom exactly: read
@@ -238,7 +238,7 @@
    * never gets overwritten) and carries the distilled purpose tags through
    * to `oncreated`, same as a job-drafted persona's tags. On error, the
    * quiet inline note near those two fields (driven directly by
-   * `$distillMutation.isError` in the markup below) is the only signal -
+   * `distillMutation.isError` in the markup below) is the only signal -
    * no blocking error banner, since the operator's persona body is already
    * safely sitting in the form either way.
    */
@@ -247,7 +247,7 @@
     draftSucceeded = false;
     draftedPurposeTags = [];
     step = "preview";
-    $distillMutation.mutate(whatTheyDo, {
+    distillMutation.mutate(whatTheyDo, {
       onSuccess: (distilled) => {
         const merged = mergeDistillFields({ name, whoTheyAre }, distilled);
         name = merged.name;
@@ -328,7 +328,7 @@
       whoTheyAre.trim().length > 0 &&
       whatTheyDo.trim().length > 0 &&
       rules.length <= RULES_MAX &&
-      !$mutation.isPending,
+      !mutation.isPending,
   );
 
   function handleDraftSubmit(event: SubmitEvent): void {
@@ -337,7 +337,7 @@
       return;
     }
     draftError = null;
-    $draftMutation.mutate(
+    draftMutation.mutate(
       { job: trimmedJob, rules },
       {
         onSuccess: (draft) => {
@@ -388,7 +388,7 @@
     // that errored (or is still somehow pending) before "start over" was
     // clicked would otherwise bleed its stale status into whichever path
     // the operator picks next.
-    $distillMutation.reset();
+    distillMutation.reset();
   }
 
   function handleCreateSubmit(event: SubmitEvent): void {
@@ -417,7 +417,7 @@
       what_they_do: whatTheyDo,
       rules,
     };
-    $mutation.mutate(body, {
+    mutation.mutate(body, {
       onSuccess: (created) => {
         oncreated(created, draftedPurposeTags);
       },
@@ -566,7 +566,7 @@
         Cancel
       </button>
       <button type="submit" class="persona-builder__submit" disabled={!canDraft}>
-        {$draftMutation.isPending ? "Drafting…" : "Draft persona"}
+        {draftMutation.isPending ? "Drafting…" : "Draft persona"}
       </button>
     </div>
   </form>
@@ -584,11 +584,11 @@
       </p>
     {/if}
 
-    {#if $distillMutation.isPending}
+    {#if distillMutation.isPending}
       <p class="persona-builder__status persona-builder__status--quiet">
         Reading their persona…
       </p>
-    {:else if $distillMutation.isError}
+    {:else if distillMutation.isError}
       <p class="persona-builder__status persona-builder__status--quiet">
         Could not read the persona. Fill these in yourself.
       </p>
@@ -721,7 +721,7 @@
         Cancel
       </button>
       <button type="submit" class="persona-builder__submit" disabled={!canCreate}>
-        {$mutation.isPending ? "Creating…" : "Create persona"}
+        {mutation.isPending ? "Creating…" : "Create persona"}
       </button>
     </div>
   </form>

@@ -813,6 +813,10 @@ class RepoStep:
             # emits no supervision at all in that case (see BundleSpec's own
             # field docstring).
             memory_replica_bucket=config.memory_replica_bucket,
+            # Agent PR broker (2026-08-27 spec): the room's own in-cluster
+            # URL, threaded the same way as every other org coordinate --
+            # empty means the composed bundle carries no github block.
+            broker_url=config.broker_url,
         )
 
         compose_dir = ctx.workdir / "repo"

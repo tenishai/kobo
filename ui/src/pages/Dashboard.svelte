@@ -22,7 +22,7 @@
   import { errorMessage } from "../lib/api";
   import { agentsQuery } from "../lib/queries";
 
-  const agents = createQuery(agentsQuery());
+  const agents = createQuery(() => (agentsQuery()));
 </script>
 
 <!-- Shared-group + group-requests wave: the least-invasive existing home
@@ -33,7 +33,7 @@
      groups_unavailable banner below already follows. -->
 <GroupRequestsCard />
 
-{#if $agents.isPending}
+{#if agents.isPending}
   <div class="dashboard-grid">
     {#each { length: 3 } as _, i (i)}
       <!-- Only the first carries the accessible "Loading…" announcement;
@@ -44,23 +44,23 @@
       </div>
     {/each}
   </div>
-{:else if $agents.isError}
+{:else if agents.isError}
   <ErrorState
-    message={errorMessage($agents.error, "Couldn't load agents.")}
-    onretry={() => $agents.refetch()}
+    message={errorMessage(agents.error, "Couldn't load agents.")}
+    onretry={() => agents.refetch()}
   />
 {:else}
-  {#if $agents.data.groups_unavailable}
+  {#if agents.data.groups_unavailable}
     <p class="groups-unavailable-banner" role="status">
       Group lookups are unavailable right now. You are seeing only what you
       own.
     </p>
   {/if}
-  {#if $agents.data.agents.length === 0}
+  {#if agents.data.agents.length === 0}
     <EmptyState message="No agents yet. Create your first." />
   {:else}
     <div class="dashboard-grid">
-      {#each $agents.data.agents as agent (agent.name)}
+      {#each agents.data.agents as agent (agent.name)}
         <AgentCard {agent} />
       {/each}
     </div>

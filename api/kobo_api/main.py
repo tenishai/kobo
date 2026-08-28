@@ -2950,7 +2950,7 @@ def create_app(
             {"error": "the PR broker is not configured on this room"}, status_code=503
         )
 
-    @app.post("/api/agents/{name}/repo-access", status_code=202)
+    @app.post("/api/agents/{name}/repo-access")
     def request_repo_access(  # noqa: B008
         name: str,
         payload: RepoAccessRequest,
@@ -3005,8 +3005,7 @@ def create_app(
                     {"id": r.id, "repository": r.repository, "status": r.status}
                     for r in rows
                 ]
-            },
-            status_code=202,
+            }
         )
 
     @app.get("/api/repo-access")

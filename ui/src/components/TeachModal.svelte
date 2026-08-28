@@ -41,7 +41,7 @@
   // comment on why), same reasoning every other panel's mutation setup
   // documents.
   // svelte-ignore state_referenced_locally
-  const mutation = createMutation(teachMutation(queryClient, agentName));
+  const mutation = createMutation(() => (teachMutation(queryClient, agentName)));
 
   let text = $state("");
   let error = $state<string | null>(null);
@@ -60,14 +60,14 @@
     wasOpen = open;
   });
 
-  const canSave = $derived(text.trim().length > 0 && !$mutation.isPending);
+  const canSave = $derived(text.trim().length > 0 && !mutation.isPending);
 
   function handleSave(): void {
     if (!canSave) {
       return;
     }
     error = null;
-    $mutation.mutate(text, {
+    mutation.mutate(text, {
       onSuccess: (data) => {
         mode = data?.mode === "instant" ? "instant" : "archive";
         saved = true;
@@ -118,7 +118,7 @@
           Cancel
         </button>
         <button type="submit" class="teach-modal__save" disabled={!canSave}>
-          {$mutation.isPending ? "Saving…" : "Save"}
+          {mutation.isPending ? "Saving…" : "Save"}
         </button>
       </div>
     </form>

@@ -52,9 +52,9 @@
   // `agentName` prop is fixed for its entire lifetime — there's no live
   // update for a reactive reference to catch.
   // svelte-ignore state_referenced_locally
-  const mutation = createMutation(chatMutation(agentName));
+  const mutation = createMutation(() => (chatMutation(agentName)));
 
-  const canSend = $derived(input.trim().length > 0 && !$mutation.isPending);
+  const canSend = $derived(input.trim().length > 0 && !mutation.isPending);
 
   /** Drops the oldest messages once the transcript grows past the cap, and
    * flips on the "older messages were trimmed" notice the first time that
@@ -115,7 +115,7 @@
    * exactly what failed rather than re-deriving it. */
   function sendTranscript(messages: ChatMessage[]): void {
     error = null;
-    $mutation.mutate(messages, {
+    mutation.mutate(messages, {
       onSuccess: (result) => {
         transcript = capTranscript([...transcript, { role: "agent", text: result.reply }]);
         focusInput();
@@ -143,7 +143,7 @@
 
   function handleSend(): void {
     const text = input.trim();
-    if (text.length === 0 || $mutation.isPending) {
+    if (text.length === 0 || mutation.isPending) {
       return;
     }
     input = "";
@@ -153,7 +153,7 @@
   }
 
   function handleRetry(): void {
-    if ($mutation.isPending) {
+    if (mutation.isPending) {
       return;
     }
     sendTranscript(transcript);
@@ -191,7 +191,7 @@
         {/if}
       </div>
     {/each}
-    {#if $mutation.isPending}
+    {#if mutation.isPending}
       <div class="chat-bubble chat-bubble--agent chat-bubble--pending">
         <span class="chat-panel__sr-only">{agentName}:</span>
         <p class="chat-bubble__text">
@@ -209,7 +209,7 @@
         <button
           type="button"
           class="chat-panel__retry"
-          disabled={frozen || $mutation.isPending}
+          disabled={frozen || mutation.isPending}
           onclick={handleRetry}
         >
           Try again
@@ -237,7 +237,7 @@
       disabled={frozen || !canSend}
       onclick={handleSend}
     >
-      {$mutation.isPending ? "Sending…" : "Send"}
+      {mutation.isPending ? "Sending…" : "Send"}
     </button>
   </div>
 </section>

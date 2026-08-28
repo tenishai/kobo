@@ -45,7 +45,7 @@
   const name = route.name as string;
 
   const queryClient = useQueryClient();
-  const agent = createQuery(agentQuery(name));
+  const agent = createQuery(() => (agentQuery(name)));
 
   // The Access tab's own visibility probe (access-control Task C2): fired
   // independently of which tab is selected, and independently of the Access
@@ -55,12 +55,12 @@
   // not theirs to administer (the "Request colleague access" card renders
   // instead, right below); anything else (a 404, in practice unreachable
   // here since a 404 on the AGENT itself would already have kept this page
-  // from ever mounting `$agent.data`) renders neither. Deliberately never
+  // from ever mounting `agent.data`) renders neither. Deliberately never
   // keyed on `whoami.operator` -- see `Whoami`'s own WATCH ITEM doc comment
   // in api.ts and `visibleTabs`'s doc comment in tabs.ts -- this tab is
   // exactly as real as the server's own gate on this route, nothing a
   // client-side flag could fake or fall out of sync with.
-  const invites = createQuery(invitesQuery(name));
+  const invites = createQuery(() => (invitesQuery(name)));
 
   // Soul-line (persona-naming law, hardening wave): the composition card's
   // Persona line used to print the bare persona id (`data.persona`)
@@ -73,29 +73,28 @@
   // deleted-from-catalog persona) -- see `personaLine` in the markup below.
   //
   // The search term (the agent's own persona id) isn't known until
-  // `$agent.data` first resolves, so this uses the same writable/derived
+  // `agent.data` first resolves, so this uses the same writable/derived
   // store idiom SlackPanel's `manifestOpened`/`manifestOptions` documents (a
   // plain `$derived` options object wouldn't re-fire `createQuery` under the
   // installed @tanstack/svelte-query adapter) -- `enabled` is overridden
   // locally here rather than added to `personasSearchQuery` itself, since
   // every other caller of that shared factory always has a real (possibly
   // empty) search string in hand already.
-  const personaSearchTerm = writable<string | null>(null);
+  let personaSearchTerm = $state<string | null>(null);
   $effect(() => {
-    const data = $agent.data;
+    const data = agent.data;
     if (data) {
-      personaSearchTerm.set(data.persona);
+      personaSearchTerm = data.persona;
     }
   });
-  const personaSearchOptions = derived(personaSearchTerm, ($term) => ({
-    ...personasSearchQuery($term ?? "", null),
-    enabled: $term !== null,
-  }));
-  const personaSoul = createQuery(personaSearchOptions);
+  const personaSoul = createQuery(() => (({
+    ...personasSearchQuery(personaSearchTerm ?? "", null),
+    enabled: personaSearchTerm !== null,
+  })));
 
-  const retry = createMutation(retryAgentMutation(queryClient, name));
-  const generateAvatar = createMutation(generateAvatarMutation(queryClient, name));
-  const uploadAvatar = createMutation(uploadAvatarMutation(queryClient, name));
+  const retry = createMutation(() => (retryAgentMutation(queryClient, name)));
+  const generateAvatar = createMutation(() => (generateAvatarMutation(queryClient, name)));
+  const uploadAvatar = createMutation(() => (uploadAvatarMutation(queryClient, name)));
 
   // Which tab (tabs.ts) is showing. Every panel stays mounted inside its own
   // tabpanel regardless of this value — see the markup below,
@@ -105,7 +104,7 @@
   //
   // Starts `null` (no data yet) so the effect below can tell "never chosen"
   // apart from "chosen, and it happens to be overview" — the first real
-  // `$agent.data` picks the smart default (`defaultTab`) exactly once, and
+  // `agent.data` picks the smart default (`defaultTab`) exactly once, and
   // never again even as later polls bring fresher statuses.
   let activeTab = $state<TabId | null>(null);
 
@@ -118,7 +117,7 @@
   let wasFrozen = $state(false);
 
   $effect(() => {
-    const data = $agent.data;
+    const data = agent.data;
     if (!data) {
       return;
     }
@@ -133,7 +132,7 @@
   });
 
   function handleRetry(): void {
-    $retry.mutate(undefined, {
+    retry.mutate(undefined, {
       onSuccess: () => {
         toast.success("Retrying", `Re-running ${name}'s setup…`);
       },
@@ -144,15 +143,15 @@
   }
 
   // The most recent status this query actually returned. Kept separately
-  // from `$agent.data` because once destroy-forget completes there is no
+  // from `agent.data` because once destroy-forget completes there is no
   // agent row left (kobo_api.destroy's module docstring): `GET
-  // /api/agents/{name}` starts 404ing, and `$agent.data` itself goes stale
+  // /api/agents/{name}` starts 404ing, and `agent.data` itself goes stale
   // rather than updating, so this is the only place that still remembers
   // what the agent's status was right before that happened.
   let lastKnownStatus = $state<string | null>(null);
 
   $effect(() => {
-    const data = $agent.data;
+    const data = agent.data;
     if (data) {
       lastKnownStatus = data.status;
     }
@@ -170,8 +169,8 @@
     if (
       isDestroyComplete(
         lastKnownStatus,
-        $agent.isError,
-        $agent.error instanceof ApiError ? $agent.error.status : undefined,
+        agent.isError,
+        agent.error instanceof ApiError ? agent.error.status : undefined,
       )
     ) {
       toast.success("Agent destroyed", `${name} and its records are gone.`);
@@ -199,7 +198,7 @@
   function handleGenerateAvatar(): void {
     avatarError = null;
     avatarNote = null;
-    $generateAvatar.mutate(undefined, {
+    generateAvatar.mutate(undefined, {
       onSuccess: (result) => {
         avatarVersion = result.sha;
         avatarNote = "Saved. It'll ride along with the next update.";
@@ -244,7 +243,7 @@
     const reader = new FileReader();
     reader.onload = () => {
       const bytes = reader.result as ArrayBuffer;
-      $uploadAvatar.mutate(bytes, {
+      uploadAvatar.mutate(bytes, {
         onSuccess: (result) => {
           avatarVersion = result.sha;
           avatarNote = "Saved. It'll ride along with the next update.";
@@ -266,15 +265,15 @@
     ← Back to dashboard
   </a>
 
-  {#if $agent.isPending}
+  {#if agent.isPending}
     <Skeleton rows={6} />
-  {:else if $agent.isError}
+  {:else if agent.isError}
     <ErrorState
-      message={errorMessage($agent.error, "Couldn't load this agent.")}
-      onretry={() => $agent.refetch()}
+      message={errorMessage(agent.error, "Couldn't load this agent.")}
+      onretry={() => agent.refetch()}
     />
-  {:else if $agent.data}
-    {@const data = $agent.data}
+  {:else if agent.data}
+    {@const data = agent.data}
     <header class="agent-detail__header">
       {#if data.has_avatar || avatarVersion !== null}
         <img class="agent-detail__avatar" src={avatarSrc} alt="{data.name}'s picture" />
@@ -307,11 +306,11 @@
       </p>
     {/if}
 
-    {#if $invites.isError && $invites.error instanceof ApiError && $invites.error.status === 403}
+    {#if invites.isError && invites.error instanceof ApiError && invites.error.status === 403}
       <RequestAccessCard toAgentName={data.name} />
     {/if}
 
-    {@const tabs = visibleTabs($invites.isSuccess)}
+    {@const tabs = visibleTabs(invites.isSuccess)}
     <div class="detail-tabs">
       <div class="detail-tabs__bar" role="tablist" aria-label="Agent sections">
         <!-- Every panel mounts regardless of status (see the tabpanel loop
@@ -354,7 +353,7 @@
           tabindex="0"
         >
           {#if tab === "overview"}
-            {@const personaMatch = $personaSoul.data?.find((p) => p.id === data.persona) ?? null}
+            {@const personaMatch = personaSoul.data?.find((p) => p.id === data.persona) ?? null}
             {@const personaLine = personaMatch
               ? `${personaMatch.name} -- ${personaMatch.description}`
               : data.persona}
@@ -401,10 +400,10 @@
                   <button
                     type="button"
                     class="composition__avatar-button"
-                    disabled={isFrozen(data.status) || $generateAvatar.isPending}
+                    disabled={isFrozen(data.status) || generateAvatar.isPending}
                     onclick={handleGenerateAvatar}
                   >
-                    {#if $generateAvatar.isPending}
+                    {#if generateAvatar.isPending}
                       <span class="composition__avatar-dot pulse" aria-hidden="true"></span>
                       Painting…
                     {:else if data.has_avatar || avatarVersion !== null}
@@ -417,14 +416,14 @@
                   <label
                     class="composition__avatar-upload"
                     class:composition__avatar-upload--disabled={isFrozen(data.status) ||
-                      $uploadAvatar.isPending}
+                      uploadAvatar.isPending}
                   >
-                    {$uploadAvatar.isPending ? "Uploading…" : "Upload a portrait"}
+                    {uploadAvatar.isPending ? "Uploading…" : "Upload a portrait"}
                     <input
                       class="composition__avatar-upload-input"
                       type="file"
                       accept=".png,image/png"
-                      disabled={isFrozen(data.status) || $uploadAvatar.isPending}
+                      disabled={isFrozen(data.status) || uploadAvatar.isPending}
                       onchange={handleAvatarFileSelect}
                     />
                   </label>
@@ -465,10 +464,10 @@
                 <button
                   type="button"
                   class="failed-banner__retry"
-                  disabled={$retry.isPending}
+                  disabled={retry.isPending}
                   onclick={handleRetry}
                 >
-                  {$retry.isPending ? "Retrying…" : "Retry"}
+                  {retry.isPending ? "Retrying…" : "Retry"}
                 </button>
               </div>
             {/if}

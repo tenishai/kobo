@@ -265,6 +265,7 @@ def test_org_keys_is_exactly_the_brief_set():
             "gojira_cluster",
             "runtime_image",
             "memory_replica_bucket",
+        "broker_url",
             "gcp_project",
             "vertex_project",
             "vertex_location",

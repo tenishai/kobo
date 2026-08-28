@@ -49,9 +49,9 @@
   // whenever the routed agent changes, so this prop is fixed for the
   // component's entire lifetime — same reasoning as ChatPanel/MemoryPanel.
   // svelte-ignore state_referenced_locally
-  const connect = createMutation(connectSlackMutation(queryClient, agentName));
+  const connect = createMutation(() => (connectSlackMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
-  const saveChannels = createMutation(saveSlackChannelsMutation(queryClient, agentName));
+  const saveChannels = createMutation(() => (saveSlackChannelsMutation(queryClient, agentName)));
 
   // --- Channels lane (open to everyone) ------------------------------------
 
@@ -73,7 +73,7 @@
   let saveError = $state<string | null>(null);
 
   const canSave = $derived(
-    !frozen && !$saveChannels.isPending && rows.some((row) => row.trim().length > 0),
+    !frozen && !saveChannels.isPending && rows.some((row) => row.trim().length > 0),
   );
 
   function handleAddRow(): void {
@@ -93,7 +93,7 @@
     }
     const cleaned = rows.map((row) => row.trim()).filter((row) => row.length > 0);
     saveError = null;
-    $saveChannels.mutate(cleaned, {
+    saveChannels.mutate(cleaned, {
       onSuccess: (result) => {
         rows = result.channels.length > 0 ? [...result.channels] : [""];
         if (result.sha !== undefined) {
@@ -117,7 +117,7 @@
 
   // "Connecting..." overrides the state-derived line while a connect is in
   // flight — client-side only, `slack.state` itself has no such value.
-  const statusText = $derived($connect.isPending ? "Connecting..." : STATE_COPY[slack.state]);
+  const statusText = $derived(connect.isPending ? "Connecting..." : STATE_COPY[slack.state]);
 
   // --- Setup section (Slack self-service, 2026-08-17: open to everyone,
   // no gate) — the manifest reveal, the numbered ceremony instructions, and
@@ -142,7 +142,7 @@
     appId.trim().length > 0 &&
       botToken.trim().length > 0 &&
       appToken.trim().length > 0 &&
-      !$connect.isPending,
+      !connect.isPending,
   );
 
   // The server's own copy for the missing-channels precondition (POST
@@ -165,7 +165,7 @@
       return;
     }
     connectError = null;
-    $connect.mutate(
+    connect.mutate(
       {
         app_id: appId.trim(),
         bot_token: botToken.trim(),
@@ -197,14 +197,11 @@
   // constraint as `deliverySha` above) is the only thing that ever enables
   // `slackManifestQuery` — the fetch never fires on mount, only once a human
   // actually asks to see it.
-  const manifestOpened = writable(false);
-  const manifestOptions = derived(manifestOpened, ($opened) =>
-    slackManifestQuery(agentName, $opened),
-  );
-  const manifest = createQuery(manifestOptions);
+  let manifestOpened = $state(false);
+  const manifest = createQuery(() => (slackManifestQuery(agentName, manifestOpened)));
 
   function handleShowManifest(): void {
-    manifestOpened.set(true);
+    manifestOpened = true;
   }
 
   // The exact pretty-printed string rendered in the `<pre>` below, kept as a
@@ -212,7 +209,7 @@
   // so there's never a second `JSON.stringify` call that could drift from
   // what the human actually sees.
   const manifestText = $derived(
-    $manifest.data ? JSON.stringify($manifest.data, null, 2) : undefined,
+    manifest.data ? JSON.stringify(manifest.data, null, 2) : undefined,
   );
 
   let copyState = $state<"idle" | "copied" | "failed">("idle");
@@ -241,9 +238,8 @@
 
   const DELIVERED_CLEAR_MS = 5000;
 
-  const deliverySha = writable<string | null>(null);
-  const deliveryOptions = derived(deliverySha, ($sha) => deliveryQuery(agentName, $sha));
-  const delivery = createQuery(deliveryOptions);
+  let deliverySha = $state<string | null>(null);
+  const delivery = createQuery(() => (deliveryQuery(agentName, deliverySha)));
 
   let clearTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -252,15 +248,15 @@
       clearTimeout(clearTimer);
       clearTimer = undefined;
     }
-    deliverySha.set(sha);
+    deliverySha = sha;
   }
 
   $effect(() => {
-    if ($delivery.data?.state !== "delivered") {
+    if (delivery.data?.state !== "delivered") {
       return;
     }
     clearTimer = setTimeout(() => {
-      deliverySha.set(null);
+      deliverySha = null;
       clearTimer = undefined;
     }, DELIVERED_CLEAR_MS);
     return () => {
@@ -274,13 +270,13 @@
   type DeliveryView = { tone: "pending" | "ok" | "fail"; text: string };
 
   const deliveryView = $derived.by((): DeliveryView => {
-    if ($delivery.isError) {
+    if (delivery.isError) {
       return {
         tone: "fail",
-        text: errorMessage($delivery.error, "Couldn't check on your changes."),
+        text: errorMessage(delivery.error, "Couldn't check on your changes."),
       };
     }
-    const data = $delivery.data;
+    const data = delivery.data;
     if (data === undefined) {
       return { tone: "pending", text: "Delivering changes…" };
     }
@@ -351,10 +347,10 @@
     <button
       type="button"
       class="slack-panel__save"
-      disabled={frozen || $saveChannels.isPending || !canSave}
+      disabled={frozen || saveChannels.isPending || !canSave}
       onclick={handleSaveChannels}
     >
-      {$saveChannels.isPending ? "Saving…" : "Save"}
+      {saveChannels.isPending ? "Saving…" : "Save"}
     </button>
   </div>
 
@@ -381,12 +377,12 @@
       {#if copyState === "failed"}
         <p class="slack-panel__error" role="alert">Copy failed. Select the text instead.</p>
       {/if}
-      {#if $manifestOpened}
-        {#if $manifest.isPending}
+      {#if manifestOpened}
+        {#if manifest.isPending}
           <p class="slack-panel__manifest-status">Loading the manifest…</p>
-        {:else if $manifest.isError}
+        {:else if manifest.isError}
           <p class="slack-panel__error" role="alert">
-            {errorMessage($manifest.error, "Couldn't load the manifest.")}
+            {errorMessage(manifest.error, "Couldn't load the manifest.")}
           </p>
         {:else if manifestText !== undefined}
           <pre class="slack-panel__manifest-block">{manifestText}</pre>
@@ -532,13 +528,13 @@
       {/if}
 
       <button type="submit" class="slack-panel__finish" disabled={frozen || !canFinish}>
-        {$connect.isPending ? "Finishing…" : "Finish setup"}
+        {connect.isPending ? "Finishing…" : "Finish setup"}
       </button>
     </form>
     <p class="slack-panel__note">You can add a picture for it later in Slack's settings.</p>
   </div>
 
-  {#if $deliverySha !== null}
+  {#if deliverySha !== null}
     <div
       class="slack-panel__delivery slack-panel__delivery--{deliveryView.tone}"
       role="status"
