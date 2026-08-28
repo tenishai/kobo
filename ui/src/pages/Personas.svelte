@@ -42,7 +42,7 @@
   const archived = createQuery(() => (archivedPersonasQuery(showArchived)));
 
   function toggleArchived(): void {
-    showArchived.update((value) => !value);
+    showArchived = !showArchived;
   }
 
   const queryClient = useQueryClient();

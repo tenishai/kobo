@@ -145,14 +145,14 @@
   let catalogError = $state<string | null>(null);
   let pendingCatalogAdd = $state<string | null>(null);
 
-  const catalogSearchParams = writable<{ q: string; team: string | null }>({
+  let catalogSearchParams = $state<{ q: string; team: string | null }>({
     q: "",
     team: null,
   });
   const catalogResults = createQuery(() => (skillsSearchQuery(catalogSearchParams.q, catalogSearchParams.team)));
 
   const commitCatalogSearch = debounced((value: { q: string; team: string | null }) => {
-    catalogSearchParams.set(value);
+    catalogSearchParams = value;
   }, 250);
 
   $effect(() => {
@@ -175,7 +175,7 @@
       catalogQ = "";
       catalogTeamFilter = "";
       catalogError = null;
-      catalogSearchParams.set({ q: "", team: null });
+      catalogSearchParams = { q: "", team: null };
     }
   }
 

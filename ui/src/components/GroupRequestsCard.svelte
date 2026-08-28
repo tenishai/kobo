@@ -35,7 +35,7 @@
   const requests = createQuery(() => (groupRequestsQuery(expanded)));
 
   function toggleExpanded(): void {
-    expanded.update((value) => !value);
+    expanded = !expanded;
   }
 
   const queryClient = useQueryClient();

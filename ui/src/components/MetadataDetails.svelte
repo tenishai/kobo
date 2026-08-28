@@ -60,7 +60,7 @@
   // svelte-ignore state_referenced_locally
   const patchMutation = createMutation(() => (patchMetadataMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
-  const regenerateMutation = createMutation(() => (regenerateMetadataMutation(queryClient, agentName),));
+  const regenerateMutation = createMutation(() => (regenerateMetadataMutation(queryClient, agentName)));
 
   let open = $state(false);
 

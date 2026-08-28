@@ -275,7 +275,7 @@
   let rerollNote = $state(false);
   let createNameInput: HTMLInputElement | undefined = $state();
 
-  const nameSuggestionParams = writable<{ whoTheyAre: string; whatTheyDo: string }>({
+  let nameSuggestionParams = $state<{ whoTheyAre: string; whatTheyDo: string }>({
     whoTheyAre: "",
     whatTheyDo: "",
   });
@@ -295,10 +295,10 @@
     if (!open) {
       return;
     }
-    nameSuggestionParams.set({
+    nameSuggestionParams = {
       whoTheyAre: meta?.description ?? "",
       whatTheyDo: meta?.name ?? "",
-    });
+    };
     nameMode = "cards";
     selectedCardName = null;
     name = "";
@@ -353,7 +353,7 @@
   // the point the search params are committed, below.
   let skillTeamFilter = $state("");
 
-  const skillSearchParams = writable<{ q: string; team: string | null }>({
+  let skillSearchParams = $state<{ q: string; team: string | null }>({
     q: "",
     team: null,
   });
@@ -361,7 +361,7 @@
 
   const commitSkillSearch = debounced(
     (value: { q: string; team: string | null }) => {
-      skillSearchParams.set(value);
+      skillSearchParams = value;
     },
     250,
   );
@@ -430,7 +430,7 @@
   //
   // `groupsQuery` (`GET /api/catalog/groups`) is the ACCESS namespace this
   // agent belongs to -- DISTINCT from Team above (the skills-catalog
-  // capability axis). The picker only renders at all once `$groups.data`
+  // capability axis). The picker only renders at all once `groups.data`
   // has anything in it (`groupOptionsAvailable`) -- in production that's
   // ALWAYS true as of the shared-group wave (the commons entry is always
   // first, even in a room with no configured groups at all), so this stays
@@ -457,18 +457,18 @@
   // when it has no entries (same "don't render an empty optgroup" rule
   // already applied to every section).
   let groupValue = $state("");
-  const groupOptionsAvailable = $derived(($groups.data?.length ?? 0) > 0);
+  const groupOptionsAvailable = $derived((groups.data?.length ?? 0) > 0);
   const sharedGroupOptions = $derived(
-    ($groups.data ?? []).filter((g) => g.kind === "shared"),
+    (groups.data ?? []).filter((g) => g.kind === "shared"),
   );
   const engineeringGroupOptions = $derived(
-    ($groups.data ?? []).filter((g) => g.kind === "engineering"),
+    (groups.data ?? []).filter((g) => g.kind === "engineering"),
   );
   const nonEngineeringGroupOptions = $derived(
-    ($groups.data ?? []).filter((g) => g.kind === "non-engineering"),
+    (groups.data ?? []).filter((g) => g.kind === "non-engineering"),
   );
   const selectedGroupKind = $derived(
-    $groups.data?.find((g) => g.name === groupValue)?.kind,
+    groups.data?.find((g) => g.name === groupValue)?.kind,
   );
 
   /** Sentinel `<option>` value for "My group is not listed..." -- never a
@@ -611,10 +611,10 @@
       nameMode = "cards";
       selectedCardName = null;
       rerollNote = false;
-      nameSuggestionParams.set({ whoTheyAre: "", whatTheyDo: "" });
+      nameSuggestionParams = { whoTheyAre: "", whatTheyDo: "" };
       skillQ = "";
       skillTeamFilter = "";
-      skillSearchParams.set({ q: "", team: null });
+      skillSearchParams = { q: "", team: null };
       skillShowAll = false;
       selectedSkills = new Map();
       groupValue = "";
@@ -966,8 +966,8 @@
                   (skillTeamFilter = (event.currentTarget as HTMLSelectElement).value)}
               >
                 <option value="">All teams</option>
-                {#if $teams.data}
-                  {#each $teams.data as t (t)}
+                {#if teams.data}
+                  {#each teams.data as t (t)}
                     <option value={t}>{t}</option>
                   {/each}
                 {/if}

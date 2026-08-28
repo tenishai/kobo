@@ -26,7 +26,7 @@
   const whoami = createQuery(() => (whoamiQuery()));
 
   const myAgents = $derived.by(() => {
-    const email = $whoami.data?.email;
+    const email = whoami.data?.email;
     if (!email) {
       return [];
     }
@@ -81,7 +81,7 @@
 <div class="request-access" aria-labelledby="request-access-heading">
   <h2 id="request-access-heading" class="request-access__heading">Request colleague access</h2>
 
-  {#if $whoami.isPending || agents.isPending}
+  {#if whoami.isPending || agents.isPending}
     <p class="request-access__status">Loading your agents…</p>
   {:else if myAgents.length === 0}
     <p class="request-access__copy">
