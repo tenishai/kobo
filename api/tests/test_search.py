@@ -1102,3 +1102,37 @@ def test_both_present_index_json_wins(engine):
     assert [e.id for e in search(engine, "skill", "")] == ["code-review", "commit-helper"]
     assert get_entry(engine, "skill", "marketplace-only-skill", "") is None
     assert "read_bytes:skills-bucket:catalog/catalog.json" not in storage.calls
+
+
+
+def test_marketplace_cli_only_surfaces_are_never_ingested(engine):
+    """Surfaces filter (skills-catalog review, 2026-08-28): a skill whose
+    surfaces exclude "agents" is CLI-session tooling and never enters the
+    room's catalog; absent surfaces means both, so nothing existing hides."""
+    storage = _marketplace_storage(
+        {
+            "wrap-up": {
+                "name": "wrap-up",
+                "version": "1.0.0",
+                "description": "End-of-session checklist for laptop sessions",
+                "tags": ["operations"],
+                "surfaces": ["cli"],
+            },
+            "gcp-audit": {
+                "name": "gcp-audit",
+                "version": "1.0.0",
+                "description": "Audit a GCP project end to end",
+                "tags": ["gcp"],
+                "surfaces": ["cli", "agents"],
+            },
+            "networking": {
+                "name": "networking",
+                "version": "1.0.0",
+                "description": "Networking domain knowledge for the org",
+                "tags": ["networking"],
+            },
+        }
+    )
+    ingest_indexes(engine, storage, {"skill": "skills-bucket"})
+    ids = sorted(e.id for e in search(engine, "skill", ""))
+    assert ids == ["gcp-audit", "networking"]

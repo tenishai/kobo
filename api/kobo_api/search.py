@@ -317,6 +317,16 @@ def _load_marketplace_entries(skills: Mapping[str, object], kind: str) -> list[d
     """
     entries = []
     for id_, raw in skills.items():
+        # Surfaces filter (skills-catalog review, 2026-08-28): a skill
+        # published with surfaces that EXCLUDE "agents" is CLI-session
+        # tooling (wrap-up, sitrep, ...) -- the room never lists it, never
+        # recommends it, never lets a picker find it. Absent surfaces means
+        # both (adding the axis must never hide an existing skill).
+        if isinstance(raw, dict):
+            surfaces = raw.get("surfaces")
+            if isinstance(surfaces, list) and surfaces and "agents" not in surfaces:
+                log.debug("catalog ingest: skill %r is not agent-surfaced -- skipping", id_)
+                continue
         if not isinstance(raw, dict):
             log.debug(
                 "catalog ingest: marketplace skill %r is not an object -- skipping", id_

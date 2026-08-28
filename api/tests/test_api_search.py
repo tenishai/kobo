@@ -834,3 +834,17 @@ def test_recommend_skills_empty_persona_recommends_nothing(client):
     response = client.get("/api/skills/recommended", params={"who": "", "what": ""})
     assert response.status_code == 200
     assert response.json() == {"results": []}
+
+
+
+def test_recommend_skills_keeps_three_letter_domain_words(client):
+    """The live failure: 'A GCP expert' must surface gcp-tagged skills --
+    gcp is three letters, and persona-generic words like 'expert' must
+    never be what the match hangs on."""
+    response = client.get(
+        "/api/skills/recommended",
+        params={"who": "A GCP expert", "what": "gcp terraform infrastructure"},
+    )
+    assert response.status_code == 200
+    ids = [r["id"] for r in response.json()["results"]]
+    assert "terraform-check" in ids

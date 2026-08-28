@@ -2007,7 +2007,13 @@ def create_app(
         "this that with from your yours their they them have has been will "
         "would should could about into over under never always exactly "
         "before after every each when what where which whose ranks against "
-        "judging".split()
+        "judging the and for who are you all can use "
+        # Persona-generic words: they describe every persona and select for
+        # nothing -- live case: "A GCP expert" reduced to the single token
+        # "expert", which literally matched the skill NAMED expert while
+        # every gcp-* skill went unmatched.
+        "expert experts specialist specialists helper helpers assistant "
+        "assistants agent agents persona team work works working helps".split()
     )
     _RECOMMEND_TERM_CAP = 12
     _RECOMMEND_RESULTS = 5
@@ -2026,7 +2032,10 @@ def create_app(
         first-hit rank as the tiebreak."""
         engine = session.get_bind()
         _maybe_refresh_catalogs(app, engine)
-        words = re.findall(r"[a-z][a-z0-9-]{3,}", f"{who} {what}".lower())
+        # 3+ chars, NOT 4: this org's domain vocabulary is three letters
+        # deep -- gcp, gke, iam, aws -- and dropping those was the live
+        # failure mode (a GCP-expert persona recommended nothing GCP).
+        words = re.findall(r"[a-z][a-z0-9-]{2,}", f"{who} {what}".lower())
         terms = []
         for word in words:
             if word not in _RECOMMEND_STOPWORDS and word not in terms:
