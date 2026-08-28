@@ -579,8 +579,9 @@ describe("PersonaBuilder - naming law microcopy (hardening wave)", () => {
       .trim();
 
     expect(helperText).toContain(
-      'Name the behavior, not a codename: "direct-factual-condensed-mellow" tells a stranger what they get. Trait words, an archetype like "stoic-mentor", or a figure whose mannerisms you want all work; the name is this persona\'s soul at a glance.',
+      "A name is a name: one or two words, the shape of a craftsman's nickname",
     );
+    expect(helperText).toContain("Never a hyphenated list of traits");
   });
 });
 

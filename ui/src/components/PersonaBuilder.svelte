@@ -606,10 +606,10 @@
         aria-describedby="persona-builder-name-hint"
       />
       <p class="persona-builder__help">
-        Name the behavior, not a codename: "direct-factual-condensed-mellow"
-        tells a stranger what they get. Trait words, an archetype like
-        "stoic-mentor", or a figure whose mannerisms you want all work; the
-        name is this persona's soul at a glance.
+        A name is a name: one or two words, the shape of a craftsman's
+        nickname, like "sentinel" or "ledger-keeper". Never a hyphenated
+        list of traits; the description line below is where the traits
+        live, so the name can just be remembered.
       </p>
       <div id="persona-builder-name-hint">
         {#if nameHint}
