@@ -1010,7 +1010,6 @@
                 {/if}
               </select>
             </div>
-          </div>
 
           {#if skillDropdownOpen}
             <div class="skill-dropdown" role="listbox" aria-label="Skills catalog">
@@ -1047,6 +1046,7 @@
           {/if}
             </div>
           {/if}
+          </div>
         {/if}
       </fieldset>
     </div>
