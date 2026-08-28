@@ -214,11 +214,12 @@ def _is_marketplace_dialect(parsed: object) -> bool:
     fetch-path dialect probe (`read_marketplace_catalog`, below) both
     delegate to this single definition.
     """
-    return (
-        isinstance(parsed, dict)
-        and isinstance(parsed.get("skills"), dict)
-        and "count" in parsed
-    )
+    # `count` is deliberately NOT required (2026-08-28): a publisher rebuild
+    # that dropped it turned the whole skills ingest into "malformed catalog
+    # index" -- a dict-shaped `skills` alone is already unambiguous, since
+    # the legacy dialect is a top-level `entries` LIST and never carries a
+    # skills mapping at all.
+    return isinstance(parsed, dict) and isinstance(parsed.get("skills"), dict)
 
 
 def _load_catalog_entries(
