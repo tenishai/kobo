@@ -112,7 +112,8 @@ class BundleSpec:
     # The room's own in-cluster base URL (org key broker_url) -- when set
     # alongside cabal_url, the composed tools block gains the github
     # sidecar (daedalus GitHubSpec: broker_url/token_env/self) and
-    # github.open_pr joins the allow list. Empty = no github block at all.
+    # the github tools (open_pr and the read quartet) join the allow list.
+    # Empty = no github block at all.
     broker_url: str = ""
 
 
@@ -255,7 +256,20 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
     # colleague JWT the cabal wiring issues, so a broker with no
     # switchboard could never authenticate anyone.
     if spec.broker_url:
-        allow.append("github.open_pr")
+        # Explicit names, never a github.* glob -- the bundle's allow list is
+        # law, and a glob would silently grant every tool the provider grows
+        # later. open_pr is the one write (PR-only by ruling); the read
+        # quartet (2026-08-28, the acme-schema-survey unblock) rides the
+        # same mint-per-call broker token.
+        allow.extend(
+            [
+                "github.open_pr",
+                "github.list_prs",
+                "github.get_pr",
+                "github.list_releases",
+                "github.read_file",
+            ]
+        )
         block["github"] = _FlowDict(
             broker_url=_DoubleQuoted(spec.broker_url),
             token_env=CABAL_COLLEAGUE_TOKEN_ENV,

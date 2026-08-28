@@ -1873,7 +1873,16 @@ def test_tools_block_gains_github_sidecar_when_broker_url_set(tmp_path):
         dest,
     )
     text = (dest / "bundle" / "agent.yaml").read_text()
-    assert "github.open_pr" in text
+    # The full explicit github allow: the one write plus the read quartet
+    # (2026-08-28). Named one by one, never a glob -- the allow list is law.
+    for tool in (
+        "github.open_pr",
+        "github.list_prs",
+        "github.get_pr",
+        "github.list_releases",
+        "github.read_file",
+    ):
+        assert tool in text
     assert 'broker_url: "http://kobo.example.com"' in text
     assert "token_env: CABAL_COLLEAGUE_TOKEN" in text
     assert 'self: "kestrel"' in text
