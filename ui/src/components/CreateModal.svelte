@@ -376,15 +376,25 @@
     250,
   );
 
-  // Caps the results list at 6 with a "show more" (create flow v2
-  // addendum: "no wall of skills, ever") — reset to the capped view
-  // whenever the search itself changes, so a fresh query never inherits an
-  // earlier search's "show more" state.
-  let skillShowAll = $state(false);
+
+  // Skills combobox (create-flow polish, round 2): clicking into the
+  // search field opens a scrollable dropdown of the catalog -- the whole
+  // offering when the query is empty, filtered as you type -- with
+  // checkbox rows so several skills can be picked without the panel
+  // closing. Closed when focus leaves the combobox subtree (checkbox
+  // clicks keep focus inside, so multi-select never fights the close).
+  let skillDropdownOpen = $state(false);
+
+  function closeSkillDropdownOnFocusout(event: FocusEvent): void {
+    const next = event.relatedTarget;
+    const root = event.currentTarget as HTMLElement;
+    if (!(next instanceof Node) || !root.contains(next)) {
+      skillDropdownOpen = false;
+    }
+  }
 
   $effect(() => {
     const value = { q: skillQ, team: skillTeamFilter === "" ? null : skillTeamFilter };
-    skillShowAll = false;
     if (!open) {
       return;
     }
@@ -396,16 +406,6 @@
 
   const SKILLS_SHOWN_CAP = 6;
 
-  const visibleSkills = $derived(
-    skills.data === undefined
-      ? []
-      : skillShowAll
-        ? skills.data
-        : skills.data.slice(0, SKILLS_SHOWN_CAP),
-  );
-  const skillsShowMoreCount = $derived(
-    Math.max(0, (skills.data?.length ?? 0) - SKILLS_SHOWN_CAP),
-  );
 
   type SelectedSkill = { id: string; team: string; name: string };
 
@@ -625,8 +625,7 @@
       skillQ = "";
       skillTeamFilter = "";
       skillSearchParams = { q: "", team: null };
-      skillShowAll = false;
-      selectedSkills = new Map();
+        selectedSkills = new Map();
       groupValue = "";
       groupRequestName = "";
       groupRequestNote = "";
@@ -980,7 +979,11 @@
             </div>
           {/if}
 
-          <div class="create-form__field">
+          <div
+            class="create-form__field skill-combobox"
+            onfocusin={() => (skillDropdownOpen = true)}
+            onfocusout={closeSkillDropdownOnFocusout}
+          >
             <label class="create-form__label" for="skill-search">Search skills</label>
             <div class="catalog-search__row">
               <input
@@ -1009,11 +1012,9 @@
             </div>
           </div>
 
-          {#if skillQ.trim().length === 0}
-            <!-- Search-first (create-flow polish): no browse wall. The
-                 recommended strip above carries the defaults; everything
-                 else is one search away. -->
-          {:else if skills.isPending}
+          {#if skillDropdownOpen}
+            <div class="skill-dropdown" role="listbox" aria-label="Skills catalog">
+            {#if skills.isPending}
             <Skeleton rows={2} />
           {:else if skills.isError}
             <ErrorState
@@ -1026,7 +1027,7 @@
             </p>
           {:else}
             <div class="skill-list">
-              {#each visibleSkills as skill (skillKey(skill.id, skill.team))}
+              {#each skills.data as skill (skillKey(skill.id, skill.team))}
                 <label class="skill-item">
                   <input
                     type="checkbox"
@@ -1043,7 +1044,8 @@
                 </label>
               {/each}
             </div>
-
+          {/if}
+            </div>
           {/if}
         {/if}
       </fieldset>
@@ -1846,5 +1848,25 @@
   .create-form__submit:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .skill-combobox {
+    position: relative;
+  }
+
+  .skill-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 30;
+    margin-top: 0.25rem;
+    max-height: 20rem;
+    overflow-y: auto;
+    background: var(--surface, #fffdf9);
+    border: 1px solid var(--border, #d0c8bc);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(40, 30, 20, 0.12);
+    padding: 0.25rem;
   }
 </style>
