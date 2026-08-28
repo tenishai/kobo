@@ -724,6 +724,22 @@ class FakeGitHub:
             return self._head_sha_sequence[index]
         return self._head_sha
 
+    def latest_run(self, repo: str) -> dict | None:
+        """Protocol parity for the build-log viewer: the newest run of the
+        newest scripted sha, or None when nothing is scripted -- enough for
+        the route's own tests, which bring their own richer fake."""
+        self.calls.append(f"latest_run:{repo}")
+        for runs in reversed(list(self._runs_by_sha.values())):
+            if runs and runs[-1]:
+                run = dict(runs[-1][-1])
+                run.setdefault("head_sha", "")
+                return run
+        return None
+
+    def run_log(self, repo: str, run_id: int, *, failed_only: bool = True) -> str:
+        self.calls.append(f"run_log:{repo}:{run_id}:{failed_only}")
+        return "fake log"
+
     def runs_for_commit(self, repo: str, sha: str) -> list[dict]:
         self.calls.append(f"runs_for_commit:{repo}:{sha}")
         sequence = self._runs_by_sha.get(sha, [[]])

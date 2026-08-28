@@ -1478,3 +1478,63 @@ export async function postThreadTurn(
   });
   return parse<{ replies: ThreadReply[] }>(res);
 }
+
+/** One workflow run's identity, as the build-log route reports it. */
+export interface BuildRun {
+  id: number;
+  status: string;
+  conclusion: string | null;
+  head_sha: string;
+}
+
+export interface BuildLog {
+  run: BuildRun;
+  log: string;
+}
+
+/** The tail of the agent repo's most recent build log (build-log viewer,
+ * 2026-08-27 feedback). Owner-or-operator on the server. */
+export async function fetchBuildLog(name: string): Promise<BuildLog> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/build-log`);
+  return parse<BuildLog>(res);
+}
+
+/** One repo-access grant row (agent PR broker). */
+export interface RepoAccessRow {
+  id: number;
+  agent: string;
+  repository: string;
+  status: "requested" | "approved" | "revoked";
+  requested_by: string;
+  decided_by: string | null;
+}
+
+export async function listRepoAccess(status?: string): Promise<{ results: RepoAccessRow[] }> {
+  const q = status ? `?status=${encodeURIComponent(status)}` : "";
+  const res = await fetch(`/api/repo-access${q}`);
+  return parse<{ results: RepoAccessRow[] }>(res);
+}
+
+export async function requestRepoAccess(
+  name: string,
+  repositories: string[],
+): Promise<{ requested: { id: number; repository: string; status: string }[] }> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/repo-access`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repositories }),
+  });
+  return parse(res);
+}
+
+export async function decideRepoAccess(
+  ids: number[],
+  decision: "approved" | "revoked",
+): Promise<{ decided: RepoAccessRow[] }> {
+  const res = await fetch("/api/repo-access/decide", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids, decision }),
+  });
+  return parse(res);
+}

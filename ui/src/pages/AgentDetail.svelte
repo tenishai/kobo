@@ -9,6 +9,8 @@
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { derived, writable } from "svelte/store";
   import AccessPanel from "../components/AccessPanel.svelte";
+  import BuildLogCard from "../components/BuildLogCard.svelte";
+  import RepoAccessCard from "../components/RepoAccessCard.svelte";
   import ChatPanel from "../components/ChatPanel.svelte";
   import ColleagueConversations from "../components/ColleagueConversations.svelte";
   import DangerZone from "../components/DangerZone.svelte";
@@ -474,6 +476,8 @@
 
             <StepChecklist steps={data.steps} />
 
+            <BuildLogCard agentName={data.name} />
+
             {#if data.first_reply}
               <FirstReply reply={data.first_reply} />
             {/if}
@@ -503,6 +507,7 @@
               groupName={data.group_name}
               frozen={isFrozen(data.status)}
             />
+            <RepoAccessCard agentName={data.name} frozen={isFrozen(data.status)} />
           {/if}
         </div>
       {/each}

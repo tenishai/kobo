@@ -256,6 +256,17 @@ class GitHubClient(Protocol):
         """
         ...
 
+    def latest_run(self, repo: str) -> dict | None:
+        """The repo's most recent workflow run ({id, status, conclusion,
+        head_sha}), or None when the repo has never run a workflow."""
+        ...
+
+    def run_log(self, repo: str, run_id: int, *, failed_only: bool = True) -> str:
+        """One workflow run's log text -- the failed steps' logs when
+        failed_only (the build-log viewer's default; whole-run logs
+        otherwise). Raw text as gh renders it; the CALLER budgets/tails."""
+        ...
+
     def runs_for_commit(self, repo: str, sha: str) -> list[dict]:
         """Workflow runs triggered by commit `sha`, newest first — each a
         {"id": int, "status": str, "conclusion": str | None} dict.
@@ -501,6 +512,32 @@ class GhCLI:
             }
             for run in runs
         ]
+
+    def latest_run(self, repo: str) -> dict | None:
+        out = self._runner.run(
+            [
+                self._gh, "run", "list", "--repo", repo, "-L", "1",
+                "--json", "databaseId,status,conclusion,headSha",
+            ],
+            env=self._env(),
+        )
+        runs = json.loads(out) if out else []
+        if not runs:
+            return None
+        run = runs[0]
+        return {
+            "id": run["databaseId"],
+            "status": run["status"],
+            "conclusion": run.get("conclusion"),
+            "head_sha": run.get("headSha", ""),
+        }
+
+    def run_log(self, repo: str, run_id: int, *, failed_only: bool = True) -> str:
+        flag = "--log-failed" if failed_only else "--log"
+        return self._runner.run(
+            [self._gh, "run", "view", str(run_id), "--repo", repo, flag],
+            env=self._env(),
+        )
 
     def rerun(self, repo: str, run_id: int) -> None:
         self._runner.run(

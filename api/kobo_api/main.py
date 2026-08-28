@@ -2937,6 +2937,56 @@ def create_app(
         # a value re-read after the pipeline thread is already running.
         return JSONResponse({"name": name, "status": AgentStatus.PROVISIONING}, status_code=202)
 
+    # --- Build-log viewer (2026-08-27 feedback: kodama parity) ------------------
+
+    _BUILD_LOG_TAIL_LINES = 400
+
+    @app.get("/api/agents/{name}/build-log")
+    def agent_build_log(  # noqa: B008
+        name: str,
+        request: Request,
+        session: Session = Depends(get_session),
+    ) -> JSONResponse:
+        """The tail of the agent repo's most recent workflow-run log --
+        failed steps only when the run failed, so the reason is on top.
+        Owner-or-operator: an owner without access to the CI project (the
+        feedback's exact situation) reads their own agent's build here
+        instead of a GitHub Actions page they cannot open."""
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+        if not agent.repo_full_name:
+            return JSONResponse(
+                {"error": "this agent has no repository yet"}, status_code=409
+            )
+        clients: Clients | None = getattr(request.app.state, "clients", None)
+        github = clients.github if clients is not None else None
+        if github is None:
+            return JSONResponse({"error": "GitHub is not configured"}, status_code=503)
+        try:
+            run = github.latest_run(agent.repo_full_name)
+            if run is None:
+                return JSONResponse(
+                    {"error": "this agent's repository has no builds yet"},
+                    status_code=404,
+                )
+            failed = run.get("conclusion") not in (None, "success")
+            log_text = github.run_log(
+                agent.repo_full_name, run["id"], failed_only=failed
+            )
+        except ClientError:
+            return JSONResponse(
+                {"error": "the build system did not answer. Try again shortly."},
+                status_code=502,
+            )
+        lines = log_text.splitlines()
+        if len(lines) > _BUILD_LOG_TAIL_LINES:
+            lines = ["... (%d earlier lines trimmed)" % (len(lines) - _BUILD_LOG_TAIL_LINES)] + lines[-_BUILD_LOG_TAIL_LINES:]
+        return JSONResponse({"run": run, "log": "\n".join(lines)})
+
     # --- Agent PR broker (2026-08-27 spec): repo access + scoped tokens ---------
 
     def _pr_broker_off(config: Config) -> JSONResponse | None:
