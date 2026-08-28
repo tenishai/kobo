@@ -341,6 +341,13 @@ class Config(BaseModel):
     # (an infra coordinate like cabal_url); empty = the composer emits no
     # github block at all.
     broker_url: str = ""
+    # Global READERS (reader-role wave, 2026-08-28): RAW Okta group names
+    # whose members see EVERY agent in the room -- visibility only, no
+    # mutation power of any kind. Raw directory names, deliberately NOT
+    # config-group names like admin_groups: a directory group may only
+    # back one config group, so a lead group inside a team's regional
+    # split could never be named in config terms.
+    reader_groups: list[str] = Field(default_factory=list)
     # The ACL axis (access-control arc, Task B1) — distinct from `team` (the
     # skills-catalog-derived capability axis; kobo_api.groups' module
     # docstring covers the fail-closed contract this feeds). Each entry's

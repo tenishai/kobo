@@ -380,3 +380,77 @@ def test_grant_email_match_is_case_insensitive(session_factory, config):
 
     assert response.status_code == 200
     assert {a["name"] for a in response.json()["agents"]} == {"a"}
+
+
+# --- global reader role (reader-role wave, 2026-08-28) --------------------------
+
+
+class _RawResolver:
+    """A resolver whose raw directory answer is scripted; configured-name
+    translation deliberately returns nothing, so any visibility a reader
+    gains comes from the reader branch alone, never group derivation."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    def groups_for(self, email):
+        return []
+
+    def raw_groups_for(self, email):
+        return self._raw
+
+
+def test_reader_group_member_sees_every_agent(session_factory, config, tmp_path):
+    private_key, jwk = _generate_jwk()
+    config = config.model_copy(
+        update={"reader_groups": ["engineering_operations_sre_lead"]}
+    )
+    _seed_agent(session_factory, name="ward", created_by=OWNER_EMAIL, group_name="infra-engineering")
+    _seed_agent(session_factory, name="clio", created_by=OWNER_EMAIL, group_name="data-engineering")
+    client = _make_client(
+        session_factory, config, _fetcher(jwk),
+        groups_resolver=_RawResolver(["engineering_operations_sre_lead", "unrelated_group"]),
+    )
+    body = client.get("/api/agents", headers=_headers(private_key, email=STRANGER_EMAIL)).json()
+    assert sorted(a["name"] for a in body["agents"]) == ["clio", "ward"]
+
+
+def test_reader_gains_no_mutation_power(session_factory, config, tmp_path):
+    """Visibility only: a reader who can SEE an agent still cannot teach it,
+    grant on it, or destroy it -- the owner-or-operator gates never consult
+    the reader role."""
+    private_key, jwk = _generate_jwk()
+    config = config.model_copy(
+        update={"reader_groups": ["engineering_operations_sre_lead"]}
+    )
+    _seed_agent(session_factory, name="ward", created_by=OWNER_EMAIL, group_name="infra-engineering")
+    client = _make_client(
+        session_factory, config, _fetcher(jwk),
+        groups_resolver=_RawResolver(["engineering_operations_sre_lead"]),
+    )
+    headers = _headers(private_key, email=STRANGER_EMAIL)
+    r = client.post("/api/agents/ward/grants", json={"email": "x@example.com"}, headers=headers)
+    assert r.status_code == 403
+    r = client.delete("/api/agents/ward", headers=headers)
+    assert r.status_code == 403
+
+
+def test_directory_outage_reads_as_not_a_reader(session_factory, config, tmp_path):
+    private_key, jwk = _generate_jwk()
+    config = config.model_copy(
+        update={"reader_groups": ["engineering_operations_sre_lead"]}
+    )
+    _seed_agent(session_factory, name="ward", created_by=OWNER_EMAIL, group_name="infra-engineering")
+
+    class _DownResolver:
+        def groups_for(self, email):
+            return None
+
+        def raw_groups_for(self, email):
+            return None
+
+    client = _make_client(
+        session_factory, config, _fetcher(jwk), groups_resolver=_DownResolver()
+    )
+    body = client.get("/api/agents", headers=_headers(private_key, email=STRANGER_EMAIL)).json()
+    assert body["agents"] == []

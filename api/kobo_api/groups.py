@@ -159,6 +159,28 @@ class OktaGroupResolver:
         self._failed_until: dict[str, float] = {}
 
     def groups_for(self, email: str) -> list[str] | None:
+        raw = self.raw_groups_for(email)
+        if raw is None:
+            return None
+        # `self._universe` is Okta name -> CONFIG name (inverted at
+        # construction, see `_invert_universe`). A member of several
+        # regional Okta groups that all back the same CONFIG name must
+        # yield that CONFIG name exactly once -- order-of-first-sight over
+        # the response's own order.
+        config_names: list[str] = []
+        for okta_name in raw:
+            config_name = self._universe.get(okta_name)
+            if config_name is not None and config_name not in config_names:
+                config_names.append(config_name)
+        return config_names
+
+    def raw_groups_for(self, email: str) -> list[str] | None:
+        """The member's RAW Okta group names, unfiltered by the configured
+        universe (reader-role wave, 2026-08-28: `Config.reader_groups`
+        names raw directory groups -- a directory group may only back one
+        CONFIG group, so a role keyed on a group that already backs one,
+        like a lead group inside a team's regional split, could never be
+        expressed in CONFIG names). Same cache, same fail-closed None."""
         email = email.lower()
         now = self._now()
         cached = self._cache.get(email)
@@ -225,22 +247,10 @@ class OktaGroupResolver:
             name = profile.get("name") if isinstance(profile, dict) else None
             if isinstance(name, str):
                 okta_names_seen.append(name)
-        okta_names = dict.fromkeys(okta_names_seen)
-
-        # `self._universe` is Okta name -> CONFIG name (inverted at
-        # construction, see `_invert_universe`). A member of several
-        # regional Okta groups that all back the same CONFIG name (the
-        # directory-splits-one-team-by-region case `GroupChoice.okta_groups`
-        # exists for) must yield that CONFIG name exactly once -- the `not
-        # in config_names` guard is the dedup, order-of-first-sight over the
-        # RESPONSE's own order (not sorted, not hash-seed order), since
-        # `okta_names` above is built and deduped in that same order.
-        config_names: list[str] = []
-        for okta_name in okta_names:
-            config_name = self._universe.get(okta_name)
-            if config_name is not None and config_name not in config_names:
-                config_names.append(config_name)
-        return config_names
+        # Dedup preserving response order; the CONFIG-name translation
+        # happens in groups_for -- this cache deliberately holds RAW names
+        # so raw_groups_for and groups_for share one fetch and one TTL.
+        return list(dict.fromkeys(okta_names_seen))
 
 
 class OktaPeopleSearch:

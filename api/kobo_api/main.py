@@ -1236,6 +1236,30 @@ def _admin_operator_block(request: Request, config: Config) -> JSONResponse | No
     )
 
 
+def _is_reader(request: Request) -> bool:
+    """Whether the caller holds the global READER role (reader-role wave,
+    2026-08-28): a member of any `config.reader_groups` entry -- RAW Okta
+    group names, checked against the resolver's raw (unfiltered) membership
+    list. Visibility only: nothing anywhere consults this for a mutation.
+    Fail-closed like every group check: no resolver, no email, or a
+    directory outage (raw_groups_for -> None) all read as not-a-reader."""
+    cfg: Config = request.app.state.config
+    if not cfg.reader_groups:
+        return False
+    email = (getattr(request.state, "iap_email", None) or "").lower()
+    if not email:
+        return False
+    clients: Clients | None = getattr(request.app.state, "clients", None)
+    resolver = clients.groups if clients is not None else None
+    raw_groups_for = getattr(resolver, "raw_groups_for", None)
+    if raw_groups_for is None:
+        return False
+    raw = raw_groups_for(email)
+    if raw is None:
+        return False
+    return bool(set(raw) & set(cfg.reader_groups))
+
+
 def _repo_access_operator_block(request: Request, config: Config) -> JSONResponse | None:
     """None when the caller may decide repo-access requests (agent PR broker
     spec, 2026-08-27 ruling 1: the room's operator set -- the kobo owner
@@ -1354,6 +1378,12 @@ def _visible_agents(session: Session, request: Request) -> tuple[list[Agent], bo
     email = (getattr(request.state, "iap_email", None) or "").lower()
 
     if _is_admin(request):
+        return all_agents, False
+
+    # Global READER (reader-role wave, 2026-08-28): full visibility, and
+    # ONLY visibility -- every mutation gate below and elsewhere still
+    # answers by owner/operator, never by this.
+    if _is_reader(request):
         return all_agents, False
 
     resolver = clients.groups if clients is not None else None

@@ -136,6 +136,7 @@ _ORG_YAML_TOKENS = {
     "mcp": "__KOBO_MCP__",
     "memory_replica_bucket": "__KOBO_MEMORY_REPLICA_BUCKET__",
     "broker_url": "__KOBO_BROKER_URL__",
+    "reader_groups": "__KOBO_READER_GROUPS__",
 }
 
 assert set(_ORG_YAML_TOKENS) == ORG_KEYS, (
@@ -159,6 +160,7 @@ def _org_yaml_context(config: Config) -> dict[str, object]:
         "runtime_image": config.runtime_image,
         "memory_replica_bucket": config.memory_replica_bucket,
         "broker_url": config.broker_url,
+        "reader_groups": config.reader_groups,
         "gcp_project": config.gcp_project,
         "vertex_project": config.vertex_project,
         "vertex_location": config.vertex_location,
