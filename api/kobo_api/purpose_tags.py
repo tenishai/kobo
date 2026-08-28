@@ -24,13 +24,23 @@ _CAP_MESSAGE = "Eight tags at most."
 
 
 def normalize_tags(tags: object) -> list[str]:
-    """Lowercase, strip, drop empties, de-duplicate (first occurrence wins,
-    order preserved). Any non-list input, or any non-string entry within
-    it, is dropped rather than raised on — this runs against both a
-    user-submitted JSON list (pydantic already guarantees `list[str]` at
-    the create route, but defense-in-depth costs nothing) and a model's
-    best-effort reply (kobo_api.clients.VertexNameClient.draft, which does
-    no type/bounds checking of its own).
+    """Lowercase, strip, slug internal whitespace to hyphens, drop empties,
+    de-duplicate (first occurrence wins, order preserved). Any non-list
+    input, or any non-string entry within it, is dropped rather than raised
+    on — this runs against both a user-submitted JSON list (pydantic already
+    guarantees `list[str]` at the create route, but defense-in-depth costs
+    nothing) and a model's best-effort reply
+    (kobo_api.clients.VertexNameClient.draft, which does no type/bounds
+    checking of its own).
+
+    The hyphenation is load-bearing, not cosmetic: the catalog index
+    (kobo_api.search) stores tags space-joined in one FTS column and splits
+    them back on read, so a tag holding a space would shatter into
+    word-shards there — and repeated shards ("cloud security" + "security
+    regulations" both shed a "security") crashed the Personas page's
+    tag-keyed each on the live audit-check persona (2026-08-28). A tag is a
+    slug; a space in one is the entry error this normalizer exists to fold
+    away.
 
     No cap applied here — callers apply their own: the draft silently
     truncates to 5 (a best-effort suggestion), the create route caps at 8
@@ -46,7 +56,7 @@ def normalize_tags(tags: object) -> list[str]:
     for tag in tags:
         if not isinstance(tag, str):
             continue
-        cleaned = tag.strip().lower()
+        cleaned = "-".join(tag.lower().split())
         if not cleaned or cleaned in seen:
             continue
         seen.add(cleaned)

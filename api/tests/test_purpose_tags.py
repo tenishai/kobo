@@ -32,6 +32,23 @@ def test_normalize_dedupes_preserving_first_occurrence_and_order():
     assert normalize_tags(["billing", "refunds", "billing"]) == ["billing", "refunds"]
 
 
+def test_normalize_hyphenates_internal_whitespace():
+    # A multi-word tag becomes one hyphenated slug. The catalog index stores
+    # tags space-joined and splits them back on read (kobo_api.search), so a
+    # tag with a space in it would otherwise shatter into word-shards there --
+    # the live persona audit-check carried "cloud security" and "security
+    # regulations", whose shards collided on "security" and blew up the
+    # Personas page's tag-keyed each (Svelte each_key_duplicate, 2026-08-28).
+    assert normalize_tags(["cloud security", "security\tregulations"]) == [
+        "cloud-security",
+        "security-regulations",
+    ]
+
+
+def test_normalize_dedupes_after_hyphenation():
+    assert normalize_tags(["cloud security", "cloud-security"]) == ["cloud-security"]
+
+
 def test_normalize_dedupes_after_case_and_whitespace_folding():
     assert normalize_tags(["Billing", " billing", "BILLING "]) == ["billing"]
 

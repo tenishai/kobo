@@ -45,6 +45,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from kobo_api.clients import ClientError, StorageClient, StorageNotFound
+from kobo_api.purpose_tags import normalize_tags
 
 log = logging.getLogger(__name__)
 
@@ -488,7 +489,14 @@ def ingest_indexes(
             "name": e["name"],
             "description": e["description"],
             "team": e["team"],
-            "tags": " ".join(e["tags"]),
+            # The column round-trips through a space-join here and a split in
+            # `_row_to_entry`, so every tag must be a single token before the
+            # join. Bucket entries written before the naming law carried
+            # multi-word tags ("cloud security") that shattered into
+            # duplicate word-shards on read and crashed the Personas page's
+            # tag-keyed each -- normalize_tags slugs and dedupes them at the
+            # boundary, so even a pre-law index ingests clean.
+            "tags": " ".join(normalize_tags(e["tags"])),
             "kind": kind,
             "sha": e["sha"],
             "builtin": e["builtin"],
@@ -512,7 +520,12 @@ def _row_to_entry(row) -> CatalogEntry:
         name=row.name,
         description=row.description,
         team=row.team,
-        tags=row.tags.split() if row.tags else [],
+        # dict.fromkeys, not a plain split: rows ingested before tags were
+        # normalized at the write boundary (above) can still hold word-shards
+        # of multi-word tags until the next full ingest replaces them, and a
+        # repeated shard must never reach a caller -- the UI keys tag chips
+        # by the tag string itself.
+        tags=list(dict.fromkeys(row.tags.split())) if row.tags else [],
         sha=row.sha or "",
         builtin=bool(row.builtin),
     )

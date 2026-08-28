@@ -194,6 +194,45 @@ def test_ingest_drops_archived_entries(engine):
     assert ids == ["active-one"]
 
 
+def test_ingest_slugs_multiword_tags_and_never_yields_duplicates(engine):
+    # The tags column is space-joined at write and split at read, so a
+    # pre-naming-law bucket entry with multi-word tags ("cloud security",
+    # "security regulations") used to shatter into word-shards whose repeats
+    # ("security", twice) crashed the Personas page's tag-keyed each
+    # (Svelte each_key_duplicate, live on audit-check 2026-08-28). Ingest
+    # now runs every entry's tags through normalize_tags -- multi-word tags
+    # come back as single hyphenated slugs, deduped, round-tripping the
+    # join/split intact.
+    storage = FakeStorage(
+        buckets={
+            "personas-bucket": {
+                "index.json": (
+                    _index_bytes(
+                        [
+                            {"id": "pre-law", "name": "Pre-law",
+                             "description": "carries multi-word tags",
+                             "team": "shared",
+                             "tags": ["compliance auditing",
+                                      "security regulations",
+                                      "cloud security"],
+                             "builtin": False},
+                        ]
+                    ),
+                    {},
+                )
+            },
+        }
+    )
+    ingest_indexes(engine, storage, {"persona": "personas-bucket"})
+    (entry,) = search(engine, "persona", "")
+    assert entry.tags == [
+        "compliance-auditing",
+        "security-regulations",
+        "cloud-security",
+    ]
+    assert len(entry.tags) == len(set(entry.tags))
+
+
 def test_ingest_records_exactly_one_read_per_bucket(engine, storage):
     _ingest(engine, storage)
     assert storage.calls.count("read_bytes:skills-bucket:index.json") == 1

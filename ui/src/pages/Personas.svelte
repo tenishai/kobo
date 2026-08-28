@@ -137,7 +137,13 @@
       <p class="persona-card__description">{persona.description}</p>
       <div class="persona-card__chips">
         <span class="persona-card__chip">{persona.team}</span>
-        {#each persona.tags as tag (tag)}
+        <!-- Set, not the raw list: the chips are keyed by the tag string, so
+             one repeated tag from the server (as the pre-naming-law
+             audit-check persona proved live, 2026-08-28) would throw
+             each_key_duplicate and take the WHOLE list down with it. The
+             server now dedupes at ingest and read; this guard keeps a render
+             from ever dying on data anyway. -->
+        {#each [...new Set(persona.tags)] as tag (tag)}
           <span class="persona-card__chip">{tag}</span>
         {/each}
       </div>
