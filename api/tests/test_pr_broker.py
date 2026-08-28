@@ -279,3 +279,31 @@ def test_mint_raises_clienterror_on_github_refusal(tmp_path):
             http_client=_FakeHttp(status=422),
             now=lambda: 1_000_000,
         )
+
+
+
+def test_destroy_forget_deletes_repo_access_rows(broker_client, session_factory):
+    """A future agent reusing a destroyed agent's name must inherit ZERO
+    grants -- destroy-forget clears repo_access by name."""
+    from kobo_api.destroy import _destroy_forget
+
+    name = _agent(session_factory)
+    rows = broker_client.post(
+        f"/api/agents/{name}/repo-access", json={"repositories": ["acme/a"]}
+    ).json()["requested"]
+    broker_client.post(
+        "/api/repo-access/decide", json={"ids": [rows[0]["id"]], "decision": "approved"}
+    )
+
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=name).one()
+
+    class Ctx:
+        pass
+
+    ctx = Ctx()
+    ctx.session = session
+    ctx.agent = agent
+    _destroy_forget(ctx)
+    assert session.query(RepoAccess).count() == 0
+    session.close()

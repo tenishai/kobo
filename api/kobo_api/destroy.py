@@ -48,7 +48,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from kobo_api.clients import ClientError, cabal_enabled
 from kobo_api.config import Config
 from kobo_api.directory import retire_directory
-from kobo_api.models import A2AInvite, Agent, AgentStatus, AgentStep, StepStatus
+from kobo_api.models import A2AInvite, Agent, AgentStatus, AgentStep, RepoAccess, StepStatus
 from kobo_api.pairs import sync_dispatch_pairs_best_effort
 from kobo_api.provisioner import _get_or_create_step
 from kobo_api.steps import refresh_colleague_rosters
@@ -340,6 +340,15 @@ def _destroy_forget(ctx: DestroyCtx) -> str:
     session.query(A2AInvite).filter(
         or_(A2AInvite.from_agent == agent.name, A2AInvite.to_agent == agent.name)
     ).delete(synchronize_session=False)
+    # Repo-access rows die with the agent (agent PR broker): they are keyed
+    # by NAME, so leaving them would hand a future agent that happens to
+    # reuse this name every repository this one was ever approved for --
+    # the broker would mint for the new agent on the old grants. The audit
+    # trail's home is the broker's own record, never a row that can turn
+    # back into a live grant.
+    session.query(RepoAccess).filter_by(agent_name=agent.name).delete(
+        synchronize_session=False
+    )
     session.query(AgentStep).filter_by(agent_id=agent.id).delete()
     session.delete(agent)
     session.commit()
