@@ -601,6 +601,7 @@
         id="persona-builder-name"
         class="persona-builder__input"
         type="text"
+        maxlength="60"
         bind:value={name}
         autocomplete="off"
         aria-describedby="persona-builder-name-hint"
@@ -626,11 +627,15 @@
         id="persona-builder-who-they-are"
         class="persona-builder__input"
         type="text"
+        maxlength="200"
         bind:value={whoTheyAre}
         placeholder="an unflappable network detective who's seen every outage twice"
         autocomplete="off"
       />
-      <p class="persona-builder__help">One vivid line: who is this agent?</p>
+      <p class="persona-builder__help">
+        One vivid line: who is this agent?{#if whoTheyAre.length > 170}
+          {" "}({200 - whoTheyAre.length} characters left){/if}
+      </p>
     </div>
 
     <div class="persona-builder__field">

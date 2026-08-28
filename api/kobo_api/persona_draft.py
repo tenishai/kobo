@@ -182,6 +182,16 @@ def _extract_field(
     if not isinstance(value, str):
         return None
     value = value.strip()
+    if key == "who_they_are":
+        # The renderer prepends "You are {name}, " to this line -- a draft
+        # that opens with its own "You are" would read doubled in the
+        # composed persona ("You are X, You are the ..."). Observed live
+        # 2026-08-28; stripped here so the bounds check sees the real line.
+        lowered = value.lower()
+        for prefix in ("you are the ", "you are a ", "you are an ", "you are "):
+            if lowered.startswith(prefix):
+                value = value[len(prefix):].strip()
+                break
     if reject_newline and "\n" in value:
         return None
     if not (1 <= len(value) <= max_len):
