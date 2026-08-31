@@ -89,10 +89,11 @@ def test_render_manifest_settings_and_events_exact():
     manifest = render_manifest("echo", "A friendly test agent.")
     assert manifest["settings"] == {
         "event_subscriptions": {
+            # Tagged-only in channels (2026-08-31 ruling): no channel
+            # message subscriptions -- mentions are the only channel
+            # delivery. DMs and group DMs keep full delivery.
             "bot_events": [
                 "app_mention",
-                "message.channels",
-                "message.groups",
                 "message.im",
                 "message.mpim",
             ]

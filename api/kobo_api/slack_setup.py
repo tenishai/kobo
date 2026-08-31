@@ -85,10 +85,17 @@ _BOT_SCOPES = [
     "reactions:write",
 ]
 
+# Tagged-only in channels (2026-08-31 operator ruling, from live use: an
+# agent in a busy thread answered EVERY reply): no message.channels or
+# message.groups subscription at all -- in channels, public or private,
+# only an explicit @-mention reaches the agent. DMs and group DMs keep
+# full message delivery; messaging an agent directly IS the ask. The
+# history/read SCOPES above stay: delivery and permission are different
+# axes, and an agent asked to orient can still look a thread up. One
+# behavioral consequence to say out loud: thread context now accumulates
+# only from mentioned messages, so the mention should carry the ask.
 _BOT_EVENTS = [
     "app_mention",
-    "message.channels",
-    "message.groups",
     "message.im",
     "message.mpim",
 ]
