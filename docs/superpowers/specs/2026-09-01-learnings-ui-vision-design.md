@@ -112,9 +112,10 @@ gets its first run immediately).
 For each agent with status `ready`:
 1. Build a `system_task: learnings` A2A message through the existing
    switchboard relay (same transport `teach` and `knowledge` already use).
-2. The message payload carries: the current UTC date, and the list of
-   `content_hash` values already in `agent_learnings` for this agent
-   (all statuses) so the agent can skip known content.
+2. The message payload carries the current UTC date. Dedupe against
+   already-proposed content happens entirely on the kobo side (the
+   upsert's hash check below) -- a hash list would be meaningless to
+   the summarizing model.
 3. On response, validate each candidate against the format above (max 10,
    field lengths, required fields). Drop malformed candidates silently.
 4. Upsert into `agent_learnings`: skip any row whose `content_hash`
@@ -136,11 +137,20 @@ New handler in `daedalus/memory/teach.py` (or a sibling `learnings.py`),
 dispatched from `Agent.handle_task` when
 `task.metadata["system_task"] == "learnings"`.
 
+**Conversation journal (new, required):** task checkpoints cannot be
+the conversation source -- the runtime drops a task's checkpoint row
+the moment the task completes, and checkpoints carry no timestamps or
+list API. Wave 1 adds a small journal: on every normal task completion,
+the agent appends one row (`context_id`, the task's message history as
+JSON, an ISO timestamp) to a `journal.db` SQLite file living next to
+the techne db on the agent's persistent volume. Rows older than 7 days
+are pruned on write. Journaling is best-effort: a journal failure never
+fails the task.
+
 The handler:
-1. Reads the agent's conversation checkpoints from the last 24h. These
-   are the task checkpoint files the runtime already writes for every
-   Slack thread and A2A exchange -- the same files the build-log viewer
-   reads. No new persistence is needed.
+1. Reads the journal rows from the last 24h. If there are none, it
+   returns an empty candidates list immediately -- no model call, so a
+   boot-time catch-up run against a quiet agent costs nothing.
 2. Builds a summarization prompt for the agent's own model (the same
    model the agent uses for regular tasks, accessed through the same
    `LiteLLMClient`). The prompt:
@@ -153,8 +163,6 @@ The handler:
      know" context via the same `recall()` the agent uses at task time).
    - Instructs the model to return structured JSON matching the candidate
      format above.
-   - Includes the `known_hashes` list from kobo so the model can skip
-     content it already proposed.
 3. Parses the model's response, validates the JSON, and returns the
    candidates array as the task's reply text (JSON-encoded in the A2A
    response body).
@@ -190,10 +198,19 @@ content would just re-fill a queue nobody is reading.
 
 ### Auth gate
 
-Same gate as teach: the caller must be the agent's owner, a grantee, or
-an operator (the `_require_teacher` check the teach route already uses).
-Readers (the `sre_lead` reader-role) can see the learnings list but
-cannot approve or deny.
+Approve/deny/bulk: the caller must be the agent's owner, an operator,
+or a grantee (an `AgentUserGrant` row for this agent). This is the
+existing `_owner_or_operator_or_403` gate widened by the grant check --
+NOT the teach gate (teach is deliberately open to any signed-in caller
+who can see the agent, which would hand approval power to readers,
+violating the reader-role law that every mutation gate answers readers
+exactly as it answers anyone else).
+
+The GET list is visibility-gated only (`_visible_agent_or_404`), so
+readers can see the queue. The agent detail GET carries a
+`can_decide_learnings` boolean (computed server-side by the same
+decide gate, following the `destroy_visible` precedent) so the UI can
+hide Approve/Deny without ever inferring roles client-side.
 
 ### API routes
 
