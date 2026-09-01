@@ -16,6 +16,7 @@
   import DangerZone from "../components/DangerZone.svelte";
   import ErrorState from "../components/ErrorState.svelte";
   import FirstReply from "../components/FirstReply.svelte";
+  import LearningsPanel from "../components/LearningsPanel.svelte";
   import MemoryPanel from "../components/MemoryPanel.svelte";
   import MetadataDetails from "../components/MetadataDetails.svelte";
   import RequestAccessCard from "../components/RequestAccessCard.svelte";
@@ -341,6 +342,9 @@
             }}
           >
             {TAB_LABELS[tab]}
+            {#if tab === "learnings" && data.pending_learnings > 0}
+              <span class="detail-tabs__badge">{data.pending_learnings}</span>
+            {/if}
           </button>
         {/each}
       </div>
@@ -491,6 +495,12 @@
             <ColleagueConversations agentName={data.name} />
           {:else if tab === "memory"}
             <MemoryPanel agentName={data.name} frozen={isFrozen(data.status)} />
+          {:else if tab === "learnings"}
+            <LearningsPanel
+              agentName={data.name}
+              canDecide={data.can_decide_learnings}
+              frozen={isFrozen(data.status)}
+            />
           {:else if tab === "skills"}
             <SkillsPanel agentName={data.name} frozen={isFrozen(data.status)} />
           {:else if tab === "tooling"}
@@ -860,6 +870,19 @@
   .detail-tabs__tab:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+  }
+
+  .detail-tabs__badge {
+    display: inline-block;
+    min-width: 1.2em;
+    margin-left: 0.35em;
+    padding: 0 0.35em;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-size: 0.72rem;
+    line-height: 1.5;
+    text-align: center;
   }
 
   .detail-tabs__panel {

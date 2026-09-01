@@ -24,6 +24,8 @@ const READY_AGENT = {
   has_avatar: false,
   created_by: null,
   group_name: null,
+  pending_learnings: 0,
+  can_decide_learnings: false,
 };
 
 // A minimal EventSource stand-in - jsdom has none, and ColleagueConversations
