@@ -175,3 +175,14 @@ def test_note_filename_strips_non_slug_characters_but_keeps_words():
     assert "!" not in slug
     assert "#" not in slug
     assert "'" not in slug
+
+
+def test_note_filename_prefix_parameter():
+    from kobo_api.teach import note_filename
+
+    name = note_filename("the canary gate is manual", on_date="2026-09-01", prefix="learning")
+
+    assert name.startswith("learning-20260901-")
+    assert name.endswith(".md")
+    # Stays inside intake's 40-chars-before-.md cap.
+    assert len(name) - len(".md") <= 40

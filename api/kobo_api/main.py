@@ -21,6 +21,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -70,6 +71,10 @@ from kobo_api.metadata import (
 )
 from kobo_api.models import (
     GROUP_REQUEST_DECLINED,
+    LEARNING_APPROVED,
+    LEARNING_DENIED,
+    LEARNING_PENDING,
+    LEARNING_STATUSES,
     REPO_ACCESS_APPROVED,
     REPO_ACCESS_REQUESTED,
     REPO_ACCESS_REVOKED,
@@ -83,6 +88,7 @@ from kobo_api.models import (
     INVITE_REVOKED,
     A2AInvite,
     Agent,
+    AgentLearning,
     AgentStatus,
     AgentUserGrant,
     GroupRequest,
@@ -381,6 +387,14 @@ class TeachPayload(BaseModel):
     filename here for the caller to pick, unlike that upload."""
 
     text: str
+
+
+class LearningsBulkPayload(BaseModel):
+    """Bulk verdict for the Learnings tab's select-all gesture: one action
+    applied to many pending rows in one request."""
+
+    ids: list[int]
+    action: Literal["approve", "deny"]
 
 
 class ToolingUploadPayload(BaseModel):
@@ -1321,6 +1335,34 @@ def _owner_or_operator_or_403(agent: Agent, request: Request) -> JSONResponse | 
         {"error": "Only this agent's owner or a room operator can change it."},
         status_code=403,
     )
+
+
+def _decider_or_403(
+    agent: Agent, request: Request, session: Session
+) -> JSONResponse | None:
+    """The learnings decide gate (daily-learnings spec): owner or operator
+    (the standard mutation gate), widened by a per-user grant -- a grantee
+    already sees and chats with this agent as if they owned it, and
+    approving a learning is teaching, which any visible caller can already
+    do; the extra bar here exists to keep READERS out (see-all,
+    mutate-nothing), and readers hold no grants, so they fail this exactly
+    as any other non-owner does."""
+    gate = _owner_or_operator_or_403(agent, request)
+    if gate is None:
+        return None
+    email = getattr(request.state, "iap_email", None)
+    if email:
+        grant = (
+            session.query(AgentUserGrant)
+            .filter(
+                AgentUserGrant.agent_name == agent.name,
+                func.lower(AgentUserGrant.email) == email.lower(),
+            )
+            .first()
+        )
+        if grant is not None:
+            return None
+    return gate
 
 
 def _visible_agents(session: Session, request: Request) -> tuple[list[Agent], bool]:
@@ -2860,6 +2902,10 @@ def create_app(
                 "has_avatar": agent.avatar_png is not None,
                 "created_by": agent.created_by,
                 "group_name": agent.group_name,
+                "pending_learnings": session.query(AgentLearning)
+                .filter_by(agent_name=agent.name, status=LEARNING_PENDING)
+                .count(),
+                "can_decide_learnings": _decider_or_403(agent, request, session) is None,
             }
         )
 
@@ -4208,6 +4254,186 @@ def create_app(
             )
 
         return JSONResponse({"filename": filename, "mode": "archive", "sha": sha})
+
+    # --- Learnings (daily-learnings spec, Task 7): the decide surface over --
+    # the nightly summarizer's candidate rows (kobo_api.learnings.
+    # store_candidates writes them; kobo_api.clients._build_learnings_
+    # envelope feeds the nightly loop that produces them). Approve rides
+    # the teach lane byte-for-byte -- same instant/archive split, same
+    # `_build_teach_envelope`/`_archive_teach_note` plumbing -- with the
+    # `prefix="learning"` note_filename gives it, so techne provenance
+    # reads `intake:learning-<date>-<slug>` rather than `intake:chat-...`.
+
+    @app.get("/api/agents/{name}/learnings")
+    def list_learnings(
+        name: str,
+        request: Request,
+        status: str = "all",
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        if status != "all" and status not in LEARNING_STATUSES:
+            return JSONResponse(
+                {"error": f"unknown status {status!r}"}, status_code=422
+            )
+        query = session.query(AgentLearning).filter_by(agent_name=agent.name)
+        if status != "all":
+            query = query.filter_by(status=status)
+        rows = query.order_by(AgentLearning.created_at.desc()).all()
+        return JSONResponse(
+            {
+                "learnings": [
+                    {
+                        "id": row.id,
+                        "day": row.day,
+                        "content": row.content,
+                        "kind": row.kind,
+                        "source": row.source,
+                        "evidence": row.evidence,
+                        "status": row.status,
+                        "decided_by": row.decided_by,
+                        "created_at": (
+                            row.created_at.isoformat() if row.created_at else None
+                        ),
+                    }
+                    for row in rows
+                ]
+            }
+        )
+
+    def _decide_learning(
+        name: str,
+        learning_id: int,
+        action: str,
+        request: Request,
+        background_tasks: BackgroundTasks,
+        session: Session,
+    ) -> JSONResponse:
+        """Shared verdict path for approve/deny/bulk. Approve rides the
+        teach lane byte-for-byte (instant relay when cabal is wired, the
+        CI-triggering archive commit otherwise) with the learning- filename
+        prefix, so techne provenance reads intake:learning-<date>-<slug>."""
+        agent = _ready_agent_or_error(
+            session,
+            request,
+            name,
+            not_ready_message="agent is not ready for learnings decisions",
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+        gate = _decider_or_403(agent, request, session)
+        if gate is not None:
+            return gate
+        row = (
+            session.query(AgentLearning)
+            .filter_by(agent_name=agent.name, id=learning_id)
+            .first()
+        )
+        if row is None:
+            return JSONResponse({"error": "no such learning"}, status_code=404)
+        if row.status != LEARNING_PENDING:
+            return JSONResponse(
+                {"error": f"learning is already {row.status}"}, status_code=409
+            )
+        email = getattr(request.state, "iap_email", None)
+        if action == "deny":
+            row.status = LEARNING_DENIED
+            row.decided_by = email
+            row.decided_at = datetime.now(UTC)
+            session.commit()
+            return JSONResponse({"id": row.id, "status": row.status})
+
+        on_date = datetime.now(UTC).date().isoformat()
+        note = format_note(row.content, taught_by=email, on_date=on_date)
+        filename = note_filename(row.content, on_date=on_date, prefix="learning")
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        mode = "archive"
+        if cabal_enabled(cfg) and clients.cabal is not None:
+            envelope = _build_teach_envelope(note, filename)
+            try:
+                raw = clients.cabal.relay(agent.name, envelope)
+                if _teach_task_not_completed(raw):
+                    raise CabalError("agent reply was not a completed task")
+                _extract_relay_reply(raw)
+            except (CabalError, httpx.HTTPError, ValueError) as exc:
+                log.warning(
+                    "learning approve relay failed for %s, archive lane: %s",
+                    name,
+                    exc,
+                )
+            else:
+                mode = "instant"
+                background_tasks.add_task(
+                    _archive_teach_note, agent.repo_full_name, filename, note
+                )
+        if mode == "archive":
+            try:
+                upload_intake_file(
+                    app.state.clients.github,
+                    agent.repo_full_name,
+                    filename,
+                    note,
+                    runtime_image=cfg.runtime_image,
+                )
+            except (IntakeError, ClientError) as exc:
+                log.warning("learning approve archive failed for %s: %s", name, exc)
+                return JSONResponse(
+                    {"error": "couldn't deliver the approved learning. Try again."},
+                    status_code=502,
+                )
+        row.status = LEARNING_APPROVED
+        row.decided_by = email
+        row.decided_at = datetime.now(UTC)
+        session.commit()
+        return JSONResponse(
+            {"id": row.id, "status": row.status, "mode": mode, "filename": filename}
+        )
+
+    @app.post("/api/agents/{name}/learnings/{learning_id}/approve")
+    def approve_learning(
+        name: str,
+        learning_id: int,
+        request: Request,
+        background_tasks: BackgroundTasks,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        return _decide_learning(
+            name, learning_id, "approve", request, background_tasks, session
+        )
+
+    @app.post("/api/agents/{name}/learnings/{learning_id}/deny")
+    def deny_learning(
+        name: str,
+        learning_id: int,
+        request: Request,
+        background_tasks: BackgroundTasks,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        return _decide_learning(
+            name, learning_id, "deny", request, background_tasks, session
+        )
+
+    @app.post("/api/agents/{name}/learnings/bulk")
+    def bulk_decide_learnings(
+        name: str,
+        payload: LearningsBulkPayload,
+        request: Request,
+        background_tasks: BackgroundTasks,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        results = [
+            {
+                "id": learning_id,
+                "status_code": _decide_learning(
+                    name, learning_id, payload.action, request, background_tasks, session
+                ).status_code,
+            }
+            for learning_id in payload.ids[:50]
+        ]
+        return JSONResponse({"results": results})
 
     # --- Tooling (2026-08-13 addendum): the staged door for an agent's --------
     # LAW-to-be — `bundle/tools/*.{py,go}`, validated and delivered, but with

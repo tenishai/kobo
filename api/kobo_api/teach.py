@@ -76,9 +76,13 @@ def format_note(text: str, *, taught_by: str | None, on_date: str) -> str:
     return f"{header}\n\n{text}\n"
 
 
-def note_filename(text: str, *, on_date: str) -> str:
-    """`chat-<YYYYMMDD>-<slug>.md`, matching
+def note_filename(text: str, *, on_date: str, prefix: str = "chat") -> str:
+    """`<prefix>-<YYYYMMDD>-<slug>.md`, matching
     `kobo_api.intake.INTAKE_FILENAME_RE` for any input.
+
+    `prefix` defaults to `"chat"` (the teach gesture); the learnings
+    approve route passes `"learning"` so its notes read as
+    `intake:learning-...` in techne provenance.
 
     `on_date` is an ISO `YYYY-MM-DD` string (the same value passed to
     `format_note` for this same upload); the dashes are simply dropped to
@@ -103,4 +107,4 @@ def note_filename(text: str, *, on_date: str) -> str:
     compact_date = on_date.replace("-", "")
     words = _SLUG_WORD_RE.findall(text.lower())[:_SLUG_MAX_WORDS]
     slug = "-".join(words)[:_SLUG_MAX_CHARS].rstrip("-") or _FALLBACK_SLUG
-    return f"chat-{compact_date}-{slug}.md"
+    return f"{prefix}-{compact_date}-{slug}.md"
