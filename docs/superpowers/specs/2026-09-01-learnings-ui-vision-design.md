@@ -216,7 +216,7 @@ hide Approve/Deny without ever inferring roles client-side.
 
 | method | path | auth | notes |
 |--------|------|------|-------|
-| GET    | `/api/agents/{name}/learnings` | owner/grantee/operator/reader | list candidates, filterable by `status` (default: `pending`), ordered by `created_at` desc |
+| GET    | `/api/agents/{name}/learnings` | any caller who can see the agent (readers included) | list candidates, filterable by `status` (default: `all` -- the panel splits pending from history in one fetch), ordered by `created_at` desc |
 | POST   | `/api/agents/{name}/learnings/{id}/approve` | owner/grantee/operator | approve and push through teach lane |
 | POST   | `/api/agents/{name}/learnings/{id}/deny` | owner/grantee/operator | deny and remember hash |
 | POST   | `/api/agents/{name}/learnings/bulk` | owner/grantee/operator | approve/deny multiple by id list in one request (the UI's "approve selected" gesture) |
