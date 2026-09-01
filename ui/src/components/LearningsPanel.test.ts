@@ -95,6 +95,40 @@ describe("LearningsPanel", () => {
     });
   });
 
+  // render.ts's `stubFetch` only ever answers 200 with a static body, so a
+  // failed fetch is simulated with a custom `vi.stubGlobal("fetch", ...)`
+  // returning a non-ok Response -- the same pattern
+  // GroupRequestsCard.test.ts's own "shows a retryable error state" test
+  // uses. Pins the fix for the reviewer's finding: before this, a failed
+  // learnings fetch fell into the `pending.length === 0` branch and
+  // rendered "Nothing waiting for review" -- a silent failure
+  // indistinguishable from a genuinely empty queue.
+  it("shows a retryable error state when the fetch fails, not the empty state", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/learnings")) {
+          return new Response(JSON.stringify({ error: "boom" }), {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        throw new Error(`unstubbed fetch: ${url}`);
+      }),
+    );
+
+    renderWithClient(LearningsPanel, {
+      agentName: "wren",
+      canDecide: true,
+      frozen: false,
+    });
+
+    expect(await screen.findByText("boom")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Try again" })).not.toBeNull();
+    expect(screen.queryByText(/Nothing waiting for review/)).toBeNull();
+  });
+
   it("shows an empty state when nothing is pending", async () => {
     stubFetch({ "/learnings": { learnings: [] } });
     renderWithClient(LearningsPanel, {

@@ -17,6 +17,8 @@
   // (destroying/destroy_failed) disables the buttons instead, same as every
   // other panel's own `frozen` prop.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
+  import ErrorState from "./ErrorState.svelte";
+  import { errorMessage } from "../lib/api";
   import {
     decideLearningMutation,
     decideLearningsBulkMutation,
@@ -91,8 +93,13 @@
     <p class="learnings-panel__error" role="alert">{errorText}</p>
   {/if}
 
-  {#if learnings.isLoading}
+  {#if learnings.isPending}
     <p class="learnings-panel__empty">Loading...</p>
+  {:else if learnings.isError}
+    <ErrorState
+      message={errorMessage(learnings.error, "Couldn't load this agent's learnings.")}
+      onretry={() => learnings.refetch()}
+    />
   {:else if pending.length === 0}
     <p class="learnings-panel__empty">
       Nothing waiting for review. New candidates appear here after your
