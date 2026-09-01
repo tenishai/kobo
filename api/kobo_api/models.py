@@ -528,3 +528,53 @@ REPO_ACCESS_REQUESTED = "requested"
 REPO_ACCESS_APPROVED = "approved"
 REPO_ACCESS_REVOKED = "revoked"
 REPO_ACCESS_STATUSES = (REPO_ACCESS_REQUESTED, REPO_ACCESS_APPROVED, REPO_ACCESS_REVOKED)
+
+
+class AgentLearning(Base):
+    """One candidate memory snippet awaiting a human verdict (daily--
+    learnings spec, 2026-09-01): the nightly summarizer's output parked
+    for curation. Nothing in this table is memory -- a row becomes memory
+    only when the approve route pushes it through the teach lane, and a
+    denied or expired row is a tombstone whose hash blocks the identical
+    content from ever being proposed again (the unique constraint below;
+    the nightly upsert skips any existing hash regardless of status).
+
+    Statuses live in LEARNING_STATUSES; `day` is the nightly run's ISO
+    date; `content_hash` is SHA-256 of `content`. `agent_name` is a plain
+    string, not a foreign key, same reasoning as `A2AInvite.from_agent`
+    above.
+
+    Postdates every table in this file, so `Base.metadata.create_all`
+    (`kobo_api.db.init_db`) creates it for free -- same no-ALTER-needed
+    convention `MCPToolCallLog` documents above.
+    """
+
+    __tablename__ = "agent_learnings"
+    __table_args__ = (UniqueConstraint("agent_name", "content_hash"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    day: Mapped[str] = mapped_column(String(10), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    source: Mapped[str] = mapped_column(String(512), nullable=False)
+    evidence: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="pending")
+    decided_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
+LEARNING_PENDING = "pending"
+LEARNING_APPROVED = "approved"
+LEARNING_DENIED = "denied"
+LEARNING_EXPIRED = "expired"
+LEARNING_STATUSES = (
+    LEARNING_PENDING,
+    LEARNING_APPROVED,
+    LEARNING_DENIED,
+    LEARNING_EXPIRED,
+)
