@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -9,6 +10,7 @@ import re
 import threading
 import time
 from collections.abc import Callable, Iterator
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Literal
@@ -56,6 +58,7 @@ from kobo_api.knowledge import (
     rollout_in_progress,
     save_knowledge_file,
 )
+from kobo_api.learnings import nightly_loop as learnings_nightly_loop
 from kobo_api.marketplace import BASELINE_TOOL_PREFIX
 from kobo_api.mcp.mount import mcp_lifespan, mount_mcp
 from kobo_api.metadata import (
@@ -1584,6 +1587,22 @@ def get_session(request: Request) -> Iterator[Session]:
         session.close()
 
 
+@asynccontextmanager
+async def _room_lifespan(app: FastAPI):
+    """mcp_lifespan plus the room's own background work (the learnings
+    nightly loop). TestClient instances used without `with` never enter
+    lifespans at all, so unit tests see no background task unless they
+    opt in."""
+    async with mcp_lifespan(app):
+        nightly = asyncio.create_task(learnings_nightly_loop(app))
+        try:
+            yield
+        finally:
+            nightly.cancel()
+            with suppress(asyncio.CancelledError):
+                await nightly
+
+
 def create_app(
     session_factory: sessionmaker[Session],
     *,
@@ -1592,7 +1611,7 @@ def create_app(
     org: OrgState | None = None,
     iap_jwks_fetcher: Callable[[], dict] | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="kobo-api", lifespan=mcp_lifespan)
+    app = FastAPI(title="kobo-api", lifespan=_room_lifespan)
     app.state.config = config
     app.state.clients = clients
     app.state.session_factory = session_factory
@@ -6304,8 +6323,9 @@ def create_app(
     # False, imports nothing from the mcp SDK or kobo_api.mcp.server/
     # oauth_as) when config.mcp_enabled is False, the default -- see
     # kobo_api.mcp.mount's own module docstring for the full mechanism,
-    # including why FastAPI(lifespan=mcp_lifespan) above is what makes the
-    # mounted sub-app's own session-manager lifespan actually run.
+    # including why FastAPI(lifespan=_room_lifespan) above (which enters
+    # mcp_lifespan itself, plus the learnings nightly loop) is what makes
+    # the mounted sub-app's own session-manager lifespan actually run.
     mount_mcp(app)
 
     # --- Built UI (Task 1): last, so every /api/* route above always wins ---

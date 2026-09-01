@@ -165,3 +165,70 @@ def seconds_until_next_utc_midnight(now: datetime) -> float:
         hour=0, minute=0, second=0, microsecond=0
     )
     return max(60.0, (tomorrow - moment).total_seconds())
+
+
+def run_nightly(app) -> None:
+    """One sweep, synchronous (runs via asyncio.to_thread): expire stale
+    pending rows, then relay a learnings task to every due ready agent and
+    store what comes back. Any single agent's failure is logged and
+    skipped -- the sweep never dies mid-fleet. With cabal unwired the
+    sweep still expires (bookkeeping needs no relay) and does nothing
+    else."""
+    import httpx
+
+    from kobo_api.clients import (
+        CabalError,
+        _build_learnings_envelope,
+        _extract_relay_reply,
+        cabal_enabled,
+    )
+    from kobo_api.models import Agent, AgentStatus
+
+    now = datetime.now(UTC)
+    config = app.state.config
+    clients = app.state.clients
+    session = app.state.session_factory()
+    try:
+        expire_stale(session, now)
+        if not (cabal_enabled(config) and clients.cabal is not None):
+            return
+        ready = [
+            row.name
+            for row in session.query(Agent).filter_by(status=AgentStatus.READY).all()
+        ]
+        day = now.date().isoformat()
+        for name in due_agents(session, ready, now):
+            envelope = _build_learnings_envelope(day)
+            try:
+                raw = clients.cabal.relay(name, envelope)
+                reply = _extract_relay_reply(raw)
+            except (CabalError, httpx.HTTPError, ValueError) as exc:
+                log.warning("learnings relay failed for %s: %s", name, exc)
+                continue
+            candidates = parse_reply(reply)
+            stored = store_candidates(session, name, day, candidates)
+            log.info(
+                "learnings: %s proposed %d, stored %d new",
+                name,
+                len(candidates),
+                stored,
+            )
+    finally:
+        session.close()
+
+
+async def nightly_loop(app) -> None:
+    """The lifespan-owned loop: sweep now (boot catch-up -- due_agents
+    keeps it from re-summarizing anyone already summarized inside 24h),
+    then once after every UTC midnight. Cancellation passes through
+    untouched; everything else is logged and the loop lives on."""
+    import asyncio
+
+    while True:
+        try:
+            await asyncio.to_thread(run_nightly, app)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("learnings nightly sweep failed")
+        await asyncio.sleep(seconds_until_next_utc_midnight(datetime.now(UTC)))

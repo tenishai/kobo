@@ -69,6 +69,7 @@ from kobo_api.learnings import (
     due_agents,
     expire_stale,
     parse_reply,
+    run_nightly,
     seconds_until_next_utc_midnight,
     store_candidates,
 )
@@ -160,3 +161,136 @@ def test_learnings_envelope_shape():
     assert envelope["metadata"]["system_task"] == "learnings"
     assert envelope["metadata"]["date"] == "2026-09-01"
     assert "2026-09-01" in envelope["status"]["message"]["parts"][0]["text"]
+
+
+# --- run_nightly (Task 6) -----------------------------------------------------
+#
+# `Config`'s `cabal_enabled` is a three-way AND (`cabal_url`,
+# `agent_endpoint_template`, and the `CABAL_OPERATOR_TOKEN` env var --
+# kobo_api.clients.cabal_enabled) -- the "enabled" helper below sets both
+# config keys, and every enabled-cabal test also sets the env var via
+# monkeypatch (auto-reverted per test), same convention test_api_agents.py's
+# switchboard-relay tests already use. `Agent` needs non-null `persona`/
+# `model_id` columns beyond bare `name`/`status` (mirrors test_web_teach.py's
+# `_seed_agent` shape) or the seed commit fails a NOT NULL constraint.
+
+from types import SimpleNamespace
+
+from kobo_api.clients import CabalError
+from kobo_api.config import Config
+from kobo_api.models import Agent, AgentStatus
+
+
+def _cabal_enabled_config():
+    return Config(
+        cabal_url="http://cabal.test",
+        agent_endpoint_template="http://agent-{name}.default.svc.cluster.local",
+    )
+
+
+def _cabal_disabled_config():
+    return Config()
+
+
+class StubCabal:
+    """Relays are recorded; the reply is the same task_to_a2a shape the
+    daedalus runtime actually returns."""
+
+    def __init__(self, reply_text):
+        self.reply_text = reply_text
+        self.calls = []
+
+    def relay(self, name, envelope):
+        self.calls.append((name, envelope))
+        if isinstance(self.reply_text, Exception):
+            raise self.reply_text
+        return {
+            "kind": "task",
+            "id": "t1",
+            "status": {
+                "state": "completed",
+                "message": {
+                    "kind": "message",
+                    "role": "agent",
+                    "parts": [{"kind": "text", "text": self.reply_text}],
+                },
+            },
+            "history": [],
+            "metadata": {},
+        }
+
+
+def _app(session_factory_fn, cabal, config):
+    return SimpleNamespace(
+        state=SimpleNamespace(
+            config=config,
+            clients=SimpleNamespace(cabal=cabal),
+            session_factory=session_factory_fn,
+        )
+    )
+
+
+def _seed_ready(session, name="wren"):
+    session.add(
+        Agent(
+            name=name,
+            persona="helpful-generalist",
+            model_id="vertex_ai/claude-sonnet-4-5",
+            status=AgentStatus.READY,
+        )
+    )
+    session.commit()
+
+
+def test_run_nightly_stores_candidates_for_due_agent(session, monkeypatch):
+    # session fixture gives one Session; run_nightly opens its own from the
+    # factory, so hand it a factory returning this same session with a
+    # no-op close.
+    monkeypatch.setattr(session, "close", lambda: None)
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    _seed_ready(session)
+    reply = json.dumps({"candidates": [_candidate()]})
+    cabal = StubCabal(reply)
+    config = _cabal_enabled_config()
+
+    run_nightly(_app(lambda: session, cabal, config))
+
+    assert len(cabal.calls) == 1
+    assert cabal.calls[0][0] == "wren"
+    assert session.query(AgentLearning).filter_by(agent_name="wren").count() == 1
+
+
+def test_run_nightly_skips_recently_summarized_agent(session, monkeypatch):
+    monkeypatch.setattr(session, "close", lambda: None)
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    _seed_ready(session)
+    store_candidates(session, "wren", "2026-09-01", [_candidate()])
+    cabal = StubCabal(json.dumps({"candidates": []}))
+
+    run_nightly(_app(lambda: session, cabal, _cabal_enabled_config()))
+
+    assert cabal.calls == []
+
+
+def test_run_nightly_survives_relay_failure(session, monkeypatch):
+    monkeypatch.setattr(session, "close", lambda: None)
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    _seed_ready(session)
+    cabal = StubCabal(CabalError("switchboard down"))
+
+    run_nightly(_app(lambda: session, cabal, _cabal_enabled_config()))  # must not raise
+
+    assert session.query(AgentLearning).count() == 0
+
+
+def test_run_nightly_without_cabal_still_expires(session, monkeypatch):
+    monkeypatch.setattr(session, "close", lambda: None)
+    session.add(_learning(content_hash="f" * 64))
+    session.commit()
+    row = session.query(AgentLearning).one()
+    row.created_at = (datetime.now(UTC) - timedelta(days=20)).replace(tzinfo=None)
+    session.commit()
+
+    run_nightly(_app(lambda: session, None, _cabal_disabled_config()))
+
+    assert session.query(AgentLearning).one().status == LEARNING_EXPIRED
