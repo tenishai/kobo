@@ -243,6 +243,25 @@ A "Select all" checkbox per day group for bulk approve/deny. Approved
 and denied rows move to a collapsed "History" section at the bottom,
 filterable.
 
+### Rider bugfix: skills ledger reconciliation
+
+Found 2026-09-01 (Leslie, agent-clio PR #4): skills merged directly into
+an agent's repo (`bundle/skills/<id>/`) are live on the agent -- the
+bundle is the runtime truth and the seeder ingests them on rebuild --
+but invisible in kobo, because `GET /api/agents/{name}/skills` is
+"purely a DB-column read" and the `agent.skills` ledger only hears about
+kobo's own routes. The direct-PR lane is legitimate; the ledger drifts.
+
+Fix: reconcile on read. The route lists the repo's `bundle/skills/`
+directories (the same clone pattern every skills.py function uses) and
+merges: repo dir with a DB row keeps the DB's provenance; repo dir with
+no row surfaces as `local`/editable and is written back into the ledger;
+a DB row with no repo dir is pruned (removed by PR = not on the agent);
+a repo read failure degrades to today's DB-only read and never prunes.
+
+Rides the wave 1 branch as its own task and commit; independent of the
+learnings feature.
+
 ### Out of scope (wave 1)
 
 - Slack notifications when new learnings are pending (registered

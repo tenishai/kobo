@@ -2703,6 +2703,196 @@ git -C ~/Documents/GitHub/kobo commit -m "feat(ui): learnings tab -- day-grouped
 
 ---
 
+### Task 10: Skills ledger reconciliation (kobo, rider bugfix)
+
+Independent of learnings: skills merged directly into an agent's repo
+(`bundle/skills/<id>/`, the direct-PR lane) are live on the agent but
+invisible in kobo, because `GET /api/agents/{name}/skills` reads only the
+`agent.skills` DB column (main.py:3652's own comment: "purely a DB-column
+read"). The bundle is the runtime truth; reconcile the ledger on read.
+
+**Files:**
+- Modify: `api/kobo_api/skills.py` (add `list_repo_skills`)
+- Modify: `api/kobo_api/main.py` (`list_skills` route, line ~3644)
+- Test: `api/tests/test_web_skills.py` (or wherever the existing skills
+  route tests live -- find with `grep -rl "agents/.*/skills" api/tests/`)
+
+**Interfaces:**
+- Consumes: existing `GitHubClient.clone`, `ClientError`, the `agent.skills`
+  JSON column, `_skill_source`.
+- Produces: `list_repo_skills(github: GitHubClient, repo: str) -> list[str]`
+  (sorted skill ids present in the repo's bundle). The route's response
+  shape is unchanged -- same keys, now truthful.
+
+- [ ] **Step 1: Read the existing skills route tests**
+
+Find and read the test file covering `GET /api/agents/{name}/skills` and
+the local-skill routes. Note how its FakeGitHub seeds a cloneable tree
+(the local-skill read/save tests must already materialize
+`bundle/skills/<id>/SKILL.md` somewhere) -- the new tests reuse that
+seeding shape exactly.
+
+- [ ] **Step 2: Write the failing tests**
+
+Add to that test file (adapt fixture/seeding names to what Step 1 found):
+
+```python
+def test_list_skills_surfaces_repo_only_skill_and_heals_ledger(session_factory, config):
+    # Seed the fake repo with bundle/skills/pr-added/SKILL.md but leave
+    # agent.skills WITHOUT a matching entry -- the direct-PR lane.
+    github = _github_with_skill_tree({"pr-added": "---\nname: pr-added\ndescription: d\n---\nbody"})
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)  # agent.skills == []
+
+    response = client.get(f"/api/agents/{AGENT_NAME}/skills")
+
+    assert response.status_code == 200
+    skills = response.json()["skills"]
+    assert [s["name"] for s in skills] == ["pr-added"]
+    assert skills[0]["source"] == "local"
+    assert skills[0]["editable"] is True
+    # The ledger healed: a second read that CANNOT reach the repo still
+    # knows the skill.
+    session = session_factory()
+    try:
+        agent = session.query(Agent).filter_by(name=AGENT_NAME).one()
+        assert [e["name"] for e in agent.skills] == ["pr-added"]
+    finally:
+        session.close()
+
+
+def test_list_skills_prunes_ledger_rows_missing_from_repo(session_factory, config):
+    github = _github_with_skill_tree({})  # empty bundle/skills/
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config, skills=[{"name": "ghost", "source": "local"}])
+
+    response = client.get(f"/api/agents/{AGENT_NAME}/skills")
+
+    assert response.json()["skills"] == []
+
+
+def test_list_skills_repo_failure_degrades_to_ledger_and_never_prunes(
+    session_factory, config
+):
+    github = _FailingCloneGitHub()  # clone raises ClientError
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config, skills=[{"name": "kept", "source": "local"}])
+
+    response = client.get(f"/api/agents/{AGENT_NAME}/skills")
+
+    assert response.status_code == 200
+    assert [s["name"] for s in response.json()["skills"]] == ["kept"]
+```
+
+Write `_github_with_skill_tree` / `_FailingCloneGitHub` by subclassing the
+same FakeGitHub the file already uses, mirroring how its existing clone
+fake materializes files. If `_seed_agent` lacks a `skills=` parameter, add
+one (default `[]`) or set the column after seeding.
+
+- [ ] **Step 3: Run to verify failure**
+
+Run: `cd ~/Documents/GitHub/kobo/api && python -m pytest tests/<skills test file> -x -q`
+Expected: the first two tests FAIL (repo-only skill invisible; ghost row survives)
+
+- [ ] **Step 4: Implement**
+
+Add to `api/kobo_api/skills.py` (beside `read_local_skill`):
+
+```python
+def list_repo_skills(github: GitHubClient, repo: str) -> list[str]:
+    """Every skill id present in `repo`'s bundle/skills/ -- the runtime
+    truth-set the reconciling route reads. A skill is a directory holding
+    a SKILL.md; anything else under bundle/skills/ is ignored, matching
+    what the bundle loader itself registers. Same clone-a-tempdir pattern
+    as every other function in this module."""
+    with tempfile.TemporaryDirectory() as tmp:
+        workdir = Path(tmp)
+        github.clone(repo, workdir)
+        skills_dir = workdir / "bundle" / "skills"
+        if not skills_dir.is_dir():
+            return []
+        return sorted(
+            entry.name
+            for entry in skills_dir.iterdir()
+            if entry.is_dir() and (entry / "SKILL.md").is_file()
+        )
+```
+
+Rewrite the `list_skills` route body in `api/kobo_api/main.py` (~3644):
+
+```python
+    @app.get("/api/agents/{name}/skills")
+    def list_skills(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        agent = _ready_agent_or_error(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        # The bundle is the runtime truth; agent.skills is kobo's ledger,
+        # and the direct-PR lane (a human merging skills straight into the
+        # agent's repo) writes the bundle without telling the ledger.
+        # Reconcile on read: the repo listing is the truth-set of ids, DB
+        # entries keep their provenance (team/sha for catalog picks),
+        # repo-only ids surface as local AND heal the ledger, DB-only rows
+        # prune (removed by PR = not on the agent). A repo read failure
+        # degrades to the ledger read and never prunes.
+        entries = {entry["name"]: entry for entry in agent.skills}
+        try:
+            repo_ids = list_repo_skills(
+                app.state.clients.github, agent.repo_full_name
+            )
+        except ClientError as exc:
+            log.warning("skills repo listing failed for %s: %s", name, exc)
+            repo_ids = None
+        if repo_ids is not None:
+            known = [e for e in agent.skills if e["name"] in set(repo_ids)]
+            known_names = {e["name"] for e in known}
+            discovered = [
+                {"name": skill_id, "source": "local"}
+                for skill_id in repo_ids
+                if skill_id not in known_names
+            ]
+            merged = known + discovered
+            if merged != agent.skills:
+                agent.skills = merged
+                session.commit()
+
+        skills = []
+        for entry in agent.skills:
+            source = _skill_source(entry)
+            skills.append(
+                {
+                    "name": entry["name"],
+                    "team": entry.get("team"),
+                    "source": source,
+                    "sha": entry.get("sha"),
+                    "editable": source == "local",
+                }
+            )
+        return JSONResponse({"skills": skills})
+```
+
+Confirm `list_repo_skills` is added to main.py's `kobo_api.skills` import
+line and `ClientError` is already imported (it is -- the teach route
+catches it).
+
+- [ ] **Step 5: Run the new tests, then the whole API suite**
+
+Run: `cd ~/Documents/GitHub/kobo/api && python -m pytest tests/<skills test file> -x -q && python -m pytest tests/ -x -q`
+Expected: all pass. Existing list_skills tests that seeded only the DB
+column may now need their fake repo seeded with matching trees (or the
+failing-clone fake) -- fix them to describe the new truth, not the drift.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git -C ~/Documents/GitHub/kobo add api/kobo_api/skills.py api/kobo_api/main.py api/tests/
+git -C ~/Documents/GitHub/kobo commit -m "fix(skills): reconcile the ledger from the bundle on read -- direct-PR skills surface"
+```
+
+---
+
 ## Rollout (after all tasks, operator-driven -- NOT part of task execution)
 
 1. daedalus branch -> PR -> coworker review -> merge -> build runtime image tagged `<sha>-t<techne_version>`.
