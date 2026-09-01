@@ -1154,6 +1154,18 @@ def _build_teach_envelope(note: str, filename: str) -> dict:
     return _build_system_task_envelope("teach", note, metadata={"filename": filename})
 
 
+def _build_learnings_envelope(on_date: str) -> dict:
+    """The learnings system task (daily-learnings spec): asks the agent to
+    summarize its journal's last day into candidate memory snippets. The
+    date rides metadata so the runtime's prompt can cite it; the text is
+    only a human-readable label for transcripts."""
+    return _build_system_task_envelope(
+        "learnings",
+        f"Summarize your conversations from {on_date} into candidate memory snippets.",
+        metadata={"date": on_date},
+    )
+
+
 def _join_text_parts(parts: object) -> str:
     """Join ALL text parts of an a2a message, in order — the family's
     join-all-parts contract (daedalus's `transports.a2a.text_of`), adopted
