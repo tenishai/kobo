@@ -1,11 +1,20 @@
 // The agent detail tab model. Pure so the visibility and default-selection
 // rules are unit-tested; the component only maps over what these return.
-export type TabId = "overview" | "chat" | "memory" | "skills" | "tooling" | "slack" | "access";
+export type TabId =
+  | "overview"
+  | "chat"
+  | "memory"
+  | "learnings"
+  | "skills"
+  | "tooling"
+  | "slack"
+  | "access";
 
 export const TAB_LABELS: Record<TabId, string> = {
   overview: "Overview",
   chat: "Chat",
   memory: "Memory",
+  learnings: "Learnings",
   skills: "Skills",
   tooling: "Tooling",
   slack: "Slack",
@@ -31,7 +40,7 @@ export const TAB_LABELS: Record<TabId, string> = {
  * first six tabs' order never shifts.
  */
 export function visibleTabs(showAccess = false): TabId[] {
-  const base: TabId[] = ["overview", "chat", "memory", "skills", "tooling", "slack"];
+  const base: TabId[] = ["overview", "chat", "memory", "learnings", "skills", "tooling", "slack"];
   return showAccess ? [...base, "access"] : base;
 }
 

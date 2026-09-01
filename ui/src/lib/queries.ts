@@ -9,6 +9,9 @@
 //   ["agents", name]                                - one agent's detail
 //   ["agents", name, "knowledge"]                   - an agent's knowledge files
 //   ["agents", name, "knowledge", "delivery", sha]  - delivery state for one sha
+//   ["agents", name, "learnings"]                   - an agent's learnings
+//                                                      queue, every status
+//                                                      (daily-learnings spec)
 //   ["agents", name, "skills"]                      - an agent's skills (catalog + local)
 //   ["agents", name, "intake"]                      - an agent's intake files
 //   ["agents", name, "tooling"]                     - an agent's tooling files
@@ -101,6 +104,7 @@ import {
   type Invite,
   type InvitesResult,
   type KnowledgeFile,
+  type Learning,
   type NameSuggestion,
   type OrgStatus,
   type PeopleSearchResult,
@@ -131,6 +135,8 @@ import {
   createPersona,
   createThread,
   decideGroupRequest,
+  decideLearning,
+  decideLearningsBulk,
   declineInvite,
   deleteIntake,
   deleteKnowledgeFile,
@@ -160,6 +166,7 @@ import {
   listIntake,
   listInvites,
   listKnowledge,
+  listLearnings,
   listSkills,
   listTooling,
   patchAgentMetadata,
@@ -583,6 +590,42 @@ export function deleteKnowledgeMutation(
       queryClient.invalidateQueries({
         queryKey: ["agents", name, "knowledge"],
       });
+    },
+  };
+}
+
+/** The agent's learnings queue, every status -- the panel splits pending
+ * from history itself. No polling; verdicts invalidate. */
+export function learningsQuery(name: string) {
+  return queryOptions({
+    queryKey: ["agents", name, "learnings"] as const,
+    queryFn: () => listLearnings(name),
+  });
+}
+
+/** One verdict. Invalidates ["agents", name] -- prefix-matching covers
+ * both the learnings list and the detail (whose pending_learnings badge
+ * count changed). */
+export function decideLearningMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: ({ id, action }: { id: number; action: "approve" | "deny" }) =>
+      decideLearning(name, id, action),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+    },
+  };
+}
+
+/** The select-all gesture: many verdicts, one request, same invalidation. */
+export function decideLearningsBulkMutation(
+  queryClient: QueryClient,
+  name: string,
+) {
+  return {
+    mutationFn: ({ ids, action }: { ids: number[]; action: "approve" | "deny" }) =>
+      decideLearningsBulk(name, ids, action),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name] });
     },
   };
 }
@@ -1249,6 +1292,7 @@ export type {
   Invite,
   InvitesResult,
   KnowledgeFile,
+  Learning,
   NameSuggestion,
   OrgStatus,
   PeopleSearchResult,

@@ -80,6 +80,13 @@ export type AgentDetail = AgentSummary & {
    * server's `_operator_block`). The route itself is the real enforcement
    * boundary, this is UX only. */
   destroy_visible: boolean;
+  /** Count of pending learnings awaiting a verdict; the Learnings tab
+   * badge reads this, never a client-side inference. */
+  pending_learnings: number;
+  /** Whether this caller may approve/deny learnings, computed server-side
+   * by the decide gate (destroy_visible precedent): the panel hides its
+   * verdict buttons off this; the route stays the real enforcement. */
+  can_decide_learnings: boolean;
 };
 
 /** One catalog search result — a skill or a persona, both served by the
@@ -883,6 +890,58 @@ export async function fetchDeliveryState(
     `/api/agents/${encodeURIComponent(name)}/knowledge/delivery/${encodeURIComponent(sha)}`,
   );
   return parse<{ state: string; detail: string | null }>(res);
+}
+
+/** One candidate memory snippet awaiting a verdict (daily-learnings
+ * spec): proposed nightly by the agent from its own conversation journal,
+ * parked by the room, inert until a human approves it into memory. */
+export type Learning = {
+  id: number;
+  day: string;
+  content: string;
+  kind: "fact" | "procedure";
+  source: string;
+  evidence: string;
+  status: "pending" | "approved" | "denied" | "expired";
+  decided_by: string | null;
+  created_at: string | null;
+};
+
+export type LearningsList = { learnings: Learning[] };
+
+export async function listLearnings(name: string): Promise<LearningsList> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/learnings?status=all`,
+  );
+  return parse<LearningsList>(res);
+}
+
+export async function decideLearning(
+  name: string,
+  id: number,
+  action: "approve" | "deny",
+): Promise<void> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/learnings/${id}/${action}`,
+    { method: "POST" },
+  );
+  await parse(res);
+}
+
+export async function decideLearningsBulk(
+  name: string,
+  ids: number[],
+  action: "approve" | "deny",
+): Promise<void> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/learnings/bulk`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, action }),
+    },
+  );
+  await parse(res);
 }
 
 /** One entry of `GET /api/agents/{name}/skills` — a catalog pick or a
