@@ -117,12 +117,11 @@
   let activeTab = $state<TabId | null>(null);
 
   // Whether the Advanced tab group (tabs.ts: learnings/memory/skills/
-  // tooling) is expanded. Seeded exactly once from the server-computed
-  // `can_decide_learnings` signal (deciders start expanded, everyone else
-  // starts collapsed) — `seededAdvanced` guards that seed so a later manual
-  // toggle is never fought by this effect re-running on the next poll.
+  // tooling) is expanded. Collapsed by default for EVERYONE (operator
+  // ruling, 2026-09-02 — an earlier cut seeded it open for deciders): the
+  // pending-learnings badge on the toggle carries the signal, and the
+  // primary row stays short.
   let advancedOpen = $state(false);
-  let seededAdvanced = $state(false);
 
   $effect(() => {
     const data = agent.data;
@@ -131,10 +130,6 @@
     }
     if (activeTab === null) {
       activeTab = defaultTab(data.status);
-    }
-    if (!seededAdvanced) {
-      advancedOpen = data.can_decide_learnings;
-      seededAdvanced = true;
     }
   });
 

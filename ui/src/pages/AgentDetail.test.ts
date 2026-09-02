@@ -98,14 +98,14 @@ describe("AgentDetail tabs", () => {
   });
 
   it("switches tabs among primary and expanded advanced without unmounting panels", async () => {
-    // A decider fixture (can_decide_learnings: true) so Memory is a visible
-    // tab trigger right away, with no Advanced-toggle click needed first --
-    // that toggle mechanic has its own dedicated tests below.
     stubFetch({ ...BASE_ROUTES, "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: true } });
     renderWithClient(AgentDetail);
     const chatTab = await screen.findByRole("tab", { name: "Chat" });
     expect(chatTab.getAttribute("aria-selected")).toBe("true");
     expect(screen.queryByRole("tab", { name: "Slack" })).not.toBeNull();
+    // The group starts collapsed for everyone (2026-09-02 ruling), so open
+    // it first -- the toggle mechanic itself has dedicated tests below.
+    await fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
 
     // Ready is the one status where every tab trigger is reachable — none
     // of them dead-end into a 409, so none should be disabled.
@@ -147,6 +147,7 @@ describe("AgentDetail tabs", () => {
     renderWithClient(AgentDetail);
     const chatTab = await screen.findByRole("tab", { name: "Chat" });
     expect(chatTab.getAttribute("aria-selected")).toBe("false");
+    await fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
 
     const memoryTab = screen.getByRole("tab", { name: "Memory" }) as HTMLButtonElement;
     const skillsTab = screen.getByRole("tab", { name: "Skills" }) as HTMLButtonElement;
@@ -263,7 +264,7 @@ describe("AgentDetail tabs", () => {
     expect((editButton as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("collapses the Advanced group for non-deciders and expands it on toggle", async () => {
+  it("collapses the Advanced group by default and expands it on toggle", async () => {
     // READY_AGENT already has can_decide_learnings: false.
     renderWithClient(AgentDetail);
     await screen.findByRole("tab", { name: "Chat" });
@@ -272,13 +273,15 @@ describe("AgentDetail tabs", () => {
     expect(screen.getByRole("tab", { name: "Memory" })).not.toBeNull();
   });
 
-  it("expands the Advanced group by default for deciders", async () => {
+  it("starts collapsed for deciders too (2026-09-02 ruling)", async () => {
     stubFetch({
       ...BASE_ROUTES,
       "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: true },
     });
     renderWithClient(AgentDetail);
     await screen.findByRole("tab", { name: "Chat" });
+    expect(screen.queryByRole("tab", { name: "Learnings" })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
     expect(screen.getByRole("tab", { name: "Learnings" })).not.toBeNull();
   });
 
@@ -294,14 +297,15 @@ describe("AgentDetail tabs", () => {
   });
 
   it("collapsing Advanced while an advanced tab is selected returns to a coherent state", async () => {
-    // A decider fixture (can_decide_learnings: true) so the group starts
-    // open and Memory is selectable with no toggle click needed first.
     stubFetch({
       ...BASE_ROUTES,
       "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: true },
     });
     renderWithClient(AgentDetail);
-    const memoryTab = await screen.findByRole("tab", { name: "Memory" });
+    await screen.findByRole("tab", { name: "Chat" });
+    // The group starts collapsed for everyone: open it, then select Memory.
+    await fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    const memoryTab = screen.getByRole("tab", { name: "Memory" });
     await fireEvent.click(memoryTab);
     expect(memoryTab.getAttribute("aria-selected")).toBe("true");
 
@@ -373,6 +377,9 @@ describe("AgentDetail tabs", () => {
     });
     renderWithClient(AgentDetail);
     expect(await screen.findByText("This agent is being destroyed.")).not.toBeNull();
+    // The Advanced group starts collapsed for everyone (2026-09-02 ruling);
+    // this test reaches the Memory tab, so open the group first.
+    await fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
     // Let MemoryPanel's own knowledge/intake queries (mounted alongside the
     // notice, since every panel stays mounted per the tab invariant) settle
     // past their initial Skeleton — otherwise those transient loading
