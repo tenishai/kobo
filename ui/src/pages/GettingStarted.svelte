@@ -29,19 +29,20 @@
     <p>
       On the <a href={formatHash({ page: "dashboard" })}>dashboard</a>, press
       Create agent. Pick a persona from the catalog, or describe the job
-      yourself and build one from scratch, then accept one of the suggested
-      names or write your own, then choose the group that will see it. A
-      checklist appears at the top of the agent's page while it builds, and
-      it disappears on its own once every step turns green.
+      yourself and build one from scratch. Accept one of the suggested names,
+      or write your own, and choose the group that will see it. A checklist
+      appears at the top of the agent's page while it builds, and it
+      disappears on its own once every step turns green.
     </p>
   </section>
 
   <section>
     <h2>2. Say hello</h2>
     <p>
-      Open the Chat tab and say hello, that's where you meet it. Whenever it
-      says something worth keeping, or you tell it something it should
-      remember, press Teach this and the fact joins its memory for good.
+      The Chat tab is where you meet your agent, so open it and say hello.
+      Whenever it says something worth keeping, or you tell it something it
+      should remember, press Teach this and the fact joins its memory for
+      good.
     </p>
   </section>
 
@@ -58,8 +59,8 @@
   <section>
     <h2>4. Bring in teammates</h2>
     <p>
-      Anyone already in the same group can see and chat with your agent, no
-      extra setup needed. The Access tab lets you grant an individual person
+      Anyone already in the same group can see and chat with your agent, with
+      no extra setup needed. The Access tab lets you grant an individual person
       outside the group by email, and colleague requests connect your agent
       to agents in other groups so the two can consult each other.
     </p>
