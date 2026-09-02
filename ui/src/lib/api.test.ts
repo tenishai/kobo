@@ -10,6 +10,7 @@ import {
   createPersona,
   createThread,
   decideGroupRequest,
+  decideLearningsBulk,
   deleteKnowledgeFile,
   draftPersona,
   errorMessage,
@@ -1400,6 +1401,42 @@ describe("decideGroupRequest (shared-group + group-requests wave, admin only)", 
     await expect(decideGroupRequest(7, "declined")).rejects.toMatchObject({
       status: 409,
     });
+  });
+});
+
+describe("decideLearningsBulk", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("POSTs {ids, action} to /api/agents/{name}/learnings/bulk", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ results: [] }));
+
+    await decideLearningsBulk("clio", [1, 2], "approve");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/agents/clio/learnings/bulk",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: [1, 2], action: "approve" }),
+      },
+    );
+  });
+
+  it("encodes the agent name in the URL", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ results: [] }));
+
+    await decideLearningsBulk("a b", [1], "deny");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/agents/a%20b/learnings/bulk",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 });
 

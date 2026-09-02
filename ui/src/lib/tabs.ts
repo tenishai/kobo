@@ -37,7 +37,7 @@ export const TAB_LABELS: Record<TabId, string> = {
  * success/failure in here), so the tab is exactly as real as the server's
  * own owner-or-operator gate on that route, never a client-side guess.
  * Appended last, after Slack, so an existing screenshot/expectation of the
- * first six tabs' order never shifts.
+ * first seven tabs' order never shifts.
  */
 export function visibleTabs(showAccess = false): TabId[] {
   const base: TabId[] = ["overview", "chat", "memory", "learnings", "skills", "tooling", "slack"];

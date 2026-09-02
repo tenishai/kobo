@@ -26,6 +26,7 @@ from __future__ import annotations
 import re
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from kobo_api.clients import GitHubClient, StorageClient
@@ -167,23 +168,69 @@ def read_local_skill(github: GitHubClient, repo: str, skill_id: str) -> str:
         return target.read_text(encoding="utf-8")
 
 
-def list_repo_skills(github: GitHubClient, repo: str) -> list[str]:
+# The reconciling GET route (main.py's list_skills) clones this repo on
+# every call to learn the runtime truth-set, and three multipliers make
+# that hot: every tabpanel mounts on page view (so this fires on every
+# agent-detail load, not just when the Skills tab is selected),
+# `refetchOnWindowFocus` defaults on for the query, and a learnings verdict
+# invalidates the whole ["agents", name] prefix (which this route's own
+# query key falls under). A short TTL cache absorbs that multiplier
+# without ever serving stale-for-long: a real mutation (catalog add, local
+# save, delete) busts its repo's entry immediately after its own repo
+# write succeeds, so a GET landing within the TTL right after a mutation
+# still sees that mutation's result, never a ghost of what used to be
+# there.
+_REPO_SKILLS_TTL_S = 60.0
+_repo_skills_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+def list_repo_skills(
+    github: GitHubClient, repo: str, *, now: float | None = None
+) -> list[str]:
     """Every skill id present in `repo`'s bundle/skills/ -- the runtime
     truth-set the reconciling route reads. A skill is a directory holding
     a SKILL.md; anything else under bundle/skills/ is ignored, matching
     what the bundle loader itself registers. Same clone-a-tempdir pattern
-    as every other function in this module."""
+    as every other function in this module, except a fresh clone only
+    actually runs when `repo`'s cached listing is missing or older than
+    `_REPO_SKILLS_TTL_S` (`time.monotonic()`, immune to wall-clock
+    adjustment; `now` is a test-only override).
+
+    A failed clone is never cached -- only a successful listing is stored
+    on the way out, so a transient `ClientError` propagates to the caller
+    exactly as it always has, and the very next call tries a fresh clone
+    again rather than being poisoned by the failure.
+    """
+    moment = time.monotonic() if now is None else now
+    cached = _repo_skills_cache.get(repo)
+    if cached is not None:
+        stored_at, ids = cached
+        if moment - stored_at < _REPO_SKILLS_TTL_S:
+            return ids
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         github.clone(repo, workdir)
         skills_dir = workdir / "bundle" / "skills"
         if not skills_dir.is_dir():
-            return []
-        return sorted(
-            entry.name
-            for entry in skills_dir.iterdir()
-            if entry.is_dir() and (entry / "SKILL.md").is_file()
-        )
+            ids: list[str] = []
+        else:
+            ids = sorted(
+                entry.name
+                for entry in skills_dir.iterdir()
+                if entry.is_dir() and (entry / "SKILL.md").is_file()
+            )
+    _repo_skills_cache[repo] = (moment, ids)
+    return ids
+
+
+def bust_repo_skills_cache(repo: str) -> None:
+    """Drop `repo`'s cached skills listing, if any. Called by the three
+    kobo-lane skills-mutation routes (main.py) right after their own repo
+    write succeeds -- without this, a delete followed by a GET within the
+    TTL would re-heal the just-deleted skill back into the ledger from the
+    stale cached listing, and a just-added skill would stay invisible for
+    the rest of the window."""
+    _repo_skills_cache.pop(repo, None)
 
 
 def save_local_skill(github: GitHubClient, repo: str, skill_id: str, content: str) -> str:

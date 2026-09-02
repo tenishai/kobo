@@ -5,12 +5,27 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import kobo_api.skills as _skills_module
 from kobo_api.config import Config
 from kobo_api.db import init_db
 from kobo_api.main import create_app
 from kobo_api.models import Base
 from kobo_api.personas import seed_default_personas
 from tests.fakes import FakeStorage
+
+
+@pytest.fixture(autouse=True)
+def _clear_repo_skills_cache():
+    """`kobo_api.skills.list_repo_skills`'s TTL cache (review fix B) is a
+    plain module-level dict, so it persists across every test in the whole
+    suite unless something clears it. Many test modules reuse the same
+    literal repo name (e.g. "acme/agent-clio") across unrelated test
+    functions with differently-shaped fake repos, so without this, a cache
+    entry one test's clone leaves behind can silently answer a later
+    test's call instead of that test's own fake ever being asked."""
+    _skills_module._repo_skills_cache.clear()
+    yield
+    _skills_module._repo_skills_cache.clear()
 
 # Bucket-catalog fixture rework (Task 5, done once here): every test module
 # that needs a wired catalog can request `fake_storage` (seeded with both

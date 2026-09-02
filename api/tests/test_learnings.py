@@ -1,5 +1,6 @@
 """Daily learnings: model, validation, storage, lifecycle, scheduling."""
 
+import logging
 from datetime import UTC, datetime
 
 import pytest
@@ -98,6 +99,21 @@ def test_parse_reply_clips_and_caps():
     assert len(parse_reply(many)) == CANDIDATE_CAP
 
 
+def test_parse_reply_drops_a_non_string_content_field():
+    # Review fix G: a JSON `null` (or a list/dict) must read as a missing
+    # field, never as `str(None)` == "None" landing in the owner's queue.
+    candidates = [
+        {"content": None, "kind": "fact", "source": "s", "evidence": "e"},
+        _candidate(content="valid one"),
+    ]
+    reply = json.dumps({"candidates": candidates})
+
+    result = parse_reply(reply)
+
+    assert len(result) == 1
+    assert result[0]["content"] == "valid one"
+
+
 def test_store_candidates_skips_known_hash_any_status(session):
     stored = store_candidates(session, "wren", "2026-09-01", [_candidate()])
     assert stored == 1
@@ -194,10 +210,14 @@ def _cabal_disabled_config():
 
 class StubCabal:
     """Relays are recorded; the reply is the same task_to_a2a shape the
-    daedalus runtime actually returns."""
+    daedalus runtime actually returns. `state` defaults to "completed" (the
+    healthy case); review fix D's tests pass "failed" to model an old
+    runtime's refusal to the (to it, unknown) "learnings" marker -- a
+    well-formed task, just not a completed one."""
 
-    def __init__(self, reply_text):
+    def __init__(self, reply_text, state="completed"):
         self.reply_text = reply_text
+        self.state = state
         self.calls = []
 
     def relay(self, name, envelope):
@@ -208,7 +228,7 @@ class StubCabal:
             "kind": "task",
             "id": "t1",
             "status": {
-                "state": "completed",
+                "state": self.state,
                 "message": {
                     "kind": "message",
                     "role": "agent",
@@ -294,3 +314,53 @@ def test_run_nightly_without_cabal_still_expires(session, monkeypatch):
     run_nightly(_app(lambda: session, None, _cabal_disabled_config()))
 
     assert session.query(AgentLearning).one().status == LEARNING_EXPIRED
+
+
+def test_run_nightly_isolates_one_agents_store_failure_from_the_rest(session, monkeypatch):
+    # Review fix C: the per-agent try/except only used to wrap the relay
+    # call. A DB hiccup in store_candidates for one agent must not abort
+    # the whole sweep -- the next due agent still gets summarized and
+    # stored.
+    import kobo_api.learnings as learnings_module
+
+    monkeypatch.setattr(session, "close", lambda: None)
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    _seed_ready(session, name="a")
+    _seed_ready(session, name="b")
+    cabal = StubCabal(json.dumps({"candidates": [_candidate()]}))
+
+    real_store_candidates = learnings_module.store_candidates
+
+    def _store_or_boom(session, agent_name, day, candidates):
+        if agent_name == "a":
+            raise RuntimeError("db hiccup")
+        return real_store_candidates(session, agent_name, day, candidates)
+
+    monkeypatch.setattr(learnings_module, "store_candidates", _store_or_boom)
+
+    run_nightly(_app(lambda: session, cabal, _cabal_enabled_config()))  # must not raise
+
+    assert {call[0] for call in cabal.calls} == {"a", "b"}
+    assert session.query(AgentLearning).filter_by(agent_name="a").count() == 0
+    assert session.query(AgentLearning).filter_by(agent_name="b").count() == 1
+
+
+def test_run_nightly_old_runtime_refusal_stores_nothing(session, monkeypatch, caplog):
+    # Review fix D: a FAILED task (an old runtime's refusal to the unknown
+    # "learnings" marker) still carries a text part parse_reply would
+    # happily turn into [] -- the sweep must tell that apart from a
+    # healthy quiet day instead of logging it as one. Rows are the
+    # due-agent marker, so storing nothing here is correct and desired
+    # during rollout (the agent stays due next sweep) -- only the log
+    # legibility and the zero-rows-stored outcome are asserted.
+    monkeypatch.setattr(session, "close", lambda: None)
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    _seed_ready(session)
+    cabal = StubCabal("Sorry, I don't know how to do that.", state="failed")
+
+    with caplog.at_level(logging.WARNING, logger="kobo.learnings"):
+        run_nightly(_app(lambda: session, cabal, _cabal_enabled_config()))
+
+    assert len(cabal.calls) == 1
+    assert session.query(AgentLearning).count() == 0
+    assert "learnings task not completed for wren" in caplog.text

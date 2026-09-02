@@ -61,7 +61,10 @@
     errorText = "";
     decide.mutate(
       { id, action },
-      { onError: (e: unknown) => (errorText = String(e)) },
+      {
+        onError: (e: unknown) =>
+          (errorText = errorMessage(e, "Couldn't record that verdict. Try again.")),
+      },
     );
   }
 
@@ -72,7 +75,10 @@
       .map((l: Learning) => l.id);
     bulkDecide.mutate(
       { ids, action },
-      { onError: (e: unknown) => (errorText = String(e)) },
+      {
+        onError: (e: unknown) =>
+          (errorText = errorMessage(e, "Couldn't record those verdicts. Try again.")),
+      },
     );
   }
 </script>

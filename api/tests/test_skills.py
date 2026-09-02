@@ -11,11 +11,15 @@ from pathlib import Path
 
 import pytest
 
+import kobo_api.skills as skills_module
+from kobo_api.clients import ClientError
 from kobo_api.config import Config
 from kobo_api.skills import (
     SKILL_MAX_BYTES,
     SkillsError,
     add_catalog_skill,
+    bust_repo_skills_cache,
+    list_repo_skills,
     read_local_skill,
     remove_skill,
     save_local_skill,
@@ -350,3 +354,42 @@ def test_save_local_skill_accepts_max_size_content():
     sha = save_local_skill(github, REPO, "survey-field", content)
     assert github.captured_skills == {"survey-field/SKILL.md": content}
     assert sha == FAKE_LOCAL_HEAD_DEFAULT
+
+
+# --- list_repo_skills TTL cache / bust_repo_skills_cache (review fix B) ------
+
+
+def test_list_repo_skills_second_call_within_ttl_does_not_reclone():
+    github = _SkillSeedingGitHub(local_skills={"survey-field/SKILL.md": SAMPLE_CONTENT})
+
+    first = list_repo_skills(github, REPO, now=1000.0)
+    second = list_repo_skills(
+        github, REPO, now=1000.0 + skills_module._REPO_SKILLS_TTL_S - 1
+    )
+
+    assert first == ["survey-field"]
+    assert second == ["survey-field"]
+    assert len(github.cloned) == 1
+
+
+def test_bust_repo_skills_cache_forces_a_reclone():
+    github = _SkillSeedingGitHub(local_skills={"survey-field/SKILL.md": SAMPLE_CONTENT})
+
+    list_repo_skills(github, REPO, now=1000.0)
+    bust_repo_skills_cache(REPO)
+    # Same `now` as the first call -- were the entry not busted, this would
+    # still be well inside the TTL and serve the stale cached list.
+    list_repo_skills(github, REPO, now=1000.0)
+
+    assert len(github.cloned) == 2
+
+
+def test_list_repo_skills_does_not_cache_a_client_error():
+    github = FakeGitHub(clone_error="gh: rate limited")
+
+    with pytest.raises(ClientError):
+        list_repo_skills(github, REPO, now=1000.0)
+    with pytest.raises(ClientError):
+        list_repo_skills(github, REPO, now=1000.0)
+
+    assert len(github.cloned) == 2

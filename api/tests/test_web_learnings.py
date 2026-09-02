@@ -8,19 +8,29 @@
 `commit_push` fires) -- all against the fakes, no real git/kubectl
 involved. Approve rides the teach lane byte-for-byte, so its archive-lane
 assertions reuse that same fixture.
+
+The decide-gate slice (review fix E) reuses test_web_teach.py's real-JWT
+idiom too: a locally generated ES256 keypair signs the assertion, verified
+through the actual `IapMiddleware`/`IapVerifier`, not a mock -- every other
+test in this file runs IAP-disabled, where `_decider_or_403` short-circuits
+to allowed, so those tests exercise nothing about the gate itself.
 """
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import Clients
 from kobo_api.config import Config
+from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import create_app
 from kobo_api.models import (
     LEARNING_APPROVED,
@@ -29,6 +39,7 @@ from kobo_api.models import (
     Agent,
     AgentLearning,
     AgentStatus,
+    AgentUserGrant,
     Base,
 )
 from tests.fakes import (
@@ -46,6 +57,11 @@ PERSONA = "helpful-generalist"
 REPO = "acme/agent-clio"
 
 SHA = FAKE_LOCAL_HEAD_DEFAULT
+
+AUDIENCE = "test-audience"
+KID = "test-key-1"
+OWNER_EMAIL = "owner@example.com"
+CALLER_EMAIL = "caller@example.com"
 
 
 class _CapturingGitHub(FakeGitHub):
@@ -113,7 +129,14 @@ def _make_client(session_factory, config, *, github=None, iap_jwks_fetcher=None,
     )
 
 
-def _seed_agent(session_factory, config, *, status=AgentStatus.READY, repo_full_name=REPO):
+def _seed_agent(
+    session_factory,
+    config,
+    *,
+    status=AgentStatus.READY,
+    repo_full_name=REPO,
+    created_by=None,
+):
     session = session_factory()
     session.add(
         Agent(
@@ -122,6 +145,7 @@ def _seed_agent(session_factory, config, *, status=AgentStatus.READY, repo_full_
             model_id=config.models[0].id,
             status=status,
             repo_full_name=repo_full_name,
+            created_by=created_by,
         )
     )
     session.commit()
@@ -245,3 +269,98 @@ def test_agent_detail_carries_learnings_fields(session_factory, config):
 
     assert body["pending_learnings"] == 1
     assert body["can_decide_learnings"] is True  # IAP disabled: gate passes
+
+
+# --- decide gate (review fix E): real IAP JWT, owner set to a DIFFERENT --
+# email than the caller so ownership can't leak the caller through --------
+
+
+def _generate_jwk(kid: str = KID):
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    jwk = jwt.algorithms.ECAlgorithm.to_jwk(private_key.public_key(), as_dict=True)
+    jwk["kid"] = kid
+    jwk["use"] = "sig"
+    jwk["alg"] = "ES256"
+    return private_key, jwk
+
+
+def _sign(private_key, *, email: str | None, kid: str = KID) -> str:
+    now = int(time.time())
+    claims = {
+        "aud": AUDIENCE,
+        "iss": IAP_ISSUER,
+        "iat": now,
+        "exp": now + 3600,
+        "sub": "accounts.google.com:1234567890",
+    }
+    if email is not None:
+        claims["email"] = email
+    return jwt.encode(claims, private_key, algorithm="ES256", headers={"kid": kid})
+
+
+def _fetcher(jwk):
+    def fetch():
+        return {"keys": [jwk]}
+
+    return fetch
+
+
+def test_decide_gate_denies_non_owner_no_grant(session_factory, config):
+    private_key, jwk = _generate_jwk()
+    iap_config = config.model_copy(update={"iap_audience": AUDIENCE})
+    client = _make_client(session_factory, iap_config, iap_jwks_fetcher=_fetcher(jwk))
+    _seed_agent(session_factory, iap_config, created_by=OWNER_EMAIL)
+    learning_id = _seed_learning(session_factory)
+
+    token = _sign(private_key, email=CALLER_EMAIL)
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/learnings/{learning_id}/deny",
+        headers={ASSERTION_HEADER: token},
+    )
+
+    assert response.status_code == 403
+
+    session = session_factory()
+    row = session.query(AgentLearning).filter_by(id=learning_id).one()
+    assert row.status == LEARNING_PENDING
+    session.close()
+
+
+def test_decide_gate_allows_a_grantee(session_factory, config):
+    private_key, jwk = _generate_jwk()
+    iap_config = config.model_copy(update={"iap_audience": AUDIENCE})
+    client = _make_client(session_factory, iap_config, iap_jwks_fetcher=_fetcher(jwk))
+    _seed_agent(session_factory, iap_config, created_by=OWNER_EMAIL)
+    learning_id = _seed_learning(session_factory)
+
+    session = session_factory()
+    session.add(AgentUserGrant(agent_name=AGENT_NAME, email=CALLER_EMAIL))
+    session.commit()
+    session.close()
+
+    token = _sign(private_key, email=CALLER_EMAIL)
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/learnings/{learning_id}/deny",
+        headers={ASSERTION_HEADER: token},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == LEARNING_DENIED
+
+
+def test_agent_detail_can_decide_learnings_false_for_non_owner_no_grant(
+    session_factory, config
+):
+    private_key, jwk = _generate_jwk()
+    iap_config = config.model_copy(update={"iap_audience": AUDIENCE})
+    client = _make_client(session_factory, iap_config, iap_jwks_fetcher=_fetcher(jwk))
+    _seed_agent(session_factory, iap_config, created_by=OWNER_EMAIL)
+
+    token = _sign(private_key, email=CALLER_EMAIL)
+    response = client.get(
+        f"/api/agents/{AGENT_NAME}",
+        headers={ASSERTION_HEADER: token},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["can_decide_learnings"] is False

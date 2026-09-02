@@ -12,6 +12,7 @@ import {
   createPersonaMutation,
   createThreadMutation,
   decideGroupRequestMutation,
+  decideLearningsBulkMutation,
   deleteIntakeMutation,
   deleteKnowledgeMutation,
   deleteSkillMutation,
@@ -262,6 +263,44 @@ describe("saveKnowledgeMutation", () => {
     expect(invalidateQueries).toHaveBeenCalledTimes(1);
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["agents", "clio", "knowledge"],
+    });
+  });
+});
+
+describe("decideLearningsBulkMutation", () => {
+  it("mutationFn delegates to decideLearningsBulk(name, ids, action)", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ results: [] }),
+    } as Response);
+
+    const queryClient = { invalidateQueries: vi.fn() } as unknown as QueryClient;
+    const mutation = decideLearningsBulkMutation(queryClient, "clio");
+
+    await mutation.mutationFn({ ids: [1, 2], action: "approve" });
+
+    expect(fetch).toHaveBeenCalledWith("/api/agents/clio/learnings/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [1, 2], action: "approve" }),
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the ['agents', name] prefix on success", () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as unknown as QueryClient;
+
+    const mutation = decideLearningsBulkMutation(queryClient, "clio");
+    mutation.onSuccess();
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["agents", "clio"],
     });
   });
 });

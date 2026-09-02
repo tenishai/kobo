@@ -135,6 +135,7 @@ from kobo_api.search import teams as catalog_teams_query
 from kobo_api.skills import (
     SkillsError,
     add_catalog_skill,
+    bust_repo_skills_cache,
     list_repo_skills,
     read_local_skill,
     remove_skill,
@@ -3731,6 +3732,14 @@ def create_app(
             log.warning("skills repo listing failed for %s: %s", name, exc)
             repo_ids = None
         if repo_ids is not None:
+            # The clone above takes real wall-clock time (seconds, not
+            # milliseconds) -- long enough for a POST to one of the
+            # kobo-lane skills-mutation routes to land in that window and
+            # commit against the ledger this request loaded before the
+            # clone even started. Re-read right before merging so the
+            # write below starts from whatever the DB holds NOW, never
+            # from a copy that's already stale by the time it's used.
+            session.refresh(agent)
             known = [e for e in agent.skills if e["name"] in set(repo_ids)]
             known_names = {e["name"] for e in known}
             discovered = [
@@ -3739,7 +3748,18 @@ def create_app(
                 if skill_id not in known_names
             ]
             merged = known + discovered
+            pruned = [e["name"] for e in agent.skills if e["name"] not in set(repo_ids)]
+            if pruned:
+                log.info(
+                    "skills reconcile pruned %s for %s (absent from bundle)",
+                    pruned,
+                    name,
+                )
             if merged != agent.skills:
+                # This write is the room repairing its OWN cache from the
+                # bundle's truth, not a caller mutating anything -- a GET
+                # that finds the ledger stale just heals it in place before
+                # answering, same as any other read-repair.
                 agent.skills = merged
                 session.commit()
 
@@ -3807,6 +3827,12 @@ def create_app(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
+        # The repo write just succeeded -- bust this repo's cached skills
+        # listing (kobo_api.skills.list_repo_skills's TTL cache) now, before
+        # anything else, so a GET landing inside the TTL sees this pick
+        # instead of a stale pre-add listing.
+        bust_repo_skills_cache(agent.repo_full_name)
+
         # The sha recorded on the row is the catalog's CURRENT source-sha for
         # this pick (add_catalog_skill's second return value) — the pin a
         # later provision/resume would compare against — never the pushed
@@ -3850,6 +3876,11 @@ def create_app(
             return JSONResponse(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
+
+        # Bust before the ledger write below -- same reasoning as the
+        # catalog-add route above: a GET landing inside the TTL must not
+        # re-heal this just-deleted skill back in from a stale listing.
+        bust_repo_skills_cache(agent.repo_full_name)
 
         agent.skills = [entry for entry in agent.skills if entry["name"] != skill_id]
         session.commit()
@@ -3925,6 +3956,11 @@ def create_app(
             return JSONResponse(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
+
+        # Same bust-before-write reasoning as the catalog-add/delete routes
+        # above -- a GET landing inside the TTL must see this save's
+        # content, not a stale pre-save listing.
+        bust_repo_skills_cache(agent.repo_full_name)
 
         agent.skills = [e for e in agent.skills if e["name"] != skill_id] + [
             {"name": skill_id, "source": "local"}

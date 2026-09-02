@@ -531,13 +531,13 @@ REPO_ACCESS_STATUSES = (REPO_ACCESS_REQUESTED, REPO_ACCESS_APPROVED, REPO_ACCESS
 
 
 class AgentLearning(Base):
-    """One candidate memory snippet awaiting a human verdict (daily--
-    learnings spec, 2026-09-01): the nightly summarizer's output parked
-    for curation. Nothing in this table is memory -- a row becomes memory
-    only when the approve route pushes it through the teach lane, and a
-    denied or expired row is a tombstone whose hash blocks the identical
-    content from ever being proposed again (the unique constraint below;
-    the nightly upsert skips any existing hash regardless of status).
+    """One candidate memory snippet awaiting a human verdict (daily-learnings
+    spec, 2026-09-01): the nightly summarizer's output parked for curation.
+    Nothing in this table is memory -- a row becomes memory only when the
+    approve route pushes it through the teach lane, and a denied or expired
+    row is a tombstone whose hash blocks the identical content from ever
+    being proposed again (the unique constraint below; the nightly upsert
+    skips any existing hash regardless of status).
 
     Statuses live in LEARNING_STATUSES; `day` is the nightly run's ISO
     date; `content_hash` is SHA-256 of `content`. `agent_name` is a plain
@@ -546,7 +546,11 @@ class AgentLearning(Base):
 
     Postdates every table in this file, so `Base.metadata.create_all`
     (`kobo_api.db.init_db`) creates it for free -- same no-ALTER-needed
-    convention `MCPToolCallLog` documents above.
+    convention `MCPToolCallLog` documents above. The migration under
+    migrations/versions/ exists only so test_migrations.py's baseline-vs-
+    models parity check keeps passing; production still creates this table
+    the same create_all way, since the shipped image carries no
+    migrations/ directory at all.
     """
 
     __tablename__ = "agent_learnings"

@@ -53,6 +53,14 @@ def _naive_utc(moment: datetime) -> datetime:
     return moment.astimezone(UTC).replace(tzinfo=None)
 
 
+def _clean_str_field(value: object) -> str:
+    """`value`, stripped, when it's a plain `str` -- otherwise "" (missing),
+    never `str(value)`. A candidate field that's JSON `null` or a list/dict
+    coerces to noise like "None" or "['a', 'b']" under a blind `str()`, and
+    that noise would otherwise land verbatim in the owner's review queue."""
+    return value.strip() if isinstance(value, str) else ""
+
+
 def parse_reply(reply: str) -> list[dict]:
     """The agent's JSON reply -> validated candidate dicts. Garbage in
     (prose, wrong shape, missing fields) reads as no candidates, never an
@@ -73,10 +81,10 @@ def parse_reply(reply: str) -> list[dict]:
     for item in raw[:CANDIDATE_CAP]:
         if not isinstance(item, dict):
             continue
-        content = str(item.get("content", "")).strip()
-        kind = str(item.get("kind", "")).strip()
-        source = str(item.get("source", "")).strip()
-        evidence = str(item.get("evidence", "")).strip()
+        content = _clean_str_field(item.get("content"))
+        kind = _clean_str_field(item.get("kind"))
+        source = _clean_str_field(item.get("source"))
+        evidence = _clean_str_field(item.get("evidence"))
         if not content or kind not in KINDS or not source:
             continue
         candidates.append(
@@ -167,13 +175,50 @@ def seconds_until_next_utc_midnight(now: datetime) -> float:
     return max(60.0, (tomorrow - moment).total_seconds())
 
 
+def _relay_reply_not_completed(raw: object) -> bool:
+    """True unless `raw` is a well-formed relayed task whose status state is
+    exactly "completed". Deliberately duplicated from `kobo_api.main`'s
+    identically-behaved `_teach_task_not_completed` (and `kobo_api.steps`'
+    own `_relay_reply_not_completed`) rather than imported -- that function
+    is a closure nested inside `create_app` (not reachable from this
+    module, which `kobo_api.main` itself imports, so the reverse import
+    would be circular anyway), and its own docstring already establishes
+    the precedent that this specific check is meant to be copied to each
+    new caller rather than shared, the same way `_extract_relay_reply` is
+    shared but this narrower bool check is not.
+
+    Without this, an old runtime's FAILED-task refusal to the (to it,
+    unknown) "learnings" marker still carries a text part `parse_reply`
+    happily turns into `[]` -- store_candidates stores nothing, and the
+    sweep log reads exactly like a healthy agent having a quiet day. This
+    lets the sweep tell the two apart and warn instead."""
+    task: object = raw
+    if isinstance(raw, dict):
+        if isinstance(raw.get("task"), dict):
+            task = raw["task"]
+        elif isinstance(raw.get("result"), dict):
+            task = raw["result"]
+
+    if not isinstance(task, dict):
+        return True
+
+    status = task.get("status")
+    if not isinstance(status, dict):
+        return True
+
+    return status.get("state") != "completed"
+
+
 def run_nightly(app) -> None:
     """One sweep, synchronous (runs via asyncio.to_thread): expire stale
     pending rows, then relay a learnings task to every due ready agent and
-    store what comes back. Any single agent's failure is logged and
-    skipped -- the sweep never dies mid-fleet. With cabal unwired the
-    sweep still expires (bookkeeping needs no relay) and does nothing
-    else."""
+    store what comes back. The whole per-agent body is wrapped in its own
+    `except Exception` -- one agent's DB hiccup (or anything else
+    unanticipated) is logged and skipped, never aborting the rest of the
+    fleet, on top of the narrower relay-specific catch below (which keeps
+    its own specific log message for that one well-understood failure
+    mode). With cabal unwired the sweep still expires (bookkeeping needs no
+    relay) and does nothing else."""
     import httpx
 
     from kobo_api.clients import (
@@ -198,21 +243,33 @@ def run_nightly(app) -> None:
         ]
         day = now.date().isoformat()
         for name in due_agents(session, ready, now):
-            envelope = _build_learnings_envelope(day)
             try:
-                raw = clients.cabal.relay(name, envelope)
-                reply = _extract_relay_reply(raw)
-            except (CabalError, httpx.HTTPError, ValueError) as exc:
-                log.warning("learnings relay failed for %s: %s", name, exc)
+                envelope = _build_learnings_envelope(day)
+                try:
+                    raw = clients.cabal.relay(name, envelope)
+                    reply = _extract_relay_reply(raw)
+                except (CabalError, httpx.HTTPError, ValueError) as exc:
+                    log.warning("learnings relay failed for %s: %s", name, exc)
+                    continue
+                if _relay_reply_not_completed(raw):
+                    log.warning(
+                        "learnings task not completed for %s (old runtime or "
+                        "refusal): %s",
+                        name,
+                        reply[:200],
+                    )
+                    continue
+                candidates = parse_reply(reply)
+                stored = store_candidates(session, name, day, candidates)
+                log.info(
+                    "learnings: %s proposed %d, stored %d new",
+                    name,
+                    len(candidates),
+                    stored,
+                )
+            except Exception:
+                log.exception("learnings sweep failed for %s", name)
                 continue
-            candidates = parse_reply(reply)
-            stored = store_candidates(session, name, day, candidates)
-            log.info(
-                "learnings: %s proposed %d, stored %d new",
-                name,
-                len(candidates),
-                stored,
-            )
     finally:
         session.close()
 
