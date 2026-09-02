@@ -2029,9 +2029,9 @@ class NameClient(Protocol):
         described by `who` (who_they_are) and `what` (what_they_do); raise
         ClientError on a transport/envelope/parse failure.
 
-        Not guaranteed to return exactly five (or even any) usable
+        Not guaranteed to return exactly three (or even any) usable
         candidates — `kobo_api.namegen.finalize_suggestions` is what filters
-        and pads the result to exactly five; this method's only job is
+        and pads the result to exactly three; this method's only job is
         best-effort extraction of whatever candidates the model's reply
         actually contained.
         """
@@ -2153,16 +2153,41 @@ def _extract_json_object(text: str) -> dict:
     return json.loads(match.group(0))
 
 
+def _render_name_prompt_list(items: list[str] | None, when_empty: str) -> str:
+    """Render a `tags`/`exclude` list for embedding in
+    `_NAME_PROMPT_TEMPLATE`: comma-joined when non-empty, else the literal
+    `when_empty` placeholder text — never the string "None" and never a
+    dangling empty span, whether `items` is `None` or an empty list.
+    """
+    if not items:
+        return when_empty
+    return ", ".join(items)
+
+
+# Persona-mining prompt (create-identity, Task 2): unlike the old fixed
+# "craft workshop's bench... quiet trades" theme (which named the same
+# lexical universe regardless of persona), this prompt draws candidate
+# names OUT of the persona actually passed in — `who`/`what`/`tags` — and
+# steers toward whatever world that persona evokes (a public figure, a
+# fictional character, a team) before falling back to the persona's own
+# domain vocabulary. `exclude` keeps repeat "offer more" rounds from
+# resurfacing names already shown. Spec: 2026-09-02-create-identity-and-
+# mcp-currency-design.md, section 1, "Cause 2".
 _NAME_PROMPT_TEMPLATE = (
-    "You are naming a small software agent for a craft workshop's bench — "
-    "not a generic assistant. The agent: it is {who}; it does {what}.\n\n"
-    "Suggest exactly five short, lowercase, single-word candidate names, "
-    "real-word-flavored in the spirit of tools, materials, and quiet trades "
-    "(never a client's or company's own name). For each, give a reason of "
-    "8 words or fewer tying it to this persona.\n\n"
-    'Respond with ONLY a strict JSON array of exactly five objects shaped '
-    '{{"name": "...", "reason": "..."}} — no prose, no markdown fences, no '
-    "commentary, nothing before or after the array."
+    "You are naming a software agent. Its persona: {who}. What it does: "
+    "{what}. Its themes: {tags}.\n\n"
+    "Suggest exactly three short, lowercase, single-word candidate names "
+    "that RESONATE with this persona's character and domain. If the "
+    "persona evokes a public figure, a fictional character, a team, or a "
+    "vivid world, draw the names from that world -- nicknames, associated "
+    "places, terms of art. Otherwise draw from the persona's own domain "
+    "vocabulary. Rules: each name is one word, lowercase letters/digits/"
+    "hyphens only, starting with a letter; never an employer's or "
+    "client's company name; never any of: {exclude}. For each, give a "
+    "reason of 8 words or fewer tying it to this persona.\n\n"
+    'Respond with ONLY a strict JSON array of exactly three objects shaped '
+    '{{"name": "...", "reason": "..."}} -- no prose, no markdown fences, '
+    "nothing before or after the array."
 )
 
 # The single server-side-only failure message for every
@@ -2352,20 +2377,33 @@ class VertexNameClient:
         self._http_client = http_client or httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0))
         self._token_provider = token_provider or _gcloud_print_access_token
 
-    def suggest(self, who: str, what: str) -> list[dict]:
+    def suggest(
+        self,
+        who: str,
+        what: str,
+        *,
+        tags: list[str] | None = None,
+        exclude: list[str] | None = None,
+    ) -> list[dict]:
         url = (
             f"https://{self._location}-aiplatform.googleapis.com/v1/projects/"
             f"{self._project}/locations/{self._location}/publishers/google/"
             f"models/{self._model}:generateContent"
         )
-        prompt = _NAME_PROMPT_TEMPLATE.format(who=who, what=what)
+        prompt = _NAME_PROMPT_TEMPLATE.format(
+            who=who,
+            what=what,
+            tags=_render_name_prompt_list(tags, "(none)"),
+            exclude=_render_name_prompt_list(exclude, "(none offered yet)"),
+        )
         body = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             # Naming is a taste task, not a reasoning task: gemini-2.5-flash
             # defaults to dynamic thinking whenever generationConfig omits
             # it, and that thinking budget is what was dominating latency
             # here, so thinking off keeps the ceremony snappy. 512 tokens is
-            # triple what five names plus their one-line reasons ever need.
+            # well more than three names plus their one-line reasons ever
+            # need.
             "generationConfig": {
                 "thinkingConfig": {"thinkingBudget": 0},
                 "maxOutputTokens": 512,

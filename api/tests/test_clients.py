@@ -3009,13 +3009,81 @@ def test_vertex_name_client_request_shape_url_body_and_auth_header():
     assert captured["auth"] == "Bearer fake-access-token"
     # Naming perf fix: dynamic thinking is gemini-2.5-flash's default when
     # generationConfig is omitted, and it was dominating latency for a
-    # five-name JSON task that needs none of it, so thinkingBudget: 0 turns
-    # it off. 512 tokens is triple what five names plus their reasons need.
+    # three-name JSON task that needs none of it, so thinkingBudget: 0 turns
+    # it off. 512 tokens is well more than three names plus their reasons need.
     assert captured["json"]["generationConfig"] == {
         "thinkingConfig": {"thinkingBudget": 0},
         "maxOutputTokens": 512,
         "temperature": 1.0,
     }
+
+
+def test_vertex_name_client_prompt_mines_the_persona_and_asks_for_three():
+    # Persona-mining prompt rewrite (create-identity, Task 2): the prompt
+    # names no lexical universe of its own — it draws candidate names out
+    # of the persona/tags/exclude actually passed in, and asks for exactly
+    # three (SUGGESTION_COUNT), not the old fixed five.
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(200, json=_text_reply(
+            '[{"name": "slugger", "reason": "the legend himself"}, '
+            '{"name": "dugout", "reason": "where the wisdom lives"}, '
+            '{"name": "cleanup", "reason": "a batting-order term"}]'
+        ))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    client.suggest(
+        "a batting coach modeled on a famous slugger",
+        "reviews swing mechanics and calls out timing flaws",
+        tags=["baseball", "coaching"],
+        exclude=["ember"],
+    )
+
+    prompt = captured["json"]["contents"][0]["parts"][0]["text"]
+    assert "a batting coach modeled on a famous slugger" in prompt
+    assert "reviews swing mechanics and calls out timing flaws" in prompt
+    assert "exactly three" in prompt
+    assert "RESONATE" in prompt
+    assert "baseball, coaching" in prompt
+    assert "ember" in prompt
+    assert "craft workshop" not in prompt
+    assert "quiet trades" not in prompt
+
+
+def test_vertex_name_client_empty_tags_and_exclude_render_cleanly():
+    # No tags/exclude offered at all (first round, no persona themes) must
+    # render clean placeholder text — never a literal "None", never a
+    # dangling unformatted "{tags}"/"{exclude}" brace.
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(200, json=_text_reply(
+            '[{"name": "a", "reason": "r"}, {"name": "b", "reason": "r"}, '
+            '{"name": "c", "reason": "r"}]'
+        ))
+
+    client = VertexNameClient(
+        "acme-project", "us-central1", "gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        token_provider=lambda: "fake-access-token",
+    )
+
+    client.suggest("a helper", "helps out")
+
+    prompt = captured["json"]["contents"][0]["parts"][0]["text"]
+    assert "Its themes: (none)" in prompt
+    assert "never any of: (none offered yet)" in prompt
+    assert "None" not in prompt
+    assert "{tags}" not in prompt
+    assert "{exclude}" not in prompt
 
 
 def test_vertex_name_client_parses_clean_json_array():
