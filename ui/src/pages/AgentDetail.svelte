@@ -846,15 +846,20 @@
     gap: var(--space-lg);
   }
 
+  /* The row WRAPS rather than scrolls: overflow-x:auto hid the Advanced
+     toggle entirely at common window widths (macOS shows no scrollbar),
+     which read as the control not existing (live finding, 2026-09-02). */
   .detail-tabs__bar {
     display: flex;
+    flex-wrap: wrap;
+    align-items: center;
     gap: var(--space-md);
     border-bottom: 1px solid var(--border);
-    overflow-x: auto;
   }
 
   .detail-tabs__list {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--space-md);
   }
 
