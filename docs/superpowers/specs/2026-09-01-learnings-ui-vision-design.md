@@ -475,8 +475,13 @@ produce very large checkpoint files. Mitigations:
 
 ### Scopes
 
-The existing Slack bot token scopes (`files:read`) are sufficient to
-download files via `url_private`. No scope changes, no reinstall.
+CORRECTION (2026-09-02, verified against `slack_setup.py`'s `_BOT_SCOPES`):
+`files:read` is NOT in the current manifest. Wave 3 must add it, and a
+scope addition -- unlike the tagged-only event change -- requires each
+agent's Slack app to be reinstalled to its workspace after the manifest
+re-apply. Existing agents' owners re-apply at api.slack.com; new agents
+get it from the updated generator. No new event subscriptions are needed
+(the `files` array already rides `app_mention`/`message.im` events).
 
 ### Out of scope (wave 3)
 
