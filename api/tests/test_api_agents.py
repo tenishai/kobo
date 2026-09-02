@@ -57,7 +57,9 @@ TEAM = "clio-team"
 AUDIENCE = "test-audience"
 KID = "test-key-1"
 
-ALL_STEP_NAMES = ["repo", "onboard", "access", "wire", "build", "deploy", "directory", "hello"]
+ALL_STEP_NAMES = [
+    "repo", "avatar", "onboard", "access", "wire", "build", "deploy", "directory", "hello",
+]
 
 POLL_DEADLINE_S = 5
 POLL_INTERVAL_S = 0.02
@@ -171,8 +173,14 @@ def test_create_agent_returns_201_pending_then_provisions_to_ready(client):
     body = _poll_until(client, AGENT_NAME, {"ready", "failed"})
     assert body["status"] == "ready"
     assert [s["name"] for s in body["steps"]] == ALL_STEP_NAMES
-    assert all(s["status"] == "done" for s in body["steps"])
-    assert all(s["error"] is None for s in body["steps"])
+    steps_by_name = {s["name"]: s for s in body["steps"]}
+    # AvatarStep is best-effort: this fixture's `clients` carries no image
+    # backend at all, so it SKIPS with a one-line reason instead of blocking
+    # READY -- every other step still runs and completes normally.
+    assert steps_by_name["avatar"]["status"] == "skipped"
+    assert steps_by_name["avatar"]["error"] == "picture generation is not available"
+    assert all(s["status"] == "done" for s in body["steps"] if s["name"] != "avatar")
+    assert all(s["error"] is None for s in body["steps"] if s["name"] != "avatar")
     assert body["first_reply"] == "hello yourself, human"
 
 
@@ -184,6 +192,7 @@ def test_create_agent_step_labels_match_ui_checklist_vocabulary(client):
     labels = {s["name"]: s["label"] for s in body["steps"]}
     assert labels == {
         "repo": "Repository",
+        "avatar": "Paint the portrait",
         "onboard": "Platform onboarding",
         "access": "Model access",
         "wire": "Deploy wiring",
@@ -1106,11 +1115,15 @@ def test_create_agent_hello_step_failure_leaves_agent_failed_with_no_reply(
     assert body["first_reply"] is None
 
     steps_by_name = {s["name"]: s for s in body["steps"]}
-    # every step before hello (directory included — it now runs first,
-    # as a no-op since this fixture's config carries no switchboard org
-    # keys) completed fine.
+    # AvatarStep SKIPPED (best-effort, no image backend in this fixture)
+    # rather than done -- everything else before hello (directory included,
+    # it now runs first, as a no-op since this fixture's config carries no
+    # switchboard org keys) completed fine.
+    assert steps_by_name["avatar"]["status"] == "skipped"
     assert all(
-        steps_by_name[n]["status"] == "done" for n in ALL_STEP_NAMES if n != "hello"
+        steps_by_name[n]["status"] == "done"
+        for n in ALL_STEP_NAMES
+        if n not in ("hello", "avatar")
     )
     assert steps_by_name["hello"]["status"] == "failed"
     assert "boom" in steps_by_name["hello"]["error"]
@@ -1153,8 +1166,10 @@ def test_retry_after_fixing_failure_reaches_ready_without_rerunning_done_steps(
     first_body = _poll_until(client, AGENT_NAME, {"ready", "failed"})
     assert first_body["status"] == "failed"
 
-    # RepoStep is the only step that actually ran (and completed) before
-    # onboard failed — the counting fake proof that retry doesn't re-run it.
+    # RepoStep is the only step that actually creates a repo before onboard
+    # fails (AvatarStep also runs in between, and immediately SKIPS, since
+    # this fixture's clients carry no image backend, but that's not a repo
+    # creation): the counting fake proof that retry doesn't re-run RepoStep.
     create_calls_before_retry = [
         c for c in fake_github.calls if c.startswith("create_repo_from_dir")
     ]
@@ -1170,7 +1185,14 @@ def test_retry_after_fixing_failure_reaches_ready_without_rerunning_done_steps(
 
     second_body = _poll_until(client, AGENT_NAME, {"ready", "failed"})
     assert second_body["status"] == "ready"
-    assert all(s["status"] == "done" for s in second_body["steps"])
+    # AvatarStep SKIPPED (best-effort, no image backend in this fixture)
+    # back on the first run, before onboard ever failed -- the resume-skip
+    # rule (DONE/SKIPPED steps never re-run) keeps it skipped on retry too.
+    steps_by_name = {s["name"]: s for s in second_body["steps"]}
+    assert steps_by_name["avatar"]["status"] == "skipped"
+    assert all(
+        s["status"] == "done" for s in second_body["steps"] if s["name"] != "avatar"
+    )
     assert second_body["first_reply"] == fake_agent._reply
 
     # Still only the one create_repo_from_dir call across both runs: RepoStep's

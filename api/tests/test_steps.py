@@ -13,8 +13,10 @@ than a couple of iterations, so the whole file runs in well under a second.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+from pathlib import Path
 
 import pytest
 import yaml
@@ -24,19 +26,22 @@ from kobo_api.composer import BundleSpec, _colleagues_md, _self_md, compose
 from kobo_api.config import Config, ModelChoice
 from kobo_api.marketplace import marketplace_repo
 from kobo_api.models import INVITE_ACCEPTED, A2AInvite, Agent, AgentStatus
-from kobo_api.provisioner import Ctx
+from kobo_api.provisioner import PIPELINE, Ctx
 from kobo_api.steps import (
+    AVATAR_MAX_BYTES,
     HELLO_RETRY_ATTEMPTS,
     HELLO_RETRY_BACKOFF_S,
     ONBOARD_REPROVISION_GRACE_POLLS,
     POLL_INTERVAL_S,
     POLL_TIMEOUT_S,
     AccessStep,
+    AvatarStep,
     DirectoryStep,
     HelloStep,
     OnboardStep,
     RepoStep,
     StagedSkill,
+    StepSkipped,
     _agents_who_can_see,
     _colleague_roster,
     _render_colleagues_md,
@@ -48,11 +53,13 @@ from kobo_api.steps import (
     refresh_colleague_rosters,
 )
 from tests.fakes import (
+    FAKE_IMAGE_PNG_BYTES,
     FakeAgent,
     FakeCabal,
     FakeCloud,
     FakeGitHub,
     FakeGojira,
+    FakeImage,
     FakeKubectl,
     FakeName,
     FakeStorage,
@@ -127,6 +134,7 @@ def _clients(
     kubectl=None,
     name=None,
     cabal=None,
+    image=None,
 ) -> Clients:
     return Clients(
         github=github,
@@ -137,6 +145,7 @@ def _clients(
         storage=storage,
         name=name,
         cabal=cabal,
+        image=image,
     )
 
 
@@ -1475,6 +1484,118 @@ def test_repo_step_marketplace_unreachable_warns_and_proceeds(
     assert (created_src / "bundle" / "agent.yaml").is_file()
     assert not (created_src / "bundle" / "tools").exists()
     assert "baseline tooling skipped" in caplog.text
+
+
+# --- AvatarStep -----------------------------------------------------------------
+
+
+class _CapturingGitHub(FakeGitHub):
+    """Snapshots bundle/avatar.png bytes at the moment commit_push is called
+    -- the only window in which set_avatar's cloned workdir still exists
+    before it's discarded. Same trick as test_api_avatars.py's own
+    _CapturingGitHub, replicated locally rather than imported cross-file."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.captured_avatar_bytes: bytes | None = None
+
+    def commit_push(self, workdir: Path, message: str) -> bool:
+        avatar_path = workdir / "bundle" / "avatar.png"
+        if avatar_path.is_file():
+            self.captured_avatar_bytes = avatar_path.read_bytes()
+        return super().commit_push(workdir, message)
+
+
+def _avatar_agent(session_factory, **kwargs):
+    kwargs.setdefault("repo_full_name", f"acme/agent-{AGENT_NAME}")
+    return _make_agent(session_factory, **kwargs)
+
+
+def test_avatar_step_generates_and_stores_the_portrait(session_factory, config):
+    session, agent = _avatar_agent(session_factory)
+    github = _CapturingGitHub()
+    image = FakeImage()
+    ctx = _make_ctx(session, agent, config, _clients(github=github, image=image))
+
+    detail = AvatarStep().run(ctx)
+
+    assert detail
+    assert github.captured_avatar_bytes == FAKE_IMAGE_PNG_BYTES
+    assert agent.avatar_png == base64.b64encode(FAKE_IMAGE_PNG_BYTES).decode("ascii")
+
+
+def test_avatar_step_skips_when_image_client_missing(session_factory, config):
+    session, agent = _avatar_agent(session_factory)
+    github = FakeGitHub()
+    ctx = _make_ctx(session, agent, config, _clients(github=github, image=None))
+
+    with pytest.raises(StepSkipped, match="not available"):
+        AvatarStep().run(ctx)
+
+    assert agent.avatar_png is None
+    assert github.cloned == []
+
+
+def test_avatar_step_skips_on_generation_error(session_factory, config):
+    session, agent = _avatar_agent(session_factory)
+    github = FakeGitHub()
+    image = FakeImage(generate_error="the picture didn't come through")
+    ctx = _make_ctx(session, agent, config, _clients(github=github, image=image))
+
+    with pytest.raises(StepSkipped, match="generation failed"):
+        AvatarStep().run(ctx)
+
+    assert agent.avatar_png is None
+    assert github.cloned == []
+
+
+def test_avatar_step_skips_when_avatar_already_present(session_factory, config):
+    existing = base64.b64encode(b"already-there").decode("ascii")
+    session, agent = _avatar_agent(session_factory)
+    agent.avatar_png = existing
+    session.commit()
+    github = FakeGitHub()
+    image = FakeImage()
+    ctx = _make_ctx(session, agent, config, _clients(github=github, image=image))
+
+    with pytest.raises(StepSkipped, match="already"):
+        AvatarStep().run(ctx)
+
+    assert image.prompts == []
+    assert github.cloned == []
+    assert agent.avatar_png == existing
+
+
+def test_avatar_step_skips_on_oversize_png(session_factory, config):
+    session, agent = _avatar_agent(session_factory)
+    github = FakeGitHub()
+    oversize = b"x" * (AVATAR_MAX_BYTES + 1)
+    image = FakeImage(image_bytes=oversize)
+    ctx = _make_ctx(session, agent, config, _clients(github=github, image=image))
+
+    with pytest.raises(StepSkipped, match="cap"):
+        AvatarStep().run(ctx)
+
+    assert agent.avatar_png is None
+    # Rejected before any store, same as the route's own size check.
+    assert github.cloned == []
+
+
+def test_avatar_step_skips_on_repo_push_failure(session_factory, config):
+    session, agent = _avatar_agent(session_factory)
+    github = FakeGitHub(clone_error="gh: rate limited")
+    image = FakeImage()
+    ctx = _make_ctx(session, agent, config, _clients(github=github, image=image))
+
+    with pytest.raises(StepSkipped, match="couldn't save"):
+        AvatarStep().run(ctx)
+
+    assert agent.avatar_png is None
+
+
+def test_pipeline_orders_avatar_right_after_repo():
+    names = [step.name for step in PIPELINE]
+    assert names.index(AvatarStep().name) == names.index(RepoStep().name) + 1
 
 
 # --- OnboardStep ----------------------------------------------------------------

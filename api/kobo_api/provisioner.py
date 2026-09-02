@@ -58,12 +58,14 @@ from kobo_api.models import Agent, AgentStatus, AgentStep, StepStatus
 from kobo_api.pairs import sync_dispatch_pairs_best_effort
 from kobo_api.steps import (
     AccessStep,
+    AvatarStep,
     BuildStep,
     DeployStep,
     DirectoryStep,
     HelloStep,
     OnboardStep,
     RepoStep,
+    StepSkipped,
     WireStep,
     refresh_colleague_rosters,
 )
@@ -76,7 +78,12 @@ class Step(Protocol):
     label: str
 
     def run(self, ctx: Ctx) -> str:
-        """Perform the step; return a human-readable detail, or raise to fail."""
+        """Perform the step; return a human-readable detail, raise
+        `kobo_api.steps.StepSkipped` to mark this step SKIPPED without
+        failing anything after it (best-effort steps, e.g. `AvatarStep`,
+        whose own outcome must never block the agent's path to READY), or
+        raise any other exception to fail the step (and abort every step
+        after it -- see `_run_pipeline_body` below)."""
         ...
 
 
@@ -187,6 +194,23 @@ def _run_pipeline_body(
 
                 try:
                     step.run(ctx)
+                except StepSkipped as exc:
+                    # Best-effort step (AvatarStep today): SKIPPED is not a
+                    # failure -- unlike the FAILED branch below, this never
+                    # touches `agent.status`/`agent.error` or sets
+                    # `failed_step_name`, so every step after this one still
+                    # runs normally and the agent can still reach READY.
+                    # `_get_or_create_step`'s own DONE/SKIPPED short-circuit
+                    # (above) makes this permanent across a retry too -- a
+                    # skipped step never gets a second chance to run.
+                    log.info(
+                        "step %r skipped for agent %s: %s", step.name, agent_id, exc
+                    )
+                    step_row.status = StepStatus.SKIPPED
+                    step_row.error = str(exc)
+                    step_row.finished_at = datetime.now(UTC)
+                    session.commit()
+                    continue
                 except Exception as exc:  # noqa: BLE001 - a step's failure, not a bug here
                     log.warning(
                         "step %r failed for agent %s: %s", step.name, agent_id, exc
@@ -382,8 +406,18 @@ def reset_failed_steps(session: Session, agent_id: int) -> None:
 # DirectoryStep is still a no-op on a room with no switchboard configured,
 # so a room that doesn't opt in sees no behavior change from either its
 # placement or HelloStep's own contact path (still the legacy direct one).
+#
+# AvatarStep (a face at birth) slots in right after RepoStep: it needs
+# `agent.repo_full_name` (set by RepoStep) to push the generated picture to
+# the bundle, and putting it this early means the agent already has a face
+# for the rest of the checklist to render against. It is the one step in
+# this list whose own failure is never a pipeline failure -- every path
+# through it that can't produce a picture raises `StepSkipped` instead
+# (see its own docstring), so a room with no image backend configured, or a
+# generation hiccup, never blocks an agent's path to READY.
 PIPELINE: list[Step] = [
     RepoStep(),
+    AvatarStep(),
     OnboardStep(),
     AccessStep(),
     WireStep(),

@@ -30,6 +30,7 @@ failed), and BuildStep/DeployStep would then run against an unverified app.
 
 from __future__ import annotations
 
+import base64
 import logging
 import shutil
 import tempfile
@@ -41,6 +42,7 @@ from typing import TYPE_CHECKING
 import httpx
 import yaml
 
+from kobo_api.avatars import avatar_prompt, set_avatar
 from kobo_api.catalog import _DESCRIPTION_HEADER_RE
 from kobo_api.clients import (
     CabalError,
@@ -67,7 +69,7 @@ from kobo_api.metadata import (
 from kobo_api.models import INVITE_ACCEPTED, A2AInvite, Agent, AgentStatus
 from kobo_api.pairs import implicitly_paired
 from kobo_api.purpose_tags import decode_tags
-from kobo_api.search import read_marketplace_catalog
+from kobo_api.search import get_entry, read_marketplace_catalog
 from kobo_api.tooling import ToolingError, _validate_content, _validate_filename
 
 log = logging.getLogger(__name__)
@@ -79,6 +81,23 @@ log = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from kobo_api.clients import Clients, GitHubClient
     from kobo_api.provisioner import Ctx
+
+
+class StepSkipped(Exception):
+    """Raise from a `Step.run()` to mark that step SKIPPED rather than DONE
+    or FAILED -- for a best-effort step whose own outcome must never block
+    the rest of the pipeline, or the agent's own path to READY.
+
+    `kobo_api.provisioner._run_pipeline_body` gives this its own except
+    branch, ahead of the generic one every other exception falls into:
+    caught here, the step's `AgentStep` row is recorded SKIPPED with this
+    exception's message as the one-line reason, and the loop moves on to
+    the next step exactly as if this one had succeeded -- unlike an
+    uncaught exception, which fails the step, aborts every step after it,
+    and lands the whole agent in FAILED. `AvatarStep` below is the first
+    (and, as of this writing, only) step that raises this.
+    """
+
 
 # Gojira onboarding poll cadence: every 5s, up to 300s total (the brief's numbers,
 # as module constants so both the step and its tests share one source of truth).
@@ -98,6 +117,15 @@ BUILD_POLL_TIMEOUT_S = 600
 # sequence of concurrent pushes and is treated as a bounded failure (raises
 # naming the observed shas) rather than looping indefinitely.
 BUILD_MAX_HEAD_ADVANCES = 2
+
+# AvatarStep's size cap on a generated PNG before it's pushed/cached -- same
+# 4 MiB figure, and the same rationale, as `kobo_api.main.AVATAR_MAX_BYTES`
+# (the human-facing `POST .../avatar` route this step mirrors). Duplicated
+# rather than imported: `kobo_api.main` imports FROM this module (routes
+# wire steps, not the other way around), so importing the constant back
+# from there would be circular -- same story as this file's own
+# `StepSkipped`/`Ctx` type-only imports above.
+AVATAR_MAX_BYTES = 4 * 1024 * 1024
 
 # Grace budget for OnboardStep's post-reprovision status read (live-incident
 # fix #2, follow-up to the reprovision fix above `_wait_active`). Deliberately
@@ -843,6 +871,99 @@ class RepoStep:
         github.create_repo_from_dir(repo, compose_dir)
         agent.repo_full_name = repo
         return f"created {repo}"
+
+
+class AvatarStep:
+    """A face at birth: generates the agent's avatar and pushes it to its
+    just-created repo, mirroring `kobo_api.main.generate_avatar`'s own
+    sequence (persona-description lookup, `clients.image.generate`, the
+    `AVATAR_MAX_BYTES` size cap, `set_avatar`, the `Agent.avatar_png`
+    base64 cache) almost exactly -- the one difference being what happens
+    when something goes wrong.
+
+    That route answers a human's button-press, so its failures are a 502/
+    503 the human can just retry. This step runs unattended, inside the
+    one-click pipeline, immediately after `RepoStep` -- and a picture is a
+    nice-to-have, never a reason to leave an otherwise-healthy agent stuck
+    in FAILED. So EVERY failure path here -- no image backend configured,
+    `clients.image.generate` raising, the generated PNG coming back over
+    the size cap, or the repo push itself failing -- raises `StepSkipped`
+    with a one-line reason instead of letting the underlying exception
+    propagate. `StepSkipped` is exactly what keeps this best-effort:
+    `kobo_api.provisioner._run_pipeline_body` records that as SKIPPED, not
+    FAILED, and -- unlike a real failure -- moves straight on to the next
+    step rather than aborting the rest of the pipeline.
+
+    Idempotent resume, belt-and-suspenders: a pre-existing `agent.
+    avatar_png` (this step already ran and succeeded on a prior attempt, or
+    a human already generated/uploaded one via the routes above before this
+    ever got a turn) short-circuits to `StepSkipped` before touching
+    `clients.image` or the repo at all -- the engine's own DONE/SKIPPED
+    resume check (`_get_or_create_step`) already prevents a second run of
+    this exact step, but checking the agent's own state here too means a
+    stray re-invocation can never overwrite a picture that's already there.
+    """
+
+    name = "avatar"
+    label = "Paint the portrait"
+
+    def run(self, ctx: Ctx) -> str:
+        agent = ctx.agent
+        clients = ctx.clients
+
+        if agent.avatar_png is not None:
+            raise StepSkipped("agent already has a picture")
+
+        if clients.image is None:
+            raise StepSkipped("picture generation is not available")
+
+        # Same catalog-lookup-by-persona-id idiom as `generate_avatar`'s own
+        # (kobo_api.main), with the same id-derived fallback for a persona
+        # that's since been removed from the catalog. Unlike that route,
+        # this never calls `_maybe_refresh_catalogs` first -- that's an
+        # app-level TTL/background-thread concern this step has no `app` to
+        # reach, and a stale or empty catalog here just means the honest
+        # generic fallback below, never a reason to skip the picture
+        # entirely.
+        engine = ctx.session.get_bind()
+        persona_entry = get_entry(engine, "persona", agent.persona, team=None)
+        if persona_entry is not None:
+            persona_description = persona_entry.description
+        else:
+            log.warning(
+                "persona %r not in the catalog, using generic text for avatar prompt",
+                agent.persona,
+            )
+            persona_description = f"A {agent.persona} agent."
+
+        prompt = avatar_prompt(agent.name, persona_description, decode_tags(agent.purpose_tags))
+
+        # Broader than the route's own `except ClientError`: this step's
+        # whole job is to never let a picture problem become an agent
+        # problem, so any exception from the image backend here -- not just
+        # the ones it documents raising -- degrades to a skip instead of
+        # failing the step (and, unlike the route, a step failure would
+        # otherwise cascade into FAILING THE WHOLE AGENT).
+        try:
+            png = clients.image.generate(prompt)
+        except Exception as exc:  # noqa: BLE001 - degrade to skip, never fail the agent
+            raise StepSkipped(f"avatar generation failed: {exc}") from exc
+
+        # Size cap enforced BEFORE any store (repo push or DB cache), same
+        # as the route.
+        if len(png) > AVATAR_MAX_BYTES:
+            raise StepSkipped(
+                f"generated avatar exceeded the {AVATAR_MAX_BYTES}-byte cap ({len(png)} bytes)"
+            )
+
+        try:
+            sha = set_avatar(clients.github, repo=agent.repo_full_name, png=png)
+        except Exception as exc:  # noqa: BLE001 - push-side failure, same skip treatment
+            raise StepSkipped(f"couldn't save the picture: {exc}") from exc
+
+        agent.avatar_png = base64.b64encode(png).decode("ascii")
+        ctx.session.commit()
+        return f"generated and saved avatar ({sha})"
 
 
 def _wait_active(ctx: Ctx, app_id: int) -> str:
