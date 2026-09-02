@@ -1,9 +1,9 @@
 """Name-suggestion pool + finalization (create flow v2 addendum): the
 generator (`kobo_api.clients.VertexNameClient`) supplies best-effort
 candidates; this module is what guarantees the room's contract of "always
-exactly five" — filtering each candidate against the agent-name slug rules
-and the (taken, reserved) sets, then padding any missing slots from a
-curated, deterministically-ordered fallback pool.
+exactly `SUGGESTION_COUNT`" -- filtering each candidate against the agent-name
+slug rules and the (taken, reserved, exclude) sets, then padding any missing
+slots from a curated, deterministically-ordered fallback pool.
 
 Kept separate from `kobo_api.main` (mirrors `kobo_api.avatars`'s split from
 the avatar route: pure prompt/logic here, route wiring/response-shape there)
@@ -17,7 +17,7 @@ import itertools
 
 from kobo_api.catalog import validate_name
 
-SUGGESTION_COUNT = 5
+SUGGESTION_COUNT = 3
 
 # Curated fallback pool (~24, workshop/nature/myth-flavored, all lowercase
 # single words, no client/company names anywhere) — the room's answer when
@@ -48,16 +48,23 @@ _FALLBACK_REASONS = [
 ]
 
 
-def _deterministic_order(pool: list[str], seed: str) -> list[str]:
-    """A permutation of `pool` that depends only on `seed` — no `random`
-    module, no wall-clock, so the exact same `seed` always sorts to the
-    exact same order (and a different seed reliably sorts to a different
-    one): each name's sort key is `sha256("{seed}:{name}")`, so the whole
-    permutation is a pure function of (seed, pool) with nothing external to
-    seed a PRNG with.
+def _deterministic_order(names: list[str], persona_seed: str, round_salt: str) -> list[str]:
+    """A permutation of `names` that depends only on `(persona_seed,
+    round_salt)` -- no `random` module, no wall-clock, so the exact same pair
+    always sorts to the exact same order (and a different `persona_seed` or
+    a different `round_salt` reliably sorts to a different one): each name's
+    sort key is `sha256("{persona_seed}:{round_salt}:{name}")`, so the whole
+    permutation is a pure function of (persona_seed, round_salt, names) with
+    nothing external to seed a PRNG with. `round_salt` is what lets a caller
+    ask for a fresh-looking fallback order on a retry within the same
+    persona (e.g. "give me another batch") without giving up determinism
+    within any one round.
     """
     return sorted(
-        pool, key=lambda name: hashlib.sha256(f"{seed}:{name}".encode()).hexdigest()
+        names,
+        key=lambda name: hashlib.sha256(
+            f"{persona_seed}:{round_salt}:{name}".encode()
+        ).hexdigest(),
     )
 
 
@@ -92,26 +99,40 @@ def _normalize_reason(reason: str) -> str:
 
 
 def finalize_suggestions(
-    candidates: list[dict], *, taken: set[str], reserved: set[str], persona_seed: str
+    candidates: list[dict],
+    *,
+    taken: set[str],
+    reserved: set[str],
+    persona_seed: str,
+    exclude: set[str] | frozenset[str] = frozenset(),
+    round_salt: str = "0",
 ) -> list[dict]:
     """Turn the generator's best-effort `candidates` into up to
-    `SUGGESTION_COUNT` `{"name", "reason"}` dicts — exactly five whenever
-    enough valid, available names exist between `candidates` and the
-    fallback pool (in practice, always: the pool alone is large enough that
-    only a pathological amount of prior `taken`/`reserved` overlap could
-    leave fewer than five, the "effectively never" case the caller
-    (`kobo_api.main`'s name-suggestions route) still guards against with a
-    502).
+    `SUGGESTION_COUNT` `{"name", "reason"}` dicts -- exactly `SUGGESTION_COUNT`
+    whenever enough valid, available names exist between `candidates` and
+    the fallback pool (in practice, always: the pool alone is large enough
+    that only a pathological amount of prior `taken`/`reserved`/`exclude`
+    overlap could leave fewer than that, the "effectively never" case the
+    caller (`kobo_api.main`'s name-suggestions route) still guards against
+    with a 502).
 
     Each candidate is validated with the exact same slug rule create/
     availability already enforce (`kobo_api.catalog.validate_name` — agent-
-    name shape, 2-24 chars) and filtered against `taken`, `reserved`, and
-    names already accepted earlier in this same call (de-dupe). Whatever's
-    left short of `SUGGESTION_COUNT` is padded from the curated fallback
-    pool, walked in a deterministic order derived from `persona_seed` (see
-    `_deterministic_order`) — same persona text, same five names, every
-    time; a different persona text reliably reorders (and usually
-    reselects) the pool.
+    name shape, 2-24 chars) and filtered against `taken`, `reserved`,
+    `exclude`, and names already accepted earlier in this same call
+    (de-dupe). `exclude` is the set of names already offered to the caller
+    this session (e.g. an earlier round's suggestions the user asked to
+    regenerate past) -- normalized to lowercase before comparison, since
+    unlike `taken`/`reserved` it isn't guaranteed to arrive pre-normalized,
+    and dropped exactly like `taken`/`reserved`. Whatever's left short of
+    `SUGGESTION_COUNT` is padded from the curated fallback pool, walked in a
+    deterministic order derived from `(persona_seed, round_salt)` (see
+    `_deterministic_order`) -- same persona text and round, same names, every
+    time; a different persona text or a different `round_salt` reliably
+    reorders (and usually reselects) the pool. `round_salt` is what lets
+    consecutive fallback-only rounds (same persona, nothing from the
+    generator survives `exclude`) rotate instead of repeating the same
+    padding every time.
 
     Generator-supplied reason strings are normalized for safe UI rendering:
     whitespace is collapsed to single spaces, leading/trailing whitespace
@@ -119,6 +140,7 @@ def finalize_suggestions(
     boundary truncation). Reasons that become empty after normalization are
     replaced with entries from the fallback reason cycle.
     """
+    excluded = {name.strip().lower() for name in exclude}
     result: list[dict] = []
     seen: set[str] = set()
     reasons = itertools.cycle(_FALLBACK_REASONS)
@@ -130,7 +152,7 @@ def finalize_suggestions(
         name = name.strip()
         if validate_name(name) is not None:
             continue
-        if name in taken or name in reserved or name in seen:
+        if name in taken or name in reserved or name in excluded or name in seen:
             continue
         reason = candidate.get("reason")
         if isinstance(reason, str):
@@ -144,8 +166,8 @@ def finalize_suggestions(
         if len(result) == SUGGESTION_COUNT:
             return result
 
-    for name in _deterministic_order(_FALLBACK_NAMES, persona_seed):
-        if name in taken or name in reserved or name in seen:
+    for name in _deterministic_order(_FALLBACK_NAMES, persona_seed, round_salt):
+        if name in taken or name in reserved or name in excluded or name in seen:
             continue
         seen.add(name)
         result.append({"name": name, "reason": next(reasons)})

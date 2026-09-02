@@ -194,22 +194,29 @@ def test_finalize_different_persona_seed_yields_different_order_or_names():
 
 def test_deterministic_order_same_seed_same_order():
     pool = list(_FALLBACK_NAMES)
-    first = _deterministic_order(pool, "seed-x")
-    second = _deterministic_order(pool, "seed-x")
+    first = _deterministic_order(pool, "seed-x", "0")
+    second = _deterministic_order(pool, "seed-x", "0")
     assert first == second
 
 
 def test_deterministic_order_different_seed_different_order():
     pool = list(_FALLBACK_NAMES)
-    first = _deterministic_order(pool, "seed-x")
-    second = _deterministic_order(pool, "seed-y")
+    first = _deterministic_order(pool, "seed-x", "0")
+    second = _deterministic_order(pool, "seed-y", "0")
     assert first != second
 
 
 def test_deterministic_order_is_a_permutation_of_the_pool():
     pool = list(_FALLBACK_NAMES)
-    ordered = _deterministic_order(pool, "any-seed")
+    ordered = _deterministic_order(pool, "any-seed", "0")
     assert sorted(ordered) == sorted(pool)
+
+
+def test_deterministic_order_different_round_salt_different_order():
+    pool = list(_FALLBACK_NAMES)
+    first = _deterministic_order(pool, "seed-x", "0")
+    second = _deterministic_order(pool, "seed-x", "1")
+    assert first != second
 
 
 def test_finalize_taken_and_reserved_together_can_still_produce_five():
@@ -335,3 +342,44 @@ def test_finalize_reason_normalization_combined():
     assert not normalized.endswith(" ")
     # Should have single spaces only
     assert "  " not in normalized
+
+
+# --- finalize_suggestions: exclude + round_salt -----------------------------------
+
+
+def test_exclude_drops_offered_names_from_model_and_fallback():
+    candidates = [{"name": "ember", "reason": "warm"}, {"name": "cedar", "reason": "steady"}]
+    out = finalize_suggestions(
+        candidates, taken=set(), reserved=set(), persona_seed="p",
+        exclude={"ember", "cedar"},
+    )
+    names = {s["name"] for s in out}
+    assert names.isdisjoint({"ember", "cedar"})
+    assert len(out) == SUGGESTION_COUNT
+
+
+def test_round_salt_rotates_the_fallback_order():
+    first = finalize_suggestions([], taken=set(), reserved=set(),
+                                 persona_seed="p", round_salt="0")
+    second = finalize_suggestions([], taken=set(), reserved=set(),
+                                  persona_seed="p", round_salt="1")
+    assert [s["name"] for s in first] != [s["name"] for s in second]
+
+
+def test_same_round_stays_deterministic():
+    a = finalize_suggestions([], taken=set(), reserved=set(),
+                             persona_seed="p", round_salt="2")
+    b = finalize_suggestions([], taken=set(), reserved=set(),
+                             persona_seed="p", round_salt="2")
+    assert a == b
+
+
+def test_exclude_is_case_insensitive():
+    candidates = [{"name": "ember", "reason": "warm"}]
+    out = finalize_suggestions(
+        candidates, taken=set(), reserved=set(), persona_seed="p",
+        exclude={"EMBER"},
+    )
+    names = {s["name"] for s in out}
+    assert "ember" not in names
+    assert len(out) == SUGGESTION_COUNT
