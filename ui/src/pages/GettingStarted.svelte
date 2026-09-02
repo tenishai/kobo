@@ -1,68 +1,80 @@
 <script lang="ts">
-  // Static orientation page. No fetching, no state: the room's vocabulary
-  // and the shortest possible path to a first agent, told as the five-step
-  // journey a first-time visitor actually takes (create, talk and teach,
-  // connect agents to each other, wire up Slack, understand who can do
-  // what) rather than a features list. Plain language throughout: no
-  // repos, images, pods, or CI, the same house rule the rest of this
-  // room's own copy follows.
+  // Static orientation page. No fetching, no state (just the one plain
+  // import below, for the dashboard link): the room's vocabulary and the
+  // shortest possible path to a first agent, told as the five-step journey a
+  // first-time visitor actually takes, in the order they actually take it
+  // (create, meet it, wire it into Slack, bring in teammates, grow it)
+  // rather than a features list. Plain language throughout: no repos,
+  // images, pods, or CI, the same house rule the rest of this room's own
+  // copy follows.
+  //
+  // Rewritten for the UI-simplification wave: the old five sections (make
+  // an agent, talk to it, give it colleagues, put it in Slack, who can do
+  // what) described a room that no longer exists -- the build checklist has
+  // moved to the top of the agent's page, the tab row is now Chat/Slack/
+  // Access plus a collapsible Advanced group, the create flow no longer
+  // asks about skills, and Slack's channel/DM answering rule and the
+  // nightly learnings approval gate are both new enough that the old copy
+  // never mentioned them. This version walks the five steps in the order a
+  // new user actually lives them, ending with the Advanced group as the
+  // "grow it later" step it actually is.
+  import { formatHash } from "../lib/router.svelte";
 </script>
 
 <article class="getting-started">
   <h1>Getting started</h1>
 
   <section>
-    <h2>Make an agent</h2>
+    <h2>1. Create your agent</h2>
     <p>
-      Press Create agent. Describe the job in a sentence, or paste or upload
-      a full persona document if your team already has one written, and the
-      details fill themselves in. Pick a name from the five cards and skills
-      from the catalog, then choose a group: your team's agents are visible
-      to your teammates, shared agents are visible to everyone, and if your
-      group is not listed you can request it right from the menu. Create it,
-      then watch the checklist: the hammer in the corner glows while Kobo
-      builds.
+      On the <a href={formatHash({ page: "dashboard" })}>dashboard</a>, press
+      Create agent. Pick a persona from the catalog, or describe the job
+      yourself and build one from scratch, then accept one of the suggested
+      names or write your own, then choose the group that will see it. A
+      checklist appears at the top of the agent's page while it builds, and
+      it disappears on its own once every step turns green.
     </p>
   </section>
 
   <section>
-    <h2>Talk to it, teach it</h2>
+    <h2>2. Say hello</h2>
     <p>
-      Open Chat. When the agent says something worth keeping, or you tell it
-      something it should remember, press Teach this and the fact is in its
-      memory in seconds. Corrections work too: teach the new fact and the
-      old one retires on its own. You can also drop files on the Memory tab
-      for one-shot learning.
+      Open the Chat tab and say hello, that's where you meet it. Whenever it
+      says something worth keeping, or you tell it something it should
+      remember, press Teach this and the fact joins its memory for good.
     </p>
   </section>
 
   <section>
-    <h2>Give it colleagues</h2>
+    <h2>3. Put it in Slack</h2>
     <p>
-      Agents on the same team already know each other. To connect across
-      teams, open Access and request a colleague from another team's list;
-      their owner accepts, and the two can consult each other from then on.
-      Watch any agent's conversations in the terminal view under Chat.
+      The Slack tab walks you through the whole setup: creating the app from
+      a ready-made manifest, pasting the two tokens it gives you, and
+      inviting the bot to a channel. In a channel it only answers when you
+      @-mention it, but a direct message always reaches it.
     </p>
   </section>
 
   <section>
-    <h2>Put it in Slack</h2>
+    <h2>4. Bring in teammates</h2>
     <p>
-      For agents you own, the Slack tab walks you through creating the app
-      with a ready-made manifest, pasting two tokens, inviting the bot to a
-      channel, and saving the channel id. Long answers arrive whole.
+      Anyone already in the same group can see and chat with your agent, no
+      extra setup needed. The Access tab lets you grant an individual person
+      outside the group by email, and colleague requests connect your agent
+      to agents in other groups so the two can consult each other.
     </p>
   </section>
 
   <section>
-    <h2>Who can do what</h2>
+    <h2>5. Grow it (Advanced)</h2>
     <p>
-      You sign in with your company account, and your email shows bottom
-      left. You own what you create: only you and the room's admins can
-      change your agent, though everyone on your team can see it and chat
-      with it. Grants on the Access tab let you add specific people from
-      other teams.
+      Once the basics are working, the Advanced group on the agent's page has
+      more to tune. Learnings shows what your agent proposes from its own
+      conversations each night, and nothing is kept until you approve it.
+      Memory holds the notes you teach it and any files you upload for it to
+      learn from. Skills lets you add abilities from the catalog, including
+      ones recommended for this agent. Tooling shows the lanes every agent
+      starts with and any extras you add on top.
     </p>
   </section>
 </article>
@@ -90,5 +102,9 @@
     margin: 0;
     color: var(--muted);
     line-height: 1.6;
+  }
+
+  .getting-started a {
+    color: var(--accent);
   }
 </style>
