@@ -244,12 +244,28 @@ class CreateAgentRequest(BaseModel):
 class NameSuggestionsRequest(BaseModel):
     """POST /api/agents/name-suggestions body (create flow v2 addendum): same
     field names as `PersonaFields` (kobo_api.personas); bounds deliberately
-    tighter (500 vs 49152) since suggestions need only a sketch of what_they_do
+    tighter (2000 vs 49152) since suggestions need only a sketch of what_they_do
     — the naming station reads the same persona-shape text the persona builder
-    itself takes, just ahead of a persona actually being committed."""
+    itself takes, just ahead of a persona actually being committed.
+
+    `persona_id`/`exclude`/`round` (create-identity, Task 3): `persona_id`,
+    when it resolves against the persona catalog, makes the route use that
+    persona's own REAL body (truncated) and purpose tags in place of
+    `what_they_do` — see the route's own docstring for the exact fallback
+    contract. `exclude` is names already offered this session (an earlier
+    round the caller wants to move past); capped at 20, generously above the
+    3 the room ever offers in one round but tolerant of a caller
+    accumulating several rounds' worth. `round` is a monotonically
+    increasing "offer me more" counter (0 on the first call) that salts the
+    fallback pool's own ordering so a fully-excluded regenerate doesn't just
+    reoffer the same padding names.
+    """
 
     who_they_are: str = Field(min_length=1, max_length=200)
-    what_they_do: str = Field(min_length=1, max_length=500)
+    what_they_do: str = Field(min_length=1, max_length=2000)
+    persona_id: str | None = None
+    exclude: list[str] = Field(default_factory=list, max_length=20)
+    round: int = Field(default=0, ge=0, le=20)
 
 
 class ChatMessagePayload(BaseModel):
@@ -2527,19 +2543,77 @@ def create_app(
         payload: NameSuggestionsRequest, session: Session = Depends(get_session)  # noqa: B008
     ) -> JSONResponse:
         clients = app.state.clients
+        cfg: Config = app.state.config
+
+        # persona_id server-side resolution (create-identity, Task 3): when
+        # it's set and resolves against the persona catalog, the persona's
+        # own REAL body (the same bucket-backed text
+        # `kobo_api.steps._resolve_persona_body` reads for a live agent's
+        # capability generation, reused here rather than a second fetch
+        # lane) replaces `what_they_do` entirely, and the catalog's own
+        # purpose tags steer the generator too. A stale/unknown persona_id
+        # (or any storage trouble) must never break naming — it just falls
+        # back to whatever the client itself submitted, silently.
+        what_they_do = payload.what_they_do
+        persona_tags: list[str] | None = None
+        if (
+            payload.persona_id
+            and clients is not None
+            and clients.storage is not None
+            and cfg.personas_bucket
+        ):
+            try:
+                index = personas_read_index(clients.storage, cfg.personas_bucket, "")
+                entry = next((e for e in index if e.get("id") == payload.persona_id), None)
+                if entry is None:
+                    raise PersonaError(f"no persona with id {payload.persona_id!r}")
+                engine = session.get_bind()
+                body = _resolve_persona_body(
+                    cfg,
+                    clients.storage,
+                    engine,
+                    SimpleNamespace(persona=payload.persona_id, name="{name}"),
+                )
+            except Exception as exc:  # noqa: BLE001 -- an unresolved/stale
+                # persona_id (or any storage/index trouble reaching it,
+                # e.g. a malformed entry) must never break naming; same
+                # "quiet, broad except" idiom as _persona_archived_in_index
+                # above, for the identical `e["id"]`-shaped hazard.
+                log.warning(
+                    "persona lookup for name suggestions failed (persona_id=%r): %s",
+                    payload.persona_id, exc,
+                )
+            else:
+                what_they_do = body[:2000]
+                persona_tags = entry.get("tags") or None
 
         # The seed finalize_suggestions' fallback ordering derives from —
         # both submitted fields, joined by a separator that can't itself
         # appear in either (both are free text, so this is purely a
         # determinism input, never parsed back apart): same persona text,
-        # same five names every time; a different persona text reliably
-        # reorders (and usually reselects) the fallback pool.
-        persona_seed = f"{payload.who_they_are}\n{payload.what_they_do}"
+        # same three names every time; a different persona text reliably
+        # reorders (and usually reselects) the fallback pool. Computed
+        # AFTER persona_id resolution above, so a resolved persona's real
+        # body (not the client's thin what_they_do) is what actually seeds
+        # it.
+        persona_seed = f"{payload.who_they_are}\n{what_they_do}"
+
+        # exclude (create-identity, Task 3): names already offered this
+        # session, lowercased into the same drop-set finalize_suggestions
+        # itself would otherwise have to normalize alone — handed to both
+        # the generator (so it doesn't waste a candidate slot resuggesting
+        # one) and the finalizer (which actually enforces the drop).
+        exclude_set = {name.strip().lower() for name in payload.exclude}
 
         candidates: list[dict] = []
         if clients is not None and clients.name is not None:
             try:
-                candidates = clients.name.suggest(payload.who_they_are, payload.what_they_do)
+                candidates = clients.name.suggest(
+                    payload.who_they_are,
+                    what_they_do,
+                    tags=persona_tags,
+                    exclude=sorted(exclude_set),
+                )
             except ClientError as exc:
                 # The room never fails to offer names (addendum) — a
                 # generator failure just means every slot comes from the
@@ -2551,7 +2625,12 @@ def create_app(
         taken = {row[0] for row in session.query(Agent.name).all()}
 
         suggestions = finalize_suggestions(
-            candidates, taken=taken, reserved=RESERVED_NAMES, persona_seed=persona_seed
+            candidates,
+            taken=taken,
+            reserved=RESERVED_NAMES,
+            persona_seed=persona_seed,
+            exclude=exclude_set,
+            round_salt=str(payload.round),
         )
 
         if len(suggestions) < SUGGESTION_COUNT:

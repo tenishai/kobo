@@ -1493,12 +1493,18 @@ class FakeImage:
 
 
 class FakeName:
-    """Records every (who, what) call to `suggest` (`.calls`) and returns a
-    configurable list of candidate dicts (default: a small canned set, all
-    shaped `{"name": ..., "reason": ...}`), plus every (job, rules) call to
-    `draft` (`.draft_calls`) and returns a configurable draft dict (default:
-    a small canned `{"name", "who_they_are", "what_they_do"}`) — no real
-    Vertex AI backend involved.
+    """Records every (who, what, tags, exclude) call to `suggest`
+    (`.calls`) and returns a configurable list of candidate dicts (default:
+    a small canned set, all shaped `{"name": ..., "reason": ...}`), plus
+    every (job, rules) call to `draft` (`.draft_calls`) and returns a
+    configurable draft dict (default: a small canned `{"name",
+    "who_they_are", "what_they_do"}`) — no real Vertex AI backend involved.
+
+    `tags`/`exclude` (create-identity, Task 3) are recorded exactly as
+    passed — `None` when the caller passes `None`, else a plain `list`
+    (never the caller's own list/set object) — so a route test can assert
+    a resolved persona's tags (or an `exclude` drop-set) actually reached
+    the generator, not just that suggest() was called.
 
     `suggest_error`/`draft_error`, when set, make `suggest`/`draft` raise
     `ClientError(...)` instead of returning a result — the seam for
@@ -1547,7 +1553,7 @@ class FakeName:
             ]
         )
         self._suggest_error = suggest_error
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, str, list[str] | None, list[str] | None]] = []
         self._draft = (
             dict(draft)
             if draft is not None
@@ -1574,8 +1580,22 @@ class FakeName:
         self._distill_error = distill_error
         self.distill_calls: list[str] = []
 
-    def suggest(self, who: str, what: str) -> list[dict]:
-        self.calls.append((who, what))
+    def suggest(
+        self,
+        who: str,
+        what: str,
+        *,
+        tags: list[str] | None = None,
+        exclude: list[str] | None = None,
+    ) -> list[dict]:
+        self.calls.append(
+            (
+                who,
+                what,
+                list(tags) if tags is not None else None,
+                list(exclude) if exclude is not None else None,
+            )
+        )
         if self._suggest_error is not None:
             raise ClientError(self._suggest_error)
         return list(self._candidates)

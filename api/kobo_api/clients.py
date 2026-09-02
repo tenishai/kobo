@@ -2024,10 +2024,25 @@ class VertexImageClient:
 
 @runtime_checkable
 class NameClient(Protocol):
-    def suggest(self, who: str, what: str) -> list[dict]:
+    def suggest(
+        self,
+        who: str,
+        what: str,
+        *,
+        tags: list[str] | None = None,
+        exclude: list[str] | None = None,
+    ) -> list[dict]:
         """Ask the generator for name+reason candidates for an agent
         described by `who` (who_they_are) and `what` (what_they_do); raise
         ClientError on a transport/envelope/parse failure.
+
+        `tags` (create-identity, Task 2) are the persona's purpose tags,
+        when a persona_id resolved server-side (kobo_api.main's
+        name-suggestions route) — steer the persona-mining prompt toward
+        this persona's themes; `exclude` (same task) is names already
+        offered this session (an earlier round's suggestions), so a repeat
+        "offer more" call doesn't resurface them. Both optional and purely
+        advisory to the prompt; neither is validated here.
 
         Not guaranteed to return exactly three (or even any) usable
         candidates — `kobo_api.namegen.finalize_suggestions` is what filters

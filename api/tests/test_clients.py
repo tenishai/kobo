@@ -3277,9 +3277,15 @@ def test_fake_name_satisfies_protocol():
 def test_fake_name_records_calls_and_returns_canned_candidates():
     fake = FakeName()
     result = fake.suggest("a helper", "helps out")
-    assert fake.calls == [("a helper", "helps out")]
+    assert fake.calls == [("a helper", "helps out", None, None)]
     assert len(result) >= 1
     assert all("name" in c and "reason" in c for c in result)
+
+
+def test_fake_name_records_tags_and_exclude_when_passed():
+    fake = FakeName()
+    fake.suggest("a helper", "helps out", tags=["billing", "calm"], exclude=["ember", "cedar"])
+    assert fake.calls == [("a helper", "helps out", ["billing", "calm"], ["ember", "cedar"])]
 
 
 def test_fake_name_suggest_error_knob_raises_client_error():
