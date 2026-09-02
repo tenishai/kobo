@@ -110,10 +110,25 @@ class _RaisingGitHub(FakeGitHub):
     """A GitHubClient whose `clone` raises `ClientError` — the 502 guard's
     fixture. `clone` is the first call every skills.py operation makes, so
     overriding just it covers every mutating route's github-side 502 path.
+    Doubles as the reconciling list_skills route's "repo unreachable"
+    fixture (its brief's own `_FailingCloneGitHub`) -- same behavior, so
+    reused rather than duplicated.
     """
 
     def clone(self, repo: str, dest: Path) -> None:
         raise ClientError("gh: rate limited")
+
+
+def _github_with_skill_tree(skills: dict[str, str]) -> _SkillSeedingGitHub:
+    """A github fake whose clone() materializes `bundle/skills/<id>/SKILL.md`
+    for each id in `skills` -- the direct-PR lane's on-repo state the
+    reconciling list_skills route discovers. Thin wrapper over
+    `_SkillSeedingGitHub`'s `local_skills` mapping (keyed by relative path,
+    not bare skill id), so an empty `skills` dict models a repo with no
+    `bundle/skills/` tree at all."""
+    return _SkillSeedingGitHub(
+        local_skills={f"{skill_id}/SKILL.md": content for skill_id, content in skills.items()}
+    )
 
 
 @pytest.fixture
@@ -196,8 +211,12 @@ def test_list_skills_empty(session_factory, config):
 
 def test_list_skills_renders_legacy_entry_without_source_as_catalog(session_factory, config):
     """An assembly-time pick carries no "source" key at all — it must still
-    render as a non-editable catalog entry, not crash or show as local."""
-    client = _make_client(session_factory, config)
+    render as a non-editable catalog entry, not crash or show as local.
+    The repo tree is seeded to match (a real catalog pick is always
+    materialized into bundle/skills/ too), so the reconciling route's
+    prune rule doesn't strip this row out from under the assertion."""
+    github = _github_with_skill_tree({SAMPLE_SKILL_ID: SAMPLE_CONTENT})
+    client = _make_client(session_factory, config, github=github)
     _seed_agent(
         session_factory,
         config,
@@ -221,7 +240,10 @@ def test_list_skills_renders_legacy_entry_without_source_as_catalog(session_fact
 
 
 def test_list_skills_renders_explicit_catalog_and_local_entries(session_factory, config):
-    client = _make_client(session_factory, config)
+    # Repo tree seeded to match both DB entries -- otherwise the
+    # reconciling route's prune rule would strip both rows as DB-only.
+    github = _github_with_skill_tree({"a": SAMPLE_CONTENT, "b": SAMPLE_CONTENT})
+    client = _make_client(session_factory, config, github=github)
     _seed_agent(
         session_factory,
         config,
@@ -260,6 +282,55 @@ def test_list_skills_non_ready_agent_returns_409(session_factory, config, status
 
     assert response.status_code == 409
     assert response.json() == {"error": "agent is not ready for memory changes"}
+
+
+def test_list_skills_surfaces_repo_only_skill_and_heals_ledger(session_factory, config):
+    # Seed the fake repo with bundle/skills/pr-added/SKILL.md but leave
+    # agent.skills WITHOUT a matching entry -- the direct-PR lane.
+    github = _github_with_skill_tree(
+        {"pr-added": "---\nname: pr-added\ndescription: d\n---\nbody"}
+    )
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)  # agent.skills == []
+
+    response = client.get(f"/api/agents/{AGENT_NAME}/skills")
+
+    assert response.status_code == 200
+    skills = response.json()["skills"]
+    assert [s["name"] for s in skills] == ["pr-added"]
+    assert skills[0]["source"] == "local"
+    assert skills[0]["editable"] is True
+    # The ledger healed: a second read that CANNOT reach the repo still
+    # knows the skill.
+    session = session_factory()
+    try:
+        agent = session.query(Agent).filter_by(name=AGENT_NAME).one()
+        assert [e["name"] for e in agent.skills] == ["pr-added"]
+    finally:
+        session.close()
+
+
+def test_list_skills_prunes_ledger_rows_missing_from_repo(session_factory, config):
+    github = _github_with_skill_tree({})  # empty bundle/skills/
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config, skills=[{"name": "ghost", "source": "local"}])
+
+    response = client.get(f"/api/agents/{AGENT_NAME}/skills")
+
+    assert response.json()["skills"] == []
+
+
+def test_list_skills_repo_failure_degrades_to_ledger_and_never_prunes(
+    session_factory, config
+):
+    github = _RaisingGitHub()  # clone raises ClientError
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config, skills=[{"name": "kept", "source": "local"}])
+
+    response = client.get(f"/api/agents/{AGENT_NAME}/skills")
+
+    assert response.status_code == 200
+    assert [s["name"] for s in response.json()["skills"]] == ["kept"]
 
 
 # --- POST /api/agents/{name}/skills/catalog ---------------------------------

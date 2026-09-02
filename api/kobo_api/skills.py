@@ -167,6 +167,25 @@ def read_local_skill(github: GitHubClient, repo: str, skill_id: str) -> str:
         return target.read_text(encoding="utf-8")
 
 
+def list_repo_skills(github: GitHubClient, repo: str) -> list[str]:
+    """Every skill id present in `repo`'s bundle/skills/ -- the runtime
+    truth-set the reconciling route reads. A skill is a directory holding
+    a SKILL.md; anything else under bundle/skills/ is ignored, matching
+    what the bundle loader itself registers. Same clone-a-tempdir pattern
+    as every other function in this module."""
+    with tempfile.TemporaryDirectory() as tmp:
+        workdir = Path(tmp)
+        github.clone(repo, workdir)
+        skills_dir = workdir / "bundle" / "skills"
+        if not skills_dir.is_dir():
+            return []
+        return sorted(
+            entry.name
+            for entry in skills_dir.iterdir()
+            if entry.is_dir() and (entry / "SKILL.md").is_file()
+        )
+
+
 def save_local_skill(github: GitHubClient, repo: str, skill_id: str, content: str) -> str:
     """Write (or overwrite) `bundle/skills/<skill_id>/SKILL.md` and push it.
 

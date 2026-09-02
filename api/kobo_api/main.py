@@ -135,6 +135,7 @@ from kobo_api.search import teams as catalog_teams_query
 from kobo_api.skills import (
     SkillsError,
     add_catalog_skill,
+    list_repo_skills,
     read_local_skill,
     remove_skill,
     save_local_skill,
@@ -3714,9 +3715,34 @@ def create_app(
         if isinstance(agent, JSONResponse):
             return agent
 
-        # Purely a DB-column read — unlike list_knowledge, this never touches
-        # the repo (provenance already lives on the row), so there's no
-        # ClientError seam here.
+        # The bundle is the runtime truth; agent.skills is kobo's ledger,
+        # and the direct-PR lane (a human merging skills straight into the
+        # agent's repo) writes the bundle without telling the ledger.
+        # Reconcile on read: the repo listing is the truth-set of ids, DB
+        # entries keep their provenance (team/sha for catalog picks),
+        # repo-only ids surface as local AND heal the ledger, DB-only rows
+        # prune (removed by PR = not on the agent). A repo read failure
+        # degrades to the ledger read and never prunes.
+        try:
+            repo_ids = list_repo_skills(
+                app.state.clients.github, agent.repo_full_name
+            )
+        except ClientError as exc:
+            log.warning("skills repo listing failed for %s: %s", name, exc)
+            repo_ids = None
+        if repo_ids is not None:
+            known = [e for e in agent.skills if e["name"] in set(repo_ids)]
+            known_names = {e["name"] for e in known}
+            discovered = [
+                {"name": skill_id, "source": "local"}
+                for skill_id in repo_ids
+                if skill_id not in known_names
+            ]
+            merged = known + discovered
+            if merged != agent.skills:
+                agent.skills = merged
+                session.commit()
+
         skills = []
         for entry in agent.skills:
             source = _skill_source(entry)
