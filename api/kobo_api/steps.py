@@ -944,10 +944,20 @@ class AvatarStep:
         # the ones it documents raising -- degrades to a skip instead of
         # failing the step (and, unlike the route, a step failure would
         # otherwise cascade into FAILING THE WHOLE AGENT).
+        #
+        # The StepSkipped message itself is a fixed, generic one-liner --
+        # never `str(exc)` -- because it lands verbatim on `AgentStep.error`,
+        # which `GET /api/agents/{name}` serves to any viewer. A `set_avatar`
+        # ClientError in particular can carry a full git/gh command line and
+        # raw stderr; that belongs in the server log only, same sanitization
+        # split the route this step mirrors already applies to its own
+        # errors. The raw exception is logged here, server-side, before the
+        # generic message is raised.
         try:
             png = clients.image.generate(prompt)
-        except Exception as exc:  # noqa: BLE001 - degrade to skip, never fail the agent
-            raise StepSkipped(f"avatar generation failed: {exc}") from exc
+        except Exception as exc:  # degrade to skip, never fail the agent
+            log.warning("avatar step %s for %s: %s", "generation", agent.name, exc)
+            raise StepSkipped("picture generation failed") from exc
 
         # Size cap enforced BEFORE any store (repo push or DB cache), same
         # as the route.
@@ -958,8 +968,9 @@ class AvatarStep:
 
         try:
             sha = set_avatar(clients.github, repo=agent.repo_full_name, png=png)
-        except Exception as exc:  # noqa: BLE001 - push-side failure, same skip treatment
-            raise StepSkipped(f"couldn't save the picture: {exc}") from exc
+        except Exception as exc:  # push-side failure, same skip treatment
+            log.warning("avatar step %s for %s: %s", "save", agent.name, exc)
+            raise StepSkipped("couldn't save the picture") from exc
 
         agent.avatar_png = base64.b64encode(png).decode("ascii")
         ctx.session.commit()

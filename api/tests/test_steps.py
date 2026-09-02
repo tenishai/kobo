@@ -1536,15 +1536,23 @@ def test_avatar_step_skips_when_image_client_missing(session_factory, config):
     assert github.cloned == []
 
 
-def test_avatar_step_skips_on_generation_error(session_factory, config):
+def test_avatar_step_skips_on_generation_error(session_factory, config, caplog):
+    """The raised StepSkipped reason must be a fixed generic one-liner, never
+    `str(exc)` -- it lands verbatim on AgentStep.error, which GET /api/agents
+    serves to any viewer, and a backend's raw exception text is not for
+    public consumption. The raw exception is still logged server-side."""
     session, agent = _avatar_agent(session_factory)
     github = FakeGitHub()
-    image = FakeImage(generate_error="the picture didn't come through")
+    raw_error = "the picture didn't come through: backend said no"
+    image = FakeImage(generate_error=raw_error)
     ctx = _make_ctx(session, agent, config, _clients(github=github, image=image))
 
-    with pytest.raises(StepSkipped, match="generation failed"):
+    with caplog.at_level(logging.WARNING), pytest.raises(StepSkipped) as excinfo:
         AvatarStep().run(ctx)
 
+    assert str(excinfo.value) == "picture generation failed"
+    assert raw_error not in str(excinfo.value)
+    assert any(raw_error in record.message for record in caplog.records)
     assert agent.avatar_png is None
     assert github.cloned == []
 
@@ -1581,15 +1589,23 @@ def test_avatar_step_skips_on_oversize_png(session_factory, config):
     assert github.cloned == []
 
 
-def test_avatar_step_skips_on_repo_push_failure(session_factory, config):
+def test_avatar_step_skips_on_repo_push_failure(session_factory, config, caplog):
+    """Same sanitization requirement as the generation-error test above: a
+    `set_avatar` ClientError can carry a full git/gh command line and raw
+    stderr, so the StepSkipped reason must be the fixed generic copy, never
+    that raw text -- which is still logged server-side."""
     session, agent = _avatar_agent(session_factory)
-    github = FakeGitHub(clone_error="gh: rate limited")
+    raw_error = "gh: rate limited (command: gh repo create ...; stderr: 403)"
+    github = FakeGitHub(clone_error=raw_error)
     image = FakeImage()
     ctx = _make_ctx(session, agent, config, _clients(github=github, image=image))
 
-    with pytest.raises(StepSkipped, match="couldn't save"):
+    with caplog.at_level(logging.WARNING), pytest.raises(StepSkipped) as excinfo:
         AvatarStep().run(ctx)
 
+    assert str(excinfo.value) == "couldn't save the picture"
+    assert raw_error not in str(excinfo.value)
+    assert any(raw_error in record.message for record in caplog.records)
     assert agent.avatar_png is None
 
 
