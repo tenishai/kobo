@@ -305,6 +305,13 @@
     {bannerView.text}
   </div>
 
+  <p class="tooling-panel__explainer">
+    Every agent ships with colleague tools: it can list and consult the room,
+    and share a fact with quorum review. Its repo tools stay dormant until an
+    operator approves a repository on the Access tab. Tools added here are
+    extras on top of that baseline.
+  </p>
+
   <form class="tooling-form" onsubmit={handleUpload}>
     <h3 class="tooling-form__heading">Upload</h3>
 
@@ -472,6 +479,12 @@
   }
 
   .tooling-panel__subtitle {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .tooling-panel__explainer {
     margin: 0;
     color: var(--muted);
     font-size: 0.85rem;
