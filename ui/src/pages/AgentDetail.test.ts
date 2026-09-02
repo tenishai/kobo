@@ -28,6 +28,27 @@ const READY_AGENT = {
   can_decide_learnings: false,
 };
 
+/** Every route AgentDetail's panels touch besides the agent itself and the
+ * persona search -- shared across every fixture below since every panel
+ * stays mounted regardless of which tab (or none) is active. Individual
+ * tests spread this and override `/api/agents/warden` (and, where needed,
+ * `/api/personas/search`) for their own fixture shape. */
+const BASE_ROUTES = {
+  "/api/colleagues/feed": { entries: [], truncated: false },
+  "/api/agents/warden/knowledge": { files: [] },
+  "/api/agents/warden/intake": { files: [] },
+  "/api/agents/warden/skills": { skills: [] },
+  "/api/agents/warden/tooling": {
+    files: [],
+    enforcement: { attested: false, locked: false, locked_file: null },
+  },
+  "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+  "/api/agents/warden/grants": { grants: [] },
+  "/api/agents/warden": READY_AGENT,
+  "/api/personas/search": { results: [] },
+  "/api/": {},
+};
+
 // A minimal EventSource stand-in - jsdom has none, and ColleagueConversations
 // (mounted unconditionally on the Chat tab, same "every panel stays mounted"
 // invariant as every other panel here) opens one as soon as its list query
@@ -55,53 +76,29 @@ describe("AgentDetail tabs", () => {
     // doesn't retroactively update it. A manual `hashchange` dispatch
     // drives the same `sync()` listener a real navigation would.
     window.dispatchEvent(new Event("hashchange"));
-    // The generic `"/api/"` catch-all below answers with `{}`, which is
-    // enough for panels that only ever read their query data through an
-    // optional chain (SlackPanel's `slack` prop; SkillsPanel's team
-    // filter, guarded by `{#if $teams.data}`). But every panel mounted here
-    // is mounted unconditionally per the tab invariant (all four panels
-    // stay mounted; only the tabpanel's `hidden` toggles), and each
-    // destructures its own query's real response shape on first render
-    // (queries.ts / api.ts):
-    //   - MemoryPanel:  knowledgeQuery -> listKnowledge -> reads `data.files`
-    //   - MemoryPanel:  intakeQuery    -> listIntake    -> reads `data.files`
-    //   - SkillsPanel:  agentSkillsQuery -> listSkills  -> reads `data.skills`
-    //   - ToolingPanel: toolingQuery  -> listTooling    -> the body itself is
-    //                   `{ files, enforcement }` (ToolingListResponse)
-    //   - ColleagueConversations: colleagueFeedQuery -> fetchColleagueFeed
-    //                   -> reads `data.entries` (terminal redesign)
-    // Against the bare `{}` catch-all, each of those becomes `undefined`
-    // (or, for tooling, a `{}` with no `.files`) and the panel throws
-    // reading `.length`/`.some` before it ever gets to render an empty
-    // state — so each gets its own minimal, healthy payload here instead.
-    stubFetch({
-      "/api/colleagues/feed": { entries: [], truncated: false },
-      "/api/agents/warden/knowledge": { files: [] },
-      "/api/agents/warden/intake": { files: [] },
-      "/api/agents/warden/skills": { skills: [] },
-      "/api/agents/warden/tooling": {
-        files: [],
-        enforcement: { attested: false, locked: false, locked_file: null },
-      },
-      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
-      "/api/agents/warden/grants": { grants: [] },
-      "/api/agents/warden": READY_AGENT,
-      "/api/personas/search": { results: [] },
-      "/api/": {},
-    });
+    stubFetch(BASE_ROUTES);
   });
 
-  it("defaults to Chat when ready and switches tabs without unmounting panels", async () => {
+  it("defaults to Chat when ready and shows no checklist", async () => {
     renderWithClient(AgentDetail);
     const chatTab = await screen.findByRole("tab", { name: "Chat" });
     expect(chatTab.getAttribute("aria-selected")).toBe("true");
-    // Two-lane Slack (2026-08-17): the tab is unconditional now, not gated
-    // on any visibility flag.
+    expect(screen.queryByText("Clone the repo")).toBeNull();
+  });
+
+  it("switches tabs among primary and expanded advanced without unmounting panels", async () => {
+    // A decider fixture (can_decide_learnings: true) so Memory is a visible
+    // tab trigger right away, with no Advanced-toggle click needed first --
+    // that toggle mechanic has its own dedicated tests below.
+    stubFetch({ ...BASE_ROUTES, "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: true } });
+    renderWithClient(AgentDetail);
+    const chatTab = await screen.findByRole("tab", { name: "Chat" });
+    expect(chatTab.getAttribute("aria-selected")).toBe("true");
     expect(screen.queryByRole("tab", { name: "Slack" })).not.toBeNull();
 
     // Ready is the one status where every tab trigger is reachable — none
     // of them dead-end into a 409, so none should be disabled.
-    for (const label of ["Overview", "Chat", "Memory", "Skills", "Tooling", "Slack"]) {
+    for (const label of ["Chat", "Slack", "Learnings", "Memory", "Skills", "Tooling"]) {
       expect((screen.getByRole("tab", { name: label }) as HTMLButtonElement).disabled).toBe(
         false,
       );
@@ -114,227 +111,171 @@ describe("AgentDetail tabs", () => {
     expect(document.getElementById("panel-chat")).not.toBeNull();
   });
 
-  it("disables the non-Overview tab triggers while provisioning, so a click can't dead-end into a 409", async () => {
+  it("selects no tab while provisioning and shows the checklist above the tabs", async () => {
     stubFetch({
-      "/api/colleagues/feed": { entries: [], truncated: false },
-      "/api/agents/warden/knowledge": { files: [] },
-      "/api/agents/warden/intake": { files: [] },
-      "/api/agents/warden/skills": { skills: [] },
-      "/api/agents/warden/tooling": {
-        files: [],
-        enforcement: { attested: false, locked: false, locked_file: null },
+      ...BASE_ROUTES,
+      "/api/agents/warden": {
+        ...READY_AGENT,
+        status: "provisioning",
+        steps: [{ name: "clone", label: "Clone the repo", status: "pending", error: null }],
       },
-      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
-      "/api/agents/warden/grants": { grants: [] },
-      "/api/agents/warden": { ...READY_AGENT, status: "provisioning" },
-      "/api/personas/search": { results: [] },
-      "/api/": {},
     });
     renderWithClient(AgentDetail);
-    const overviewTab = await screen.findByRole("tab", { name: "Overview" });
-    expect(overviewTab.getAttribute("aria-selected")).toBe("true");
-    expect((overviewTab as HTMLButtonElement).disabled).toBe(false);
+    const chatTab = await screen.findByRole("tab", { name: "Chat" });
+    expect(chatTab.getAttribute("aria-selected")).toBe("false");
+    expect(chatTab.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText("Clone the repo")).not.toBeNull();
+    expect(screen.getByRole("button", { name: /build log/i })).not.toBeNull();
+  });
 
-    const chatTab = screen.getByRole("tab", { name: "Chat" }) as HTMLButtonElement;
+  it("disables every tab trigger while provisioning, so a click can't dead-end into a 409", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": { ...READY_AGENT, status: "provisioning", can_decide_learnings: true },
+    });
+    renderWithClient(AgentDetail);
+    const chatTab = await screen.findByRole("tab", { name: "Chat" });
+    expect(chatTab.getAttribute("aria-selected")).toBe("false");
+
     const memoryTab = screen.getByRole("tab", { name: "Memory" }) as HTMLButtonElement;
     const skillsTab = screen.getByRole("tab", { name: "Skills" }) as HTMLButtonElement;
     const toolingTab = screen.getByRole("tab", { name: "Tooling" }) as HTMLButtonElement;
-    expect(chatTab.disabled).toBe(true);
+    const slackTab = screen.getByRole("tab", { name: "Slack" }) as HTMLButtonElement;
+    expect((chatTab as HTMLButtonElement).disabled).toBe(true);
     expect(memoryTab.disabled).toBe(true);
     expect(skillsTab.disabled).toBe(true);
     expect(toolingTab.disabled).toBe(true);
+    expect(slackTab.disabled).toBe(true);
 
-    // The root of review-Important-2's gap: a disabled trigger can't be
-    // selected at all, so Memory's 409-then-ErrorState path is never
-    // reached by clicking in from here — selection just stays put.
+    // A disabled trigger can't be selected at all — no default tab was
+    // chosen either (defaultTab returns null for a non-ready status), so
+    // clicking just leaves every trigger unselected.
     await fireEvent.click(memoryTab);
-    expect(overviewTab.getAttribute("aria-selected")).toBe("true");
     expect(memoryTab.getAttribute("aria-selected")).toBe("false");
   });
 
-  it("lands on Overview on mount for a non-ready status (destroying)", async () => {
+  it("does not auto-select a tab while destroying, but tabs stay clickable (frozen makes read-only content reachable)", async () => {
     stubFetch({
-      "/api/colleagues/feed": { entries: [], truncated: false },
-      "/api/agents/warden/knowledge": { files: [] },
-      "/api/agents/warden/intake": { files: [] },
-      "/api/agents/warden/skills": { skills: [] },
-      "/api/agents/warden/tooling": {
-        files: [],
-        enforcement: { attested: false, locked: false, locked_file: null },
-      },
-      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
-      "/api/agents/warden/grants": { grants: [] },
+      ...BASE_ROUTES,
       "/api/agents/warden": { ...READY_AGENT, status: "destroying", destroy_visible: true },
-      "/api/personas/search": { results: [] },
-      "/api/": {},
     });
     renderWithClient(AgentDetail);
-    const overviewTab = await screen.findByRole("tab", { name: "Overview" });
-    expect(overviewTab.getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByRole("tab", { name: "Chat" }).getAttribute("aria-selected")).toBe("false");
+    const chatTab = await screen.findByRole("tab", { name: "Chat" });
+    expect(chatTab.getAttribute("aria-selected")).toBe("false");
+    expect((chatTab as HTMLButtonElement).disabled).toBe(false);
+
+    await fireEvent.click(chatTab);
+    expect(chatTab.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("renders the checklist and first words inside the Overview tabpanel", async () => {
+  it("renders first words inside the Chat tabpanel", async () => {
     stubFetch({
-      "/api/colleagues/feed": { entries: [], truncated: false },
-      "/api/agents/warden/knowledge": { files: [] },
-      "/api/agents/warden/intake": { files: [] },
-      "/api/agents/warden/skills": { skills: [] },
-      "/api/agents/warden/tooling": {
-        files: [],
-        enforcement: { attested: false, locked: false, locked_file: null },
-      },
-      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
-      "/api/agents/warden/grants": { grants: [] },
-      "/api/agents/warden": {
-        ...READY_AGENT,
-        steps: [{ name: "clone", label: "Clone the repo", status: "done", error: null }],
-        first_reply: "Hello there.",
-      },
-      "/api/personas/search": { results: [] },
-      "/api/": {},
+      ...BASE_ROUTES,
+      "/api/agents/warden": { ...READY_AGENT, first_reply: "Hello there." },
     });
     renderWithClient(AgentDetail);
     await screen.findByRole("tab", { name: "Chat" });
-    const overviewPanel = document.getElementById("panel-overview") as HTMLElement;
-    expect(overviewPanel).not.toBeNull();
-    expect(within(overviewPanel).getByText("Clone the repo")).not.toBeNull();
-    expect(within(overviewPanel).getByText("Hello there.")).not.toBeNull();
+    const chatPanel = document.getElementById("panel-chat");
+    expect(chatPanel?.textContent).toContain("Hello there.");
   });
 
-  it("composition card shows the team chip, purpose chips, and the null-capability copy verbatim", async () => {
+  it("keeps identity fields in the always-visible header", async () => {
+    const agentWithIdentity = {
+      ...READY_AGENT,
+      capability: "Answers billing questions and escalates refunds.",
+      created_by: "owner@example.com",
+    };
+    stubFetch({ ...BASE_ROUTES, "/api/agents/warden": agentWithIdentity });
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Chat" });
+    const header = document.querySelector(".agent-detail__header");
+    expect(header?.textContent).toContain(agentWithIdentity.capability);
+    expect(header?.textContent).toContain(`Made by ${agentWithIdentity.created_by}`);
+  });
+
+  it("keeps the team chip, purpose tags, and the null-capability copy in the header", async () => {
     stubFetch({
-      "/api/colleagues/feed": { entries: [], truncated: false },
-      "/api/agents/warden/knowledge": { files: [] },
-      "/api/agents/warden/intake": { files: [] },
-      "/api/agents/warden/skills": { skills: [] },
-      "/api/agents/warden/tooling": {
-        files: [],
-        enforcement: { attested: false, locked: false, locked_file: null },
-      },
-      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
-      "/api/agents/warden/grants": { grants: [] },
+      ...BASE_ROUTES,
       "/api/agents/warden": {
         ...READY_AGENT,
         team: "growth",
         purpose_tags: ["billing", "support"],
         capability: null,
       },
-      "/api/personas/search": { results: [] },
-      "/api/": {},
     });
     renderWithClient(AgentDetail);
     await screen.findByRole("tab", { name: "Chat" });
-    const overviewPanel = document.getElementById("panel-overview") as HTMLElement;
-    expect(within(overviewPanel).getByText("growth")).not.toBeNull();
-    expect(within(overviewPanel).getByText("billing")).not.toBeNull();
-    expect(within(overviewPanel).getByText("support")).not.toBeNull();
+    const header = document.querySelector(".agent-detail__header") as HTMLElement;
+    expect(within(header).getByText("growth")).not.toBeNull();
+    expect(within(header).getByText("billing")).not.toBeNull();
+    expect(within(header).getByText("support")).not.toBeNull();
     expect(
-      within(overviewPanel).getByText(
-        "Not written yet. It arrives after first contact.",
-      ),
+      within(header).getByText("Not written yet. It arrives after first contact."),
     ).not.toBeNull();
   });
 
-  it("composition card shows the earned capability line verbatim when present", async () => {
+  it("shows the earned capability line in the header, replacing the not-written-yet copy", async () => {
     stubFetch({
-      "/api/colleagues/feed": { entries: [], truncated: false },
-      "/api/agents/warden/knowledge": { files: [] },
-      "/api/agents/warden/intake": { files: [] },
-      "/api/agents/warden/skills": { skills: [] },
-      "/api/agents/warden/tooling": {
-        files: [],
-        enforcement: { attested: false, locked: false, locked_file: null },
-      },
-      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
-      "/api/agents/warden/grants": { grants: [] },
+      ...BASE_ROUTES,
       "/api/agents/warden": {
         ...READY_AGENT,
         capability: "Answers billing questions and escalates refunds.",
       },
-      "/api/personas/search": { results: [] },
-      "/api/": {},
     });
     renderWithClient(AgentDetail);
     await screen.findByRole("tab", { name: "Chat" });
-    const overviewPanel = document.getElementById("panel-overview") as HTMLElement;
+    const header = document.querySelector(".agent-detail__header") as HTMLElement;
     expect(
-      within(overviewPanel).getByText(
-        "Answers billing questions and escalates refunds.",
-      ),
+      within(header).getByText("Answers billing questions and escalates refunds."),
     ).not.toBeNull();
-    expect(
-      within(overviewPanel).queryByText(/Not written yet/),
-    ).toBeNull();
+    expect(within(header).queryByText(/Not written yet/)).toBeNull();
   });
 
-  it("Overview shows 'Made by <email>' when created_by is present (Task A3)", async () => {
-    stubFetch({
-      "/api/colleagues/feed": { entries: [], truncated: false },
-      "/api/agents/warden/knowledge": { files: [] },
-      "/api/agents/warden/intake": { files: [] },
-      "/api/agents/warden/skills": { skills: [] },
-      "/api/agents/warden/tooling": {
-        files: [],
-        enforcement: { attested: false, locked: false, locked_file: null },
-      },
-      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
-      "/api/agents/warden/grants": { grants: [] },
-      "/api/agents/warden": { ...READY_AGENT, created_by: "owner@example.com" },
-      "/api/personas/search": { results: [] },
-      "/api/": {},
-    });
+  it("renders no owner line in the header when created_by is null", async () => {
     renderWithClient(AgentDetail);
     await screen.findByRole("tab", { name: "Chat" });
-    const overviewPanel = document.getElementById("panel-overview") as HTMLElement;
-    expect(within(overviewPanel).getByText("Made by owner@example.com")).not.toBeNull();
-  });
-
-  it("Overview renders no owner line when created_by is null", async () => {
-    stubFetch({
-      "/api/colleagues/feed": { entries: [], truncated: false },
-      "/api/agents/warden/knowledge": { files: [] },
-      "/api/agents/warden/intake": { files: [] },
-      "/api/agents/warden/skills": { skills: [] },
-      "/api/agents/warden/tooling": {
-        files: [],
-        enforcement: { attested: false, locked: false, locked_file: null },
-      },
-      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
-      "/api/agents/warden/grants": { grants: [] },
-      "/api/agents/warden": READY_AGENT,
-      "/api/personas/search": { results: [] },
-      "/api/": {},
-    });
-    renderWithClient(AgentDetail);
-    await screen.findByRole("tab", { name: "Chat" });
-    const overviewPanel = document.getElementById("panel-overview") as HTMLElement;
-    expect(within(overviewPanel).queryByText(/Made by/)).toBeNull();
+    const header = document.querySelector(".agent-detail__header") as HTMLElement;
+    expect(within(header).queryByText(/Made by/)).toBeNull();
   });
 
   it("the Edit details affordance disables while frozen (destroying)", async () => {
     stubFetch({
-      "/api/colleagues/feed": { entries: [], truncated: false },
-      "/api/agents/warden/knowledge": { files: [] },
-      "/api/agents/warden/intake": { files: [] },
-      "/api/agents/warden/skills": { skills: [] },
-      "/api/agents/warden/tooling": {
-        files: [],
-        enforcement: { attested: false, locked: false, locked_file: null },
-      },
-      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
-      "/api/agents/warden/grants": { grants: [] },
-      "/api/agents/warden": {
-        ...READY_AGENT,
-        status: "destroying",
-        destroy_visible: true,
-      },
-      "/api/personas/search": { results: [] },
-      "/api/": {},
+      ...BASE_ROUTES,
+      "/api/agents/warden": { ...READY_AGENT, status: "destroying", destroy_visible: true },
     });
     renderWithClient(AgentDetail);
     const editButton = await screen.findByRole("button", { name: "Edit details" });
     expect((editButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("collapses the Advanced group for non-deciders and expands it on toggle", async () => {
+    // READY_AGENT already has can_decide_learnings: false.
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Chat" });
+    expect(screen.queryByRole("tab", { name: "Memory" })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    expect(screen.getByRole("tab", { name: "Memory" })).not.toBeNull();
+  });
+
+  it("expands the Advanced group by default for deciders", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: true },
+    });
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Chat" });
+    expect(screen.getByRole("tab", { name: "Learnings" })).not.toBeNull();
+  });
+
+  it("shows the pending badge on the Advanced toggle while collapsed", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: false, pending_learnings: 3 },
+    });
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Chat" });
+    const toggle = screen.getByRole("button", { name: /advanced/i });
+    expect(toggle.textContent).toContain("3");
   });
 
   it("shows the Slack tab, and renders the setup section unconditionally inside it", async () => {
@@ -343,21 +284,6 @@ describe("AgentDetail tabs", () => {
     // now, no gate. The agent payload's old visibility flag for the setup
     // lane is gone entirely, and AgentDetail no longer threads any such
     // prop into SlackPanel.
-    stubFetch({
-      "/api/colleagues/feed": { entries: [], truncated: false },
-      "/api/agents/warden/knowledge": { files: [] },
-      "/api/agents/warden/intake": { files: [] },
-      "/api/agents/warden/skills": { skills: [] },
-      "/api/agents/warden/tooling": {
-        files: [],
-        enforcement: { attested: false, locked: false, locked_file: null },
-      },
-      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
-      "/api/agents/warden/grants": { grants: [] },
-      "/api/agents/warden": READY_AGENT,
-      "/api/personas/search": { results: [] },
-      "/api/": {},
-    });
     renderWithClient(AgentDetail);
     const slackTab = await screen.findByRole("tab", { name: "Slack" });
     await fireEvent.click(slackTab);
@@ -373,19 +299,13 @@ describe("AgentDetail tabs", () => {
     // isn't shaped like those endpoints' real responses and leaves those
     // panels' queries permanently pending instead of settled.
     stubFetch({
-      "/api/colleagues/feed": { entries: [], truncated: false },
-      "/api/agents/warden/knowledge": { files: [] },
-      "/api/agents/warden/intake": { files: [] },
-      "/api/agents/warden/skills": { skills: [] },
-      "/api/agents/warden/tooling": {
-        files: [],
-        enforcement: { attested: false, locked: false, locked_file: null },
+      ...BASE_ROUTES,
+      "/api/agents/warden": {
+        ...READY_AGENT,
+        status: "destroying",
+        destroy_visible: true,
+        can_decide_learnings: true,
       },
-      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
-      "/api/agents/warden/grants": { grants: [] },
-      "/api/agents/warden": { ...READY_AGENT, status: "destroying", destroy_visible: true },
-      "/api/personas/search": { results: [] },
-      "/api/": {},
     });
     renderWithClient(AgentDetail);
     expect(await screen.findByText("This agent is being destroyed.")).not.toBeNull();
@@ -399,16 +319,16 @@ describe("AgentDetail tabs", () => {
     // (fixed by dropping DangerZone's live-region attributes — the visible
     // text stays, see DangerZone.svelte). StepChecklist's own step-count
     // announcer ("N of N steps done") is a separate, pre-existing
-    // role="status" unrelated to destroying — always present regardless of
-    // agent status — so it's excluded here rather than folded into this
-    // count.
+    // role="status", but it no longer renders at all while frozen (the
+    // checklist is gated on `!isFrozen` now), so there is nothing left to
+    // exclude here — kept anyway as a defensive filter.
     const destroyAnnouncers = screen
       .getAllByRole("status")
       .filter((el) => !el.classList.contains("step-checklist__sr-only"));
     expect(destroyAnnouncers).toHaveLength(1);
     expect(screen.getByRole("tab", { name: "Memory" })).not.toBeNull();
-    const overviewTab = screen.getByRole("tab", { name: "Overview" });
-    expect(overviewTab.getAttribute("aria-selected")).toBe("true");
+    const chatTab = screen.getByRole("tab", { name: "Chat" });
+    expect(chatTab.getAttribute("aria-selected")).toBe("false");
     const avatarButton = screen.getByRole("button", { name: /give warden a face/i });
     expect((avatarButton as HTMLButtonElement).disabled).toBe(true);
 
@@ -417,34 +337,33 @@ describe("AgentDetail tabs", () => {
     // content reachable even though it's not "ready"; only per-panel
     // CONTROLS (like the avatar button above) freeze, never the tabs
     // themselves.
-    for (const label of ["Overview", "Chat", "Memory", "Skills", "Tooling"]) {
+    for (const label of ["Chat", "Memory", "Skills", "Tooling"]) {
       expect((screen.getByRole("tab", { name: label }) as HTMLButtonElement).disabled).toBe(
         false,
       );
     }
   });
 
-  it('shows a "Download the portrait" link, with the per-agent filename, when has_avatar is true', async () => {
+  it("renders the danger zone below the tabs while destroying", async () => {
     stubFetch({
-      "/api/colleagues/feed": { entries: [], truncated: false },
-      "/api/agents/warden/knowledge": { files: [] },
-      "/api/agents/warden/intake": { files: [] },
-      "/api/agents/warden/skills": { skills: [] },
-      "/api/agents/warden/tooling": {
-        files: [],
-        enforcement: { attested: false, locked: false, locked_file: null },
-      },
-      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
-      "/api/agents/warden/grants": { grants: [] },
-      "/api/agents/warden": { ...READY_AGENT, has_avatar: true },
-      "/api/personas/search": { results: [] },
-      "/api/": {},
+      ...BASE_ROUTES,
+      "/api/agents/warden": { ...READY_AGENT, status: "destroying", destroy_visible: true },
     });
     renderWithClient(AgentDetail);
-    // A ready agent defaults to the Chat tab (defaultTab, tabs.ts) — every
-    // panel stays mounted but the Overview tabpanel is `hidden` until
-    // switched to, and role queries (unlike getByText) respect that.
-    await fireEvent.click(await screen.findByRole("tab", { name: "Overview" }));
+    await screen.findByRole("tab", { name: "Chat" });
+    expect(screen.getByText("Danger zone")).not.toBeNull();
+  });
+
+  it('shows a "Download the portrait" link, with the per-agent filename, when has_avatar is true', async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": { ...READY_AGENT, has_avatar: true },
+    });
+    renderWithClient(AgentDetail);
+    // The avatar action block lives in the always-visible header now, not
+    // behind any tab — waiting for Chat just confirms the page finished
+    // mounting.
+    await screen.findByRole("tab", { name: "Chat" });
 
     const link = (await screen.findByRole("link", {
       name: "Download the portrait",
@@ -455,14 +374,14 @@ describe("AgentDetail tabs", () => {
 
   it('hides "Download the portrait" when has_avatar is false (nothing to download yet)', async () => {
     renderWithClient(AgentDetail);
-    await fireEvent.click(await screen.findByRole("tab", { name: "Overview" }));
+    await screen.findByRole("tab", { name: "Chat" });
 
     expect(screen.queryByRole("link", { name: "Download the portrait" })).toBeNull();
   });
 
   it('a file over the 2 MiB cap shows the plain client-side copy and never PUTs', async () => {
     renderWithClient(AgentDetail);
-    await fireEvent.click(await screen.findByRole("tab", { name: "Overview" }));
+    await screen.findByRole("tab", { name: "Chat" });
 
     const oversized = new Uint8Array(2 * 1024 * 1024 + 1);
     const file = new File([oversized], "too-big.png", { type: "image/png" });
@@ -556,27 +475,13 @@ describe("AgentDetail tabs", () => {
   });
 });
 
-describe("AgentDetail Overview persona soul-line (persona-naming law, hardening wave)", () => {
+describe("AgentDetail persona soul-line (persona-naming law, hardening wave)", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
     vi.stubGlobal("EventSource", NoopEventSource);
     location.hash = "#/agents/warden";
     window.dispatchEvent(new Event("hashchange"));
   });
-
-  const BASE_ROUTES = {
-    "/api/colleagues/feed": { entries: [], truncated: false },
-    "/api/agents/warden/knowledge": { files: [] },
-    "/api/agents/warden/intake": { files: [] },
-    "/api/agents/warden/skills": { skills: [] },
-    "/api/agents/warden/tooling": {
-      files: [],
-      enforcement: { attested: false, locked: false, locked_file: null },
-    },
-    "/api/agents/warden/invites": { incoming: [], outgoing: [] },
-    "/api/agents/warden/grants": { grants: [] },
-    "/api/agents/warden": READY_AGENT,
-  };
 
   it("renders `{name} -- {who_they_are}` once the persona catalog search answers with a matching id", async () => {
     stubFetch({
@@ -593,14 +498,13 @@ describe("AgentDetail Overview persona soul-line (persona-naming law, hardening 
           },
         ],
       },
-      "/api/": {},
     });
     renderWithClient(AgentDetail);
-    await fireEvent.click(await screen.findByRole("tab", { name: "Overview" }));
+    await screen.findByRole("tab", { name: "Chat" });
 
-    const overviewPanel = document.getElementById("panel-overview") as HTMLElement;
+    const header = document.querySelector(".agent-detail__header") as HTMLElement;
     expect(
-      await within(overviewPanel).findByText("Keeper -- a calm, steady presence who never panics"),
+      await within(header).findByText("Keeper -- a calm, steady presence who never panics"),
     ).not.toBeNull();
   });
 
@@ -622,10 +526,9 @@ describe("AgentDetail Overview persona soul-line (persona-naming law, hardening 
           },
         ],
       },
-      "/api/": {},
     });
     renderWithClient(AgentDetail);
-    await fireEvent.click(await screen.findByRole("tab", { name: "Overview" }));
+    await screen.findByRole("tab", { name: "Chat" });
 
     // Wait for the persona search fetch to actually resolve, and for its
     // result to settle all the way through TanStack Query's cache and
@@ -649,10 +552,10 @@ describe("AgentDetail Overview persona soul-line (persona-naming law, hardening 
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
 
-    const overviewPanel = document.getElementById("panel-overview") as HTMLElement;
-    expect(within(overviewPanel).getByText("keeper")).not.toBeNull();
-    expect(within(overviewPanel).queryByText(/Someone Else/)).toBeNull();
-    expect(within(overviewPanel).queryByText(/--/)).toBeNull();
+    const header = document.querySelector(".agent-detail__header") as HTMLElement;
+    expect(within(header).getByText("keeper")).not.toBeNull();
+    expect(within(header).queryByText(/Someone Else/)).toBeNull();
+    expect(within(header).queryByText(/--/)).toBeNull();
   });
 });
 

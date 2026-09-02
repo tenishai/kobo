@@ -1,10 +1,14 @@
 <script lang="ts">
-  // A single agent's detail: header (back link, name, status, model, repo
-  // link), a read-only composition summary (persona/skills/model — no
-  // editing affordances, that's P2), the step checklist, a retry banner
-  // when the agent has failed, and — once it's arrived — the "First words"
-  // card. All polling is `agentQuery`'s own adaptive cadence (status.ts):
-  // this component only renders whatever state that query is in, same
+  // A single agent's detail (UI-simplification wave, 2026-09-02: overview
+  // tab retired -- its identity content lives in the always-visible header
+  // now). Header: back link, name, status, model, repo link, persona line,
+  // team/purpose chips, capability, owner, avatar actions, and the "Edit
+  // details" trigger. Below that: a failed-status retry banner, the step
+  // checklist (pre-ready only), and the build log card, all above a tab bar
+  // split into always-visible primary tabs plus a collapsible Advanced
+  // group. The Danger zone renders below the tabs once destroy is visible.
+  // All polling is `agentQuery`'s own adaptive cadence (status.ts): this
+  // component only renders whatever state that query is in, same
   // loading/error/populated split Dashboard already uses.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { derived, writable } from "svelte/store";
@@ -38,7 +42,7 @@
   } from "../lib/queries";
   import { formatHash, navigate, route } from "../lib/router.svelte";
   import { isDestroyComplete, isFrozen } from "../lib/status";
-  import { defaultTab, TAB_LABELS, visibleTabs, type TabId } from "../lib/tabs";
+  import { ADVANCED_TABS, advancedTabs, defaultTab, primaryTabs, TAB_LABELS, type TabId } from "../lib/tabs";
   import { toast } from "../lib/toast.svelte";
 
   // Invariant: App.svelte only mounts this page when `route.page === "agent"`,
@@ -54,13 +58,13 @@
   // independently of which tab is selected, and independently of the Access
   // tab even existing yet, since that's exactly what this decides. A 200
   // means the caller is this agent's owner or a room operator (the Access
-  // tab renders, see `tabs` below); a 403 means the agent is visible but
+  // tab renders, see `primary` below); a 403 means the agent is visible but
   // not theirs to administer (the "Request colleague access" card renders
   // instead, right below); anything else (a 404, in practice unreachable
   // here since a 404 on the AGENT itself would already have kept this page
   // from ever mounting `agent.data`) renders neither. Deliberately never
   // keyed on `whoami.operator` -- see `Whoami`'s own WATCH ITEM doc comment
-  // in api.ts and `visibleTabs`'s doc comment in tabs.ts -- this tab is
+  // in api.ts and `primaryTabs`'s doc comment in tabs.ts -- this tab is
   // exactly as real as the server's own gate on this route, nothing a
   // client-side flag could fake or fall out of sync with.
   const invites = createQuery(() => (invitesQuery(name)));
@@ -105,19 +109,20 @@
   // refetches a panel's query or drops its in-progress local state (an open
   // modal, a half-typed form).
   //
-  // Starts `null` (no data yet) so the effect below can tell "never chosen"
-  // apart from "chosen, and it happens to be overview" — the first real
-  // `agent.data` picks the smart default (`defaultTab`) exactly once, and
-  // never again even as later polls bring fresher statuses.
+  // Starts `null` (no data yet, and "no tab" is also a real, permanent state
+  // now for any non-ready status — see `defaultTab`, tabs.ts) so the effect
+  // below can tell "never chosen" apart from "chosen" — the first real
+  // `agent.data` picks the smart default exactly once, and never again even
+  // as later polls bring fresher statuses.
   let activeTab = $state<TabId | null>(null);
 
-  // Tracks the agent's frozen-ness across polls so the one-shot destroy
-  // auto-select (below) can tell "just started destroying" (false -> true)
-  // from "still destroying" (true -> true, e.g. every ~3.5s poll while
-  // `destroying`/`destroy_failed` persists) — only the former should steal
-  // focus back to Overview; the operator must be free to click away
-  // afterward without getting yanked back on the next poll.
-  let wasFrozen = $state(false);
+  // Whether the Advanced tab group (tabs.ts: learnings/memory/skills/
+  // tooling) is expanded. Seeded exactly once from the server-computed
+  // `can_decide_learnings` signal (deciders start expanded, everyone else
+  // starts collapsed) — `seededAdvanced` guards that seed so a later manual
+  // toggle is never fought by this effect re-running on the next poll.
+  let advancedOpen = $state(false);
+  let seededAdvanced = $state(false);
 
   $effect(() => {
     const data = agent.data;
@@ -127,11 +132,18 @@
     if (activeTab === null) {
       activeTab = defaultTab(data.status);
     }
-    const frozenNow = isFrozen(data.status);
-    if (frozenNow && !wasFrozen) {
-      activeTab = "overview";
+    if (!seededAdvanced) {
+      advancedOpen = data.can_decide_learnings;
+      seededAdvanced = true;
     }
-    wasFrozen = frozenNow;
+  });
+
+  // An advanced tab can become active (badge click, future deep link) —
+  // the group must never hide the selected tab.
+  $effect(() => {
+    if (activeTab !== null && (ADVANCED_TABS as readonly string[]).includes(activeTab)) {
+      advancedOpen = true;
+    }
   });
 
   function handleRetry(): void {
@@ -277,10 +289,65 @@
     />
   {:else if agent.data}
     {@const data = agent.data}
+    {@const personaMatch = personaSoul.data?.find((p) => p.id === data.persona) ?? null}
+    {@const personaLine = personaMatch
+      ? `${personaMatch.name} -- ${personaMatch.description}`
+      : data.persona}
     <header class="agent-detail__header">
-      {#if data.has_avatar || avatarVersion !== null}
-        <img class="agent-detail__avatar" src={avatarSrc} alt="{data.name}'s picture" />
-      {/if}
+      <div class="agent-detail__avatar-col">
+        {#if data.has_avatar || avatarVersion !== null}
+          <img class="agent-detail__avatar" src={avatarSrc} alt="{data.name}'s picture" />
+        {/if}
+        <div class="composition__avatar-action">
+          <div class="composition__avatar-buttons">
+            <button
+              type="button"
+              class="composition__avatar-button"
+              disabled={isFrozen(data.status) || generateAvatar.isPending}
+              onclick={handleGenerateAvatar}
+            >
+              {#if generateAvatar.isPending}
+                <span class="composition__avatar-dot pulse" aria-hidden="true"></span>
+                Painting…
+              {:else if data.has_avatar || avatarVersion !== null}
+                New face
+              {:else}
+                Give {data.name} a face
+              {/if}
+            </button>
+
+            <label
+              class="composition__avatar-upload"
+              class:composition__avatar-upload--disabled={isFrozen(data.status) ||
+                uploadAvatar.isPending}
+            >
+              {uploadAvatar.isPending ? "Uploading…" : "Upload a portrait"}
+              <input
+                class="composition__avatar-upload-input"
+                type="file"
+                accept=".png,image/png"
+                disabled={isFrozen(data.status) || uploadAvatar.isPending}
+                onchange={handleAvatarFileSelect}
+              />
+            </label>
+
+            {#if data.has_avatar || avatarVersion !== null}
+              <a
+                class="composition__avatar-download"
+                href={avatarSrc}
+                download={`${data.name}-portrait.png`}
+              >
+                Download the portrait
+              </a>
+            {/if}
+          </div>
+          {#if avatarError}
+            <p class="composition__avatar-error" role="alert">{avatarError}</p>
+          {:else if avatarNote}
+            <p class="composition__avatar-note">{avatarNote}</p>
+          {/if}
+        </div>
+      </div>
       <div class="agent-detail__heading">
         <div class="agent-detail__title">
           <h1 class="agent-detail__name">{data.name}</h1>
@@ -300,8 +367,37 @@
             </a>
           {/if}
         </div>
+        <p class="agent-detail__persona">
+          {personaLine}
+          {#if data.team && data.team !== "shared"}
+            <span class="agent-detail__chip">{data.team}</span>
+          {/if}
+        </p>
+        {#if data.purpose_tags.length > 0}
+          <p class="agent-detail__tags">
+            {#each data.purpose_tags as tag (tag)}
+              <span class="agent-detail__chip">{tag}</span>
+            {/each}
+          </p>
+        {/if}
+        <p class="agent-detail__capability">
+          {data.capability ?? "Not written yet. It arrives after first contact."}
+        </p>
+        {#if data.created_by}
+          <p class="agent-detail__owner">Made by {data.created_by}</p>
+        {/if}
       </div>
     </header>
+
+    <div class="composition__edit-action">
+      <MetadataDetails
+        agentName={data.name}
+        team={data.team}
+        purposeTags={data.purpose_tags}
+        capability={data.capability}
+        frozen={isFrozen(data.status)}
+      />
+    </div>
 
     {#if isFrozen(data.status)}
       <p class="agent-detail__destroy-notice" role="status" aria-live="polite">
@@ -313,20 +409,44 @@
       <RequestAccessCard toAgentName={data.name} />
     {/if}
 
-    {@const tabs = visibleTabs(invites.isSuccess)}
+    {#if data.status === "failed"}
+      <div class="failed-banner" role="alert">
+        <p class="failed-banner__message">
+          {data.error ?? "Something went wrong during setup."}
+        </p>
+        <button
+          type="button"
+          class="failed-banner__retry"
+          disabled={retry.isPending}
+          onclick={handleRetry}
+        >
+          {retry.isPending ? "Retrying…" : "Retry"}
+        </button>
+      </div>
+    {/if}
+
+    {#if data.status !== "ready" && !isFrozen(data.status)}
+      <StepChecklist steps={data.steps} />
+    {/if}
+
+    <BuildLogCard agentName={data.name} />
+
+    {@const primary = primaryTabs(invites.isSuccess)}
+    {@const advanced = advancedTabs()}
+    {@const tabDisabled = data.status !== "ready" && !isFrozen(data.status)}
     <div class="detail-tabs">
       <div class="detail-tabs__bar" role="tablist" aria-label="Agent sections">
-        <!-- Every panel mounts regardless of status (see the tabpanel loop
-             below), but its query still 409s server-side until the agent is
-             `ready` — so the trigger itself is disabled rather than left
-             clickable into a dead end, for every status that is neither
-             ready nor frozen (pending/provisioning/failed). Frozen statuses
-             (destroying/destroy_failed) are the one exception: destruction
-             makes read-only content reachable again, so only mutation
-             CONTROLS freeze there (each panel's own `frozen` prop below) —
-             the tabs themselves stay fully clickable. -->
-        {#each tabs as tab (tab)}
-          {@const tabDisabled = tab !== "overview" && data.status !== "ready" && !isFrozen(data.status)}
+        <!-- Every panel mounts regardless of status or the Advanced group's
+             collapse (see the tabpanel loop below), but its query still
+             409s server-side until the agent is `ready` — so the trigger
+             itself is disabled rather than left clickable into a dead end,
+             for every status that is neither ready nor frozen (pending/
+             provisioning/failed). Frozen statuses (destroying/
+             destroy_failed) are the one exception: destruction makes
+             read-only content reachable again, so only mutation CONTROLS
+             freeze there (each panel's own `frozen` prop below) — the tabs
+             themselves stay fully clickable. -->
+        {#each primary as tab (tab)}
           <button
             type="button"
             role="tab"
@@ -342,14 +462,45 @@
             }}
           >
             {TAB_LABELS[tab]}
-            {#if tab === "learnings" && data.pending_learnings > 0}
-              <span class="detail-tabs__badge">{data.pending_learnings}</span>
-            {/if}
           </button>
         {/each}
+        <button
+          type="button"
+          class="detail-tabs__advanced-toggle"
+          aria-expanded={advancedOpen}
+          onclick={() => (advancedOpen = !advancedOpen)}
+        >
+          Advanced
+          {#if !advancedOpen && data.pending_learnings > 0}
+            <span class="detail-tabs__badge">{data.pending_learnings}</span>
+          {/if}
+        </button>
+        {#if advancedOpen}
+          {#each advanced as tab (tab)}
+            <button
+              type="button"
+              role="tab"
+              id={`tab-${tab}`}
+              class="detail-tabs__tab"
+              aria-selected={activeTab === tab}
+              aria-controls={`panel-${tab}`}
+              disabled={tabDisabled}
+              onclick={() => {
+                if (!tabDisabled) {
+                  activeTab = tab;
+                }
+              }}
+            >
+              {TAB_LABELS[tab]}
+              {#if tab === "learnings" && data.pending_learnings > 0}
+                <span class="detail-tabs__badge">{data.pending_learnings}</span>
+              {/if}
+            </button>
+          {/each}
+        {/if}
       </div>
 
-      {#each tabs as tab (tab)}
+      {#each [...primary, ...advanced] as tab (tab)}
         <div
           id={`panel-${tab}`}
           class="detail-tabs__panel"
@@ -358,138 +509,10 @@
           hidden={activeTab !== tab}
           tabindex="0"
         >
-          {#if tab === "overview"}
-            {@const personaMatch = personaSoul.data?.find((p) => p.id === data.persona) ?? null}
-            {@const personaLine = personaMatch
-              ? `${personaMatch.name} -- ${personaMatch.description}`
-              : data.persona}
-            <div class="composition">
-              <span class="composition__item">
-                <span class="composition__label">Persona</span>
-                <span class="composition__value composition__value--persona">
-                  {personaLine}
-                  <span class="composition__team-chip">{data.team}</span>
-                </span>
-              </span>
-              {#if data.created_by}
-                <p class="composition__owner">Made by {data.created_by}</p>
-              {/if}
-              {#if data.skills.length > 0}
-                <div class="composition__skills">
-                  {#each data.skills as skill (skill.name)}
-                    <span class="skill-chip" title={skill.sha}>{skill.name}</span>
-                  {/each}
-                </div>
-              {/if}
-              <span class="composition__item">
-                <span class="composition__label">Model</span>
-                <span class="composition__value">{data.model_label}</span>
-              </span>
-
-              {#if data.purpose_tags.length > 0}
-                <div class="composition__tags">
-                  {#each data.purpose_tags as tag (tag)}
-                    <span class="tag-chip">{tag}</span>
-                  {/each}
-                </div>
-              {/if}
-
-              <span class="composition__item composition__item--capability">
-                <span class="composition__label">Capability</span>
-                <span class="composition__value composition__value--capability">
-                  {data.capability ?? "Not written yet. It arrives after first contact."}
-                </span>
-              </span>
-
-              <div class="composition__avatar-action">
-                <div class="composition__avatar-buttons">
-                  <button
-                    type="button"
-                    class="composition__avatar-button"
-                    disabled={isFrozen(data.status) || generateAvatar.isPending}
-                    onclick={handleGenerateAvatar}
-                  >
-                    {#if generateAvatar.isPending}
-                      <span class="composition__avatar-dot pulse" aria-hidden="true"></span>
-                      Painting…
-                    {:else if data.has_avatar || avatarVersion !== null}
-                      New face
-                    {:else}
-                      Give {data.name} a face
-                    {/if}
-                  </button>
-
-                  <label
-                    class="composition__avatar-upload"
-                    class:composition__avatar-upload--disabled={isFrozen(data.status) ||
-                      uploadAvatar.isPending}
-                  >
-                    {uploadAvatar.isPending ? "Uploading…" : "Upload a portrait"}
-                    <input
-                      class="composition__avatar-upload-input"
-                      type="file"
-                      accept=".png,image/png"
-                      disabled={isFrozen(data.status) || uploadAvatar.isPending}
-                      onchange={handleAvatarFileSelect}
-                    />
-                  </label>
-
-                  {#if data.has_avatar || avatarVersion !== null}
-                    <a
-                      class="composition__avatar-download"
-                      href={avatarSrc}
-                      download={`${data.name}-portrait.png`}
-                    >
-                      Download the portrait
-                    </a>
-                  {/if}
-                </div>
-                {#if avatarError}
-                  <p class="composition__avatar-error" role="alert">{avatarError}</p>
-                {:else if avatarNote}
-                  <p class="composition__avatar-note">{avatarNote}</p>
-                {/if}
-              </div>
-
-              <div class="composition__edit-action">
-                <MetadataDetails
-                  agentName={data.name}
-                  team={data.team}
-                  purposeTags={data.purpose_tags}
-                  capability={data.capability}
-                  frozen={isFrozen(data.status)}
-                />
-              </div>
-            </div>
-
-            {#if data.status === "failed"}
-              <div class="failed-banner" role="alert">
-                <p class="failed-banner__message">
-                  {data.error ?? "Something went wrong during setup."}
-                </p>
-                <button
-                  type="button"
-                  class="failed-banner__retry"
-                  disabled={retry.isPending}
-                  onclick={handleRetry}
-                >
-                  {retry.isPending ? "Retrying…" : "Retry"}
-                </button>
-              </div>
-            {/if}
-
-            <StepChecklist steps={data.steps} />
-
-            <BuildLogCard agentName={data.name} />
-
+          {#if tab === "chat"}
             {#if data.first_reply}
               <FirstReply reply={data.first_reply} />
             {/if}
-
-            {#if data.destroy_visible}
-              <DangerZone agentName={data.name} status={data.status} error={data.error} />
-            {/if}
-          {:else if tab === "chat"}
             <ChatPanel agentName={data.name} frozen={isFrozen(data.status)} />
             <ThreadPanel agentName={data.name} frozen={isFrozen(data.status)} />
             <ColleagueConversations agentName={data.name} />
@@ -523,6 +546,10 @@
       {/each}
     </div>
 
+    {#if data.destroy_visible}
+      <DangerZone agentName={data.name} status={data.status} error={data.error} />
+    {/if}
+
   {/if}
 </div>
 
@@ -547,8 +574,16 @@
 
   .agent-detail__header {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: var(--space-md);
+  }
+
+  .agent-detail__avatar-col {
+    display: flex;
+    flex-shrink: 0;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-sm);
   }
 
   .agent-detail__avatar {
@@ -598,55 +633,27 @@
     color: var(--accent);
   }
 
-  .composition {
+  /* Soul-line (persona-naming law): the Persona line reads as a secondary
+     grey line (name + who-they-are), not the ink-toned page title -- the
+     agent's own name (the page's `<h1>`) stays the one real title. */
+  .agent-detail__persona {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-md);
-    padding: var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--panel);
-  }
-
-  .composition__item {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-
-  .composition__label {
-    color: var(--muted);
-    font-size: 0.75rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-
-  .composition__value {
-    display: flex;
-    align-items: center;
     gap: var(--space-2xs);
-    color: var(--ink);
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
-  }
-
-  .composition__owner {
     margin: 0;
     color: var(--muted);
-    font-size: 0.8rem;
+    font-size: 0.9rem;
   }
 
-  /* Soul-line (persona-naming law): the Persona line reads as a secondary
-     grey line now (name + who-they-are), not the ink-toned, mono-font
-     persona id `.composition__value` renders everywhere else -- the agent's
-     own name (the page's `<h1>`) stays the one real title. */
-  .composition__value--persona {
-    color: var(--muted);
-    font-family: inherit;
+  .agent-detail__tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2xs);
+    margin: 0;
   }
 
-  .composition__team-chip {
+  .agent-detail__chip {
     display: inline-flex;
     padding: 0.1rem var(--space-2xs);
     border: 1px solid var(--border);
@@ -656,34 +663,20 @@
     white-space: nowrap;
   }
 
-  .composition__skills,
-  .composition__tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2xs);
-  }
-
-  .skill-chip,
-  .tag-chip {
-    padding: 0.2rem var(--space-xs);
-    border: 1px solid var(--border);
-    border-radius: 999px;
+  .agent-detail__capability {
+    margin: 0;
     color: var(--ink);
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
+    font-size: 0.9rem;
   }
 
-  .composition__item--capability {
-    flex-basis: 100%;
-  }
-
-  .composition__value--capability {
-    font-family: inherit;
+  .agent-detail__owner {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.8rem;
   }
 
   .composition__avatar-action {
     display: flex;
-    flex-basis: 100%;
     flex-direction: column;
     align-items: flex-start;
     gap: var(--space-xs);
@@ -691,7 +684,6 @@
 
   .composition__edit-action {
     display: flex;
-    flex-basis: 100%;
   }
 
   .composition__avatar-buttons {
@@ -870,6 +862,27 @@
   .detail-tabs__tab:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+  }
+
+  /* A quieter sibling of `.detail-tabs__tab` -- no underline-on-select
+     styling of its own (it isn't a `role="tab"`, just the group's show/hide
+     switch), and a divider margin sets it apart from the primary run of
+     tabs to its left. */
+  .detail-tabs__advanced-toggle {
+    flex-shrink: 0;
+    margin-left: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    border: none;
+    border-left: 1px solid var(--border);
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+
+  .detail-tabs__advanced-toggle:hover {
+    color: var(--ink);
   }
 
   .detail-tabs__badge {

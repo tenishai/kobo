@@ -447,9 +447,9 @@
       </li>
       <li class="slack-panel__step">
         <p class="slack-panel__step-text">
-          Slack cannot receive the portrait automatically. Download it from the
-          Overview tab, then in Slack open Basic Information, scroll to Display
-          Information, and upload it as the app icon.
+          Slack cannot receive the portrait automatically. Download it from
+          the top of this agent's page, then in Slack open Basic Information,
+          scroll to Display Information, and upload it as the app icon.
         </p>
       </li>
     </ol>
