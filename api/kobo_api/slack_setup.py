@@ -81,6 +81,12 @@ _BOT_SCOPES = [
     "mpim:history",
     "mpim:read",
     "chat:write",
+    # Vision (wave 3): downloading a message's image attachments via
+    # files.url_private requires this read scope. A SCOPE addition --
+    # unlike the tagged-only event change -- requires each existing
+    # agent's Slack app to be reinstalled to its workspace after the
+    # manifest re-apply; new agents get it from this generator.
+    "files:read",
     "reactions:read",
     "reactions:write",
 ]

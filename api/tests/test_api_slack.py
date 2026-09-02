@@ -305,6 +305,7 @@ def test_slack_manifest_renders_agent_manifest(session_factory, config):
         "mpim:history",
         "mpim:read",
         "chat:write",
+        "files:read",
         "reactions:read",
         "reactions:write",
     ]
