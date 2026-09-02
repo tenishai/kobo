@@ -1,52 +1,36 @@
 import { describe, expect, it } from "vitest";
-import { defaultTab, TAB_LABELS, visibleTabs } from "./tabs";
 
-describe("visibleTabs", () => {
-  it("always includes slack last, with no argument", () => {
-    expect(visibleTabs()).toEqual([
-      "overview",
-      "chat",
-      "memory",
-      "learnings",
-      "skills",
-      "tooling",
-      "slack",
-    ]);
+import {
+  ADVANCED_TABS,
+  TAB_LABELS,
+  advancedTabs,
+  defaultTab,
+  primaryTabs,
+} from "./tabs";
+
+describe("primaryTabs", () => {
+  it("is chat and slack with no argument", () => {
+    expect(primaryTabs()).toEqual(["chat", "slack"]);
   });
 
-  it("omits access when showAccess is false", () => {
-    expect(visibleTabs(false)).toEqual([
-      "overview",
-      "chat",
-      "memory",
-      "learnings",
-      "skills",
-      "tooling",
-      "slack",
-    ]);
+  it("appends access last when the invites probe succeeded", () => {
+    expect(primaryTabs(true)).toEqual(["chat", "slack", "access"]);
   });
+});
 
-  it("appends access last when showAccess is true", () => {
-    expect(visibleTabs(true)).toEqual([
-      "overview",
-      "chat",
-      "memory",
-      "learnings",
-      "skills",
-      "tooling",
-      "slack",
-      "access",
-    ]);
+describe("advancedTabs", () => {
+  it("is the four grow-it sections in order", () => {
+    expect(advancedTabs()).toEqual(["learnings", "memory", "skills", "tooling"]);
+    expect(ADVANCED_TABS).toEqual(advancedTabs());
   });
 });
 
 describe("TAB_LABELS", () => {
-  it("labels every tab", () => {
+  it("labels every tab and has no overview entry", () => {
     expect(TAB_LABELS).toEqual({
-      overview: "Overview",
       chat: "Chat",
-      memory: "Memory",
       learnings: "Learnings",
+      memory: "Memory",
       skills: "Skills",
       tooling: "Tooling",
       slack: "Slack",
@@ -56,14 +40,14 @@ describe("TAB_LABELS", () => {
 });
 
 describe("defaultTab", () => {
-  it("lands on chat when the agent is ready", () => {
+  it("is chat when ready", () => {
     expect(defaultTab("ready")).toBe("chat");
   });
 
   it.each(["pending", "provisioning", "failed", "destroying", "destroy_failed"])(
-    "lands on overview for status %s",
+    "is null (no tab selected, the header owns the story) for %s",
     (status) => {
-      expect(defaultTab(status)).toBe("overview");
+      expect(defaultTab(status)).toBeNull();
     },
   );
 });
