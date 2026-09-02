@@ -49,8 +49,12 @@
 //   ["whoami"]                                       - the signed-in identity
 //                                                      this room's server has
 //                                                      already verified
-//   ["names", "suggestions", {who_they_are, what_they_do}]
-//                                                    - five name-suggestion cards for a committed persona
+//   ["names", "suggestions", {who_they_are, what_they_do, persona_id, exclude, round}]
+//                                                    - three name-suggestion cards for a committed persona
+//                                                      (create-identity, Task 4: persona_id/exclude/round
+//                                                      all ride the key so a persona switch, an "Offer more"
+//                                                      round bump, or a new exclude set all address a
+//                                                      distinct cache entry)
 //   ["colleagues", "feed", agent]                   - the terminal's flattened,
 //                                                      chronological feed of one
 //                                                      agent's own colleague talk
@@ -390,26 +394,55 @@ export function whoamiQuery() {
 }
 
 /**
- * Five name-suggestion cards for the naming station (create flow v2 "naming
- * ceremony" addendum), derived from the just-committed persona's own
+ * Three name-suggestion cards for the naming station (create flow v2
+ * "naming ceremony" addendum, narrowed from five to three by
+ * create-identity), derived from the just-committed persona's own
  * `who_they_are`/`what_they_do` text. `enabled` is false until both fields
  * are non-empty — there's nothing to suggest against before a persona is
  * picked, same "nothing to fetch yet" gate `deliveryQuery` uses for its own
  * sha. No polling. `staleTime: Infinity` because the builder path PREFETCHES
  * this key while the create-persona POST is still in flight (naming-latency
  * fix) — without it, the station's own mount would refetch a just-settled
- * prefetch and double the model call. The naming station's "offer more"
- * action is a plain `refetch()` on this same query, which ignores staleTime
- * by design, so re-rolls still work.
+ * prefetch and double the model call.
+ *
+ * `personaId`/`exclude`/`round` (create-identity, Task 4) all ride the
+ * query key alongside `whoTheyAre`/`whatTheyDo`: a catalog pick sends
+ * `personaId` and lets the server resolve the real body (see
+ * `NameSuggestionsRequest`'s own doc comment in api.ts); the builder lane
+ * has no persisted id yet at prefetch time, so it sends the drafted body
+ * itself instead. `exclude`/`round` change on every "Offer more" click
+ * (CreateModal's `offeredNames`/`offerRound`), so each round addresses its
+ * own cache entry rather than colliding with (or silently reusing) the
+ * previous one — the naming station's "Offer more" action bumps `round`
+ * rather than calling a bare `refetch()`, since `refetch()` alone would
+ * re-run the SAME key and ignore `exclude` entirely.
  */
-export function nameSuggestionsQuery(whoTheyAre: string, whatTheyDo: string) {
+export function nameSuggestionsQuery(params: {
+  whoTheyAre: string;
+  whatTheyDo: string;
+  personaId?: string | null;
+  exclude?: string[];
+  round?: number;
+}) {
+  const whoTheyAre = params.whoTheyAre;
+  const whatTheyDo = params.whatTheyDo;
+  const personaId = params.personaId ?? null;
+  const exclude = params.exclude ?? [];
+  const round = params.round ?? 0;
   return queryOptions({
     queryKey: [
       "names",
       "suggestions",
-      { who_they_are: whoTheyAre, what_they_do: whatTheyDo },
+      {
+        who_they_are: whoTheyAre,
+        what_they_do: whatTheyDo,
+        persona_id: personaId,
+        exclude,
+        round,
+      },
     ] as const,
-    queryFn: () => fetchNameSuggestions(whoTheyAre, whatTheyDo),
+    queryFn: () =>
+      fetchNameSuggestions({ whoTheyAre, whatTheyDo, personaId, exclude, round }),
     staleTime: Infinity,
     enabled: whoTheyAre.trim().length > 0 && whatTheyDo.trim().length > 0,
   });

@@ -738,26 +738,44 @@ export async function createPersona(body: PersonaForm): Promise<CatalogEntry> {
   return parse<CatalogEntry>(res);
 }
 
+/** `POST /api/agents/name-suggestions`'s body (create-identity, Task 3's
+ * route contract). `personaId`, when it resolves against the persona
+ * catalog, makes the SERVER pull that persona's own real body (truncated)
+ * and purpose tags in place of `whatTheyDo` -- an unresolved/absent id
+ * falls back to `whatTheyDo` as submitted, so that field is always sent and
+ * always non-empty regardless of which lane supplied it. `exclude` is every
+ * name already offered this session (capped at 20 client-side, see
+ * CreateModal's `offeredNames`); `round` is a monotonically increasing
+ * "offer me more" counter that salts the server's fallback ordering. */
+export type NameSuggestionsRequest = {
+  whoTheyAre: string;
+  whatTheyDo: string;
+  personaId?: string | null;
+  exclude?: string[];
+  round?: number;
+};
+
 /**
- * `POST /api/agents/name-suggestions` — five name+reason candidates for
- * the agent being created, generated from the just-committed persona's own
- * `who_they_are`/`what_they_do` text. The server never fails to return
- * five (a curated fallback pool stands in when its generator errors out),
- * so this only ever rejects on a genuine transport/route failure. Wired as
- * a query factory (queries.ts's `nameSuggestionsQuery`), not a mutation,
- * even though the transport is POST — nothing is created or changed by
- * calling it, the free-text fields just don't fit a query string.
+ * `POST /api/agents/name-suggestions` — three name+reason candidates for
+ * the agent being created. The server never fails to return three (a
+ * curated fallback pool stands in when its generator errors out), so this
+ * only ever rejects on a genuine transport/route failure. Wired as a query
+ * factory (queries.ts's `nameSuggestionsQuery`), not a mutation, even
+ * though the transport is POST — nothing is created or changed by calling
+ * it, the free-text fields just don't fit a query string.
  */
 export async function fetchNameSuggestions(
-  whoTheyAre: string,
-  whatTheyDo: string,
+  req: NameSuggestionsRequest,
 ): Promise<NameSuggestion[]> {
   const res = await fetch("/api/agents/name-suggestions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      who_they_are: whoTheyAre,
-      what_they_do: whatTheyDo,
+      who_they_are: req.whoTheyAre,
+      what_they_do: req.whatTheyDo,
+      persona_id: req.personaId ?? null,
+      exclude: req.exclude ?? [],
+      round: req.round ?? 0,
     }),
   });
   const data = await parse<{ suggestions: NameSuggestion[] }>(res);

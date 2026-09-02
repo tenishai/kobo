@@ -630,18 +630,21 @@ describe("PersonaBuilder - naming station warm-up (perf fix: prefetch on Create 
     await fireEvent.click(screen.getByRole("button", { name: "Create persona" }));
 
     expect(prefetchSpy).toHaveBeenCalledTimes(1);
-    // Second arg is DRAFT_RESPONSE's `name` field, not `what_they_do`,
-    // since CreateModal's own persona-commit effect stands the persona's
-    // `name` in for `what_they_do` (see CreateModal.svelte's "The Naming"
-    // doc comment), so that's the key the naming station will actually
-    // read once this persona lands there.
+    // what_they_do is DRAFT_RESPONSE's own drafted body (create-identity,
+    // Task 4), not its `name` -- nothing has been created yet at this
+    // click, so there's no persona_id to lean on the way a catalog pick
+    // does; the builder lane sends the real body directly instead, and
+    // `persona_id` stays absent so CreateModal's own post-creation naming
+    // query (fed the same body through `oncreated`'s third argument) reads
+    // this exact cache entry rather than warming a different one.
     expect(prefetchSpy.mock.calls[0][0]).toMatchObject({
       queryKey: [
         "names",
         "suggestions",
         {
           who_they_are: DRAFT_RESPONSE.who_they_are,
-          what_they_do: DRAFT_RESPONSE.name,
+          what_they_do: DRAFT_RESPONSE.what_they_do,
+          persona_id: null,
         },
       ],
     });

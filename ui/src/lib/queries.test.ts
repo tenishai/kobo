@@ -1029,30 +1029,75 @@ describe("whoamiQuery", () => {
 });
 
 describe("nameSuggestionsQuery", () => {
-  it("has queryKey ['names', 'suggestions', {who_they_are, what_they_do}]", () => {
+  it("has queryKey ['names', 'suggestions', {who_they_are, what_they_do, persona_id, exclude, round}]", () => {
     expect(
-      nameSuggestionsQuery("a calm troubleshooter", "helps with billing").queryKey,
+      nameSuggestionsQuery({
+        whoTheyAre: "a calm troubleshooter",
+        whatTheyDo: "helps with billing",
+      }).queryKey,
     ).toEqual([
       "names",
       "suggestions",
-      { who_they_are: "a calm troubleshooter", what_they_do: "helps with billing" },
+      {
+        who_they_are: "a calm troubleshooter",
+        what_they_do: "helps with billing",
+        persona_id: null,
+        exclude: [],
+        round: 0,
+      },
+    ]);
+  });
+
+  it("folds personaId/exclude/round into the key when given", () => {
+    expect(
+      nameSuggestionsQuery({
+        whoTheyAre: "a calm troubleshooter",
+        whatTheyDo: "helps with billing",
+        personaId: "billing-buddy",
+        exclude: ["ember", "cedar"],
+        round: 2,
+      }).queryKey,
+    ).toEqual([
+      "names",
+      "suggestions",
+      {
+        who_they_are: "a calm troubleshooter",
+        what_they_do: "helps with billing",
+        persona_id: "billing-buddy",
+        exclude: ["ember", "cedar"],
+        round: 2,
+      },
     ]);
   });
 
   it("is disabled when either field is empty (or whitespace-only)", () => {
-    expect(nameSuggestionsQuery("", "helps with billing").enabled).toBe(false);
-    expect(nameSuggestionsQuery("a calm troubleshooter", "").enabled).toBe(false);
-    expect(nameSuggestionsQuery("  ", "helps with billing").enabled).toBe(false);
-    expect(nameSuggestionsQuery("", "").enabled).toBe(false);
+    expect(
+      nameSuggestionsQuery({ whoTheyAre: "", whatTheyDo: "helps with billing" })
+        .enabled,
+    ).toBe(false);
+    expect(
+      nameSuggestionsQuery({ whoTheyAre: "a calm troubleshooter", whatTheyDo: "" })
+        .enabled,
+    ).toBe(false);
+    expect(
+      nameSuggestionsQuery({ whoTheyAre: "  ", whatTheyDo: "helps with billing" })
+        .enabled,
+    ).toBe(false);
+    expect(
+      nameSuggestionsQuery({ whoTheyAre: "", whatTheyDo: "" }).enabled,
+    ).toBe(false);
   });
 
   it("is enabled once both fields are non-empty", () => {
     expect(
-      nameSuggestionsQuery("a calm troubleshooter", "helps with billing").enabled,
+      nameSuggestionsQuery({
+        whoTheyAre: "a calm troubleshooter",
+        whatTheyDo: "helps with billing",
+      }).enabled,
     ).toBe(true);
   });
 
-  it("queryFn POSTs {who_they_are, what_they_do} to /api/agents/name-suggestions and unwraps {suggestions: [...]}", async () => {
+  it("queryFn POSTs {who_they_are, what_they_do, persona_id, exclude, round} to /api/agents/name-suggestions and unwraps {suggestions: [...]}", async () => {
     const suggestions: NameSuggestion[] = [
       { name: "ember", reason: "a steady hand" },
       { name: "cedar", reason: "quiet and quick" },
@@ -1067,7 +1112,13 @@ describe("nameSuggestionsQuery", () => {
 
     await expect(
       callQueryFn<NameSuggestion[]>(
-        nameSuggestionsQuery("a calm troubleshooter", "helps with billing"),
+        nameSuggestionsQuery({
+          whoTheyAre: "a calm troubleshooter",
+          whatTheyDo: "helps with billing",
+          personaId: "billing-buddy",
+          exclude: ["ember"],
+          round: 1,
+        }),
       ),
     ).resolves.toEqual(suggestions);
     expect(fetch).toHaveBeenCalledWith("/api/agents/name-suggestions", {
@@ -1076,6 +1127,9 @@ describe("nameSuggestionsQuery", () => {
       body: JSON.stringify({
         who_they_are: "a calm troubleshooter",
         what_they_do: "helps with billing",
+        persona_id: "billing-buddy",
+        exclude: ["ember"],
+        round: 1,
       }),
     });
 
@@ -1093,7 +1147,9 @@ describe("nameSuggestionsQuery", () => {
     } as Response);
 
     await expect(
-      callQueryFn<NameSuggestion[]>(nameSuggestionsQuery(" ", "x")),
+      callQueryFn<NameSuggestion[]>(
+        nameSuggestionsQuery({ whoTheyAre: " ", whatTheyDo: "x" }),
+      ),
     ).rejects.toThrow("who_they_are must not be empty");
 
     vi.unstubAllGlobals();
@@ -1111,7 +1167,10 @@ describe("nameSuggestionsQuery", () => {
 
     await expect(
       callQueryFn<NameSuggestion[]>(
-        nameSuggestionsQuery("a calm troubleshooter", "helps with billing"),
+        nameSuggestionsQuery({
+          whoTheyAre: "a calm troubleshooter",
+          whatTheyDo: "helps with billing",
+        }),
       ),
     ).rejects.toThrow("couldn't come up with names right now — try again");
 

@@ -38,7 +38,7 @@
   // every keystroke gets instant client-side validation (validate.ts) and
   // only once that passes does a debounced (350ms) `checkAvailability` call
   // go out, so a name that's obviously wrong never costs a request. A name
-  // can now arrive two ways — picking one of the naming station's five
+  // can now arrive two ways — picking one of the naming station's three
   // suggested cards, or "name it yourself" — but either way it lands in
   // the same `name` state and runs through the same check.
   //
@@ -205,32 +205,60 @@
    * persona (createPersonaMutation's own cache invalidation hasn't
    * necessarily resolved yet), so re-deriving would risk racing it.
    *
+   * `personaId`/`whatTheyDo` (create-identity, Task 4) are what let the
+   * naming station tell the two lanes apart: a search pick has a real,
+   * already-stored id, so `personaId` carries it and `whatTheyDo` stays
+   * `null` — the server does the real-body lookup (see
+   * `NameSuggestionsRequest` in api.ts). A builder create has no id yet at
+   * the moment its own "Create persona" click fires the warm-up prefetch
+   * (nothing's been written yet), so `PersonaBuilder` hands back its
+   * drafted body directly through `oncreated`'s third argument instead;
+   * `personaId` stays `null` for that lane so the naming query's key never
+   * drifts from the one that prefetch already warmed.
+   *
    * `purposeTags` (persona-metadata plan) rides alongside for the same
    * reason: the moment a persona commits is also the moment the Create
    * station's chips editor should (re-)seed, so it travels in the same
    * state update rather than a second, separately-timed effect. */
   let selectedPersonaMeta = $state<
-    { name: string; description: string; purposeTags: string[] } | null
+    {
+      whoTheyAre: string;
+      personaId: string | null;
+      whatTheyDo: string | null;
+      purposeTags: string[];
+    } | null
   >(null);
 
-  function selectPersona(persona: CatalogEntry, purposeTags: string[] = []): void {
+  function selectPersona(
+    persona: CatalogEntry,
+    purposeTags: string[] = [],
+    builderWhatTheyDo: string | null = null,
+  ): void {
     personaOverride = persona.id;
     selectedPersonaMeta = {
-      name: persona.name,
-      description: persona.description,
+      whoTheyAre: persona.description,
+      personaId: builderWhatTheyDo === null ? persona.id : null,
+      whatTheyDo: builderWhatTheyDo,
       purposeTags,
     };
   }
 
   /** Warms the naming station's suggestion cache the instant an existing
-   * persona is picked from search (naming station perf fix), since both
-   * `description`/`name` are already sitting right here in the search
-   * result with no network round trip needed to learn them, so this is the
-   * earliest possible moment to start the Vertex call, well before the
-   * operator's eye even reaches station 2. Same query key the
-   * persona-commit effect below feeds `nameSuggestionParams`, so a warm
-   * cache entry here means that reactive query never has to wait on a
-   * second request of its own.
+   * persona is picked from search (naming station perf fix), since
+   * `description` is already sitting right here in the search result with
+   * no network round trip needed to learn it, so this is the earliest
+   * possible moment to start the Vertex call, well before the operator's
+   * eye even reaches station 2. Sends `persona_id` (create-identity, Task
+   * 4) so the server does the real-body lookup rather than this thin
+   * search-result text; `who_they_are` doubles as the required
+   * `what_they_do` placeholder since a resolved `persona_id` makes the
+   * server ignore it anyway (see `NameSuggestionsRequest` in api.ts) — it
+   * must still be some non-empty string, and it must not be the persona's
+   * bare label, which is exactly what this avoids. Same params the
+   * persona-commit effect below will feed `nameSuggestionParams` (`exclude:
+   * []`/`round: 0`, since picking any persona resets both), so a warm cache
+   * entry here means that reactive query never has to wait on a second
+   * request of its own — a mismatched key here would just warm a dead one.
    *
    * Deliberately NOT folded into `selectPersona` itself: that's also
    * called from `handlePersonaCreated` below, for the builder path, which
@@ -240,60 +268,150 @@
    * (if harmless) extra call once the mutation lands. */
   function prefetchNameSuggestionsForPick(persona: CatalogEntry): void {
     void queryClient.prefetchQuery(
-      nameSuggestionsQuery(persona.description, persona.name),
+      nameSuggestionsQuery({
+        whoTheyAre: persona.description,
+        whatTheyDo: persona.description,
+        personaId: persona.id,
+        exclude: [],
+        round: 0,
+      }),
     );
   }
 
-  function handlePersonaCreated(persona: CatalogEntry, purposeTags: string[]): void {
-    selectPersona(persona, purposeTags);
+  function handlePersonaCreated(
+    persona: CatalogEntry,
+    purposeTags: string[],
+    whatTheyDo: string,
+  ): void {
+    selectPersona(persona, purposeTags, whatTheyDo);
     builderOpen = false;
     personaQ = "";
     personaSearchTerm = "";
     toast.success("Persona ready");
   }
 
-  // --- The Naming: five suggested cards once a persona is committed ------
+  // --- The Naming: three suggested cards once a persona is committed -----
   //
-  // CatalogEntry (what both a search pick and a freshly-built persona hand
-  // back) carries only `description`/`name` — no separate "what they do"
-  // text survives into either shape. Disclosed call: `description` (==
-  // `who_they_are`) becomes the generator's `who_they_are`, and the
-  // persona's own `name` stands in for `what_they_do` — the best available
-  // signal, not a literal match for the field name.
+  // create-identity Task 4 rewrite: a search-picked persona already has a
+  // real, stored id, so its lane sends `persona_id` and lets the SERVER
+  // pull the persona's own real body + tags (`kobo_api.main`'s
+  // name-suggestions route, Task 3) — `who_they_are` (== `description`
+  // verbatim) doubles as the required `what_they_do` placeholder, since a
+  // resolved `persona_id` makes the server ignore that field anyway. A
+  // builder-drafted persona has no id yet at the moment its own warm-up
+  // prefetch fires (see `PersonaBuilder`'s "Create persona" click), so that
+  // lane sends the drafted body's own first 2000 chars as `what_they_do`
+  // directly, with no `persona_id` at all — see `selectedPersonaMeta`'s own
+  // doc comment above for how the two lanes are told apart.
 
   let nameMode = $state<"cards" | "manual">("cards");
   let selectedCardName = $state<string | null>(null);
-  // Set only by a "reroll" whose five names come back identical to the
-  // five just shown — the fallback pool is deterministic per persona text,
-  // so a generator outage can make that happen; copy must not promise
-  // novelty it can't deliver (see `handleReroll`).
+  // Set only by an "Offer more" whose names come back identical to the set
+  // already on screen — the fallback pool is deterministic per persona
+  // text, so a generator outage can make that happen; copy must not
+  // promise novelty it can't deliver (see `handleOfferMore`).
   let rerollNote = $state(false);
   let createNameInput: HTMLInputElement | undefined = $state();
 
-  let nameSuggestionParams = $state<{ whoTheyAre: string; whatTheyDo: string }>({
+  /** The live query's actual params, INCLUDING `exclude`/`round` — a frozen
+   * snapshot for whichever round is currently on screen (create-identity,
+   * Task 4). Deliberately NOT a live derived read of the ever-growing
+   * `offeredNames` below: `exclude` has to be part of the query key (a
+   * different exclude set is a genuinely different request), but if the
+   * key for the round ALREADY ON SCREEN kept changing every time
+   * `offeredNames` grew, the station would chase its own tail — the
+   * moment round 0's three names settle, the accrual effect (below) folds
+   * them into `offeredNames`, which would immediately read as a new
+   * `exclude` value for the SAME round if this object read it live,
+   * firing a second fetch under a new key, whose own three names would
+   * grow `offeredNames` again, firing a third... This object only ever
+   * changes at an explicit round boundary (a persona commit, or an "Offer
+   * more" click in `handleOfferMore`), so it stays stable for as long as
+   * one round's three cards are actually on screen. */
+  let nameSuggestionParams = $state<{
+    whoTheyAre: string;
+    whatTheyDo: string;
+    personaId: string | null;
+    exclude: string[];
+    round: number;
+  }>({
     whoTheyAre: "",
     whatTheyDo: "",
+    personaId: null,
+    exclude: [],
+    round: 0,
   });
-  const nameSuggestions = createQuery(() => (nameSuggestionsQuery(nameSuggestionParams.whoTheyAre, nameSuggestionParams.whatTheyDo)));
+
+  /** Every name this persona's naming station has shown across every round
+   * so far (create-identity, Task 4) — pure bookkeeping, consulted only
+   * when `handleOfferMore` builds the NEXT round's `exclude` set, never fed
+   * directly into the live query above (see that state's own doc comment
+   * for why). Capped at 20 (dropping the oldest beyond that, same cap the
+   * route itself enforces server-side) — generous well past the three a
+   * single round ever shows, but bounded so an operator who mashes "Offer
+   * more" all afternoon doesn't grow the request body without limit. Reset
+   * to `[]` whenever the persona changes (see the persona-commit effect
+   * below) — a prior persona's offered names have no bearing on a new
+   * one's. */
+  let offeredNames = $state<string[]>([]);
+  const OFFERED_NAMES_CAP = 20;
+
+  const nameSuggestions = createQuery(() => (
+    nameSuggestionsQuery({
+      whoTheyAre: nameSuggestionParams.whoTheyAre,
+      whatTheyDo: nameSuggestionParams.whatTheyDo,
+      personaId: nameSuggestionParams.personaId,
+      exclude: nameSuggestionParams.exclude,
+      round: nameSuggestionParams.round,
+    })
+  ));
+
+  // Accumulates every name a settled response has actually shown into
+  // `offeredNames` (create-identity, Task 4) — the ONE place that list
+  // grows, so the next "Offer more" round's exclude set reflects every
+  // card the operator has genuinely seen for this persona, not just the
+  // immediately-prior round. Reads/writes `offeredNames` only, never
+  // `nameSuggestionParams` — see that state's own doc comment for why
+  // folding this back into the live query's own params would loop.
+  $effect(() => {
+    const data = nameSuggestions.data;
+    if (data === undefined || data.length === 0) {
+      return;
+    }
+    const fresh = data.map((s) => s.name).filter((n) => !offeredNames.includes(n));
+    if (fresh.length === 0) {
+      return;
+    }
+    const merged = [...offeredNames, ...fresh];
+    offeredNames =
+      merged.length > OFFERED_NAMES_CAP
+        ? merged.slice(merged.length - OFFERED_NAMES_CAP)
+        : merged;
+  });
 
   // A persona commit — a first pick, a builder create, or picking a
   // *different* persona than before — feeds the naming query its who/what
   // text and, in the same beat, voids whatever the naming station had
   // going for the previous persona (or for no persona at all): a card pick
   // or a hand-typed name tied to one persona's suggestions has no business
-  // surviving a switch to a different one. Purpose tags (persona-metadata
-  // plan) re-seed here too, from the SAME commit's `purposeTags` — a
-  // builder create carries its draft's tags, a search pick carries `[]`
-  // (see `selectPersona`'s own default).
+  // surviving a switch to a different one, and neither does an earlier
+  // persona's offered-names history or round count. Purpose tags
+  // (persona-metadata plan) re-seed here too, from the SAME commit's
+  // `purposeTags` — a builder create carries its draft's tags, a search
+  // pick carries `[]` (see `selectPersona`'s own default).
   $effect(() => {
     const meta = selectedPersonaMeta;
     if (!open) {
       return;
     }
     nameSuggestionParams = {
-      whoTheyAre: meta?.description ?? "",
-      whatTheyDo: meta?.name ?? "",
+      whoTheyAre: meta?.whoTheyAre ?? "",
+      whatTheyDo: meta?.whatTheyDo ?? meta?.whoTheyAre ?? "",
+      personaId: meta?.personaId ?? null,
+      exclude: [],
+      round: 0,
     };
+    offeredNames = [];
     nameMode = "cards";
     selectedCardName = null;
     name = "";
@@ -321,17 +439,42 @@
   }
 
   /** "Offer more" (never "reroll" in the UI copy — the fallback pool is
-   * deterministic per persona text, so promising novelty would sometimes be
-   * a lie). Compares the five names before and after the refetch: if the
-   * generator is down and the deterministic fallback hands back the exact
-   * same five, `rerollNote` flips on so the station can say so plainly
-   * instead of pretending something changed. Either way, the previous pick
-   * doesn't survive a reroll — the offered set just changed out from under
-   * it. */
-  async function handleReroll(): Promise<void> {
+   * deterministic per persona text, so promising total novelty would
+   * sometimes be a lie). create-identity Task 4: this used to be a bare
+   * `nameSuggestions.refetch()`, which re-runs the SAME query key and so
+   * can only ever hand back the SAME three names a generator failure
+   * already served — "Offer more" that can't actually offer more. Bumping
+   * `round` (and carrying every name `offeredNames` has accumulated so far
+   * as `exclude`) instead addresses a genuinely new cache key, so a fresh
+   * request actually goes out and the route's own exclude-set enforcement
+   * (`kobo_api.namegen.finalize_suggestions`) keeps every name already
+   * shown off the table. `queryClient.fetchQuery` (not the reactive
+   * `nameSuggestions` query itself) is what actually issues that request
+   * and lets this function await its result directly, for the
+   * before/after comparison below — the reactive query picks up the exact
+   * same cache entry once Svelte re-renders with the reassigned
+   * `nameSuggestionParams`, so nothing fetches twice.
+   *
+   * Compares the names on screen right before the click against the ones
+   * that come back: if the generator is down and the deterministic
+   * fallback hands back the exact same set, `rerollNote` flips on so the
+   * station can say so plainly instead of pretending something changed —
+   * count-agnostic, since it compares whatever came back to whatever was
+   * shown rather than assuming a fixed size. Either way, the previous pick
+   * doesn't survive an "Offer more" — the offered set just changed out
+   * from under it. */
+  async function handleOfferMore(): Promise<void> {
     const before = (nameSuggestions.data ?? []).map((s) => s.name);
-    const result = await nameSuggestions.refetch();
-    const after = (result.data ?? []).map((s) => s.name);
+    const params = {
+      whoTheyAre: nameSuggestionParams.whoTheyAre,
+      whatTheyDo: nameSuggestionParams.whatTheyDo,
+      personaId: nameSuggestionParams.personaId,
+      exclude: offeredNames,
+      round: nameSuggestionParams.round + 1,
+    };
+    nameSuggestionParams = params;
+    const result = await queryClient.fetchQuery(nameSuggestionsQuery(params));
+    const after = result.map((s) => s.name);
     rerollNote =
       before.length > 0 &&
       after.length === before.length &&
@@ -522,7 +665,14 @@
       nameMode = "cards";
       selectedCardName = null;
       rerollNote = false;
-      nameSuggestionParams = { whoTheyAre: "", whatTheyDo: "" };
+      nameSuggestionParams = {
+        whoTheyAre: "",
+        whatTheyDo: "",
+        personaId: null,
+        exclude: [],
+        round: 0,
+      };
+      offeredNames = [];
       groupValue = "";
       groupRequestName = "";
       groupRequestNote = "";
@@ -751,7 +901,7 @@
         </div>
       {:else if nameSuggestions.isPending}
         <div class="name-cards" aria-hidden="true">
-          {#each { length: 5 } as _, i (i)}
+          {#each { length: 3 } as _, i (i)}
             <div class="name-card name-card--skeleton">
               <span class="name-card__skeleton-bar name-card__skeleton-bar--name"
               ></span>
@@ -793,7 +943,7 @@
           <button
             type="button"
             class="naming-actions__reroll"
-            onclick={handleReroll}
+            onclick={handleOfferMore}
             disabled={nameSuggestions.isFetching}
           >
             {nameSuggestions.isFetching ? "Asking again…" : "Offer more"}
@@ -807,7 +957,7 @@
           </button>
         </div>
         {#if rerollNote}
-          <p class="create-form__help">Same five as before. The workshop stands by them.</p>
+          <p class="create-form__help">Same names as before. The workshop stands by them.</p>
         {/if}
       {/if}
     </div>
@@ -1370,7 +1520,7 @@
     color: var(--accent);
   }
 
-  /* --- The Naming: five cards, staggered entrance, quiet press-select --- */
+  /* --- The Naming: three cards, staggered entrance, quiet press-select -- */
 
   .name-cards {
     display: flex;
@@ -1389,7 +1539,7 @@
     animation: name-card-rise 260ms ease-out both;
   }
 
-  /* 60ms per-card stagger (addendum) — five tags settling onto the bench
+  /* 60ms per-card stagger (addendum) — three cards settling onto the bench
      one after another. Purely nth-child so no per-card inline style/JS is
      needed for it. */
   .name-card:nth-child(1) {
@@ -1400,12 +1550,6 @@
   }
   .name-card:nth-child(3) {
     animation-delay: 120ms;
-  }
-  .name-card:nth-child(4) {
-    animation-delay: 180ms;
-  }
-  .name-card:nth-child(5) {
-    animation-delay: 240ms;
   }
 
   .name-card:hover {

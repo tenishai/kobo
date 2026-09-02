@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, screen, waitFor } from "@testing-library/svelte";
+import { fireEvent, screen, waitFor, within } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import CreateModal from "./CreateModal.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
@@ -685,10 +685,12 @@ describe("CreateModal - naming station warm-up (perf fix: prefetch on persona pi
   // `derived` options read), but that's still gated behind whatever tick
   // Svelte schedules the effect on, so an explicit prefetch at the exact
   // moment of picking makes the warm-up unambiguous and no longer dependent
-  // on that scheduling detail. `who_they_are`/`what_they_do` are both
-  // already known client-side from the search result (persona.description/
-  // persona.name, no network round trip needed), so this is the earliest
-  // possible moment to start the Vertex call.
+  // on that scheduling detail. `who_they_are` is already known client-side
+  // from the search result (persona.description, no network round trip
+  // needed), so this is the earliest possible moment to start the Vertex
+  // call. create-identity Task 4: the key now carries `persona_id` (the
+  // server does the real-body lookup) rather than the persona's bare label
+  // standing in for `what_they_do`.
   it("prefetches name suggestions exactly once, with the right key, the moment a persona is picked from search", async () => {
     stubCreateModalCatalogs({
       "/api/personas/search": {
@@ -718,8 +720,165 @@ describe("CreateModal - naming station warm-up (perf fix: prefetch on persona pi
       queryKey: [
         "names",
         "suggestions",
-        { who_they_are: "Helps with things.", what_they_do: "Helper" },
+        {
+          who_they_are: "Helps with things.",
+          persona_id: "helper",
+          exclude: [],
+          round: 0,
+        },
       ],
     });
+    // Not the persona's bare label -- a resolved persona_id makes the
+    // server ignore what_they_do anyway, but it must never be sent as the
+    // thin label itself.
+    const key = prefetchSpy.mock.calls[0][0] as { queryKey: unknown[] };
+    expect((key.queryKey[2] as { what_they_do: string }).what_they_do).not.toBe(
+      "Helper",
+    );
+  });
+});
+
+describe("CreateModal — naming station: three cards, honest Offer more (create-identity)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const HELPER_PERSONA = {
+    id: "helper",
+    name: "Helper",
+    description: "Helps with things.",
+    team: "shared",
+    tags: [],
+    builtin: true,
+  };
+
+  async function pickHelperPersona(): Promise<void> {
+    const personaRadio = await screen.findByRole("radio", { name: /Helper/i });
+    await fireEvent.click(personaRadio);
+  }
+
+  it("renders exactly three name cards", async () => {
+    stubCreateModalCatalogs({
+      "/api/personas/search": { results: [HELPER_PERSONA] },
+      "/api/agents/name-suggestions": {
+        suggestions: [
+          { name: "ember", reason: "a steady hand" },
+          { name: "cedar", reason: "quiet and quick" },
+          { name: "flint", reason: "sharp and precise" },
+        ],
+      },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+    await findCreateStationReady();
+    await pickHelperPersona();
+
+    const radiogroup = await screen.findByRole("radiogroup", {
+      name: "Suggested names",
+    });
+    expect(
+      within(radiogroup).getAllByRole("radio"),
+    ).toHaveLength(3);
+  });
+
+  it("offer more excludes every name already shown and bumps the round", async () => {
+    let nameSuggestionCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/api/agents/name-suggestions")) {
+          nameSuggestionCalls += 1;
+          const suggestions =
+            nameSuggestionCalls === 1
+              ? [
+                  { name: "ember", reason: "a steady hand" },
+                  { name: "cedar", reason: "quiet and quick" },
+                  { name: "flint", reason: "sharp and precise" },
+                ]
+              : [
+                  { name: "loom", reason: "warm at the bench" },
+                  { name: "anvil", reason: "never in a hurry" },
+                  { name: "birch", reason: "built to last" },
+                ];
+          return new Response(JSON.stringify({ suggestions }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const routes: Record<string, unknown> = {
+          "/api/catalog/models": {
+            models: [{ id: "gpt-5", label: "GPT-5" }],
+            default: "gpt-5",
+          },
+          "/api/catalog/groups": { groups: [] },
+          "/api/catalog/teams": { teams: ["shared"] },
+          "/api/teams": { teams: ["growth", "platform"], default: "shared" },
+          "/api/org/status": { org: "acme", wired: true, checks: [] },
+          "/api/personas/search": { results: [HELPER_PERSONA] },
+          "/api/": {},
+        };
+        for (const [needle, payload] of Object.entries(routes)) {
+          if (url.includes(needle)) {
+            return new Response(JSON.stringify(payload), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+        }
+        throw new Error(`unstubbed fetch: ${url}, init=${JSON.stringify(init)}`);
+      }),
+    );
+
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+    await findCreateStationReady();
+    await pickHelperPersona();
+    await screen.findByRole("radio", { name: /ember/i });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Offer more" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("radio", { name: /loom/i })).not.toBeNull();
+    });
+
+    const nameSuggestionRequests = vi
+      .mocked(fetch)
+      .mock.calls.filter(([url]) => String(url).includes("/api/agents/name-suggestions"));
+    expect(nameSuggestionRequests).toHaveLength(2);
+
+    const secondBody = JSON.parse(
+      (nameSuggestionRequests[1]?.[1] as RequestInit).body as string,
+    );
+    expect(secondBody.round).toBe(1);
+    expect(secondBody.exclude).toEqual(
+      expect.arrayContaining(["ember", "cedar", "flint"]),
+    );
+    expect(secondBody.exclude).toHaveLength(3);
+  });
+
+  it("catalog picks send persona_id instead of the label-as-what", async () => {
+    stubCreateModalCatalogs({
+      "/api/personas/search": { results: [HELPER_PERSONA] },
+      "/api/agents/name-suggestions": { suggestions: [] },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+    await findCreateStationReady();
+    await pickHelperPersona();
+
+    await waitFor(() => {
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.some(([url]) =>
+            String(url).includes("/api/agents/name-suggestions"),
+          ),
+      ).toBe(true);
+    });
+
+    const call = vi
+      .mocked(fetch)
+      .mock.calls.find(([url]) => String(url).includes("/api/agents/name-suggestions"));
+    const body = JSON.parse((call?.[1] as RequestInit).body as string);
+    expect(body.persona_id).toBe("helper");
+    expect(body.what_they_do).not.toBe("Helper");
   });
 });
