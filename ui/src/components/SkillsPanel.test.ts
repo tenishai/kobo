@@ -1,0 +1,161 @@
+// @vitest-environment jsdom
+import { fireEvent, screen } from "@testing-library/svelte";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import SkillsPanel from "./SkillsPanel.svelte";
+import { renderWithClient, stubFetch } from "../test-utils/render";
+
+const EMPTY_SKILLS = { skills: [] };
+const EMPTY_TEAMS = { teams: ["sre", "growth"] };
+const EMPTY_SEARCH = { results: [] };
+const NO_RECOMMENDED = { results: [] };
+
+const COST_REPORT_ENTRY = {
+  id: "cost-report",
+  name: "cost-report",
+  description: "Summarizes recent spend.",
+  team: "sre",
+  tags: [],
+};
+
+describe("SkillsPanel", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("shows recommended skills for the agent and adds one on click", async () => {
+    stubFetch({
+      "/api/agents/warden/skills/catalog": { sha: "abc123def456" },
+      "/api/agents/warden/skills": EMPTY_SKILLS,
+      "/api/catalog/teams": EMPTY_TEAMS,
+      "/api/skills/recommended": { results: [COST_REPORT_ENTRY] },
+      "/api/skills/search": EMPTY_SEARCH,
+      "/api/": {},
+    });
+
+    renderWithClient(SkillsPanel, {
+      agentName: "warden",
+      frozen: false,
+      recommendWho: "watches billing",
+      recommendWhat: "cost billing",
+    });
+
+    await fireEvent.click(await screen.findByRole("button", { name: "Add from catalog" }));
+
+    expect(await screen.findByText("Recommended for this agent")).not.toBeNull();
+    const row = screen.getByText("cost-report").closest("li");
+    expect(row).not.toBeNull();
+
+    const addButton = row?.querySelector(".catalog-row__add") as HTMLButtonElement;
+    expect(addButton).not.toBeUndefined();
+    await fireEvent.click(addButton);
+
+    const call = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([url, init]) =>
+          String(url).includes("/api/agents/warden/skills/catalog") &&
+          (init as RequestInit | undefined)?.method === "POST",
+      );
+    expect(call).toBeDefined();
+    const body = JSON.parse((call as [RequestInfo | URL, RequestInit])[1].body as string);
+    expect(body).toEqual({ name: "cost-report", team: "sre" });
+  });
+
+  it("searches the catalog from the combobox and adds a result", async () => {
+    // A manual mock (rather than `stubFetch`'s substring-match routing)
+    // because this test needs to tell an empty-query search apart from a
+    // "cost"-query one -- `stubFetch` would return the same body for both,
+    // masking whether the debounced search ever actually re-fired with the
+    // typed value.
+    function jsonResponse(body: unknown): Response {
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/api/agents/warden/skills/catalog") && init?.method === "POST") {
+          return jsonResponse({ sha: "abc123def456" });
+        }
+        if (url.includes("/api/agents/warden/skills")) {
+          return jsonResponse(EMPTY_SKILLS);
+        }
+        if (url.includes("/api/catalog/teams")) {
+          return jsonResponse(EMPTY_TEAMS);
+        }
+        if (url.includes("/api/skills/recommended")) {
+          return jsonResponse(NO_RECOMMENDED);
+        }
+        if (url.includes("/api/skills/search")) {
+          return jsonResponse({ results: url.includes("q=cost") ? [COST_REPORT_ENTRY] : [] });
+        }
+        return jsonResponse({});
+      }),
+    );
+
+    renderWithClient(SkillsPanel, { agentName: "warden", frozen: false });
+
+    await fireEvent.click(await screen.findByRole("button", { name: "Add from catalog" }));
+
+    const input = await screen.findByLabelText("Search skills catalog");
+    // The dropdown opens on `focusin` (a bubbling event the combobox's
+    // wrapper div listens for) -- jsdom's plain `focus` event does not bubble
+    // the way a real browser's paired focusin does, so it has to be fired
+    // explicitly here to open the dropdown the way a real click/tab would.
+    await fireEvent.focusIn(input);
+    await fireEvent.input(input, { target: { value: "cost" } });
+
+    const found = await screen.findByText("cost-report", {}, { timeout: 2000 });
+    expect(found).not.toBeNull();
+
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([url]) => String(url).includes("/api/skills/search?q=cost")),
+    ).toBe(true);
+
+    const row = found.closest("li");
+    const addButton = row?.querySelector(".catalog-row__add") as HTMLButtonElement;
+    expect(addButton).not.toBeUndefined();
+    await fireEvent.click(addButton);
+
+    const call = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([url, init]) =>
+          String(url).includes("/api/agents/warden/skills/catalog") &&
+          (init as RequestInit | undefined)?.method === "POST",
+      );
+    expect(call).toBeDefined();
+    const body = JSON.parse((call as [RequestInfo | URL, RequestInit])[1].body as string);
+    expect(body).toEqual({ name: "cost-report", team: "sre" });
+  });
+
+  it("omits the recommended strip when the agent has no capability or tags", async () => {
+    stubFetch({
+      "/api/agents/warden/skills": EMPTY_SKILLS,
+      "/api/catalog/teams": EMPTY_TEAMS,
+      "/api/skills/search": EMPTY_SEARCH,
+      "/api/": {},
+    });
+
+    renderWithClient(SkillsPanel, {
+      agentName: "warden",
+      frozen: false,
+      recommendWho: "",
+      recommendWhat: "",
+    });
+
+    await fireEvent.click(await screen.findByRole("button", { name: "Add from catalog" }));
+    // Let any in-flight microtasks settle before asserting an absence.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(screen.queryByText("Recommended for this agent")).toBeNull();
+    expect(
+      vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/api/skills/recommended")),
+    ).toBe(false);
+  });
+});

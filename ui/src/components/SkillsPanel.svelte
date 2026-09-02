@@ -44,12 +44,19 @@
     agentSkillsQuery,
     deleteSkillMutation,
     deliveryQuery,
+    recommendedSkillsQuery,
     saveLocalSkillMutation,
     skillsSearchQuery,
     teamsQuery,
   } from "../lib/queries";
 
-  let { agentName, frozen = false }: { agentName: string; frozen?: boolean } = $props();
+  let {
+    agentName,
+    frozen = false,
+    recommendWho = "",
+    recommendWhat = "",
+  }: { agentName: string; frozen?: boolean; recommendWho?: string; recommendWhat?: string } =
+    $props();
 
   const queryClient = useQueryClient();
   // `agentName` is read once here rather than tracked reactively: same
@@ -60,6 +67,11 @@
   const skills = createQuery(() => (agentSkillsQuery(agentName)));
   // svelte-ignore state_referenced_locally
   const teams = createQuery(() => (teamsQuery()));
+  // `recommendWho`/`recommendWhat` are AgentDetail's own `capability`/
+  // `purpose_tags` for this same agent — fixed for the component's lifetime
+  // by the same remount-per-agent reasoning as `agentName` above.
+  // svelte-ignore state_referenced_locally
+  const recommended = createQuery(() => (recommendedSkillsQuery(recommendWho, recommendWhat)));
   // svelte-ignore state_referenced_locally
   const addCatalog = createMutation(() => (addCatalogSkillMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
@@ -166,6 +178,23 @@
     };
   });
 
+  // Search combobox (shape ported from CreateModal's old skill-search
+  // station, adapted to this panel's BEM root and single-select-with-
+  // immediate-add semantics): the results list only shows while focus is
+  // somewhere in the search row or the dropdown itself, closing once focus
+  // leaves that subtree entirely — an Add click keeps focus inside (it moves
+  // to the button, still a descendant of the combobox root), so it never
+  // closes the dropdown out from under itself.
+  let catalogDropdownOpen = $state(false);
+
+  function closeCatalogDropdownOnFocusout(event: FocusEvent): void {
+    const next = event.relatedTarget;
+    const root = event.currentTarget as HTMLElement;
+    if (!(next instanceof Node) || !root.contains(next)) {
+      catalogDropdownOpen = false;
+    }
+  }
+
   /** Toggles the catalog search section, resetting it fresh every time it
    * opens — same "clean slate on open" idiom as CreateModal's own reset
    * effect, just scoped to this toggle instead of a whole-modal `open`. */
@@ -176,6 +205,7 @@
       catalogTeamFilter = "";
       catalogError = null;
       catalogSearchParams = { q: "", team: null };
+      catalogDropdownOpen = false;
     }
   }
 
@@ -483,82 +513,127 @@
 
   {#if catalogOpen}
     <div class="skills-panel__catalog">
-      <div class="skills-panel__catalog-row">
-        <label class="skills-panel__sr-only" for="skills-catalog-search">
-          Search skills catalog
-        </label>
-        <input
-          id="skills-catalog-search"
-          class="skills-panel__catalog-input"
-          type="text"
-          bind:value={catalogQ}
-          placeholder="Search skills"
-          autocomplete="off"
-          disabled={frozen}
-        />
-        <label class="skills-panel__sr-only" for="skills-catalog-team">Filter by team</label>
-        <select
-          id="skills-catalog-team"
-          class="skills-panel__catalog-input"
-          value={catalogTeamFilter}
-          disabled={frozen}
-          onchange={(event) =>
-            (catalogTeamFilter = (event.currentTarget as HTMLSelectElement).value)}
-        >
-          <option value="">All teams</option>
-          {#if teams.data}
-            {#each teams.data as t (t)}
-              <option value={t}>{t}</option>
+      {#if recommended.data && recommended.data.length > 0}
+        <div class="skills-panel__recommended">
+          <h4 class="skills-panel__subheading">Recommended for this agent</h4>
+          <ul class="skills-panel__catalog-list">
+            {#each recommended.data as entry (entry.team + "/" + entry.name)}
+              {@const already = alreadyCarried(entry.name)}
+              {@const pending = pendingCatalogAdd === entry.name}
+              <li class="catalog-row">
+                <span class="catalog-row__body">
+                  <span class="catalog-row__head">
+                    <span class="catalog-row__name">{entry.name}</span>
+                    <span class="skills-panel__badge">{entry.team}</span>
+                  </span>
+                  <span class="catalog-row__description">{entry.description}</span>
+                </span>
+                <button
+                  type="button"
+                  class="catalog-row__add"
+                  disabled={frozen || already || pending}
+                  onclick={() => handleAddFromCatalog(entry)}
+                >
+                  {#if pending}
+                    Adding…
+                  {:else if already}
+                    Added
+                  {:else}
+                    Add
+                  {/if}
+                </button>
+              </li>
             {/each}
-          {/if}
-        </select>
+          </ul>
+        </div>
+      {/if}
+
+      <div
+        class="skills-panel__combobox"
+        onfocusin={() => (catalogDropdownOpen = true)}
+        onfocusout={closeCatalogDropdownOnFocusout}
+      >
+        <div class="skills-panel__catalog-row">
+          <label class="skills-panel__sr-only" for="skills-catalog-search">
+            Search skills catalog
+          </label>
+          <input
+            id="skills-catalog-search"
+            class="skills-panel__catalog-input"
+            type="text"
+            bind:value={catalogQ}
+            placeholder="Search skills"
+            autocomplete="off"
+            disabled={frozen}
+          />
+          <label class="skills-panel__sr-only" for="skills-catalog-team">Filter by team</label>
+          <select
+            id="skills-catalog-team"
+            class="skills-panel__catalog-input"
+            value={catalogTeamFilter}
+            disabled={frozen}
+            onchange={(event) =>
+              (catalogTeamFilter = (event.currentTarget as HTMLSelectElement).value)}
+          >
+            <option value="">All teams</option>
+            {#if teams.data}
+              {#each teams.data as t (t)}
+                <option value={t}>{t}</option>
+              {/each}
+            {/if}
+          </select>
+        </div>
+
+        {#if catalogDropdownOpen}
+          <div class="skills-panel__dropdown" role="listbox" aria-label="Skills catalog">
+            {#if catalogResults.isPending}
+              <Skeleton rows={2} />
+            {:else if catalogResults.isError}
+              <ErrorState
+                message={errorMessage(catalogResults.error, "Couldn't load the skills catalog.")}
+                onretry={() => catalogResults.refetch()}
+              />
+            {:else if catalogResults.data.length === 0}
+              <p class="skills-panel__catalog-help">
+                {catalogQ.length > 0 ? "Nothing matches your search." : "No skills in the catalog yet."}
+              </p>
+            {:else}
+              <ul class="skills-panel__catalog-list">
+                {#each catalogResults.data as entry (entry.id)}
+                  {@const already = alreadyCarried(entry.name)}
+                  {@const pending = pendingCatalogAdd === entry.name}
+                  <li class="catalog-row">
+                    <span class="catalog-row__body">
+                      <span class="catalog-row__head">
+                        <span class="catalog-row__name">{entry.name}</span>
+                        <span class="skills-panel__badge">{entry.team}</span>
+                      </span>
+                      <span class="catalog-row__description">{entry.description}</span>
+                    </span>
+                    <button
+                      type="button"
+                      class="catalog-row__add"
+                      disabled={frozen || already || pending}
+                      onclick={() => handleAddFromCatalog(entry)}
+                    >
+                      {#if pending}
+                        Adding…
+                      {:else if already}
+                        Added
+                      {:else}
+                        Add
+                      {/if}
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
       </div>
 
       {#if catalogError}
         <p class="skills-panel__catalog-error" role="alert">{catalogError}</p>
-      {/if}
-
-      {#if catalogResults.isPending}
-        <Skeleton rows={2} />
-      {:else if catalogResults.isError}
-        <ErrorState
-          message={errorMessage(catalogResults.error, "Couldn't load the skills catalog.")}
-          onretry={() => catalogResults.refetch()}
-        />
-      {:else if catalogResults.data.length === 0}
-        <p class="skills-panel__catalog-help">
-          {catalogQ.length > 0 ? "Nothing matches your search." : "No skills in the catalog yet."}
-        </p>
-      {:else}
-        <ul class="skills-panel__catalog-list">
-          {#each catalogResults.data as entry (entry.id)}
-            {@const already = alreadyCarried(entry.name)}
-            {@const pending = pendingCatalogAdd === entry.name}
-            <li class="catalog-row">
-              <span class="catalog-row__body">
-                <span class="catalog-row__head">
-                  <span class="catalog-row__name">{entry.name}</span>
-                  <span class="skills-panel__badge">{entry.team}</span>
-                </span>
-                <span class="catalog-row__description">{entry.description}</span>
-              </span>
-              <button
-                type="button"
-                class="catalog-row__add"
-                disabled={frozen || already || pending}
-                onclick={() => handleAddFromCatalog(entry)}
-              >
-                {#if pending}
-                  Adding…
-                {:else if already}
-                  Added
-                {:else}
-                  Add
-                {/if}
-              </button>
-            </li>
-          {/each}
-        </ul>
       {/if}
     </div>
   {/if}
@@ -881,6 +956,45 @@
     margin: 0;
     color: var(--fail);
     font-size: 0.85rem;
+  }
+
+  .skills-panel__recommended {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+
+  .skills-panel__subheading {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  /* Combobox shape ported from CreateModal's old skill-search station
+     (deleted in the create-modal skills-station removal): the dropdown
+     floats over whatever sits below it rather than pushing it down, closing
+     on focusout via `closeCatalogDropdownOnFocusout` above. */
+  .skills-panel__combobox {
+    position: relative;
+  }
+
+  .skills-panel__dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 30;
+    margin-top: 0.25rem;
+    max-height: 20rem;
+    overflow-y: auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 8px 24px rgba(40, 30, 20, 0.12);
+    padding: var(--space-2xs);
   }
 
   .skills-panel__catalog-list {

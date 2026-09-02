@@ -525,7 +525,12 @@
               frozen={isFrozen(data.status)}
             />
           {:else if tab === "skills"}
-            <SkillsPanel agentName={data.name} frozen={isFrozen(data.status)} />
+            <SkillsPanel
+              agentName={data.name}
+              frozen={isFrozen(data.status)}
+              recommendWho={data.capability ?? ""}
+              recommendWhat={data.purpose_tags.join(" ")}
+            />
           {:else if tab === "tooling"}
             <ToolingPanel agentName={data.name} frozen={isFrozen(data.status)} />
           {:else if tab === "slack"}
