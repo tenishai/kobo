@@ -51,7 +51,9 @@
     <p>
       The Slack tab walks you through the whole setup: creating the app from
       a ready-made manifest, pasting the two tokens it gives you, and
-      inviting the bot to a channel. In a channel it only answers when you
+      inviting the bot to a channel. Slack hands you that channel's ID when
+      you invite it, so paste that back into the Slack tab too, and the
+      agent is connected there. In a channel it only answers when you
       @-mention it, but a direct message always reaches it.
     </p>
   </section>

@@ -80,6 +80,17 @@ describe("AgentDetail tabs", () => {
   });
 
   it("defaults to Chat when ready and shows no checklist", async () => {
+    // A real steps entry (same shape the provisioning fixture below uses)
+    // so this actually proves the ready state HIDES an existing checklist,
+    // rather than trivially finding nothing because READY_AGENT.steps is
+    // normally [].
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": {
+        ...READY_AGENT,
+        steps: [{ name: "clone", label: "Clone the repo", status: "pending", error: null }],
+      },
+    });
     renderWithClient(AgentDetail);
     const chatTab = await screen.findByRole("tab", { name: "Chat" });
     expect(chatTab.getAttribute("aria-selected")).toBe("true");
@@ -276,6 +287,55 @@ describe("AgentDetail tabs", () => {
     await screen.findByRole("tab", { name: "Chat" });
     const toggle = screen.getByRole("button", { name: /advanced/i });
     expect(toggle.textContent).toContain("3");
+  });
+
+  it("collapsing Advanced while an advanced tab is selected returns to a coherent state", async () => {
+    // A decider fixture (can_decide_learnings: true) so the group starts
+    // open and Memory is selectable with no toggle click needed first.
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: true },
+    });
+    renderWithClient(AgentDetail);
+    const memoryTab = await screen.findByRole("tab", { name: "Memory" });
+    await fireEvent.click(memoryTab);
+    expect(memoryTab.getAttribute("aria-selected")).toBe("true");
+
+    await fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+
+    // Memory's own trigger is gone now that the group collapsed, and its
+    // panel is hidden -- nothing is left selected-but-invisible, and Chat
+    // (the coherent fallback) is the one tab left selected.
+    expect(screen.queryByRole("tab", { name: "Memory" })).toBeNull();
+    expect(document.getElementById("panel-memory")?.hasAttribute("hidden")).toBe(true);
+    const chatTab = screen.getByRole("tab", { name: "Chat" });
+    expect(chatTab.getAttribute("aria-selected")).toBe("true");
+    const selectedTabs = screen
+      .getAllByRole("tab")
+      .filter((t) => t.getAttribute("aria-selected") === "true");
+    expect(selectedTabs).toEqual([chatTab]);
+  });
+
+  it("preserves the selected tab across a destroy transition", async () => {
+    // `client` (exposed by `renderWithClient`) re-resolves the same agent
+    // query with a destroying status, the same way a real poll would
+    // (status.ts keeps polling while an agent is non-terminal) -- this
+    // forces that re-resolution deterministically rather than faking
+    // timers around the real interval.
+    const { client } = renderWithClient(AgentDetail);
+    const slackTab = await screen.findByRole("tab", { name: "Slack" });
+    await fireEvent.click(slackTab);
+    expect(slackTab.getAttribute("aria-selected")).toBe("true");
+
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": { ...READY_AGENT, status: "destroying", destroy_visible: true },
+    });
+    await client.invalidateQueries({ queryKey: ["agents", "warden"] });
+
+    await screen.findByText("This agent is being destroyed.");
+    const slackTabAfter = screen.getByRole("tab", { name: "Slack" });
+    expect(slackTabAfter.getAttribute("aria-selected")).toBe("true");
   });
 
   it("shows the Slack tab, and renders the setup section unconditionally inside it", async () => {

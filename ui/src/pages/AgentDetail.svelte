@@ -138,14 +138,6 @@
     }
   });
 
-  // An advanced tab can become active (badge click, future deep link) —
-  // the group must never hide the selected tab.
-  $effect(() => {
-    if (activeTab !== null && (ADVANCED_TABS as readonly string[]).includes(activeTab)) {
-      advancedOpen = true;
-    }
-  });
-
   function handleRetry(): void {
     retry.mutate(undefined, {
       onSuccess: () => {
@@ -435,48 +427,19 @@
     {@const advanced = advancedTabs()}
     {@const tabDisabled = data.status !== "ready" && !isFrozen(data.status)}
     <div class="detail-tabs">
-      <div class="detail-tabs__bar" role="tablist" aria-label="Agent sections">
-        <!-- Every panel mounts regardless of status or the Advanced group's
-             collapse (see the tabpanel loop below), but its query still
-             409s server-side until the agent is `ready` — so the trigger
-             itself is disabled rather than left clickable into a dead end,
-             for every status that is neither ready nor frozen (pending/
-             provisioning/failed). Frozen statuses (destroying/
-             destroy_failed) are the one exception: destruction makes
-             read-only content reachable again, so only mutation CONTROLS
-             freeze there (each panel's own `frozen` prop below) — the tabs
-             themselves stay fully clickable. -->
-        {#each primary as tab (tab)}
-          <button
-            type="button"
-            role="tab"
-            id={`tab-${tab}`}
-            class="detail-tabs__tab"
-            aria-selected={activeTab === tab}
-            aria-controls={`panel-${tab}`}
-            disabled={tabDisabled}
-            onclick={() => {
-              if (!tabDisabled) {
-                activeTab = tab;
-              }
-            }}
-          >
-            {TAB_LABELS[tab]}
-          </button>
-        {/each}
-        <button
-          type="button"
-          class="detail-tabs__advanced-toggle"
-          aria-expanded={advancedOpen}
-          onclick={() => (advancedOpen = !advancedOpen)}
-        >
-          Advanced
-          {#if !advancedOpen && data.pending_learnings > 0}
-            <span class="detail-tabs__badge">{data.pending_learnings}</span>
-          {/if}
-        </button>
-        {#if advancedOpen}
-          {#each advanced as tab (tab)}
+      <div class="detail-tabs__bar">
+        <div class="detail-tabs__list" role="tablist" aria-label="Agent sections">
+          <!-- Every panel mounts regardless of status or the Advanced group's
+               collapse (see the tabpanel loop below), but its query still
+               409s server-side until the agent is `ready` — so the trigger
+               itself is disabled rather than left clickable into a dead end,
+               for every status that is neither ready nor frozen (pending/
+               provisioning/failed). Frozen statuses (destroying/
+               destroy_failed) are the one exception: destruction makes
+               read-only content reachable again, so only mutation CONTROLS
+               freeze there (each panel's own `frozen` prop below) — the tabs
+               themselves stay fully clickable. -->
+          {#each primary as tab (tab)}
             <button
               type="button"
               role="tab"
@@ -492,12 +455,49 @@
               }}
             >
               {TAB_LABELS[tab]}
-              {#if tab === "learnings" && data.pending_learnings > 0}
-                <span class="detail-tabs__badge">{data.pending_learnings}</span>
-              {/if}
             </button>
           {/each}
-        {/if}
+          {#if advancedOpen}
+            {#each advanced as tab (tab)}
+              <button
+                type="button"
+                role="tab"
+                id={`tab-${tab}`}
+                class="detail-tabs__tab"
+                aria-selected={activeTab === tab}
+                aria-controls={`panel-${tab}`}
+                disabled={tabDisabled}
+                onclick={() => {
+                  if (!tabDisabled) {
+                    activeTab = tab;
+                  }
+                }}
+              >
+                {TAB_LABELS[tab]}
+                {#if tab === "learnings" && data.pending_learnings > 0}
+                  <span class="detail-tabs__badge">{data.pending_learnings}</span>
+                {/if}
+              </button>
+            {/each}
+          {/if}
+        </div>
+        <button
+          type="button"
+          class="detail-tabs__advanced-toggle"
+          aria-expanded={advancedOpen}
+          onclick={() => {
+            advancedOpen = !advancedOpen;
+            if (!advancedOpen && activeTab !== null
+                && (ADVANCED_TABS as readonly string[]).includes(activeTab)) {
+              activeTab = defaultTab(data.status);
+            }
+          }}
+        >
+          Advanced
+          {#if !advancedOpen && data.pending_learnings > 0}
+            <span class="detail-tabs__badge">{data.pending_learnings}</span>
+          {/if}
+        </button>
       </div>
 
       {#each [...primary, ...advanced] as tab (tab)}
@@ -840,6 +840,11 @@
     gap: var(--space-md);
     border-bottom: 1px solid var(--border);
     overflow-x: auto;
+  }
+
+  .detail-tabs__list {
+    display: flex;
+    gap: var(--space-md);
   }
 
   .detail-tabs__tab {

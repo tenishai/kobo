@@ -548,6 +548,10 @@
         </div>
       {/if}
 
+      {#if catalogError}
+        <p class="skills-panel__catalog-error" role="alert">{catalogError}</p>
+      {/if}
+
       <div
         class="skills-panel__combobox"
         onfocusin={() => (catalogDropdownOpen = true)}
@@ -585,7 +589,7 @@
         </div>
 
         {#if catalogDropdownOpen}
-          <div class="skills-panel__dropdown" role="listbox" aria-label="Skills catalog">
+          <div class="skills-panel__dropdown" aria-label="Skills catalog">
             {#if catalogResults.isPending}
               <Skeleton rows={2} />
             {:else if catalogResults.isError}
@@ -631,10 +635,6 @@
           </div>
         {/if}
       </div>
-
-      {#if catalogError}
-        <p class="skills-panel__catalog-error" role="alert">{catalogError}</p>
-      {/if}
     </div>
   {/if}
 
