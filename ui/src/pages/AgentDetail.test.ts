@@ -195,6 +195,7 @@ describe("AgentDetail tabs", () => {
       ...READY_AGENT,
       capability: "Answers billing questions and escalates refunds.",
       created_by: "owner@example.com",
+      skills: [{ name: "cost-report", team: "sre", sha: "abc123" }],
     };
     stubFetch({ ...BASE_ROUTES, "/api/agents/warden": agentWithIdentity });
     renderWithClient(AgentDetail);
@@ -202,6 +203,9 @@ describe("AgentDetail tabs", () => {
     const header = document.querySelector(".agent-detail__header");
     expect(header?.textContent).toContain(agentWithIdentity.capability);
     expect(header?.textContent).toContain(`Made by ${agentWithIdentity.created_by}`);
+    // Skill chips live in the header (2026-09-02 ruling): a visitor sees
+    // what the agent can do without expanding the Advanced group.
+    expect(header?.textContent).toContain("cost-report");
   });
 
   it("keeps the team chip, purpose tags, and the null-capability copy in the header", async () => {

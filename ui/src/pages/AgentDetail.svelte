@@ -286,60 +286,9 @@
       ? `${personaMatch.name} -- ${personaMatch.description}`
       : data.persona}
     <header class="agent-detail__header">
-      <div class="agent-detail__avatar-col">
-        {#if data.has_avatar || avatarVersion !== null}
-          <img class="agent-detail__avatar" src={avatarSrc} alt="{data.name}'s picture" />
-        {/if}
-        <div class="composition__avatar-action">
-          <div class="composition__avatar-buttons">
-            <button
-              type="button"
-              class="composition__avatar-button"
-              disabled={isFrozen(data.status) || generateAvatar.isPending}
-              onclick={handleGenerateAvatar}
-            >
-              {#if generateAvatar.isPending}
-                <span class="composition__avatar-dot pulse" aria-hidden="true"></span>
-                Painting…
-              {:else if data.has_avatar || avatarVersion !== null}
-                New face
-              {:else}
-                Give {data.name} a face
-              {/if}
-            </button>
-
-            <label
-              class="composition__avatar-upload"
-              class:composition__avatar-upload--disabled={isFrozen(data.status) ||
-                uploadAvatar.isPending}
-            >
-              {uploadAvatar.isPending ? "Uploading…" : "Upload a portrait"}
-              <input
-                class="composition__avatar-upload-input"
-                type="file"
-                accept=".png,image/png"
-                disabled={isFrozen(data.status) || uploadAvatar.isPending}
-                onchange={handleAvatarFileSelect}
-              />
-            </label>
-
-            {#if data.has_avatar || avatarVersion !== null}
-              <a
-                class="composition__avatar-download"
-                href={avatarSrc}
-                download={`${data.name}-portrait.png`}
-              >
-                Download the portrait
-              </a>
-            {/if}
-          </div>
-          {#if avatarError}
-            <p class="composition__avatar-error" role="alert">{avatarError}</p>
-          {:else if avatarNote}
-            <p class="composition__avatar-note">{avatarNote}</p>
-          {/if}
-        </div>
-      </div>
+      {#if data.has_avatar || avatarVersion !== null}
+        <img class="agent-detail__avatar" src={avatarSrc} alt="{data.name}'s picture" />
+      {/if}
       <div class="agent-detail__heading">
         <div class="agent-detail__title">
           <h1 class="agent-detail__name">{data.name}</h1>
@@ -372,6 +321,17 @@
             {/each}
           </p>
         {/if}
+        <!-- Skill chips returned to the header (operator ruling, 2026-09-02):
+             with Skills living behind the Advanced group, a visitor browsing
+             someone else's agent would otherwise see nothing about what it
+             can do. Chips only; managing skills stays in the Skills tab. -->
+        {#if data.skills.length > 0}
+          <p class="agent-detail__skills">
+            {#each data.skills as skill (skill.name)}
+              <span class="agent-detail__chip agent-detail__chip--skill">{skill.name}</span>
+            {/each}
+          </p>
+        {/if}
         <p class="agent-detail__capability">
           {data.capability ?? "Not written yet. It arrives after first contact."}
         </p>
@@ -380,6 +340,60 @@
         {/if}
       </div>
     </header>
+
+    <!-- Portrait actions live BELOW the header row, not beside the avatar:
+         inside the header's flex row their three-button run refused to
+         shrink and squeezed the identity column to a sliver (2026-09-02
+         layout fix, from the first live look at the rolled page). -->
+    <div class="agent-detail__portrait-actions">
+      <div class="composition__avatar-buttons">
+        <button
+          type="button"
+          class="composition__avatar-button"
+          disabled={isFrozen(data.status) || generateAvatar.isPending}
+          onclick={handleGenerateAvatar}
+        >
+          {#if generateAvatar.isPending}
+            <span class="composition__avatar-dot pulse" aria-hidden="true"></span>
+            Painting…
+          {:else if data.has_avatar || avatarVersion !== null}
+            New face
+          {:else}
+            Give {data.name} a face
+          {/if}
+        </button>
+
+        <label
+          class="composition__avatar-upload"
+          class:composition__avatar-upload--disabled={isFrozen(data.status) ||
+            uploadAvatar.isPending}
+        >
+          {uploadAvatar.isPending ? "Uploading…" : "Upload a portrait"}
+          <input
+            class="composition__avatar-upload-input"
+            type="file"
+            accept=".png,image/png"
+            disabled={isFrozen(data.status) || uploadAvatar.isPending}
+            onchange={handleAvatarFileSelect}
+          />
+        </label>
+
+        {#if data.has_avatar || avatarVersion !== null}
+          <a
+            class="composition__avatar-download"
+            href={avatarSrc}
+            download={`${data.name}-portrait.png`}
+          >
+            Download the portrait
+          </a>
+        {/if}
+      </div>
+      {#if avatarError}
+        <p class="composition__avatar-error" role="alert">{avatarError}</p>
+      {:else if avatarNote}
+        <p class="composition__avatar-note">{avatarNote}</p>
+      {/if}
+    </div>
 
     <div class="composition__edit-action">
       <MetadataDetails
@@ -493,7 +507,7 @@
             }
           }}
         >
-          Advanced
+          Advanced {advancedOpen ? "▾" : "▸"}
           {#if !advancedOpen && data.pending_learnings > 0}
             <span class="detail-tabs__badge">{data.pending_learnings}</span>
           {/if}
@@ -583,12 +597,11 @@
     gap: var(--space-md);
   }
 
-  .agent-detail__avatar-col {
+  .agent-detail__portrait-actions {
     display: flex;
-    flex-shrink: 0;
     flex-direction: column;
-    align-items: flex-start;
-    gap: var(--space-sm);
+    gap: var(--space-2xs);
+    margin-top: var(--space-sm);
   }
 
   .agent-detail__avatar {
@@ -651,11 +664,16 @@
     font-size: 0.9rem;
   }
 
-  .agent-detail__tags {
+  .agent-detail__tags,
+  .agent-detail__skills {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-2xs);
     margin: 0;
+  }
+
+  .agent-detail__chip--skill {
+    color: var(--ink);
   }
 
   .agent-detail__chip {
@@ -678,13 +696,6 @@
     margin: 0;
     color: var(--muted);
     font-size: 0.8rem;
-  }
-
-  .composition__avatar-action {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--space-xs);
   }
 
   .composition__edit-action {
@@ -880,12 +891,13 @@
      tabs to its left. */
   .detail-tabs__advanced-toggle {
     flex-shrink: 0;
+    align-self: center;
     margin-left: var(--space-sm);
-    padding: var(--space-sm) var(--space-md);
-    border: none;
-    border-left: 1px solid var(--border);
+    padding: 0.2rem var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: 999px;
     background: none;
-    color: var(--muted);
+    color: var(--ink);
     font: inherit;
     font-size: 0.85rem;
     cursor: pointer;
