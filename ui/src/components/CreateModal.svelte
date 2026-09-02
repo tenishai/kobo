@@ -1,8 +1,10 @@
 <script lang="ts">
-  // The one-click moment, now staged as four stations at a bench (create
+  // The one-click moment, now staged as three stations at a bench (create
   // flow v2, "the naming ceremony" addendum; Persona v3 / teamless-create
-  // addendum drops the Team station entirely and reorders what's left):
-  // Persona -> The Naming -> Skills -> Create, each one unlocking once the
+  // addendum drops the Team station entirely and reorders what's left; the
+  // UI-simplification wave then drops Skills too -- skills are picked
+  // post-create, in the Skills tab, not at the bench):
+  // Persona -> The Naming -> Create, each one unlocking once the
   // previous "commits". Fully controlled by the caller (`open` + `onclose`),
   // same contract as Modal itself — this component owns the form's own
   // state (name, selections, the availability check, submit errors) but
@@ -40,30 +42,26 @@
   // suggested cards, or "name it yourself" — but either way it lands in
   // the same `name` state and runs through the same check.
   //
-  // Persona and skills are catalog *searches* now (Task 10), not a whole
-  // catalog fetched once: `personasSearchQuery`/`skillsSearchQuery` re-run
-  // as the user types, each debounced 250ms via the same `debounced` helper
-  // the name field uses. Because @tanstack/svelte-query's installed adapter
-  // (5.90.2) only re-derives a query's options from an actual Svelte store
-  // (see MemoryPanel/SlackPanel's delivery-chip doc comments for the same
-  // constraint), the debounced search term for each section lives in a
-  // plain `writable` store, fed by an `$effect` off the `$state` the input
-  // is bound to — not a `$derived` object, which the adapter would freeze
-  // at first render and never look at again. The naming station's
-  // suggestion fetch (`nameSuggestionsQuery`) uses the exact same
-  // writable-store idiom, just set once per persona commit rather than
-  // per keystroke.
+  // Persona is a catalog *search* now (Task 10), not a whole catalog
+  // fetched once: `personasSearchQuery` re-runs as the user types, debounced
+  // 250ms via the same `debounced` helper the name field uses. Because
+  // @tanstack/svelte-query's installed adapter (5.90.2) only re-derives a
+  // query's options from an actual Svelte store (see MemoryPanel/SlackPanel's
+  // delivery-chip doc comments for the same constraint), the debounced
+  // search term lives in a plain `writable` store, fed by an `$effect` off
+  // the `$state` the input is bound to -- not a `$derived` object, which the
+  // adapter would freeze at first render and never look at again. The
+  // naming station's suggestion fetch (`nameSuggestionsQuery`) uses the
+  // exact same writable-store idiom, just set once per persona commit
+  // rather than per keystroke.
   //
   // Models come from `modelsQuery()`, prefetched by App.svelte the same
-  // "warm modal" way the old whole-catalog fetch was. `teamsQuery()` (also
-  // prefetched there) now feeds only the Skills section's search-by-team
-  // filter — the "team vs group" ruling retired this station's own team
-  // picker, so `teamOptionsQuery()` (`/api/teams`, the distinct skill-owner
-  // pool + a server-named default) has no reader in this component any
-  // more; it still backs Edit details' own team field (`MetadataDetails`).
-  // Org wiring status (`orgStatusQuery()`) decides whether the persona/
-  // skills sections show real pickers or an honest "not set up yet" empty
-  // state — see `personasUnwired`/`skillsUnwired` below.
+  // "warm modal" way the old whole-catalog fetch was. `teamOptionsQuery()`
+  // (`/api/teams`, the distinct skill-owner pool + a server-named default)
+  // has no reader in this component -- it backs Edit details' own team field
+  // (`MetadataDetails`) instead. Org wiring status (`orgStatusQuery()`)
+  // decides whether the persona section shows a real picker or an honest
+  // "not set up yet" empty state -- see `personasUnwired` below.
   //
   // Purpose chips are a plain local list, pre-filled once from the persona
   // draft step's own `purpose_tags` (`PersonaBuilder`'s `oncreated`) when
@@ -96,9 +94,6 @@
     orgStatusQuery,
     personasSearchQuery,
     requestGroupMutation,
-    recommendedSkillsQuery,
-    skillsSearchQuery,
-    teamsQuery,
   } from "../lib/queries";
   import { toast } from "../lib/toast.svelte";
   import { validateName } from "../lib/validate";
@@ -107,7 +102,6 @@
 
   const queryClient = useQueryClient();
   const models = createQuery(() => (modelsQuery()));
-  const teams = createQuery(() => (teamsQuery()));
   const groups = createQuery(() => (groupsQuery()));
   const orgStatus = createQuery(() => (orgStatusQuery()));
   const mutation = createMutation(() => (createAgentMutation(queryClient)));
@@ -346,95 +340,6 @@
     name = "";
   }
 
-  // --- Skills search -------------------------------------------------------
-
-  let skillQ = $state("");
-  // "" means "All teams" — a plain string (not `string | null`) because a
-  // `<select>`'s DOM value is always a string; converted to `null` only at
-  // the point the search params are committed, below.
-  let skillTeamFilter = $state("");
-
-  let skillSearchParams = $state<{ q: string; team: string | null }>({
-    q: "",
-    team: null,
-  });
-  const skills = createQuery(() => (skillsSearchQuery(skillSearchParams.q, skillSearchParams.team)));
-
-  // Recommended-for-this-persona strip (create-flow polish, 2026-08-28):
-  // fed by the committed persona's own description and tags -- the same
-  // meta the naming station reads -- and disabled until one is committed.
-  const recommendedSkills = createQuery(() =>
-    (recommendedSkillsQuery(
-      selectedPersonaMeta?.description ?? "",
-      (selectedPersonaMeta?.purposeTags ?? []).join(" "),
-    )));
-
-  const commitSkillSearch = debounced(
-    (value: { q: string; team: string | null }) => {
-      skillSearchParams = value;
-    },
-    250,
-  );
-
-
-  // Skills combobox (create-flow polish, round 2): clicking into the
-  // search field opens a scrollable dropdown of the catalog -- the whole
-  // offering when the query is empty, filtered as you type -- with
-  // checkbox rows so several skills can be picked without the panel
-  // closing. Closed when focus leaves the combobox subtree (checkbox
-  // clicks keep focus inside, so multi-select never fights the close).
-  let skillDropdownOpen = $state(false);
-
-  function closeSkillDropdownOnFocusout(event: FocusEvent): void {
-    const next = event.relatedTarget;
-    const root = event.currentTarget as HTMLElement;
-    if (!(next instanceof Node) || !root.contains(next)) {
-      skillDropdownOpen = false;
-    }
-  }
-
-  $effect(() => {
-    const value = { q: skillQ, team: skillTeamFilter === "" ? null : skillTeamFilter };
-    if (!open) {
-      return;
-    }
-    commitSkillSearch(value);
-    return () => {
-      commitSkillSearch.cancel();
-    };
-  });
-
-  const SKILLS_SHOWN_CAP = 6;
-
-
-  type SelectedSkill = { id: string; team: string; name: string };
-
-  /** Keyed `team/id` (a skill id is only unique within its own team) so a
-   * pick survives the visible results changing underneath it as the user
-   * keeps searching. */
-  let selectedSkills = $state<Map<string, SelectedSkill>>(new Map());
-
-  function skillKey(id: string, skillTeam: string): string {
-    return `${skillTeam}/${id}`;
-  }
-
-  function toggleSkill(entry: CatalogEntry): void {
-    const key = skillKey(entry.id, entry.team);
-    const next = new Map(selectedSkills);
-    if (next.has(key)) {
-      next.delete(key);
-    } else {
-      next.set(key, { id: entry.id, team: entry.team, name: entry.name });
-    }
-    selectedSkills = next;
-  }
-
-  function removeSkill(key: string): void {
-    const next = new Map(selectedSkills);
-    next.delete(key);
-    selectedSkills = next;
-  }
-
   // --- Group (access-control Task B2, sectioned by the shared-group +
   // group-requests wave) -----------------------------------------------
   //
@@ -593,14 +498,10 @@
     orgStatus.data !== undefined &&
       (orgStatus.data.wired === false || checkFailed("personas-seeded")),
   );
-  const skillsUnwired = $derived(
-    orgStatus.data !== undefined &&
-      (orgStatus.data.wired === false || checkFailed("skills-index")),
-  );
 
   const UNWIRED_MESSAGE = "Catalogs aren't set up yet. Ask whoever runs your room.";
 
-  // --- Stations: which of the four read as active vs. muted --------------
+  // --- Stations: which of the three read as active vs. muted -------------
   // Purely a visual cue (see the doc comment at the top of this file) —
   // none of these gate anything functionally; `canSubmit` below is the one
   // real gate, and it's unchanged.
@@ -622,10 +523,6 @@
       selectedCardName = null;
       rerollNote = false;
       nameSuggestionParams = { whoTheyAre: "", whatTheyDo: "" };
-      skillQ = "";
-      skillTeamFilter = "";
-      skillSearchParams = { q: "", team: null };
-        selectedSkills = new Map();
       groupValue = "";
       groupRequestName = "";
       groupRequestNote = "";
@@ -641,7 +538,6 @@
       nameLocallyValid &&
       availability.status === "available" &&
       !personasUnwired &&
-      !skillsUnwired &&
       selectedPersona !== "" &&
       selectedModel !== "" &&
       (!groupOptionsAvailable || groupChosen) &&
@@ -659,10 +555,9 @@
       {
         name: createdName,
         persona: selectedPersona,
-        skills: [...selectedSkills.values()].map(({ id, team: skillTeam }) => ({
-          id,
-          team: skillTeam,
-        })),
+        // Skills are added post-create, in the Skills tab (UI-simplification
+        // wave) -- the bench no longer picks them.
+        skills: [],
         model: selectedModel,
         purpose_tags: purposeTags,
         group_name: groupOptionsAvailable ? groupValue : undefined,
@@ -917,141 +812,7 @@
       {/if}
     </div>
 
-    <!-- Station 3: Skills — search-first, capped, muted until a name's
-         landed (but always live — nothing about searching/picking skills
-         actually needs one). -->
-    <div class="station" class:station--locked={!namingCommitted}>
-      <div class="station__head">
-        <span
-          class="station-marker"
-          class:station-marker--filled={namingCommitted}
-          aria-hidden="true"
-        >
-          3
-        </span>
-        <h3 class="station__heading">Skills</h3>
-      </div>
-
-      <fieldset class="create-form__field create-form__fieldset">
-        <legend class="sr-only">Skills</legend>
-        {#if skillsUnwired}
-          <EmptyState message={UNWIRED_MESSAGE} />
-        {:else}
-          {#if selectedSkills.size > 0}
-            <div class="chip-row">
-              {#each [...selectedSkills.entries()] as [key, skill] (key)}
-                <span class="chip">
-                  {skill.name}
-                  <button
-                    type="button"
-                    class="chip__remove"
-                    aria-label={`Remove ${skill.name}`}
-                    onclick={() => removeSkill(key)}
-                  >
-                    &times;
-                  </button>
-                </span>
-              {/each}
-            </div>
-          {/if}
-
-          {#if recommendedSkills.data && recommendedSkills.data.length > 0}
-            <div class="create-form__field">
-              <span class="create-form__label">Recommended for this persona</span>
-              <div class="skill-list skill-list--recommended">
-                {#each recommendedSkills.data as skill (skillKey(skill.id, skill.team))}
-                  <label class="skill-item">
-                    <input
-                      type="checkbox"
-                      checked={selectedSkills.has(skillKey(skill.id, skill.team))}
-                      onchange={() => toggleSkill(skill)}
-                    />
-                    <span class="skill-item__body">
-                      <span class="skill-item__head">
-                        <span class="skill-item__name">{skill.name}</span>
-                        <span class="catalog-badge">{skill.team}</span>
-                      </span>
-                      <span class="skill-item__description">{skill.description}</span>
-                    </span>
-                  </label>
-                {/each}
-              </div>
-            </div>
-          {/if}
-
-          <div
-            class="create-form__field skill-combobox"
-            onfocusin={() => (skillDropdownOpen = true)}
-            onfocusout={closeSkillDropdownOnFocusout}
-          >
-            <label class="create-form__label" for="skill-search">Search skills</label>
-            <div class="catalog-search__row">
-              <input
-                id="skill-search"
-                class="create-form__input"
-                type="text"
-                bind:value={skillQ}
-                placeholder="Search skills"
-                autocomplete="off"
-              />
-              <label class="sr-only" for="skill-team-filter">Filter skills by team</label>
-              <select
-                id="skill-team-filter"
-                class="create-form__input"
-                value={skillTeamFilter}
-                onchange={(event) =>
-                  (skillTeamFilter = (event.currentTarget as HTMLSelectElement).value)}
-              >
-                <option value="">All teams</option>
-                {#if teams.data}
-                  {#each teams.data as t (t)}
-                    <option value={t}>{t}</option>
-                  {/each}
-                {/if}
-              </select>
-            </div>
-
-          {#if skillDropdownOpen}
-            <div class="skill-dropdown" role="listbox" aria-label="Skills catalog">
-            {#if skills.isPending}
-            <Skeleton rows={2} />
-          {:else if skills.isError}
-            <ErrorState
-              message={errorMessage(skills.error, "Couldn't load skills.")}
-              onretry={() => skills.refetch()}
-            />
-          {:else if skills.data.length === 0}
-            <p class="create-form__help">
-              {skillQ.length > 0 ? "Nothing matches your search." : "No skills in the catalog yet"}
-            </p>
-          {:else}
-            <div class="skill-list">
-              {#each skills.data as skill (skillKey(skill.id, skill.team))}
-                <label class="skill-item">
-                  <input
-                    type="checkbox"
-                    checked={selectedSkills.has(skillKey(skill.id, skill.team))}
-                    onchange={() => toggleSkill(skill)}
-                  />
-                  <span class="skill-item__body">
-                    <span class="skill-item__head">
-                      <span class="skill-item__name">{skill.name}</span>
-                      <span class="catalog-badge">{skill.team}</span>
-                    </span>
-                    <span class="skill-item__description">{skill.description}</span>
-                  </span>
-                </label>
-              {/each}
-            </div>
-          {/if}
-            </div>
-          {/if}
-          </div>
-        {/if}
-      </fieldset>
-    </div>
-
-    <!-- Station 4: Create — muted until a name's landed; Create itself
+    <!-- Station 3: Create -- muted until a name's landed; Create itself
          stays gated by `canSubmit`, unchanged. -->
     <div class="station" class:station--locked={!namingCommitted}>
       <div class="station__head">
@@ -1060,7 +821,7 @@
           class:station-marker--filled={namingCommitted}
           aria-hidden="true"
         >
-          4
+          3
         </span>
         <h3 class="station__heading">Create</h3>
       </div>
@@ -1519,15 +1280,13 @@
     color: var(--accent);
   }
 
-  .persona-list,
-  .skill-list {
+  .persona-list {
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
   }
 
-  .persona-card,
-  .skill-item {
+  .persona-card {
     display: flex;
     align-items: flex-start;
     gap: var(--space-xs);
@@ -1557,8 +1316,7 @@
     filter: brightness(1.05);
   }
 
-  .persona-card:hover,
-  .skill-item:hover {
+  .persona-card:hover {
     border-color: var(--accent);
   }
 
@@ -1567,36 +1325,31 @@
     background: color-mix(in srgb, var(--accent) 8%, var(--panel));
   }
 
-  .persona-card input,
-  .skill-item input {
+  .persona-card input {
     margin-top: 0.2rem;
   }
 
-  .persona-card__body,
-  .skill-item__body {
+  .persona-card__body {
     display: flex;
     flex: 1;
     flex-direction: column;
     gap: 0.15rem;
   }
 
-  .persona-card__head,
-  .skill-item__head {
+  .persona-card__head {
     display: flex;
     align-items: center;
     gap: var(--space-xs);
   }
 
-  .persona-card__name,
-  .skill-item__name {
+  .persona-card__name {
     color: var(--ink);
     font-family: var(--font-mono);
     font-size: 0.85rem;
     font-weight: 600;
   }
 
-  .persona-card__description,
-  .skill-item__description {
+  .persona-card__description {
     color: var(--muted);
     font-size: 0.8rem;
   }
@@ -1848,25 +1601,5 @@
   .create-form__submit:disabled {
     opacity: 0.5;
     cursor: not-allowed;
-  }
-
-  .skill-combobox {
-    position: relative;
-  }
-
-  .skill-dropdown {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    z-index: 30;
-    margin-top: 0.25rem;
-    max-height: 20rem;
-    overflow-y: auto;
-    background: var(--surface, #fffdf9);
-    border: 1px solid var(--border, #d0c8bc);
-    border-radius: 8px;
-    box-shadow: 0 8px 24px rgba(40, 30, 20, 0.12);
-    padding: 0.25rem;
   }
 </style>

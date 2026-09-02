@@ -26,13 +26,12 @@ function stubCreateModalCatalogs(extra: Record<string, unknown> = {}): void {
     "/api/teams": { teams: ["growth", "platform"], default: "shared" },
     "/api/org/status": { org: "acme", wired: true, checks: [] },
     "/api/personas/search": { results: [] },
-    "/api/skills/search": { results: [] },
     ...extra,
     "/api/": {},
   });
 }
 
-// The Create form's own stable, always-rendered anchor: station 4's
+// The Create form's own stable, always-rendered anchor: station 3's
 // "unlocking" is purely visual (opacity, see the doc comment at the top of
 // CreateModal.svelte), so the Purpose tags field is present in the DOM the
 // moment the modal mounts, regardless of persona/naming progress — same
@@ -56,9 +55,6 @@ describe("CreateModal — team vs group ruling: team dropdown retired", () => {
     expect(screen.queryByLabelText("Team")).toBeNull();
     expect(screen.queryByLabelText("Team name")).toBeNull();
     expect(screen.queryByText("lowercase-with-dashes")).toBeNull();
-    // The skills-search team filter is a DIFFERENT control (a distinct
-    // accessible name) and must survive this ruling untouched.
-    expect(screen.getByLabelText("Filter skills by team")).not.toBeNull();
   });
 
   it("submits with no team key in the POST body at all", async () => {
@@ -95,7 +91,7 @@ describe("CreateModal — team vs group ruling: team dropdown retired", () => {
     await fireEvent.input(nameInput, { target: { value: "helper-bot" } });
     await screen.findByText("✓ Available", {}, { timeout: 2000 });
 
-    // Station 4: model defaults, no groups configured — ready to submit.
+    // Station 3: model defaults, no groups configured — ready to submit.
     const submit = screen.getByRole("button", { name: "Create agent" }) as HTMLButtonElement;
     expect(submit.disabled).toBe(false);
     await fireEvent.click(submit);
@@ -121,6 +117,75 @@ describe("CreateModal — team vs group ruling: team dropdown retired", () => {
     expect(sentBody).not.toHaveProperty("team");
     expect(sentBody.name).toBe("helper-bot");
     expect(sentBody.persona).toBe("helper");
+  });
+});
+
+describe("CreateModal -- skills station removed (skills move to the post-create Skills tab)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("submits with an empty skills list and offers no skills station", async () => {
+    stubCreateModalCatalogs({
+      "/api/personas/search": {
+        results: [
+          {
+            id: "helper",
+            name: "Helper",
+            description: "Helps with things.",
+            team: "shared",
+            tags: [],
+            builtin: true,
+          },
+        ],
+      },
+      "/api/agents/name-suggestions": { suggestions: [] },
+      "/api/agents": { name: "helper-bot", status: "provisioning" },
+      "/api/availability": { available: true, reason: null },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    await findCreateStationReady();
+
+    // The station heading is gone entirely -- skills are added post-create,
+    // in the Skills tab, not at the bench.
+    expect(screen.queryByText("Skills")).toBeNull();
+
+    // Station 1: pick the one seeded persona.
+    const personaRadio = await screen.findByRole("radio", { name: /Helper/i });
+    await fireEvent.click(personaRadio);
+
+    // Station 2: no suggestions came back, so go straight to manual naming.
+    await fireEvent.click(
+      await screen.findByRole("button", { name: "name it yourself" }),
+    );
+    const nameInput = await screen.findByLabelText("Name");
+    await fireEvent.input(nameInput, { target: { value: "helper-bot" } });
+    await screen.findByText("✓ Available", {}, { timeout: 2000 });
+
+    const submit = screen.getByRole("button", { name: "Create agent" }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(false);
+    await fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(
+        vi.mocked(fetch).mock.calls.some(
+          ([url, init]) =>
+            String(url) === "/api/agents" &&
+            (init as RequestInit | undefined)?.method === "POST",
+        ),
+      ).toBe(true);
+    });
+
+    const call = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([url, init]) =>
+          String(url) === "/api/agents" &&
+          (init as RequestInit | undefined)?.method === "POST",
+      );
+    const sentBody = JSON.parse((call?.[1] as RequestInit).body as string);
+    expect(sentBody.skills).toEqual([]);
   });
 });
 
@@ -535,7 +600,6 @@ describe("CreateModal — the group menu has a commons, a directory, and a door 
           "/api/teams": { teams: ["growth", "platform"], default: "shared" },
           "/api/org/status": { org: "acme", wired: true, checks: [] },
           "/api/personas/search": { results: [] },
-          "/api/skills/search": { results: [] },
           "/api/": {},
         };
         for (const [needle, payload] of Object.entries(routes)) {
