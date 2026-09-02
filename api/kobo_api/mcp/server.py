@@ -222,10 +222,11 @@ def build_mcp_server(app: Any) -> FastMCP:
     security_for` above -- a rollout-blocking gap Task 9's review caught
     via a live 421 probe), `audit.configure`d with `app`'s own session
     factory so every tool call's audit row lands in the room's real DB,
-    the four read tools (Task 7), and the six write tools (Task 8) --
-    `create_agent`/`teach`/`chat`/`request_colleague`/`accept_invite`/
-    `wire_slack`, registered from their own module (`kobo_api.mcp.tools.
-    write`) the same way read tools are, right after them.
+    then the read tools and write tools registered by their own modules
+    (`kobo_api.mcp.tools.read`/`kobo_api.mcp.tools.write`) -- see each
+    module's own docstring for its current tool count and roster, never
+    duplicated here where a later wave would have to remember to update
+    both places in lockstep.
 
     **Import deliberately deferred, not just habit:** `kobo_api.mcp.tools.
     read` itself imports `get_user_email` straight off this module

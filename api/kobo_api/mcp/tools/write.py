@@ -3,10 +3,15 @@
 wire_slack -- plus `kobo_set_agent_skills` (MCP marketplace wave Task 3,
 staging/removing marketplace catalog skills on an owned agent),
 `kobo_add_agent_tool` (Task 4, staging a `bundle/tools/*.py` file on an
-owned agent, from the marketplace or given inline), and `kobo_create_skill`/
+owned agent, from the marketplace or given inline), `kobo_create_skill`/
 `kobo_create_tool` (Task 5, publishing a NEW skill or tool into the org
 marketplace catalog itself, membership-gated -- see that pair's own
-docstring section below).
+docstring section below), `kobo_request_repo_access`/`kobo_list_repo_access`/
+`kobo_decide_repo_access` (the agent PR broker's request/list/decide trio,
+gating which GitHub repositories an agent's own github.open_pr tool may
+mint scoped tokens against), and `kobo_create_persona` (persona wave Task
+5, publishing a NEW persona into the room's own catalog -- see that tool's
+own docstring section below).
 
 THE REUSE MECHANISM -- this is the entire design of this module. Every
 tool below is a thin shim that calls the SAME route handler the room's own
@@ -51,20 +56,20 @@ that already exists and is already tested in `kobo_api.main`. Concretely:
 Every route function below returns a `fastapi.responses.JSONResponse` in
 every branch (verified against each route's own source) -- `_parse` reads
 its `.body` (already-serialized JSON bytes) back into a dict, and the
-three status-code translators below (`_agent_route_result` for the seven
+three status-code translators below (`_agent_route_result` for the eight
 agent-scoped tools, `_skill_route_result` for `kobo_set_agent_skills`
 alone, `_create_result` for `kobo_create_agent`) turn that status code
 into either the tool's return value or a `ToolError`.
 
 ## Status -> ToolError translation
 
-**(A) The seven agent-scoped tools** (`kobo_teach`, `kobo_chat`,
+**(A) The eight agent-scoped tools** (`kobo_teach`, `kobo_chat`,
 `kobo_request_colleague`, `kobo_accept_invite`, `kobo_wire_slack`,
-`kobo_set_agent_skills`, `kobo_add_agent_tool`) -- every one of these
-resolves an existing agent by name (or, for `kobo_accept_invite`, an
-existing invite naming two agents) before doing anything else, so the
-anti-enumeration property the read tools already pin
-(`kobo_api.mcp.authz.NotFound`'s own docstring) applies here too.
+`kobo_set_agent_skills`, `kobo_add_agent_tool`, `kobo_request_repo_access`)
+-- every one of these resolves an existing agent by name (or, for
+`kobo_accept_invite`, an existing invite naming two agents) before doing
+anything else, so the anti-enumeration property the read tools already
+pin (`kobo_api.mcp.authz.NotFound`'s own docstring) applies here too.
 `kobo_set_agent_skills` carries one narrow, documented, operator-ruled
 exception to this table -- see its own section below.
 
@@ -312,7 +317,6 @@ from functools import partial
 from typing import Any
 
 import anyio.to_thread
-
 from fastapi import BackgroundTasks
 from fastapi.responses import JSONResponse
 from mcp.server.fastmcp import Context, FastMCP
@@ -515,7 +519,7 @@ def _require_team_membership(app: Any, email: str, team: str) -> None:
 
 
 def register(mcp: FastMCP, app: Any) -> None:
-    """Registers this module's eleven write tools on `mcp`. Every route this
+    """Registers this module's fourteen write tools on `mcp`. Every route this
     module calls is looked up exactly once, here, at registration time --
     never re-resolved per call. `kobo_create_skill`/`kobo_create_tool`
     (Task 5) call `kobo_api.marketplace` directly and have no route of
@@ -550,17 +554,18 @@ def register(mcp: FastMCP, app: Any) -> None:
         tags: list[str] | None = None,
         skip_baseline: bool = False,
     ) -> dict:
-        """Create a new agent in the room -- the same one-click create the
-        room's own UI drives. `who_they_are` is the catalog persona id
-        this agent should be built from (the room's persona catalog, e.g.
-        "helpful-generalist"); `group` is the ACL group this agent
-        belongs to, and you must already be a member of it (an operator
-        may name any configured group). `name` is optional -- when
-        omitted, the room's own naming station picks one for you.
-        `skills`, when given, is a list of `{"id", "team"}` picks from the
-        room's skills catalog; `tags` is a short list of purpose tags.
-        Every new agent ships the baseline tooling pack (leakguard and
-        probe guard) unless skip_baseline is true. Returns the agent's
+        """Create a new agent in the room. More capable at create time than
+        the room's own modal, which adds skills post-create in the Skills
+        tab -- `skills` picks here are still honored. `who_they_are` is the
+        catalog persona id this agent should be built from (the room's
+        persona catalog, e.g. "helpful-generalist"); `group` is the ACL
+        group this agent belongs to, and you must already be a member of
+        it (an operator may name any configured group). `name` is
+        optional -- when omitted, the room's own naming station picks one
+        for you. `skills`, when given, is a list of `{"id", "team"}` picks
+        from the room's skills catalog; `tags` is a short list of purpose
+        tags. Every new agent ships the baseline tooling pack (leakguard
+        and probe guard) unless skip_baseline is true. Returns the agent's
         name and status; watch the room (or `kobo_get_agent`) for its
         checklist to finish in the background.
         """

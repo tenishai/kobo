@@ -58,7 +58,13 @@ from kobo_api.mcp.tools.read import (
     _SWITCHBOARD_DID_NOT_ANSWER,
 )
 from kobo_api.mcp.tools.write import _endpoint
-from kobo_api.models import Agent, AgentStatus, AgentStep, Base
+from kobo_api.models import (
+    Agent,
+    AgentLearning,
+    AgentStatus,
+    AgentStep,
+    Base,
+)
 from kobo_api.purpose_tags import encode_tags
 from tests.fakes import (
     FakeAgent,
@@ -517,6 +523,58 @@ def test_get_agent_raises_the_identical_error_for_an_invisible_agent_no_existenc
 
     assert missing_message is not None
     assert missing_message == invisible_message
+
+
+def _seed_learning(session_factory, agent_name, **overrides):
+    session = session_factory()
+    try:
+        defaults = {
+            "agent_name": agent_name,
+            "day": "2026-09-01",
+            "content": "the canary gate is manual",
+            "kind": "fact",
+            "source": "Slack, Sep 1",
+            "evidence": "quote",
+            "content_hash": "a" * 64,
+        }
+        defaults.update(overrides)
+        row = AgentLearning(**defaults)
+        session.add(row)
+        session.commit()
+        return row.id
+    finally:
+        session.close()
+
+
+def test_get_agent_carries_the_detail_routes_full_field_set(session_factory, config):
+    # Task 7 (create-identity wave): kobo_get_agent had drifted from the
+    # HTTP detail route (GET /api/agents/{name}) -- this pins that the MCP
+    # card now mirrors that route's own additions field for field: the
+    # learnings count/gate (daily-learnings spec), skills, slack, avatar,
+    # repo, and model-label facts.
+    _seed_agent(
+        session_factory,
+        name="agent-a",
+        created_by=OWNER_A_EMAIL,
+        group_name=GROUP_A,
+        team="growth-team",
+    )
+    _seed_learning(session_factory, "agent-a")
+    app = _app(session_factory, config, groups_resolver=_resolver())
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(mcp, "kobo_get_agent", _ctx_for(OWNER_A_EMAIL), name="agent-a")
+
+    assert result["pending_learnings"] == 1
+    assert result["can_decide_learnings"] is True
+    assert result["has_avatar"] is False
+    assert result["model_label"] == "Claude Sonnet 4.5"
+    assert result["skills"] == []
+    assert result["repo_full_name"] == REPO_TEMPLATE.format(name="agent-a")
+    assert result["slack"] == {"app_id": None, "channels": [], "state": "idle"}
+    # OWNER_A_EMAIL owns this agent (can_decide_learnings above) but holds
+    # no operator standing -- destroy stays operator-only regardless.
+    assert result["destroy_visible"] is False
 
 
 # --- kobo_feed ----------------------------------------------------------------

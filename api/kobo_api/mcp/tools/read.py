@@ -41,6 +41,7 @@ from kobo_api.mcp.audit import audited
 from kobo_api.mcp.server import get_user_email
 from kobo_api.purpose_tags import decode_tags
 from kobo_api.search import read_marketplace_catalog
+from kobo_api.slack_state import decode_channels, derive_state
 
 # The one error message both agent-scoped tools raise for "doesn't exist"
 # and "exists but you can't see it" alike -- see `kobo_api.mcp.authz.
@@ -145,17 +146,43 @@ def register(mcp: FastMCP, app: Any) -> None:
     @audited("kobo_get_agent")
     async def kobo_get_agent(ctx: Context, name: str) -> dict:
         """Get one agent's card: its persona, team, purpose, model,
-        status, and status checklist. Answers "agent not found" both for
-        a name that does not exist and for one you are not allowed to
+        status, and status checklist -- plus its skills, Slack wiring,
+        avatar/repo facts, and pending-learnings state, the same detail
+        the room's own agent page shows. Answers "agent not found" both
+        for a name that does not exist and for one you are not allowed to
         see -- the two are never told apart.
         """
+        # Deferred import: kobo_api.main is a large module, and the same
+        # circularity concern this module's own docstring already
+        # documents for kobo_feed's imports from kobo_api.main applies
+        # here too -- this module is imported at kobo_api.mcp.server load
+        # time, well before kobo_api.main is guaranteed to have finished
+        # importing everything it does.
+        from kobo_api.main import _decider_or_403, _model_label, _operator_block
+        from kobo_api.models import LEARNING_PENDING, AgentLearning
+
         email = get_user_email(ctx)
+        cfg = app.state.config
         session = app.state.session_factory()
         try:
             try:
                 agent = authz.visible_agent_or_not_found(session, app, email, name)
             except authz.NotFound as exc:
                 raise ToolError(_AGENT_NOT_FOUND) from exc
+
+            # Same synthetic room Request every write tool already builds
+            # (`authz.room_request`'s own docstring) -- `_operator_block`/
+            # `_decider_or_403` below were both written against a real HTTP
+            # `Request`, and this is the one bridge that lets them run
+            # unmodified for an MCP caller too.
+            req = authz.room_request(app, email)
+
+            channels = decode_channels(agent.slack_channels)
+            slack = {
+                "app_id": agent.slack_app_id,
+                "channels": channels,
+                "state": derive_state(channels, wired=agent.slack_wired),
+            }
 
             return {
                 "name": agent.name,
@@ -166,7 +193,10 @@ def register(mcp: FastMCP, app: Any) -> None:
                 "purpose": decode_tags(agent.purpose_tags),
                 "capability": agent.capability,
                 "model": agent.model_id,
+                "model_label": _model_label(cfg, agent.model_id),
+                "skills": agent.skills,
                 "status": agent.status,
+                "repo_full_name": agent.repo_full_name,
                 "steps": [
                     {"name": step.name, "status": step.status, "error": step.error}
                     for step in agent.steps
@@ -174,6 +204,13 @@ def register(mcp: FastMCP, app: Any) -> None:
                 "first_reply": agent.first_reply,
                 "error": agent.error,
                 "created_at": agent.created_at.isoformat(),
+                "slack": slack,
+                "destroy_visible": _operator_block(req, cfg) is None,
+                "has_avatar": agent.avatar_png is not None,
+                "pending_learnings": session.query(AgentLearning)
+                .filter_by(agent_name=agent.name, status=LEARNING_PENDING)
+                .count(),
+                "can_decide_learnings": _decider_or_403(agent, req, session) is None,
             }
         finally:
             session.close()
