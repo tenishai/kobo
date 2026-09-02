@@ -20,23 +20,38 @@ from pathlib import Path
 from kobo_api.clients import GitHubClient
 
 
-def avatar_prompt(agent_name: str, persona_description: str) -> str:
+def avatar_prompt(agent_name: str, persona_description: str, purpose_tags: list[str] | None = None) -> str:
     """A deterministic prompt for `clients.image.generate` — same inputs
     always produce the exact same string, so a route can be tested against
     it byte-for-byte without depending on the image backend at all.
 
-    Named person-first ("an assistant named {name}") rather than a bare
-    label, and closes on an explicit no-text clause: the model this backs
-    (Vertex's `gemini-2.5-flash-image`, see `VertexImageClient`) tends to
-    render stray lettering into "portrait" prompts unless told not to, and an
-    avatar is a small square rendered at icon size — any text in it reads as
-    noise, never as a legible label.
+    Named person-first ("a character named {name}") and enriched with persona
+    description and optional purpose tags. Closes on an explicit no-text
+    clause: the model this backs (Vertex's `gemini-2.5-flash-image`, see
+    `VertexImageClient`) tends to render stray lettering into "portrait"
+    prompts unless told not to, and an avatar is a small square rendered at
+    icon size -- any text in it reads as noise, never as a legible label.
+
+    When purpose_tags is empty or None, the themes clause is omitted entirely.
     """
-    return (
-        f"friendly square avatar portrait for an assistant named {agent_name}, "
-        f"persona flavor from {persona_description}; flat, minimal, centered, "
-        f"plain background; no text in image."
+    parts = [
+        f"friendly square avatar portrait of a character named {agent_name}; "
+        f"persona: {persona_description};"
+    ]
+
+    if purpose_tags:
+        tags_str = ", ".join(purpose_tags)
+        parts.append(f" themes: {tags_str};")
+    else:
+        parts.append("")
+
+    parts.append(
+        f" the face and styling should feel like a \"{agent_name}\" -- let the name "
+        f"and persona set the character's vibe; flat, minimal, centered, plain "
+        f"background; no text in image."
     )
+
+    return "".join(parts)
 
 
 def set_avatar(github: GitHubClient, *, repo: str, png: bytes) -> str:

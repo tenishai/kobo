@@ -21,6 +21,7 @@ from kobo_api.config import Config
 from kobo_api.main import AVATAR_MAX_BYTES, AVATAR_UPLOAD_MAX_BYTES, PNG_SIGNATURE, create_app
 from kobo_api.models import Agent, AgentStatus, Base
 from kobo_api.personas import seed_default_personas
+from kobo_api.purpose_tags import encode_tags
 from tests.fakes import (
     FAKE_IMAGE_PNG_BYTES,
     FAKE_LOCAL_HEAD_DEFAULT,
@@ -127,6 +128,7 @@ def _seed_agent(
     status=AgentStatus.READY,
     repo_full_name=REPO,
     avatar_png=None,
+    purpose_tags=None,
 ):
     session = session_factory()
     session.add(
@@ -137,6 +139,7 @@ def _seed_agent(
             status=status,
             repo_full_name=repo_full_name,
             avatar_png=avatar_png,
+            purpose_tags=purpose_tags,
         )
     )
     session.commit()
@@ -167,6 +170,33 @@ def test_generate_avatar_happy_path_pushes_caches_and_returns_sha(session_factor
     agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
     assert agent.avatar_png == base64.b64encode(FAKE_IMAGE_PNG_BYTES).decode("ascii")
     session.close()
+
+
+def test_generate_avatar_with_purpose_tags_carries_decoded_tags_to_prompt(
+    session_factory, config
+):
+    """The route passes agent.purpose_tags (a JSON-encoded string from the DB)
+    to avatar_prompt, which must receive it decoded to a list. This test verifies
+    the decoding happens, not just that tags "survive" — a common bug is
+    joining the raw JSON string character-by-character instead of the tag list."""
+    github = _CapturingGitHub()
+    image = FakeImage()
+    client = _make_client(session_factory, config, github=github, image=image)
+
+    # Seed agent with real purpose_tags, stored as JSON (same as DB persists them)
+    tags = ["billing", "audits"]
+    _seed_agent(session_factory, config, purpose_tags=encode_tags(tags))
+
+    response = client.post(f"/api/agents/{AGENT_NAME}/avatar")
+
+    assert response.status_code == 200
+    # The captured prompt must contain the decoded, comma-joined tags
+    # (not individual characters from the JSON string)
+    captured_prompt = image.prompts[0]
+    assert "themes: billing, audits" in captured_prompt
+    # Verify tags are not mangled: a JSON string joined char-by-char
+    # would include brackets, quotes, etc.
+    assert '"' not in captured_prompt.split("themes:")[1].split(";")[0]
 
 
 def test_generate_avatar_regenerate_overwrites_bytes_and_cache(session_factory, config):

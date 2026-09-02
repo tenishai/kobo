@@ -5612,7 +5612,7 @@ def create_app(
             log.warning("persona %r not in the catalog, using generic text for avatar prompt", agent.persona)
             persona_description = f"A {agent.persona} agent."
 
-        prompt = avatar_prompt(agent.name, persona_description)
+        prompt = avatar_prompt(agent.name, persona_description, decode_tags(agent.purpose_tags))
 
         try:
             png = clients.image.generate(prompt)

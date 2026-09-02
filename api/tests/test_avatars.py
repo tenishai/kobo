@@ -56,10 +56,24 @@ def test_avatar_prompt_exact_template():
     # client recorded exactly this string, so the template's shape is a
     # contract, not just "contains the right substrings".
     assert avatar_prompt(NAME, DESCRIPTION) == (
-        "friendly square avatar portrait for an assistant named clio, "
-        "persona flavor from A friendly, concise generalist assistant.; "
-        "flat, minimal, centered, plain background; no text in image."
+        "friendly square avatar portrait of a character named clio; "
+        "persona: A friendly, concise generalist assistant.; "
+        "the face and styling should feel like a \"clio\" -- let the name "
+        "and persona set the character's vibe; flat, minimal, centered, plain "
+        "background; no text in image."
     )
+
+
+def test_avatar_prompt_carries_name_flavor_and_tags():
+    prompt = avatar_prompt("wren", "a careful billing auditor", ["billing", "audits"])
+    assert 'feel like a "wren"' in prompt
+    assert "billing, audits" in prompt
+    assert "no text in image" in prompt
+
+
+def test_avatar_prompt_without_tags_stays_clean():
+    prompt = avatar_prompt("wren", "a careful auditor")
+    assert "themes:" not in prompt or "(none)" not in prompt  # tags clause simply omitted
 
 
 # --- set_avatar ------------------------------------------------------------------
