@@ -150,6 +150,78 @@ C) Demand-driven growth: write keys/principals per explicit ruling;
 5. Anything in the hardening bill that should be upstreamed to
    tenishai/liminal as PRs vs carried as kobo-side patches.
 
+## The dogfood case, made concrete: ledger's four lanes (2026-09-03)
+
+The audit agent this arc was always going to serve now EXISTS: `ledger`
+(persona ledger-keeper, group infra-engineering, repo example-org/agent-ledger),
+built 2026-09-03 entirely through the kobo MCP connector -- two marketplace
+skills (gcp-access-audit, iam-binding-evidence), an enforcement tool
+(audit-provenance: pre_task computes the evidence-chain decision points in
+code and injects them as notices; post_draft blocks gapless bundles and
+annotates identifiers that appeared in no input), and an approved repo
+grant. Its four external lanes are the concrete requirements this arc's
+decision unblocks. Every fact below is read from the shipped
+infra-audit-mcp client code, not remembered.
+
+**Lane 1 -- GitHub (READY, waiting only on the runtime roll).** The
+room's PR-broker grant for example-org/global-iam-permissions is approved.
+The github read quartet (read_file / list_prs / get_pr / list_releases)
+is merged on upstream daedalus main (PR #23) but absent from the fleet
+runtime c1992f2-t0161; the next canonical runtime pin lights this lane
+with no further access work. No liminal dependency.
+
+**Lane 2 -- AWS CloudTrail Lake, acme-it (access design settled by
+precedent; tool surface is the open question).** The old server already
+runs the exact pattern proposed: the workload's GCP service account gets
+an OIDC token (audience=sts.amazonaws.com) and calls
+sts:AssumeRoleWithWebIdentity against a role in acme-it (account
+052257306451), then queries the CloudTrail Lake event data store
+`acme-okta-logs` in us-east-2 via cloudtrail:StartQuery /
+GetQueryResults. NOTE: this is CloudTrail Lake SQL, NOT Athena -- the
+scoped policy needs cloudtrail:StartQuery, cloudtrail:GetQueryResults,
+cloudtrail:DescribeQuery on the event-data-store ARN, not
+athena:*/glue/s3 (unless we deliberately move to Athena federation, a
+separate decision). Ledger's principal exists:
+`agent-ledger@example-project.iam.gserviceaccount.com` (workload
+identity, KSA agent-ledger, ns ledger). Execution is one of: add this
+GSA to the existing audit role's trust policy, or mint a twin role
+`ledger-audit-readonly` scoped identically. Both are one small PR once a
+tool surface exists to consume it.
+
+**Lane 3 -- Slack #ask-access-request (scopes known; reuse available).**
+The old server reads the channel with a bot token (GSM:
+audit-mcp-slack-bot-token) holding channels:history, deliberately using
+conversations.history + conversations.replies rather than
+search.messages (bot-token search is unreliable and the thread ROOT
+carries the emails -- documented in the client). Ledger can reuse that
+bot or get a twin; the missing piece is again the tool surface, not the
+access.
+
+**Lane 4 -- Jira AREQ board (the arc's scoped-key model, live
+precedent).** The old server authenticates as the shared service account
+automation@example.com with a read-only PAT from GSM (basic auth, REST
+/rest/api/3/issue). Ledger's need: read AREQ tickets and their comments
+to verify a VP-or-above approval comment exists. That is exactly the
+"one read service account per vendor + vendor-scoped key" middle ground
+this doc recommends -- browse permission on AREQ only. Caveat for the
+reviewer: verifying the approver is "VP or above" is a DIRECTORY
+question, not a Jira question; Jira proves who commented, the org chart
+proves rank. The bundle should carry the comment + author and name the
+rank check as its own evidence leg.
+
+**The tool-surface decision (what actually blocks lanes 2-4).** Three
+options, unchanged from this doc's body: (a) liminal gateway (the
+recommendation; ledger is the designated first consumer), (b) native
+daedalus sidecar providers per service (the github.py pattern --
+fastest per-lane, but every lane is bespoke runtime code and the credential
+custody/hardening bill still applies), (c) kobo-side broker per service
+(the pr_broker two-wall pattern generalized). Recommendation stands:
+(a), with lane 2 (AWS) as the first target after Atlassian OR instead of
+it -- the AWS lane has the strongest precedent (the old role/trust
+pattern already exists) and the clearest scoping story. Until the arc is
+decided, ledger runs these lanes paste-in, and its teach notes say so
+honestly.
+
 ---
 
 # ORIGINAL DISCOVERY NOTES (2026-09-02, pre-evaluation -- kept for context;
