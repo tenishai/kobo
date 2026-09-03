@@ -340,19 +340,32 @@ already carries `action: Literal["approve", "deny"]`), so it is a plain
 shim exactly like every other route-backed tool here -- `action`'s
 vocabulary is the payload model's own job, not a second check.
 
-Status translation is table (A) (`_agent_route_result`) with one
+Status translation differs sharply between the two, and only ONE of them
+goes through this module's usual table (A):
+
+`kobo_decide_learning` (single id) DOES translate, through a new
+`_learning_route_result` -- table (A) (`_agent_route_result`) with one
 documented, operator-ruled deviation mirroring `kobo_set_agent_skills`'s
-own: `_learning_route_result` (`kobo_decide_learning` alone --
-`kobo_decide_learnings_bulk`'s own route never fails at the top level,
-only per id, inside its own `results` list, already table-(A)-shaped
-verbatim by the route itself) surfaces a 404 whose body is exactly "no
-such learning" verbatim rather than folding it into `_AGENT_NOT_FOUND`:
-that 404 fires strictly POST-gate (the caller already cleared the
-ready-and-decide gate on THIS agent by the time the row lookup runs), so
-folding it would hide a plain bad `learning_id` behind the generic agent
-answer for zero enumeration benefit. Every other 404 (the gate's own
-not-visible) and every 403 still normalize exactly like every other tool
-in this module.
+own: a 404 whose body is exactly "no such learning" surfaces that message
+verbatim rather than folding into `_AGENT_NOT_FOUND`, since that 404 fires
+strictly POST-gate (the caller already cleared the ready-and-decide gate
+on THIS agent by the time the row lookup runs), so folding it would hide
+a plain bad `learning_id` behind the generic agent answer for zero
+enumeration benefit. Every other 404 (the gate's own not-visible) and
+every 403 (the decide gate's own refusal) still fold into `_AGENT_NOT_
+FOUND` exactly like every other agent-scoped tool in this module.
+
+`kobo_decide_learnings_bulk` (many ids) does NOT translate at all -- this
+is deliberate, per the design brief's own "per-id status codes verbatim."
+Its route (`bulk_decide_learnings`) never fails at the top level; it
+always answers 200 with a `results` list, one entry per id, and each
+entry's `status_code` is whatever `_decide_learning` itself returned for
+that one id, untouched. So a per-id 403 (the decide gate's own refusal)
+reaches an MCP caller as a bare 403 in `results`, NOT folded into "agent
+not found" the way the single-id tool folds it -- the anti-enumeration
+fold this module holds everywhere else does not apply per-entry inside a
+bulk result, only to the overall response shape (which bulk's route never
+varies). See that tool's own docstring for the full status-code table.
 
 Approve rides the teach lane byte-for-byte, same as `kobo_teach`: a
 `BackgroundTasks()` instance threads through the call, and `await
@@ -1332,13 +1345,18 @@ def register(mcp: FastMCP, app: Any) -> None:
         .../learnings/bulk route. `action` ("approve" or "deny") applies to
         every id in `ids`; only the first 50 are honored, matching the
         room's own bulk endpoint -- anything past that is silently
-        dropped, never decided and never an error. Each id gets back its
-        OWN status code (200 decided, 404 unknown id, 409 already-decided
-        or agent not ready, and the decide-gate refusal folds into the
-        identical "agent not found" every other tool in this module gives)
-        rather than one verdict for the whole batch -- inspect each entry
-        in `results` rather than assuming the call as a whole succeeded or
-        failed.
+        dropped, never decided and never an error. The call itself always
+        answers with `results`, one entry per id, never a single verdict
+        for the whole batch. Each entry's `status_code` is the room's own
+        verdict VERBATIM, unlike every other tool in this module: it is
+        NOT translated the way a decide-gate refusal folds into "agent not
+        found" elsewhere. 200 means that id was decided; 403 means you may
+        not decide for `agent` right now (not its owner, not an operator,
+        no per-user grant); 404 means either that learning_id does not
+        exist or `agent` itself is unknown or not visible to you; 409
+        means that learning was already decided, or `agent` is not ready.
+        Inspect each entry rather than assuming the call as a whole
+        succeeded or failed.
         """
         from kobo_api.main import LearningsBulkPayload
 

@@ -2795,6 +2795,41 @@ def test_decide_learnings_bulk_per_id_status_codes(session_factory, config, fake
     assert codes[999999] == 404
 
 
+def test_decide_learnings_bulk_gate_refusal_is_a_raw_403_not_folded(
+    session_factory, config, fake_storage
+):
+    """Review fix: `kobo_decide_learnings_bulk` does NOT fold a per-id
+    decide-gate refusal into "agent not found" the way `kobo_decide_
+    learning` (single) does -- the overall call still succeeds (200,
+    `results` shaped) and the refused id's own `status_code` is the raw
+    403 the room's decide gate produced, verbatim, per the design brief's
+    own "per-id status codes verbatim." Same visible-but-not-decider
+    harness as `test_decide_learning_gate_refusal_maps_to_agent_not_found`
+    -- MEMBER_A_EMAIL shares `ward`'s group (so it is visible) but is
+    neither owner nor operator and holds no per-user grant."""
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    learning_id = _seed_learning(session_factory, "ward")
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp,
+        "kobo_decide_learnings_bulk",
+        _ctx_for(MEMBER_A_EMAIL),
+        agent="ward",
+        ids=[learning_id],
+        action="deny",
+    )
+
+    assert result["results"][0]["status_code"] == 403
+    session = session_factory()
+    try:
+        row = session.query(AgentLearning).filter_by(id=learning_id).one()
+        assert row.status == LEARNING_PENDING
+    finally:
+        session.close()
+
+
 def test_decide_learnings_bulk_approve_instant_covers_every_id(
     session_factory, config, fake_storage, monkeypatch
 ):
