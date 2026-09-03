@@ -1609,6 +1609,54 @@ def test_avatar_step_skips_on_repo_push_failure(session_factory, config, caplog)
     assert agent.avatar_png is None
 
 
+def test_avatar_step_survives_malformed_purpose_tags(session_factory, config, caplog):
+    """Final-review fix: a malformed `purpose_tags` column (`decode_tags`
+    raises on bad JSON) must degrade to the same generic, tag-free prompt
+    an unrecognized persona already falls back to -- never propagate out
+    of this step and fail the whole agent through `_run_pipeline_body`'s
+    generic FAILED branch (kobo_api.provisioner)."""
+    session, agent = _avatar_agent(session_factory, purpose_tags="{not valid json")
+    github = _CapturingGitHub()
+    image = FakeImage()
+    ctx = _make_ctx(session, agent, config, _clients(github=github, image=image))
+
+    with caplog.at_level(logging.WARNING):
+        detail = AvatarStep().run(ctx)
+
+    assert detail
+    assert agent.avatar_png == base64.b64encode(FAKE_IMAGE_PNG_BYTES).decode("ascii")
+    assert image.prompts
+    assert f"A {agent.persona} agent." in image.prompts[0]
+    assert "themes:" not in image.prompts[0]
+
+
+def test_avatar_step_survives_persona_lookup_error(session_factory, config, monkeypatch, caplog):
+    """The other half of the same guard: a `get_entry` failure (a catalog/
+    search backend hiccup) must degrade exactly like a persona that simply
+    isn't there -- the portrait still gets generated with the generic
+    fallback description, never a skip and never a failed agent."""
+    import kobo_api.steps as steps_module
+
+    def boom(engine, kind, id, team=None):
+        raise RuntimeError("catalog backend unavailable")
+
+    monkeypatch.setattr(steps_module, "get_entry", boom)
+
+    session, agent = _avatar_agent(session_factory)
+    github = _CapturingGitHub()
+    image = FakeImage()
+    ctx = _make_ctx(session, agent, config, _clients(github=github, image=image))
+
+    with caplog.at_level(logging.WARNING):
+        detail = AvatarStep().run(ctx)
+
+    assert detail
+    assert agent.avatar_png == base64.b64encode(FAKE_IMAGE_PNG_BYTES).decode("ascii")
+    assert image.prompts
+    assert f"A {agent.persona} agent." in image.prompts[0]
+    assert any("catalog backend unavailable" in record.message for record in caplog.records)
+
+
 def test_pipeline_orders_avatar_right_after_repo():
     names = [step.name for step in PIPELINE]
     assert names.index(AvatarStep().name) == names.index(RepoStep().name) + 1

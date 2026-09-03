@@ -60,6 +60,7 @@ from tests.fakes import (
     FakeGitHub,
     FakeGojira,
     FakeKubectl,
+    FakeName,
     FakeSlack,
     FakeStorage,
 )
@@ -209,6 +210,7 @@ def _app(
     agent=None,
     slack=None,
     cabal=None,
+    name=None,
 ):
     clients = Clients(
         github=github if github is not None else FakeGitHub(),
@@ -220,6 +222,7 @@ def _app(
         storage=storage,
         slack=slack,
         cabal=cabal,
+        name=name,
     )
     return create_app(session_factory, config=config, clients=clients)
 
@@ -444,7 +447,21 @@ def test_create_agent_happy_path_returns_name_status_and_note(
 def test_create_agent_without_a_name_uses_the_naming_stations_first_suggestion(
     session_factory, config, fake_storage
 ):
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    """Also the request-shape proof for the persona lookup this wave built
+    (create-identity, Task 3): `who_they_are` IS a catalog persona id on
+    this tool, so it must ride along as `NameSuggestionsRequest.persona_id`
+    too, not just the bare `who_they_are`/`what_they_do` free-text fields --
+    proven here by the real, seeded persona body (a distinctive sentence no
+    caller-submitted text in this test contains) reaching the name
+    generator instead of the thin `who_they_are` string standing in for it."""
+    fake_name = FakeName()
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        name=fake_name,
+    )
     mcp = build_mcp_server(app)
 
     result = _call_tool(
@@ -461,6 +478,17 @@ def test_create_agent_without_a_name_uses_the_naming_stations_first_suggestion(
         assert session.query(Agent).filter_by(name=result["name"]).first() is not None
     finally:
         session.close()
+
+    assert len(fake_name.calls) == 1
+    who, what, _tags, _exclude = fake_name.calls[0]
+    assert who == PERSONA
+    # The seeded "helpful-generalist" persona's own real body (see
+    # templates/personas/helpful-generalist.md), not the bare persona id
+    # `who_they_are` was passed as `what_they_do` -- proof `persona_id`
+    # resolved server-side rather than the thin fallback text riding
+    # through untouched.
+    assert "helpful assistant" in what
+    assert what != PERSONA
 
 
 def test_create_agent_non_member_of_claimed_group_surfaces_the_routes_own_consent_rejection(

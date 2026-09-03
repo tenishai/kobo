@@ -887,12 +887,16 @@ class AvatarStep:
     nice-to-have, never a reason to leave an otherwise-healthy agent stuck
     in FAILED. So EVERY failure path here -- no image backend configured,
     `clients.image.generate` raising, the generated PNG coming back over
-    the size cap, or the repo push itself failing -- raises `StepSkipped`
-    with a one-line reason instead of letting the underlying exception
-    propagate. `StepSkipped` is exactly what keeps this best-effort:
-    `kobo_api.provisioner._run_pipeline_body` records that as SKIPPED, not
-    FAILED, and -- unlike a real failure -- moves straight on to the next
-    step rather than aborting the rest of the pipeline.
+    the size cap, the repo push itself failing, or the final `avatar_png`
+    encode/persist failing -- raises `StepSkipped` with a one-line reason
+    instead of letting the underlying exception propagate. A persona-
+    description or purpose-tags lookup failure is guarded too, but
+    degrades quietly to a generic, tag-free prompt rather than skipping --
+    a missing/unreadable persona is never worth losing the picture over.
+    `StepSkipped` is exactly what keeps this best-effort: `kobo_api.
+    provisioner._run_pipeline_body` records that as SKIPPED, not FAILED,
+    and -- unlike a real failure -- moves straight on to the next step
+    rather than aborting the rest of the pipeline.
 
     Idempotent resume, belt-and-suspenders: a pre-existing `agent.
     avatar_png` (this step already ran and succeeded on a prior attempt, or
@@ -925,18 +929,36 @@ class AvatarStep:
         # reach, and a stale or empty catalog here just means the honest
         # generic fallback below, never a reason to skip the picture
         # entirely.
+        #
+        # Wrapped broader than just the "not in the catalog" branch below:
+        # `get_entry` itself can raise (a catalog/search backend hiccup),
+        # and `decode_tags` raises on a malformed `purpose_tags` column --
+        # either one, left unguarded, would propagate straight out of this
+        # step and into `_run_pipeline_body`'s generic FAILED branch
+        # (kobo_api.provisioner), turning a picture problem into a raw
+        # exception on the whole agent. Both degrade to the exact same
+        # generic, tag-free prompt a plain unresolved persona already falls
+        # back to.
         engine = ctx.session.get_bind()
-        persona_entry = get_entry(engine, "persona", agent.persona, team=None)
-        if persona_entry is not None:
-            persona_description = persona_entry.description
-        else:
+        try:
+            persona_entry = get_entry(engine, "persona", agent.persona, team=None)
+            if persona_entry is not None:
+                persona_description = persona_entry.description
+            else:
+                log.warning(
+                    "persona %r not in the catalog, using generic text for avatar prompt",
+                    agent.persona,
+                )
+                persona_description = f"A {agent.persona} agent."
+            tags = decode_tags(agent.purpose_tags)
+        except Exception as exc:  # degrade to the generic fallback, never fail the agent
             log.warning(
-                "persona %r not in the catalog, using generic text for avatar prompt",
-                agent.persona,
+                "avatar step %s for %s: %s", "persona/tags lookup", agent.name, exc
             )
             persona_description = f"A {agent.persona} agent."
+            tags = []
 
-        prompt = avatar_prompt(agent.name, persona_description, decode_tags(agent.purpose_tags))
+        prompt = avatar_prompt(agent.name, persona_description, tags)
 
         # Broader than the route's own `except ClientError`: this step's
         # whole job is to never let a picture problem become an agent
@@ -972,8 +994,25 @@ class AvatarStep:
             log.warning("avatar step %s for %s: %s", "save", agent.name, exc)
             raise StepSkipped("couldn't save the picture") from exc
 
-        agent.avatar_png = base64.b64encode(png).decode("ascii")
-        ctx.session.commit()
+        # No explicit commit here: `_run_pipeline_body` (kobo_api.
+        # provisioner, ~227-229) already commits the session right after
+        # every step's `run` returns successfully, so this assignment rides
+        # that same commit. A second commit here bought nothing on the
+        # happy path and, on failure, poisoned the session for good --
+        # the provisioner's own FAILED-branch commit (same function, the
+        # `except Exception` arm right below the success path) would then
+        # raise its own `PendingRollbackError` instead of ever recording
+        # this step's honest `StepSkipped`, and the agent would die with a
+        # raw SQLAlchemy error instead. Guarded the same way as every other
+        # failure path in this method: a picture is never a reason to fail
+        # the agent.
+        try:
+            agent.avatar_png = base64.b64encode(png).decode("ascii")
+        except Exception as exc:
+            ctx.session.rollback()
+            log.warning("avatar step %s for %s: %s", "encode", agent.name, exc)
+            raise StepSkipped("couldn't save the picture") from exc
+
         return f"generated and saved avatar ({sha})"
 
 

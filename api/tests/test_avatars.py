@@ -73,7 +73,7 @@ def test_avatar_prompt_carries_name_flavor_and_tags():
 
 def test_avatar_prompt_without_tags_stays_clean():
     prompt = avatar_prompt("wren", "a careful auditor")
-    assert "themes:" not in prompt or "(none)" not in prompt  # tags clause simply omitted
+    assert "themes:" not in prompt  # tags clause simply omitted
 
 
 # --- set_avatar ------------------------------------------------------------------

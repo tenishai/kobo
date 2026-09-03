@@ -58,20 +58,23 @@ export function detailRefetchInterval(
 /**
  * Visual tone for a provisioning step:
  *  - "done"    -> ok
- *  - "skipped" -> ok — a skipped step isn't a failure and isn't still
- *    running either; it renders the same as "done" (no error, no spinner).
+ *  - "skipped" -> skipped, its own tone -- not a failure and not still
+ *    running, but not a success either: the step's own reason (e.g.
+ *    "picture generation is not available") is real information, never
+ *    folded into "ok" the way a plain no-op would be.
  *  - "failed"  -> fail
- *  - "pending" | "running" -> active — a pending step is queued behind
+ *  - "pending" | "running" -> active -- a pending step is queued behind
  *    an active one, and the UI shows both as "working" (spinner), not as
  *    an inert/neutral state.
  *  - anything else (a status this code doesn't recognize) -> active, the
  *    safest default: it doesn't falsely claim success or failure.
  */
-export function stepTone(status: string): "ok" | "fail" | "active" {
+export function stepTone(status: string): "ok" | "fail" | "active" | "skipped" {
   switch (status) {
     case "done":
-    case "skipped":
       return "ok";
+    case "skipped":
+      return "skipped";
     case "failed":
       return "fail";
     case "pending":

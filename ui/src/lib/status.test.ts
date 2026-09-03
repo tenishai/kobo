@@ -104,8 +104,8 @@ describe("stepTone", () => {
     expect(stepTone("done")).toBe("ok");
   });
 
-  it("maps skipped -> ok (renders like done: not an error, not still working)", () => {
-    expect(stepTone("skipped")).toBe("ok");
+  it("maps skipped -> its own tone (not ok, not fail: a real reason worth showing)", () => {
+    expect(stepTone("skipped")).toBe("skipped");
   });
 
   it("maps failed -> fail", () => {

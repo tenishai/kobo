@@ -42,8 +42,6 @@ def avatar_prompt(agent_name: str, persona_description: str, purpose_tags: list[
     if purpose_tags:
         tags_str = ", ".join(purpose_tags)
         parts.append(f" themes: {tags_str};")
-    else:
-        parts.append("")
 
     parts.append(
         f" the face and styling should feel like a \"{agent_name}\" -- let the name "

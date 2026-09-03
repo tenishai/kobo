@@ -60,22 +60,25 @@ that already exists and is already tested in `kobo_api.main`. Concretely:
 Every route function below returns a `fastapi.responses.JSONResponse` in
 every branch (verified against each route's own source) -- `_parse` reads
 its `.body` (already-serialized JSON bytes) back into a dict, and the
-three status-code translators below (`_agent_route_result` for the eight
+four status-code translators below (`_agent_route_result` for the
 agent-scoped tools, `_skill_route_result` for `kobo_set_agent_skills`
-alone, `_create_result` for `kobo_create_agent`) turn that status code
-into either the tool's return value or a `ToolError`.
+alone, `_learning_route_result` for `kobo_decide_learning` alone,
+`_create_result` for `kobo_create_agent`) turn that status code into
+either the tool's return value or a `ToolError`.
 
 ## Status -> ToolError translation
 
-**(A) The eight agent-scoped tools** (`kobo_teach`, `kobo_chat`,
+**(A) The agent-scoped tools** (`kobo_teach`, `kobo_chat`,
 `kobo_request_colleague`, `kobo_accept_invite`, `kobo_wire_slack`,
-`kobo_set_agent_skills`, `kobo_add_agent_tool`, `kobo_request_repo_access`)
--- every one of these resolves an existing agent by name (or, for
-`kobo_accept_invite`, an existing invite naming two agents) before doing
-anything else, so the anti-enumeration property the read tools already
-pin (`kobo_api.mcp.authz.NotFound`'s own docstring) applies here too.
-`kobo_set_agent_skills` carries one narrow, documented, operator-ruled
-exception to this table -- see its own section below.
+`kobo_set_agent_skills`, `kobo_add_agent_tool`, `kobo_request_repo_access`,
+`kobo_decide_learning`, `kobo_decide_learnings_bulk`) -- every one of
+these resolves an existing agent by name (or, for `kobo_accept_invite`, an
+existing invite naming two agents) before doing anything else, so the
+anti-enumeration property the read tools already pin
+(`kobo_api.mcp.authz.NotFound`'s own docstring) applies here too.
+`kobo_set_agent_skills`, `kobo_decide_learning`, and `kobo_decide_
+learnings_bulk` each carry their own narrow, documented, operator-ruled
+deviation from this table -- see their own sections below.
 
 | Route status | Tool outcome |
 |---|---|
@@ -698,7 +701,19 @@ def register(mcp: FastMCP, app: Any) -> None:
                 # it is semantically distinct text. See module docstring.
                 suggestion_response = name_suggestions_endpoint(
                     payload=NameSuggestionsRequest(
-                        who_they_are=who_they_are, what_they_do=who_they_are
+                        who_they_are=who_they_are,
+                        what_they_do=who_they_are,
+                        # `who_they_are` IS a catalog persona id on this
+                        # tool (its own docstring above), so it rides along
+                        # as `persona_id` too -- a resolvable one gets the
+                        # route's own real-body-and-tags enrichment
+                        # (NameSuggestionsRequest's own docstring,
+                        # create-identity Task 3) in place of the bare id
+                        # string standing in for both free-text fields. An
+                        # unresolvable id just falls back to that same bare
+                        # string, silently, by the route's own design --
+                        # never a reason to validate it here first.
+                        persona_id=who_they_are,
                     ),
                     session=session,
                 )

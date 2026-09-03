@@ -2737,6 +2737,16 @@ def create_app(
         clients = app.state.clients
         cfg: Config = app.state.config
 
+        # This route carries no owner/operator gate beyond the app-wide IAP
+        # middleware every route already has -- any signed-in caller may
+        # name a persona_id here, resolved below, same org-wide-ungated
+        # posture GET /api/personas/search already holds for the same
+        # catalog. The exposure that buys a caller: three slug-shaped names
+        # plus three 80-char reasons (SUGGESTION_COUNT, kobo_api.namegen),
+        # derived from at most 2000 chars of that persona's own body sent to
+        # the org-internal name-suggestion model. A decision, not an
+        # omission.
+        #
         # persona_id server-side resolution (create-identity, Task 3): when
         # it's set and resolves against the persona catalog, the persona's
         # own REAL body (the same bucket-backed text
