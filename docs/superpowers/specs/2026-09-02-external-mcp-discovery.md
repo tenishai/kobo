@@ -209,6 +209,35 @@ question, not a Jira question; Jira proves who commented, the org chart
 proves rank. The bundle should carry the comment + author and name the
 rank check as its own evidence leg.
 
+**Cloud lanes are their own category (operator ask, 2026-09-03).** The
+operator wants scoped role-based access to cloud services (CloudTrail
+Lake SQL today; any AWS/Azure/GCP service tomorrow) with a SIMPLIFIED
+way of granting it -- fold this into the arc as a first-class lane type.
+The key observation: cloud providers are the one vendor class where the
+"vendor scopes" half of the recommendation is already solved better than
+any gateway could do it -- IAM roles, conditions, and resource ARNs are
+the native scoping primitives -- and where NO stored credential is
+needed at all: every kobo agent already has its own GCP service account
+(workload identity, created at birth), GCP federates to AWS via
+AssumeRoleWithWebIdentity (the shipped audit-mcp precedent) and to Azure
+via federated credentials. So for cloud lanes, liminal's credential
+custody problem (K1/K4, resolver, OpenBao) largely DISSOLVES: the
+gateway would forward identity, not inject secrets. Proposed simplified
+grant model: declare agent cloud access in example-org/global-iam-permissions
+the same way team access is declared -- the agent's GSA as a principal
+in the existing YAML+terraform machinery (per-service scoped role, PR
+lane, drift detection, and the access-ledger diff chain all come free,
+and ledger itself can audit agent grants with the same methodology it
+uses for humans). Open sub-questions for the reviewer: (a) do cloud
+calls still route THROUGH liminal for the audit trail and policy gate,
+or does the agent call the provider directly once IAM grants it (weaker
+central kill-switch, no gateway hop)? (b) if through liminal, the
+gateway needs cloud-SDK-shaped targets (SigV4 signing for AWS), which
+is a bigger liminal feature than an HTTP MCP target; (c) a
+`CloudAccess` row type in kobo (request -> operator approve ->
+generated PR against global-iam-permissions) as the self-service front
+door.
+
 **The tool-surface decision (what actually blocks lanes 2-4).** Three
 options, unchanged from this doc's body: (a) liminal gateway (the
 recommendation; ledger is the designated first consumer), (b) native
