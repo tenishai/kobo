@@ -9,9 +9,13 @@ marketplace catalog itself, membership-gated -- see that pair's own
 docstring section below), `kobo_request_repo_access`/`kobo_list_repo_access`/
 `kobo_decide_repo_access` (the agent PR broker's request/list/decide trio,
 gating which GitHub repositories an agent's own github.open_pr tool may
-mint scoped tokens against), and `kobo_create_persona` (persona wave Task
+mint scoped tokens against), `kobo_create_persona` (persona wave Task
 5, publishing a NEW persona into the room's own catalog -- see that tool's
-own docstring section below).
+own docstring section below), and the write half of the MCP learnings
+trio (Task 8) -- `kobo_decide_learning`/`kobo_decide_learnings_bulk` --
+its read half, `kobo_list_learnings`, lives in `kobo_api.mcp.tools.read`
+since it never mutates, the same split every other read/write pair in
+this pair of modules already holds.
 
 THE REUSE MECHANISM -- this is the entire design of this module. Every
 tool below is a thin shim that calls the SAME route handler the room's own
@@ -307,6 +311,63 @@ membership-gated for any other name -- is deliberately NOT this module's
 this one): the persona axis and the marketplace axis are two different
 gates on two different resources, and only the route's own gate fires
 here, never a second implementation of it.
+
+## `kobo_decide_learning`/`kobo_decide_learnings_bulk` (MCP learnings trio,
+## Task 8)
+
+The verdict half of the daily-learnings spec's decide surface (`kobo_
+list_learnings`, this pair's read-only sibling, lives in `kobo_api.mcp.
+tools.read`). Both ride `kobo_api.main._decide_learning` -- lifted to
+module level for this task from a closure that used to live inside
+`create_app` -- the SAME shared verdict path `approve_learning`/
+`deny_learning`/`bulk_decide_learnings` call, so every gate it already
+enforces (`_ready_agent_or_error`'s 404/409, `_decider_or_403`'s
+owner-or-operator-or-grant 403, the row's own 404/409) fires unmodified
+for an MCP caller too, exactly this module's whole reuse mechanism.
+
+`kobo_decide_learning` (one id) has no existing HTTP route of its own to
+look up via `_endpoint`: the room's own two single-verdict routes each
+hardcode their own action (`POST .../approve`, `POST .../deny`), neither
+taking `action` as a caller-supplied value the way this tool does. So
+this tool calls `_decide_learning` directly (imported straight from
+`kobo_api.main`, deferred the same way every other main.py-only symbol in
+this module already is) rather than through `_endpoint` -- and validates
+`action` itself, BEFORE any call, since `_decide_learning`'s own body
+only branches on `action == "deny"` and silently treats anything else as
+an approve. `kobo_decide_learnings_bulk` (many ids), in contrast, DOES
+have a real route (`POST .../learnings/bulk`, `LearningsBulkPayload`
+already carries `action: Literal["approve", "deny"]`), so it is a plain
+shim exactly like every other route-backed tool here -- `action`'s
+vocabulary is the payload model's own job, not a second check.
+
+Status translation is table (A) (`_agent_route_result`) with one
+documented, operator-ruled deviation mirroring `kobo_set_agent_skills`'s
+own: `_learning_route_result` (`kobo_decide_learning` alone --
+`kobo_decide_learnings_bulk`'s own route never fails at the top level,
+only per id, inside its own `results` list, already table-(A)-shaped
+verbatim by the route itself) surfaces a 404 whose body is exactly "no
+such learning" verbatim rather than folding it into `_AGENT_NOT_FOUND`:
+that 404 fires strictly POST-gate (the caller already cleared the
+ready-and-decide gate on THIS agent by the time the row lookup runs), so
+folding it would hide a plain bad `learning_id` behind the generic agent
+answer for zero enumeration benefit. Every other 404 (the gate's own
+not-visible) and every 403 still normalize exactly like every other tool
+in this module.
+
+Approve rides the teach lane byte-for-byte, same as `kobo_teach`: a
+`BackgroundTasks()` instance threads through the call, and `await
+background_tasks()` afterward runs whatever the instant lane queued (the
+background archive commit) -- nothing here re-implements
+`_archive_teach_note`, this just runs it, same as `kobo_teach`/
+`kobo_add_agent_tool` already do. For the bulk tool, ONE shared
+`BackgroundTasks()` instance threads through every id `_decide_learning`
+processes internally, so a single `await background_tasks()` after the
+whole batch runs every id's own queued archive commit.
+
+`kobo_decide_learnings_bulk` honors at most 50 ids, matching the room's
+own bulk route (`payload.ids[:50]`, unchanged): a caller passing more
+gets the first 50 silently decided, never an error naming the excess --
+existing route behavior, byte-identical, not a new cap this tool invents.
 """
 
 from __future__ import annotations
@@ -367,6 +428,18 @@ _SKILL_GONE_FROM_CATALOG_PREFIX = "skill no longer in the catalog:"
 # `kobo_add_agent_tool`'s own source-arbitration gate -- see this module's
 # own docstring section for exactly which shapes this covers.
 _EXACTLY_ONE_SOURCE = "pass exactly one source: tool_id, or filename with content"
+
+# `kobo_api.main._decide_learning`'s own POST-GATE "no such learning" 404
+# (an unknown learning_id on an agent the caller already cleared the
+# ready-and-decide gate for) -- see this module's own `kobo_decide_learning`/
+# `kobo_decide_learnings_bulk` docstring section for the operator-ruled
+# reasoning `_learning_route_result` below acts on.
+_LEARNING_NOT_FOUND = "no such learning"
+
+# `kobo_decide_learning`'s own action-vocabulary gate -- there is no route
+# of its own to translate a bad value through (see this module's own
+# docstring section), so this is checked here, before any call.
+_INVALID_LEARNING_ACTION = "action must be 'approve' or 'deny'"
 
 
 async def _off_loop(fn: Callable, /, **kwargs: Any) -> Any:
@@ -475,6 +548,25 @@ def _skill_route_result(response: JSONResponse) -> dict:
     return _agent_route_result(response)
 
 
+def _learning_route_result(response: JSONResponse) -> dict:
+    """`kobo_decide_learning`'s own status translation -- table (A) with
+    one documented, operator-ruled deviation mirroring `_skill_route_
+    result`'s own: a 404 whose body is exactly `_LEARNING_NOT_FOUND`
+    surfaces that message verbatim instead of folding into
+    `_AGENT_NOT_FOUND` -- it fires only AFTER the shared ready/decide gate
+    has already passed (see this module's own `kobo_decide_learning`/
+    `kobo_decide_learnings_bulk` docstring section), so it carries zero
+    enumeration value to hide. Every other 404 (the gate's own "not
+    visible") and every 403 fall through to `_agent_route_result` and
+    normalize exactly like every other tool in this module.
+    """
+    if response.status_code == 404:
+        body = _parse(response)
+        if str(body.get("error", "")) == _LEARNING_NOT_FOUND:
+            raise ToolError(_LEARNING_NOT_FOUND)
+    return _agent_route_result(response)
+
+
 def _create_result(response: JSONResponse) -> dict:
     """Table (B) from this module's own docstring -- `kobo_create_agent`'s
     own status translation, distinct from the shared agent-scoped table
@@ -519,13 +611,21 @@ def _require_team_membership(app: Any, email: str, team: str) -> None:
 
 
 def register(mcp: FastMCP, app: Any) -> None:
-    """Registers this module's fourteen write tools on `mcp`. Every route this
+    """Registers this module's sixteen write tools on `mcp`. Every route this
     module calls is looked up exactly once, here, at registration time --
     never re-resolved per call. `kobo_create_skill`/`kobo_create_tool`
     (Task 5) call `kobo_api.marketplace` directly and have no route of
     their own to look up here; `kobo_create_persona` (persona wave, Task 5)
     is the exception to that exception -- it looks up a real route, same as
-    every other tool in this module.
+    every other tool in this module. `kobo_decide_learning` (MCP learnings
+    trio, Task 8) is a second exception alongside it: it calls `kobo_api.
+    main._decide_learning` directly (imported inside its own tool body, the
+    same deferred-import discipline every other main.py-only symbol in this
+    module already follows) rather than through a route lookup here, since
+    no single HTTP route takes `action` as a caller-supplied value -- see
+    that tool's own docstring section for why. `kobo_decide_learnings_bulk`,
+    its batch sibling, DOES have a real route to look up, same as every
+    other tool.
     """
     create_agent_endpoint = _endpoint(app, "POST", "/api/agents")
     name_suggestions_endpoint = _endpoint(app, "POST", "/api/agents/name-suggestions")
@@ -542,6 +642,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     list_repo_access_endpoint = _endpoint(app, "GET", "/api/repo-access")
     decide_repo_access_endpoint = _endpoint(app, "POST", "/api/repo-access/decide")
     create_persona_endpoint = _endpoint(app, "POST", "/api/personas")
+    bulk_decide_learnings_endpoint = _endpoint(app, "POST", "/api/agents/{name}/learnings/bulk")
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     @audited("kobo_create_agent")
@@ -1175,3 +1276,96 @@ def register(mcp: FastMCP, app: Any) -> None:
             return _create_result(response)
         finally:
             session.close()
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @audited("kobo_decide_learning")
+    async def kobo_decide_learning(
+        ctx: Context, agent: str, learning_id: int, action: str
+    ) -> dict:
+        """Approve or deny one pending learning for `agent` -- the same
+        verdict the room's own Learnings tab records for a single row.
+        `action` is "approve" (rides the teach lane byte-for-byte, the same
+        instant-or-archive split kobo_teach uses) or "deny" (marks the row,
+        nothing more). You must clear the decide gate -- owner, room
+        operator, or a per-user grant on this agent, the identical gate
+        kobo_list_learnings' own can_decide reports -- a caller who can
+        only see the agent gets "agent not found", never a distinguishable
+        forbidden. Returns the decided row's id and status, plus mode and
+        filename on an approve.
+        """
+        from kobo_api.main import _decide_learning
+
+        if action not in ("approve", "deny"):
+            raise ToolError(f"{_INVALID_LEARNING_ACTION}, got {action!r}")
+
+        email = get_user_email(ctx)
+        req = authz.room_request(app, email)
+        session = app.state.session_factory()
+        background_tasks = BackgroundTasks()
+        try:
+            response = await _off_loop(
+                _decide_learning,
+                name=agent,
+                learning_id=learning_id,
+                action=action,
+                request=req,
+                background_tasks=background_tasks,
+                session=session,
+            )
+            body = _learning_route_result(response)
+            # Mirrors kobo_teach above: runs whatever the approve+instant
+            # lane queued (the background archive commit) -- nothing here
+            # re-implements `_archive_teach_note`, this just runs it.
+            await background_tasks()
+        finally:
+            session.close()
+
+        return body
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @audited("kobo_decide_learnings_bulk")
+    async def kobo_decide_learnings_bulk(
+        ctx: Context, agent: str, ids: list[int], action: str
+    ) -> dict:
+        """Approve or deny MANY pending learnings for `agent` in one call --
+        the room's own Learnings tab select-all gesture, the same POST
+        .../learnings/bulk route. `action` ("approve" or "deny") applies to
+        every id in `ids`; only the first 50 are honored, matching the
+        room's own bulk endpoint -- anything past that is silently
+        dropped, never decided and never an error. Each id gets back its
+        OWN status code (200 decided, 404 unknown id, 409 already-decided
+        or agent not ready, and the decide-gate refusal folds into the
+        identical "agent not found" every other tool in this module gives)
+        rather than one verdict for the whole batch -- inspect each entry
+        in `results` rather than assuming the call as a whole succeeded or
+        failed.
+        """
+        from kobo_api.main import LearningsBulkPayload
+
+        email = get_user_email(ctx)
+        req = authz.room_request(app, email)
+        session = app.state.session_factory()
+        background_tasks = BackgroundTasks()
+        try:
+            try:
+                payload = LearningsBulkPayload(ids=ids, action=action)
+            except ValidationError as exc:
+                raise ToolError(f"that request wasn't quite right: {exc}") from exc
+            response = await _off_loop(
+                bulk_decide_learnings_endpoint,
+                name=agent,
+                payload=payload,
+                request=req,
+                background_tasks=background_tasks,
+                session=session,
+            )
+            body = _agent_route_result(response)
+            # Mirrors kobo_decide_learning above: ONE shared background_tasks
+            # instance threads through every id `_decide_learning` processes
+            # internally, so a single run afterward covers every id's own
+            # queued archive commit.
+            await background_tasks()
+        finally:
+            session.close()
+
+        return {"results": body.get("results", [])}

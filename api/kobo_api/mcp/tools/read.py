@@ -1,12 +1,18 @@
 """kobo's read-only MCP tools: the original four from the MCP server arc
 (Task 7) -- whoami, list, get, and feed -- plus two marketplace-catalog
 listers added by the MCP marketplace wave's Task 2 -- `kobo_list_skills`
-and `kobo_list_tools` -- plus the persona wave's Task 4 -- `kobo_list_personas`.
+and `kobo_list_tools` -- plus the persona wave's Task 4 -- `kobo_list_personas`
+-- plus the MCP learnings trio's own read half (Task 8) -- `kobo_list_learnings`,
+the decide-gated view over one agent's learnings queue; its write half,
+`kobo_decide_learning`/`kobo_decide_learnings_bulk`, lives in
+`kobo_api.mcp.tools.write` since they mutate, the same read/write split
+this pair of modules already holds for everything else.
 Every one of these is a thin shim over the room's own choke points --
 `kobo_api.mcp.authz` for visibility/admin, `kobo_api.main` for the feed's own
-flattening pipeline and the persona search route, `kobo_api.search`/
-`kobo_api.marketplace` for the two marketplace catalogs -- never a second
-implementation of logic that already exists and is already tested there.
+flattening pipeline, the persona search route, and the learnings list route,
+`kobo_api.search`/`kobo_api.marketplace` for the two marketplace catalogs --
+never a second implementation of logic that already exists and is already
+tested there.
 
 Every tool wears `@mcp.tool(annotations=ToolAnnotations(readOnlyHint=
 True))` on the outside and `@audited("kobo_x")` immediately under it --
@@ -82,7 +88,7 @@ _MARKETPLACE_DID_NOT_ANSWER = "The marketplace did not answer. Try again shortly
 
 
 def register(mcp: FastMCP, app: Any) -> None:
-    """Registers this module's seven read tools on `mcp`. Each closes over
+    """Registers this module's eight read tools on `mcp`. Each closes over
     `app` -- the same FastAPI app `kobo_api.mcp.authz.room_request` builds
     its synthetic `Request` from, and the source of the session factory,
     switchboard client, storage client, and GitHub client every tool
@@ -369,21 +375,22 @@ def register(mcp: FastMCP, app: Any) -> None:
 
         return {"result": tools}
 
-    # Deferred import: `_endpoint` is `kobo_api.mcp.tools.write`'s own
-    # helper (see that module's docstring for the full mechanism) -- a real
-    # read->write->read cycle exists: write.py line ~331 module-level imports
-    # three constants FROM this module (_CATALOG_UNAVAILABLE,
-    # _MARKETPLACE_DID_NOT_ANSWER, _SKILLS_BUCKET_NOT_CONFIGURED). A
-    # module-level import would fail loudly at import time, so this module IS
-    # imported at `kobo_api.mcp.server` load time (from `register`'s own
-    # module-level position in that file), well before
-    # `kobo_api.mcp.tools.write` is guaranteed to have finished importing
-    # everything it does. Deferring the import to inside `register` (which
-    # only ever runs once `build_mcp_server` is actually called) sidesteps
-    # that ordering entirely.
-    from kobo_api.mcp.tools.write import _endpoint, _off_loop
+    # Deferred import: `_endpoint`/`_off_loop`/`_parse` are `kobo_api.mcp.
+    # tools.write`'s own helpers (see that module's docstring for the full
+    # mechanism) -- a real read->write->read cycle exists: write.py line
+    # ~331 module-level imports three constants FROM this module
+    # (_CATALOG_UNAVAILABLE, _MARKETPLACE_DID_NOT_ANSWER,
+    # _SKILLS_BUCKET_NOT_CONFIGURED). A module-level import would fail
+    # loudly at import time, so this module IS imported at `kobo_api.mcp.
+    # server` load time (from `register`'s own module-level position in
+    # that file), well before `kobo_api.mcp.tools.write` is guaranteed to
+    # have finished importing everything it does. Deferring the import to
+    # inside `register` (which only ever runs once `build_mcp_server` is
+    # actually called) sidesteps that ordering entirely.
+    from kobo_api.mcp.tools.write import _endpoint, _off_loop, _parse
 
     search_personas_endpoint = _endpoint(app, "GET", "/api/personas/search")
+    list_learnings_endpoint = _endpoint(app, "GET", "/api/agents/{name}/learnings")
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     @audited("kobo_list_personas")
@@ -403,3 +410,49 @@ def register(mcp: FastMCP, app: Any) -> None:
         finally:
             session.close()
         return {"result": body["results"]}
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @audited("kobo_list_learnings")
+    async def kobo_list_learnings(ctx: Context, agent: str, status: str = "all") -> dict:
+        """List the learnings queued for `agent`: candidate memories the
+        nightly summarizer proposed, awaiting a human verdict -- the same
+        rows the room's own Learnings tab shows, straight from GET
+        .../learnings. Optional status filters to one of
+        pending/approved/denied/expired; the default "all" returns every
+        row regardless of status. Visibility is checked before anything
+        else, the same as kobo_get_agent: an agent you cannot see answers
+        "agent not found". `can_decide` reports whether YOU may approve or
+        deny a learning for this agent right now -- the identical gate
+        kobo_decide_learning/kobo_decide_learnings_bulk enforce (owner,
+        room operator, or a per-user grant) -- check it before assuming a
+        decide call on one of these rows will actually succeed.
+        """
+        from kobo_api.main import _decider_or_403
+
+        email = get_user_email(ctx)
+        req = authz.room_request(app, email)
+        session = app.state.session_factory()
+        try:
+            response = await _off_loop(
+                list_learnings_endpoint, name=agent, request=req, status=status, session=session
+            )
+            if response.status_code == 404:
+                raise ToolError(_AGENT_NOT_FOUND)
+            if response.status_code != 200:
+                body = _parse(response)
+                raise ToolError(
+                    str(body.get("error", "that request could not be completed"))
+                )
+            body = _parse(response)
+
+            try:
+                agent_row = authz.visible_agent_or_not_found(session, app, email, agent)
+            except authz.NotFound as exc:
+                raise ToolError(_AGENT_NOT_FOUND) from exc
+
+            return {
+                "learnings": body["learnings"],
+                "can_decide": _decider_or_403(agent_row, req, session) is None,
+            }
+        finally:
+            session.close()

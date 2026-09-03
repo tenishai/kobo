@@ -41,8 +41,12 @@ from kobo_api.mcp.server import build_mcp_server
 from kobo_api.mcp.tools.read import _MARKETPLACE_DID_NOT_ANSWER
 from kobo_api.models import (
     INVITE_PENDING,
+    LEARNING_APPROVED,
+    LEARNING_DENIED,
+    LEARNING_PENDING,
     A2AInvite,
     Agent,
+    AgentLearning,
     AgentStatus,
     Base,
     MCPToolCallLog,
@@ -51,6 +55,7 @@ from kobo_api.personas import seed_default_personas
 from kobo_api.slack_state import encode_channels
 from tests.fakes import (
     FakeAgent,
+    FakeCabal,
     FakeCloud,
     FakeGitHub,
     FakeGojira,
@@ -85,6 +90,23 @@ APP_ID = "A0EXISTING"
 CHANNEL = "C1234567"
 
 _AGENT_YAML_TRANSPORTS = [{"kind": "a2a", "host": "0.0.0.0", "port": 8080}]
+
+_CABAL_ENDPOINT_TEMPLATE = "http://agent-{name}.default.svc.cluster.local"
+
+
+def _cabal_enabled_config(config):
+    """Same switchboard-on config shape as test_web_teach.py's own
+    `_enabled_config` -- local copy, this file's own no-cross-import-
+    fixtures convention. Combined with the `CABAL_OPERATOR_TOKEN` env var
+    (set per-test via monkeypatch) and a wired `clients.cabal`, this is
+    what flips `cabal_enabled(cfg)` true for `kobo_decide_learning`'s own
+    instant-lane test."""
+    return config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": _CABAL_ENDPOINT_TEMPLATE,
+        }
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -186,6 +208,7 @@ def _app(
     gojira=None,
     agent=None,
     slack=None,
+    cabal=None,
 ):
     clients = Clients(
         github=github if github is not None else FakeGitHub(),
@@ -196,6 +219,7 @@ def _app(
         groups=groups_resolver,
         storage=storage,
         slack=slack,
+        cabal=cabal,
     )
     return create_app(session_factory, config=config, clients=clients)
 
@@ -332,25 +356,27 @@ def test_build_mcp_server_registers_the_six_write_tools_alongside_the_read_ones(
     } <= names
 
 
-def test_build_mcp_server_registers_exactly_the_eighteen_named_tools(
+def test_build_mcp_server_registers_exactly_the_twenty_four_named_tools(
     session_factory, config, fake_storage
 ):
     """Coverage folded in from Task 8's review: the subset check just
     above (and its read-tools twin in test_mcp_tools_read.py,
-    `test_build_mcp_server_registers_the_six_read_tools`) each pin only
+    `test_build_mcp_server_registers_the_seven_read_tools`) each pin only
     their own file's tools with `<=`, deliberately, so neither file also
     has to track the other's count -- which means nothing anywhere pins
     the FULL registered set. This is that missing test: `build_mcp_server`
-    must register EXACTLY these eighteen tools, no more, no fewer,
+    must register EXACTLY these twenty-four tools, no more, no fewer,
     matching the design's own "Tool surface" table
     (docs/superpowers/specs/2026-08-22-mcp-server-design.md) plus the MCP
     marketplace wave's Task 2 pair (`kobo_list_skills`/`kobo_list_tools`),
     Task 3's `kobo_set_agent_skills`, Task 4's `kobo_add_agent_tool`, Task
-    5's `kobo_create_skill`/`kobo_create_tool`, and the persona wave's own
-    `kobo_list_personas` (Task 4) plus `kobo_create_persona` (Task 5), one-
-    for-one. A stray extra registration (a copy-paste twin, a leftover
-    experiment) or a dropped one would fail this even though both
-    narrower `<=` checks above would stay green.
+    5's `kobo_create_skill`/`kobo_create_tool`, the persona wave's own
+    `kobo_list_personas` (Task 4) plus `kobo_create_persona` (Task 5), and
+    the MCP learnings trio (Task 8) -- `kobo_list_learnings`,
+    `kobo_decide_learning`, `kobo_decide_learnings_bulk` -- one-for-one. A
+    stray extra registration (a copy-paste twin, a leftover experiment) or
+    a dropped one would fail this even though both narrower `<=` checks
+    above would stay green.
     """
     app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
 
@@ -365,6 +391,7 @@ def test_build_mcp_server_registers_exactly_the_eighteen_named_tools(
         "kobo_list_skills",
         "kobo_list_tools",
         "kobo_list_personas",
+        "kobo_list_learnings",
         "kobo_create_agent",
         "kobo_teach",
         "kobo_chat",
@@ -379,6 +406,8 @@ def test_build_mcp_server_registers_exactly_the_eighteen_named_tools(
         "kobo_request_repo_access",
         "kobo_list_repo_access",
         "kobo_decide_repo_access",
+        "kobo_decide_learning",
+        "kobo_decide_learnings_bulk",
     }
 
 
@@ -2522,3 +2551,342 @@ def test_decide_repo_access_validates_decision_vocabulary(
             ids=[1],
             decision="maybe",
         )
+
+
+# --- kobo_decide_learning / kobo_decide_learnings_bulk (MCP learnings trio, --
+# Task 8) -- the write half of the daily-learnings decide surface. Both ride
+# `kobo_api.main._decide_learning` (lifted to module level for this task),
+# the SAME shared verdict path `approve_learning`/`deny_learning`/
+# `bulk_decide_learnings` already call -- these tests exist to prove the
+# WIRING and status-code translation, not to re-prove the verdict logic
+# itself (test_web_learnings.py's job, exhaustively, and it stays green,
+# untouched, through this same extraction). The read half of this trio
+# (`kobo_list_learnings`) lives in test_mcp_tools_read.py, matching the
+# read/write module split itself.
+
+
+def _seed_learning(session_factory, agent_name, **overrides):
+    """Local copy of test_mcp_tools_read.py's own helper of the same name
+    -- this file's "don't cross-import test fixtures" convention (see this
+    file's module docstring) applies here too."""
+    session = session_factory()
+    try:
+        defaults = {
+            "agent_name": agent_name,
+            "day": "2026-09-01",
+            "content": "the canary gate is manual",
+            "kind": "fact",
+            "source": "Slack, Sep 1",
+            "evidence": "quote",
+            "content_hash": "a" * 64,
+        }
+        defaults.update(overrides)
+        row = AgentLearning(**defaults)
+        session.add(row)
+        session.commit()
+        return row.id
+    finally:
+        session.close()
+
+
+def test_decide_learning_deny_flips_status(session_factory, config, fake_storage):
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    learning_id = _seed_learning(session_factory, "ward")
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp,
+        "kobo_decide_learning",
+        _ctx_for(OWNER_A_EMAIL),
+        agent="ward",
+        learning_id=learning_id,
+        action="deny",
+    )
+
+    assert result["status"] == LEARNING_DENIED
+    session = session_factory()
+    try:
+        row = session.query(AgentLearning).filter_by(id=learning_id).one()
+        assert row.status == LEARNING_DENIED
+        assert row.decided_by == OWNER_A_EMAIL
+    finally:
+        session.close()
+
+
+def test_decide_learning_approve_rides_teach_lane_instant(
+    session_factory, config, fake_storage, monkeypatch
+):
+    """The trio's own proof that approve delivers via the (faked) teach
+    lane -- no existing test anywhere in this repo exercises the
+    learnings-approve INSTANT path (test_web_learnings.py's own approve
+    test only covers the archive fallback), so this is new coverage, not a
+    re-proof of something test_web_learnings.py already pins."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    relay_result = {
+        "status": {
+            "state": "completed",
+            "message": {"parts": [{"text": "noted, thanks"}]},
+        }
+    }
+    fake_cabal = FakeCabal(relay_result=relay_result)
+    fake_github = FakeGitHub()
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    learning_id = _seed_learning(session_factory, "ward")
+    app = _app(
+        session_factory,
+        cfg,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+        cabal=fake_cabal,
+    )
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp,
+        "kobo_decide_learning",
+        _ctx_for(OWNER_A_EMAIL),
+        agent="ward",
+        learning_id=learning_id,
+        action="approve",
+    )
+
+    assert result["status"] == LEARNING_APPROVED
+    assert result["mode"] == "instant"
+    filename = result["filename"]
+    assert filename.startswith("learning-")
+    # await background_tasks() inside the tool ran the queued archive
+    # commit before the call returned -- the same discipline kobo_teach's
+    # own instant-lane test pins.
+    assert "the canary gate is manual" in fake_github.pushed_file(f"bundle/intake/{filename}")
+    session = session_factory()
+    try:
+        row = session.query(AgentLearning).filter_by(id=learning_id).one()
+        assert row.status == LEARNING_APPROVED
+    finally:
+        session.close()
+
+
+def test_decide_learning_gate_refusal_maps_to_agent_not_found(
+    session_factory, config, fake_storage
+):
+    """A visible caller who is neither owner nor operator and holds no
+    per-user grant must get "agent not found" -- never a distinguishable
+    forbidden, and the row must stay untouched."""
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    learning_id = _seed_learning(session_factory, "ward")
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="agent not found"):
+        _call_tool(
+            mcp,
+            "kobo_decide_learning",
+            _ctx_for(MEMBER_A_EMAIL),
+            agent="ward",
+            learning_id=learning_id,
+            action="deny",
+        )
+
+    session = session_factory()
+    try:
+        row = session.query(AgentLearning).filter_by(id=learning_id).one()
+        assert row.status == LEARNING_PENDING
+    finally:
+        session.close()
+
+
+def test_decide_learning_invalid_action_raises_tool_error(session_factory, config, fake_storage):
+    """There is no route to validate `action`'s vocabulary the way
+    `LearningsBulkPayload` does for the bulk tool (see this module's own
+    docstring section) -- this tool's own gate must catch it."""
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    learning_id = _seed_learning(session_factory, "ward")
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="action must be 'approve' or 'deny'"):
+        _call_tool(
+            mcp,
+            "kobo_decide_learning",
+            _ctx_for(OWNER_A_EMAIL),
+            agent="ward",
+            learning_id=learning_id,
+            action="frobnicate",
+        )
+
+    session = session_factory()
+    try:
+        row = session.query(AgentLearning).filter_by(id=learning_id).one()
+        assert row.status == LEARNING_PENDING
+    finally:
+        session.close()
+
+
+def test_decide_learning_unknown_id_surfaces_verbatim(session_factory, config, fake_storage):
+    """`_learning_route_result`'s own documented deviation: a bad
+    learning_id fires strictly POST-gate (the caller already cleared the
+    ready-and-decide gate on THIS agent), so it surfaces "no such
+    learning" verbatim rather than folding into "agent not found"."""
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="no such learning"):
+        _call_tool(
+            mcp,
+            "kobo_decide_learning",
+            _ctx_for(OWNER_A_EMAIL),
+            agent="ward",
+            learning_id=999999,
+            action="deny",
+        )
+
+
+def test_decide_learning_audit_row_logs_tool_status_and_arguments(
+    session_factory, config, fake_storage
+):
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    learning_id = _seed_learning(session_factory, "ward")
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    _call_tool(
+        mcp,
+        "kobo_decide_learning",
+        _ctx_for(OWNER_A_EMAIL),
+        agent="ward",
+        learning_id=learning_id,
+        action="deny",
+    )
+
+    row = _last_audit_row(session_factory)
+    assert row is not None
+    assert row.tool == "kobo_decide_learning"
+    assert row.status == "ok"
+    logged = json.loads(row.redacted_args)
+    assert logged["agent"] == "ward"
+    assert logged["action"] == "deny"
+
+
+def test_decide_learnings_bulk_per_id_status_codes(session_factory, config, fake_storage):
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    first = _seed_learning(session_factory, "ward", content_hash="a" * 64)
+    second = _seed_learning(
+        session_factory, "ward", content="another fact", content_hash="b" * 64
+    )
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp,
+        "kobo_decide_learnings_bulk",
+        _ctx_for(OWNER_A_EMAIL),
+        agent="ward",
+        ids=[first, second, 999999],
+        action="deny",
+    )
+
+    codes = {row["id"]: row["status_code"] for row in result["results"]}
+    assert codes[first] == 200
+    assert codes[second] == 200
+    assert codes[999999] == 404
+
+
+def test_decide_learnings_bulk_approve_instant_covers_every_id(
+    session_factory, config, fake_storage, monkeypatch
+):
+    """ONE shared `BackgroundTasks()` instance threads through every id
+    `_decide_learning` processes internally (this module's own docstring
+    section) -- both rows must land APPROVED, proving the single `await
+    background_tasks()` after the loop covers every id's own queued
+    archive commit, not just the first or the last."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    relay_result = {
+        "status": {"state": "completed", "message": {"parts": [{"text": "noted"}]}}
+    }
+    fake_cabal = FakeCabal(relay_result=relay_result)
+    fake_github = FakeGitHub()
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    first = _seed_learning(session_factory, "ward", content_hash="a" * 64)
+    second = _seed_learning(
+        session_factory, "ward", content="another fact", content_hash="b" * 64
+    )
+    app = _app(
+        session_factory,
+        cfg,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+        cabal=fake_cabal,
+    )
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp,
+        "kobo_decide_learnings_bulk",
+        _ctx_for(OWNER_A_EMAIL),
+        agent="ward",
+        ids=[first, second],
+        action="approve",
+    )
+
+    assert [row["status_code"] for row in result["results"]] == [200, 200]
+    session = session_factory()
+    try:
+        rows = session.query(AgentLearning).filter(AgentLearning.id.in_([first, second])).all()
+        assert all(row.status == LEARNING_APPROVED for row in rows)
+    finally:
+        session.close()
+
+
+def test_decide_learnings_bulk_invalid_action_raises_tool_error(
+    session_factory, config, fake_storage
+):
+    """The bulk tool's own action vocabulary is the route's payload
+    model's job (`LearningsBulkPayload.action: Literal["approve", "deny"]`)
+    -- a bad value must surface as a `ToolError` before any route call,
+    same as every other pydantic-validated tool in this module."""
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError):
+        _call_tool(
+            mcp,
+            "kobo_decide_learnings_bulk",
+            _ctx_for(OWNER_A_EMAIL),
+            agent="ward",
+            ids=[1],
+            action="frobnicate",
+        )
+
+
+def test_decide_learnings_bulk_audit_row_logs_tool_status_and_arguments(
+    session_factory, config, fake_storage
+):
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    learning_id = _seed_learning(session_factory, "ward")
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    _call_tool(
+        mcp,
+        "kobo_decide_learnings_bulk",
+        _ctx_for(OWNER_A_EMAIL),
+        agent="ward",
+        ids=[learning_id],
+        action="deny",
+    )
+
+    row = _last_audit_row(session_factory)
+    assert row is not None
+    assert row.tool == "kobo_decide_learnings_bulk"
+    assert row.status == "ok"
+    logged = json.loads(row.redacted_args)
+    assert logged["agent"] == "ward"
+    assert logged["ids"] == [learning_id]
+    assert logged["action"] == "deny"

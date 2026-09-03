@@ -1663,6 +1663,198 @@ async def _room_lifespan(app: FastAPI):
                 await nightly
 
 
+def _teach_task_not_completed(raw: object) -> bool:
+    """True unless `raw` is a well-formed relayed task whose status state
+    is exactly "completed": kobo must not claim the instant lane for a
+    note the agent did not actually keep.
+
+    Same unwrap-then-isinstance-guard style as `_extract_relay_reply`
+    (kobo_api.clients), deliberately duplicated rather than shared: that
+    helper raises on a malformed reply (its caller wants the exception),
+    this one only ever needs a bool and must never raise, since the whole
+    point is answering the question BEFORE it's safe to call
+    `_extract_relay_reply(raw)` at all. A 2xx relay body that's valid JSON
+    but not a dict (a bare list, or a `task`/`result` wrapper whose value
+    isn't a dict either) counts as not-completed rather than raising
+    AttributeError -- that would otherwise escape the route's own `except
+    (CabalError, httpx.HTTPError, ValueError)` and turn an instant-lane
+    miss into a 500 instead of the archive fallback the spec promises.
+
+    The state check is deliberately an equality against "completed", not
+    an inequality against "failed": the daedalus runtime's every success
+    reply (including the already-known reply) is always state "completed",
+    so anything else -- "canceled" (TaskAborted still carries a text
+    part), "input-required" (a clarifying question is not the agent
+    confirming it kept anything), "failed", or missing entirely -- means
+    the note was not actually kept, even though a text part may still be
+    sitting right there ready for `_extract_relay_reply` to happily
+    return it.
+
+    Module-level (MCP learnings trio, Task 8) so `_decide_learning` below
+    can call it without a route's own closure -- every one of teach_agent,
+    upload_intake, and the chat routes still call this exact function,
+    resolved through the module scope now rather than an enclosing one; no
+    call site there needed to change.
+    """
+    task: object = raw
+    if isinstance(raw, dict):
+        if isinstance(raw.get("task"), dict):
+            task = raw["task"]
+        elif isinstance(raw.get("result"), dict):
+            task = raw["result"]
+
+    if not isinstance(task, dict):
+        return True
+
+    status = task.get("status")
+    if not isinstance(status, dict):
+        return True
+
+    return status.get("state") != "completed"
+
+
+def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> None:
+    """The background archive lane. Failure is logged, never surfaced: the
+    memory is already stored in the agent; only the repo copy is missing,
+    and the intake panel simply won't list the file until a later commit
+    lands it.
+
+    `archive_only=True`: this only ever runs after the relay above already
+    reported the note "completed" -- the agent has the memory in hand, so
+    this commit is purely a repo-side mirror of it. The agent repo's
+    generated CI rebuilds and (Recreate strategy) hard-rotates the pod on
+    every push; doing that here would just be downtime bought for a memory
+    the pod already has. `upload_intake_file` still keeps the normal,
+    CI-triggering message if a real Dockerfile re-pin rides along in this
+    same push -- that rebuild is wanted regardless of which lane asked for
+    the commit.
+
+    Module-level (MCP learnings trio, Task 8), taking `app` explicitly
+    instead of closing over it -- `_decide_learning` below needs this same
+    background hook and has no enclosing `create_app` scope to close over.
+    The three routes that schedule this via `background_tasks.add_task`
+    (upload_intake, teach_agent, and `_decide_learning`'s own approve path)
+    all now pass `app` as this function's first argument; behavior is
+    otherwise byte-identical to the closure this replaces.
+    """
+    try:
+        upload_intake_file(
+            app.state.clients.github,
+            repo,
+            filename,
+            note,
+            runtime_image=app.state.config.runtime_image,
+            archive_only=True,
+        )
+    except Exception as exc:
+        log.warning(
+            "teach archive commit failed for %s (%s): %s", repo, filename, exc
+        )
+
+
+def _decide_learning(
+    name: str,
+    learning_id: int,
+    action: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    session: Session,
+) -> JSONResponse:
+    """Shared verdict path for approve/deny/bulk (daily-learnings spec,
+    Task 7). Approve rides the teach lane byte-for-byte (instant relay
+    when cabal is wired, the CI-triggering archive commit otherwise) with
+    the learning- filename prefix, so techne provenance reads
+    intake:learning-<date>-<slug>.
+
+    Module-level (MCP learnings trio, Task 8) rather than a closure inside
+    `create_app`: both `approve_learning`/`deny_learning`/
+    `bulk_decide_learnings` below AND `kobo_decide_learning`/
+    `kobo_decide_learnings_bulk` (kobo_api.mcp.tools.write) call this exact
+    function, the same reuse-not-reimplement discipline every other gate
+    in this file already holds. `request` stands in for the `app` this
+    used to close over -- `request.app.state.config`/`.clients` reads the
+    identical values `_ready_agent_or_error`/`_decider_or_403` (both
+    already module-level) already read the same way off a real or
+    synthetic (`kobo_api.mcp.authz.room_request`) request.
+    """
+    agent = _ready_agent_or_error(
+        session,
+        request,
+        name,
+        not_ready_message="agent is not ready for learnings decisions",
+    )
+    if isinstance(agent, JSONResponse):
+        return agent
+    gate = _decider_or_403(agent, request, session)
+    if gate is not None:
+        return gate
+    row = (
+        session.query(AgentLearning)
+        .filter_by(agent_name=agent.name, id=learning_id)
+        .first()
+    )
+    if row is None:
+        return JSONResponse({"error": "no such learning"}, status_code=404)
+    if row.status != LEARNING_PENDING:
+        return JSONResponse(
+            {"error": f"learning is already {row.status}"}, status_code=409
+        )
+    email = getattr(request.state, "iap_email", None)
+    if action == "deny":
+        row.status = LEARNING_DENIED
+        row.decided_by = email
+        row.decided_at = datetime.now(UTC)
+        session.commit()
+        return JSONResponse({"id": row.id, "status": row.status})
+
+    on_date = datetime.now(UTC).date().isoformat()
+    note = format_note(row.content, taught_by=email, on_date=on_date)
+    filename = note_filename(row.content, on_date=on_date, prefix="learning")
+    cfg: Config = request.app.state.config
+    clients = request.app.state.clients
+    mode = "archive"
+    if cabal_enabled(cfg) and clients.cabal is not None:
+        envelope = _build_teach_envelope(note, filename)
+        try:
+            raw = clients.cabal.relay(agent.name, envelope)
+            if _teach_task_not_completed(raw):
+                raise CabalError("agent reply was not a completed task")
+            _extract_relay_reply(raw)
+        except (CabalError, httpx.HTTPError, ValueError) as exc:
+            log.warning(
+                "learning approve relay failed for %s, archive lane: %s",
+                name,
+                exc,
+            )
+        else:
+            mode = "instant"
+            background_tasks.add_task(
+                _archive_teach_note, request.app, agent.repo_full_name, filename, note
+            )
+    if mode == "archive":
+        try:
+            upload_intake_file(
+                request.app.state.clients.github,
+                agent.repo_full_name,
+                filename,
+                note,
+                runtime_image=cfg.runtime_image,
+            )
+        except (IntakeError, ClientError) as exc:
+            log.warning("learning approve archive failed for %s: %s", name, exc)
+            return JSONResponse(
+                {"error": "couldn't deliver the approved learning. Try again."},
+                status_code=502,
+            )
+    row.status = LEARNING_APPROVED
+    row.decided_by = email
+    row.decided_at = datetime.now(UTC)
+    session.commit()
+    return JSONResponse(
+        {"id": row.id, "status": row.status, "mode": mode, "filename": filename}
+    )
+
+
 def create_app(
     session_factory: sessionmaker[Session],
     *,
@@ -4152,7 +4344,11 @@ def create_app(
                 )
             else:
                 background_tasks.add_task(
-                    _archive_teach_note, agent.repo_full_name, payload.filename, payload.content
+                    _archive_teach_note,
+                    app,
+                    agent.repo_full_name,
+                    payload.filename,
+                    payload.content,
                 )
                 return JSONResponse({"mode": "instant"})
 
@@ -4226,79 +4422,11 @@ def create_app(
     # same false-ingested-window fix). Ready-gated, any signed-in user (no
     # operator gate) — same reach as the metadata routes above.
 
-    def _teach_task_not_completed(raw: object) -> bool:
-        """True unless `raw` is a well-formed relayed task whose status
-        state is exactly "completed": kobo must not claim the instant lane
-        for a note the agent did not actually keep.
-
-        Same unwrap-then-isinstance-guard style as `_extract_relay_reply`
-        (kobo_api.clients) below, deliberately duplicated rather than
-        shared: that helper raises on a malformed reply (its caller wants
-        the exception), this one only ever needs a bool and must never
-        raise, since the whole point is answering the question BEFORE it's
-        safe to call `_extract_relay_reply(raw)` at all. A 2xx relay body
-        that's valid JSON but not a dict (a bare list, or a `task`/`result`
-        wrapper whose value isn't a dict either) counts as not-completed
-        rather than raising AttributeError -- that would otherwise escape
-        the route's own `except (CabalError, httpx.HTTPError, ValueError)`
-        and turn an instant-lane miss into a 500 instead of the archive
-        fallback the spec promises.
-
-        The state check is deliberately an equality against "completed",
-        not an inequality against "failed": the daedalus runtime's every
-        success reply (including the already-known reply) is always state
-        "completed", so anything else -- "canceled" (TaskAborted still
-        carries a text part), "input-required" (a clarifying question is
-        not the agent confirming it kept anything), "failed", or missing
-        entirely -- means the note was not actually kept, even though a
-        text part may still be sitting right there ready for
-        `_extract_relay_reply` to happily return it.
-        """
-        task: object = raw
-        if isinstance(raw, dict):
-            if isinstance(raw.get("task"), dict):
-                task = raw["task"]
-            elif isinstance(raw.get("result"), dict):
-                task = raw["result"]
-
-        if not isinstance(task, dict):
-            return True
-
-        status = task.get("status")
-        if not isinstance(status, dict):
-            return True
-
-        return status.get("state") != "completed"
-
-    def _archive_teach_note(repo: str, filename: str, note: str) -> None:
-        """The background archive lane. Failure is logged, never surfaced:
-        the memory is already stored in the agent; only the repo copy is
-        missing, and the intake panel simply won't list the file until a
-        later commit lands it.
-
-        `archive_only=True`: this only ever runs after the relay above
-        already reported the note "completed" -- the agent has the memory
-        in hand, so this commit is purely a repo-side mirror of it. The
-        agent repo's generated CI rebuilds and (Recreate strategy)
-        hard-rotates the pod on every push; doing that here would just be
-        downtime bought for a memory the pod already has. `upload_intake_
-        file` still keeps the normal, CI-triggering message if a real
-        Dockerfile re-pin rides along in this same push -- that rebuild is
-        wanted regardless of which lane asked for the commit.
-        """
-        try:
-            upload_intake_file(
-                app.state.clients.github,
-                repo,
-                filename,
-                note,
-                runtime_image=app.state.config.runtime_image,
-                archive_only=True,
-            )
-        except Exception as exc:
-            log.warning(
-                "teach archive commit failed for %s (%s): %s", repo, filename, exc
-            )
+    # `_teach_task_not_completed`/`_archive_teach_note` are now module-level
+    # (MCP learnings trio, Task 8, see their own docstrings just above
+    # `create_app`) -- both used to be closures defined right here; every
+    # call site below still calls them by the same bare name, resolved
+    # through the module scope now instead of this enclosing one.
 
     @app.post("/api/agents/{name}/teach")
     def teach_agent(
@@ -4367,7 +4495,7 @@ def create_app(
                 )
             else:
                 background_tasks.add_task(
-                    _archive_teach_note, agent.repo_full_name, filename, note
+                    _archive_teach_note, app, agent.repo_full_name, filename, note
                 )
                 return JSONResponse({"filename": filename, "mode": "instant"})
 
@@ -4444,94 +4572,11 @@ def create_app(
             }
         )
 
-    def _decide_learning(
-        name: str,
-        learning_id: int,
-        action: str,
-        request: Request,
-        background_tasks: BackgroundTasks,
-        session: Session,
-    ) -> JSONResponse:
-        """Shared verdict path for approve/deny/bulk. Approve rides the
-        teach lane byte-for-byte (instant relay when cabal is wired, the
-        CI-triggering archive commit otherwise) with the learning- filename
-        prefix, so techne provenance reads intake:learning-<date>-<slug>."""
-        agent = _ready_agent_or_error(
-            session,
-            request,
-            name,
-            not_ready_message="agent is not ready for learnings decisions",
-        )
-        if isinstance(agent, JSONResponse):
-            return agent
-        gate = _decider_or_403(agent, request, session)
-        if gate is not None:
-            return gate
-        row = (
-            session.query(AgentLearning)
-            .filter_by(agent_name=agent.name, id=learning_id)
-            .first()
-        )
-        if row is None:
-            return JSONResponse({"error": "no such learning"}, status_code=404)
-        if row.status != LEARNING_PENDING:
-            return JSONResponse(
-                {"error": f"learning is already {row.status}"}, status_code=409
-            )
-        email = getattr(request.state, "iap_email", None)
-        if action == "deny":
-            row.status = LEARNING_DENIED
-            row.decided_by = email
-            row.decided_at = datetime.now(UTC)
-            session.commit()
-            return JSONResponse({"id": row.id, "status": row.status})
-
-        on_date = datetime.now(UTC).date().isoformat()
-        note = format_note(row.content, taught_by=email, on_date=on_date)
-        filename = note_filename(row.content, on_date=on_date, prefix="learning")
-        cfg: Config = app.state.config
-        clients = app.state.clients
-        mode = "archive"
-        if cabal_enabled(cfg) and clients.cabal is not None:
-            envelope = _build_teach_envelope(note, filename)
-            try:
-                raw = clients.cabal.relay(agent.name, envelope)
-                if _teach_task_not_completed(raw):
-                    raise CabalError("agent reply was not a completed task")
-                _extract_relay_reply(raw)
-            except (CabalError, httpx.HTTPError, ValueError) as exc:
-                log.warning(
-                    "learning approve relay failed for %s, archive lane: %s",
-                    name,
-                    exc,
-                )
-            else:
-                mode = "instant"
-                background_tasks.add_task(
-                    _archive_teach_note, agent.repo_full_name, filename, note
-                )
-        if mode == "archive":
-            try:
-                upload_intake_file(
-                    app.state.clients.github,
-                    agent.repo_full_name,
-                    filename,
-                    note,
-                    runtime_image=cfg.runtime_image,
-                )
-            except (IntakeError, ClientError) as exc:
-                log.warning("learning approve archive failed for %s: %s", name, exc)
-                return JSONResponse(
-                    {"error": "couldn't deliver the approved learning. Try again."},
-                    status_code=502,
-                )
-        row.status = LEARNING_APPROVED
-        row.decided_by = email
-        row.decided_at = datetime.now(UTC)
-        session.commit()
-        return JSONResponse(
-            {"id": row.id, "status": row.status, "mode": mode, "filename": filename}
-        )
+    # `_decide_learning` is now module-level (MCP learnings trio, Task 8,
+    # see its own docstring just above `create_app`) -- both this route's
+    # `approve_learning`/`deny_learning`/`bulk_decide_learnings` below AND
+    # the two MCP write tools (`kobo_decide_learning`/
+    # `kobo_decide_learnings_bulk`) call this exact function.
 
     @app.post("/api/agents/{name}/learnings/{learning_id}/approve")
     def approve_learning(

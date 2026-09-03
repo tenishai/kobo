@@ -64,6 +64,7 @@ from kobo_api.models import (
     AgentStatus,
     AgentStep,
     Base,
+    MCPToolCallLog,
 )
 from kobo_api.purpose_tags import encode_tags
 from tests.fakes import (
@@ -237,6 +238,17 @@ def _ctx_for(email):
 
 def _call_tool(mcp, tool_name, ctx, **arguments):
     return asyncio.run(mcp._tool_manager.call_tool(tool_name, arguments, context=ctx))
+
+
+def _last_audit_row(session_factory) -> MCPToolCallLog:
+    """Local copy of test_mcp_tools_write.py's own helper of the same name
+    -- this file's "don't cross-import test fixtures" convention (see that
+    file's module docstring) applies here too."""
+    session = session_factory()
+    try:
+        return session.query(MCPToolCallLog).order_by(MCPToolCallLog.id.desc()).first()
+    finally:
+        session.close()
 
 
 # --- build_mcp_server / _KoboTokenVerifier / get_user_email ----------------
@@ -1074,3 +1086,85 @@ def test_list_personas_hides_archived_entries(session_factory, config):
     listed_ids = {entry["id"] for entry in result["result"]}
     assert active["id"] in listed_ids
     assert archived["id"] not in listed_ids
+
+
+# --- kobo_list_learnings (MCP learnings trio, Task 8) ------------------------
+#
+# The read half of the daily-learnings decide surface -- rides the SAME
+# GET .../learnings route `list_learnings` already carries (visibility,
+# status validation), plus `can_decide` computed the identical way
+# `kobo_get_agent`'s own `can_decide_learnings` already is
+# (`_decider_or_403`, kobo_api.main). The write half of this trio
+# (`kobo_decide_learning`/`kobo_decide_learnings_bulk`) lives in
+# test_mcp_tools_write.py, matching the read/write module split itself.
+
+
+def test_list_learnings_returns_seeded_pending_row_and_can_decide(
+    session_factory, config
+):
+    _seed_agent(session_factory, name="agent-a", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    _seed_learning(session_factory, "agent-a")
+    app = _app(session_factory, config, groups_resolver=_resolver())
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(mcp, "kobo_list_learnings", _ctx_for(OWNER_A_EMAIL), agent="agent-a")
+
+    assert len(result["learnings"]) == 1
+    assert result["learnings"][0]["content"] == "the canary gate is manual"
+    assert result["learnings"][0]["status"] == "pending"
+    assert result["can_decide"] is True
+
+
+def test_list_learnings_invisible_agent_raises_agent_not_found(session_factory, config):
+    _seed_agent(session_factory, name="hidden", created_by=OWNER_B_EMAIL, group_name=GROUP_B)
+    app = _app(session_factory, config, groups_resolver=_resolver())
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="agent not found"):
+        _call_tool(mcp, "kobo_list_learnings", _ctx_for(MEMBER_A_EMAIL), agent="hidden")
+
+
+def test_list_learnings_unknown_status_surfaces_the_routes_own_422(session_factory, config):
+    _seed_agent(session_factory, name="agent-a", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver())
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="unknown status 'nonsense'"):
+        _call_tool(
+            mcp,
+            "kobo_list_learnings",
+            _ctx_for(OWNER_A_EMAIL),
+            agent="agent-a",
+            status="nonsense",
+        )
+
+
+def test_list_learnings_can_decide_false_for_non_owner_no_grant(session_factory, config):
+    """A visible caller who is neither owner nor operator and holds no
+    per-user grant still gets the learnings list back (visibility passed)
+    but `can_decide` reports False -- mirrors `test_get_agent_carries_the_
+    detail_routes_full_field_set`'s own can_decide_learnings distinction."""
+    _seed_agent(session_factory, name="agent-a", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    _seed_learning(session_factory, "agent-a")
+    app = _app(session_factory, config, groups_resolver=_resolver())
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(mcp, "kobo_list_learnings", _ctx_for(MEMBER_A_EMAIL), agent="agent-a")
+
+    assert len(result["learnings"]) == 1
+    assert result["can_decide"] is False
+
+
+def test_list_learnings_audit_row_logs_tool_status_and_arguments(session_factory, config):
+    _seed_agent(session_factory, name="agent-a", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver())
+    mcp = build_mcp_server(app)
+
+    _call_tool(mcp, "kobo_list_learnings", _ctx_for(OWNER_A_EMAIL), agent="agent-a")
+
+    row = _last_audit_row(session_factory)
+    assert row is not None
+    assert row.tool == "kobo_list_learnings"
+    assert row.status == "ok"
+    logged = json.loads(row.redacted_args)
+    assert logged["agent"] == "agent-a"
