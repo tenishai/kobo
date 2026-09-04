@@ -341,6 +341,24 @@ class Config(BaseModel):
     # (an infra coordinate like cabal_url); empty = the composer emits no
     # github block at all.
     broker_url: str = ""
+    # The Jira read broker (AREQ lane, 2026-09-04) -- the PR broker's
+    # custody model applied to tracker reads: the room holds ONE read-only
+    # service-account API token (mounted as a file, the PR App key's own
+    # convention) and `kobo_api.jira_broker` pins the reachable projects
+    # server-side. Deployment-config-settable like pr_app_* above, NOT
+    # org.yaml-settable. domain + email + pat_path + at least one project
+    # all set = the /broker/.../jira routes live; anything missing = 503,
+    # the same absent-equals-off convention as the PR broker.
+    jira_domain: str = ""  # e.g. "yourorg.atlassian.net"
+    jira_email: str = ""  # the read-only service account's email
+    jira_pat_path: Path | None = None  # mounted API-token file, never logged
+    jira_projects: list[str] = []  # project keys the broker will read, e.g. ["AREQ"]
+    # Agent names allowed to call the jira read routes. There is no
+    # per-agent grant table for this lane yet (the CloudAccess/ServiceAccess
+    # arc is the real fix); an explicit deployment-config allowlist is the
+    # honest interim gate. Absent from this list reads as 404, the
+    # anti-enumeration answer the github-token route already gives.
+    jira_read_agents: list[str] = []
     # Global READERS (reader-role wave, 2026-08-28): RAW Okta group names
     # whose members see EVERY agent in the room -- visibility only, no
     # mutation power of any kind. Raw directory names, deliberately NOT
@@ -390,7 +408,7 @@ class Config(BaseModel):
 
     @field_validator(
         "workdir", "slack_tokens_path", "ui_dist", "github_app_private_key_path",
-        "pr_app_private_key_path",
+        "pr_app_private_key_path", "jira_pat_path",
         mode="before",
     )
     @classmethod

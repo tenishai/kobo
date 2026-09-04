@@ -120,6 +120,8 @@ from kobo_api.provisioner import (
     run_pipeline,
     sweep_interrupted,
 )
+from kobo_api.jira_broker import fetch_issue as jira_fetch_issue
+from kobo_api.jira_broker import search_issues as jira_search_issues
 from kobo_api.pr_broker import BrokerAuthError, mint_scoped_token, verify_agent_token
 from kobo_api.purpose_tags import clean_tags, decode_tags, encode_tags
 from kobo_api.search import (
@@ -3635,6 +3637,117 @@ def create_app(
                 status_code=502,
             )
         return JSONResponse(minted)
+
+    # --- Agent Jira read broker (2026-09-04, AREQ lane) -------------------------
+
+    def _jira_broker_off(config: Config) -> JSONResponse | None:
+        """None when the jira read broker is configured, the 503 to return
+        otherwise -- the PR broker's absent-equals-off convention."""
+        if (
+            config.jira_domain
+            and config.jira_email
+            and config.jira_pat_path
+            and config.jira_projects
+        ):
+            return None
+        return JSONResponse(
+            {"error": "the jira read broker is not configured on this room"},
+            status_code=503,
+        )
+
+    def _jira_agent_block(config: Config, request: Request, name: str) -> JSONResponse | None:
+        """The jira routes' shared gate: broker configured, switchboard
+        wired, the bearer is cabal's own signature over this agent (the
+        github-token route's exact walls), and the agent is on the lane's
+        allowlist. Off-list reads as 404 -- an agent without the lane must
+        not be distinguishable from one that does not exist."""
+        off = _jira_broker_off(config)
+        if off is not None:
+            return off
+        if not config.cabal_url:
+            return JSONResponse(
+                {"error": "the jira read broker requires the switchboard"},
+                status_code=503,
+            )
+        authorization = request.headers.get("authorization", "")
+        bearer = authorization.removeprefix("Bearer ").strip()
+        if not bearer:
+            return JSONResponse({"error": "agent token required"}, status_code=401)
+        try:
+            verify_agent_token(config.cabal_url, bearer, name)
+        except BrokerAuthError:
+            return JSONResponse({"error": "agent token was not accepted"}, status_code=401)
+        if name not in config.jira_read_agents:
+            return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
+        return None
+
+    @app.get("/broker/agents/{name}/jira/issues/{key}")
+    def read_agent_jira_issue(name: str, key: str, request: Request) -> JSONResponse:
+        """One issue with its comment history, for an allowlisted agent.
+        The reachable projects are pinned server-side: a key outside
+        `jira_projects` is refused here, before any tracker call."""
+        config: Config = app.state.config
+        block = _jira_agent_block(config, request, name)
+        if block is not None:
+            return block
+        project = key.split("-", 1)[0].upper()
+        if "-" not in key or project not in config.jira_projects:
+            return JSONResponse(
+                {
+                    "error": "that issue is outside the projects this lane "
+                    f"reaches ({', '.join(config.jira_projects)})"
+                },
+                status_code=403,
+            )
+        try:
+            body = jira_fetch_issue(
+                domain=config.jira_domain,
+                email=config.jira_email,
+                pat_path=config.jira_pat_path,
+                key=key,
+            )
+        except ClientError as exc:
+            if str(exc) == "no such issue":
+                return JSONResponse({"error": f"no issue {key!r}"}, status_code=404)
+            return JSONResponse(
+                {"error": "the tracker did not answer. Try again shortly."},
+                status_code=502,
+            )
+        return JSONResponse(body)
+
+    @app.get("/broker/agents/{name}/jira/search")
+    def search_agent_jira_issues(name: str, request: Request) -> JSONResponse:
+        """Text search pinned to the lane's FIRST configured project (one
+        project is the lane's shape today; a multi-project room grows a
+        project parameter validated against the list, not a JQL knob).
+        The term and limit are bounded inside `jira_broker.search_issues`
+        -- no JQL crosses this boundary."""
+        config: Config = app.state.config
+        block = _jira_agent_block(config, request, name)
+        if block is not None:
+            return block
+        text = request.query_params.get("text", "")
+        try:
+            limit = int(request.query_params.get("limit", "10"))
+        except ValueError:
+            limit = 10
+        try:
+            body = jira_search_issues(
+                domain=config.jira_domain,
+                email=config.jira_email,
+                pat_path=config.jira_pat_path,
+                project=config.jira_projects[0],
+                text=text,
+                limit=limit,
+            )
+        except ClientError as exc:
+            if str(exc) == "nothing searchable in the given text":
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            return JSONResponse(
+                {"error": "the tracker did not answer. Try again shortly."},
+                status_code=502,
+            )
+        return JSONResponse(body)
 
     # --- Destroy (Task 4): the resumable four-step teardown ledger --------------
 
