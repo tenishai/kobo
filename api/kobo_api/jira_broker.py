@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 from pathlib import Path
 
 import httpx
@@ -37,6 +38,7 @@ _TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 _COMMENTS_MAX = 50
 _SEARCH_CAP = 25
 _TEXT_MAX = 200
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # ADF node types that end a block of text; everything else concatenates.
 _BLOCK_NODES = {
@@ -216,23 +218,35 @@ def search_issues(
     project: str,
     text: str,
     limit: int,
+    created_after: str = "",
+    created_before: str = "",
     http_client: httpx.Client | None = None,
 ) -> dict:
-    """Text search pinned to `project`, newest first. The JQL is assembled
-    here from bounded inputs -- the term is stripped of the two characters
-    that could escape its quoting and length-capped, and the project comes
-    from config, never the caller."""
+    """Text search pinned to `project`, newest first, optionally scoped to
+    a created-date window. The JQL is assembled here from bounded inputs
+    -- the term is stripped of the two characters that could escape its
+    quoting and length-capped, the dates must be bare yyyy-mm-dd, and the
+    project comes from config, never the caller."""
     term = text.replace("\\", " ").replace('"', " ").strip()[:_TEXT_MAX]
     if not term:
         raise ClientError("nothing searchable in the given text")
+    for label, value in (("created_after", created_after), ("created_before", created_before)):
+        if value and not _DATE_RE.fullmatch(value):
+            raise ClientError(f"{label} must be a bare date like 2026-07-10")
     count = max(1, min(int(limit), _SEARCH_CAP))
+    jql = f'project = "{project}" AND text ~ "{term}"'
+    if created_after:
+        jql += f' AND created >= "{created_after}"'
+    if created_before:
+        jql += f' AND created <= "{created_before}"'
+    jql += " ORDER BY created DESC"
     response = _get(
         domain,
         email,
         pat_path,
         "/rest/api/3/search/jql",
         {
-            "jql": f'project = "{project}" AND text ~ "{term}" ORDER BY created DESC',
+            "jql": jql,
             "fields": "summary,status,reporter,created",
             "maxResults": count,
         },

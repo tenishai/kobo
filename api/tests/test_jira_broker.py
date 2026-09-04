@@ -427,3 +427,80 @@ def test_alias_lane_off_by_default_keeps_the_pre_check(jira_client, monkeypatch)
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 403
+
+
+# --- created-date windows (audit-log-first workflow, 2026-09-04) --------------
+
+
+def test_search_route_passes_the_created_window(jira_client, monkeypatch):
+    main_mod = _authed(monkeypatch)
+    seen = {}
+
+    def fake_search(**kwargs):
+        seen.update(kwargs)
+        return {"issues": [], "truncated": False}
+
+    monkeypatch.setattr(main_mod, "jira_search_issues", fake_search)
+    r = jira_client.get(
+        "/broker/agents/ledger/jira/search",
+        params={
+            "text": "jdoe@acme.io",
+            "created_after": "2026-07-03",
+            "created_before": "2026-07-17",
+        },
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert seen["created_after"] == "2026-07-03"
+    assert seen["created_before"] == "2026-07-17"
+
+
+def test_search_route_rejects_a_malformed_date(jira_client, monkeypatch):
+    main_mod = _authed(monkeypatch)
+
+    def refuse(**kwargs):
+        raise ClientError("created_after must be a bare date like 2026-07-10")
+
+    monkeypatch.setattr(main_mod, "jira_search_issues", refuse)
+    r = jira_client.get(
+        "/broker/agents/ledger/jira/search",
+        params={"text": "jdoe@acme.io", "created_after": "last july"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 400
+    assert "bare date" in r.json()["error"]
+
+
+def test_search_jql_carries_the_window_and_stays_server_assembled(tmp_path):
+    fake = FakeTracker([("/search/jql", _Resp(200, {"issues": []}))])
+    search_issues(
+        domain="tracker.test",
+        email="reader@acme.io",
+        pat_path=_pat(tmp_path),
+        project="AREQ",
+        text="jdoe@acme.io",
+        limit=10,
+        created_after="2026-07-03",
+        created_before="2026-07-17",
+        http_client=fake,
+    )
+    _, _, params = fake.sent[0]
+    assert params["jql"] == (
+        'project = "AREQ" AND text ~ "jdoe@acme.io" '
+        'AND created >= "2026-07-03" AND created <= "2026-07-17" '
+        "ORDER BY created DESC"
+    )
+
+
+def test_search_refuses_a_date_that_could_carry_jql(tmp_path):
+    with pytest.raises(ClientError, match="bare date"):
+        search_issues(
+            domain="t",
+            email="e",
+            pat_path=_pat(tmp_path),
+            project="AREQ",
+            text="jdoe@acme.io",
+            limit=5,
+            created_after='2026-07-03" OR project = "SECRET',
+            http_client=FakeTracker([]),
+        )

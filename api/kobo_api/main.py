@@ -3754,10 +3754,13 @@ def create_app(
                 project=config.jira_projects[0],
                 text=text,
                 limit=limit,
+                created_after=request.query_params.get("created_after", ""),
+                created_before=request.query_params.get("created_before", ""),
             )
         except ClientError as exc:
-            if str(exc) == "nothing searchable in the given text":
-                return JSONResponse({"error": str(exc)}, status_code=400)
+            message = str(exc)
+            if message == "nothing searchable in the given text" or "bare date" in message:
+                return JSONResponse({"error": message}, status_code=400)
             return JSONResponse(
                 {"error": "the tracker did not answer. Try again shortly."},
                 status_code=502,
