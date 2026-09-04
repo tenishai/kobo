@@ -93,6 +93,13 @@ tool RESULTS as untrusted data (catalog inspection covers descriptions
 only); L8 empty resolved credential = hard dispatch failure (today:
 fail-soft unauthenticated upstream call) + pod egress allowlisted.
 
+TRACKED (2026-09-03, operator ruling: issues on the repo, not PRs --
+work through and resolve there): tenishai/liminal #73 (L1), #74 (L2),
+#75 (L3), #76 (L4), #77 (L5), #78 (L6), #79 (L7), #80 (L8). This also
+answers peer-review question 5: the liminal-side bill lives upstream as
+issues; kobo-side items (K1-K4) and cabal C1 stay with their own repos
+when their waves start.
+
 kobo: K1 OpenBao custody (grant rows + bao path in Postgres only); K2
 credential endpoint on the resolver contract serving the approved
 grant's credential, denying otherwise; K3 extend the resolver contract
@@ -228,15 +235,27 @@ the same way team access is declared -- the agent's GSA as a principal
 in the existing YAML+terraform machinery (per-service scoped role, PR
 lane, drift detection, and the access-ledger diff chain all come free,
 and ledger itself can audit agent grants with the same methodology it
-uses for humans). Open sub-questions for the reviewer: (a) do cloud
-calls still route THROUGH liminal for the audit trail and policy gate,
-or does the agent call the provider directly once IAM grants it (weaker
-central kill-switch, no gateway hop)? (b) if through liminal, the
-gateway needs cloud-SDK-shaped targets (SigV4 signing for AWS), which
-is a bigger liminal feature than an HTTP MCP target; (c) a
+uses for humans).
+
+RULED (operator, 2026-09-03): cloud access is a SEPARATE PATH from MCP
+access -- an integration path, not a gateway path. An SRE creates the
+access role per cloud: AWS = a scoped role in the specific account,
+limited to the specific services needed, whose trust policy trusts the
+agent's GCP service account (the shipped audit precedent); GCP = no new
+identity at all, the agent's existing birth GSA gets cross-project role
+grants; Azure = a scoped role/app with a federated credential trusting
+the same GSA, mirroring the AWS shape. The MCP/liminal path remains for
+SaaS vendors that lack workload federation (Atlassian, Slack, Datadog).
+The former sub-questions, narrowed by the ruling: (a) cloud calls carry
+NO gateway hop by default -- the audit trail for cloud lanes is the
+provider's own (CloudTrail / GCP audit logs / Azure activity log),
+stronger than a gateway log, and the central kill-switch is the IAM
+grant itself (revoke the role or binding); (b) the tool surface for
+cloud calls is the agent runtime's own (a provider like the github
+sidecar, or a direct SDK tool), sized per integration; (c) a
 `CloudAccess` row type in kobo (request -> operator approve ->
-generated PR against global-iam-permissions) as the self-service front
-door.
+generated PR against global-iam-permissions) stays the target shape for
+"simplified".
 
 **The tool-surface decision (what actually blocks lanes 2-4).** Three
 options, unchanged from this doc's body: (a) liminal gateway (the
