@@ -371,3 +371,59 @@ def test_search_with_nothing_searchable_raises(tmp_path):
             limit=5,
             http_client=FakeTracker([]),
         )
+
+
+# --- migrated-key aliases (IE -> AREQ move, 2026-09-04) -----------------------
+
+
+@pytest.fixture
+def alias_client(session_factory, jira_config):
+    config = jira_config.model_copy(update={"jira_alias_projects": ["IE"]})
+    return TestClient(create_app(session_factory, config=config))
+
+
+def test_alias_key_resolving_into_the_pin_is_returned(alias_client, monkeypatch):
+    main_mod = _authed(monkeypatch)
+
+    def fake_fetch(**kwargs):
+        assert kwargs["key"] == "IE-5578"  # the tracker is asked by the OLD key
+        return {"issue": {"key": "AREQ-1693"}, "comments": [], "comments_truncated": False}
+
+    monkeypatch.setattr(main_mod, "jira_fetch_issue", fake_fetch)
+    r = alias_client.get(
+        "/broker/agents/ledger/jira/issues/IE-5578",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert r.json()["issue"]["key"] == "AREQ-1693"
+
+
+def test_alias_key_resolving_elsewhere_is_refused_after_the_fetch(
+    alias_client, monkeypatch
+):
+    main_mod = _authed(monkeypatch)
+
+    def fake_fetch(**kwargs):
+        return {"issue": {"key": "SECRETPROJ-9"}, "comments": [], "comments_truncated": False}
+
+    monkeypatch.setattr(main_mod, "jira_fetch_issue", fake_fetch)
+    r = alias_client.get(
+        "/broker/agents/ledger/jira/issues/IE-1",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 403
+    assert "AREQ" in r.json()["error"]
+
+
+def test_alias_lane_off_by_default_keeps_the_pre_check(jira_client, monkeypatch):
+    main_mod = _authed(monkeypatch)
+
+    def explode(**kwargs):
+        raise AssertionError("no alias configured: the tracker must not be called")
+
+    monkeypatch.setattr(main_mod, "jira_fetch_issue", explode)
+    r = jira_client.get(
+        "/broker/agents/ledger/jira/issues/IE-5578",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 403

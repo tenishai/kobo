@@ -353,6 +353,14 @@ class Config(BaseModel):
     jira_email: str = ""  # the read-only service account's email
     jira_pat_path: Path | None = None  # mounted API-token file, never logged
     jira_projects: list[str] = []  # project keys the broker will read, e.g. ["AREQ"]
+    # Old project keys that MIGRATED into a pinned project (a Jira project
+    # move keeps every old key as an alias that resolves to the new one).
+    # A key with one of these prefixes may be REQUESTED -- historical Slack
+    # threads cite them -- but the broker returns the issue only when the
+    # RESOLVED key lands inside jira_projects; anything else is refused
+    # after the fetch, so the alias lane can never widen the read surface
+    # beyond the pinned projects. e.g. ["IE"] after the IE -> AREQ move.
+    jira_alias_projects: list[str] = []
     # Agent names allowed to call the jira read routes. There is no
     # per-agent grant table for this lane yet (the CloudAccess/ServiceAccess
     # arc is the real fix); an explicit deployment-config allowlist is the

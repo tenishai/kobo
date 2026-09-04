@@ -3691,7 +3691,8 @@ def create_app(
         if block is not None:
             return block
         project = key.split("-", 1)[0].upper()
-        if "-" not in key or project not in config.jira_projects:
+        reachable = set(config.jira_projects) | set(config.jira_alias_projects)
+        if "-" not in key or project not in reachable:
             return JSONResponse(
                 {
                     "error": "that issue is outside the projects this lane "
@@ -3712,6 +3713,20 @@ def create_app(
             return JSONResponse(
                 {"error": "the tracker did not answer. Try again shortly."},
                 status_code=502,
+            )
+        # The post-fetch wall for alias keys: a migrated key resolves to its
+        # NEW key in the response, and only a resolved key inside the pinned
+        # projects leaves the broker. An alias that resolves anywhere else
+        # is refused as if the pre-check had caught it -- the alias lane
+        # exists for key redirects into the pin, never around it.
+        resolved = (body.get("issue") or {}).get("key") or key
+        if resolved.split("-", 1)[0].upper() not in config.jira_projects:
+            return JSONResponse(
+                {
+                    "error": "that issue is outside the projects this lane "
+                    f"reaches ({', '.join(config.jira_projects)})"
+                },
+                status_code=403,
             )
         return JSONResponse(body)
 
