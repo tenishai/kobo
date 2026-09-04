@@ -425,3 +425,31 @@ per-owner consents.
   Postgres vs k8s Secrets; blast radius; rotation).
 - Whether cabal should mint a limenal-scoped token distinct from
   CABAL_COLLEAGUE_TOKEN, or the colleague JWT grows limenal claims.
+
+## 2026-09-04 addendum: the AREQ tactical bridge shipped (and what it is not)
+
+Ruling (operator, 2026-09-04): ledger reads AREQ now, on the
+jiraautomation read PAT, while the liminal hardening PRs work through
+review -- so the dogfood case keeps moving. The shape is deliberately the
+PR broker's custody model applied to reads, NOT an env-secret in the
+agent's namespace:
+
+- kobo holds the one read-only tracker credential (mounted file, PR-App
+  key convention) and exposes two GET routes on the IAP-exempt /broker
+  root: `/broker/agents/{name}/jira/issues/{key}` and `.../jira/search`.
+  Same walls as the github-token route (cabal JWT, anti-enumeration 404),
+  plus a deployment-config agent allowlist (`jira_read_agents`) standing
+  in for the ServiceAccess rows this arc will eventually grow.
+- The pinning lives server-side and is not a parameter: `jira_projects`
+  gates issue keys before any tracker call, and search accepts bare text
+  only -- the JQL is assembled inside kobo from bounded inputs. No JQL
+  crosses the boundary (the resource-guard-theater finding, honored).
+- daedalus grew the client half (`tools.jira` sidecar) and, in the same
+  wave, `tools.slack_read` -- the channel-allowlisted thread reader that
+  closes the #ask-access-request lane with zero new credentials (the
+  pod's own bot token + channel membership as Slack's second wall).
+
+None of this displaces the liminal path: when the gateway lands, the
+Atlassian hosted-MCP connection replaces these two routes, and the
+custody plumbing (mounted credential, allowlist gate) carries forward as
+K1/K2 groundwork. The bridge is a lane, not a fork.
