@@ -330,7 +330,11 @@ def _agent_yaml_data(spec: BundleSpec) -> dict:
         "model": {
             "id": f"${{AGENT_MODEL:-{spec.model_id}}}",
             "max_tokens": 8192,
-            "budget": {"per_task_tokens": 50000},
+            # No per-task token budget (2026-09-08 ruling): max_steps bounds
+            # the loop, prompt caching bounds the cost, and a budget sized
+            # for chat starved every real multi-tool task -- three live
+            # exhaustions (an audit twice, a release survey once) before the
+            # pattern was named.
         },
         "transports": [_a2a_transport(spec)],
         "tools": _tools_block(spec),
