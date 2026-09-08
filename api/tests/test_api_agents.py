@@ -2175,3 +2175,11 @@ def test_create_without_runtime_stays_on_the_org_default(client, session_factory
     row = session.query(Agent).filter_by(name="sdk-three").first()
     assert row is not None and row.runtime_image is None
     session.close()
+
+
+def test_catalog_runtimes_shape(client):
+    r = client.get("/api/catalog/runtimes")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["runtimes"] == []
+    assert body["default"]

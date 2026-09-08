@@ -2022,6 +2022,17 @@ def create_app(
             "default": cfg.models[0].id,
         }
 
+    @app.get("/api/catalog/runtimes")
+    def catalog_runtimes() -> dict:
+        """The create modal's runtime dropdown (IE-4526): the org default
+        first (implicit), then the configured extras. An empty extras list
+        hides the dropdown client-side -- default-only rooms never see it."""
+        cfg: Config = app.state.config
+        return {
+            "runtimes": [{"image": r.image, "label": r.label} for r in cfg.runtimes],
+            "default": cfg.runtime_image,
+        }
+
     # Access control (Task B2): the create modal's group dropdown reads this
     # -- CONFIG names only, never the Okta group names `cfg.groups` also
     # carries (`GroupChoice.okta_group`), which are an implementation detail

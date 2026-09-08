@@ -100,6 +100,16 @@ class GroupChoice(BaseModel):
         return self
 
 
+class RuntimeChoice(BaseModel):
+    """One runtime the create modal offers (IE-4526). `image` is the full
+    Dockerfile FROM ref; `label` is what the dropdown shows. The org
+    default (Config.runtime_image) is always offered first and needs no
+    entry here -- this list is the ADDITIONAL choices."""
+
+    image: str
+    label: str
+
+
 class MCPConfig(BaseModel):
     """Google OAuth + JWT signing coordinates for kobo's MCP server (MCP
     server arc, Task 1) -- this block is the config surface later tasks'
@@ -341,6 +351,12 @@ class Config(BaseModel):
     # (an infra coordinate like cabal_url); empty = the composer emits no
     # github block at all.
     broker_url: str = ""
+    # Additional runtime choices the create modal offers (IE-4526) beside
+    # the org default -- e.g. an sdk-based runtime. Empty (the default)
+    # hides the dropdown entirely, the same absent-equals-off convention
+    # as every catalog above. Entries must live under the org default's
+    # registry root (the create route enforces this per request).
+    runtimes: list[RuntimeChoice] = []
     # The MCP gateway's in-cluster base URL, as deployed AGENTS reach its
     # data plane (external-MCP arc). Org-settable like broker_url; empty =
     # the composer emits no liminal block. The token exchange lives at

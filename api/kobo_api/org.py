@@ -52,6 +52,7 @@ ORG_KEYS = frozenset(
         "memory_replica_bucket",
         "broker_url",
         "liminal_url",
+        "runtimes",
         "reader_groups",
         "gcp_project",
         "vertex_project",

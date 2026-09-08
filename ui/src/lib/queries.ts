@@ -154,6 +154,7 @@ import {
   fetchGroupRequests,
   fetchGroups,
   fetchModels,
+  fetchRuntimes,
   fetchRecommendedSkills,
   fetchNameSuggestions,
   fetchOrgStatus,
@@ -257,6 +258,15 @@ export function modelsQuery() {
  * room hasn't configured any, in which case the create modal's group
  * picker doesn't render at all. Same "doesn't change on its own in the
  * background" reasoning as `modelsQuery`: no polling. */
+/** The runtime dropdown's choices (IE-4526). Same no-polling reasoning as
+ * `modelsQuery`: org config only changes with a room restart. */
+export function runtimesQuery() {
+  return queryOptions({
+    queryKey: ["catalog", "runtimes"] as const,
+    queryFn: fetchRuntimes,
+  });
+}
+
 export function groupsQuery() {
   return queryOptions({
     queryKey: ["catalog", "groups"] as const,

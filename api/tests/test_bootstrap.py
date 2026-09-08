@@ -87,6 +87,7 @@ def test_render_org_yaml_golden_with_computed_defaults():
         "memory_replica_bucket": "",
         "broker_url": "",
         "liminal_url": "",
+        "runtimes": [],
         "reader_groups": [],
         "gcp_project": "acme-project",
         "vertex_project": "acme-models",
