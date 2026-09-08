@@ -670,6 +670,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         skills: list[dict] | None = None,
         tags: list[str] | None = None,
         skip_baseline: bool = False,
+        runtime_image: str | None = None,
     ) -> dict:
         """Create a new agent in the room. More capable at create time than
         the room's own modal, which adds skills post-create in the Skills
@@ -682,7 +683,10 @@ def register(mcp: FastMCP, app: Any) -> None:
         for you. `skills`, when given, is a list of `{"id", "team"}` picks
         from the room's skills catalog; `tags` is a short list of purpose
         tags. Every new agent ships the baseline tooling pack (leakguard
-        and probe guard) unless skip_baseline is true. Returns the agent's
+        and probe guard) unless skip_baseline is true. `runtime_image`
+        (optional, IE-4526) pins this agent to a custom runtime image from
+        the room's own registry; omitted means the org default, which keeps
+        following the org pin. Returns the agent's
         name and status; watch the room (or `kobo_get_agent`) for its
         checklist to finish in the background.
         """
@@ -737,6 +741,7 @@ def register(mcp: FastMCP, app: Any) -> None:
                     purpose_tags=list(tags or []),
                     group_name=group,
                     skip_baseline=skip_baseline,
+                    runtime_image=runtime_image,
                 )
             except (TypeError, ValidationError) as exc:
                 raise ToolError(f"that request wasn't quite right: {exc}") from exc

@@ -76,6 +76,12 @@ class Agent(Base):
     purpose_tags: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     capability: Mapped[str | None] = mapped_column(String(255), nullable=True)
     model_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Per-agent runtime image (IE-4526): FROM line of the generated
+    # Dockerfile when set; None means the org-wide default at compose/re-pin
+    # time. Nullable: this column postdates create_all on any already-running
+    # DB -- apply manually there (fresh DBs get it free via create_all):
+    #   ALTER TABLE agents ADD COLUMN runtime_image VARCHAR;
+    runtime_image: Mapped[str | None] = mapped_column(String(512), nullable=True)
     skills: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=AgentStatus.PENDING

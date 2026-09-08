@@ -2142,3 +2142,36 @@ def test_create_agent_launch_failure_with_session_close_raising_still_returns_50
     assert agent.status == AgentStatus.FAILED
     assert agent.error == "failed to start provisioning: no more threads"
     session.close()
+
+
+# --- per-agent runtime image (IE-4526) ---------------------------------------
+
+
+def test_create_accepts_a_room_registry_runtime(client, monkeypatch):
+    r = client.post("/api/agents", json={
+        "name": "sdk-one", "persona": "helpful-generalist",
+        "runtime_image": "registry.example/agents/acme-agent-sdk:1.0",
+    })
+    assert r.status_code in (200, 201, 202), r.text
+
+
+def test_create_refuses_a_foreign_registry_runtime(client):
+    r = client.post("/api/agents", json={
+        "name": "sdk-two", "persona": "helpful-generalist",
+        "runtime_image": "docker.io/evil/runtime:latest",
+    })
+    assert r.status_code == 422
+    assert "registry" in r.json()["error"] or "runtime_image" in r.json()["error"]
+
+
+def test_create_without_runtime_stays_on_the_org_default(client, session_factory):
+    r = client.post("/api/agents", json={
+        "name": "sdk-three", "persona": "helpful-generalist",
+    })
+    assert r.status_code in (200, 201, 202), r.text
+    from kobo_api.models import Agent
+
+    session = session_factory()
+    row = session.query(Agent).filter_by(name="sdk-three").first()
+    assert row is not None and row.runtime_image is None
+    session.close()

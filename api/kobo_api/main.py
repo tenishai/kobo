@@ -200,6 +200,12 @@ class SkillPick(BaseModel):
 class CreateAgentRequest(BaseModel):
     name: str
     persona: str
+    # Per-agent runtime image (IE-4526): optional; None means the org-wide
+    # default, resolved at compose/re-pin time rather than stored -- so
+    # default-runtime agents keep following the org pin. Validated in the
+    # route against the org default's registry root: a runtime from a
+    # foreign registry never reaches a Dockerfile.
+    runtime_image: str | None = None
     # The creating team (Task 5, bucket catalogs) — same slug shape as
     # `CreatePersonaRequest.team` below. Optional, defaulting to "shared"
     # (Persona v3 / teamless create addendum): the create modal drops the
@@ -1715,6 +1721,22 @@ def _teach_task_not_completed(raw: object) -> bool:
     return status.get("state") != "completed"
 
 
+def _runtime_image_for_repo(app, repo: str) -> str:
+    """The Dockerfile pin a fast-lane commit should carry for `repo`'s agent:
+    the agent's own runtime when it set one (IE-4526), the org default
+    otherwise. Falls back to the org default when the row can't be found --
+    a mirror commit must never crash over a lookup."""
+    try:
+        with app.state.session_factory() as session:
+            row = session.query(Agent).filter_by(repo_full_name=repo).first()
+            if row is not None and row.runtime_image:
+                return row.runtime_image
+    except Exception:
+        log.debug("runtime lookup failed for %s; using the org default", repo)
+    return app.state.config.runtime_image
+
+
+
 def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> None:
     """The background archive lane. Failure is logged, never surfaced: the
     memory is already stored in the agent; only the repo copy is missing,
@@ -1745,7 +1767,7 @@ def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> No
             repo,
             filename,
             note,
-            runtime_image=app.state.config.runtime_image,
+            runtime_image=_runtime_image_for_repo(app, repo),
             archive_only=True,
         )
     except Exception as exc:
@@ -1840,7 +1862,7 @@ def _decide_learning(
                 agent.repo_full_name,
                 filename,
                 note,
-                runtime_image=cfg.runtime_image,
+                runtime_image=agent.runtime_image or cfg.runtime_image,
             )
         except (IntakeError, ClientError) as exc:
             log.warning("learning approve archive failed for %s: %s", name, exc)
@@ -3019,6 +3041,21 @@ def create_app(
             )
         model_id = payload.model if payload.model is not None else cfg.models[0].id
 
+        # Per-agent runtime (IE-4526): allowed iff it lives in the same
+        # registry root as the org default -- existence is CI's problem
+        # (a bad tag fails the first build loudly), provenance is ours.
+        runtime_image = (payload.runtime_image or "").strip() or None
+        if runtime_image is not None:
+            registry_root = cfg.runtime_image.rsplit("/", 1)[0] + "/"
+            if not runtime_image.startswith(registry_root):
+                return JSONResponse(
+                    {
+                        "error": "runtime_image must live under "
+                        f"{registry_root!r} (got {runtime_image!r})"
+                    },
+                    status_code=422,
+                )
+
         # Checked last (a DB round-trip) rather than first: a malformed request
         # is a 422 regardless of whether the name happens to collide too.
         existing = session.query(Agent).filter_by(name=payload.name).first()
@@ -3041,6 +3078,7 @@ def create_app(
             team=payload.team,
             purpose_tags=encode_tags(cleaned_tags),
             model_id=model_id,
+            runtime_image=runtime_image,
             skills=[
                 {"name": pick.id, "team": pick.team, "sha": entry.sha}
                 for pick, entry in resolved_skills
@@ -4499,7 +4537,7 @@ def create_app(
                 agent.repo_full_name,
                 payload.filename,
                 payload.content,
-                runtime_image=cfg.runtime_image,
+                runtime_image=agent.runtime_image or cfg.runtime_image,
             )
         except IntakeError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
@@ -4653,7 +4691,7 @@ def create_app(
                 agent.repo_full_name,
                 filename,
                 note,
-                runtime_image=cfg.runtime_image,
+                runtime_image=agent.runtime_image or cfg.runtime_image,
             )
         except IntakeError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
@@ -4810,7 +4848,7 @@ def create_app(
                 repo,
                 filename,
                 content,
-                runtime_image=app.state.config.runtime_image,
+                runtime_image=_runtime_image_for_repo(app, repo),
             )
         except Exception as exc:
             log.warning(
@@ -4980,7 +5018,7 @@ def create_app(
                 agent.repo_full_name,
                 payload.filename,
                 payload.content,
-                runtime_image=cfg.runtime_image,
+                runtime_image=agent.runtime_image or cfg.runtime_image,
             )
         except ToolingError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
@@ -5013,7 +5051,7 @@ def create_app(
                 agent.repo_full_name,
                 source_repo=payload.repo,
                 source_path=payload.path,
-                runtime_image=cfg.runtime_image,
+                runtime_image=agent.runtime_image or cfg.runtime_image,
             )
         except ToolingError as exc:
             # Request-shape failures (a malformed owner/repo, a traversal
@@ -5173,7 +5211,7 @@ def create_app(
                 channels=channels,
                 bot_token=payload.bot_token,
                 app_token=payload.app_token,
-                runtime_image=cfg.runtime_image,
+                runtime_image=agent.runtime_image or cfg.runtime_image,
             )
         except ClientError as exc:
             log.warning("slack connect failed: %s", exc)
