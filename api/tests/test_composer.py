@@ -36,6 +36,7 @@ def _make_spec(
     cabal_url: str | None = None,
     memory_replica_bucket: str = "",
     broker_url: str = "",
+    liminal_url: str = "",
 ) -> BundleSpec:
     return BundleSpec(
         name=name,
@@ -53,6 +54,7 @@ def _make_spec(
         cabal_url=cabal_url,
         memory_replica_bucket=memory_replica_bucket,
         broker_url=broker_url,
+        liminal_url=liminal_url,
     )
 
 
@@ -1904,3 +1906,111 @@ def test_self_md_teaches_skills_are_procedures(tmp_path):
     assert "Your skills are PROCEDURES seeded into your memory, never tools" in text
     assert "recall that procedure and follow" in text
     assert "say which step and ask for that capability" in text
+
+
+# --- liminal birthright + preserving rewire (2026-09-08) ----------------------
+
+
+def test_liminal_block_composes_when_both_coordinates_exist():
+    from kobo_api.composer import _render_agent_yaml
+
+    spec = _make_spec(cabal_url="http://cabal.test", broker_url="http://kobo.test",
+                      liminal_url="http://liminal.test")
+    import yaml as _yaml
+
+    data = _yaml.safe_load(_render_agent_yaml(spec))
+    tools = data["tools"]
+    assert tools["liminal"] == {
+        "url": "http://liminal.test",
+        "token_env": "CABAL_COLLEAGUE_TOKEN",
+        "exchange_url": "http://cabal.test",
+    }
+    # A birthright, never a grant: no gateway tool is allow-listed.
+    assert not any(a.startswith(("scratchpad.", "atlassian.")) for a in tools["allow"])
+
+
+def test_no_liminal_block_without_the_gateway_coordinate():
+    from kobo_api.composer import _render_agent_yaml
+
+    spec = _make_spec(cabal_url="http://cabal.test")
+    import yaml as _yaml
+
+    assert "liminal" not in _yaml.safe_load(_render_agent_yaml(spec))["tools"]
+
+
+def _rewire(tmp_path, tools_text):
+    (tmp_path / "agent.yaml").write_text(
+        "name: x\nmodel: {id: m, max_tokens: 8192}\n" + tools_text + "memory: {personal: none}\n"
+    )
+    update_agent_yaml_tools(
+        tmp_path, url="http://cabal.new", token_env="CABAL_COLLEAGUE_TOKEN", self_name="x"
+    )
+    import yaml as _yaml
+
+    text = (tmp_path / "agent.yaml").read_text()
+    return _yaml.safe_load(text), text
+
+
+def test_rewire_preserves_sidecar_blocks_and_extra_allows(tmp_path):
+    blocky = (
+        "tools:\n"
+        "  provider: colleagues\n"
+        "  allow:\n"
+        "  - colleagues.list_colleagues\n"
+        "  - cloudtrail.query_provisioning\n"
+        "  - jira.get_issue\n"
+        "  colleagues: {url: http://cabal.old, token_env: CABAL_COLLEAGUE_TOKEN, self: x}\n"
+        "  github: {broker_url: http://kobo.test, token_env: CABAL_COLLEAGUE_TOKEN, self: x}\n"
+        "  cloudtrail: {role_arn: 'arn:aws:iam::1:role/r', event_data_store: eds}\n"
+        "  jira: {broker_url: http://kobo.test, token_env: CABAL_COLLEAGUE_TOKEN, self: x}\n"
+    )
+    data, text = _rewire(tmp_path, blocky)
+    tools = data["tools"]
+    assert tools["colleagues"]["url"] == "http://cabal.new"  # re-pointed
+    assert tools["github"]["broker_url"] == "http://kobo.test"  # preserved
+    assert tools["cloudtrail"]["event_data_store"] == "eds"  # preserved
+    assert tools["jira"]["broker_url"] == "http://kobo.test"  # preserved
+    # Union, never revocation: composer allows first, hand allows survive.
+    assert "colleagues.ask_colleague" in tools["allow"]
+    assert "cloudtrail.query_provisioning" in tools["allow"]
+    assert "jira.get_issue" in tools["allow"]
+    # The section collapsed to one flow line; the rest of the file survives.
+    assert "memory: {personal: none}" in text
+    assert text.count("tools:") == 1
+
+
+def test_rewire_still_works_on_the_composed_flow_line(tmp_path):
+    flow = (
+        'tools: {provider: none, allow: []}\n'
+    )
+    data, _ = _rewire(tmp_path, flow)
+    assert data["tools"]["provider"] == "colleagues"
+    assert data["tools"]["allow"][:3] == [
+        "colleagues.list_colleagues", "colleagues.ask_colleague", "colleagues.remember",
+    ]
+
+
+def test_rewire_is_idempotent(tmp_path):
+    blocky = (
+        "tools:\n"
+        "  provider: colleagues\n"
+        "  allow: [colleagues.list_colleagues, slack.find_threads]\n"
+        "  slack_read: {channels: [C1]}\n"
+    )
+    _rewire(tmp_path, blocky)
+    first = (tmp_path / "agent.yaml").read_text()
+    update_agent_yaml_tools(
+        tmp_path, url="http://cabal.new", token_env="CABAL_COLLEAGUE_TOKEN", self_name="x"
+    )
+    assert (tmp_path / "agent.yaml").read_text() == first
+
+
+# --- per-agent runtime image (IE-4526) ---------------------------------------
+
+
+def test_bundle_spec_dockerfile_uses_the_given_runtime(tmp_path):
+    spec = _make_spec()
+    spec.runtime_image = "us-east4-docker.pkg.dev/p/apps/acme-agent-sdk:1.2"
+    compose(spec, tmp_path / "out")
+    text = (tmp_path / "out" / "Dockerfile").read_text()
+    assert "FROM us-east4-docker.pkg.dev/p/apps/acme-agent-sdk:1.2" in text

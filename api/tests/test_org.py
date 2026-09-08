@@ -266,6 +266,7 @@ def test_org_keys_is_exactly_the_brief_set():
             "runtime_image",
             "memory_replica_bucket",
         "broker_url",
+        "liminal_url",
         "reader_groups",
             "gcp_project",
             "vertex_project",

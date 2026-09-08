@@ -341,6 +341,13 @@ class Config(BaseModel):
     # (an infra coordinate like cabal_url); empty = the composer emits no
     # github block at all.
     broker_url: str = ""
+    # The MCP gateway's in-cluster base URL, as deployed AGENTS reach its
+    # data plane (external-MCP arc). Org-settable like broker_url; empty =
+    # the composer emits no liminal block. The token exchange lives at
+    # cabal_url (the /auth/liminal-token route), so no second coordinate.
+    # SAFE TO SET FLEET-WIDE: a wired agent with no policy grant sees zero
+    # tools -- the gateway denies by default; grants are the control point.
+    liminal_url: str = ""
     # The Jira read broker (AREQ lane, 2026-09-04) -- the PR broker's
     # custody model applied to tracker reads: the room holds ONE read-only
     # service-account API token (mounted as a file, the PR App key's own

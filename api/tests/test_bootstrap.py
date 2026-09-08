@@ -86,6 +86,7 @@ def test_render_org_yaml_golden_with_computed_defaults():
         "runtime_image": "registry.example/agents/daedalus-runtime:v1",
         "memory_replica_bucket": "",
         "broker_url": "",
+        "liminal_url": "",
         "reader_groups": [],
         "gcp_project": "acme-project",
         "vertex_project": "acme-models",

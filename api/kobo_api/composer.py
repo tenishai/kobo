@@ -115,6 +115,11 @@ class BundleSpec:
     # the github tools (open_pr and the read quartet) join the allow list.
     # Empty = no github block at all.
     broker_url: str = ""
+    # The MCP gateway's data-plane URL (external-MCP arc). Empty = no
+    # liminal block composed. The exchange rides cabal_url (the
+    # /auth/liminal-token route), so wiring is gated on BOTH coordinates,
+    # the same both-or-nothing rule the github block applies.
+    liminal_url: str = ""
 
 
 # --- agent.yaml rendering ----------------------------------------------------
@@ -274,6 +279,21 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
             broker_url=_DoubleQuoted(spec.broker_url),
             token_env=CABAL_COLLEAGUE_TOKEN_ENV,
             self=_DoubleQuoted(spec.name),
+        )
+    # The liminal sidecar (external-MCP arc): the gateway block is a
+    # BIRTHRIGHT, not a grant -- deny-by-default at the gateway means a
+    # wired agent with no policy row sees zero tools, so wiring everyone
+    # is safe and grants stay the control point. Gated on BOTH
+    # coordinates like github: the exchange (/auth/liminal-token) lives
+    # at the switchboard, so a gateway with no switchboard could never
+    # authenticate anyone. Deliberately NO allow entries here: which
+    # gateway tools an agent may call arrives with its grant (K3), never
+    # as a composed default.
+    if spec.liminal_url:
+        block["liminal"] = _FlowDict(
+            url=_DoubleQuoted(spec.liminal_url),
+            token_env=CABAL_COLLEAGUE_TOKEN_ENV,
+            exchange_url=_DoubleQuoted(spec.cabal_url),
         )
     block["allow"] = _FlowList(allow)
     return block
@@ -868,45 +888,39 @@ def update_agent_yaml_auth(
 # rather than mirroring the list-item prefix the transport regex matches.
 _TOOLS_LINE_RE = re.compile(r"^tools:[ \t]*\{.*\}[ \t]*$", re.MULTILINE)
 
+# The whole tools SECTION: the `tools:` line plus any following
+# more-indented lines (the block-style form hand-edited bundles use). For a
+# flow-style line the second alternative matches nothing and the line alone
+# is the section.
+_TOOLS_SECTION_RE = re.compile(r"^tools:[^\n]*(?:\n[ \t]+[^\n]*)*", re.MULTILINE)
+
 
 def update_agent_yaml_tools(
     bundle_dir: Path, *, url: str, token_env: str, self_name: str
 ) -> None:
-    """In-place edit of an already-composed `bundle_dir/agent.yaml`'s
-    `tools:` line: replace it wholesale with the colleagues tool provider's
-    config block (daedalus's `ColleaguesSpec` shape verbatim), leaving every
-    other line in the file byte-identical.
+    """Re-point an already-composed `bundle_dir/agent.yaml` at a (new) set
+    of switchboard coordinates -- PRESERVING everything in the `tools`
+    block the composer did not author.
 
-    The backfill path for agents composed before this feature existed (same
-    role `update_agent_yaml_auth` plays for the a2a auth block) — and, more
-    generally, for any already-composed bundle a caller wants to re-point at
-    a (new) set of switchboard coordinates without recomposing the whole
-    bundle.
+    The original version replaced the whole `tools:` line with a
+    colleagues-only block. By the time real agents existed, their tools
+    blocks carried more: the github sidecar the composer itself adds,
+    hand-added lanes (cloudtrail, slack_read, jira, liminal), and the
+    allow entries that gate them -- a rewire silently dropped every one
+    of them (and refused outright on a block-style file). This version
+    merges instead of replacing:
 
-    Same file-editing idiom as `update_agent_yaml_auth` above: read the
-    whole file as text, apply one targeted `re.subn` against a replacement
-    function (never a plain substitution string — a literal `url`/
-    `self_name` containing a backslash or a `\\g<...>`-shaped run must never
-    be misread as a backreference, same reasoning `update_dockerfile_
-    runtime_image` documents for its own replacement function), and raise
-    rather than silently no-op when the thing being edited isn't found.
+    - `provider` and `colleagues` are set to the given coordinates.
+    - `allow` becomes the colleague allows UNIONED with every existing
+      entry, original order preserved -- a rewire never revokes.
+    - Every other key (`github`, `cloudtrail`, `slack_read`, `jira`,
+      `liminal`, `builtin`, `max_steps`, anything future) rides through
+      untouched.
 
-    Add-or-replace in one code path: since the whole `tools:` line is always
-    replaced wholesale (never patched in place), this works identically
-    whether the line being replaced is the composed default
-    (`{provider: none, allow: []}`) or an earlier `update_agent_yaml_tools`
-    call's own colleagues block — there is no separate "add" branch.
-
-    Idempotent by construction: a second call with the same `(url,
-    token_env, self_name)` replaces the line with byte-identical text, so
-    the file's contents never drift on a repeat call.
-
-    Raises `ClientError` (never silently no-ops), mirroring
-    `update_agent_yaml_auth`'s own two failure modes:
-
-    - `agent.yaml` is missing entirely: `Path.read_text()` raises `OSError`.
-    - No line in the file matches `_TOOLS_LINE_RE` (no `tools:` line to
-      replace): `re.subn`'s match count is 0.
+    The tools SECTION (flow-style line or block-style stanza) is spliced
+    back as one flow-style line, so repeat calls are idempotent and the
+    rest of the file stays byte-identical. Raises `ClientError` when the
+    file is missing, has no `tools` section, or does not parse.
     """
     agent_yaml_path = bundle_dir / "agent.yaml"
     try:
@@ -914,17 +928,34 @@ def update_agent_yaml_tools(
     except OSError as exc:
         raise ClientError(f"agent.yaml not found: {agent_yaml_path}") from exc
 
-    # Build the allow list from the shared constant, rendered as comma-separated tool names.
-    allow_list_str = ", ".join(_COLLEAGUES_TOOLS_ALLOW)
-    replacement = (
-        "tools: {provider: colleagues, allow: ["
-        + allow_list_str
-        + f'], colleagues: {{url: "{url}", token_env: {token_env}, self: "{self_name}"}}}}'
-    )
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ClientError(f"agent.yaml does not parse: {agent_yaml_path}") from exc
+    if not isinstance(data, dict) or "tools" not in data:
+        raise ClientError(f"agent.yaml has no tools section to update: {agent_yaml_path}")
+    existing = data["tools"] if isinstance(data["tools"], dict) else {}
 
-    updated, count = _TOOLS_LINE_RE.subn(lambda match: replacement, text, count=1)
+    merged: dict = {"provider": "colleagues"}
+    merged["colleagues"] = {"url": url, "token_env": token_env, "self": self_name}
+    for key, value in existing.items():
+        if key in ("provider", "colleagues", "allow"):
+            continue
+        merged[key] = value
+    allow = list(_COLLEAGUES_TOOLS_ALLOW)
+    for entry in existing.get("allow") or []:
+        if entry not in allow:
+            allow.append(entry)
+    merged["allow"] = allow
+
+    rendered = yaml.dump(
+        merged, default_flow_style=True, sort_keys=False, width=10**9
+    ).strip()
+    replacement = f"tools: {rendered}"
+
+    updated, count = _TOOLS_SECTION_RE.subn(lambda match: replacement, text, count=1)
     if count == 0:
-        raise ClientError(f"agent.yaml has no tools: line to update: {agent_yaml_path}")
+        raise ClientError(f"agent.yaml has no tools section to update: {agent_yaml_path}")
     agent_yaml_path.write_text(updated)
 
 

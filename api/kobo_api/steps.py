@@ -805,7 +805,7 @@ class RepoStep:
             persona_body=persona_body,
             model_id=agent.model_id,
             skills=staged_skills,
-            runtime_image=config.runtime_image,
+            runtime_image=agent.runtime_image or config.runtime_image,
             vertex_project=config.vertex_project,
             vertex_location=vertex_location_for(config, agent.model_id),
             # Persona metadata (Task 3): thread the agent row's own team
@@ -845,6 +845,7 @@ class RepoStep:
             # URL, threaded the same way as every other org coordinate --
             # empty means the composed bundle carries no github block.
             broker_url=config.broker_url,
+            liminal_url=config.liminal_url,
         )
 
         compose_dir = ctx.workdir / "repo"
