@@ -2185,28 +2185,24 @@ def test_catalog_runtimes_shape(client):
     assert body["default"]
 
 
-def test_create_accepts_a_configured_runtime_from_another_registry_host(
-    session_factory, tmp_path
-):
-    from fastapi.testclient import TestClient
+def test_create_accepts_a_configured_runtime_from_another_registry_host(client):
+    from kobo_api.config import RuntimeChoice
 
-    from kobo_api.config import Config, RuntimeChoice
-    from kobo_api.main import create_app
-
-    cfg = Config(
-        workdir=tmp_path / "w",
-        runtimes=[RuntimeChoice(
-            image="us-docker.pkg.dev/p/apps/acme-agent-runtime:1.0", label="acme-runtime"
-        )],
-    )
-    local = TestClient(create_app(session_factory, config=cfg))
-    r = local.post("/api/agents", json={
-        "name": "sdk-four", "persona": "helpful-generalist",
-        "runtime_image": "us-docker.pkg.dev/p/apps/acme-agent-runtime:1.0",
-    })
-    assert r.status_code in (200, 201, 202), r.text
-    r2 = local.post("/api/agents", json={
-        "name": "sdk-five", "persona": "helpful-generalist",
-        "runtime_image": "us-docker.pkg.dev/p/apps/other-thing:1.0",
-    })
-    assert r2.status_code == 422
+    cfg = client.app.state.config
+    original = cfg.runtimes
+    cfg.runtimes = [RuntimeChoice(
+        image="us-docker.pkg.dev/p/apps/acme-agent-runtime:1.0", label="acme-runtime"
+    )]
+    try:
+        r = client.post("/api/agents", json={
+            "name": "sdk-four", "persona": "helpful-generalist",
+            "runtime_image": "us-docker.pkg.dev/p/apps/acme-agent-runtime:1.0",
+        })
+        assert r.status_code in (200, 201, 202), r.text
+        r2 = client.post("/api/agents", json={
+            "name": "sdk-five", "persona": "helpful-generalist",
+            "runtime_image": "us-docker.pkg.dev/p/apps/other-thing:1.0",
+        })
+        assert r2.status_code == 422
+    finally:
+        cfg.runtimes = original
