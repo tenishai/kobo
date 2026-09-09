@@ -3057,12 +3057,18 @@ def create_app(
         # (a bad tag fails the first build loudly), provenance is ours.
         runtime_image = (payload.runtime_image or "").strip() or None
         if runtime_image is not None:
+            # Two ways in: exactly a configured runtime (operator-vetted
+            # config, any registry the org publishes to -- the sdk runtime
+            # lives on a different regional host than the daedalus default),
+            # or a freeform ref under the org default's registry root.
+            configured = {r.image for r in cfg.runtimes}
             registry_root = cfg.runtime_image.rsplit("/", 1)[0] + "/"
-            if not runtime_image.startswith(registry_root):
+            if runtime_image not in configured and not runtime_image.startswith(registry_root):
                 return JSONResponse(
                     {
-                        "error": "runtime_image must live under "
-                        f"{registry_root!r} (got {runtime_image!r})"
+                        "error": "runtime_image must be one of the configured "
+                        f"runtimes or live under {registry_root!r} "
+                        f"(got {runtime_image!r})"
                     },
                     status_code=422,
                 )
