@@ -42,6 +42,7 @@ from kobo_api.clients import (
 from kobo_api.config import SHARED_GROUP, Config
 from kobo_api.db import init_db, make_engine, make_session_factory
 from kobo_api.metrics import install as install_metrics
+from kobo_api.tracing import install as install_tracing
 from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
 from kobo_api.directory import sync_directory
 from kobo_api.iap import IapMiddleware, IapVerifier
@@ -1890,6 +1891,7 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="kobo-api", lifespan=_room_lifespan)
     install_metrics(app)
+    install_tracing(app)
     app.state.config = config
     app.state.clients = clients
     app.state.session_factory = session_factory

@@ -16,6 +16,10 @@ dependencies = [
     "httpx",
     "jsonschema",
     "prometheus-client",  # RED metrics at /metrics (argus web profile contract)
+    # OTLP tracing, env-gated by OTEL_EXPORTER_OTLP_ENDPOINT (kobo_api.tracing)
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp-proto-http",
+    "opentelemetry-instrumentation-fastapi",
     "PyJWT[crypto]",
     # POST /oauth/token (Task 4) is form-encoded per RFC 6749 -- FastAPI's
     # Form(...) parameters need this even for plain urlencoded bodies (not
