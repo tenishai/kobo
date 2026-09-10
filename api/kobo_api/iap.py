@@ -36,7 +36,11 @@ log = logging.getLogger(__name__)
 IAP_ISSUER = "https://cloud.google.com/iap"
 IAP_JWKS_URL = "https://www.gstatic.com/iap/verify/public_key-jwk"
 ASSERTION_HEADER = "x-goog-iap-jwt-assertion"
-EXEMPT_PATHS = frozenset({"/api/healthz"})
+# /metrics: the in-cluster scraper reaches the pod's service directly and
+# carries no IAP assertion, same shape as /broker's callers; the external
+# ingress never routes this root. The exposition is request counts and
+# durations only - no identities, no payloads.
+EXEMPT_PATHS = frozenset({"/api/healthz", "/metrics"})
 
 # Path ROOTS the app-wide IAP assertion check never applies to, because they
 # carry their OWN authentication (the MCP server arc): kobo's OAuth 2.1 server

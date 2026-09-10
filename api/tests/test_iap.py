@@ -92,7 +92,7 @@ def _counting_fetcher(*responses):
 def test_constants_match_the_brief_exactly():
     assert IAP_ISSUER == "https://cloud.google.com/iap"
     assert ASSERTION_HEADER == "x-goog-iap-jwt-assertion"
-    assert EXEMPT_PATHS == frozenset({"/api/healthz"})
+    assert EXEMPT_PATHS == frozenset({"/api/healthz", "/metrics"})
     assert UNAUTHORIZED_BODY == {"error": "you need to sign in to use this room"}
 
 
@@ -413,6 +413,20 @@ def test_enabled_healthz_exempt_with_no_header(session_factory, iap_config):
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
+
+
+def test_enabled_metrics_exempt_with_no_header(session_factory, iap_config):
+    # The in-cluster scraper carries no IAP assertion (it reaches the pod's
+    # service directly, below the ingress) - /metrics must answer anyway.
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    response = test_client.get("/metrics", follow_redirects=True)
+
+    assert response.status_code == 200
+    assert "http_request_duration_seconds" in response.text
 
 
 def _make_minimal_dist(tmp_path):
