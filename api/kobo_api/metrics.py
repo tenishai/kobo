@@ -9,7 +9,14 @@ status only, never path.
 import time
 
 from fastapi import FastAPI, Request
-from prometheus_client import CollectorRegistry, Counter, Histogram, make_asgi_app
+from fastapi.responses import Response
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Counter,
+    Histogram,
+    generate_latest,
+)
 
 
 def install(app: FastAPI) -> None:
@@ -32,9 +39,7 @@ def install(app: FastAPI) -> None:
 
     @app.middleware("http")
     async def _record(request: Request, call_next):
-        # The mount answers /metrics with a redirect to /metrics/ - skip both,
-        # or the follow-up request counts the metrics endpoint itself.
-        if request.url.path in ("/metrics", "/metrics/"):
+        if request.url.path == "/metrics":
             return await call_next(request)
         start = time.perf_counter()
         response = await call_next(request)
@@ -42,4 +47,9 @@ def install(app: FastAPI) -> None:
         requests.labels(request.method, str(response.status_code)).inc()
         return response
 
-    app.mount("/metrics", make_asgi_app(registry=registry))
+    # An explicit route, not a mount: a mount only PARTIALLY matches the bare
+    # /metrics path, and Starlette prefers any later full match - a SPA
+    # catch-all route swallows the mount whole (found live on kobo).
+    @app.get("/metrics", include_in_schema=False)
+    def _metrics() -> Response:
+        return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
