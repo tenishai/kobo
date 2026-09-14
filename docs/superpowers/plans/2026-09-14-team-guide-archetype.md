@@ -353,6 +353,39 @@ memory ONLY.
 - [ ] **Step 3:** Run `tests/test_composer.py` + `tests/test_api_agents.py` + the migration import check the suite already does; full file green.
 - [ ] **Step 4: Commit** `feat(composer): team-guide bundles carry no action tools - never-act enforced in the bundle`.
 
+### Task 2c: OAuth surface is https-only (security ride-along, Shaz 9/14)
+
+CYBER-1132 follow-on: kobo's IAP-exempt external roots (`/oauth`, `/.well-known`,
+`/mcp`) answer over plain `http://` at the LB. App-level enforcement ships in
+this image (the LB-level `FrontendConfig redirectToHttps` is a kc.yaml change,
+Kyle's — noted in Task 8).
+
+**Files:**
+- Modify: `api/kobo_api/main.py` or `api/kobo_api/iap.py` (wherever the middleware
+  stack is assembled — a new small middleware beside the IAP gate)
+- Test: `api/tests/test_iap.py` (append; it owns the exempt-roots doctrine)
+
+**Design (binding):**
+- Discriminator is `X-Forwarded-Proto`: the GCLB always sets it; in-cluster
+  direct-Service traffic (the `/broker` lane ledger uses, kubelet probes) never
+  does. ABSENT header → allow untouched (internal). Header `https` → allow.
+- Header `http` AND path is one of the external roots (`/oauth`, `/.well-known`,
+  `/mcp` — same segment-boundary matching `_is_exempt` uses; NOT `/broker`,
+  NOT `/metrics`, NOT anything else): GET/HEAD → 308 to the same URL with
+  scheme https; any other method → 400 `{"error": "this endpoint requires
+  https"}` (a token POST's credentials must never transit plain http, and a
+  redirect would invite resubmission).
+- Non-external paths over XFP=http are untouched (IAP fronting already owns
+  them; do not widen scope).
+- Inspect how the OAuth discovery documents build their URLs (`grep -rn
+  "well-known\|issuer" api/kobo_api/mcp/ api/kobo_api/*.py`): if any endpoint
+  URL is derived from the request scheme, force https whenever
+  X-Forwarded-Proto is present; add one test pinning the discovery doc's URLs
+  are https under an XFP=http request.
+
+- [ ] **Step 1:** Failing tests: (a) GET /oauth/... with XFP=http → 308, Location scheme https, path+query preserved; (b) POST with XFP=http to an /oauth path → 400 with the copy above; (c) GET /broker path with XFP=http → NOT redirected (in-cluster lane unharmed even if a proxy ever sets it); (d) request with NO XFP header to /oauth → passes through untouched; (e) XFP=https → untouched; (f) discovery doc https pin per inspection.
+- [ ] **Step 2:** Implement per design. **Step 3:** run test_iap.py + the mcp/oauth test files green. **Step 4:** Commit `fix(security): oauth surface refuses plain http (CYBER-1132 ride-along)`.
+
 ### Task 3: MCP parity
 
 **Files:**
