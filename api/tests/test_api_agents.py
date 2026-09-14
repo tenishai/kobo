@@ -2433,6 +2433,12 @@ def test_archetype_marker_lands_on_the_agent_row(client, session_factory):
     assert row is not None and row.archetype == "team_guide"
     session.close()
 
+    # Task 2b: the detail response carries the same marker -- the UI can
+    # then detect a guide from this explicit field instead of the defeasible
+    # purpose-tags pair.
+    agent = client.get("/api/agents/atlas").json()
+    assert agent["archetype"] == "team_guide"
+
 
 def test_plain_create_leaves_the_archetype_marker_null(client, session_factory):
     r = client.post("/api/agents", json={"name": "beacon", "persona": PERSONA})
@@ -2442,6 +2448,9 @@ def test_plain_create_leaves_the_archetype_marker_null(client, session_factory):
     row = session.query(Agent).filter_by(name="beacon").first()
     assert row is not None and row.archetype is None
     session.close()
+
+    agent = client.get("/api/agents/beacon").json()
+    assert agent["archetype"] is None
 
 
 def test_archetype_forces_baseline_and_default_model(client, session_factory):

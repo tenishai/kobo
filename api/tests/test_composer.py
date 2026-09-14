@@ -1966,6 +1966,11 @@ def test_team_guide_archetype_composes_no_github_and_no_liminal(tmp_path):
     text = (dest / "bundle" / "agent.yaml").read_text()
     data = yaml.safe_load(text)
     tools = data["tools"]
+    # The kiosk's tools block carries exactly the colleagues trio -- no
+    # sidecar key can ride in, structurally, because the compose-time gate
+    # returns before either sidecar arm runs (memory lives as its own
+    # sibling stanza on `data`, not inside `tools`).
+    assert set(tools) == {"provider", "allow", "colleagues"}
     # Colleagues survive untouched -- the guide still talks.
     assert tools["provider"] == "colleagues"
     assert tools["colleagues"]["url"] == "http://cabal.example.com"

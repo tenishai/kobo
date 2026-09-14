@@ -3454,6 +3454,7 @@ def create_app(
                 "has_avatar": agent.avatar_png is not None,
                 "created_by": agent.created_by,
                 "group_name": agent.group_name,
+                "archetype": agent.archetype,
                 "pending_learnings": session.query(AgentLearning)
                 .filter_by(agent_name=agent.name, status=LEARNING_PENDING)
                 .count(),

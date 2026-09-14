@@ -274,17 +274,23 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
     # composed from ORG coordinates, not from anything the caller sends, so
     # without this gate every kiosk would still be born holding
     # `github.open_pr`. "Never act" is enforced HERE, in the bundle itself,
-    # where the runtime reads it. Deliberately a suppression of the two
-    # action sidecars and nothing else: the colleagues provider, the
-    # colleague allow-list and the memory block above/below are untouched
-    # (the guide still talks and still remembers).
+    # where the runtime reads it -- structurally: the kiosk returns before
+    # either sidecar arm below ever runs, so a future org-config sidecar
+    # cannot reach a kiosk just by forgetting its own `not never_act` check.
+    # Deliberately a suppression of the two action sidecars and nothing
+    # else: the colleagues provider, the colleague allow-list and the
+    # memory block above/below are untouched (the guide still talks and
+    # still remembers).
     never_act = spec.archetype == ARCHETYPE_TEAM_GUIDE
+    if never_act:
+        block["allow"] = _FlowList(allow)   # colleagues trio only
+        return block
     # The github sidecar (agent PR broker spec): rides ALONGSIDE the
     # colleagues provider (daedalus composes the two), gated on BOTH
     # coordinates -- the broker route authenticates the agent by the same
     # colleague JWT the cabal wiring issues, so a broker with no
     # switchboard could never authenticate anyone.
-    if spec.broker_url and not never_act:
+    if spec.broker_url:
         # Explicit names, never a github.* glob -- the bundle's allow list is
         # law, and a glob would silently grant every tool the provider grows
         # later. open_pr is the one write (PR-only by ruling); the read
@@ -313,7 +319,7 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
     # authenticate anyone. Deliberately NO allow entries here: which
     # gateway tools an agent may call arrives with its grant (K3), never
     # as a composed default.
-    if spec.liminal_url and not never_act:
+    if spec.liminal_url:
         block["liminal"] = _FlowDict(
             url=_DoubleQuoted(spec.liminal_url),
             token_env=CABAL_COLLEAGUE_TOKEN_ENV,
