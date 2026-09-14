@@ -42,7 +42,17 @@ def install(app: FastAPI) -> None:
         if request.url.path == "/metrics":
             return await call_next(request)
         start = time.perf_counter()
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception:
+            # An unhandled exception never produces a response object, so
+            # without this the crash is invisible to http_requests_total -
+            # and a crashing app looks healthy to any 5xx alert (found in
+            # review of the gojira twin, gojira #44). Count it as the 500
+            # the client receives.
+            latency.labels(request.method).observe(time.perf_counter() - start)
+            requests.labels(request.method, "500").inc()
+            raise
         latency.labels(request.method).observe(time.perf_counter() - start)
         requests.labels(request.method, str(response.status_code)).inc()
         return response
