@@ -2206,3 +2206,111 @@ def test_create_accepts_a_configured_runtime_from_another_registry_host(client):
         assert r2.status_code == 422
     finally:
         cfg.runtimes = original
+
+
+# --- team-guide archetype (spec 2026-09-14) ---------------------------------
+#
+# The create route's archetype lane FORCES the bundle surface (persona,
+# skills, runtime, tags, ACL namespace) and ignores whatever the client sent
+# for those — "cannot act" is a property of the composed bundle, not of a UI
+# default. This module's `config` fixture names no groups, so `group_name`
+# reaches the route unvalidated (exactly as the pre-groups tests above rely
+# on) and the archetype branch is the only thing that rewrites it.
+
+
+def _create_guide(client, name="atlas", group="sre", voice=None, **extra):
+    payload = {
+        "name": name,
+        "persona": PERSONA,  # ignored by the archetype path
+        "archetype": "team_guide",
+        "group_name": group,
+        **({"voice": voice} if voice else {}),
+        **extra,
+    }
+    return client.post("/api/agents", json=payload)
+
+
+def test_archetype_forces_tags_persona_and_commons_namespace(client):
+    r = _create_guide(client)
+    assert r.status_code == 201, r.text
+
+    agent = client.get(f"/api/agents/{r.json()['name']}").json()
+    assert "team-guide" in agent["purpose_tags"] and "sre" in agent["purpose_tags"]
+    assert agent["persona"] == "team-guide-sre"
+    # shared visibility, mechanically: the guide lives in the commons
+    assert agent["group_name"] == "shared"
+
+
+def test_archetype_ignores_client_supplied_skills_and_runtime(client, session_factory):
+    r = _create_guide(
+        client,
+        skills=[{"id": "word-games", "team": "shared"}],
+        runtime_image="registry.example/agents/acme-agent-sdk:1.0",
+    )
+    assert r.status_code == 201, r.text
+
+    agent = client.get(f"/api/agents/{r.json()['name']}").json()
+    # The marketplace hasn't published `team-guide` in this fixture's
+    # catalog, so the forced pick list is empty — and the client's own pick
+    # is gone either way.
+    assert agent["skills"] == []
+    session = session_factory()
+    row = session.query(Agent).filter_by(name="atlas").first()
+    assert row is not None and row.runtime_image is None
+    session.close()
+
+
+def test_archetype_duplicate_guard_409_names_existing(client):
+    assert _create_guide(client, name="atlas").status_code == 201
+
+    r = _create_guide(client, name="beacon")
+    assert r.status_code == 409
+    assert r.json()["existing"] == "atlas"
+    # A different team may still have its own guide.
+    assert _create_guide(client, name="beacon", group="qa").status_code == 201
+
+
+def test_archetype_voice_lands_in_stored_persona(client, fake_storage):
+    assert _create_guide(client, voice="Anthony Bourdain").status_code == 201
+
+    body = fake_storage.read_bytes("personas-bucket", "team-guide-sre/persona.md").decode()
+    assert "Anthony Bourdain" in body and "Never act." in body
+
+
+def test_archetype_rerender_overwrites_an_existing_guide_persona(client, fake_storage):
+    """Re-creating a guide after a destroy re-renders its persona: the
+    persona id is derived from the group, so the write must overwrite rather
+    than collide the way POST /api/personas' 409 would."""
+    assert _create_guide(client, name="atlas").status_code == 201
+    first = fake_storage.read_bytes("personas-bucket", "team-guide-sre/persona.md").decode()
+    assert "Anthony Bourdain" not in first
+
+    # Stand in for a destroy: let the pipeline settle, then drop the row that
+    # holds the team-guide tag pair, freeing the group for a fresh guide.
+    _poll_until(client, "atlas", {"ready", "failed"})
+    session = client.app.state.session_factory()
+    row = session.query(Agent).filter_by(name="atlas").first()
+    for step in list(row.steps):
+        session.delete(step)
+    session.delete(row)
+    session.commit()
+    session.close()
+
+    assert _create_guide(client, name="beacon", voice="Anthony Bourdain").status_code == 201
+    second = fake_storage.read_bytes("personas-bucket", "team-guide-sre/persona.md").decode()
+    assert "Anthony Bourdain" in second
+
+
+def test_unknown_archetype_is_422(client):
+    r = client.post(
+        "/api/agents",
+        json={"name": "atlas", "persona": PERSONA, "archetype": "team_overlord"},
+    )
+    assert r.status_code == 422
+    assert "archetype" in r.json()["error"]
+
+
+def test_archetype_voice_must_be_a_name_not_a_biography(client):
+    r = _create_guide(client, voice="x" * 121)
+    assert r.status_code == 422
+    assert "voice" in r.json()["error"]

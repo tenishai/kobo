@@ -25,6 +25,12 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from kobo_api.archetypes import (
+    ARCHETYPE_TEAM_GUIDE,
+    TEAM_GUIDE_TAG,
+    render_team_guide,
+    team_guide_persona_id,
+)
 from kobo_api.avatars import avatar_prompt, set_avatar
 from kobo_api.catalog import RESERVED_NAMES, validate_name
 from kobo_api.clients import (
@@ -111,6 +117,7 @@ from kobo_api.personas import (
     PersonaFields,
     create_persona,
     set_persona_archived,
+    upsert_persona,
 )
 from kobo_api.personas import (
     read_index as personas_read_index,
@@ -125,7 +132,7 @@ from kobo_api.provisioner import (
 from kobo_api.jira_broker import fetch_issue as jira_fetch_issue
 from kobo_api.jira_broker import search_issues as jira_search_issues
 from kobo_api.pr_broker import BrokerAuthError, mint_scoped_token, verify_agent_token
-from kobo_api.purpose_tags import clean_tags, decode_tags, encode_tags
+from kobo_api.purpose_tags import MAX_CREATE_TAGS, clean_tags, decode_tags, encode_tags
 from kobo_api.search import (
     CATALOG_TTL_S,
     catalog_index_metadata,
@@ -249,6 +256,14 @@ class CreateAgentRequest(BaseModel):
     # a bool -- and it is recorded on the row rather than acted on here, since
     # the pack is staged by RepoStep, not by this route.
     skip_baseline: bool = False
+    # Archetype create lane (team-guide spec 2026-09-14): when set, the route
+    # FORCES persona/tools/tags/visibility/skills and ignores the client's
+    # values for them — "cannot act" is enforced in the composed bundle, not
+    # in UI defaults. Only "team_guide" exists today.
+    archetype: str | None = None
+    # Optional style overlay for archetype personas (style-not-identity;
+    # subordinate to the constitution — see kobo_api/archetypes.py).
+    voice: str | None = None
 
 
 class NameSuggestionsRequest(BaseModel):
@@ -3018,6 +3033,118 @@ def create_app(
             return JSONResponse(
                 {"error": "catalogs aren't set up yet"}, status_code=422
             )
+
+        # Archetype create lane (team-guide spec 2026-09-14). Sits here on
+        # purpose: AFTER the group validation + membership-consent block
+        # above (so only a member of the picked team -- or an operator --
+        # can deploy that team's guide, and the guard runs on the group the
+        # caller actually PICKED, before this branch rewrites it), and
+        # AFTER the catalog refresh (so the forced skill pick is resolved
+        # against a fresh catalog), but BEFORE persona/skill resolution
+        # below -- everything downstream reads `payload.*` and
+        # `cleaned_tags` and runs completely unchanged.
+        if payload.archetype is not None:
+            if payload.archetype != ARCHETYPE_TEAM_GUIDE:
+                return JSONResponse(
+                    {"error": f"unknown archetype: {payload.archetype!r}"},
+                    status_code=422,
+                )
+            # The PICKED group is the team this guide serves.
+            group = payload.group_name or SHARED_GROUP
+            if payload.voice is not None and len(payload.voice) > 120:
+                return JSONResponse(
+                    {"error": "voice should be a short name, not a biography"},
+                    status_code=422,
+                )
+            # One guide per team: the team identity lives in the TAG PAIR
+            # (team-guide + group), because the agent's ACL namespace is
+            # forced to the commons below.
+            for other in session.query(Agent):
+                other_tags = decode_tags(other.purpose_tags)
+                if TEAM_GUIDE_TAG in other_tags and group in other_tags:
+                    return JSONResponse(
+                        {
+                            "error": f"{group} already has a team guide",
+                            "existing": other.name,
+                        },
+                        status_code=409,
+                    )
+
+            archetype_clients = app.state.clients
+            if (
+                archetype_clients is None
+                or archetype_clients.storage is None
+                or not cfg.personas_bucket
+            ):
+                return JSONResponse(
+                    {"error": "catalogs aren't set up yet"}, status_code=503
+                )
+            persona_id = team_guide_persona_id(group)
+            try:
+                # Stored as an ordinary room persona so `_resolve_persona_body`
+                # and everything downstream never learn archetypes exist.
+                # Overwrite-safe (`upsert_persona`, not `create_persona`):
+                # re-creating a guide after a destroy re-renders in place.
+                upsert_persona(
+                    archetype_clients.storage,
+                    bucket=cfg.personas_bucket,
+                    id=persona_id,
+                    name=f"{group} team guide",
+                    description=f"The informational guide for the {group} team.",
+                    body=render_team_guide(payload.name, group, payload.voice),
+                    team=group,
+                    tags=[TEAM_GUIDE_TAG],
+                    creator="kobo",
+                )
+                # Same instant-ingest idiom as create_persona_route: the FULL
+                # kind->bucket mapping (a persona-only ingest would wipe the
+                # skills table), so the persona this route just wrote is
+                # resolvable by the `get_entry` lookup a few lines below.
+                ingest_indexes(engine, archetype_clients.storage, configured_catalogs(cfg))
+                app.state.catalog_loaded_at = time.monotonic()
+            except PersonaError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=422)
+            except ClientError as exc:
+                log.warning("team-guide persona write failed: %s", exc)
+                return JSONResponse({"error": str(exc)}, status_code=502)
+
+            # Force the surface: the rest of the route reads payload.*.
+            payload.persona = persona_id
+            # Shared visibility, mechanically: the guide lives in the commons
+            # namespace so every team's humans (and agents) can find and chat
+            # with it. Its team identity is the tag pair + persona, not its
+            # ACL namespace.
+            payload.group_name = SHARED_GROUP
+            payload.team = SHARED_GROUP
+            payload.runtime_image = None
+            # Attach the packaged guide skill when the marketplace has it;
+            # skip silently when it hasn't published it yet (a kiosk without
+            # the skill still has its constitution from the persona). Forced
+            # BEFORE the resolution loop below, so the loop resolves this pick
+            # exactly like a client's own.
+            guide_skill = get_entry(engine, "skill", TEAM_GUIDE_TAG, team=None)
+            payload.skills = (
+                [SkillPick(id=guide_skill.id, team=guide_skill.team)]
+                if guide_skill is not None
+                else []
+            )
+            # Canonical tags FIRST, then the caller's own (already normalized
+            # and cap-checked above). Truncated rather than re-rejected: the
+            # cap's usual "never silently drop a tag a human typed" posture
+            # aims at the caller's list, and it would be perverse to 422 a
+            # caller over two tags the ROUTE added -- so the overflow this
+            # branch itself creates is the route's to absorb. The pair leads,
+            # so it always survives: the duplicate guard above and every
+            # "which team does this guide serve" reader depend on it.
+            forced_tags = clean_tags(
+                [TEAM_GUIDE_TAG, group, *cleaned_tags][:MAX_CREATE_TAGS]
+            )
+            # Unreachable as long as the slice above stands (normalization
+            # only ever shrinks a list) -- kept so the union return is
+            # handled at every call site rather than assumed away.
+            if isinstance(forced_tags, str):
+                return JSONResponse({"error": forced_tags}, status_code=422)
+            cleaned_tags = forced_tags
 
         # Personas are org-wide — the id alone is unique across the whole
         # personas index, so no team is required (or known) to look one up.

@@ -363,6 +363,71 @@ def create_persona(
     )
 
 
+def upsert_persona(
+    storage: StorageClient,
+    *,
+    bucket: str,
+    prefix: str = "",
+    id: str,
+    name: str,
+    description: str,
+    body: str,
+    team: str,
+    tags: list[str] | None = None,
+    creator: str = "room",
+) -> CatalogEntry:
+    """Write an ALREADY-RENDERED persona.md under `id`, overwriting whatever
+    is there — same storage layout, same index shape, and the same
+    never-touches-search contract as `create_persona` above (its caller
+    re-ingests with the FULL kind->bucket mapping right after).
+
+    Two deliberate differences from `create_persona`, both required by the
+    archetype create lane (kobo_api.archetypes): the body arrives rendered
+    (an archetype persona comes from a packaged template, not from
+    `PersonaFields`), and an existing id is REPLACED rather than refused —
+    a team's guide persona id is derived from its group, so re-creating a
+    guide after a destroy must re-render in place instead of hitting
+    `PersonaExists`. Replacing the index entry outright also clears a stale
+    `archived` flag, which is the honest reading: the persona is being
+    written afresh.
+
+    The rendered ceiling (`_check_rendered_size`) still applies — a packaged
+    template is not exempt from the room's persona.md limits.
+    """
+    _check_rendered_size(body)
+    storage.write_bytes(
+        bucket,
+        f"{prefix}{id}/persona.md",
+        body.encode(),
+        metadata={"team": team, "creator": creator},
+        content_type="text/markdown",
+    )
+
+    cleaned = normalize_tags(tags or [])[:_TAG_CAP]
+    index = [entry for entry in _read_index(storage, bucket, prefix) if entry["id"] != id]
+    index.append(
+        {
+            "id": id,
+            "name": name,
+            "description": description,
+            "team": team,
+            "tags": cleaned,
+            "builtin": False,
+        }
+    )
+    _write_index(storage, bucket, prefix, index)
+
+    return CatalogEntry(
+        kind="persona",
+        id=id,
+        name=name,
+        description=description,
+        team=team,
+        tags=cleaned,
+        builtin=False,
+    )
+
+
 def seed_default_personas(storage: StorageClient, *, bucket: str, prefix: str = "") -> dict:
     """Seed the packaged default personas (`templates/personas/*.md`) into
     `bucket`, idempotently: a `<prefix><id>/persona.md` that's already
