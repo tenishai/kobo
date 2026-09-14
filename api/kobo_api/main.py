@@ -3299,6 +3299,15 @@ def create_app(
             purpose_tags=encode_tags(cleaned_tags),
             model_id=model_id,
             runtime_image=runtime_image,
+            # Archetype marker (team-guide spec 2026-09-14, Task 2b). Read
+            # straight off the payload, exactly as `payload.persona`/
+            # `payload.team` above are: the archetype branch far above
+            # either rewrote everything around it and left this field
+            # alone, or returned 422 for an unknown value -- so by the time
+            # the row is built this is None or the one archetype that
+            # exists, never an unvalidated string. The composer reads it to
+            # compose a kiosk with no action tools at all.
+            archetype=payload.archetype,
             skills=[
                 {"name": pick.id, "team": pick.team, "sha": entry.sha}
                 for pick, entry in resolved_skills

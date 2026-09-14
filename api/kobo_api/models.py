@@ -82,6 +82,17 @@ class Agent(Base):
     # DB -- apply manually there (fresh DBs get it free via create_all):
     #   ALTER TABLE agents ADD COLUMN runtime_image VARCHAR;
     runtime_image: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Archetype marker (team-guide spec 2026-09-14): the create-time recipe
+    # this agent was born from (`kobo_api.archetypes.ARCHETYPE_TEAM_GUIDE`),
+    # or None for an ordinary agent. Recorded on the row rather than inferred
+    # from tags because the bundle composer reads it: a team-guide kiosk
+    # composes with NO action tools at all (no github broker block, no
+    # liminal gateway block), and "cannot act" has to be a property of the
+    # composed bundle, not of the create form. Nullable: this column
+    # postdates create_all on any already-running DB -- apply manually there
+    # (fresh DBs get it free via create_all):
+    #   ALTER TABLE agents ADD COLUMN archetype VARCHAR(64);
+    archetype: Mapped[str | None] = mapped_column(String(64), nullable=True)
     skills: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=AgentStatus.PENDING

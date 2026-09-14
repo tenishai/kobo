@@ -37,6 +37,7 @@ def _make_spec(
     memory_replica_bucket: str = "",
     broker_url: str = "",
     liminal_url: str = "",
+    archetype: str | None = None,
 ) -> BundleSpec:
     return BundleSpec(
         name=name,
@@ -55,6 +56,7 @@ def _make_spec(
         memory_replica_bucket=memory_replica_bucket,
         broker_url=broker_url,
         liminal_url=liminal_url,
+        archetype=archetype,
     )
 
 
@@ -1936,6 +1938,109 @@ def test_no_liminal_block_without_the_gateway_coordinate():
     import yaml as _yaml
 
     assert "liminal" not in _yaml.safe_load(_render_agent_yaml(spec))["tools"]
+
+
+# --- archetype suppression: the bundle enforces "never act" (2026-09-14) -----
+#
+# A team-guide kiosk carries colleagues + memory ONLY. The create route can
+# force persona/tags/skills, but the github broker quartet and the liminal
+# birthright are composed from ORG config (broker_url/liminal_url) and would
+# otherwise reach every bundle -- `github.open_pr` included. The marker on
+# the spec is the one thing that can suppress them at compose time.
+
+
+def test_team_guide_archetype_composes_no_github_and_no_liminal(tmp_path):
+    dest = tmp_path / "out"
+
+    compose(
+        _make_spec(
+            name="atlas",
+            cabal_url="http://cabal.example.com",
+            broker_url="http://kobo.example.com",
+            liminal_url="http://liminal.example.com",
+            archetype="team_guide",
+        ),
+        dest,
+    )
+
+    text = (dest / "bundle" / "agent.yaml").read_text()
+    data = yaml.safe_load(text)
+    tools = data["tools"]
+    # Colleagues survive untouched -- the guide still talks.
+    assert tools["provider"] == "colleagues"
+    assert tools["colleagues"]["url"] == "http://cabal.example.com"
+    # No action surface at all: no sidecar blocks, no github allow entries.
+    assert "github" not in tools
+    assert "liminal" not in tools
+    assert not any(t.startswith("github.") for t in tools["allow"])
+    assert tools["allow"] == [
+        "colleagues.list_colleagues",
+        "colleagues.ask_colleague",
+        "colleagues.remember",
+    ]
+    # Not merely absent from the parsed mapping: absent from the bytes.
+    assert "github" not in text
+    assert "liminal" not in text
+    # Memory is untouched by the suppression.
+    assert data["memory"]["personal"] == "techne"
+
+
+def test_same_org_coordinates_still_compose_both_blocks_without_the_marker(tmp_path):
+    """The control for the test above: suppression is the archetype's doing,
+    never a regression in the org-config gates."""
+    dest = tmp_path / "out"
+
+    compose(
+        _make_spec(
+            name="atlas",
+            cabal_url="http://cabal.example.com",
+            broker_url="http://kobo.example.com",
+            liminal_url="http://liminal.example.com",
+        ),
+        dest,
+    )
+
+    tools = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())["tools"]
+    assert "github" in tools and "liminal" in tools
+    assert "github.open_pr" in tools["allow"]
+
+
+def test_unknown_archetype_marker_suppresses_nothing(tmp_path):
+    """The gate names the one archetype that exists (no truthiness check on
+    the field), so a future archetype composes the ordinary surface until it
+    asks for something else."""
+    dest = tmp_path / "out"
+
+    compose(
+        _make_spec(
+            name="atlas",
+            cabal_url="http://cabal.example.com",
+            broker_url="http://kobo.example.com",
+            liminal_url="http://liminal.example.com",
+            archetype="team_overlord",
+        ),
+        dest,
+    )
+
+    tools = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())["tools"]
+    assert "github" in tools and "liminal" in tools
+
+
+def test_team_guide_bundle_still_validates_against_the_vendored_schema(tmp_path):
+    dest = tmp_path / "out"
+
+    compose(
+        _make_spec(
+            name="atlas",
+            cabal_url="http://cabal.example.com",
+            broker_url="http://kobo.example.com",
+            liminal_url="http://liminal.example.com",
+            archetype="team_guide",
+        ),
+        dest,
+    )
+
+    validate_agent_yaml(dest / "bundle")  # must not raise
 
 
 def _rewire(tmp_path, tools_text):

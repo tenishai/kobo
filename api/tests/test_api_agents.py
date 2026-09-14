@@ -2423,6 +2423,27 @@ def test_archetype_forced_skill_pick_prefers_the_shared_team_deterministically(
     assert agent["skills"] == [{"name": "team-guide", "team": "shared", "sha": "sharedsha"}]
 
 
+def test_archetype_marker_lands_on_the_agent_row(client, session_factory):
+    """Task 2b: the row carries the archetype so the composer can suppress
+    the action-tool blocks org config would otherwise hand every bundle."""
+    assert _create_guide(client, name="atlas", group="sre").status_code == 201
+
+    session = session_factory()
+    row = session.query(Agent).filter_by(name="atlas").first()
+    assert row is not None and row.archetype == "team_guide"
+    session.close()
+
+
+def test_plain_create_leaves_the_archetype_marker_null(client, session_factory):
+    r = client.post("/api/agents", json={"name": "beacon", "persona": PERSONA})
+    assert r.status_code == 201, r.text
+
+    session = session_factory()
+    row = session.query(Agent).filter_by(name="beacon").first()
+    assert row is not None and row.archetype is None
+    session.close()
+
+
 def test_archetype_forces_baseline_and_default_model(client, session_factory):
     """M3: the kiosk always ships the baseline guardrail tools and the
     org-default model -- a client-supplied opt-out or model override must

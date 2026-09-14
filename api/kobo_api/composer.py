@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import jsonschema
 import yaml
 
+from kobo_api.archetypes import ARCHETYPE_TEAM_GUIDE
 from kobo_api.clients import ClientError
 
 # Type-only: `kobo_api.steps` imports `BundleSpec`/`compose`/`validate_agent_
@@ -120,6 +121,18 @@ class BundleSpec:
     # /auth/liminal-token route), so wiring is gated on BOTH coordinates,
     # the same both-or-nothing rule the github block applies.
     liminal_url: str = ""
+    # The create-time archetype this agent was born from (`kobo_api.models.
+    # Agent.archetype`, threaded by `kobo_api.steps.RepoStep`), or None for
+    # an ordinary agent -- which every pre-existing `BundleSpec(...)`
+    # construction across the test suite is, so the default keeps them all
+    # composing byte-identical output. Read ONLY by `_tools_block` below,
+    # and only to SUPPRESS: a team-guide kiosk composes with no action
+    # tools at all, because the github and liminal blocks come from org
+    # config (`broker_url`/`liminal_url`) and would otherwise reach every
+    # bundle the room composes -- `github.open_pr` included. Compared
+    # against the named archetype constant, never truth-tested, so a future
+    # archetype composes the ordinary surface until it asks for its own.
+    archetype: str | None = None
 
 
 # --- agent.yaml rendering ----------------------------------------------------
@@ -255,12 +268,23 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
             self=_DoubleQuoted(spec.name),
         ),
     )
+    # A team-guide kiosk carries colleagues + memory ONLY (team-guide spec
+    # 2026-09-14). Its constitution says it never acts, and the create lane
+    # forces its persona, tags and skills -- but the two sidecars below are
+    # composed from ORG coordinates, not from anything the caller sends, so
+    # without this gate every kiosk would still be born holding
+    # `github.open_pr`. "Never act" is enforced HERE, in the bundle itself,
+    # where the runtime reads it. Deliberately a suppression of the two
+    # action sidecars and nothing else: the colleagues provider, the
+    # colleague allow-list and the memory block above/below are untouched
+    # (the guide still talks and still remembers).
+    never_act = spec.archetype == ARCHETYPE_TEAM_GUIDE
     # The github sidecar (agent PR broker spec): rides ALONGSIDE the
     # colleagues provider (daedalus composes the two), gated on BOTH
     # coordinates -- the broker route authenticates the agent by the same
     # colleague JWT the cabal wiring issues, so a broker with no
     # switchboard could never authenticate anyone.
-    if spec.broker_url:
+    if spec.broker_url and not never_act:
         # Explicit names, never a github.* glob -- the bundle's allow list is
         # law, and a glob would silently grant every tool the provider grows
         # later. open_pr is the one write (PR-only by ruling); the read
@@ -289,7 +313,7 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
     # authenticate anyone. Deliberately NO allow entries here: which
     # gateway tools an agent may call arrives with its grant (K3), never
     # as a composed default.
-    if spec.liminal_url:
+    if spec.liminal_url and not never_act:
         block["liminal"] = _FlowDict(
             url=_DoubleQuoted(spec.liminal_url),
             token_env=CABAL_COLLEAGUE_TOKEN_ENV,

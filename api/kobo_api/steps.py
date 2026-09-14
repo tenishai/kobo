@@ -846,6 +846,12 @@ class RepoStep:
             # empty means the composed bundle carries no github block.
             broker_url=config.broker_url,
             liminal_url=config.liminal_url,
+            # Archetype marker (team-guide spec 2026-09-14, Task 2b): the
+            # row's own create-time recipe, threaded so the composer can
+            # SUPPRESS the two sidecars above for a kiosk. The org
+            # coordinates are handed over unchanged either way -- the
+            # composer, not this step, decides what they compose into.
+            archetype=agent.archetype,
         )
 
         compose_dir = ctx.workdir / "repo"

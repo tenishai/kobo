@@ -99,9 +99,11 @@ def _make_agent(
     group_name: str | None = None,
     purpose_tags: str | None = None,
     skip_baseline: bool = False,
+    archetype: str | None = None,
 ):
     session = session_factory()
     agent = Agent(
+        archetype=archetype,
         name=name,
         persona=persona,
         model_id=model_id,
@@ -1283,6 +1285,56 @@ def test_repo_step_composes_with_cabal_auth_when_config_carries_cabal_url(
     assert auth["jwks_url"] == expected_jwks_url
     assert auth["issuer"] == "cabal-core"
     assert auth["audience"] == agent.name
+
+
+def _archetype_config(tmp_path):
+    """Every action coordinate the org can carry, all at once -- the exact
+    config that made the Task 2 create lane insufficient on its own."""
+    return Config(
+        workdir=tmp_path / "work",
+        skills_bucket="skills-bucket",
+        personas_bucket="personas-bucket",
+        cabal_url="https://switchboard.example.com",
+        broker_url="https://kobo.example.com",
+        liminal_url="https://liminal.example.com",
+    )
+
+
+def test_repo_step_threads_archetype_and_composes_no_action_tools(
+    session_factory, fake_storage, tmp_path
+):
+    """The row's archetype marker reaches BundleSpec: a team-guide bundle
+    composes with NO github block (open_pr included) and NO liminal block,
+    even with both org coordinates configured."""
+    config = _archetype_config(tmp_path)
+    session, agent = _make_agent(session_factory, archetype="team_guide")
+    ctx = _make_ctx(session, agent, config, _clients(github=FakeGitHub(), storage=fake_storage))
+
+    RepoStep().run(ctx)
+
+    text = (ctx.workdir / "repo" / "bundle" / "agent.yaml").read_text()
+    tools = yaml.safe_load(text)["tools"]
+    assert tools["provider"] == "colleagues"
+    assert "github" not in tools and "liminal" not in tools
+    assert not any(t.startswith("github.") for t in tools["allow"])
+
+
+def test_repo_step_keeps_action_tools_for_an_unmarked_agent(
+    session_factory, fake_storage, tmp_path
+):
+    """The control: same org config, no marker -- the birthright blocks
+    still compose, so suppression is the archetype's doing alone."""
+    config = _archetype_config(tmp_path)
+    session, agent = _make_agent(session_factory)
+    ctx = _make_ctx(session, agent, config, _clients(github=FakeGitHub(), storage=fake_storage))
+
+    RepoStep().run(ctx)
+
+    tools = yaml.safe_load(
+        (ctx.workdir / "repo" / "bundle" / "agent.yaml").read_text()
+    )["tools"]
+    assert "github" in tools and "liminal" in tools
+    assert "github.open_pr" in tools["allow"]
 
 
 def test_repo_step_composes_without_cabal_auth_when_config_has_no_cabal_url(
