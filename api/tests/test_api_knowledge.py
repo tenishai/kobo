@@ -714,7 +714,8 @@ def test_delivery_delivered_when_success_and_image_matches(session_factory, conf
 
 def test_delivery_failed_when_run_completed_non_success(session_factory, config):
     github = FakeGitHub(
-        runs_by_sha={SHA: [[{"id": 1, "status": "completed", "conclusion": "failure"}]]}
+        head_sha=SHA,  # main hasn't moved past it: a real failure, not a superseded one
+        runs_by_sha={SHA: [[{"id": 1, "status": "completed", "conclusion": "failure"}]]},
     )
     client = _make_client(session_factory, config, github=github)
     _seed_agent(session_factory, config)

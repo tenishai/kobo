@@ -273,7 +273,8 @@ def test_delivery_state_building_when_run_queued():
 
 def test_delivery_state_failed_when_run_completed_non_success():
     github = FakeGitHub(
-        runs_by_sha={"sha1": [[{"id": 1, "status": "completed", "conclusion": "failure"}]]}
+        head_sha="sha1",
+        runs_by_sha={"sha1": [[{"id": 1, "status": "completed", "conclusion": "failure"}]]},
     )
     kubectl = FakeKubectl()
     state = delivery_state(
@@ -287,7 +288,8 @@ def test_delivery_state_failed_when_run_completed_non_success():
 
 def test_delivery_state_failed_when_run_cancelled():
     github = FakeGitHub(
-        runs_by_sha={"sha1": [[{"id": 1, "status": "completed", "conclusion": "cancelled"}]]}
+        head_sha="sha1",
+        runs_by_sha={"sha1": [[{"id": 1, "status": "completed", "conclusion": "cancelled"}]]},
     )
     kubectl = FakeKubectl()
     state = delivery_state(
@@ -448,3 +450,59 @@ def test_rollout_in_progress_truth_table():
         rollout_in_progress(Kubectl(ClientError("kubectl down")), namespace="w", deploy="w")
         is False
     )
+
+
+# --- delivery_state follows gojira's setup PR (gojira finding #20) -----------
+#
+# A contract-changing push (gojira.yaml) is delivered by gojira's setup PR,
+# which lands seconds later carrying the push; the platform's generated CI
+# fails the push's OWN run fast ("Verify manifests match gojira.yaml"). The
+# head is the commit that deploys — report its delivery, not the push's.
+
+SETUP_PR_HEAD = "5e70e5e70e5e70e5e70e5e70e5e70e5e70e5e70e"
+
+
+def test_delivery_state_follows_head_when_own_run_failed_and_head_advanced():
+    github = FakeGitHub(
+        head_sha=SETUP_PR_HEAD,
+        runs_by_sha={
+            "sha1": [[{"id": 1, "status": "completed", "conclusion": "failure"}]],
+            SETUP_PR_HEAD: [[{"id": 2, "status": "completed", "conclusion": "success"}]],
+        },
+    )
+    kubectl = FakeKubectl(images={("clio", "clio"): f"gojira-app:{SETUP_PR_HEAD[:12]}"})
+    state = delivery_state(
+        github, kubectl, repo="acme/agent-clio", namespace="clio", deploy="clio", sha="sha1"
+    )
+    assert state == {"state": "delivered", "detail": None}
+    assert f"runs_for_commit:acme/agent-clio:{SETUP_PR_HEAD}" in github.calls
+
+
+def test_delivery_state_building_while_setup_pr_run_still_going():
+    github = FakeGitHub(
+        head_sha=SETUP_PR_HEAD,
+        runs_by_sha={
+            "sha1": [[{"id": 1, "status": "completed", "conclusion": "cancelled"}]],
+            SETUP_PR_HEAD: [[{"id": 2, "status": "in_progress", "conclusion": None}]],
+        },
+    )
+    state = delivery_state(
+        github, FakeKubectl(), repo="acme/agent-clio", namespace="clio", deploy="clio", sha="sha1"
+    )
+    assert state == {"state": "building", "detail": None}
+
+
+def test_delivery_state_failed_when_setup_pr_run_also_failed():
+    # One hop only: the head's own failure is a real failure.
+    github = FakeGitHub(
+        head_sha=SETUP_PR_HEAD,
+        runs_by_sha={
+            "sha1": [[{"id": 1, "status": "completed", "conclusion": "failure"}]],
+            SETUP_PR_HEAD: [[{"id": 2, "status": "completed", "conclusion": "failure"}]],
+        },
+    )
+    state = delivery_state(
+        github, FakeKubectl(), repo="acme/agent-clio", namespace="clio", deploy="clio", sha="sha1"
+    )
+    assert state["state"] == "failed"
+    assert github.calls.count("head_sha:acme/agent-clio") == 2

@@ -180,12 +180,25 @@ def delivery_state(
       - no runs yet: "building" — registration lag, the same grace BuildStep
         extends CI before treating an empty list as anything but "not yet".
       - newest run not completed (queued or in_progress): "building".
-      - newest completed run's conclusion != "success": "failed", with a
-        detail pointing at the one remedy available here (no automatic
-        rerun, unlike BuildStep — a save already means an operator is
-        present): an identical re-save no-ops in commit_push and reports the
-        same failed sha again, so the detail steers toward actually changing
-        the content, not just saving again.
+      - newest completed run's conclusion != "success": first check whether
+        main has moved past `sha` (github.head_sha). Gojira finding #20
+        (tenishai/gojira#41): a push that changes `gojira.yaml` is
+        delivered by gojira's setup PR, which auto-merges seconds later
+        carrying this commit — and the platform's generated CI now fails
+        the contract commit's OWN run fast ("Verify manifests match
+        gojira.yaml") instead of deploying a stale manifest set. GitHub's
+        pending-queue rule can likewise "cancel" this run outright behind
+        the setup PR's. Nothing else pushes to these repos (BuildStep's
+        invariant), so an advanced head means exactly that: follow it and
+        report the head's delivery instead. Head still == sha: "failed",
+        with a detail pointing at the one remedy available here (no
+        automatic rerun, unlike BuildStep — a save already means an
+        operator is present): an identical re-save no-ops in commit_push
+        and reports the same failed sha again, so the detail steers toward
+        actually changing the content, not just saving again. (The
+        contract-changing callers — WireStep, wire_slack — wait for gojira
+        to be active before returning their sha, so the head has already
+        advanced by the UI's first poll; the UI stops polling on "failed".)
       - success: compare kubectl.deploy_image(namespace, deploy)'s tag
         (via `image_tag`, kobo_api.clients — handles both a plain
         `repo:tag` and a digest-pinned `repo:tag@sha256:...` apply, the
@@ -208,6 +221,14 @@ def delivery_state(
         return {"state": "building", "detail": None}
 
     if newest.get("conclusion") != "success":
+        head = github.head_sha(repo)
+        if head != sha:
+            # Superseded by gojira's setup PR (see docstring) — the head is
+            # the commit that actually deploys this change. One hop only:
+            # the recursive call's head == its sha.
+            return delivery_state(
+                github, kubectl, repo=repo, namespace=namespace, deploy=deploy, sha=head
+            )
         return {
             "state": "failed",
             "detail": "the update didn't go through — change something and save to try again",
