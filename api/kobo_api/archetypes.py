@@ -6,6 +6,7 @@ surface (tools, tags, visibility, skills), then the standard pipeline runs
 unchanged. `_resolve_persona_body` never learns archetypes exist.
 """
 
+import re
 from pathlib import Path
 
 ARCHETYPE_TEAM_GUIDE = "team_guide"
@@ -21,6 +22,14 @@ _VOICE_SECTION = (
     "\nstill interview.\n"
 )
 
+# Two distinct patterns, applied in two distinct passes: the voice section
+# formats its own {name}/{group}/{voice} placeholders first, and only the
+# *result* (never rescanned) is handed to the outer substitution over the
+# template. This keeps a name/group/voice that itself contains a placeholder
+# token (e.g. voice="{group} Cowboy") from being re-interpolated.
+_SECTION_PLACEHOLDER_RE = re.compile(r"\{(name|group|voice)\}")
+_BODY_PLACEHOLDER_RE = re.compile(r"\{(name|group|voice_section)\}")
+
 
 def team_guide_persona_id(group: str) -> str:
     return f"team-guide-{group}"
@@ -29,11 +38,14 @@ def team_guide_persona_id(group: str) -> str:
 def render_team_guide(name: str, group: str, voice: str | None) -> str:
     body = _TEMPLATE.read_text()
     voice = (voice or "").strip()
-    section = (
-        _VOICE_SECTION.replace("{voice}", voice) if voice else ""
-    )
-    return (
-        body.replace("{voice_section}", section)
-        .replace("{name}", name)
-        .replace("{group}", group)
-    )
+
+    if voice:
+        voice_mapping = {"name": name, "group": group, "voice": voice}
+        section = _SECTION_PLACEHOLDER_RE.sub(
+            lambda m: voice_mapping[m.group(1)], _VOICE_SECTION
+        )
+    else:
+        section = ""
+
+    mapping = {"name": name, "group": group, "voice_section": section}
+    return _BODY_PLACEHOLDER_RE.sub(lambda m: mapping[m.group(1)], body)
