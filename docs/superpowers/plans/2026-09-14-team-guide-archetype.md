@@ -330,6 +330,29 @@ git add api/kobo_api/main.py api/tests/test_api_agents.py
 git commit -m "feat(api): team_guide archetype - forced persona/tools/tags, one per group"
 ```
 
+### Task 2b: Composer suppression — the bundle enforces "never act"
+
+Added mid-run: the Task 2 review proved the create route cannot deliver the
+kiosk-tools constraint alone — `composer._tools_block` adds the github broker
+quartet (including `github.open_pr`) whenever org config carries `broker_url`,
+and the liminal birthright block whenever `liminal_url` is set, both threaded
+unconditionally in `steps.py` (~847). The kiosk bundle must carry colleagues +
+memory ONLY.
+
+**Files:**
+- Modify: `api/kobo_api/models.py` (Agent row), new alembic migration in `api/migrations/versions/` (revises current head — `cd api && .venv/bin/alembic heads` to find it; follow the `per_agent_runtime_image` migration's shape)
+- Modify: `api/kobo_api/main.py` (archetype branch stores the marker), `api/kobo_api/steps.py` (thread to spec), `api/kobo_api/composer.py` (suppress)
+- Test: `api/tests/test_composer.py` (or wherever `_tools_block`/BundleSpec tests live — `grep -rn "_tools_block\|liminal_url" api/tests/` and follow), `api/tests/test_api_agents.py`
+
+**Interfaces:**
+- Consumes: Task 2's archetype branch (sets the marker), `ARCHETYPE_TEAM_GUIDE` from `kobo_api.archetypes`.
+- Produces: `Agent.archetype: Mapped[str | None]` (String(64), nullable); BundleSpec field `archetype: str | None = None`; composer emits NO github block and NO liminal block when `spec.archetype == "team_guide"` (colleagues + memory unaffected).
+
+- [ ] **Step 1: Failing tests** — composer test: build the kiosk-shaped spec the existing `_tools_block` tests build (with broker_url AND liminal_url configured) plus `archetype="team_guide"`; assert the rendered tools block contains `colleagues` and NO `github` key, NO `liminal` key, and the allow list contains no `github.*` entries. API test: archetype create → agent row has `archetype == "team_guide"`; plain create → `None`.
+- [ ] **Step 2:** Column + migration (`ALTER TABLE agents ADD COLUMN archetype VARCHAR(64)` shape, nullable, revises current head). Route branch sets it (find where the Agent row is constructed and pass it the same way `runtime_image` is). Thread through steps.py to BundleSpec exactly as `runtime_image`/`liminal_url` are threaded. Composer: gate the github and liminal block emissions on `spec.archetype != ARCHETYPE_TEAM_GUIDE` (import the constant — one vocabulary, no string literal).
+- [ ] **Step 3:** Run `tests/test_composer.py` + `tests/test_api_agents.py` + the migration import check the suite already does; full file green.
+- [ ] **Step 4: Commit** `feat(composer): team-guide bundles carry no action tools - never-act enforced in the bundle`.
+
 ### Task 3: MCP parity
 
 **Files:**
