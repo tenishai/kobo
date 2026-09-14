@@ -166,6 +166,21 @@ same 409.
   argus keys configured (card + detail).
 - **Skill:** frontmatter validates under the marketplace gate before push.
 
+## Dependencies (estate review, 2026-09-14)
+
+- **Fleet runtime must include daedalus #49 before the first kiosk deploys.**
+  #49 (merged 9/14) fixes `teach_authorized` refusing nothing — any verified
+  caller was operator-grade on the teach/knowledge/tool lanes. The 9/10
+  runtime pin predates it. A shared, teach-hungry agent must not ship on a
+  runtime where any colleague can stuff its knowledge. Take #52 (enforcement
+  denial fix) in the same re-pin.
+- Deployed cabal is `7ce9d82-c1` (9/9): the delegation-guardrails arc
+  (merged 9/12–14) is not live yet. The kiosk is compatible before and after
+  that roll (light colleague user, well inside any budget).
+- Post-deploy check: the kiosk appears in colleague lists (daedalus #38/#39
+  now filter out colleagues that cannot answer).
+- Liminal and gojira: unchanged since 9/10; no interaction.
+
 ## Rollout order
 
 1. Skill published to marketplace (validate first — publish law).
