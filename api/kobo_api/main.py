@@ -112,6 +112,7 @@ from kobo_api.pairs import (
 )
 from kobo_api.persona_draft import finalize_distill, finalize_draft
 from kobo_api.personas import (
+    PERSONA_ID_RE,
     PersonaError,
     PersonaExists,
     PersonaFields,
@@ -132,7 +133,13 @@ from kobo_api.provisioner import (
 from kobo_api.jira_broker import fetch_issue as jira_fetch_issue
 from kobo_api.jira_broker import search_issues as jira_search_issues
 from kobo_api.pr_broker import BrokerAuthError, mint_scoped_token, verify_agent_token
-from kobo_api.purpose_tags import MAX_CREATE_TAGS, clean_tags, decode_tags, encode_tags
+from kobo_api.purpose_tags import (
+    MAX_CREATE_TAGS,
+    clean_tags,
+    decode_tags,
+    encode_tags,
+    normalize_tags,
+)
 from kobo_api.search import (
     CATALOG_TTL_S,
     catalog_index_metadata,
@@ -3049,22 +3056,67 @@ def create_app(
                     {"error": f"unknown archetype: {payload.archetype!r}"},
                     status_code=422,
                 )
-            # The PICKED group is the team this guide serves.
+
+            # I4: name uniqueness is checked FIRST, before anything below
+            # writes a persona -- otherwise the most likely user error (a
+            # name that's already taken, caught a few hundred lines down at
+            # the very same query) orphans a team-guide-<slug> persona in
+            # the catalog with nothing left pointing at it. Same query and
+            # same 409 body as that later pre-check (kept in place,
+            # unreordered, for the non-archetype path).
+            if session.query(Agent).filter_by(name=payload.name).first() is not None:
+                return JSONResponse(
+                    {"error": f"name taken: {payload.name!r}"}, status_code=409
+                )
+
+            # The PICKED group is the team this guide serves. Normalized to
+            # its slug ONCE, here, via the exact fold `normalize_tags`
+            # applies to any other tag (lowercase, internal whitespace to
+            # hyphens) -- reused rather than reimplemented, so "SRE" and
+            # "sre" (or "Data Eng" and "data-eng") always collapse to the
+            # same slug. Every identity-bearing use below reads `slug`, not
+            # the raw `group` -- the duplicate guard, the canonical tag, and
+            # `team_guide_persona_id()` -- so two spellings of the same team
+            # can never mint two guides or two persona ids. `group` (raw)
+            # survives only for the rendered persona prose, where "Data
+            # Eng" should still read like a name, not a slug.
             group = payload.group_name or SHARED_GROUP
+            normalized_group = normalize_tags([group])
+            slug = normalized_group[0] if normalized_group else ""
+            # M1: reject before the slug is used as any part of a storage
+            # key (the persona id, the canonical tag) -- empty (the raw
+            # group folded away to nothing) or shaped unlike every other
+            # persona id (kobo_api.personas.PERSONA_ID_RE, the same
+            # DNS-ish lowercase-start shape) both fail closed here rather
+            # than reaching `upsert_persona` with something like
+            # "../../pwned".
+            if not slug or not PERSONA_ID_RE.fullmatch(slug):
+                return JSONResponse(
+                    {"error": "that doesn't look like a group name"},
+                    status_code=422,
+                )
             if payload.voice is not None and len(payload.voice) > 120:
                 return JSONResponse(
                     {"error": "voice should be a short name, not a biography"},
                     status_code=422,
                 )
+            guide_persona_id = team_guide_persona_id(slug)
             # One guide per team: the team identity lives in the TAG PAIR
-            # (team-guide + group), because the agent's ACL namespace is
-            # forced to the commons below.
+            # (team-guide + slug), because the agent's ACL namespace is
+            # forced to the commons below. I3: the tag pair alone
+            # false-positives on any ordinary agent that merely happens to
+            # carry both tags (e.g. a human hand-typed "team-guide" and
+            # "sre" into an ordinary agent's purpose_tags) -- requiring the
+            # persona match too pins the guard to an actual guide, never a
+            # tag coincidence.
             for other in session.query(Agent):
+                if other.persona != guide_persona_id:
+                    continue
                 other_tags = decode_tags(other.purpose_tags)
-                if TEAM_GUIDE_TAG in other_tags and group in other_tags:
+                if TEAM_GUIDE_TAG in other_tags and slug in other_tags:
                     return JSONResponse(
                         {
-                            "error": f"{group} already has a team guide",
+                            "error": f"{slug} already has a team guide",
                             "existing": other.name,
                         },
                         status_code=409,
@@ -3079,7 +3131,6 @@ def create_app(
                 return JSONResponse(
                     {"error": "catalogs aren't set up yet"}, status_code=503
                 )
-            persona_id = team_guide_persona_id(group)
             try:
                 # Stored as an ordinary room persona so `_resolve_persona_body`
                 # and everything downstream never learn archetypes exist.
@@ -3088,7 +3139,7 @@ def create_app(
                 upsert_persona(
                     archetype_clients.storage,
                     bucket=cfg.personas_bucket,
-                    id=persona_id,
+                    id=guide_persona_id,
                     name=f"{group} team guide",
                     description=f"The informational guide for the {group} team.",
                     body=render_team_guide(payload.name, group, payload.voice),
@@ -3109,7 +3160,7 @@ def create_app(
                 return JSONResponse({"error": str(exc)}, status_code=502)
 
             # Force the surface: the rest of the route reads payload.*.
-            payload.persona = persona_id
+            payload.persona = guide_persona_id
             # Shared visibility, mechanically: the guide lives in the commons
             # namespace so every team's humans (and agents) can find and chat
             # with it. Its team identity is the tag pair + persona, not its
@@ -3122,7 +3173,23 @@ def create_app(
             # the skill still has its constitution from the persona). Forced
             # BEFORE the resolution loop below, so the loop resolves this pick
             # exactly like a client's own.
-            guide_skill = get_entry(engine, "skill", TEAM_GUIDE_TAG, team=None)
+            #
+            # M2: a bare `team=None` lookup ("match any team", per get_entry's
+            # own docstring) is genuinely nondeterministic here -- a skill id
+            # is only unique WITHIN a team (SkillPick's own docstring), so
+            # two teams each publishing their own "team-guide" skill would
+            # leave `.first()` picking whichever row an unordered SQL scan
+            # happens to return first, silently, and that pick could shift
+            # across catalog rebuilds. Every packaged/marketplace skill in
+            # this codebase is published under the shared team (see
+            # tests/conftest.py's own `shared/word-games` fixture), so that's
+            # the deterministic home to prefer; `team=None` remains only as
+            # the fallback for a room where it's been published somewhere
+            # else instead (still whatever single team has it, in the common
+            # case where only one does).
+            guide_skill = get_entry(
+                engine, "skill", TEAM_GUIDE_TAG, team=SHARED_GROUP
+            ) or get_entry(engine, "skill", TEAM_GUIDE_TAG, team=None)
             payload.skills = (
                 [SkillPick(id=guide_skill.id, team=guide_skill.team)]
                 if guide_skill is not None
@@ -3137,7 +3204,7 @@ def create_app(
             # so it always survives: the duplicate guard above and every
             # "which team does this guide serve" reader depend on it.
             forced_tags = clean_tags(
-                [TEAM_GUIDE_TAG, group, *cleaned_tags][:MAX_CREATE_TAGS]
+                [TEAM_GUIDE_TAG, slug, *cleaned_tags][:MAX_CREATE_TAGS]
             )
             # Unreachable as long as the slice above stands (normalization
             # only ever shrinks a list) -- kept so the union return is
@@ -3145,6 +3212,11 @@ def create_app(
             if isinstance(forced_tags, str):
                 return JSONResponse({"error": forced_tags}, status_code=422)
             cleaned_tags = forced_tags
+            # M3: the kiosk always ships the baseline guardrail tools and
+            # the org-default model -- a client-supplied opt-out or model
+            # override never reaches an archetype agent.
+            payload.skip_baseline = False
+            payload.model = None
 
         # Personas are org-wide — the id alone is unique across the whole
         # personas index, so no team is required (or known) to look one up.

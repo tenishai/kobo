@@ -28,7 +28,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from kobo_api.clients import Clients
+from kobo_api.clients import Clients, StorageNotFound
 from kobo_api.config import Config
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import create_app, get_session
@@ -2314,3 +2314,124 @@ def test_archetype_voice_must_be_a_name_not_a_biography(client):
     r = _create_guide(client, voice="x" * 121)
     assert r.status_code == 422
     assert "voice" in r.json()["error"]
+
+
+# --- team-guide review fix wave (C1/M1/I3/I4/M2/M3) -------------------------
+
+
+def test_archetype_duplicate_guard_normalizes_group_case(client):
+    """C1: the guard used to compare the RAW picked group against normalized
+    tags, so "SRE" and "sre" (or "Data Eng"/"data-eng") minted two guides
+    with divergent persona ids instead of colliding. Both must now resolve
+    to the same slug -- and therefore the same guide."""
+    first = _create_guide(client, name="atlas", group="SRE")
+    assert first.status_code == 201, first.text
+    agent = client.get("/api/agents/atlas").json()
+    assert agent["persona"] == "team-guide-sre"
+
+    r = _create_guide(client, name="beacon", group="sre")
+    assert r.status_code == 409, r.text
+    assert r.json()["existing"] == "atlas"
+
+
+def test_archetype_rejects_a_group_that_does_not_slugify_to_a_persona_id(client):
+    """M1: a picked group that folds to something shaped unlike a persona id
+    (PERSONA_ID_RE) must never reach `upsert_persona` as a storage key. This
+    module's `client` fixture configures no groups at all, so nothing
+    upstream of the archetype branch validates `group_name` first."""
+    r = _create_guide(client, group="../../pwned")
+    assert r.status_code == 422
+    assert "group name" in r.json()["error"]
+
+
+def test_ordinary_agent_sharing_both_tags_does_not_block_the_real_guide(client):
+    """I3: the tag-pair guard alone false-positives on any ordinary agent
+    that happens to carry both "team-guide" and the group tag -- the guard
+    must also require that agent's persona actually be the guide persona."""
+    impostor = client.post(
+        "/api/agents",
+        json={
+            "name": "impostor",
+            "persona": PERSONA,
+            "purpose_tags": ["team-guide", "sre"],
+        },
+    )
+    assert impostor.status_code == 201, impostor.text
+
+    r = _create_guide(client, name="atlas", group="sre")
+    assert r.status_code == 201, r.text
+
+
+def test_archetype_name_collision_is_checked_before_any_persona_write(client, fake_storage):
+    """I4: the name-taken 409 must be checked BEFORE the persona write, so a
+    collision on the most likely user error (re-using an existing agent's
+    name) never orphans a team-guide-<slug> entry in the personas catalog."""
+    taken = client.post(
+        "/api/agents", json={"name": "atlas", "persona": PERSONA, "team": TEAM}
+    )
+    assert taken.status_code == 201, taken.text
+
+    r = _create_guide(client, name="atlas", group="sre")
+    assert r.status_code == 409, r.text
+
+    with pytest.raises(StorageNotFound):
+        fake_storage.read_bytes("personas-bucket", "team-guide-sre/persona.md")
+
+
+def test_archetype_forced_skill_pick_prefers_the_shared_team_deterministically(
+    client, fake_storage
+):
+    """M2: a skill id is only unique WITHIN a team (SkillPick's own
+    docstring), so a bare `team=None` lookup over two teams that each
+    published their own "team-guide" skill would otherwise depend on
+    whatever order an unordered SQL scan happens to return. The forced pick
+    must deterministically prefer the shared/marketplace team's entry."""
+    fake_storage.write_bytes(
+        "skills-bucket",
+        "index.json",
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "id": "team-guide",
+                        "name": "Some other team's guide skill",
+                        "description": "not the packaged one",
+                        "team": "not-shared",
+                        "tags": [],
+                        "sha": "othersha",
+                        "builtin": False,
+                    },
+                    {
+                        "id": "team-guide",
+                        "name": "Team guide",
+                        "description": "The packaged guide skill.",
+                        "team": "shared",
+                        "tags": [],
+                        "sha": "sharedsha",
+                        "builtin": False,
+                    },
+                ]
+            }
+        ).encode(),
+        content_type="application/json",
+    )
+
+    r = _create_guide(client, name="atlas", group="sre")
+    assert r.status_code == 201, r.text
+
+    agent = client.get("/api/agents/atlas").json()
+    assert agent["skills"] == [{"name": "team-guide", "team": "shared", "sha": "sharedsha"}]
+
+
+def test_archetype_forces_baseline_and_default_model(client, session_factory):
+    """M3: the kiosk always ships the baseline guardrail tools and the
+    org-default model -- a client-supplied opt-out or model override must
+    never reach an archetype agent."""
+    r = _create_guide(client, name="atlas", group="sre", skip_baseline=True, model="nonexistent")
+    assert r.status_code == 201, r.text
+
+    session = session_factory()
+    row = session.query(Agent).filter_by(name="atlas").first()
+    assert row is not None
+    assert row.skip_baseline is False
+    session.close()
