@@ -42,6 +42,7 @@
     class="agent-card__stretched-link"
     href={formatHash({ page: "agent", name: agent.name })}
     aria-label={`Open ${agent.name}`}
+    title={agent.name}
   ></a>
   <div class="agent-card__top">
     <span class="agent-card__identity">

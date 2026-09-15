@@ -2083,7 +2083,7 @@ def create_app(
         cfg: Config = app.state.config
         both = bool(cfg.argus_url and cfg.argus_project)
         return {
-            "url": cfg.argus_url if both else None,
+            "url": cfg.argus_url.rstrip("/") if both else None,
             "project": cfg.argus_project if both else None,
         }
 
@@ -3171,7 +3171,7 @@ def create_app(
                     name=f"{group} team guide",
                     description=f"The informational guide for the {group} team.",
                     body=render_team_guide(payload.name, group, payload.voice),
-                    team=group,
+                    team=slug,
                     tags=[TEAM_GUIDE_TAG],
                     creator="kobo",
                 )

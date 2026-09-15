@@ -2204,6 +2204,22 @@ def test_observability_catalog_returns_configured_values(client):
         cfg.argus_url, cfg.argus_project = old
 
 
+def test_observability_catalog_strips_trailing_slash_from_url(client):
+    """A trailing slash on the configured url would double up with the
+    `/projects/...` path the UI appends, producing a broken `//projects`
+    link -- the route normalizes it away."""
+    cfg = client.app.state.config
+    old = (cfg.argus_url, cfg.argus_project)
+    cfg.argus_url, cfg.argus_project = "https://argus.example/", "ai-agents-dev"
+    try:
+        assert client.get("/api/catalog/observability").json() == {
+            "url": "https://argus.example",
+            "project": "ai-agents-dev",
+        }
+    finally:
+        cfg.argus_url, cfg.argus_project = old
+
+
 def test_observability_catalog_both_or_nothing_url_only(client):
     """A half-configured pair (only one of url/project set) must surface as
     fully absent, same as the composer's other both-or-nothing config pairs
@@ -2310,6 +2326,23 @@ def test_archetype_voice_lands_in_stored_persona(client, fake_storage):
 
     body = fake_storage.read_bytes("personas-bucket", "team-guide-sre/persona.md").decode()
     assert "Anthony Bourdain" in body and "Never act." in body
+
+
+def test_archetype_persona_index_team_is_the_slug_not_the_raw_group(client, fake_storage):
+    """The persona catalog's `team` axis must only ever carry slugs -- this
+    is the one write path (`upsert_persona` in the archetype branch) that
+    used to file the RAW picked group instead, which could put a non-slug
+    string (mixed case, internal spaces) into the teams axis. `group` (raw)
+    still belongs in the rendered persona prose/name/description, just not
+    here."""
+    r = _create_guide(client, name="atlas", group="Data Eng")
+    assert r.status_code == 201, r.text
+
+    index = json.loads(fake_storage.read_bytes("personas-bucket", "index.json"))
+    entry = next(e for e in index["entries"] if e["id"] == "team-guide-data-eng")
+    assert entry["team"] == "data-eng"
+    # The raw group survives only in the rendered prose, not the index.
+    assert entry["name"] == "Data Eng team guide"
 
 
 def test_archetype_rerender_overwrites_an_existing_guide_persona(client, fake_storage):
