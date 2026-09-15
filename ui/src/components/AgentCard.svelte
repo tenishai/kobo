@@ -1,20 +1,48 @@
 <script lang="ts">
   // One tile in the dashboard grid. Presentation only, over the one row
-  // `agentsQuery` already returns for this agent — no per-card fetch. The
-  // whole tile is a real link (an `<a>`, not a click handler on a `<div>`)
-  // built from the router's own `formatHash`, so its destination hash can
-  // never drift from what `parseHash` on the other end expects, and it gets
-  // keyboard/focus/"open in new tab" behavior for free.
+  // `agentsQuery` already returns for this agent, plus the room-wide
+  // observability catalog (shared across every mounted card, one query key —
+  // see `observabilityQuery`'s own doc comment). The root is a `<div>`, not
+  // an `<a>`: nesting the Observability link (Task 6 of the
+  // observability-catalog addendum) inside a whole-tile anchor would be
+  // invalid HTML — a browser's parser closes an outer `<a>` as soon as it
+  // meets an inner one, which would silently detach the inner link from the
+  // card's layout. Instead, `.agent-card__stretched-link` is an absolutely
+  // positioned anchor covering the whole tile (built from the router's own
+  // `formatHash`, so its destination hash can never drift from what
+  // `parseHash` on the other end expects) — that's what makes the WHOLE
+  // card clickable/keyboard-focusable/"open in new tab"-able, same as
+  // before. The Observability link, appearing later in the DOM, paints
+  // above it (see its own `position: relative` below) so it stays
+  // independently clickable rather than swallowed by the stretched anchor
+  // underneath.
   import StatusBadge from "./StatusBadge.svelte";
+  import { createQuery } from "@tanstack/svelte-query";
+  import { observabilityQuery } from "../lib/queries";
   import { formatHash } from "../lib/router.svelte";
   import { agentTone } from "../lib/status";
   import { relativeTime } from "../lib/time";
   import type { AgentSummary } from "../lib/queries";
 
   let { agent }: { agent: AgentSummary } = $props();
+
+  // Task 6 of the observability-catalog addendum: rendered only when the
+  // room config carries BOTH the dashboard base URL and the project, per
+  // the addendum's fixed URL shape.
+  const observability = createQuery(() => observabilityQuery());
+  let dashboardUrl = $derived(
+    observability.data?.url && observability.data?.project
+      ? `${observability.data.url}/projects/${observability.data.project}/dashboards/${agent.name}-agent-health`
+      : null,
+  );
 </script>
 
-<a class="agent-card" href={formatHash({ page: "agent", name: agent.name })}>
+<div class="agent-card">
+  <a
+    class="agent-card__stretched-link"
+    href={formatHash({ page: "agent", name: agent.name })}
+    aria-label={`Open ${agent.name}`}
+  ></a>
   <div class="agent-card__top">
     <span class="agent-card__identity">
       {#if agent.has_avatar}
@@ -39,10 +67,21 @@
   {#if agentTone(agent.status) === "fail"}
     <p class="agent-card__error">Something went wrong. Open for details.</p>
   {/if}
-</a>
+  {#if dashboardUrl}
+    <a
+      class="agent-card__observability"
+      href={dashboardUrl}
+      target="_blank"
+      rel="noreferrer"
+    >
+      Observability
+    </a>
+  {/if}
+</div>
 
 <style>
   .agent-card {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
@@ -51,7 +90,6 @@
     border-radius: var(--radius);
     background: var(--panel);
     color: inherit;
-    text-decoration: none;
     transition:
       border-color 0.15s ease,
       box-shadow 0.15s ease;
@@ -62,9 +100,17 @@
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
   }
 
-  .agent-card:focus-visible {
+  .agent-card__stretched-link {
+    position: absolute;
+    inset: 0;
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .agent-card__stretched-link:focus-visible {
     outline: 2px solid var(--accent);
-    outline-offset: 2px;
+    outline-offset: -2px;
+    border-radius: var(--radius);
   }
 
   .agent-card__top {
@@ -128,5 +174,21 @@
     font-size: 0.75rem;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* Positioned (not static) so it paints above the stretched link that
+     precedes it in the DOM — see the module doc comment above — while
+     staying in normal flow (no offsets applied). */
+  .agent-card__observability {
+    position: relative;
+    align-self: flex-start;
+    color: var(--accent);
+    font-size: 0.8rem;
+    text-decoration: none;
+  }
+
+  .agent-card__observability:hover,
+  .agent-card__observability:focus-visible {
+    text-decoration: underline;
   }
 </style>

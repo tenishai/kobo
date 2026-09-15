@@ -1,10 +1,28 @@
 // @vitest-environment jsdom
 //
 // Access-control Task A3: the dashboard grid card shows who made the agent.
-import { render, screen } from "@testing-library/svelte";
-import { describe, expect, it } from "vitest";
+import { screen } from "@testing-library/svelte";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import AgentCard from "./AgentCard.svelte";
 import type { AgentSummary } from "../lib/queries";
+import { renderWithClient, stubFetch } from "../test-utils/render";
+
+// AgentCard mounts `observabilityQuery` (Task 6, observability-catalog
+// addendum) unconditionally now, so every render here needs a QueryClient in
+// context plus a stubbed `/api/catalog/observability` — same harness
+// AgentDetail.test.ts already uses. The catch-all `/api/` fixture resolves
+// to `{}`, i.e. `{url: undefined, project: undefined}`, so the
+// Observability link never renders in these tests (neither is a string) —
+// exactly the "config not both set" case, and none of the assertions below
+// are about that link.
+beforeEach(() => {
+  vi.unstubAllGlobals();
+  stubFetch({ "/api/": {} });
+});
+
+function render(component: typeof AgentCard, props: { agent: AgentSummary }) {
+  return renderWithClient(component, props);
+}
 
 const BASE_AGENT: AgentSummary = {
   name: "warden",

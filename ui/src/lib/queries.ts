@@ -28,6 +28,10 @@
 //                                                      (access-control Task
 //                                                      C1/C2)
 //   ["catalog", "models"]                           - the model list + default
+//   ["catalog", "observability"]                    - the org's dashboard
+//                                                      base URL + project
+//                                                      (observability-catalog
+//                                                      addendum Task 4/6)
 //   ["catalog", "groups"]                           - the room's named ACL
 //                                                      groups (access-control
 //                                                      Task B2)
@@ -154,6 +158,7 @@ import {
   fetchGroupRequests,
   fetchGroups,
   fetchModels,
+  fetchObservability,
   fetchRuntimes,
   fetchRecommendedSkills,
   fetchNameSuggestions,
@@ -264,6 +269,22 @@ export function runtimesQuery() {
   return queryOptions({
     queryKey: ["catalog", "runtimes"] as const,
     queryFn: fetchRuntimes,
+  });
+}
+
+/** The org's observability catalog (Task 4 of the observability-catalog
+ * addendum: `GET /api/catalog/observability`) -- a dashboard base URL +
+ * project, both `null` unless the room config carries both. Long
+ * `staleTime`, same "doesn't change on its own in the background" reasoning
+ * as `modelsQuery`/`runtimesQuery`: this config only changes on a room
+ * roll. Shared across every mounted `AgentCard` and the detail page under
+ * one cache entry (`["catalog", "observability"]`), so many cards on the
+ * dashboard grid cost one network request, not one each. */
+export function observabilityQuery() {
+  return queryOptions({
+    queryKey: ["catalog", "observability"] as const,
+    queryFn: fetchObservability,
+    staleTime: 5 * 60_000,
   });
 }
 

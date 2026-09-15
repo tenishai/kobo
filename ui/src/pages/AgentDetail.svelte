@@ -36,6 +36,7 @@
     agentQuery,
     generateAvatarMutation,
     invitesQuery,
+    observabilityQuery,
     personasSearchQuery,
     retryAgentMutation,
     uploadAvatarMutation,
@@ -68,6 +69,19 @@
   // exactly as real as the server's own gate on this route, nothing a
   // client-side flag could fake or fall out of sync with.
   const invites = createQuery(() => (invitesQuery(name)));
+
+  // The org's observability catalog (Task 6, observability-catalog
+  // addendum): a dashboard base URL + project, both `null` unless the room
+  // config carries both -- see `observabilityQuery`'s own doc comment.
+  // Shares its cache entry with every AgentCard mounted on the dashboard
+  // grid, so this costs no extra network request when the list was visited
+  // first.
+  const observability = createQuery(() => observabilityQuery());
+  let dashboardUrl = $derived(
+    observability.data?.url && observability.data?.project
+      ? `${observability.data.url}/projects/${observability.data.project}/dashboards/${name}-agent-health`
+      : null,
+  );
 
   // Soul-line (persona-naming law, hardening wave): the composition card's
   // Persona line used to print the bare persona id (`data.persona`)
@@ -330,6 +344,19 @@
         <p class="agent-detail__capability">
           {data.capability ?? "Not written yet. It arrives after first contact."}
         </p>
+        {#if dashboardUrl}
+          <p class="agent-detail__observability">
+            Observability:
+            <a
+              class="agent-detail__repo"
+              href={dashboardUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {name}-agent-health
+            </a>
+          </p>
+        {/if}
         {#if data.created_by}
           <p class="agent-detail__owner">Made by {data.created_by}</p>
         {/if}
@@ -688,6 +715,12 @@
   }
 
   .agent-detail__owner {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .agent-detail__observability {
     margin: 0;
     color: var(--muted);
     font-size: 0.8rem;

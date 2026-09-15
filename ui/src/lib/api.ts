@@ -523,6 +523,20 @@ export async function fetchModels(): Promise<{
   );
 }
 
+/** `GET /api/catalog/observability` (Task 4 of the observability-catalog
+ * addendum) -- the org's dashboard base URL + project, both `null` unless
+ * the room config carries both keys. A caller builds one agent's dashboard
+ * link itself (`${url}/projects/${project}/dashboards/${agent.name}-agent-
+ * health`, the fixed URL shape the addendum specifies) only when both come
+ * back non-null; either alone isn't enough to construct a working link. */
+export async function fetchObservability(): Promise<{
+  url: string | null;
+  project: string | null;
+}> {
+  const res = await fetch("/api/catalog/observability");
+  return parse<{ url: string | null; project: string | null }>(res);
+}
+
 /** `GET /api/catalog/groups` (access-control Task B2, sectioned by the
  * shared-group + group-requests wave, extended by the create-modal
  * non-engineering-wing ruling) -- the room's named ACL namespaces, config
