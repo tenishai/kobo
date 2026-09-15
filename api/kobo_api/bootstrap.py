@@ -137,6 +137,8 @@ _ORG_YAML_TOKENS = {
     "memory_replica_bucket": "__KOBO_MEMORY_REPLICA_BUCKET__",
     "broker_url": "__KOBO_BROKER_URL__",
     "liminal_url": "__KOBO_LIMINAL_URL__",
+    "argus_url": "__KOBO_ARGUS_URL__",
+    "argus_project": "__KOBO_ARGUS_PROJECT__",
     "runtimes": "__KOBO_RUNTIMES__",
     "reader_groups": "__KOBO_READER_GROUPS__",
 }
@@ -163,6 +165,8 @@ def _org_yaml_context(config: Config) -> dict[str, object]:
         "memory_replica_bucket": config.memory_replica_bucket,
         "broker_url": config.broker_url,
         "liminal_url": config.liminal_url,
+        "argus_url": config.argus_url,
+        "argus_project": config.argus_project,
         "runtimes": [{"image": r.image, "label": r.label} for r in config.runtimes],
         "reader_groups": config.reader_groups,
         "gcp_project": config.gcp_project,

@@ -29,6 +29,13 @@ broker_url: __KOBO_BROKER_URL__
 liminal_url: __KOBO_LIMINAL_URL__
 runtimes: __KOBO_RUNTIMES__
 
+# Argus dashboard link for this room's agents (Task 4). Both null (the
+# default) means the observability catalog is off -- the UI shows no
+# Argus link. A half-configured pair (only one set) is treated the same
+# as both unset; see kobo_api.main's /api/catalog/observability route.
+argus_url: __KOBO_ARGUS_URL__
+argus_project: __KOBO_ARGUS_PROJECT__
+
 # Raw Okta group names whose members can SEE every agent (visibility only,
 # never any mutation power). Empty list = nobody holds the reader role.
 reader_groups: __KOBO_READER_GROUPS__

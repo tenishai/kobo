@@ -267,6 +267,8 @@ def test_org_keys_is_exactly_the_brief_set():
             "memory_replica_bucket",
         "broker_url",
         "liminal_url",
+        "argus_url",
+        "argus_project",
         "runtimes",
         "reader_groups",
             "gcp_project",

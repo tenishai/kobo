@@ -2185,6 +2185,41 @@ def test_catalog_runtimes_shape(client):
     assert body["default"]
 
 
+def test_observability_catalog_empty_without_config(client):
+    r = client.get("/api/catalog/observability")
+    assert r.status_code == 200
+    assert r.json() == {"url": None, "project": None}
+
+
+def test_observability_catalog_returns_configured_values(client):
+    cfg = client.app.state.config
+    old = (cfg.argus_url, cfg.argus_project)
+    cfg.argus_url, cfg.argus_project = "https://argus.example", "ai-agents-dev"
+    try:
+        assert client.get("/api/catalog/observability").json() == {
+            "url": "https://argus.example",
+            "project": "ai-agents-dev",
+        }
+    finally:
+        cfg.argus_url, cfg.argus_project = old
+
+
+def test_observability_catalog_both_or_nothing_url_only(client):
+    """A half-configured pair (only one of url/project set) must surface as
+    fully absent, same as the composer's other both-or-nothing config pairs
+    (e.g. broker_url's github block) -- a partial value is not actionable."""
+    cfg = client.app.state.config
+    old = (cfg.argus_url, cfg.argus_project)
+    cfg.argus_url, cfg.argus_project = "https://argus.example", None
+    try:
+        assert client.get("/api/catalog/observability").json() == {
+            "url": None,
+            "project": None,
+        }
+    finally:
+        cfg.argus_url, cfg.argus_project = old
+
+
 def test_create_accepts_a_configured_runtime_from_another_registry_host(client):
     from kobo_api.config import RuntimeChoice
 

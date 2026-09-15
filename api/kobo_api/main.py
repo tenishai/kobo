@@ -2075,6 +2075,18 @@ def create_app(
             "default": cfg.runtime_image,
         }
 
+    @app.get("/api/catalog/observability")
+    def observability_catalog() -> dict:
+        """The Argus deep-link config (Task 4). Both-or-nothing: url and
+        project only ever surface together -- a half-configured pair reads
+        as fully unset, since a link built from just one half is broken."""
+        cfg: Config = app.state.config
+        both = bool(cfg.argus_url and cfg.argus_project)
+        return {
+            "url": cfg.argus_url if both else None,
+            "project": cfg.argus_project if both else None,
+        }
+
     # Access control (Task B2): the create modal's group dropdown reads this
     # -- CONFIG names only, never the Okta group names `cfg.groups` also
     # carries (`GroupChoice.okta_group`), which are an implementation detail

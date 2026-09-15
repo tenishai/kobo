@@ -358,6 +358,15 @@ class Config(BaseModel):
     # as every catalog above. Entries must live under the org default's
     # registry root (the create route enforces this per request).
     runtimes: list[RuntimeChoice] = []
+    # The observability catalog's Argus link (Task 4): the dashboard base
+    # URL and this room's project slug within it, surfaced at
+    # GET /api/catalog/observability for the UI to build a deep link from.
+    # Org-settable like broker_url/liminal_url above. Both-or-nothing, same
+    # convention as cabal_url/agent_endpoint_template: a half-configured
+    # pair (only one of the two set) is not actionable, so the route
+    # treats it as fully unset rather than emitting a broken link.
+    argus_url: str | None = None
+    argus_project: str | None = None
     # The MCP gateway's in-cluster base URL, as deployed AGENTS reach its
     # data plane (external-MCP arc). Org-settable like broker_url; empty =
     # the composer emits no liminal block. The token exchange lives at
