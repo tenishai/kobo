@@ -623,6 +623,54 @@ def test_mcp_enabled_with_issuer_base_url_set_constructs_fine():
     assert config.mcp.issuer_base_url == "https://kobo.example.org"
 
 
+# --- mcp.issuer_base_url must be https:// (CYBER-1132 ride-along) -----------
+
+
+def test_mcp_issuer_base_url_over_plain_http_is_rejected():
+    """The well-known documents echo `issuer_base_url` verbatim into
+    `issuer`, `authorization_endpoint`, etc -- an http:// value would be the
+    one in-repo way left to advertise a plain-http OAuth surface, so
+    construction fails loudly instead of booting with it."""
+    with pytest.raises(ValidationError) as exc_info:
+        Config(mcp=MCPConfig(issuer_base_url="http://example.com"))
+
+    message = str(exc_info.value)
+    assert (
+        "mcp.issuer_base_url must be https:// -- the OAuth discovery "
+        "documents echo it verbatim"
+    ) in message
+
+
+def test_mcp_issuer_base_url_over_https_constructs_fine():
+    config = Config(mcp=MCPConfig(issuer_base_url="https://kobo.example.org"))
+
+    assert config.mcp.issuer_base_url == "https://kobo.example.org"
+
+
+def test_mcp_issuer_base_url_over_http_localhost_is_allowed():
+    """Dev rooms run the MCP server and its OAuth AS locally over plain http
+    with no load balancer in front to upgrade the scheme -- deliberately
+    exempted, same as the `127.0.0.1` form below."""
+    config = Config(mcp=MCPConfig(issuer_base_url="http://localhost:8000"))
+
+    assert config.mcp.issuer_base_url == "http://localhost:8000"
+
+
+def test_mcp_issuer_base_url_over_http_127_0_0_1_is_allowed():
+    config = Config(mcp=MCPConfig(issuer_base_url="http://127.0.0.1:8000"))
+
+    assert config.mcp.issuer_base_url == "http://127.0.0.1:8000"
+
+
+def test_mcp_issuer_base_url_empty_is_unaffected_by_the_https_check():
+    """Whether empty is even allowed is
+    `_mcp_requires_an_issuer_base_url_when_enabled`'s other half's job (see
+    the tests above); the https check only looks at a NON-empty value."""
+    config = Config(mcp=MCPConfig(issuer_base_url=""))
+
+    assert config.mcp.issuer_base_url == ""
+
+
 def test_config_example_yaml_documents_avatar_keys():
     # config.example.yaml is the operator-facing template; both new keys must
     # be explicitly present (not merely absent-and-defaulted) and must parse

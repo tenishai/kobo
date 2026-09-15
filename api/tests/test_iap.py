@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 
+import httpx
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
@@ -742,6 +743,119 @@ def test_plain_http_multi_hop_proto_takes_the_client_facing_value(
 
     assert resp.status_code == 308
     assert resp.headers["location"] == "https://testserver/oauth/authorize"
+
+
+def test_plain_http_redirect_strips_an_explicit_default_port(
+    session_factory, iap_config
+):
+    """Mirrors starlette.middleware.httpsredirect.HTTPSRedirectMiddleware: a
+    request that named its OWN port explicitly as the default for its
+    (http) scheme -- `Host: testserver:80` -- must not carry that port
+    forward onto the swapped `https://` scheme, or the 308 would point at
+    `https://testserver:80/...`, a dead end for a CLI/SDK client that won't
+    silently retry on a nonstandard port."""
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    resp = test_client.get(
+        "/oauth/authorize?client_id=abc",
+        headers={**HTTP_PROTO, "host": "testserver:80"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 308
+    assert resp.headers["location"] == "https://testserver/oauth/authorize?client_id=abc"
+
+
+def test_plain_http_redirect_preserves_a_non_default_port(
+    session_factory, iap_config
+):
+    """A NON-default port is not the thing being stripped -- it's part of
+    where the client actually needs to go, so it survives the scheme swap
+    verbatim."""
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    resp = test_client.get(
+        "/oauth/authorize",
+        headers={**HTTP_PROTO, "host": "testserver:8443"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 308
+    assert resp.headers["location"] == "https://testserver:8443/oauth/authorize"
+
+
+def test_duplicate_forwarded_proto_lines_cannot_smuggle_past_an_http_hop(
+    session_factory, iap_config
+):
+    """Fail CLOSED against header splitting: `Headers.get` only sees the
+    FIRST line a name occurs on, so a `https` line followed by a SECOND,
+    separate `http` line would report clean under a `.get`-based check even
+    though a real hop said http. The guard must fire on this, not pass it
+    through."""
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    headers = httpx.Headers(
+        [
+            (FORWARDED_PROTO_HEADER, "https"),
+            (FORWARDED_PROTO_HEADER, "http"),
+        ]
+    )
+    resp = test_client.get(
+        "/oauth/authorize", headers=headers, follow_redirects=False
+    )
+
+    assert resp.status_code == 308
+    assert resp.headers["location"] == "https://testserver/oauth/authorize"
+
+
+def test_comma_joined_http_token_anywhere_in_one_line_also_fires(
+    session_factory, iap_config
+):
+    """A single header line can itself carry multiple comma-joined hops
+    (RFC 7239's accumulate-left-to-right convention); an "http" token
+    anywhere in that line -- not just first -- must still fire the guard."""
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    resp = test_client.get(
+        "/oauth/authorize",
+        headers={FORWARDED_PROTO_HEADER: "https, http"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 308
+    assert resp.headers["location"] == "https://testserver/oauth/authorize"
+
+
+def test_junk_forwarded_proto_value_with_no_http_token_stays_allowed(
+    session_factory, iap_config
+):
+    """A value that never spells "http" at all -- e.g. a websocket hop -- is
+    not a claim of plain http, so there is nothing to refuse; unchanged from
+    before the fail-closed rewrite."""
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    resp = test_client.get(
+        "/oauth/authorize",
+        headers={FORWARDED_PROTO_HEADER: "wss"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 404
 
 
 def test_broker_lane_is_untouched_by_the_https_guard(session_factory, iap_config):

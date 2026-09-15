@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -533,6 +534,24 @@ class Config(BaseModel):
         (`kobo_api.mcp.oauth_as._google_redirect_uri`) -- fine for local
         dev/tests, not a valid state for a real deployment, so construction
         fails loudly instead of booting half-configured.
+
+        CYBER-1132 ride-along: a NON-empty `issuer_base_url` must also be
+        `https://`. `kobo_api.mcp.oauth_as._issuer`/`_endpoint` echo this
+        value verbatim into the well-known documents' `issuer`,
+        `authorization_endpoint`, `token_endpoint`, etc -- so `http://...`
+        here is the one in-repo way left to advertise a plain-http OAuth
+        surface, config-side, independent of `HttpsOnlyMiddleware`
+        (`kobo_api.iap`) refusing the actual traffic. Checked unconditionally
+        whenever the field is set (not gated on `oauth_client_id`, unlike the
+        empty check above), since a stray http value would be just as wrong
+        the moment MCP later gets enabled.
+
+        Exception, deliberate: a `localhost`/`127.0.0.1` host stays allowed
+        over http -- dev rooms run the MCP server and its OAuth AS locally
+        over plain http with no LB in front to upgrade the scheme, and
+        there's no real client relying on that redirect_uri being spoofable,
+        so gating dev on a self-signed cert here would just move the pain
+        without buying anything.
         """
         if self.mcp.oauth_client_id and not self.mcp.issuer_base_url:
             raise ValueError(
@@ -540,6 +559,15 @@ class Config(BaseModel):
                 "empty; issuer_base_url is required for the well-known "
                 "documents and the google redirect_uri once mcp is enabled"
             )
+
+        issuer = self.mcp.issuer_base_url
+        if issuer and not issuer.startswith("https://"):
+            host = urlparse(issuer).hostname
+            if host not in ("localhost", "127.0.0.1"):
+                raise ValueError(
+                    "mcp.issuer_base_url must be https:// -- the OAuth "
+                    "discovery documents echo it verbatim"
+                )
         return self
 
     @classmethod

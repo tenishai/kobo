@@ -132,18 +132,27 @@ def _requires_https(path: str) -> bool:
     return any(path == p or path.startswith(p + "/") for p in HTTPS_ONLY_PREFIXES)
 
 
-def _client_proto(request: Request) -> str | None:
-    """The protocol the ORIGINAL client spoke, per X-Forwarded-Proto, or None
-    if the header is absent (an in-cluster caller).
+def _is_plain_http(request: Request) -> bool:
+    """Whether the ORIGINAL client spoke plain http, per X-Forwarded-Proto --
+    fail CLOSED, not first-hop-wins.
 
-    The header accumulates left to right, oldest hop first, so the first
-    value is the client-facing one -- `http, https` means the client arrived
-    over plain http even though a later hop was encrypted.
+    `Headers.get` returns only the FIRST header line a name occurs on; a
+    proxy (or an attacker who can inject a header) sending the name TWICE --
+    "x-forwarded-proto: https" then a second "x-forwarded-proto: http" --
+    would report clean under a `.get`-based check even though a real hop
+    said http. So this reads every line with `getlist`, splits each line on
+    "," (the header also accumulates left-to-right, oldest hop first, WITHIN
+    one line -- "http, https" -- per RFC 7239's forwarding convention),
+    strips and lowercases each token, and fires if "http" appears ANYWHERE
+    in the result. A header with no "http" token at all -- "https", or a
+    junk value like "wss" -- stays allowed: those aren't a claim of plain
+    http, so there's nothing to refuse. A header entirely ABSENT still
+    returns False (an in-cluster caller reaching the pod's Service directly,
+    unchanged).
     """
-    raw = request.headers.get(FORWARDED_PROTO_HEADER)
-    if raw is None:
-        return None
-    return raw.split(",")[0].strip().lower()
+    lines = request.headers.getlist(FORWARDED_PROTO_HEADER)
+    tokens = (part.strip().lower() for line in lines for part in line.split(","))
+    return "http" in tokens
 
 
 class HttpsOnlyMiddleware(BaseHTTPMiddleware):
@@ -154,16 +163,20 @@ class HttpsOnlyMiddleware(BaseHTTPMiddleware):
     and a plain-http request should be turned away before any credential is
     read rather than after.
 
-    Three-way on `X-Forwarded-Proto` (see `_client_proto`):
+    Three-way on `X-Forwarded-Proto` (see `_is_plain_http`, which reads
+    EVERY header line the client or a hop sent, not just the first):
 
-    * absent -> pass through untouched. An in-cluster caller reaching the
-      pod's Service directly; `/broker`, `/metrics` and the kubelet probes
-      all live here and legitimately speak http.
-    * anything but `http` (i.e. `https`, which is all the GCLB ever sets
-      besides `http`) -> pass through untouched.
-    * `http` AND the path is on the external surface -> 308 for GET/HEAD to
-      the same URL with the scheme swapped (host, path and query preserved),
-      or 400 `HTTPS_REQUIRED_BODY` for any other method.
+    * absent, or present with no "http" token anywhere across all its lines
+      (i.e. only `https`, which is all the GCLB ever sets besides `http`, or
+      a junk value) -> pass through untouched. An in-cluster caller reaching
+      the pod's Service directly; `/broker`, `/metrics` and the kubelet
+      probes all live here and legitimately speak http.
+    * an "http" token anywhere AND the path is on the external surface ->
+      308 for GET/HEAD to the same URL with the scheme swapped (host, path
+      and query preserved, and an explicit default port -- :80 or :443 --
+      dropped the way Starlette's own `HTTPSRedirectMiddleware` does, since
+      carrying :80 forward onto `https://` would otherwise redirect straight
+      into a dead end), or 400 `HTTPS_REQUIRED_BODY` for any other method.
 
     Non-external paths over plain http are left alone even so: the IAP
     fronting already owns them, and widening this guard's scope would be the
@@ -171,19 +184,37 @@ class HttpsOnlyMiddleware(BaseHTTPMiddleware):
 
     Same `BaseHTTPMiddleware` websocket caveat as `IapMiddleware`: only
     `http` scopes pass through here. No websocket routes exist today.
+
+    One sharp edge, accepted rather than special-cased: a plain-http CORS
+    preflight (`OPTIONS`) against the external surface gets this guard's
+    bare 400 with no CORS headers attached, so a browser reports it as an
+    opaque network failure rather than surfacing `HTTPS_REQUIRED_BODY` --
+    this middleware is registered outermost by design (see `create_app`) so
+    it runs before any CORS middleware could add those headers, and the case
+    is moot in practice once the load balancer's own redirect-to-https is in
+    place, since a browser would never reach this app over plain http at all.
     """
 
     async def dispatch(self, request: Request, call_next):
-        if _client_proto(request) != "http":
+        if not _is_plain_http(request):
             return await call_next(request)
         if not _requires_https(request.url.path):
             return await call_next(request)
 
         if request.method.upper() in _REDIRECTABLE_METHODS:
-            # `URL.replace` keeps netloc, path and query verbatim -- the
-            # client's own (un-normalized) path, never the canonicalized one.
+            # Mirrors starlette.middleware.httpsredirect.HTTPSRedirectMiddleware:
+            # keep path and query verbatim (the client's own un-normalized
+            # path, never the canonicalized one), but an explicit DEFAULT
+            # port for the ORIGINAL scheme -- :80, since this guard only
+            # ever sees requests reported as http -- must not survive the
+            # swap to https verbatim, or "Host: testserver:80" would redirect
+            # to "https://testserver:80/...", a dead end for any CLI/SDK
+            # client that won't silently reconnect on a nonstandard port. A
+            # genuinely non-default port (":8443") is preserved.
+            url = request.url
+            netloc = url.hostname if url.port in (80, 443) else url.netloc
             return RedirectResponse(
-                str(request.url.replace(scheme="https")), status_code=308
+                str(url.replace(scheme="https", netloc=netloc)), status_code=308
             )
         return JSONResponse(HTTPS_REQUIRED_BODY, status_code=400)
 
