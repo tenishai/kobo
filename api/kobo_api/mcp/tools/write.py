@@ -671,6 +671,8 @@ def register(mcp: FastMCP, app: Any) -> None:
         tags: list[str] | None = None,
         skip_baseline: bool = False,
         runtime_image: str | None = None,
+        archetype: str | None = None,
+        voice: str | None = None,
     ) -> dict:
         """Create a new agent in the room. More capable at create time than
         the room's own modal, which adds skills post-create in the Skills
@@ -686,7 +688,10 @@ def register(mcp: FastMCP, app: Any) -> None:
         and probe guard) unless skip_baseline is true. `runtime_image`
         (optional, IE-4526) pins this agent to a custom runtime image from
         the room's own registry; omitted means the org default, which keeps
-        following the org pin. Returns the agent's
+        following the org pin. archetype="team_guide" deploys a team's
+        informational guide; forces persona/tools/tags. `voice` (optional)
+        is a style overlay for archetype personas -- ignored unless
+        `archetype` is set. Returns the agent's
         name and status; watch the room (or `kobo_get_agent`) for its
         checklist to finish in the background.
         """
@@ -742,6 +747,8 @@ def register(mcp: FastMCP, app: Any) -> None:
                     group_name=group,
                     skip_baseline=skip_baseline,
                     runtime_image=runtime_image,
+                    archetype=archetype,
+                    voice=voice,
                 )
             except (TypeError, ValidationError) as exc:
                 raise ToolError(f"that request wasn't quite right: {exc}") from exc

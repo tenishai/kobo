@@ -658,6 +658,87 @@ def test_create_agent_passes_skip_baseline(session_factory, config, fake_storage
         session.close()
 
 
+# --- kobo_create_agent archetype + voice (MCP parity, Task 3) ----------------
+#
+# The REST lane's archetype/voice fields (Task 2, `kobo_api.main.
+# CreateAgentRequest.archetype`/`.voice`) are plumbed through this tool
+# exactly like `runtime_image` above -- these two tests exist to prove the
+# WIRING (the forced surface reaches the row, and the route's own duplicate
+# guard surfaces through this tool's error shape), not to re-prove the
+# archetype route's own business logic (test_api_agents.py's own
+# "team-guide archetype" section already pins that exhaustively).
+
+
+def test_create_agent_archetype_and_voice_force_persona_tags_and_marker(
+    session_factory, config, fake_storage
+):
+    """`archetype`/`voice` reach the same create route the REST lane already
+    forces through: the created agent's row carries the forced team-guide
+    tag pair, the derived persona, the commons namespace, and the archetype
+    marker -- exactly like a REST caller passing the same two fields gets
+    (test_api_agents.py's own `test_archetype_forces_tags_persona_and_
+    commons_namespace`)."""
+    from kobo_api.purpose_tags import decode_tags
+
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp,
+        "kobo_create_agent",
+        _ctx_for(MEMBER_A_EMAIL),
+        who_they_are=PERSONA,
+        group=GROUP_A,
+        name="atlas",
+        archetype="team_guide",
+        voice="Anthony Bourdain",
+    )
+
+    assert result["name"] == "atlas"
+    session = session_factory()
+    try:
+        agent = session.query(Agent).filter_by(name="atlas").one()
+        assert agent.archetype == "team_guide"
+        assert {"team-guide", GROUP_A} <= set(decode_tags(agent.purpose_tags))
+        assert agent.persona == f"team-guide-{GROUP_A}"
+        assert agent.group_name == "shared"
+    finally:
+        session.close()
+
+
+def test_create_agent_archetype_duplicate_guard_409_surfaces_through_tool_error(
+    session_factory, config, fake_storage
+):
+    """The route's own "one guide per team" duplicate guard is a real 409
+    conflict on `kobo_create_agent`'s own table (B) -- no existing agent to
+    protect from enumeration here (this module's own docstring), so it
+    surfaces verbatim, same as `test_create_agent_name_taken_surfaces_the_
+    routes_own_409` above."""
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    _call_tool(
+        mcp,
+        "kobo_create_agent",
+        _ctx_for(MEMBER_A_EMAIL),
+        who_they_are=PERSONA,
+        group=GROUP_A,
+        name="atlas",
+        archetype="team_guide",
+    )
+
+    with pytest.raises(ToolError, match="already has a team guide"):
+        _call_tool(
+            mcp,
+            "kobo_create_agent",
+            _ctx_for(MEMBER_A_EMAIL),
+            who_they_are=PERSONA,
+            group=GROUP_A,
+            name="beacon",
+            archetype="team_guide",
+        )
+
+
 # --- kobo_teach ----------------------------------------------------------------
 
 
