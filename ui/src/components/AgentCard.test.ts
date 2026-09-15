@@ -15,6 +15,8 @@ const BASE_AGENT: AgentSummary = {
   has_avatar: false,
   created_by: null,
   group_name: null,
+  archetype: null,
+  purpose_tags: [],
 };
 
 describe("AgentCard — owner line (Task A3)", () => {

@@ -24,6 +24,18 @@ export type AgentSummary = {
    * group picker starts sending one. Not yet rendered anywhere; carried
    * here so Task B2's visibility filter has it on the wire already. */
   group_name: string | null;
+  /** Team-guide UI (team-guide spec 2026-09-14, Task 5): `"team_guide"` for
+   * an archetype-deployed agent, `null` for an ordinary one. Alone this
+   * says only "is a guide," never WHICH team's -- a guide's own
+   * `group_name` above is forced to the commons, not the team it serves --
+   * so `purpose_tags` (below) carries the actual tag pair callers match
+   * against. */
+  archetype: string | null;
+  /** Free-form purpose chips, same shape/semantics as `AgentDetail`'s own
+   * field -- present here too (as of the same task) so a client can run
+   * the team-guide pre-check (does group X already have a guide?) off the
+   * list it already holds, with no per-agent detail fetch. `[]` when none. */
+  purpose_tags: string[];
 };
 
 export type StepView = {
@@ -302,11 +314,18 @@ export type ColleagueFeed = {
 
 export class ApiError extends Error {
   status: number;
+  /** The parsed JSON error body, when the response had one (`undefined` for
+   * a non-JSON body). `.message` above already extracts `.error` from it
+   * for the common case; this is for a route that puts something ELSE
+   * alongside `error` a caller needs (team-guide spec 2026-09-14: the
+   * duplicate-guide 409's `existing` agent name, for "Open {name}"). */
+  body?: unknown;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, body?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -373,7 +392,7 @@ async function parse<T>(res: Response): Promise<T> {
     const message = parseFailed
       ? `${res.status} ${res.statusText}`.trim()
       : (errorMessageFrom(data) ?? `${res.status} ${res.statusText}`.trim());
-    throw new ApiError(message, res.status);
+    throw new ApiError(message, res.status, parseFailed ? undefined : data);
   }
 
   if (parseFailed) {
@@ -434,6 +453,18 @@ export async function createAgent(body: {
   /** Per-agent runtime image (IE-4526) — omitted means the org default,
    * and the agent keeps following the org-wide runtime pin. */
   runtime_image?: string;
+  /** Archetype create lane (team-guide spec 2026-09-14): set to
+   * `"team_guide"` to deploy a team's guide instead of an ordinary agent —
+   * the server then forces persona/tools/tags/visibility/skills and
+   * ignores this request's own values for them (`persona` above is still
+   * required by the request model, but ignored on this path; the UI sends
+   * `"helpful-generalist"`). Omitted for every ordinary create. */
+  archetype?: string;
+  /** Optional style overlay for a `"team_guide"` archetype (style-not-
+   * identity — see `kobo_api/archetypes.py`): "name a famous person,
+   * artist, or regional character your guide should sound like." Ignored
+   * outside the archetype path. Server rejects over 120 chars. */
+  voice?: string;
 }): Promise<{ name: string; status: string }> {
   const res = await fetch("/api/agents", {
     method: "POST",

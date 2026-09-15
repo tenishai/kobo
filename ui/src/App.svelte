@@ -6,6 +6,7 @@
   import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
   import CreateModal from "./components/CreateModal.svelte";
   import Sidebar from "./components/Sidebar.svelte";
+  import TeamGuideModal from "./components/TeamGuideModal.svelte";
   import Toasts from "./components/Toasts.svelte";
   import AgentDetail from "./pages/AgentDetail.svelte";
   import Dashboard from "./pages/Dashboard.svelte";
@@ -70,11 +71,28 @@
   function onCloseCreate(): void {
     createOpen = false;
   }
+
+  // Team-guide spec 2026-09-14: same fully-controlled contract as
+  // `createOpen` above, just for the Sidebar's second, secondary button.
+  let guideOpen = $state(false);
+
+  function onOpenGuide(): void {
+    guideOpen = true;
+  }
+
+  function onCloseGuide(): void {
+    guideOpen = false;
+  }
 </script>
 
 <QueryClientProvider client={queryClient}>
   <div class="shell">
-    <Sidebar active={route.page} oncreate={onOpenCreate} onprefetch={prefetchCatalogs} />
+    <Sidebar
+      active={route.page}
+      oncreate={onOpenCreate}
+      onopenguide={onOpenGuide}
+      onprefetch={prefetchCatalogs}
+    />
 
     <main class="shell__main">
       {#if route.page === "dashboard"}
@@ -95,6 +113,7 @@
   </div>
 
   <CreateModal open={createOpen} onclose={onCloseCreate} />
+  <TeamGuideModal open={guideOpen} onclose={onCloseGuide} />
 </QueryClientProvider>
 
 <Toasts />

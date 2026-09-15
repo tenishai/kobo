@@ -6,9 +6,10 @@
   import { formatHash } from "../lib/router.svelte";
   import { agentsQuery, whoamiQuery } from "../lib/queries";
 
-  let { active, oncreate, onprefetch }: {
+  let { active, oncreate, onopenguide, onprefetch }: {
     active: "dashboard" | "agent" | "getting-started" | "personas";
     oncreate: () => void;
+    onopenguide: () => void;
     onprefetch: () => void;
   } = $props();
 
@@ -103,6 +104,23 @@
   >
     <span class="sidebar__create-label">Create agent</span>
     <span class="sidebar__create-glyph" aria-hidden="true">+</span>
+  </button>
+
+  <!-- Team-guide spec 2026-09-14: a secondary action under Create agent,
+       never competing with it for primary-accent styling. Shares the same
+       warm-prefetch handlers (groups is one of the catalogs this button's
+       own modal reads). -->
+  <button
+    type="button"
+    class="sidebar__guide"
+    onmouseenter={onprefetch}
+    onfocus={onprefetch}
+    onclick={onopenguide}
+    aria-label="Deploy your team's guide"
+    title="Deploy your team's guide"
+  >
+    <span class="sidebar__guide-label">Deploy your team's guide</span>
+    <span class="sidebar__guide-glyph" aria-hidden="true">◎</span>
   </button>
 
   {#if whoami.data?.email}
@@ -240,6 +258,33 @@
     display: none;
   }
 
+  /* Secondary style (team-guide spec 2026-09-14): an outline, not the
+     filled accent Create agent uses -- a sibling action, not a competing
+     primary one. */
+  .sidebar__guide {
+    padding: var(--space-xs) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .sidebar__guide:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .sidebar__guide:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .sidebar__guide-glyph {
+    display: none;
+  }
+
   .sidebar__whoami {
     margin: auto 0 0 0;
     padding-top: var(--space-sm);
@@ -266,6 +311,14 @@
     }
 
     .sidebar__create-glyph {
+      display: inline;
+    }
+
+    .sidebar__guide-label {
+      display: none;
+    }
+
+    .sidebar__guide-glyph {
       display: inline;
     }
 

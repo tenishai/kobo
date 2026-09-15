@@ -58,6 +58,25 @@ export function validateSlug(value: string): string | null {
 }
 
 /**
+ * Client-side mirror of `kobo_api.purpose_tags.normalize_tags`'s per-tag
+ * fold (team-guide spec 2026-09-14): lowercase, then collapse any run of
+ * internal whitespace to a single hyphen — the exact same
+ * `"-".join(tag.lower().split())` the server applies to every purpose tag,
+ * including the picked group name a team guide's identity tag is derived
+ * from. Used by TeamGuideModal to turn a picked group ("Data Eng") into the
+ * slug ("data-eng") it must match against an existing guide's purpose_tags,
+ * without a round trip — the server is still authoritative (its own fold
+ * is what actually got stored), this only has to agree with it.
+ */
+export function normalizeGroupTag(value: string): string {
+  return value
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((piece) => piece.length > 0)
+    .join("-");
+}
+
+/**
  * Splits a comma/whitespace-separated tags field into individual candidate
  * slugs: trims each piece and drops empties, so `"a, b   c,,d"` becomes
  * `["a", "b", "c", "d"]`. Doesn't validate the pieces — pair with

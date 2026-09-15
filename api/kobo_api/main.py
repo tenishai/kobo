@@ -3425,6 +3425,18 @@ def create_app(
                     # placeholder string.
                     "created_by": a.created_by,
                     "group_name": a.group_name,
+                    # Team-guide UI (team-guide spec 2026-09-14, Task 5): the
+                    # create modal's "deploy your team's guide" pre-check
+                    # needs to tell, from the list alone, whether a picked
+                    # group already has one -- `archetype` alone can't say
+                    # WHICH team's guide a row is (every guide's own
+                    # `group_name` is forced to the commons, never the
+                    # team), so `purpose_tags` rides along too: the tag
+                    # pair (`TEAM_GUIDE_TAG` + the team's slug) is the only
+                    # thing that actually identifies it. Both are already
+                    # loaded on `a` with no extra query.
+                    "archetype": a.archetype,
+                    "purpose_tags": decode_tags(a.purpose_tags),
                 }
                 for a in agents
             ],
