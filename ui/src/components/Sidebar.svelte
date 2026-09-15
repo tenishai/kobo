@@ -116,10 +116,10 @@
     onmouseenter={onprefetch}
     onfocus={onprefetch}
     onclick={onopenguide}
-    aria-label="Deploy your team's guide"
-    title="Deploy your team's guide"
+    aria-label="Quick-start team agent"
+    title="Quick-start team agent"
   >
-    <span class="sidebar__guide-label">Deploy your team's guide</span>
+    <span class="sidebar__guide-label">Quick-start team agent</span>
     <span class="sidebar__guide-glyph" aria-hidden="true">◎</span>
   </button>
 

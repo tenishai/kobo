@@ -156,7 +156,7 @@
   }
 </script>
 
-<Modal {open} title="Deploy your team's guide" {onclose}>
+<Modal {open} title="Quick-start team agent" {onclose}>
   <form class="guide-form" onsubmit={handleSubmit}>
     <div class="guide-form__field">
       <label class="guide-form__label" for="guide-group">Group</label>
@@ -270,7 +270,7 @@
           Cancel
         </button>
         <button type="submit" class="guide-form__submit" disabled={!canSubmit}>
-          {mutation.isPending ? "Deploying…" : "Deploy guide"}
+          {mutation.isPending ? "Starting…" : "Quick-start agent"}
         </button>
       </div>
     {:else}

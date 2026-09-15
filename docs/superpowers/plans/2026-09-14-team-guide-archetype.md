@@ -15,7 +15,7 @@
 - Canonical discovery tags forced and unremovable at create: `team-guide` + the group name.
 - Voice is style-not-identity, subordinate to the constitution; absent voice → no overlay section at all.
 - Duplicate guard: one guide per group, 409 naming the existing agent.
-- Button copy: **"Deploy your team's guide"**.
+- Button copy: **"Quick-start team agent"** (Kyle 9/15: "guide" as button noun confused; agent is the page vocabulary — guide stays the ROLE in modal/persona/tags; "Deploy" was infra vocabulary).
 - Observability URL shape: `{argus_url}/projects/{argus_project}/dashboards/{agent_name}-agent-health`; links hidden when config absent.
 - Skill `team-guide` 1.0.0 obeys the publish law: frontmatter name/description/version/tags(≥1 domain)/profiles(non-empty, fixed set)/owner.
 - GATE: first live kiosk only after the fleet runtime re-pin containing daedalus #49 (+ #52).
