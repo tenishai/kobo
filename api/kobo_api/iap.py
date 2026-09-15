@@ -14,6 +14,14 @@ request without a valid assertion with a 401, for EVERY path except
 `EXEMPT_PATHS` — including the built UI's static assets and SPA fallback
 (Task 1's `mount_ui`), since the proxy sits in front of the whole app, not
 just `/api/*`.
+
+Also home to `HttpsOnlyMiddleware` (CYBER-1132 ride-along) -- the same
+path-matching discipline pointed at a different question: the IAP-exempt
+roots that ARE reachable from the internet (`HTTPS_ONLY_PREFIXES`) must
+never be answered over plain `http`. It lives beside the IAP gate because
+the two share `_normalize`'s canonicalization and the segment-boundary
+matching, and because the set it guards is a strict subset of the set the
+IAP gate exempts.
 """
 
 from __future__ import annotations
@@ -27,7 +35,7 @@ from collections.abc import Callable
 import httpx
 import jwt
 from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
@@ -82,6 +90,102 @@ def _is_exempt(path: str) -> bool:
     if path in EXEMPT_PATHS:
         return True
     return any(path == p or path.startswith(p + "/") for p in EXEMPT_PREFIXES)
+
+
+# --- https-only OAuth surface (Task 2c, CYBER-1132 ride-along) --------------
+
+# The header the Google load balancer always sets, naming the protocol the
+# CLIENT spoke to it. In-cluster callers that reach the pod's Service
+# directly -- the /broker lane agents and the ledger use, kubelet probes,
+# the /metrics scraper -- never set it. That asymmetry is the whole
+# discriminator below: absent == internal == untouched.
+FORWARDED_PROTO_HEADER = "x-forwarded-proto"
+
+# The subset of EXEMPT_PREFIXES that is reachable FROM THE INTERNET (served
+# off the deploy's no-IAP ingress backend): kobo's OAuth 2.1 server, its
+# public discovery documents, and the MCP surface. Spelled out literally
+# rather than derived as `EXEMPT_PREFIXES - {"/broker"}` on purpose: a
+# future IAP exemption for another in-cluster lane must not silently enroll
+# itself into https enforcement and break a plain-http internal caller.
+# /broker is deliberately ABSENT -- agents call http://kobo.kobo.svc/broker/...
+# with no TLS and no X-Forwarded-Proto, and that lane must keep working.
+# Matched with the same normalize-then-segment-boundary discipline
+# `_is_exempt` uses, so "/oauthx" is never treated as the OAuth surface.
+HTTPS_ONLY_PREFIXES = ("/mcp", "/oauth", "/.well-known")
+
+# Plain-language 400 body, verbatim, for a non-idempotent request that
+# arrived over plain http.
+HTTPS_REQUIRED_BODY = {"error": "this endpoint requires https"}
+
+# Methods that are safe to answer with a redirect. Everything else carries a
+# body -- an /oauth/token POST carries the authorization code and PKCE
+# verifier -- and those credentials have ALREADY transited plain http by the
+# time we see them; a redirect would merely invite the client to send them a
+# second time. Refuse instead.
+_REDIRECTABLE_METHODS = frozenset({"GET", "HEAD"})
+
+
+def _requires_https(path: str) -> bool:
+    """Whether `path` is on the externally-reachable OAuth/MCP surface, and so
+    must never be answered over plain http."""
+    path = _normalize(path)
+    return any(path == p or path.startswith(p + "/") for p in HTTPS_ONLY_PREFIXES)
+
+
+def _client_proto(request: Request) -> str | None:
+    """The protocol the ORIGINAL client spoke, per X-Forwarded-Proto, or None
+    if the header is absent (an in-cluster caller).
+
+    The header accumulates left to right, oldest hop first, so the first
+    value is the client-facing one -- `http, https` means the client arrived
+    over plain http even though a later hop was encrypted.
+    """
+    raw = request.headers.get(FORWARDED_PROTO_HEADER)
+    if raw is None:
+        return None
+    return raw.split(",")[0].strip().lower()
+
+
+class HttpsOnlyMiddleware(BaseHTTPMiddleware):
+    """Refuses plain-`http` requests to kobo's externally-reachable OAuth/MCP
+    surface (`HTTPS_ONLY_PREFIXES`). Registered unconditionally by
+    `create_app` (`kobo_api.main`), and registered LAST so it runs FIRST --
+    outside `IapMiddleware`, because these are exactly the roots IAP exempts,
+    and a plain-http request should be turned away before any credential is
+    read rather than after.
+
+    Three-way on `X-Forwarded-Proto` (see `_client_proto`):
+
+    * absent -> pass through untouched. An in-cluster caller reaching the
+      pod's Service directly; `/broker`, `/metrics` and the kubelet probes
+      all live here and legitimately speak http.
+    * anything but `http` (i.e. `https`, which is all the GCLB ever sets
+      besides `http`) -> pass through untouched.
+    * `http` AND the path is on the external surface -> 308 for GET/HEAD to
+      the same URL with the scheme swapped (host, path and query preserved),
+      or 400 `HTTPS_REQUIRED_BODY` for any other method.
+
+    Non-external paths over plain http are left alone even so: the IAP
+    fronting already owns them, and widening this guard's scope would be the
+    easy way to break an internal caller nobody remembered.
+
+    Same `BaseHTTPMiddleware` websocket caveat as `IapMiddleware`: only
+    `http` scopes pass through here. No websocket routes exist today.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        if _client_proto(request) != "http":
+            return await call_next(request)
+        if not _requires_https(request.url.path):
+            return await call_next(request)
+
+        if request.method.upper() in _REDIRECTABLE_METHODS:
+            # `URL.replace` keeps netloc, path and query verbatim -- the
+            # client's own (un-normalized) path, never the canonicalized one.
+            return RedirectResponse(
+                str(request.url.replace(scheme="https")), status_code=308
+            )
+        return JSONResponse(HTTPS_REQUIRED_BODY, status_code=400)
 
 # IAP rotates its signing keys infrequently; caching for this long avoids a
 # JWKS round trip on every request while still picking up a rotation well

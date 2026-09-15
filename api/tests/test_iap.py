@@ -16,18 +16,24 @@ import time
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
-from fastapi import Request
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from kobo_api.iap import (
     ASSERTION_HEADER,
     EXEMPT_PATHS,
     EXEMPT_PREFIXES,
+    FORWARDED_PROTO_HEADER,
+    HTTPS_ONLY_PREFIXES,
+    HTTPS_REQUIRED_BODY,
     IAP_ISSUER,
     UNAUTHORIZED_BODY,
+    HttpsOnlyMiddleware,
     IapError,
+    IapMiddleware,
     IapVerifier,
     _is_exempt,
+    _requires_https,
 )
 from kobo_api.main import create_app
 
@@ -566,3 +572,349 @@ def test_is_exempt_normalizes_before_matching_so_traversal_cannot_forge_exemptio
     # trailing slash still exempt after normpath strips it
     assert _is_exempt("/mcp/") is True
     assert _is_exempt("/oauth/") is True
+
+
+# --- https-only OAuth surface (Task 2c, CYBER-1132 ride-along) --------------
+# The IAP-exempt EXTERNAL roots (/oauth, /.well-known, /mcp) are reachable
+# from the internet off the no-IAP ingress backend, and answered over plain
+# http:// at the load balancer. `HttpsOnlyMiddleware` is the app-level half of
+# the fix (the LB-level FrontendConfig redirectToHttps is a kc.yaml change):
+# X-Forwarded-Proto is the discriminator -- the GCLB always sets it, and
+# in-cluster direct-Service callers (the /broker lane the ledger and agents
+# use, kubelet probes, the metrics scraper) never do. ABSENT means internal
+# and is always left untouched, so the plain-http /broker lane is unharmed.
+#
+# Every test below runs with follow_redirects=False on purpose: a real client
+# re-requests over https and the LB then sets X-Forwarded-Proto: https, but a
+# test client replays the pinned http header on the redirect and would loop.
+
+HTTP_PROTO = {FORWARDED_PROTO_HEADER: "http"}
+HTTPS_PROTO = {FORWARDED_PROTO_HEADER: "https"}
+
+
+def test_https_only_constants_match_the_brief_exactly():
+    assert FORWARDED_PROTO_HEADER == "x-forwarded-proto"
+    assert HTTPS_REQUIRED_BODY == {"error": "this endpoint requires https"}
+    # Exactly the three EXTERNAL roots -- deliberately NOT derived from
+    # EXEMPT_PREFIXES, so a future IAP exemption for another in-cluster lane
+    # can never silently enroll itself into https enforcement.
+    assert HTTPS_ONLY_PREFIXES == ("/mcp", "/oauth", "/.well-known")
+    assert "/broker" not in HTTPS_ONLY_PREFIXES
+    assert set(HTTPS_ONLY_PREFIXES) < set(EXEMPT_PREFIXES)
+
+
+def test_requires_https_matches_the_external_roots_on_segment_boundaries():
+    """Same path-matching discipline `_is_exempt` holds: normalize first,
+    then match exactly or on a segment boundary."""
+    for external in (
+        "/mcp",
+        "/mcp/",
+        "/oauth",
+        "/oauth/authorize",
+        "/oauth/token",
+        "/oauth/google/callback",
+        "/.well-known/oauth-authorization-server",
+        "/.well-known/oauth-protected-resource",
+    ):
+        assert _requires_https(external) is True, external
+    for untouched in (
+        # the in-cluster lanes: never enforced, they legitimately speak http
+        "/broker",
+        "/broker/agents/wren/github-token",
+        "/metrics",
+        "/api/healthz",
+        # not our scope to widen -- IAP fronting owns these
+        "/api/agents",
+        "/",
+        # lookalikes, off a segment boundary
+        "/mcpevil",
+        "/oauthx",
+        "/oauth-something",
+        "/.well-knownx",
+    ):
+        assert _requires_https(untouched) is False, untouched
+    # a traversal that borrows an external root's prefix but resolves into
+    # /api is NOT the oauth surface; one that resolves INTO it is
+    assert _requires_https("/oauth/../api/agents") is False
+    assert _requires_https("//mcp/../api/agents") is False
+    assert _requires_https("/api/agents/../../oauth/token") is True
+
+
+def test_plain_http_get_on_the_oauth_surface_is_308_with_path_and_query_kept(
+    session_factory, iap_config
+):
+    """(a) GET over plain http on an external root: 308 to the identical URL
+    with the scheme swapped -- host, path and query all preserved."""
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    resp = test_client.get(
+        "/oauth/authorize?response_type=code&client_id=abc&state=xyz%20z",
+        headers=HTTP_PROTO,
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 308
+    assert resp.headers["location"] == (
+        "https://testserver/oauth/authorize"
+        "?response_type=code&client_id=abc&state=xyz%20z"
+    )
+
+
+def test_plain_http_get_is_308_on_every_external_root(session_factory, iap_config):
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    for root in (
+        "/oauth/authorize",
+        "/oauth/google/callback",
+        "/mcp",
+        "/mcp/",
+        "/.well-known/oauth-authorization-server",
+        "/.well-known/oauth-protected-resource",
+    ):
+        resp = test_client.get(root, headers=HTTP_PROTO, follow_redirects=False)
+        assert resp.status_code == 308, root
+        assert resp.headers["location"] == f"https://testserver{root}", root
+
+
+def test_plain_http_head_on_the_oauth_surface_is_308(session_factory, iap_config):
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    resp = test_client.head(
+        "/oauth/authorize", headers=HTTP_PROTO, follow_redirects=False
+    )
+
+    assert resp.status_code == 308
+    assert resp.headers["location"] == "https://testserver/oauth/authorize"
+
+
+def test_plain_http_post_on_the_oauth_surface_is_400_never_redirected(
+    session_factory, iap_config
+):
+    """(b) A token POST's credentials must never transit plain http, and a
+    redirect would invite the client to resubmit them -- so it is refused
+    outright, not redirected."""
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    for method, path in (
+        ("post", "/oauth/token"),
+        ("post", "/oauth/register"),
+        ("post", "/mcp/"),
+        ("put", "/oauth/token"),
+        ("delete", "/mcp/"),
+        ("patch", "/oauth/token"),
+    ):
+        resp = getattr(test_client, method)(
+            path, headers=HTTP_PROTO, follow_redirects=False
+        )
+        assert resp.status_code == 400, f"{method} {path}"
+        assert resp.json() == HTTPS_REQUIRED_BODY, f"{method} {path}"
+        assert "location" not in resp.headers, f"{method} {path}"
+
+
+def test_plain_http_multi_hop_proto_takes_the_client_facing_value(
+    session_factory, iap_config
+):
+    """X-Forwarded-Proto accumulates left-to-right, oldest first: the FIRST
+    value is the protocol the client actually spoke. `http, https` means the
+    client arrived over plain http, so it is still refused."""
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    resp = test_client.get(
+        "/oauth/authorize",
+        headers={FORWARDED_PROTO_HEADER: "http, https"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 308
+    assert resp.headers["location"] == "https://testserver/oauth/authorize"
+
+
+def test_broker_lane_is_untouched_by_the_https_guard(session_factory, iap_config):
+    """(c) The in-cluster /broker lane must keep working over plain http even
+    if some future proxy does set the header on it: never 308'd, never 400'd
+    with the https copy. (These reach their real routes and fail their own
+    agent-JWT check -- the point is WHICH gate answered.)"""
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    for method, path in (
+        ("get", "/broker/agents/wren/jira/search?q=x"),
+        ("post", "/broker/agents/wren/github-token"),
+    ):
+        for headers in ({}, HTTP_PROTO, HTTPS_PROTO):
+            resp = getattr(test_client, method)(
+                path, headers=headers, follow_redirects=False
+            )
+            assert resp.status_code != 308, f"{method} {path} {headers}"
+            assert resp.json() != HTTPS_REQUIRED_BODY, f"{method} {path} {headers}"
+
+
+def test_non_external_paths_over_plain_http_are_untouched(session_factory, iap_config):
+    """Scope discipline: IAP fronting already owns /api and the scraper owns
+    /metrics. Plain http there is not this guard's business -- /api still
+    answers with the IAP 401, /metrics still 200s."""
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    api = test_client.get("/api/agents", headers=HTTP_PROTO, follow_redirects=False)
+    assert api.status_code == 401
+    assert api.json() == UNAUTHORIZED_BODY
+
+    metrics = test_client.get("/metrics", headers=HTTP_PROTO, follow_redirects=False)
+    assert metrics.status_code == 200
+
+
+def test_absent_forwarded_proto_passes_through_untouched(session_factory, iap_config):
+    """(d) No header at all means an in-cluster caller reaching the pod's
+    Service directly. Pass through: this is how the MCP roots behaved before
+    the guard existed (MCP flag-off here, so they 404 at routing)."""
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    for root in ("/oauth/authorize", "/mcp", "/.well-known/oauth-protected-resource"):
+        resp = test_client.get(root, follow_redirects=False)
+        assert resp.status_code == 404, root
+
+    posted = test_client.post("/oauth/token", follow_redirects=False)
+    assert posted.status_code == 404
+    assert posted.json() != HTTPS_REQUIRED_BODY
+
+
+def test_forwarded_proto_https_passes_through_untouched(session_factory, iap_config):
+    """(e) Already https: the guard has nothing to do, for any method."""
+    _, jwk = _generate_jwk()
+    test_client = _client_with_fetcher(
+        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
+    )
+
+    for root in ("/oauth/authorize", "/mcp", "/.well-known/oauth-protected-resource"):
+        resp = test_client.get(root, headers=HTTPS_PROTO, follow_redirects=False)
+        assert resp.status_code == 404, root
+
+    posted = test_client.post("/oauth/token", headers=HTTPS_PROTO, follow_redirects=False)
+    assert posted.status_code == 404
+    assert posted.json() != HTTPS_REQUIRED_BODY
+
+
+def test_https_guard_runs_with_iap_disabled_too(client):
+    """The guard is registered unconditionally, independent of
+    `Config.iap_audience` -- the external roots are served off the NO-IAP
+    ingress backend, so an IAP-less room is exactly the room that needs it.
+    `client` (conftest.py) is built from the plain `config` fixture, whose
+    `iap_audience` defaults to "" -- disabled."""
+    redirected = client.get(
+        "/oauth/authorize?client_id=abc", headers=HTTP_PROTO, follow_redirects=False
+    )
+    assert redirected.status_code == 308
+    assert redirected.headers["location"] == (
+        "https://testserver/oauth/authorize?client_id=abc"
+    )
+
+    refused = client.post("/oauth/token", headers=HTTP_PROTO, follow_redirects=False)
+    assert refused.status_code == 400
+    assert refused.json() == HTTPS_REQUIRED_BODY
+
+    # and the in-cluster lanes stay plain-http-clean here too
+    assert client.get("/api/healthz", headers=HTTP_PROTO).status_code == 200
+    broker = client.post(
+        "/broker/agents/wren/github-token", headers=HTTP_PROTO, follow_redirects=False
+    )
+    assert broker.status_code != 308
+    assert broker.json() != HTTPS_REQUIRED_BODY
+
+
+def test_https_guard_is_installed_outside_the_iap_gate(session_factory, iap_config):
+    """The ordering create_app relies on, pinned structurally because it is
+    NOT observable in behavior: every root the guard covers is a root the IAP
+    gate exempts, so both orders happen to answer a plain-http /oauth request
+    the same way today. `add_middleware` inserts at index 0, so index 0 is the
+    OUTERMOST layer and runs first -- the https guard must be there, ahead of
+    IapMiddleware, so a plain-http request is refused before any credential
+    in it is read and regardless of how the IAP gate's exemption list later
+    changes."""
+    app = create_app(session_factory, config=iap_config)
+    classes = [m.cls for m in app.user_middleware]
+
+    assert classes.index(HttpsOnlyMiddleware) == 0
+    assert classes.index(HttpsOnlyMiddleware) < classes.index(IapMiddleware)
+
+
+def test_discovery_document_urls_are_https_independent_of_the_request_scheme():
+    """(f) The brief's inspection point. FINDING: the discovery documents do
+    NOT derive their URLs from the request at all -- `oauth_as._issuer` /
+    `_endpoint` build every URL from the configured `mcp.issuer_base_url`
+    (required non-empty the moment MCP is enabled, by
+    `Config._mcp_requires_an_issuer_base_url_when_enabled`). So there is
+    nothing to force to https; this test PINS that staticness, so a future
+    refactor to `request.base_url` (the scheme-derived shape, which survives
+    today only in `_google_redirect_uri`'s unreachable flag-off fallback)
+    cannot silently start publishing http:// endpoint URLs.
+
+    Harness mirrors test_mcp_oauth.py: just the AS router and a config, no
+    guard middleware -- so the XFP=http request actually REACHES the routes
+    rather than being 308'd, which is the only way to observe what the
+    documents would say.
+    """
+    from kobo_api.config import Config, MCPConfig
+    from kobo_api.mcp import oauth_as
+
+    app = FastAPI()
+    app.include_router(oauth_as.router)
+    app.state.config = Config(
+        mcp=MCPConfig(
+            oauth_client_id="mcp-test-client",
+            workspace_domain="example.com",
+            issuer_base_url="https://kobo.example.org",
+        )
+    )
+    test_client = TestClient(app, follow_redirects=False)
+
+    as_doc = test_client.get(
+        "/.well-known/oauth-authorization-server", headers=HTTP_PROTO
+    )
+    pr_doc = test_client.get(
+        "/.well-known/oauth-protected-resource", headers=HTTP_PROTO
+    )
+
+    assert as_doc.status_code == 200
+    assert pr_doc.status_code == 200
+    for url in (
+        as_doc.json()["issuer"],
+        as_doc.json()["authorization_endpoint"],
+        as_doc.json()["token_endpoint"],
+        as_doc.json()["registration_endpoint"],
+        pr_doc.json()["resource"],
+        pr_doc.json()["authorization_servers"][0],
+    ):
+        assert url.startswith("https://kobo.example.org"), url
+
+    # byte-identical with the header absent and with it claiming https:
+    # proof the documents never consult the request's scheme
+    assert (
+        test_client.get("/.well-known/oauth-authorization-server").json()
+        == test_client.get(
+            "/.well-known/oauth-authorization-server", headers=HTTPS_PROTO
+        ).json()
+        == as_doc.json()
+    )

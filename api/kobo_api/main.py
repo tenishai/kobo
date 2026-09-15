@@ -51,7 +51,7 @@ from kobo_api.metrics import install as install_metrics
 from kobo_api.tracing import install as install_tracing
 from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
 from kobo_api.directory import sync_directory
-from kobo_api.iap import IapMiddleware, IapVerifier
+from kobo_api.iap import HttpsOnlyMiddleware, IapMiddleware, IapVerifier
 from kobo_api.intake import (
     INTAKE_MAX_BYTES,
     IntakeError,
@@ -1967,6 +1967,22 @@ def create_app(
             IapMiddleware,
             verifier=IapVerifier(config.iap_audience, jwks_fetcher=iap_jwks_fetcher),
         )
+
+    # https-only OAuth/MCP surface (CYBER-1132 ride-along). Registered LAST
+    # on purpose: Starlette runs the last-added middleware FIRST, so this
+    # sits OUTSIDE IapMiddleware above. That ordering is load-bearing twice
+    # over -- the roots it guards (/oauth, /.well-known, /mcp) are exactly
+    # the roots IapMiddleware exempts, so a guard installed inside the IAP
+    # gate would be reached only via that gate's pass-through; and a request
+    # that arrived over plain http should be turned away before any
+    # credential in it is read, not after. Unconditional, unlike the IAP
+    # gate: these roots are served off the deploy's NO-IAP ingress backend,
+    # so a room with `iap_audience` unset is precisely the room that needs
+    # it. It is a no-op for every caller that does not set
+    # X-Forwarded-Proto: http, which is every in-cluster caller (the
+    # /broker lane, the /metrics scraper, kubelet probes). See
+    # kobo_api.iap.HttpsOnlyMiddleware for the full three-way contract.
+    app.add_middleware(HttpsOnlyMiddleware)
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(
