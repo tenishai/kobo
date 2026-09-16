@@ -368,7 +368,7 @@ def test_build_mcp_server_registers_exactly_the_twenty_four_named_tools(
     their own file's tools with `<=`, deliberately, so neither file also
     has to track the other's count -- which means nothing anywhere pins
     the FULL registered set. This is that missing test: `build_mcp_server`
-    must register EXACTLY these twenty-four tools, no more, no fewer,
+    must register EXACTLY these twenty-five tools, no more, no fewer,
     matching the design's own "Tool surface" table
     (docs/superpowers/specs/2026-08-22-mcp-server-design.md) plus the MCP
     marketplace wave's Task 2 pair (`kobo_list_skills`/`kobo_list_tools`),
@@ -401,6 +401,7 @@ def test_build_mcp_server_registers_exactly_the_twenty_four_named_tools(
         "kobo_request_colleague",
         "kobo_accept_invite",
         "kobo_wire_slack",
+        "kobo_set_runtime_image",
         "kobo_set_agent_skills",
         "kobo_add_agent_tool",
         "kobo_create_skill",
@@ -3034,3 +3035,66 @@ def test_decide_learnings_bulk_audit_row_logs_tool_status_and_arguments(
     assert logged["agent"] == "ward"
     assert logged["ids"] == [learning_id]
     assert logged["action"] == "deny"
+
+
+# --- kobo_set_runtime_image (#15) -------------------------------------------
+# The MCP half of the runtime-change route: the gap issue #15 names is "no
+# route -- UI or MCP", so the HTTP route alone would leave the surface it
+# calls out still missing the verb.
+
+
+def _under_org_registry(config, tag: str) -> str:
+    """A freeform ref under the org default's registry root — accepted by
+    `validate_runtime_image` without the room having to configure it, which
+    keeps these tests off the `runtimes` fixture list."""
+    return config.runtime_image.rsplit("/", 1)[0] + f"/{tag}"
+
+
+def test_set_runtime_image_moves_the_row_and_reports_both_values(
+    session_factory, config, fake_storage
+):
+    fake_github = FakeGitHub()
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        github=fake_github,
+    )
+    mcp = build_mcp_server(app)
+    target = _under_org_registry(config, "experimental:v9")
+
+    result = _call_tool(
+        mcp, "kobo_set_runtime_image", _ctx_for(OWNER_A_EMAIL), agent="ward", runtime_image=target
+    )
+
+    assert result["agent"] == "ward"
+    assert result["runtime_image"] == target
+    # The row is what `_runtime_image_for_repo` reads, and four other write
+    # paths re-pin the Dockerfile from it — a tool that moved only the file
+    # would be undone by the next teach note.
+    session = session_factory()
+    try:
+        assert session.query(Agent).filter_by(name="ward").one().runtime_image == target
+    finally:
+        session.close()
+
+
+def test_set_runtime_image_refuses_an_image_the_org_does_not_run(
+    session_factory, config, fake_storage
+):
+    """The create-time rule reaches the MCP surface too — otherwise the tool
+    would be the one way to put an unvetted image on an agent."""
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="configured runtimes"):
+        _call_tool(
+            mcp,
+            "kobo_set_runtime_image",
+            _ctx_for(OWNER_A_EMAIL),
+            agent="ward",
+            runtime_image="docker.io/somebody/whatever:latest",
+        )

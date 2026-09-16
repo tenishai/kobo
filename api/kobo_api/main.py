@@ -77,6 +77,7 @@ from kobo_api.metadata import (
     skill_descriptions_for_agent,
     tooling_filenames_for,
 )
+from kobo_api.runtime import commit_runtime_image, validate_runtime_image
 from kobo_api.models import (
     GROUP_REQUEST_DECLINED,
     LEARNING_APPROVED,
@@ -568,6 +569,20 @@ class AgentMetadataPatch(BaseModel):
     team: str | None = None
     purpose_tags: list[str] | None = None
     capability: str | None = None
+
+
+class AgentRuntimePatch(BaseModel):
+    """PATCH .../runtime body (#15). One required field, unlike
+    `AgentMetadataPatch` above: there is nothing here to leave alone, so an
+    omitted `runtime_image` is a malformed request rather than a no-op.
+
+    Plain `str` for the same reason its sibling gives — the registry-root
+    and configured-runtime rules live in `kobo_api.runtime.
+    validate_runtime_image`, shared with create, and a caller who names an
+    image this org does not run should read that rule stated plainly, not a
+    generic RequestValidationError from a pydantic pattern."""
+
+    runtime_image: str
 
 
 # The delivery-status route's sha path param must look like a real git
@@ -3292,17 +3307,20 @@ def create_app(
             # config, any registry the org publishes to -- the sdk runtime
             # lives on a different regional host than the daedalus default),
             # or a freeform ref under the org default's registry root.
-            configured = {r.image for r in cfg.runtimes}
-            registry_root = cfg.runtime_image.rsplit("/", 1)[0] + "/"
-            if runtime_image not in configured and not runtime_image.startswith(registry_root):
-                return JSONResponse(
-                    {
-                        "error": "runtime_image must be one of the configured "
-                        f"runtimes or live under {registry_root!r} "
-                        f"(got {runtime_image!r})"
-                    },
-                    status_code=422,
-                )
+            #
+            # THE RULE MOVED, THE RULE DID NOT CHANGE (#15): it now lives in
+            # `kobo_api.runtime.validate_runtime_image` so the PATCH route
+            # that changes a runtime after create refuses on exactly these
+            # grounds. A mutation that accepted what a create rejects would
+            # make "which images may this org run" depend on which endpoint
+            # you asked.
+            rejection = validate_runtime_image(
+                runtime_image,
+                configured={r.image for r in cfg.runtimes},
+                org_default=cfg.runtime_image,
+            )
+            if rejection is not None:
+                return JSONResponse({"error": rejection}, status_code=422)
 
         # Checked last (a DB round-trip) rather than first: a malformed request
         # is a 422 regardless of whether the name happens to collide too.
@@ -5564,6 +5582,80 @@ def create_app(
             body["sha"] = sha
         session.commit()
         return JSONResponse(body)
+
+    # --- Runtime (#15): move an existing agent to a different runtime image ----
+
+    @app.patch("/api/agents/{name}/runtime")
+    def update_agent_runtime(
+        name: str,
+        payload: AgentRuntimePatch,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Re-point an agent at a different runtime image without destroying
+        it. Before this existed the only way to change a runtime was
+        destroy-and-recreate, which discards Slack wiring (whose tokens are
+        supplied by hand — `wire_slack` cannot create a Slack app),
+        accumulated agent memory, and channel membership. None of that is a
+        runtime concern.
+
+        Owner-or-operator and ready-gated, same gate as the metadata route
+        below: this mutates the agent's repo and rolls its pod.
+
+        NO SHORT-CIRCUIT WHEN THE VALUE IS UNCHANGED, deliberately. The row
+        and the Dockerfile are two stores and can disagree — that is the
+        whole failure this route's ordering exists to prevent — so asking
+        for the image an agent already has is a legitimate REPAIR, and
+        `update_dockerfile_runtime_image` is idempotent, so a genuinely
+        in-sync agent pushes nothing and gets its unchanged head back.
+        """
+        cfg: Config = request.app.state.config
+        agent = _ready_agent_or_error(
+            session, request, name, not_ready_message="agent is not ready for a runtime change yet"
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+
+        runtime_image = payload.runtime_image.strip()
+        if not runtime_image:
+            return JSONResponse({"error": "runtime_image can't be blank"}, status_code=422)
+        rejection = validate_runtime_image(
+            runtime_image,
+            configured={r.image for r in cfg.runtimes},
+            org_default=cfg.runtime_image,
+        )
+        if rejection is not None:
+            return JSONResponse({"error": rejection}, status_code=422)
+
+        # THE ROW MOVES FIRST, IN MEMORY, AND IS ONLY COMMITTED IF THE PUSH
+        # LANDS. `_runtime_image_for_repo` reads this column, and four other
+        # write paths (wire_slack, upload_intake_file, and both tooling
+        # uploads) pass its value back into `update_dockerfile_runtime_image`
+        # on their own commits. So a file moved without the row is not
+        # merely untidy: the next teach note or tool upload re-pins the
+        # Dockerfile to the stale row value and the generated CI hard-rotates
+        # the pod onto it, silently undoing this change. Ordering per
+        # `update_agent_metadata` below: return before `session.commit()` on
+        # a delivery failure and `get_session`'s rollback-on-close discards
+        # the in-memory mutation, so a failed push leaves both stores at the
+        # value they already agreed on.
+        previous = agent.runtime_image
+        agent.runtime_image = runtime_image
+        try:
+            sha = commit_runtime_image(app.state.clients.github, agent.repo_full_name, runtime_image)
+        except ClientError as exc:
+            log.warning("runtime image commit failed for %s: %s", name, exc)
+            return JSONResponse(
+                {"error": "couldn't change the runtime image. Try again."}, status_code=502
+            )
+
+        session.commit()
+        return JSONResponse(
+            {"runtime_image": runtime_image, "previous_runtime_image": previous, "sha": sha}
+        )
 
     # --- Metadata (persona-metadata plan, Task 3): capability earned + card lockstep --
 

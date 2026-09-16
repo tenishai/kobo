@@ -654,6 +654,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     add_skill_endpoint = _endpoint(app, "POST", "/api/agents/{name}/skills/catalog")
     remove_skill_endpoint = _endpoint(app, "DELETE", "/api/agents/{name}/skills/{skill_id}")
     add_tool_endpoint = _endpoint(app, "POST", "/api/agents/{name}/tooling")
+    set_runtime_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/runtime")
     request_repo_access_endpoint = _endpoint(app, "POST", "/api/agents/{name}/repo-access")
     list_repo_access_endpoint = _endpoint(app, "GET", "/api/repo-access")
     decide_repo_access_endpoint = _endpoint(app, "POST", "/api/repo-access/decide")
@@ -927,6 +928,50 @@ def register(mcp: FastMCP, app: Any) -> None:
             session.close()
 
         return {"agent": agent, "connected": True, "sha": body.get("sha")}
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @audited("kobo_set_runtime_image")
+    async def kobo_set_runtime_image(ctx: Context, agent: str, runtime_image: str) -> dict:
+        """Move an existing agent onto a different runtime image (#15).
+
+        Before this existed, `runtime_image` could only be chosen at create
+        time, so changing it meant destroying the agent and building a
+        replacement -- which throws away Slack wiring (whose tokens are
+        supplied by hand at Slack's own site), everything the agent has
+        learned or been taught, and its channel membership. This changes
+        the runtime and leaves all three alone.
+
+        `runtime_image` must name one of the room's configured runtimes or
+        live under the org's own registry root -- the same rule
+        `kobo_create_agent` enforces, so a change cannot smuggle in an
+        image a create would have refused. The room's configured runtimes
+        are served at `GET /api/catalog/runtimes`; there is no read tool
+        for them, so a caller that cannot reach that route should pass an
+        image it already knows and read the rejection copy if it is
+        refused. You must own `agent` (or be a room operator), and `agent`
+        must be READY.
+
+        NOT DESTRUCTIVE OF DATA, but it does roll the pod: landing the
+        change pushes a commit, and the agent repo's CI rebuilds and
+        hard-rotates the running container. Expect a brief restart.
+        """
+        from kobo_api.main import AgentRuntimePatch
+
+        email = get_user_email(ctx)
+        req = authz.room_request(app, email)
+        session = app.state.session_factory()
+        try:
+            response = set_runtime_endpoint(
+                name=agent,
+                payload=AgentRuntimePatch(runtime_image=runtime_image),
+                request=req,
+                session=session,
+            )
+            body = _agent_route_result(response)
+        finally:
+            session.close()
+
+        return {"agent": agent, **body}
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
     @audited("kobo_set_agent_skills")
