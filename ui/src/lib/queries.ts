@@ -672,8 +672,15 @@ export function learningsQuery(name: string) {
  * count changed). */
 export function decideLearningMutation(queryClient: QueryClient, name: string) {
   return {
-    mutationFn: ({ id, action }: { id: number; action: "approve" | "deny" }) =>
-      decideLearning(name, id, action),
+    mutationFn: ({
+      id,
+      action,
+      content,
+    }: {
+      id: number;
+      action: "approve" | "deny";
+      content?: string;
+    }) => decideLearning(name, id, action, content),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name] });
     },
