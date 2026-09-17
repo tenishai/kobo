@@ -47,6 +47,7 @@ NEAR_DUP_THRESHOLD = 0.6
 KNOWN_WINDOW_DAYS = 90
 KNOWN_LIST_CAP = 40
 EDITED_LEARNING_MAX_CHARS = 200
+KNOWN_STATEMENT_MAX_CHARS = 400
 _KNOWN_LABELS = {
     LEARNING_PENDING: "pending",
     LEARNING_APPROVED: "remembered",
@@ -113,6 +114,14 @@ def _clean_str_field(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _one_line(text: str) -> str:
+    """Collapse every whitespace run (newlines, tabs, carriage returns
+    included) to a single space. A learning is one sentence; more to the
+    point, a statement is later rendered into an agent's prompt one entry
+    per line, and must not be able to start a new line and forge a heading."""
+    return " ".join(text.split())
+
+
 def _parse_v1(item: dict) -> dict | None:
     """The 2026-09-01 shape, still spoken by runtimes built before the
     rethink. Agents roll runtimes at different times; both must land."""
@@ -137,7 +146,7 @@ def _parse_v2(item: dict) -> dict | None:
     statement is DROPPED, never truncated: a clipped sentence teaches half
     a claim. `replaces` must be a real int (bool is an int subclass and
     `True` must not become learning id 1)."""
-    statement = _clean_str_field(item.get("statement"))
+    statement = _one_line(_clean_str_field(item.get("statement")))
     if not statement or len(statement) > STATEMENT_MAX_CHARS:
         return None
     replaces = item.get("replaces")
@@ -146,9 +155,9 @@ def _parse_v2(item: dict) -> dict | None:
     return {
         "content": statement,
         "kind": "fact",
-        "source": _clean_str_field(item.get("where"))[:WHERE_MAX_CHARS] or "conversation",
-        "evidence": _clean_str_field(item.get("quote"))[:EVIDENCE_MAX_CHARS],
-        "said_by": _clean_str_field(item.get("said_by"))[:SAID_BY_MAX_CHARS] or None,
+        "source": _one_line(_clean_str_field(item.get("where")))[:WHERE_MAX_CHARS] or "conversation",
+        "evidence": _one_line(_clean_str_field(item.get("quote")))[:EVIDENCE_MAX_CHARS],
+        "said_by": _one_line(_clean_str_field(item.get("said_by")))[:SAID_BY_MAX_CHARS] or None,
         "replaces": replaces,
         "shape": "v2",
     }
@@ -289,10 +298,15 @@ def known_statements(session: Session, agent_name: str, now: datetime) -> list[d
         .limit(KNOWN_LIST_CAP)
         .all()
     )
-    return [
-        {"id": row.id, "status": _KNOWN_LABELS[row.status], "statement": row.content}
-        for row in rows
-    ]
+    known = []
+    for row in rows:
+        statement = _one_line(row.content)[:KNOWN_STATEMENT_MAX_CHARS]
+        if not statement:
+            continue
+        known.append(
+            {"id": row.id, "status": _KNOWN_LABELS[row.status], "statement": statement}
+        )
+    return known
 
 
 def expire_stale(session: Session, now: datetime) -> int:
