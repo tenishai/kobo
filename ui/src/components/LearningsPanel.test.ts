@@ -175,9 +175,10 @@ describe("LearningsPanel", () => {
     });
 
     await screen.findByText("the canary gate is manual");
-    await fireEvent.click(screen.getByRole("button", { name: "Fix the wording" }));
+    const [pencil] = screen.getAllByRole("button", { name: "Fix the wording" });
+    await fireEvent.click(pencil);
 
-    const edit = screen.getByLabelText("Fix the wording") as HTMLInputElement;
+    const edit = screen.getByRole("textbox", { name: "Fix the wording" }) as HTMLInputElement;
     await fireEvent.input(edit, { target: { value: "the canary gate is now manual" } });
 
     const [rememberButton] = screen.getAllByRole("button", { name: "Remember" });
@@ -204,7 +205,8 @@ describe("LearningsPanel", () => {
     });
 
     await screen.findByText("the canary gate is manual");
-    await fireEvent.click(screen.getByRole("button", { name: "Fix the wording" }));
+    const [pencil] = screen.getAllByRole("button", { name: "Fix the wording" });
+    await fireEvent.click(pencil);
 
     const [rememberButton] = screen.getAllByRole("button", { name: "Remember" });
     await fireEvent.click(rememberButton);
@@ -420,6 +422,100 @@ describe("LearningsPanel", () => {
     expect(await screen.findByText("boom")).not.toBeNull();
     expect(screen.getByRole("button", { name: "Try again" })).not.toBeNull();
     expect(screen.queryByText(/Nothing new/)).toBeNull();
+  });
+
+  it("caps the bulk confirm text and the bulk POST at 50 when more than 50 are pending", async () => {
+    const many = {
+      learnings: Array.from({ length: 60 }, (_, i) => ({
+        id: i + 1,
+        day: "2026-09-01",
+        content: `sentence number ${i}`,
+        kind: "fact",
+        source: "Slack",
+        evidence: "",
+        said_by: null,
+        status: "pending",
+        decided_by: null,
+        created_at: "2026-09-01T05:00:00",
+      })),
+    };
+    stubFetch({ "/learnings": many });
+    renderWithClient(LearningsPanel, {
+      agentName: "wren",
+      canDecide: true,
+      frozen: false,
+    });
+
+    await screen.findByText("sentence number 0");
+    await fireEvent.click(screen.getByRole("button", { name: "Remember all" }));
+
+    expect(screen.getByText("Remember the first 50 of 60?")).not.toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Yes, remember" }));
+
+    await vi.waitFor(() => {
+      const call = vi
+        .mocked(fetch)
+        .mock.calls.find(([url]) => String(url).includes("/learnings/bulk"));
+      expect(call).toBeDefined();
+      const init = call?.[1] as RequestInit | undefined;
+      const body = JSON.parse(String(init?.body));
+      expect(body.action).toBe("approve");
+      expect(body.ids).toEqual(Array.from({ length: 50 }, (_, i) => i + 1));
+    });
+  });
+
+  it("history toggle counts only denied rows as Skipped, and adds Expired when any exist", async () => {
+    stubFetch({
+      "/learnings": {
+        learnings: [
+          {
+            id: 1, day: "d", content: "approved one", kind: "fact", source: "s",
+            evidence: "", said_by: null, status: "approved", decided_by: "kyle",
+            created_at: "2026-09-01T05:00:00",
+          },
+          {
+            id: 2, day: "d", content: "denied one", kind: "fact", source: "s",
+            evidence: "", said_by: null, status: "denied", decided_by: "kyle",
+            created_at: "2026-09-01T05:00:00",
+          },
+          {
+            id: 3, day: "d", content: "expired one", kind: "fact", source: "s",
+            evidence: "", said_by: null, status: "expired", decided_by: null,
+            created_at: "2026-09-01T05:00:00",
+          },
+        ],
+      },
+    });
+    renderWithClient(LearningsPanel, { agentName: "wren", canDecide: true, frozen: false });
+
+    expect(
+      await screen.findByRole("button", { name: "Remembered 1 · Skipped 1 · Expired 1" }),
+    ).not.toBeNull();
+  });
+
+  it("history toggle omits Expired when there are no expired rows", async () => {
+    stubFetch({
+      "/learnings": {
+        learnings: [
+          {
+            id: 1, day: "d", content: "approved one", kind: "fact", source: "s",
+            evidence: "", said_by: null, status: "approved", decided_by: "kyle",
+            created_at: "2026-09-01T05:00:00",
+          },
+          {
+            id: 2, day: "d", content: "denied one", kind: "fact", source: "s",
+            evidence: "", said_by: null, status: "denied", decided_by: "kyle",
+            created_at: "2026-09-01T05:00:00",
+          },
+        ],
+      },
+    });
+    renderWithClient(LearningsPanel, { agentName: "wren", canDecide: true, frozen: false });
+
+    expect(
+      await screen.findByRole("button", { name: "Remembered 1 · Skipped 1" }),
+    ).not.toBeNull();
   });
 
   it("shows the empty-state copy when nothing is pending", async () => {

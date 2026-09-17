@@ -55,11 +55,27 @@
   let teachNote = $state("");
   let confirming = $state<"approve" | "deny" | null>(null);
 
+  // The server's bulk route silently truncates at BULK_MAX ids -- decideAll
+  // must send no more than that, and the confirm prompt must say so rather
+  // than promise a count it can't deliver.
+  const BULK_MAX = 50;
+
   const all = $derived(learnings.data?.learnings ?? []);
   const pending = $derived(all.filter((l: Learning) => l.status === "pending"));
+  const bulkIds = $derived(pending.slice(0, BULK_MAX).map((l: Learning) => l.id));
   const history = $derived(all.filter((l: Learning) => l.status !== "pending"));
   const remembered = $derived(history.filter((l: Learning) => l.status === "approved").length);
-  const skipped = $derived(history.length - remembered);
+  // Only a denied row is "Skipped" -- an expired one is counted and shown
+  // separately, never folded into skipped just because it isn't remembered.
+  const skipped = $derived(history.filter((l: Learning) => l.status === "denied").length);
+  const expiredCount = $derived(history.filter((l: Learning) => l.status === "expired").length);
+
+  // A decide/bulk-decide success (or a plain refetch) can empty `pending`
+  // out from under an open confirm prompt -- reset it so a stale "Remember
+  // all 2?" never lingers over a list that's no longer there to act on.
+  $effect(() => {
+    if (pending.length === 0) confirming = null;
+  });
 
   // svelte-ignore state_referenced_locally
   const teach = createMutation(() => ({
@@ -92,7 +108,11 @@
     decide.mutate(
       { id: l.id, action: "approve", ...(edited ? { content: draft.trim() } : {}) },
       {
-        onSuccess: () => (editingId = null),
+        // Guarded: deciding row B while row A is mid-edit must not clear
+        // row A's own edit state out from under it.
+        onSuccess: () => {
+          if (editingId === l.id) editingId = null;
+        },
         onError: (e: unknown) =>
           (errorText = errorMessage(e, "Couldn't save that. Try again.")),
       },
@@ -110,9 +130,15 @@
   function decideAll(action: "approve" | "deny"): void {
     errorText = "";
     bulkDecide.mutate(
-      { ids: pending.map((l: Learning) => l.id), action },
+      { ids: bulkIds, action },
       { onError: (e: unknown) => (errorText = errorMessage(e, "Couldn't finish that. Try again.")) },
     );
+  }
+
+  function bulkConfirmText(action: "approve" | "deny"): string {
+    const verb = action === "approve" ? "Remember" : "Skip";
+    if (pending.length <= BULK_MAX) return `${verb} all ${pending.length}?`;
+    return `${verb} the first ${BULK_MAX} of ${pending.length}?`;
   }
 
   function submitTeach(event: SubmitEvent): void {
@@ -171,8 +197,8 @@
       {#if canDecide}
         <div class="learnings-panel__bulk">
           {#if confirming}
-            <span class="learnings-panel__confirm">
-              {confirming === "approve" ? "Remember all" : "Skip all"} {pending.length}?
+            <span class="learnings-panel__confirm" role="status">
+              {bulkConfirmText(confirming)}
             </span>
             <button class="learnings-panel__button learnings-panel__button--quiet" type="button"
               disabled={frozen || deciding} onclick={() => (confirming = null)}>Cancel</button>
@@ -244,7 +270,7 @@
   {#if history.length > 0}
     <button class="learnings-panel__history-toggle" type="button"
       aria-expanded={showHistory} onclick={() => (showHistory = !showHistory)}>
-      Remembered {remembered} · Skipped {skipped}
+      Remembered {remembered} · Skipped {skipped}{expiredCount > 0 ? ` · Expired ${expiredCount}` : ""}
       <span aria-hidden="true">{showHistory ? "▾" : "▸"}</span>
     </button>
     {#if showHistory}
@@ -351,7 +377,7 @@
     overflow: hidden; margin: 0; padding: 0; border: 0; background: none;
     color: var(--ink); font: inherit; line-height: 1.4; text-align: left; cursor: pointer;
   }
-  .learning-row__statement--open { display: block; overflow: visible; }
+  .learning-row__statement--open { display: block; overflow: visible; white-space: pre-wrap; }
   .learning-row__statement-text { margin: 0; color: var(--ink); line-height: 1.4; }
   .learning-row__foot {
     display: flex; flex-wrap: wrap; align-items: center;
