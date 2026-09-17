@@ -56,6 +56,10 @@ jobs:
       - name: Typecheck
         working-directory: ui
         run: npm run check
+      - name: Unit tests
+        working-directory: ui
+        timeout-minutes: 10
+        run: npm test
 
   migrations:
     runs-on: ubuntu-latest

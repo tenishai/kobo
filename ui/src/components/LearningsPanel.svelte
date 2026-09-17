@@ -1,9 +1,8 @@
 <script lang="ts">
-  // Daily-learnings spec: each night the agent proposes candidate memory
-  // snippets from its own conversation journal (`Learning`, api.ts). Nothing
-  // is saved until a human approves it here -- approve teaches it to the
-  // agent permanently, deny makes sure the same snippet is never proposed
-  // again. Mirrors MemoryPanel's own conventions: thunk-wrapped
+  // Learnings rethink (2026-09-16): a learning is one sentence a person
+  // actually said, with their name on it. One list, Remember / Skip, inline
+  // fix, and a teach box -- adding a memory and accepting one live in the
+  // same place. Mirrors MemoryPanel's own conventions: thunk-wrapped
   // createQuery/createMutation, BEM-scoped CSS below.
   //
   // Every panel mounts unconditionally inside its own tabpanel regardless of
@@ -18,7 +17,7 @@
   // other panel's own `frozen` prop.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import ErrorState from "./ErrorState.svelte";
-  import { errorMessage } from "../lib/api";
+  import { errorMessage, teachAgent } from "../lib/api";
   import {
     decideLearningMutation,
     decideLearningsBulkMutation,
@@ -49,51 +48,131 @@
 
   let showHistory = $state(false);
   let errorText = $state("");
+  let openId = $state<number | null>(null);      // row whose quote is showing
+  let editingId = $state<number | null>(null);   // row being reworded
+  let draft = $state("");
+  let teachText = $state("");
+  let teachNote = $state("");
+  let confirming = $state<"approve" | "deny" | null>(null);
+
+  // The server's bulk route silently truncates at BULK_MAX ids -- decideAll
+  // must send no more than that, and the confirm prompt must say so rather
+  // than promise a count it can't deliver.
+  const BULK_MAX = 50;
 
   const all = $derived(learnings.data?.learnings ?? []);
   const pending = $derived(all.filter((l: Learning) => l.status === "pending"));
+  const bulkIds = $derived(pending.slice(0, BULK_MAX).map((l: Learning) => l.id));
   const history = $derived(all.filter((l: Learning) => l.status !== "pending"));
-  const days = $derived([...new Set(pending.map((l: Learning) => l.day))]);
+  const remembered = $derived(history.filter((l: Learning) => l.status === "approved").length);
+  // Only a denied row is "Skipped" -- an expired one is counted and shown
+  // separately, never folded into skipped just because it isn't remembered.
+  const skipped = $derived(history.filter((l: Learning) => l.status === "denied").length);
+  const expiredCount = $derived(history.filter((l: Learning) => l.status === "expired").length);
 
-  const busy = $derived(decide.isPending || bulkDecide.isPending);
+  // A decide/bulk-decide success (or a plain refetch) can empty `pending`
+  // out from under an open confirm prompt -- reset it so a stale "Remember
+  // all 2?" never lingers over a list that's no longer there to act on.
+  $effect(() => {
+    if (pending.length === 0) confirming = null;
+  });
 
-  function decideOne(id: number, action: "approve" | "deny"): void {
+  // svelte-ignore state_referenced_locally
+  const teach = createMutation(() => ({
+    mutationFn: (text: string) => teachAgent(agentName, text),
+    onSuccess: () => {
+      teachText = "";
+      teachNote = `${agentName} will remember that.`;
+      queryClient.invalidateQueries({ queryKey: ["agents", agentName] });
+    },
+  }));
+
+  // Verdict controls (row + bulk) lock while a decide/bulk-decide request is
+  // in flight; the teach box has its own, separate lock below (`frozen ||
+  // teach.isPending`) so an in-flight verdict never freezes the unrelated
+  // "teach this" input -- see the review follow-up this split fixes.
+  const deciding = $derived(decide.isPending || bulkDecide.isPending);
+
+  function byline(l: Learning): string {
+    return [l.said_by, l.source].filter(Boolean).join(" · ");
+  }
+
+  function startEdit(l: Learning): void {
+    editingId = l.id;
+    draft = l.content;
+  }
+
+  function remember(l: Learning): void {
     errorText = "";
+    const edited = editingId === l.id && draft.trim() !== l.content;
     decide.mutate(
-      { id, action },
+      { id: l.id, action: "approve", ...(edited ? { content: draft.trim() } : {}) },
       {
+        // Guarded: deciding row B while row A is mid-edit must not clear
+        // row A's own edit state out from under it.
+        onSuccess: () => {
+          if (editingId === l.id) editingId = null;
+        },
         onError: (e: unknown) =>
-          (errorText = errorMessage(e, "Couldn't record that verdict. Try again.")),
+          (errorText = errorMessage(e, "Couldn't save that. Try again.")),
       },
     );
   }
 
-  function decideDay(day: string, action: "approve" | "deny"): void {
+  function skip(id: number): void {
     errorText = "";
-    const ids = pending
-      .filter((l: Learning) => l.day === day)
-      .map((l: Learning) => l.id);
-    bulkDecide.mutate(
-      { ids, action },
-      {
-        onError: (e: unknown) =>
-          (errorText = errorMessage(e, "Couldn't record those verdicts. Try again.")),
-      },
+    decide.mutate(
+      { id, action: "deny" },
+      { onError: (e: unknown) => (errorText = errorMessage(e, "Couldn't skip that. Try again.")) },
     );
+  }
+
+  function decideAll(action: "approve" | "deny"): void {
+    errorText = "";
+    bulkDecide.mutate(
+      { ids: bulkIds, action },
+      { onError: (e: unknown) => (errorText = errorMessage(e, "Couldn't finish that. Try again.")) },
+    );
+  }
+
+  function bulkConfirmText(action: "approve" | "deny"): string {
+    const verb = action === "approve" ? "Remember" : "Skip";
+    if (pending.length <= BULK_MAX) return `${verb} all ${pending.length}?`;
+    return `${verb} the first ${BULK_MAX} of ${pending.length}?`;
+  }
+
+  function submitTeach(event: SubmitEvent): void {
+    event.preventDefault();
+    const text = teachText.trim();
+    if (!text) return;
+    errorText = "";
+    teachNote = "";
+    teach.mutate(text, {
+      onError: (e: unknown) => (errorText = errorMessage(e, "Couldn't teach that. Try again.")),
+    });
   }
 </script>
 
 <section class="learnings-panel" aria-labelledby="learnings-panel-heading">
-  <div class="learnings-panel__header">
-    <h2 id="learnings-panel-heading" class="learnings-panel__heading">Learnings</h2>
-  </div>
+  <h2 id="learnings-panel-heading" class="learnings-panel__heading">Learnings</h2>
 
-  <p class="learnings-panel__explainer">
-    Each night your agent reviews its own conversations and proposes snippets
-    worth remembering. Nothing is saved until you approve it: approve teaches
-    it to the agent permanently, deny makes sure the same snippet is never
-    proposed again.
-  </p>
+  {#if canDecide}
+    <form class="learnings-teach" onsubmit={submitTeach}>
+      <input
+        class="learnings-teach__input"
+        type="text"
+        bind:value={teachText}
+        placeholder={`Teach ${agentName} something...`}
+        aria-label={`Teach ${agentName} something`}
+        maxlength="400"
+        disabled={frozen || teach.isPending}
+      />
+      <button class="learnings-panel__button" type="submit" disabled={frozen || teach.isPending || !teachText.trim()}>
+        Add
+      </button>
+    </form>
+    {#if teachNote}<p class="learnings-panel__note" role="status">{teachNote}</p>{/if}
+  {/if}
 
   {#if errorText}
     <p class="learnings-panel__error" role="alert">{errorText}</p>
@@ -108,88 +187,103 @@
     />
   {:else if pending.length === 0}
     <p class="learnings-panel__empty">
-      Nothing waiting for review. New candidates appear here after your
-      agent's next nightly summary.
+      Nothing new. When someone tells {agentName} something worth keeping, it shows up here.
     </p>
   {:else}
-    {#each days as day (day)}
-      <div class="learnings-day">
-        <div class="learnings-day__header">
-          <h3 class="learnings-day__title">{day}</h3>
-          {#if canDecide}
-            <div class="learnings-day__bulk">
-              <button
-                type="button"
-                class="learnings-panel__button"
-                disabled={frozen || busy}
-                onclick={() => decideDay(day, "approve")}
-              >
-                Approve all
-              </button>
-              <button
-                type="button"
-                class="learnings-panel__button learnings-panel__button--deny"
-                disabled={frozen || busy}
-                onclick={() => decideDay(day, "deny")}
-              >
-                Deny all
-              </button>
-            </div>
+    <div class="learnings-panel__summary">
+      <p class="learnings-panel__count">
+        {agentName} picked up {pending.length} {pending.length === 1 ? "thing" : "things"}
+      </p>
+      {#if canDecide}
+        <div class="learnings-panel__bulk">
+          {#if confirming}
+            <span class="learnings-panel__confirm" role="status">
+              {bulkConfirmText(confirming)}
+            </span>
+            <button class="learnings-panel__button learnings-panel__button--quiet" type="button"
+              disabled={frozen || deciding} onclick={() => (confirming = null)}>Cancel</button>
+            <button class="learnings-panel__button learnings-panel__button--primary" type="button"
+              disabled={frozen || deciding}
+              onclick={() => { const action = confirming; confirming = null; if (action) decideAll(action); }}
+            >{confirming === "approve" ? "Yes, remember" : "Yes, skip"}</button>
+          {:else}
+            <button class="learnings-panel__button learnings-panel__button--quiet" type="button"
+              disabled={frozen || deciding} onclick={() => (confirming = "deny")}>Skip all</button>
+            <button class="learnings-panel__button learnings-panel__button--primary" type="button"
+              disabled={frozen || deciding} onclick={() => (confirming = "approve")}>Remember all</button>
           {/if}
         </div>
-        {#each pending.filter((l: Learning) => l.day === day) as learning (learning.id)}
-          <article class="learning-card">
-            <span class="learning-card__kind">{learning.kind}</span>
-            <p class="learning-card__content">{learning.content}</p>
-            <p class="learning-card__source">Source: {learning.source}</p>
-            {#if learning.evidence}
-              <p class="learning-card__evidence">&quot;{learning.evidence}&quot;</p>
-            {/if}
+      {/if}
+    </div>
+
+    <ul class="learnings-list">
+      {#each pending as l (l.id)}
+        <li class="learning-row">
+          {#if editingId === l.id}
+            <input
+              class="learning-row__edit"
+              type="text"
+              bind:value={draft}
+              maxlength="200"
+              aria-label="Fix the wording"
+              onkeydown={(e) => { if (e.key === "Escape") editingId = null; }}
+            />
+          {:else}
+            <button
+              class="learning-row__statement"
+              class:learning-row__statement--open={openId === l.id}
+              type="button"
+              aria-expanded={openId === l.id}
+              onclick={() => (openId = openId === l.id ? null : l.id)}
+            >{l.content}</button>
+          {/if}
+
+          <div class="learning-row__foot">
+            <span class="learning-row__byline">{byline(l)}</span>
             {#if canDecide}
-              <div class="learning-card__actions">
-                <button
-                  type="button"
-                  class="learnings-panel__button"
-                  disabled={frozen || busy}
-                  onclick={() => decideOne(learning.id, "approve")}
-                >
-                  Approve
-                </button>
-                <button
-                  type="button"
-                  class="learnings-panel__button learnings-panel__button--deny"
-                  disabled={frozen || busy}
-                  onclick={() => decideOne(learning.id, "deny")}
-                >
-                  Deny
-                </button>
-              </div>
+              <span class="learning-row__actions">
+                {#if editingId === l.id}
+                  <button class="learnings-panel__button learnings-panel__button--quiet" type="button"
+                    onclick={() => (editingId = null)}>Cancel</button>
+                {:else}
+                  <button class="learnings-panel__button learnings-panel__button--quiet" type="button"
+                    disabled={frozen || deciding} aria-label="Fix the wording" title="Fix the wording"
+                    onclick={() => startEdit(l)}>✎</button>
+                  <button class="learnings-panel__button learnings-panel__button--quiet" type="button"
+                    disabled={frozen || deciding} onclick={() => skip(l.id)}>Skip</button>
+                {/if}
+                <button class="learnings-panel__button learnings-panel__button--primary" type="button"
+                  disabled={frozen || deciding || (editingId === l.id && !draft.trim())}
+                  onclick={() => remember(l)}>Remember</button>
+              </span>
             {/if}
-          </article>
-        {/each}
-      </div>
-    {/each}
+          </div>
+
+          {#if openId === l.id && l.evidence}
+            <blockquote class="learning-row__quote">{l.evidence}</blockquote>
+          {/if}
+        </li>
+      {/each}
+    </ul>
   {/if}
 
   {#if history.length > 0}
-    <button
-      type="button"
-      class="learnings-panel__history-toggle"
-      aria-expanded={showHistory}
-      onclick={() => (showHistory = !showHistory)}
-    >
-      History ({history.length})
+    <button class="learnings-panel__history-toggle" type="button"
+      aria-expanded={showHistory} onclick={() => (showHistory = !showHistory)}>
+      Remembered {remembered} · Skipped {skipped}{expiredCount > 0 ? ` · Expired ${expiredCount}` : ""}
+      <span aria-hidden="true">{showHistory ? "▾" : "▸"}</span>
     </button>
     {#if showHistory}
-      {#each history as learning (learning.id)}
-        <article class="learning-card learning-card--decided">
-          <span class="learning-card__kind">{learning.status}</span>
-          <p class="learning-card__content">{learning.content}</p>
-          {#if learning.decided_by}
-            <p class="learning-card__source">Decided by {learning.decided_by}</p>
-          {/if}
-        </article>
-      {/each}
+      <ul class="learnings-list learnings-list--history">
+        {#each history as l (l.id)}
+          <li class="learning-row learning-row--decided">
+            <p class="learning-row__statement-text">{l.content}</p>
+            <span class="learning-row__byline">
+              {l.status === "approved" ? "Remembered" : l.status === "denied" ? "Skipped" : "Expired"}{l.decided_by ? ` by ${l.decided_by}` : ""}
+            </span>
+          </li>
+        {/each}
+      </ul>
     {/if}
   {/if}
 </section>
@@ -205,13 +299,6 @@
     background: var(--panel);
   }
 
-  .learnings-panel__header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--space-md);
-  }
-
   .learnings-panel__heading {
     margin: 0;
     color: var(--muted);
@@ -219,12 +306,6 @@
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-  }
-
-  .learnings-panel__explainer {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.85rem;
   }
 
   .learnings-panel__error {
@@ -237,72 +318,6 @@
     margin: 0;
     color: var(--muted);
     font-size: 0.85rem;
-  }
-
-  .learnings-day {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
-
-  .learnings-day__header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-sm);
-  }
-
-  .learnings-day__title {
-    margin: 0;
-    color: var(--ink);
-    font-size: 0.9rem;
-    font-weight: 600;
-  }
-
-  .learnings-day__bulk {
-    display: flex;
-    gap: var(--space-xs);
-  }
-
-  .learning-card {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    padding: var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg);
-  }
-
-  .learning-card--decided {
-    opacity: 0.7;
-  }
-
-  .learning-card__kind {
-    display: inline-block;
-    color: var(--muted);
-    font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-
-  .learning-card__content {
-    margin: 0.15rem 0;
-    color: var(--ink);
-  }
-
-  .learning-card__source,
-  .learning-card__evidence {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-  }
-
-  .learning-card__actions {
-    display: flex;
-    gap: var(--space-xs);
-    margin-top: var(--space-2xs);
   }
 
   .learnings-panel__button {
@@ -326,29 +341,57 @@
     cursor: not-allowed;
   }
 
-  .learnings-panel__button--deny {
-    color: var(--fail);
-  }
-
-  .learnings-panel__button--deny:hover:not(:disabled) {
-    border-color: var(--fail);
-    color: var(--fail);
-  }
-
-  .learnings-panel__history-toggle {
-    align-self: flex-start;
+  .learnings-teach { display: flex; gap: var(--space-xs); }
+  .learnings-teach__input,
+  .learning-row__edit {
+    flex: 1;
+    min-width: 0;
     padding: var(--space-2xs) var(--space-sm);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--muted);
-    font-size: 0.85rem;
-    font-weight: 600;
-    cursor: pointer;
+    background: var(--bg);
+    color: var(--ink);
+    font: inherit;
   }
-
-  .learnings-panel__history-toggle:hover {
-    border-color: var(--accent);
-    color: var(--accent);
+  .learnings-teach__input:focus,
+  .learning-row__edit:focus { outline: none; border-color: var(--accent); }
+  .learnings-panel__note { margin: 0; color: var(--muted); font-size: 0.85rem; }
+  .learnings-panel__summary {
+    display: flex; flex-wrap: wrap; align-items: center;
+    justify-content: space-between; gap: var(--space-sm);
   }
+  .learnings-panel__count { margin: 0; color: var(--ink); font-size: 0.95rem; font-weight: 600; }
+  .learnings-panel__bulk { display: flex; align-items: center; gap: var(--space-xs); }
+  .learnings-panel__confirm { color: var(--muted); font-size: 0.85rem; }
+  .learnings-panel__button--primary { border-color: var(--accent); color: var(--accent); }
+  .learnings-panel__button--quiet { border-color: transparent; background: transparent; color: var(--muted); }
+  .learnings-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+  .learning-row {
+    display: flex; flex-direction: column; gap: var(--space-2xs);
+    padding: var(--space-sm) 0; border-top: 1px solid var(--border);
+  }
+  .learning-row:first-child { border-top: 0; }
+  .learning-row--decided { opacity: 0.75; }
+  .learning-row__statement {
+    display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden; margin: 0; padding: 0; border: 0; background: none;
+    color: var(--ink); font: inherit; line-height: 1.4; text-align: left; cursor: pointer;
+  }
+  .learning-row__statement--open { display: block; overflow: visible; white-space: pre-wrap; }
+  .learning-row__statement-text { margin: 0; color: var(--ink); line-height: 1.4; }
+  .learning-row__foot {
+    display: flex; flex-wrap: wrap; align-items: center;
+    justify-content: space-between; gap: var(--space-xs);
+  }
+  .learning-row__byline { color: var(--muted); font-size: 0.8rem; }
+  .learning-row__actions { display: flex; gap: var(--space-2xs); margin-left: auto; }
+  .learning-row__quote {
+    margin: 0; padding-left: var(--space-sm); border-left: 2px solid var(--border);
+    color: var(--muted); font-size: 0.85rem;
+  }
+  .learnings-panel__history-toggle {
+    align-self: flex-start; padding: 0; border: 0; background: none;
+    color: var(--muted); font: inherit; font-size: 0.85rem; cursor: pointer;
+  }
+  .learnings-panel__history-toggle:hover { color: var(--accent); }
 </style>

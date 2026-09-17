@@ -1365,7 +1365,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
     @audited("kobo_decide_learning")
     async def kobo_decide_learning(
-        ctx: Context, agent: str, learning_id: int, action: str
+        ctx: Context, agent: str, learning_id: int, action: str, content: str | None = None
     ) -> dict:
         """Approve or deny one pending learning for `agent` -- the same
         verdict the room's own Learnings tab records for a single row.
@@ -1375,8 +1375,11 @@ def register(mcp: FastMCP, app: Any) -> None:
         operator, or a per-user grant on this agent, the identical gate
         kobo_list_learnings' own can_decide reports -- a caller who can
         only see the agent gets "agent not found", never a distinguishable
-        forbidden. Returns the decided row's id and status, plus mode and
-        filename on an approve.
+        forbidden. `content`, approve only: fixed wording to teach instead
+        of the proposed sentence, one line, 200 characters or fewer -- bad
+        wording raises a `ToolError` and leaves the row untouched. Returns
+        the decided row's id and status, plus mode and filename on an
+        approve.
         """
         from kobo_api.main import _decide_learning
 
@@ -1396,6 +1399,7 @@ def register(mcp: FastMCP, app: Any) -> None:
                 request=req,
                 background_tasks=background_tasks,
                 session=session,
+                content=content if action == "approve" else None,
             )
             body = _learning_route_result(response)
             # Mirrors kobo_teach above: runs whatever the approve+instant

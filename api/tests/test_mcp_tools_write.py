@@ -2779,6 +2779,95 @@ def test_decide_learning_approve_rides_teach_lane_instant(
         session.close()
 
 
+def test_decide_learning_approve_with_content_teaches_the_edited_text(
+    session_factory, config, fake_storage
+):
+    """MCP parity (learnings rethink Task 5): `content`, approve only,
+    teaches the fixed wording instead of the proposed sentence -- mirrors
+    test_web_learnings.py's own
+    `test_approve_with_content_teaches_the_edited_text_and_keeps_the_hash`."""
+    fake_github = FakeGitHub()
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    learning_id = _seed_learning(session_factory, "ward", content="Suspend keeps memberships.")
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage, github=fake_github)
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp,
+        "kobo_decide_learning",
+        _ctx_for(OWNER_A_EMAIL),
+        agent="ward",
+        learning_id=learning_id,
+        action="approve",
+        content="Edited sentence.",
+    )
+
+    assert result["status"] == LEARNING_APPROVED
+    session = session_factory()
+    try:
+        row = session.query(AgentLearning).filter_by(id=learning_id).one()
+        assert row.content == "Edited sentence."
+    finally:
+        session.close()
+
+
+def test_decide_learning_approve_bad_content_raises_tool_error(
+    session_factory, config, fake_storage
+):
+    """A 422 from `_decide_learning` (bad edited wording) surfaces as a
+    `ToolError`, and the row stays untouched."""
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    learning_id = _seed_learning(session_factory, "ward", content="Suspend keeps memberships.")
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="a learning is one sentence, 200 characters or fewer"):
+        _call_tool(
+            mcp,
+            "kobo_decide_learning",
+            _ctx_for(OWNER_A_EMAIL),
+            agent="ward",
+            learning_id=learning_id,
+            action="approve",
+            content="x" * 201,
+        )
+
+    session = session_factory()
+    try:
+        row = session.query(AgentLearning).filter_by(id=learning_id).one()
+        assert row.status == LEARNING_PENDING
+        assert row.content == "Suspend keeps memberships."
+    finally:
+        session.close()
+
+
+def test_decide_learning_deny_ignores_content(session_factory, config, fake_storage):
+    """`content` is passed through only for approve -- a deny with
+    `content` set behaves exactly like a plain deny."""
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    learning_id = _seed_learning(session_factory, "ward", content="Suspend keeps memberships.")
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(
+        mcp,
+        "kobo_decide_learning",
+        _ctx_for(OWNER_A_EMAIL),
+        agent="ward",
+        learning_id=learning_id,
+        action="deny",
+        content="edited",
+    )
+
+    assert result["status"] == LEARNING_DENIED
+    session = session_factory()
+    try:
+        row = session.query(AgentLearning).filter_by(id=learning_id).one()
+        assert row.content == "Suspend keeps memberships."
+    finally:
+        session.close()
+
+
 def test_decide_learning_gate_refusal_maps_to_agent_not_found(
     session_factory, config, fake_storage
 ):

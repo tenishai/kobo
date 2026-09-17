@@ -980,6 +980,7 @@ export type Learning = {
   kind: "fact" | "procedure";
   source: string;
   evidence: string;
+  said_by: string | null;
   status: "pending" | "approved" | "denied" | "expired";
   decided_by: string | null;
   created_at: string | null;
@@ -998,10 +999,18 @@ export async function decideLearning(
   name: string,
   id: number,
   action: "approve" | "deny",
+  content?: string,
 ): Promise<void> {
+  const edited = action === "approve" && content !== undefined;
   const res = await fetch(
     `/api/agents/${encodeURIComponent(name)}/learnings/${id}/${action}`,
-    { method: "POST" },
+    edited
+      ? {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content }),
+        }
+      : { method: "POST" },
   );
   await parse(res);
 }

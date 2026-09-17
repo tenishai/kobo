@@ -67,6 +67,7 @@ from kobo_api.knowledge import (
     rollout_in_progress,
     save_knowledge_file,
 )
+from kobo_api.learnings import clean_edited_statement
 from kobo_api.learnings import nightly_loop as learnings_nightly_loop
 from kobo_api.marketplace import BASELINE_TOOL_PREFIX
 from kobo_api.mcp.mount import mcp_lifespan, mount_mcp
@@ -446,6 +447,16 @@ class LearningsBulkPayload(BaseModel):
 
     ids: list[int]
     action: Literal["approve", "deny"]
+
+
+class LearningApprovePayload(BaseModel):
+    """POST .../approve body: optional fixed wording (learnings rethink) --
+    when present, THIS is what gets taught and what the row shows
+    afterwards. `max_length` only stops a multi-megabyte body from being
+    parsed at all; the 200-char semantic rule on the actual statement stays
+    enforced by `clean_edited_statement`."""
+
+    content: str | None = Field(default=None, max_length=2000)
 
 
 class ToolingUploadPayload(BaseModel):
@@ -1822,12 +1833,22 @@ def _decide_learning(
     request: Request,
     background_tasks: BackgroundTasks,
     session: Session,
+    content: str | None = None,
 ) -> JSONResponse:
     """Shared verdict path for approve/deny/bulk (daily-learnings spec,
     Task 7). Approve rides the teach lane byte-for-byte (instant relay
     when cabal is wired, the CI-triggering archive commit otherwise) with
     the learning- filename prefix, so techne provenance reads
     intake:learning-<date>-<slug>.
+
+    `content`, approve only (learnings rethink, Task 5): the operator's
+    fixed wording, when present, replaces `row.content` BEFORE the note is
+    formatted and taught -- this is what gets remembered and what the row
+    shows afterwards. Bad wording (empty, over `EDITED_LEARNING_MAX_CHARS`,
+    or multi-line) short-circuits with a 422 before anything is taught, and
+    the ORIGINAL `content_hash` is kept even when the text changes -- the
+    rejected-by-rewriting phrasing stays tombstoned against re-proposal.
+    `deny` and the bulk route never pass `content`.
 
     Module-level (MCP learnings trio, Task 8) rather than a closure inside
     `create_app`: both `approve_learning`/`deny_learning`/
@@ -1869,6 +1890,17 @@ def _decide_learning(
         row.decided_at = datetime.now(UTC)
         session.commit()
         return JSONResponse({"id": row.id, "status": row.status})
+
+    if content is not None:
+        edited = clean_edited_statement(content)
+        if edited is None:
+            return JSONResponse(
+                {"error": "a learning is one sentence, 200 characters or fewer"},
+                status_code=422,
+            )
+        # The ORIGINAL content_hash is kept on purpose: the phrasing the
+        # operator rejected-by-rewriting stays tombstoned against re-proposal.
+        row.content = edited
 
     on_date = datetime.now(UTC).date().isoformat()
     note = format_note(row.content, taught_by=email, on_date=on_date)
@@ -5028,6 +5060,7 @@ def create_app(
                         "kind": row.kind,
                         "source": row.source,
                         "evidence": row.evidence,
+                        "said_by": row.said_by,
                         "status": row.status,
                         "decided_by": row.decided_by,
                         "created_at": (
@@ -5052,9 +5085,16 @@ def create_app(
         request: Request,
         background_tasks: BackgroundTasks,
         session: Session = Depends(get_session),  # noqa: B008
+        payload: LearningApprovePayload | None = None,
     ) -> JSONResponse:
         return _decide_learning(
-            name, learning_id, "approve", request, background_tasks, session
+            name,
+            learning_id,
+            "approve",
+            request,
+            background_tasks,
+            session,
+            content=payload.content if payload else None,
         )
 
     @app.post("/api/agents/{name}/learnings/{learning_id}/deny")

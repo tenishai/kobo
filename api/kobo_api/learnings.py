@@ -16,12 +16,15 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from kobo_api.models import (
+    LEARNING_APPROVED,
+    LEARNING_DENIED,
     LEARNING_EXPIRED,
     LEARNING_PENDING,
     AgentLearning,
@@ -30,12 +33,69 @@ from kobo_api.models import (
 log = logging.getLogger("kobo.learnings")
 
 CANDIDATE_CAP = 10
+RAW_SCAN_CAP = 50
 CONTENT_MAX_CHARS = 400
 EVIDENCE_MAX_CHARS = 200
 SOURCE_MAX_CHARS = 512
 KINDS = ("fact", "procedure")
+V2_CANDIDATE_CAP = 5
+STATEMENT_MAX_CHARS = 160
+SAID_BY_MAX_CHARS = 120
+WHERE_MAX_CHARS = 120
 EXPIRY_DAYS = 14
 DUE_AFTER_HOURS = 24
+NEAR_DUP_THRESHOLD = 0.6
+KNOWN_WINDOW_DAYS = 90
+KNOWN_LIST_CAP = 40
+EDITED_LEARNING_MAX_CHARS = 200
+KNOWN_STATEMENT_MAX_CHARS = 400
+_KNOWN_LABELS = {
+    LEARNING_PENDING: "pending",
+    LEARNING_APPROVED: "remembered",
+    LEARNING_DENIED: "skipped",
+}
+
+_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
+_STOPWORDS = frozenset(
+    "a an and are as at be but by for from has have if in into is it its not of on "
+    "only or so that the their them then there these they this to was when which "
+    "will with".split()
+)
+
+
+def _tokens(text: str) -> frozenset[str]:
+    """Lowercased content words. Dotted identifiers survive whole
+    (`user.lifecycle.suspend` is one token, not three common words)."""
+    return frozenset(
+        token.strip("._-") for token in _TOKEN_RE.findall(text.lower())
+    ) - _STOPWORDS - {""}
+
+
+def is_near_duplicate(a: str, b: str) -> bool:
+    """Token-set Jaccard >= NEAR_DUP_THRESHOLD. The second wall behind the
+    runtime's own 'already proposed' list: deterministic, no model call.
+    It catches a REPHRASE, not a related-but-distinct claim, by design --
+    dropping a genuinely new fact is the worse failure."""
+    left, right = _tokens(a), _tokens(b)
+    if not left or not right:
+        return False
+    return len(left & right) / len(left | right) >= NEAR_DUP_THRESHOLD
+
+
+def clean_edited_statement(text: str) -> str | None:
+    """An operator's fixed wording for a learning, or None when it cannot
+    be taught: empty, over EDITED_LEARNING_MAX_CHARS, or carrying any
+    whitespace character other than a plain space (a learning is one
+    sentence rendered on one line; a tab, vertical tab, form feed, NEL, or
+    a Unicode line/paragraph separator all break that as surely as a
+    literal newline would, so every one of them is rejected alongside
+    \\n and \\r rather than just those two)."""
+    cleaned = text.strip()
+    if not cleaned or len(cleaned) > EDITED_LEARNING_MAX_CHARS:
+        return None
+    if any(ch.isspace() and ch != " " for ch in cleaned):
+        return None
+    return cleaned
 
 
 def content_hash(content: str) -> str:
@@ -61,10 +121,70 @@ def _clean_str_field(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _one_line(text: str) -> str:
+    """Collapse every whitespace run (newlines, tabs, carriage returns
+    included) to a single space. A learning is one sentence; more to the
+    point, a statement is later rendered into an agent's prompt one entry
+    per line, and must not be able to start a new line and forge a heading."""
+    return " ".join(text.split())
+
+
+def _parse_v1(item: dict) -> dict | None:
+    """The 2026-09-01 shape, still spoken by runtimes built before the
+    rethink. Agents roll runtimes at different times; both must land."""
+    content = _clean_str_field(item.get("content"))
+    kind = _clean_str_field(item.get("kind"))
+    source = _clean_str_field(item.get("source"))
+    if not content or kind not in KINDS or not source:
+        return None
+    return {
+        "content": content[:CONTENT_MAX_CHARS],
+        "kind": kind,
+        "source": source[:SOURCE_MAX_CHARS],
+        "evidence": _clean_str_field(item.get("evidence"))[:EVIDENCE_MAX_CHARS],
+        "said_by": None,
+        "replaces": None,
+        "shape": "v1",
+    }
+
+
+def _parse_v2(item: dict) -> dict | None:
+    """One human-attributed sentence (learnings rethink). An over-long
+    statement is DROPPED, never truncated: a clipped sentence teaches half
+    a claim. `replaces` must be a real int (bool is an int subclass and
+    `True` must not become learning id 1)."""
+    statement = _one_line(_clean_str_field(item.get("statement")))
+    if not statement or len(statement) > STATEMENT_MAX_CHARS:
+        return None
+    replaces = item.get("replaces")
+    if isinstance(replaces, bool) or not isinstance(replaces, int):
+        replaces = None
+    return {
+        "content": statement,
+        "kind": "fact",
+        "source": _one_line(_clean_str_field(item.get("where")))[:WHERE_MAX_CHARS] or "conversation",
+        "evidence": _one_line(_clean_str_field(item.get("quote")))[:EVIDENCE_MAX_CHARS],
+        "said_by": _one_line(_clean_str_field(item.get("said_by")))[:SAID_BY_MAX_CHARS] or None,
+        "replaces": replaces,
+        "shape": "v2",
+    }
+
+
 def parse_reply(reply: str) -> list[dict]:
     """The agent's JSON reply -> validated candidate dicts. Garbage in
     (prose, wrong shape, missing fields) reads as no candidates, never an
-    error -- one agent's bad output must not sink the nightly sweep."""
+    error -- one agent's bad output must not sink the nightly sweep.
+
+    Accepts both the legacy v1 shape (content/kind/source/evidence) and the
+    v2 shape (statement/said_by/quote/where/replaces) from the learnings
+    rethink, normalizing either into the same internal dict.
+
+    CANDIDATE_CAP/V2_CANDIDATE_CAP bound VALID candidates, not raw items --
+    a hostile (or just malformed) reply padded with junk ahead of the real
+    candidates must not starve the caller of the good ones behind it.
+    RAW_SCAN_CAP bounds the raw list itself so a giant list still can't buy
+    unbounded parsing work: at most the first RAW_SCAN_CAP items are ever
+    looked at, valid or not."""
     cleaned = reply.strip()
     if cleaned.startswith("```"):
         inner = cleaned.split("```")
@@ -78,56 +198,157 @@ def parse_reply(reply: str) -> list[dict]:
     if not isinstance(raw, list):
         return []
     candidates: list[dict] = []
-    for item in raw[:CANDIDATE_CAP]:
+    v2_count = 0
+    for item in raw[:RAW_SCAN_CAP]:
+        if len(candidates) >= CANDIDATE_CAP:
+            break
         if not isinstance(item, dict):
             continue
-        content = _clean_str_field(item.get("content"))
-        kind = _clean_str_field(item.get("kind"))
-        source = _clean_str_field(item.get("source"))
-        evidence = _clean_str_field(item.get("evidence"))
-        if not content or kind not in KINDS or not source:
+        parsed = _parse_v2(item) if "statement" in item else _parse_v1(item)
+        if parsed is None:
             continue
-        candidates.append(
-            {
-                "content": content[:CONTENT_MAX_CHARS],
-                "kind": kind,
-                "source": source[:SOURCE_MAX_CHARS],
-                "evidence": evidence[:EVIDENCE_MAX_CHARS],
-            }
-        )
+        if parsed["shape"] == "v2":
+            if v2_count >= V2_CANDIDATE_CAP:
+                continue
+            v2_count += 1
+        candidates.append(parsed)
     return candidates
 
 
 def store_candidates(
-    session: Session, agent_name: str, day: str, candidates: list[dict]
+    session: Session,
+    agent_name: str,
+    day: str,
+    candidates: list[dict],
+    *,
+    now: datetime | None = None,
 ) -> int:
-    """Upsert candidates as pending rows, skipping any content_hash this
-    agent has EVER seen (any status) -- denial and expiry are permanent
-    tombstones against re-proposal. Returns how many rows were stored."""
+    """Park candidates as pending rows. Per candidate, in order: the exact
+    hash tombstone (any status, forever); `replaces` naming one of THIS
+    agent's PENDING rows updates that row in place (anything else in
+    `replaces` is ignored and the candidate is new); the near-duplicate
+    guard against this agent's pending/approved/denied statements from the
+    last KNOWN_WINDOW_DAYS; insert. Returns rows stored or updated."""
+    cutoff = _naive_utc(now or datetime.now(UTC)) - timedelta(days=KNOWN_WINDOW_DAYS)
     stored = 0
     for candidate in candidates[:CANDIDATE_CAP]:
-        digest = content_hash(candidate["content"])
-        exists = (
+        content = candidate["content"]
+        digest = content_hash(content)
+        exact = (
             session.query(AgentLearning)
             .filter_by(agent_name=agent_name, content_hash=digest)
             .first()
         )
-        if exists is not None:
-            continue
-        session.add(
-            AgentLearning(
-                agent_name=agent_name,
-                day=day,
-                content=candidate["content"],
-                kind=candidate["kind"],
-                source=candidate["source"],
-                evidence=candidate.get("evidence", ""),
-                content_hash=digest,
+        if exact is not None:
+            log.info(
+                "learnings: %s skipped an exact repeat of #%d (%s)",
+                agent_name,
+                exact.id,
+                exact.status,
             )
+            continue
+
+        target = None
+        if candidate.get("replaces") is not None:
+            target = (
+                session.query(AgentLearning)
+                .filter_by(
+                    agent_name=agent_name,
+                    id=candidate["replaces"],
+                    status=LEARNING_PENDING,
+                )
+                .first()
+            )
+
+        known = (
+            session.query(AgentLearning)
+            .filter(
+                AgentLearning.agent_name == agent_name,
+                AgentLearning.status.in_(
+                    (LEARNING_PENDING, LEARNING_APPROVED, LEARNING_DENIED)
+                ),
+                AgentLearning.created_at >= cutoff,
+            )
+            .all()
         )
+        match = next(
+            (
+                row
+                for row in known
+                if (target is None or row.id != target.id)
+                and is_near_duplicate(content, row.content)
+            ),
+            None,
+        )
+        if match is not None:
+            log.info(
+                "learnings: %s dropped a near-duplicate of #%d (%s): %r",
+                agent_name,
+                match.id,
+                match.status,
+                content[:80],
+            )
+            continue
+
+        if target is not None:
+            target.content = content
+            target.content_hash = digest
+            target.said_by = candidate.get("said_by")
+            target.source = candidate["source"]
+            # An empty refinement quote must not wipe evidence the original
+            # already had -- `or` keeps target.evidence when the incoming
+            # value is falsy (missing key or "").
+            target.evidence = candidate.get("evidence") or target.evidence
+        else:
+            session.add(
+                AgentLearning(
+                    agent_name=agent_name,
+                    day=day,
+                    content=content,
+                    kind=candidate["kind"],
+                    source=candidate["source"],
+                    evidence=candidate.get("evidence", ""),
+                    said_by=candidate.get("said_by"),
+                    content_hash=digest,
+                )
+            )
+        session.flush()
         stored += 1
     session.commit()
     return stored
+
+
+def known_statements(session: Session, agent_name: str, now: datetime) -> list[dict]:
+    """What the agent must not re-propose: its pending, remembered, and
+    skipped statements from the last KNOWN_WINDOW_DAYS, newest first,
+    capped. Ids ride along so a refinement can name what it `replaces`.
+    Expired rows are left out -- nobody ever judged them.
+
+    Ordered by created_at, id both descending: two rows can share an
+    identical created_at (fast test seeding, or genuinely simultaneous
+    writes), and without the id tiebreaker their relative order is
+    whatever SQLite/Postgres happens to return -- not deterministic."""
+    cutoff = _naive_utc(now) - timedelta(days=KNOWN_WINDOW_DAYS)
+    rows = (
+        session.query(AgentLearning)
+        .filter(
+            AgentLearning.agent_name == agent_name,
+            AgentLearning.status.in_(tuple(_KNOWN_LABELS)),
+            AgentLearning.created_at >= cutoff,
+        )
+        .order_by(AgentLearning.created_at.desc(), AgentLearning.id.desc())
+        .limit(KNOWN_LIST_CAP)
+        .all()
+    )
+    known = []
+    for row in rows:
+        statement = _one_line(row.content)[:KNOWN_STATEMENT_MAX_CHARS]
+        if not statement:
+            continue
+        known.append(
+            {"id": row.id, "status": _KNOWN_LABELS[row.status], "statement": statement}
+        )
+    return known
 
 
 def expire_stale(session: Session, now: datetime) -> int:
@@ -244,7 +465,9 @@ def run_nightly(app) -> None:
         day = now.date().isoformat()
         for name in due_agents(session, ready, now):
             try:
-                envelope = _build_learnings_envelope(day)
+                envelope = _build_learnings_envelope(
+                    day, known_statements(session, name, now)
+                )
                 try:
                     raw = clients.cabal.relay(name, envelope)
                     reply = _extract_relay_reply(raw)
@@ -260,7 +483,7 @@ def run_nightly(app) -> None:
                     )
                     continue
                 candidates = parse_reply(reply)
-                stored = store_candidates(session, name, day, candidates)
+                stored = store_candidates(session, name, day, candidates, now=now)
                 log.info(
                     "learnings: %s proposed %d, stored %d new",
                     name,
