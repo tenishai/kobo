@@ -114,6 +114,51 @@ def test_parse_reply_drops_a_non_string_content_field():
     assert result[0]["content"] == "valid one"
 
 
+def _v2_reply(*candidates):
+    return json.dumps({"candidates": list(candidates)})
+
+
+def test_parse_v2_candidate_normalizes_to_internal_keys():
+    got = parse_reply(_v2_reply({
+        "statement": "Suspend keeps group memberships; only deactivate removes them.",
+        "said_by": "kgreiner", "quote": "suspend RETAINS memberships",
+        "where": "Slack thread, Sep 4", "replaces": 12,
+    }))
+    assert got == [{
+        "content": "Suspend keeps group memberships; only deactivate removes them.",
+        "kind": "fact", "source": "Slack thread, Sep 4",
+        "evidence": "suspend RETAINS memberships", "said_by": "kgreiner",
+        "replaces": 12, "shape": "v2",
+    }]
+
+
+def test_parse_v2_missing_where_falls_back_and_bad_replaces_is_none():
+    got = parse_reply(_v2_reply({"statement": "A plain sentence.", "replaces": "12"}))
+    assert got[0]["source"] == "conversation"
+    assert got[0]["replaces"] is None
+    assert got[0]["said_by"] is None
+
+
+def test_parse_v2_over_long_statement_is_dropped_not_truncated():
+    # A clipped sentence is worse than none: truncation would teach half a claim.
+    assert parse_reply(_v2_reply({"statement": "x" * 161})) == []
+
+
+def test_parse_v2_caps_at_five_and_v1_still_parses_at_ten():
+    v2 = parse_reply(_v2_reply(*[{"statement": f"Sentence number {i}."} for i in range(8)]))
+    assert len(v2) == 5
+    v1 = parse_reply(_v2_reply(*[
+        {"content": f"c{i}", "kind": "fact", "source": "s"} for i in range(12)
+    ]))
+    assert len(v1) == 10
+    assert v1[0]["shape"] == "v1" and v1[0]["said_by"] is None and v1[0]["replaces"] is None
+
+
+def test_parse_bool_replaces_is_rejected():
+    # bool is an int subclass; True must not become learning id 1.
+    assert parse_reply(_v2_reply({"statement": "A sentence.", "replaces": True}))[0]["replaces"] is None
+
+
 def test_store_candidates_skips_known_hash_any_status(session):
     stored = store_candidates(session, "wren", "2026-09-01", [_candidate()])
     assert stored == 1

@@ -34,6 +34,10 @@ CONTENT_MAX_CHARS = 400
 EVIDENCE_MAX_CHARS = 200
 SOURCE_MAX_CHARS = 512
 KINDS = ("fact", "procedure")
+V2_CANDIDATE_CAP = 5
+STATEMENT_MAX_CHARS = 160
+SAID_BY_MAX_CHARS = 120
+WHERE_MAX_CHARS = 120
 EXPIRY_DAYS = 14
 DUE_AFTER_HOURS = 24
 
@@ -61,10 +65,55 @@ def _clean_str_field(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _parse_v1(item: dict) -> dict | None:
+    """The 2026-09-01 shape, still spoken by runtimes built before the
+    rethink. Agents roll runtimes at different times; both must land."""
+    content = _clean_str_field(item.get("content"))
+    kind = _clean_str_field(item.get("kind"))
+    source = _clean_str_field(item.get("source"))
+    if not content or kind not in KINDS or not source:
+        return None
+    return {
+        "content": content[:CONTENT_MAX_CHARS],
+        "kind": kind,
+        "source": source[:SOURCE_MAX_CHARS],
+        "evidence": _clean_str_field(item.get("evidence"))[:EVIDENCE_MAX_CHARS],
+        "said_by": None,
+        "replaces": None,
+        "shape": "v1",
+    }
+
+
+def _parse_v2(item: dict) -> dict | None:
+    """One human-attributed sentence (learnings rethink). An over-long
+    statement is DROPPED, never truncated: a clipped sentence teaches half
+    a claim. `replaces` must be a real int (bool is an int subclass and
+    `True` must not become learning id 1)."""
+    statement = _clean_str_field(item.get("statement"))
+    if not statement or len(statement) > STATEMENT_MAX_CHARS:
+        return None
+    replaces = item.get("replaces")
+    if isinstance(replaces, bool) or not isinstance(replaces, int):
+        replaces = None
+    return {
+        "content": statement,
+        "kind": "fact",
+        "source": _clean_str_field(item.get("where"))[:WHERE_MAX_CHARS] or "conversation",
+        "evidence": _clean_str_field(item.get("quote"))[:EVIDENCE_MAX_CHARS],
+        "said_by": _clean_str_field(item.get("said_by"))[:SAID_BY_MAX_CHARS] or None,
+        "replaces": replaces,
+        "shape": "v2",
+    }
+
+
 def parse_reply(reply: str) -> list[dict]:
     """The agent's JSON reply -> validated candidate dicts. Garbage in
     (prose, wrong shape, missing fields) reads as no candidates, never an
-    error -- one agent's bad output must not sink the nightly sweep."""
+    error -- one agent's bad output must not sink the nightly sweep.
+
+    Accepts both the legacy v1 shape (content/kind/source/evidence) and the
+    v2 shape (statement/said_by/quote/where/replaces) from the learnings
+    rethink, normalizing either into the same internal dict."""
     cleaned = reply.strip()
     if cleaned.startswith("```"):
         inner = cleaned.split("```")
@@ -78,23 +127,18 @@ def parse_reply(reply: str) -> list[dict]:
     if not isinstance(raw, list):
         return []
     candidates: list[dict] = []
+    v2_count = 0
     for item in raw[:CANDIDATE_CAP]:
         if not isinstance(item, dict):
             continue
-        content = _clean_str_field(item.get("content"))
-        kind = _clean_str_field(item.get("kind"))
-        source = _clean_str_field(item.get("source"))
-        evidence = _clean_str_field(item.get("evidence"))
-        if not content or kind not in KINDS or not source:
+        parsed = _parse_v2(item) if "statement" in item else _parse_v1(item)
+        if parsed is None:
             continue
-        candidates.append(
-            {
-                "content": content[:CONTENT_MAX_CHARS],
-                "kind": kind,
-                "source": source[:SOURCE_MAX_CHARS],
-                "evidence": evidence[:EVIDENCE_MAX_CHARS],
-            }
-        )
+        if parsed["shape"] == "v2":
+            if v2_count >= V2_CANDIDATE_CAP:
+                continue
+            v2_count += 1
+        candidates.append(parsed)
     return candidates
 
 
