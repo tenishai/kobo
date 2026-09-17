@@ -46,6 +46,7 @@ DUE_AFTER_HOURS = 24
 NEAR_DUP_THRESHOLD = 0.6
 KNOWN_WINDOW_DAYS = 90
 KNOWN_LIST_CAP = 40
+EDITED_LEARNING_MAX_CHARS = 200
 _KNOWN_LABELS = {
     LEARNING_PENDING: "pending",
     LEARNING_APPROVED: "remembered",
@@ -77,6 +78,16 @@ def is_near_duplicate(a: str, b: str) -> bool:
     if not left or not right:
         return False
     return len(left & right) / len(left | right) >= NEAR_DUP_THRESHOLD
+
+
+def clean_edited_statement(text: str) -> str | None:
+    """An operator's fixed wording for a learning, or None when it cannot
+    be taught: empty, over EDITED_LEARNING_MAX_CHARS, or multi-line (a
+    learning is one sentence; a pasted paragraph belongs in the teach box)."""
+    cleaned = text.strip()
+    if not cleaned or len(cleaned) > EDITED_LEARNING_MAX_CHARS or "\n" in cleaned or "\r" in cleaned:
+        return None
+    return cleaned
 
 
 def content_hash(content: str) -> str:

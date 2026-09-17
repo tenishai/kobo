@@ -28,7 +28,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from kobo_api.clients import Clients
+from kobo_api.clients import ClientError, Clients
 from kobo_api.config import Config
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import create_app
@@ -94,6 +94,15 @@ class _CapturingGitHub(FakeGitHub):
         `captured_intake` (a filename -> content dict, same shape
         test_web_teach.py's own `_CapturingGitHub` exposes)."""
         return list(self.captured_intake.values())
+
+
+class _RaisingGitHub(FakeGitHub):
+    """A GitHubClient whose `clone` raises `ClientError` -- same 502-guard
+    fixture as test_web_teach.py's own `_RaisingGitHub`, replicated locally
+    per this file's convention (each web_ test file owns its fixtures)."""
+
+    def clone(self, repo: str, dest: Path) -> None:
+        raise ClientError("gh: rate limited")
 
 
 @pytest.fixture
@@ -244,6 +253,120 @@ def test_approve_rides_teach_lane_archive_fallback(session_factory, config):
     assert body["filename"].startswith("learning-")
     # The note landed in bundle/intake with the taught content.
     assert any("the canary gate is manual" in c for c in github.intake_contents)
+
+
+# --- approve with edited content (learnings rethink Task 5: remember with --
+# a fix) -- the operator's chance to correct wording while approving, in the
+# same request. Same harness (session_factory/config, _seed_agent/
+# _seed_learning, the _CapturingGitHub archive-lane seam) as every other
+# approve test above.
+
+
+def test_approve_with_content_teaches_the_edited_text_and_keeps_the_hash(
+    session_factory, config
+):
+    github = _CapturingGitHub()
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+    learning_id = _seed_learning(session_factory, content="Suspend keeps memberships.")
+
+    session = session_factory()
+    original_hash = session.query(AgentLearning).filter_by(id=learning_id).one().content_hash
+    session.close()
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/learnings/{learning_id}/approve",
+        json={"content": "  Suspend keeps group memberships.  "},
+    )
+
+    assert response.status_code == 200
+    # The taught note body contains the EDITED sentence, not the original.
+    assert any("Suspend keeps group memberships." in c for c in github.intake_contents)
+    assert not any("Suspend keeps memberships." in c for c in github.intake_contents)
+
+    session = session_factory()
+    refreshed = session.query(AgentLearning).filter_by(id=learning_id).one()
+    session.close()
+    assert refreshed.content == "Suspend keeps group memberships."
+    assert refreshed.content_hash == original_hash  # original phrasing stays tombstoned
+    assert refreshed.status == LEARNING_APPROVED
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "x" * 201, "two\nlines"])
+def test_approve_rejects_bad_edited_content(session_factory, config, bad):
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config)
+    learning_id = _seed_learning(session_factory, content="Suspend keeps memberships.")
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/learnings/{learning_id}/approve",
+        json={"content": bad},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "a learning is one sentence, 200 characters or fewer"
+
+    session = session_factory()
+    row = session.query(AgentLearning).filter_by(id=learning_id).one()
+    session.close()
+    assert row.status == LEARNING_PENDING
+    assert row.content == "Suspend keeps memberships."
+
+
+def test_approve_without_body_is_unchanged(session_factory, config):
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config)
+    learning_id = _seed_learning(session_factory)
+
+    response = client.post(f"/api/agents/{AGENT_NAME}/learnings/{learning_id}/approve")
+
+    assert response.status_code == 200
+    session = session_factory()
+    row = session.query(AgentLearning).filter_by(id=learning_id).one()
+    session.close()
+    assert row.content == "the canary gate is manual"
+    assert row.status == LEARNING_APPROVED
+
+
+def test_deny_ignores_content(session_factory, config):
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config)
+    learning_id = _seed_learning(session_factory, content="the canary gate is manual")
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/learnings/{learning_id}/deny",
+        json={"content": "edited"},
+    )
+
+    assert response.status_code == 200
+    session = session_factory()
+    row = session.query(AgentLearning).filter_by(id=learning_id).one()
+    session.close()
+    assert row.content == "the canary gate is manual"
+    assert row.status == LEARNING_DENIED
+
+
+def test_approve_with_content_delivery_failure_does_not_persist_edit(session_factory, config):
+    """502 path (upload_intake_file raises): the edit must not be
+    persisted -- `get_session`'s implicit rollback-on-close discards the
+    in-memory `row.content = edited` mutation, the same idiom
+    `update_agent_metadata`/`set_runtime_image` already rely on for their
+    own failed-delivery paths."""
+    client = _make_client(session_factory, config, github=_RaisingGitHub())
+    _seed_agent(session_factory, config)
+    learning_id = _seed_learning(session_factory, content="Suspend keeps memberships.")
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/learnings/{learning_id}/approve",
+        json={"content": "Suspend keeps group memberships."},
+    )
+
+    assert response.status_code == 502
+    session = session_factory()
+    row = session.query(AgentLearning).filter_by(id=learning_id).one()
+    session.close()
+    assert row.content == "Suspend keeps memberships."
+    assert row.status == LEARNING_PENDING
 
 
 def test_approve_unknown_id_404(session_factory, config):

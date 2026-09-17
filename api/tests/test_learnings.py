@@ -66,6 +66,7 @@ from kobo_api.clients import _build_learnings_envelope
 from kobo_api.learnings import (
     CANDIDATE_CAP,
     CONTENT_MAX_CHARS,
+    clean_edited_statement,
     content_hash,
     due_agents,
     expire_stale,
@@ -560,3 +561,14 @@ def test_two_rephrases_in_one_reply_store_once(session):
         _cand("Only deactivate or delete removes group memberships; suspend keeps them."),
     ], now=STORE_NOW)
     assert stored == 1
+
+
+# --- clean_edited_statement (learnings rethink Task 5: remember with a fix) --
+
+
+def test_clean_edited_statement():
+    assert clean_edited_statement("  A sentence.  ") == "A sentence."
+    assert clean_edited_statement("") is None
+    assert clean_edited_statement("x" * 201) is None
+    assert clean_edited_statement("two\nlines") is None
+    assert clean_edited_statement("x" * 200) == "x" * 200
