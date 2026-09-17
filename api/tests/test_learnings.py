@@ -70,6 +70,7 @@ from kobo_api.learnings import (
     due_agents,
     expire_stale,
     is_near_duplicate,
+    known_statements,
     parse_reply,
     run_nightly,
     seconds_until_next_utc_midnight,
@@ -225,6 +226,16 @@ def test_learnings_envelope_shape():
     assert "2026-09-01" in envelope["status"]["message"]["parts"][0]["text"]
 
 
+def test_learnings_envelope_carries_known_list():
+    known = [{"id": 3, "status": "pending", "statement": "A sentence."}]
+
+    with_known = _build_learnings_envelope("2026-09-16", known)
+    without_known = _build_learnings_envelope("2026-09-16")
+
+    assert with_known["metadata"]["known"] == known
+    assert without_known["metadata"]["known"] == []
+
+
 # --- run_nightly (Task 6) -----------------------------------------------------
 #
 # `Config`'s `cabal_enabled` is a three-way AND (`cabal_url`,
@@ -326,6 +337,28 @@ def test_run_nightly_stores_candidates_for_due_agent(session, monkeypatch):
     assert session.query(AgentLearning).filter_by(agent_name="wren").count() == 1
 
 
+def test_run_nightly_relays_the_known_list_in_the_envelope(session, monkeypatch):
+    # The runtime must be told what it already proposed/has decided on so it
+    # doesn't re-propose it -- run_nightly builds that list itself and rides
+    # it in the envelope metadata handed to cabal.relay.
+    monkeypatch.setattr(session, "close", lambda: None)
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    _seed_ready(session)
+    store_candidates(session, "wren", "2026-08-01", [_candidate()])
+    row = session.query(AgentLearning).filter_by(agent_name="wren").one()
+    row.created_at = (datetime.now(UTC) - timedelta(hours=30)).replace(tzinfo=None)
+    session.commit()
+    cabal = StubCabal(json.dumps({"candidates": []}))
+
+    run_nightly(_app(lambda: session, cabal, _cabal_enabled_config()))
+
+    assert len(cabal.calls) == 1
+    known = cabal.calls[0][1]["metadata"]["known"]
+    assert known == [
+        {"id": row.id, "status": "pending", "statement": row.content}
+    ]
+
+
 def test_run_nightly_skips_recently_summarized_agent(session, monkeypatch):
     monkeypatch.setattr(session, "close", lambda: None)
     monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
@@ -377,10 +410,10 @@ def test_run_nightly_isolates_one_agents_store_failure_from_the_rest(session, mo
 
     real_store_candidates = learnings_module.store_candidates
 
-    def _store_or_boom(session, agent_name, day, candidates):
+    def _store_or_boom(session, agent_name, day, candidates, *, now=None):
         if agent_name == "a":
             raise RuntimeError("db hiccup")
-        return real_store_candidates(session, agent_name, day, candidates)
+        return real_store_candidates(session, agent_name, day, candidates, now=now)
 
     monkeypatch.setattr(learnings_module, "store_candidates", _store_or_boom)
 
@@ -437,6 +470,25 @@ def _row(session, text, status="pending", age_days=0, agent="ledger"):
     session.add(row)
     session.commit()
     return row
+
+
+def test_known_statements_maps_statuses_orders_newest_first_and_windows(session):
+    _row(session, "Oldest approved sentence here.", status="approved", age_days=5)
+    _row(session, "Newer denied sentence here.", status="denied", age_days=2)
+    _row(session, "Newest pending sentence here.", status="pending", age_days=1)
+    _row(session, "Expired sentence is not listed.", status="expired", age_days=1)
+    _row(session, "Too old to matter anymore.", status="approved", age_days=91)
+    _row(session, "Another agent entirely.", agent="clio")
+    got = known_statements(session, "ledger", STORE_NOW)
+    assert [k["status"] for k in got] == ["pending", "skipped", "remembered"]
+    assert got[0]["statement"] == "Newest pending sentence here."
+    assert all(set(k) == {"id", "status", "statement"} for k in got)
+
+
+def test_known_statements_caps_at_forty(session):
+    for i in range(45):
+        _row(session, f"Distinct sentence number {i} about topic {i}.", age_days=1)
+    assert len(known_statements(session, "ledger", STORE_NOW)) == 40
 
 
 def test_near_duplicate_catches_a_rephrase_and_passes_a_distinct_claim():

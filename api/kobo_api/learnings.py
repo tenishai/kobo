@@ -45,6 +45,12 @@ EXPIRY_DAYS = 14
 DUE_AFTER_HOURS = 24
 NEAR_DUP_THRESHOLD = 0.6
 KNOWN_WINDOW_DAYS = 90
+KNOWN_LIST_CAP = 40
+_KNOWN_LABELS = {
+    LEARNING_PENDING: "pending",
+    LEARNING_APPROVED: "remembered",
+    LEARNING_DENIED: "skipped",
+}
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
 _STOPWORDS = frozenset(
@@ -255,6 +261,29 @@ def store_candidates(
     return stored
 
 
+def known_statements(session: Session, agent_name: str, now: datetime) -> list[dict]:
+    """What the agent must not re-propose: its pending, remembered, and
+    skipped statements from the last KNOWN_WINDOW_DAYS, newest first,
+    capped. Ids ride along so a refinement can name what it `replaces`.
+    Expired rows are left out -- nobody ever judged them."""
+    cutoff = _naive_utc(now) - timedelta(days=KNOWN_WINDOW_DAYS)
+    rows = (
+        session.query(AgentLearning)
+        .filter(
+            AgentLearning.agent_name == agent_name,
+            AgentLearning.status.in_(tuple(_KNOWN_LABELS)),
+            AgentLearning.created_at >= cutoff,
+        )
+        .order_by(AgentLearning.created_at.desc())
+        .limit(KNOWN_LIST_CAP)
+        .all()
+    )
+    return [
+        {"id": row.id, "status": _KNOWN_LABELS[row.status], "statement": row.content}
+        for row in rows
+    ]
+
+
 def expire_stale(session: Session, now: datetime) -> int:
     """Pending rows older than EXPIRY_DAYS flip to expired -- the queue
     stays livable, and their hashes keep blocking re-proposal."""
@@ -369,7 +398,9 @@ def run_nightly(app) -> None:
         day = now.date().isoformat()
         for name in due_agents(session, ready, now):
             try:
-                envelope = _build_learnings_envelope(day)
+                envelope = _build_learnings_envelope(
+                    day, known_statements(session, name, now)
+                )
                 try:
                     raw = clients.cabal.relay(name, envelope)
                     reply = _extract_relay_reply(raw)
@@ -385,7 +416,7 @@ def run_nightly(app) -> None:
                     )
                     continue
                 candidates = parse_reply(reply)
-                stored = store_candidates(session, name, day, candidates)
+                stored = store_candidates(session, name, day, candidates, now=now)
                 log.info(
                     "learnings: %s proposed %d, stored %d new",
                     name,

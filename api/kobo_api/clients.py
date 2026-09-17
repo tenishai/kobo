@@ -1154,15 +1154,16 @@ def _build_teach_envelope(note: str, filename: str) -> dict:
     return _build_system_task_envelope("teach", note, metadata={"filename": filename})
 
 
-def _build_learnings_envelope(on_date: str) -> dict:
-    """The learnings system task (daily-learnings spec): asks the agent to
-    summarize its journal's last day into candidate memory snippets. The
-    date rides metadata so the runtime's prompt can cite it; the text is
-    only a human-readable label for transcripts."""
+def _build_learnings_envelope(on_date: str, known: list[dict] | None = None) -> dict:
+    """The learnings system task: asks the agent for what people told it
+    that day. The date and the `known` list (what is already pending,
+    remembered, or skipped -- never to be re-proposed) ride metadata; the
+    text is only a human-readable label for transcripts. Runtimes that
+    predate `known` ignore it."""
     return _build_system_task_envelope(
         "learnings",
         f"Summarize your conversations from {on_date} into candidate memory snippets.",
-        metadata={"date": on_date},
+        metadata={"date": on_date, "known": list(known or [])},
     )
 
 
