@@ -8,6 +8,7 @@ docs
 
 # Python virtualenvs and caches — the image installs the API fresh via pip.
 **/venv
+**/.venv
 **/__pycache__
 
 # Node deps and build output — the image runs its own `npm ci` + build.

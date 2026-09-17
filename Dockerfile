@@ -36,7 +36,10 @@ FROM python:3.12-slim AS runtime
 # git      — the room clones/commits against agent and org-config repos.
 # curl     — fetches the kubectl binary and CLI signing keys below.
 # ca-certificates, gnupg — TLS + apt key verification for the gh/gcloud repos.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# The upgrade pass pulls base-image packages (libc6, zlib1g, libpcre2, ...)
+# up to the current Debian security revisions even when the cached base
+# layer is stale; CI additionally builds with --pull.
+RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
       git \
       curl \
       ca-certificates \
@@ -84,6 +87,14 @@ COPY api/pyproject.toml ./api/pyproject.toml
 COPY api/kobo_api ./api/kobo_api
 RUN pip install --no-cache-dir ./api
 
+# Migrations ship with the image so boot can bring the schema to head —
+# the deploy path (`kubectl set image`) runs nothing else, so the pod
+# itself is the only place migrations can reliably happen.
+COPY api/alembic.ini ./api/alembic.ini
+COPY api/migrations ./api/migrations
+COPY docker/entrypoint.sh /usr/local/bin/kobo-entrypoint
+RUN chmod +x /usr/local/bin/kobo-entrypoint
+
 # The built UI. The mounted runtime config points ui_dist at this path.
 COPY --from=ui-build /ui/dist /srv/ui
 
@@ -98,4 +109,4 @@ USER 1001
 ENV PORT=8080
 EXPOSE 8080
 
-ENTRYPOINT ["uvicorn", "--factory", "kobo_api.main:build_default_app", "--host", "0.0.0.0", "--port", "8080"]
+ENTRYPOINT ["/usr/local/bin/kobo-entrypoint"]
