@@ -16,12 +16,15 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from kobo_api.models import (
+    LEARNING_APPROVED,
+    LEARNING_DENIED,
     LEARNING_EXPIRED,
     LEARNING_PENDING,
     AgentLearning,
@@ -40,6 +43,34 @@ SAID_BY_MAX_CHARS = 120
 WHERE_MAX_CHARS = 120
 EXPIRY_DAYS = 14
 DUE_AFTER_HOURS = 24
+NEAR_DUP_THRESHOLD = 0.6
+KNOWN_WINDOW_DAYS = 90
+
+_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
+_STOPWORDS = frozenset(
+    "a an and are as at be but by for from has have if in into is it its not of on "
+    "only or so that the their them then there these they this to was when which "
+    "will with".split()
+)
+
+
+def _tokens(text: str) -> frozenset[str]:
+    """Lowercased content words. Dotted identifiers survive whole
+    (`user.lifecycle.suspend` is one token, not three common words)."""
+    return frozenset(
+        token.strip("._-") for token in _TOKEN_RE.findall(text.lower())
+    ) - _STOPWORDS - {""}
+
+
+def is_near_duplicate(a: str, b: str) -> bool:
+    """Token-set Jaccard >= NEAR_DUP_THRESHOLD. The second wall behind the
+    runtime's own 'already proposed' list: deterministic, no model call.
+    It catches a REPHRASE, not a related-but-distinct claim, by design --
+    dropping a genuinely new fact is the worse failure."""
+    left, right = _tokens(a), _tokens(b)
+    if not left or not right:
+        return False
+    return len(left & right) / len(left | right) >= NEAR_DUP_THRESHOLD
 
 
 def content_hash(content: str) -> str:
@@ -143,32 +174,82 @@ def parse_reply(reply: str) -> list[dict]:
 
 
 def store_candidates(
-    session: Session, agent_name: str, day: str, candidates: list[dict]
+    session: Session,
+    agent_name: str,
+    day: str,
+    candidates: list[dict],
+    *,
+    now: datetime | None = None,
 ) -> int:
-    """Upsert candidates as pending rows, skipping any content_hash this
-    agent has EVER seen (any status) -- denial and expiry are permanent
-    tombstones against re-proposal. Returns how many rows were stored."""
+    """Park candidates as pending rows. Per candidate, in order: the exact
+    hash tombstone (any status, forever); `replaces` naming one of THIS
+    agent's PENDING rows updates that row in place (anything else in
+    `replaces` is ignored and the candidate is new); the near-duplicate
+    guard against this agent's pending/approved/denied statements from the
+    last KNOWN_WINDOW_DAYS; insert. Returns rows stored or updated."""
+    cutoff = _naive_utc(now or datetime.now(UTC)) - timedelta(days=KNOWN_WINDOW_DAYS)
     stored = 0
     for candidate in candidates[:CANDIDATE_CAP]:
-        digest = content_hash(candidate["content"])
-        exists = (
+        content = candidate["content"]
+        digest = content_hash(content)
+        if (
             session.query(AgentLearning)
             .filter_by(agent_name=agent_name, content_hash=digest)
             .first()
-        )
-        if exists is not None:
+            is not None
+        ):
             continue
-        session.add(
-            AgentLearning(
-                agent_name=agent_name,
-                day=day,
-                content=candidate["content"],
-                kind=candidate["kind"],
-                source=candidate["source"],
-                evidence=candidate.get("evidence", ""),
-                content_hash=digest,
+
+        target = None
+        if candidate.get("replaces") is not None:
+            target = (
+                session.query(AgentLearning)
+                .filter_by(
+                    agent_name=agent_name,
+                    id=candidate["replaces"],
+                    status=LEARNING_PENDING,
+                )
+                .first()
             )
+
+        known = (
+            session.query(AgentLearning)
+            .filter(
+                AgentLearning.agent_name == agent_name,
+                AgentLearning.status.in_(
+                    (LEARNING_PENDING, LEARNING_APPROVED, LEARNING_DENIED)
+                ),
+                AgentLearning.created_at >= cutoff,
+            )
+            .all()
         )
+        if any(
+            is_near_duplicate(content, row.content)
+            for row in known
+            if target is None or row.id != target.id
+        ):
+            continue
+
+        if target is not None:
+            target.content = content
+            target.content_hash = digest
+            target.said_by = candidate.get("said_by")
+            target.source = candidate["source"]
+            target.evidence = candidate.get("evidence", "")
+        else:
+            session.add(
+                AgentLearning(
+                    agent_name=agent_name,
+                    day=day,
+                    content=content,
+                    kind=candidate["kind"],
+                    source=candidate["source"],
+                    evidence=candidate.get("evidence", ""),
+                    said_by=candidate.get("said_by"),
+                    content_hash=digest,
+                )
+            )
+        session.flush()
         stored += 1
     session.commit()
     return stored

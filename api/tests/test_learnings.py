@@ -69,6 +69,7 @@ from kobo_api.learnings import (
     content_hash,
     due_agents,
     expire_stale,
+    is_near_duplicate,
     parse_reply,
     run_nightly,
     seconds_until_next_utc_midnight,
@@ -409,3 +410,101 @@ def test_run_nightly_old_runtime_refusal_stores_nothing(session, monkeypatch, ca
     assert len(cabal.calls) == 1
     assert session.query(AgentLearning).count() == 0
     assert "learnings task not completed for wren" in caplog.text
+
+
+# --- replaces-in-place and the near-duplicate guard (Task 3) -----------------
+#
+# Named STORE_NOW rather than reusing the module's NOW: NOW == 2026-09-01 is
+# baked into test_expire_stale_flips_only_old_pending, test_due_agents_*, and
+# test_seconds_until_next_utc_midnight above via module-level assignment --
+# rebinding the same name here would silently shift their fixed-date math.
+
+STORE_NOW = datetime(2026, 9, 16, tzinfo=UTC)
+
+
+def _cand(text, **over):
+    base = {"content": text, "kind": "fact", "source": "Slack thread", "evidence": "",
+            "said_by": "kgreiner", "replaces": None, "shape": "v2"}
+    return {**base, **over}
+
+
+def _row(session, text, status="pending", age_days=0, agent="ledger"):
+    row = AgentLearning(
+        agent_name=agent, day="2026-09-10", content=text, kind="fact", source="s",
+        evidence="", content_hash=content_hash(text), status=status,
+        created_at=(STORE_NOW - timedelta(days=age_days)).replace(tzinfo=None),
+    )
+    session.add(row)
+    session.commit()
+    return row
+
+
+def test_near_duplicate_catches_a_rephrase_and_passes_a_distinct_claim():
+    a = "Suspend keeps group memberships; only deactivate or delete removes them."
+    assert is_near_duplicate(a, "Only deactivate or delete removes group memberships; suspend keeps them.")
+    assert is_near_duplicate(a, "Suspend retains group memberships; deactivate removes them.")
+    assert not is_near_duplicate(a, "CloudTrail Lake console queries take the bare event data store ID, not the ARN.")
+    assert not is_near_duplicate("", "")  # no tokens is never a match
+
+
+def test_store_drops_rephrase_of_pending_approved_or_denied(session):
+    _row(session, "Suspend keeps group memberships; only deactivate or delete removes them.", status="denied")
+    stored = store_candidates(session, "ledger", "2026-09-16",
+        [_cand("Only deactivate or delete removes group memberships; suspend keeps them.")], now=STORE_NOW)
+    assert stored == 0
+
+
+def test_store_ignores_near_duplicates_outside_the_window_or_other_agents(session):
+    text = "Suspend keeps group memberships; only deactivate or delete removes them."
+    _row(session, text, status="approved", age_days=91)
+    _row(session, text + " ", status="approved", agent="clio")
+    stored = store_candidates(session, "ledger", "2026-09-16",
+        [_cand("Only deactivate or delete removes group memberships; suspend keeps them.")], now=STORE_NOW)
+    assert stored == 1
+
+
+def test_replaces_updates_a_pending_row_in_place(session):
+    old = _row(session, "Suspend keeps memberships.")
+    stored = store_candidates(session, "ledger", "2026-09-16", [_cand(
+        "Suspend keeps group memberships; only deactivate or delete removes them.",
+        replaces=old.id, said_by="priya", evidence="q", source="Slack thread, Sep 16")], now=STORE_NOW)
+    session.refresh(old)
+    assert stored == 1
+    assert old.content.startswith("Suspend keeps group memberships;")
+    assert old.said_by == "priya" and old.day == "2026-09-10" and old.status == "pending"
+    assert old.content_hash == content_hash(old.content)
+    assert session.query(AgentLearning).filter_by(agent_name="ledger").count() == 1
+
+
+def test_replaces_a_decided_or_foreign_row_is_treated_as_new(session):
+    decided = _row(session, "Alpha beta gamma delta.", status="approved")
+    foreign = _row(session, "Epsilon zeta eta theta.", agent="clio")
+    stored = store_candidates(session, "ledger", "2026-09-16", [
+        _cand("Completely unrelated first sentence here.", replaces=decided.id),
+        _cand("Another entirely different second claim.", replaces=foreign.id),
+    ], now=STORE_NOW)
+    assert stored == 2
+    session.refresh(decided); session.refresh(foreign)
+    assert decided.content == "Alpha beta gamma delta." and foreign.content == "Epsilon zeta eta theta."
+
+
+def test_replaces_does_not_compare_against_the_row_it_replaces(session):
+    old = _row(session, "Suspend keeps group memberships.")
+    stored = store_candidates(session, "ledger", "2026-09-16", [_cand(
+        "Suspend keeps group memberships; deactivate removes them.", replaces=old.id)], now=STORE_NOW)
+    assert stored == 1  # a refinement is near its own predecessor by definition
+
+
+def test_v1_candidates_store_without_said_by(session):
+    stored = store_candidates(session, "ledger", "2026-09-16", [
+        {"content": "legacy", "kind": "procedure", "source": "s", "evidence": "",
+         "said_by": None, "replaces": None, "shape": "v1"}], now=STORE_NOW)
+    assert stored == 1
+
+
+def test_two_rephrases_in_one_reply_store_once(session):
+    stored = store_candidates(session, "ledger", "2026-09-16", [
+        _cand("Suspend keeps group memberships; only deactivate or delete removes them."),
+        _cand("Only deactivate or delete removes group memberships; suspend keeps them."),
+    ], now=STORE_NOW)
+    assert stored == 1
