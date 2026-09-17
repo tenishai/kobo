@@ -1,0 +1,140 @@
+# kobo CI: the three gates every change must pass, plus a build that only
+# runs on main and only when the registry variables are configured.
+#
+# The migration job exists because of a trap this room hit three times:
+# a model change without a matching migration deploys cleanly and then
+# crashloops on its first query. Here the chain runs against a real
+# Postgres and schema_tripwire.py asserts the ORM maps nothing the chain
+# never created.
+#
+# Registry/build configuration lives in repo/org variables (KOBO_IMAGE,
+# GCP_WIF_PROVIDER, GCP_BUILD_SA) — never in this file. Rolling the built
+# image stays an operator action; the build job prints the command.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  api-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: api/uv.lock
+      - name: Install (locked, py3.12)
+        working-directory: api
+        run: uv sync --extra dev --python 3.12
+      - name: pytest
+        working-directory: api
+        run: PYTHONPATH=. .venv/bin/python -m pytest -q
+
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install
+        working-directory: ui
+        run: npm ci
+      - name: Build
+        working-directory: ui
+        run: npm run build
+      - name: Typecheck
+        working-directory: ui
+        run: npm run check
+
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: kobo
+          POSTGRES_PASSWORD: kobo
+          POSTGRES_DB: kobo
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kobo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DB_URL: postgresql+psycopg2://kobo:kobo@localhost:5432/kobo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: api/uv.lock
+      - name: Install (locked, py3.12)
+        working-directory: api
+        run: uv sync --python 3.12
+      - name: Migration chain to head on real Postgres
+        working-directory: api
+        run: KOBO_DB_URL="$DB_URL" .venv/bin/alembic upgrade head
+      - name: Schema tripwire (models ⊆ migrated schema)
+        working-directory: api
+        run: PYTHONPATH=. .venv/bin/python scripts/schema_tripwire.py "$DB_URL"
+
+  build-push:
+    # Main-only, and only once the registry variables are configured.
+    # Pushes the image; rolling it stays an operator action.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.KOBO_IMAGE != ''
+    needs: [api-tests, ui, migrations]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag and registry host
+        id: meta
+        run: |
+          echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "host=${KOBO_IMAGE%%/*}" >> "$GITHUB_OUTPUT"
+        env:
+          KOBO_IMAGE: ${{ vars.KOBO_IMAGE }}
+      - uses: google-github-actions/auth@v2
+        id: auth
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_BUILD_SA }}
+          token_format: access_token
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.meta.outputs.host }}
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          # --pull is the stale-base fix: without it, buildx reuses a weeks-old
+          # cached base layer and published CVE fixes never reach the image.
+          pull: true
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          tags: ${{ vars.KOBO_IMAGE }}:${{ steps.meta.outputs.tag }}
+      - name: Roll command (operator runs this)
+        run: |
+          {
+            echo '## Image pushed'
+            echo '```'
+            echo "kubectl -n kobo set image deploy/kobo kobo=${{ vars.KOBO_IMAGE }}:${{ steps.meta.outputs.tag }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
