@@ -535,7 +535,18 @@ def test_create_agent_purpose_tags_dedupe_brings_under_cap_accepted(client):
     assert detail["purpose_tags"] == ["billing"]
 
 
-def test_get_agent_capability_is_null_until_earned(client):
+def test_get_agent_capability_is_null_until_earned(session_factory, config, monkeypatch):
+    """`run_pipeline` is replaced with a no-op (the retry-race idiom below):
+    the real daemon pipeline distills a capability shortly after the 201, so
+    GETting the live app is a race this test lost on a loaded CI runner
+    (2026-09-16: the distill won and `capability` came back as the persona's
+    first sentence). The contract under test is only that CREATE itself
+    births the row with no capability."""
+    import kobo_api.main as main_module
+
+    monkeypatch.setattr(main_module, "run_pipeline", lambda *args, **kwargs: None)
+    client = TestClient(create_app(session_factory, config=config))
+
     response = client.post(
         "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM}
     )
