@@ -123,7 +123,7 @@
   const selectedPersona = $derived(personaOverride ?? "");
   const selectedModel = $derived(modelOverride ?? models.data?.default ?? "");
   const selectedRuntime = $derived(runtimeOverride ?? runtimes.data?.default ?? "");
-  const runtimeChoicesAvailable = $derived((runtimes.data?.runtimes.length ?? 0) > 0);
+  const runtimeChoicesAvailable = $derived((runtimes.data?.runtimes?.length ?? 0) > 0);
 
   // --- Name: client-side check, only rendered once there's something to
   // say about it (an empty field isn't "invalid", it's just empty) --------
@@ -1156,7 +1156,7 @@
             onchange={(event) =>
               (modelOverride = (event.currentTarget as HTMLSelectElement).value)}
           >
-            {#each models.data.models as model (model.id)}
+            {#each models.data.models ?? [] as model (model.id)}
               <option value={model.id}>{model.label}</option>
             {/each}
           </select>
@@ -1174,7 +1174,7 @@
               (runtimeOverride = (event.currentTarget as HTMLSelectElement).value)}
           >
             <option value={runtimes.data.default}>Default (daedalus)</option>
-            {#each runtimes.data.runtimes as runtime (runtime.image)}
+            {#each runtimes.data.runtimes ?? [] as runtime (runtime.image)}
               {#if runtime.image !== runtimes.data.default}
                 <option value={runtime.image}>{runtime.label}</option>
               {/if}
