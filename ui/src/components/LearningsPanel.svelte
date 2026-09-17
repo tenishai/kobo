@@ -53,6 +53,7 @@
   let draft = $state("");
   let teachText = $state("");
   let teachNote = $state("");
+  let confirming = $state<"approve" | "deny" | null>(null);
 
   const all = $derived(learnings.data?.learnings ?? []);
   const pending = $derived(all.filter((l: Learning) => l.status === "pending"));
@@ -70,7 +71,11 @@
     },
   }));
 
-  const busy = $derived(decide.isPending || bulkDecide.isPending || teach.isPending);
+  // Verdict controls (row + bulk) lock while a decide/bulk-decide request is
+  // in flight; the teach box has its own, separate lock below (`frozen ||
+  // teach.isPending`) so an in-flight verdict never freezes the unrelated
+  // "teach this" input -- see the review follow-up this split fixes.
+  const deciding = $derived(decide.isPending || bulkDecide.isPending);
 
   function byline(l: Learning): string {
     return [l.said_by, l.source].filter(Boolean).join(" · ");
@@ -134,9 +139,9 @@
         placeholder={`Teach ${agentName} something...`}
         aria-label={`Teach ${agentName} something`}
         maxlength="400"
-        disabled={frozen || busy}
+        disabled={frozen || teach.isPending}
       />
-      <button class="learnings-panel__button" type="submit" disabled={frozen || busy || !teachText.trim()}>
+      <button class="learnings-panel__button" type="submit" disabled={frozen || teach.isPending || !teachText.trim()}>
         Add
       </button>
     </form>
@@ -165,10 +170,22 @@
       </p>
       {#if canDecide}
         <div class="learnings-panel__bulk">
-          <button class="learnings-panel__button learnings-panel__button--quiet" type="button"
-            disabled={frozen || busy} onclick={() => decideAll("deny")}>Skip all</button>
-          <button class="learnings-panel__button learnings-panel__button--primary" type="button"
-            disabled={frozen || busy} onclick={() => decideAll("approve")}>Remember all</button>
+          {#if confirming}
+            <span class="learnings-panel__confirm">
+              {confirming === "approve" ? "Remember all" : "Skip all"} {pending.length}?
+            </span>
+            <button class="learnings-panel__button learnings-panel__button--quiet" type="button"
+              disabled={frozen || deciding} onclick={() => (confirming = null)}>Cancel</button>
+            <button class="learnings-panel__button learnings-panel__button--primary" type="button"
+              disabled={frozen || deciding}
+              onclick={() => { const action = confirming; confirming = null; if (action) decideAll(action); }}
+            >{confirming === "approve" ? "Yes, remember" : "Yes, skip"}</button>
+          {:else}
+            <button class="learnings-panel__button learnings-panel__button--quiet" type="button"
+              disabled={frozen || deciding} onclick={() => (confirming = "deny")}>Skip all</button>
+            <button class="learnings-panel__button learnings-panel__button--primary" type="button"
+              disabled={frozen || deciding} onclick={() => (confirming = "approve")}>Remember all</button>
+          {/if}
         </div>
       {/if}
     </div>
@@ -204,13 +221,13 @@
                     onclick={() => (editingId = null)}>Cancel</button>
                 {:else}
                   <button class="learnings-panel__button learnings-panel__button--quiet" type="button"
-                    disabled={frozen || busy} aria-label="Fix the wording" title="Fix the wording"
+                    disabled={frozen || deciding} aria-label="Fix the wording" title="Fix the wording"
                     onclick={() => startEdit(l)}>✎</button>
                   <button class="learnings-panel__button learnings-panel__button--quiet" type="button"
-                    disabled={frozen || busy} onclick={() => skip(l.id)}>Skip</button>
+                    disabled={frozen || deciding} onclick={() => skip(l.id)}>Skip</button>
                 {/if}
                 <button class="learnings-panel__button learnings-panel__button--primary" type="button"
-                  disabled={frozen || busy || (editingId === l.id && !draft.trim())}
+                  disabled={frozen || deciding || (editingId === l.id && !draft.trim())}
                   onclick={() => remember(l)}>Remember</button>
               </span>
             {/if}
@@ -318,7 +335,8 @@
     justify-content: space-between; gap: var(--space-sm);
   }
   .learnings-panel__count { margin: 0; color: var(--ink); font-size: 0.95rem; font-weight: 600; }
-  .learnings-panel__bulk { display: flex; gap: var(--space-xs); }
+  .learnings-panel__bulk { display: flex; align-items: center; gap: var(--space-xs); }
+  .learnings-panel__confirm { color: var(--muted); font-size: 0.85rem; }
   .learnings-panel__button--primary { border-color: var(--accent); color: var(--accent); }
   .learnings-panel__button--quiet { border-color: transparent; background: transparent; color: var(--muted); }
   .learnings-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
