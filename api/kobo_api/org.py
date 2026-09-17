@@ -115,6 +115,39 @@ def _revalidate(merged: Config) -> Config:
     return Config.model_validate(dumped)
 
 
+def _shown(value: object) -> str:
+    """A value as it may appear in a log line: scalars verbatim (the whole
+    point is seeing the two runtime_image refs side by side), composites by
+    shape only — `groups`/`models` dumped verbatim would drown the line, and
+    `operators`/`slack_operators` would echo addresses into logs."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return repr(value)
+    try:
+        size = len(value)  # type: ignore[arg-type]
+    except TypeError:
+        return f"a {type(value).__name__}"
+    return f"a {type(value).__name__} with {size} entries"
+
+
+def _disclose_overrides(local: Config, merged: Config, org_keys: set[str]) -> None:
+    """Say when org.yaml defeats a value the deployment config explicitly
+    set (IE-6065): the Secret carried a digest-pinned `runtime_image`, this
+    merge replaced it with a floating tag on every boot, and nothing showed
+    that from either file alone — only a diff of the two. One WARNING per
+    differing key (the app configures no logging, so INFO from this module
+    never reaches pod logs). Overriding an untouched default is org config
+    doing its job and stays silent."""
+    for key in sorted(org_keys & local.model_fields_set):
+        before, after = getattr(local, key), getattr(merged, key)
+        if before != after:
+            log.warning(
+                "org.yaml overrides %s: deployment config had %s, org.yaml sets %s",
+                key,
+                _shown(before),
+                _shown(after),
+            )
+
+
 def load_org_config(local: Config, github: GitHubClient) -> tuple[Config, OrgState]:
     """Clone `local.org_repo`, read its `org.yaml`, and merge validated org
     values over `local`.
@@ -184,4 +217,5 @@ def load_org_config(local: Config, github: GitHubClient) -> tuple[Config, OrgSta
                 False, local.org_repo, f"org.yaml has an invalid value for {names}"
             )
 
+        _disclose_overrides(local, merged, set(data))
         return merged, OrgState(True, local.org_repo)

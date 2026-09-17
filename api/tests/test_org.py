@@ -293,6 +293,67 @@ def test_org_keys_is_exactly_the_brief_set():
     )
 
 
+def test_override_of_explicit_local_value_is_disclosed(caplog):
+    """IE-6065: org.yaml silently defeating a value the deployment config
+    explicitly set (the Secret's digest pin vs. org.yaml's floating tag) was
+    invisible from either file alone. The merge now says so, once per
+    differing key, at WARNING (the app configures no logging, so INFO from
+    this logger never reaches pod logs)."""
+    import logging
+
+    local = Config(
+        org_repo=ORG_REPO,
+        runtime_image="reg.example/ai/runtime@sha256:aaa111",
+        gojira_cluster="acme-cluster",
+    )
+    github = FakeGitHub(
+        org_yaml=(
+            "runtime_image: reg.example/ai/runtime:floating\n"
+            "gojira_cluster: acme-cluster\n"
+            "vertex_project: acme-models\n"
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="kobo_api.org"):
+        merged, org = load_org_config(local, github)
+
+    assert org.wired is True
+    assert merged.runtime_image == "reg.example/ai/runtime:floating"
+    messages = [r.getMessage() for r in caplog.records]
+    disclosures = [m for m in messages if "org.yaml overrides" in m]
+    # The differing explicitly-set key is disclosed, with both values.
+    assert len(disclosures) == 1
+    assert "runtime_image" in disclosures[0]
+    assert "sha256:aaa111" in disclosures[0]
+    assert "floating" in disclosures[0]
+    # Same-value override and default-only override stay silent.
+    assert "gojira_cluster" not in disclosures[0]
+    assert "vertex_project" not in disclosures[0]
+
+
+def test_composite_override_is_disclosed_without_dumping_the_value(caplog):
+    """A differing composite (list/dict) key is disclosed by shape, not by
+    value — `groups` or `models` dumped verbatim would drown the line that
+    matters and could echo operator emails into logs."""
+    import logging
+
+    local = Config(org_repo=ORG_REPO, operators=["a@acme.test"])
+    github = FakeGitHub(org_yaml="operators: [a@acme.test, b@acme.test]\n")
+
+    with caplog.at_level(logging.WARNING, logger="kobo_api.org"):
+        merged, org = load_org_config(local, github)
+
+    assert org.wired is True
+    disclosures = [
+        r.getMessage() for r in caplog.records if "org.yaml overrides" in r.getMessage()
+    ]
+    assert len(disclosures) == 1
+    assert "operators" in disclosures[0]
+    assert "a@acme.test" not in disclosures[0]
+    assert "list with 1" in disclosures[0]
+    assert "list with 2" in disclosures[0]
+
+
 def test_slack_operators_list_round_trips():
     """slack_operators (Task 5) is org-scoped like the other gating knobs
     above — a client's kobo-config repo can name its own operator emails."""
