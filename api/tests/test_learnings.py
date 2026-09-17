@@ -66,6 +66,7 @@ from kobo_api.clients import _build_learnings_envelope
 from kobo_api.learnings import (
     CANDIDATE_CAP,
     CONTENT_MAX_CHARS,
+    RAW_SCAN_CAP,
     clean_edited_statement,
     content_hash,
     due_agents,
@@ -100,6 +101,29 @@ def test_parse_reply_clips_and_caps():
     assert len(parse_reply(long_one)[0]["content"]) == CONTENT_MAX_CHARS
     many = json.dumps({"candidates": [_candidate(content=f"c{i}") for i in range(30)]})
     assert len(parse_reply(many)) == CANDIDATE_CAP
+
+
+def test_parse_reply_caps_on_valid_candidates_not_raw_items():
+    # The cap must count VALID candidates, not raw list items -- junk ahead
+    # of the real candidates must not starve the caller of the good ones
+    # behind it.
+    malformed = [{"statement": "x" * 161} for _ in range(6)]  # each over STATEMENT_MAX_CHARS
+    good = [{"statement": f"Sentence number {i}."} for i in range(5)]
+    reply = _v2_reply(*(malformed + good))
+
+    got = parse_reply(reply)
+
+    assert [c["content"] for c in got] == [f"Sentence number {i}." for i in range(5)]
+
+
+def test_parse_reply_scan_cap_bounds_the_raw_list_itself():
+    # RAW_SCAN_CAP stops a hostile giant list from buying unbounded parsing
+    # work: a valid candidate sitting past the first RAW_SCAN_CAP raw items
+    # is never even looked at.
+    padding = [{"statement": "x" * 161} for _ in range(RAW_SCAN_CAP)]
+    reply = _v2_reply(*(padding + [{"statement": "A sentence that would pass."}]))
+
+    assert parse_reply(reply) == []
 
 
 def test_parse_reply_drops_a_non_string_content_field():
@@ -173,6 +197,20 @@ def test_store_candidates_skips_known_hash_any_status(session):
 
     assert again == 0
     assert session.query(AgentLearning).count() == 1
+
+
+def test_store_candidates_logs_exact_hash_tombstone(session, caplog):
+    store_candidates(session, "wren", "2026-09-01", [_candidate()])
+    row = session.query(AgentLearning).one()
+    row.status = LEARNING_DENIED
+    session.commit()
+
+    with caplog.at_level(logging.INFO, logger="kobo.learnings"):
+        again = store_candidates(session, "wren", "2026-09-02", [_candidate()])
+
+    assert again == 0
+    assert f"skipped an exact repeat of #{row.id}" in caplog.text
+    assert "denied" in caplog.text
 
 
 def test_store_candidates_hash_is_sha256_of_content(session):
@@ -486,6 +524,22 @@ def test_known_statements_maps_statuses_orders_newest_first_and_windows(session)
     assert all(set(k) == {"id", "status", "statement"} for k in got)
 
 
+def test_known_statements_orders_by_id_when_created_at_ties(session):
+    # Two rows sharing an identical created_at (fast test seeding, or a
+    # genuinely simultaneous write) must still come out newest-first,
+    # deterministically -- the id tiebreaker is what makes that so.
+    first = _row(session, "First sentence inserted.", age_days=1)
+    second = _row(session, "Second sentence inserted.", age_days=1)
+    assert first.created_at == second.created_at
+
+    got = known_statements(session, "ledger", STORE_NOW)
+
+    assert [k["statement"] for k in got] == [
+        "Second sentence inserted.",
+        "First sentence inserted.",
+    ]
+
+
 def test_known_statements_caps_at_forty(session):
     for i in range(45):
         _row(session, f"Distinct sentence number {i} about topic {i}.", age_days=1)
@@ -505,6 +559,27 @@ def test_store_drops_rephrase_of_pending_approved_or_denied(session):
     stored = store_candidates(session, "ledger", "2026-09-16",
         [_cand("Only deactivate or delete removes group memberships; suspend keeps them.")], now=STORE_NOW)
     assert stored == 0
+
+
+def test_store_candidates_logs_near_duplicate_drop(session, caplog):
+    old = _row(
+        session,
+        "Suspend keeps group memberships; only deactivate or delete removes them.",
+        status="denied",
+    )
+
+    with caplog.at_level(logging.INFO, logger="kobo.learnings"):
+        stored = store_candidates(
+            session,
+            "ledger",
+            "2026-09-16",
+            [_cand("Only deactivate or delete removes group memberships; suspend keeps them.")],
+            now=STORE_NOW,
+        )
+
+    assert stored == 0
+    assert f"dropped a near-duplicate of #{old.id}" in caplog.text
+    assert "denied" in caplog.text
 
 
 def test_store_ignores_near_duplicates_outside_the_window_or_other_agents(session):
@@ -527,6 +602,20 @@ def test_replaces_updates_a_pending_row_in_place(session):
     assert old.said_by == "priya" and old.day == "2026-09-10" and old.status == "pending"
     assert old.content_hash == content_hash(old.content)
     assert session.query(AgentLearning).filter_by(agent_name="ledger").count() == 1
+
+
+def test_replaces_keeps_original_evidence_when_refinement_quote_is_empty(session):
+    old = _row(session, "Suspend keeps memberships.")
+    old.evidence = "original quote"
+    session.commit()
+
+    stored = store_candidates(session, "ledger", "2026-09-16", [_cand(
+        "Suspend keeps group memberships; only deactivate or delete removes them.",
+        replaces=old.id, evidence="")], now=STORE_NOW)
+
+    session.refresh(old)
+    assert stored == 1
+    assert old.evidence == "original quote"
 
 
 def test_replaces_a_decided_or_foreign_row_is_treated_as_new(session):
@@ -595,3 +684,17 @@ def test_clean_edited_statement():
     assert clean_edited_statement("x" * 201) is None
     assert clean_edited_statement("two\nlines") is None
     assert clean_edited_statement("x" * 200) == "x" * 200
+
+
+def test_clean_edited_statement_rejects_any_non_space_whitespace():
+    # Not just \n/\r: a tab, vertical tab, form feed, NEL, non-breaking
+    # space, or a Unicode line/paragraph separator all break the
+    # one-line-on-a-prompt guarantee just as surely as a literal newline.
+    assert clean_edited_statement("a\tb") is None
+    assert clean_edited_statement("a\x0bb") is None
+    assert clean_edited_statement("a\x0cb") is None
+    assert clean_edited_statement("a\x85b") is None
+    assert clean_edited_statement("a\xa0b") is None
+    assert clean_edited_statement("a b") is None
+    assert clean_edited_statement("a b") is None
+    assert clean_edited_statement("a b") == "a b"  # a plain space is fine

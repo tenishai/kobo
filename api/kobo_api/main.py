@@ -450,9 +450,13 @@ class LearningsBulkPayload(BaseModel):
 
 
 class LearningApprovePayload(BaseModel):
-    # Optional fixed wording (learnings rethink): when present, THIS is what
-    # gets taught and what the row shows afterwards.
-    content: str | None = None
+    """POST .../approve body: optional fixed wording (learnings rethink) --
+    when present, THIS is what gets taught and what the row shows
+    afterwards. `max_length` only stops a multi-megabyte body from being
+    parsed at all; the 200-char semantic rule on the actual statement stays
+    enforced by `clean_edited_statement`."""
+
+    content: str | None = Field(default=None, max_length=2000)
 
 
 class ToolingUploadPayload(BaseModel):

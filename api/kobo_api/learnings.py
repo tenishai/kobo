@@ -33,6 +33,7 @@ from kobo_api.models import (
 log = logging.getLogger("kobo.learnings")
 
 CANDIDATE_CAP = 10
+RAW_SCAN_CAP = 50
 CONTENT_MAX_CHARS = 400
 EVIDENCE_MAX_CHARS = 200
 SOURCE_MAX_CHARS = 512
@@ -83,10 +84,16 @@ def is_near_duplicate(a: str, b: str) -> bool:
 
 def clean_edited_statement(text: str) -> str | None:
     """An operator's fixed wording for a learning, or None when it cannot
-    be taught: empty, over EDITED_LEARNING_MAX_CHARS, or multi-line (a
-    learning is one sentence; a pasted paragraph belongs in the teach box)."""
+    be taught: empty, over EDITED_LEARNING_MAX_CHARS, or carrying any
+    whitespace character other than a plain space (a learning is one
+    sentence rendered on one line; a tab, vertical tab, form feed, NEL, or
+    a Unicode line/paragraph separator all break that as surely as a
+    literal newline would, so every one of them is rejected alongside
+    \\n and \\r rather than just those two)."""
     cleaned = text.strip()
-    if not cleaned or len(cleaned) > EDITED_LEARNING_MAX_CHARS or "\n" in cleaned or "\r" in cleaned:
+    if not cleaned or len(cleaned) > EDITED_LEARNING_MAX_CHARS:
+        return None
+    if any(ch.isspace() and ch != " " for ch in cleaned):
         return None
     return cleaned
 
@@ -170,7 +177,14 @@ def parse_reply(reply: str) -> list[dict]:
 
     Accepts both the legacy v1 shape (content/kind/source/evidence) and the
     v2 shape (statement/said_by/quote/where/replaces) from the learnings
-    rethink, normalizing either into the same internal dict."""
+    rethink, normalizing either into the same internal dict.
+
+    CANDIDATE_CAP/V2_CANDIDATE_CAP bound VALID candidates, not raw items --
+    a hostile (or just malformed) reply padded with junk ahead of the real
+    candidates must not starve the caller of the good ones behind it.
+    RAW_SCAN_CAP bounds the raw list itself so a giant list still can't buy
+    unbounded parsing work: at most the first RAW_SCAN_CAP items are ever
+    looked at, valid or not."""
     cleaned = reply.strip()
     if cleaned.startswith("```"):
         inner = cleaned.split("```")
@@ -185,7 +199,9 @@ def parse_reply(reply: str) -> list[dict]:
         return []
     candidates: list[dict] = []
     v2_count = 0
-    for item in raw[:CANDIDATE_CAP]:
+    for item in raw[:RAW_SCAN_CAP]:
+        if len(candidates) >= CANDIDATE_CAP:
+            break
         if not isinstance(item, dict):
             continue
         parsed = _parse_v2(item) if "statement" in item else _parse_v1(item)
@@ -218,12 +234,18 @@ def store_candidates(
     for candidate in candidates[:CANDIDATE_CAP]:
         content = candidate["content"]
         digest = content_hash(content)
-        if (
+        exact = (
             session.query(AgentLearning)
             .filter_by(agent_name=agent_name, content_hash=digest)
             .first()
-            is not None
-        ):
+        )
+        if exact is not None:
+            log.info(
+                "learnings: %s skipped an exact repeat of #%d (%s)",
+                agent_name,
+                exact.id,
+                exact.status,
+            )
             continue
 
         target = None
@@ -249,11 +271,23 @@ def store_candidates(
             )
             .all()
         )
-        if any(
-            is_near_duplicate(content, row.content)
-            for row in known
-            if target is None or row.id != target.id
-        ):
+        match = next(
+            (
+                row
+                for row in known
+                if (target is None or row.id != target.id)
+                and is_near_duplicate(content, row.content)
+            ),
+            None,
+        )
+        if match is not None:
+            log.info(
+                "learnings: %s dropped a near-duplicate of #%d (%s): %r",
+                agent_name,
+                match.id,
+                match.status,
+                content[:80],
+            )
             continue
 
         if target is not None:
@@ -261,7 +295,10 @@ def store_candidates(
             target.content_hash = digest
             target.said_by = candidate.get("said_by")
             target.source = candidate["source"]
-            target.evidence = candidate.get("evidence", "")
+            # An empty refinement quote must not wipe evidence the original
+            # already had -- `or` keeps target.evidence when the incoming
+            # value is falsy (missing key or "").
+            target.evidence = candidate.get("evidence") or target.evidence
         else:
             session.add(
                 AgentLearning(
@@ -285,7 +322,12 @@ def known_statements(session: Session, agent_name: str, now: datetime) -> list[d
     """What the agent must not re-propose: its pending, remembered, and
     skipped statements from the last KNOWN_WINDOW_DAYS, newest first,
     capped. Ids ride along so a refinement can name what it `replaces`.
-    Expired rows are left out -- nobody ever judged them."""
+    Expired rows are left out -- nobody ever judged them.
+
+    Ordered by created_at, id both descending: two rows can share an
+    identical created_at (fast test seeding, or genuinely simultaneous
+    writes), and without the id tiebreaker their relative order is
+    whatever SQLite/Postgres happens to return -- not deterministic."""
     cutoff = _naive_utc(now) - timedelta(days=KNOWN_WINDOW_DAYS)
     rows = (
         session.query(AgentLearning)
@@ -294,7 +336,7 @@ def known_statements(session: Session, agent_name: str, now: datetime) -> list[d
             AgentLearning.status.in_(tuple(_KNOWN_LABELS)),
             AgentLearning.created_at >= cutoff,
         )
-        .order_by(AgentLearning.created_at.desc())
+        .order_by(AgentLearning.created_at.desc(), AgentLearning.id.desc())
         .limit(KNOWN_LIST_CAP)
         .all()
     )

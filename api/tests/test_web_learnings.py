@@ -313,6 +313,31 @@ def test_approve_rejects_bad_edited_content(session_factory, config, bad):
     assert row.content == "Suspend keeps memberships."
 
 
+def test_approve_content_over_field_max_length_is_422_and_stays_pending(
+    session_factory, config
+):
+    # The Pydantic Field bound (max_length=2000) exists only to stop a
+    # multi-megabyte body from being parsed at all -- the 200-char semantic
+    # rule stays clean_edited_statement's job. This proves the oversized
+    # body never even reaches that check: it 422s at the payload boundary
+    # and the row is untouched.
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config)
+    learning_id = _seed_learning(session_factory, content="Suspend keeps memberships.")
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/learnings/{learning_id}/approve",
+        json={"content": "x" * 5000},
+    )
+
+    assert response.status_code == 422
+    session = session_factory()
+    row = session.query(AgentLearning).filter_by(id=learning_id).one()
+    session.close()
+    assert row.status == LEARNING_PENDING
+    assert row.content == "Suspend keeps memberships."
+
+
 def test_approve_without_body_is_unchanged(session_factory, config):
     client = _make_client(session_factory, config)
     _seed_agent(session_factory, config)
