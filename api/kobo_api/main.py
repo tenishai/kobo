@@ -5028,6 +5028,7 @@ def create_app(
                         "kind": row.kind,
                         "source": row.source,
                         "evidence": row.evidence,
+                        "said_by": row.said_by,
                         "status": row.status,
                         "decided_by": row.decided_by,
                         "created_at": (

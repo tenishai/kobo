@@ -199,6 +199,17 @@ def test_list_learnings_returns_rows_and_validates_status(session_factory, confi
     assert bogus.status_code == 422
 
 
+def test_list_learnings_includes_said_by(session_factory, config):
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config)
+    _seed_learning(session_factory, said_by="kgreiner")
+
+    listed = client.get(f"/api/agents/{AGENT_NAME}/learnings")
+    assert listed.status_code == 200
+    body = listed.json()["learnings"]
+    assert body[0]["said_by"] == "kgreiner"
+
+
 def test_list_learnings_unknown_agent_404(session_factory, config):
     client = _make_client(session_factory, config)
 

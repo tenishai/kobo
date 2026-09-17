@@ -565,9 +565,9 @@ class AgentLearning(Base):
     (`kobo_api.db.init_db`) creates it for free -- same no-ALTER-needed
     convention `MCPToolCallLog` documents above. The migration under
     migrations/versions/ exists only so test_migrations.py's baseline-vs-
-    models parity check keeps passing; production still creates this table
-    the same create_all way, since the shipped image carries no
-    migrations/ directory at all.
+    models parity check keeps passing; the image ships migrations/ and runs
+    `alembic upgrade head` at boot, so columns added after the table's
+    birth (like `said_by`) arrive by migration.
     """
 
     __tablename__ = "agent_learnings"
@@ -580,6 +580,9 @@ class AgentLearning(Base):
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     source: Mapped[str] = mapped_column(String(512), nullable=False)
     evidence: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Who stated it, as the conversation shows them (learnings rethink,
+    # 2026-09-16). Nullable: v1 candidates and every pre-rethink row have none.
+    said_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(10), nullable=False, default="pending")
     decided_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
