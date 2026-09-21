@@ -957,6 +957,214 @@ def test_branch_exists_raises_for_any_other_failure():
         client.branch_exists("acme/clio", "kobo/wire")
 
 
+# --- GitHub (reading a repository without cloning it) ---------------------------
+#
+# The connect scan answers four questions about a repository the room does
+# not own, before anything has been cloned and before a row exists. Every
+# one of them is a `gh api` read, and every one of them has the same
+# discipline: "the App cannot see it" is an ANSWER (visible=False, no file,
+# no entries, not protected), never an exception, because a person typing a
+# repository name into a form gets a report, not a stack trace. Only a
+# failure that says nothing about this repository (bad credentials, an
+# unreachable API) still raises.
+
+REPO_JSON = (
+    '{"default_branch":"main","permissions":{"admin":false,"push":true,'
+    '"pull":true}}'
+)
+NOT_FOUND = (1, '{"message":"Not Found"}', "gh: Not Found (HTTP 404)")
+BAD_CREDENTIALS = (1, "", "gh: Bad credentials (HTTP 401)")
+
+
+def test_repo_access_argv_and_a_writable_repo():
+    runner = RecordingRunner(results=[(0, REPO_JSON, "")])
+    client = GhCLI(runner=runner)
+
+    access = client.repo_access("acme/clio")
+
+    assert runner.calls == [["gh", "api", "repos/acme/clio"]]
+    assert access.visible is True
+    assert access.can_write is True
+    assert access.default_branch == "main"
+
+
+def test_repo_access_read_only_when_github_says_push_is_false():
+    runner = RecordingRunner(
+        results=[(0, '{"default_branch":"trunk","permissions":{"push":false}}', "")]
+    )
+    client = GhCLI(runner=runner)
+
+    access = client.repo_access("acme/clio")
+
+    assert access.visible is True
+    assert access.can_write is False
+    assert access.default_branch == "trunk"
+
+
+def test_repo_access_assumes_write_when_the_response_carries_no_permissions():
+    """An App installation token's repo response can omit `permissions`
+    altogether. The App is installed on the repository or the read would
+    have 404ed, so the honest assumption is that it may write; the wiring
+    pull request is where a missing permission actually shows itself."""
+    runner = RecordingRunner(results=[(0, '{"default_branch":"main"}', "")])
+    client = GhCLI(runner=runner)
+
+    access = client.repo_access("acme/clio")
+
+    assert access.visible is True
+    assert access.can_write is True
+
+
+def test_repo_access_not_visible_on_a_404():
+    runner = RecordingRunner(results=[NOT_FOUND])
+    client = GhCLI(runner=runner)
+
+    access = client.repo_access("acme/private-thing")
+
+    assert access.visible is False
+    assert access.can_write is False
+    assert access.default_branch == ""
+
+
+def test_repo_access_raises_for_a_failure_that_is_not_about_this_repo():
+    runner = RecordingRunner(results=[BAD_CREDENTIALS])
+    client = GhCLI(runner=runner)
+
+    with pytest.raises(ClientError):
+        client.repo_access("acme/clio")
+
+
+def test_read_file_argv_and_decoded_content():
+    body = base64.b64encode(b"FROM registry.example/agents/base\n").decode()
+    runner = RecordingRunner(
+        results=[(0, f'{{"size":33,"encoding":"base64","content":"{body}"}}', "")]
+    )
+    client = GhCLI(runner=runner)
+
+    text = client.read_file("acme/clio", "Dockerfile")
+
+    assert runner.calls == [["gh", "api", "repos/acme/clio/contents/Dockerfile"]]
+    assert text == "FROM registry.example/agents/base\n"
+
+
+def test_read_file_none_when_the_file_is_not_there():
+    runner = RecordingRunner(results=[NOT_FOUND])
+    client = GhCLI(runner=runner)
+
+    assert client.read_file("acme/clio", "Dockerfile") is None
+
+
+def test_read_file_none_for_a_file_over_the_size_cap():
+    """The reader has one job: small text files the scan reasons about. A
+    huge one is refused before its base64 is ever decoded into memory."""
+    runner = RecordingRunner(
+        results=[(0, '{"size":9999999,"encoding":"base64","content":"aGk="}', "")]
+    )
+    client = GhCLI(runner=runner)
+
+    assert client.read_file("acme/clio", "Dockerfile") is None
+
+
+def test_read_file_none_when_github_declines_to_inline_the_content():
+    """GitHub answers a large file with an empty `content` and encoding
+    "none". Nothing to read, same answer as a missing file."""
+    runner = RecordingRunner(
+        results=[(0, '{"size":12,"encoding":"none","content":""}', "")]
+    )
+    client = GhCLI(runner=runner)
+
+    assert client.read_file("acme/clio", "Dockerfile") is None
+
+
+def test_read_file_none_when_the_path_is_a_directory():
+    """The contents API answers a directory with a JSON array. That is not
+    a file, and the caller asked for one."""
+    runner = RecordingRunner(results=[(0, '[{"name":"main.py","type":"file"}]', "")])
+    client = GhCLI(runner=runner)
+
+    assert client.read_file("acme/clio", "src") is None
+
+
+def test_read_file_raises_for_a_failure_that_is_not_about_this_file():
+    runner = RecordingRunner(results=[BAD_CREDENTIALS])
+    client = GhCLI(runner=runner)
+
+    with pytest.raises(ClientError):
+        client.read_file("acme/clio", "Dockerfile")
+
+
+def test_list_root_argv_and_names():
+    runner = RecordingRunner(results=[(0, "Dockerfile\nk8s\n.env\n", "")])
+    client = GhCLI(runner=runner)
+
+    names = client.list_root("acme/clio")
+
+    assert runner.calls == [
+        ["gh", "api", "repos/acme/clio/contents/", "--jq", ".[].name"]
+    ]
+    assert names == ["Dockerfile", "k8s", ".env"]
+
+
+def test_list_root_empty_for_a_repo_with_nothing_in_it():
+    """An empty repository has no root tree at all, and GitHub answers the
+    contents endpoint with a 404. Nothing there is exactly the answer."""
+    runner = RecordingRunner(results=[NOT_FOUND])
+    client = GhCLI(runner=runner)
+
+    assert client.list_root("acme/clio") == []
+
+
+def test_list_root_raises_for_a_failure_that_is_not_about_this_repo():
+    runner = RecordingRunner(results=[BAD_CREDENTIALS])
+    client = GhCLI(runner=runner)
+
+    with pytest.raises(ClientError):
+        client.list_root("acme/clio")
+
+
+def test_branch_protected_argv_and_true():
+    runner = RecordingRunner(results=[(0, "true", "")])
+    client = GhCLI(runner=runner)
+
+    assert client.branch_protected("acme/clio", "main") is True
+    assert runner.calls == [
+        ["gh", "api", "repos/acme/clio/branches/main", "--jq", ".protected"]
+    ]
+
+
+def test_branch_protected_false_when_it_is_not():
+    runner = RecordingRunner(results=[(0, "false", "")])
+    client = GhCLI(runner=runner)
+
+    assert client.branch_protected("acme/clio", "main") is False
+
+
+def test_branch_protected_false_when_there_is_no_such_branch():
+    runner = RecordingRunner(results=[NOT_FOUND])
+    client = GhCLI(runner=runner)
+
+    assert client.branch_protected("acme/clio", "main") is False
+
+
+def test_branch_protected_raises_for_a_failure_that_is_not_about_this_branch():
+    runner = RecordingRunner(results=[BAD_CREDENTIALS])
+    client = GhCLI(runner=runner)
+
+    with pytest.raises(ClientError):
+        client.branch_protected("acme/clio", "main")
+
+
+def test_the_read_methods_pass_gh_token_env_when_provider_set():
+    runner = RecordingRunner(results=[(0, REPO_JSON, ""), (0, "", ""), (0, "true", "")])
+    client = GhCLI(runner=runner, token_provider=lambda: "ghs_faketoken123")
+
+    client.repo_access("acme/clio")
+    client.list_root("acme/clio")
+    client.branch_protected("acme/clio", "main")
+
+    assert runner.envs == [{"GH_TOKEN": "ghs_faketoken123"}] * 3
+
+
 # --- Cloud (GcloudClient) -----------------------------------------------------
 
 
@@ -6321,6 +6529,42 @@ def test_fake_github_satisfies_protocol(tmp_path):
     fake.archive_repo("acme/archived-agent-clio-1")
     assert fake.renamed == {"acme/agent-clio": "acme/archived-agent-clio-1"}
     assert fake.archived == {"acme/archived-agent-clio-1"}
+
+
+def test_fake_github_reads_a_repository_the_way_the_real_client_does():
+    """The connect scan's four reads, against the fake's wired happy path:
+    a visible, writable repository with a Dockerfile at its root and an
+    unprotected default branch. A repository the fake has never heard of is
+    invisible rather than an error, exactly as a 404 is for the real one.
+    """
+    fake = FakeGitHub(existing_repos={"acme/clio"})
+
+    access = fake.repo_access("acme/clio")
+    assert (access.visible, access.can_write, access.default_branch) == (True, True, "main")
+    assert "Dockerfile" in fake.list_root("acme/clio")
+    assert fake.read_file("acme/clio", "Dockerfile").startswith("FROM ")
+    assert fake.read_file("acme/clio", "gojira.yaml") is None
+    assert fake.branch_protected("acme/clio", "main") is False
+
+    unknown = fake.repo_access("acme/nobody-told-us")
+    assert (unknown.visible, unknown.can_write, unknown.default_branch) == (False, False, "")
+
+
+def test_fake_github_read_knobs():
+    fake = FakeGitHub(
+        existing_repos={"acme/clio"},
+        can_write=False,
+        default_branch="trunk",
+        root_entries=["Dockerfile", ".env"],
+        repo_files={"Dockerfile": "FROM python:3.12\n"},
+        protected_branches={"trunk"},
+    )
+
+    access = fake.repo_access("acme/clio")
+    assert (access.can_write, access.default_branch) == (False, "trunk")
+    assert fake.list_root("acme/clio") == ["Dockerfile", ".env"]
+    assert fake.read_file("acme/clio", "Dockerfile") == "FROM python:3.12\n"
+    assert fake.branch_protected("acme/clio", "trunk") is True
 
 
 def test_fake_gojira_satisfies_protocol():

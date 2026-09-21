@@ -22,6 +22,7 @@ from kobo_api.clients import (
     ChatMessage,
     ClientError,
     GojiraConflict,
+    RepoAccessInfo,
     SlackApiError,
     StorageNotFound,
     gsa_email,
@@ -193,6 +194,20 @@ COPY bundle/ /bundle
 # in: this is the incident's stale-base shape (an agent repo whose image
 # predates a later-added transport's required extra).
 FAKE_DOCKERFILE_OLD_IMAGE = "registry.example/agents/daedalus-runtime:old"
+
+# What a team's own repository holds at its root when nothing about it
+# worries the connect scan: a Dockerfile whose base is pinned by digest
+# under the room's own registry, serving the port the deploy platform
+# probes. The wired-happy-path default for the reading methods below, same
+# convention as every other knob on this fake.
+FAKE_CONNECTED_DOCKERFILE = (
+    "FROM registry.example/agents/base@sha256:"
+    "1111111111111111111111111111111111111111111111111111111111111111\n"
+    "EXPOSE 8080\n"
+    'CMD ["/app/serve"]\n'
+)
+
+FAKE_CONNECTED_ROOT = ["Dockerfile", "README.md", "src"]
 
 
 def _app_name_from_repo(repo: str) -> str:
@@ -463,6 +478,11 @@ class FakeGitHub:
         agent_card: dict | None = None,
         clone_tree: dict[str, str] | None = None,
         extra_clone_files: dict[str, str] | None = None,
+        repo_files: dict[str, str] | None = None,
+        root_entries: list[str] | None = None,
+        can_write: bool = True,
+        default_branch: str = "main",
+        protected_branches: set[str] | None = None,
     ):
         self.repos: set[str] = set(existing_repos) if existing_repos else set()
         self._rename_error = rename_error
@@ -534,6 +554,19 @@ class FakeGitHub:
             ]
         self._run_index_by_sha: dict[str, int] = {}
         self._run_id_to_sha: dict[int, str] = {}
+        self._repo_files = (
+            dict(repo_files)
+            if repo_files is not None
+            else {"Dockerfile": FAKE_CONNECTED_DOCKERFILE}
+        )
+        self._root_entries = (
+            list(root_entries) if root_entries is not None else list(FAKE_CONNECTED_ROOT)
+        )
+        self._can_write = can_write
+        self._default_branch = default_branch
+        self._protected_branches: set[str] = (
+            set(protected_branches) if protected_branches else set()
+        )
         self._rerun_result = rerun_result or {"status": "completed", "conclusion": "success"}
         self._rerun_followup = list(rerun_followup) if rerun_followup else None
         self.rerun_calls: list[tuple[str, int]] = []
@@ -541,6 +574,40 @@ class FakeGitHub:
     def repo_exists(self, repo: str) -> bool:
         self.calls.append(f"repo_exists:{repo}")
         return repo in self.repos
+
+    def repo_access(self, repo: str) -> RepoAccessInfo:
+        """Visibility comes from `existing_repos`, exactly as `repo_exists`
+        reads it, so one knob answers both. `can_write` and `default_branch`
+        are their own knobs, defaulting to the wired happy path; a repo the
+        fake has never heard of is invisible and carries neither.
+        """
+        self.calls.append(f"repo_access:{repo}")
+        if repo not in self.repos:
+            return RepoAccessInfo(visible=False, can_write=False, default_branch="")
+        return RepoAccessInfo(
+            visible=True,
+            can_write=self._can_write,
+            default_branch=self._default_branch,
+        )
+
+    def read_file(self, repo: str, path: str) -> str | None:
+        """Whatever `repo_files` holds at `path`, None otherwise -- the same
+        "nothing to read" the real client answers for a missing, oversized
+        or non-file path. Not keyed by repo: every test here scans one.
+        """
+        self.calls.append(f"read_file:{repo}:{path}")
+        return self._repo_files.get(path)
+
+    def list_root(self, repo: str) -> list[str]:
+        self.calls.append(f"list_root:{repo}")
+        return list(self._root_entries)
+
+    def branch_protected(self, repo: str, branch: str) -> bool:
+        """True for any branch named in `protected_branches`. Default empty:
+        the room can merge its own wiring pull request.
+        """
+        self.calls.append(f"branch_protected:{repo}:{branch}")
+        return branch in self._protected_branches
 
     def _snapshot_pushed_content(self, repo: str, src: Path) -> None:
         """Read every file under `src` now, synchronously — the real
