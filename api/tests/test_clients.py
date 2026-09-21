@@ -40,9 +40,11 @@ from kobo_api.clients import (
     GojiraClient,
     GojiraConflict,
     HttpxGojiraClient,
+    FileSlackTokenStore,
     HttpxSlackClient,
     HttpxStorageClient,
     ImageClient,
+    KubeSlackTokenStore,
     KubectlAgentClient,
     KubectlCLI,
     KubectlClient,
@@ -69,6 +71,8 @@ from kobo_api.clients import (
     filter_cabal_event_stream,
     image_tag,
     installation_token_provider,
+    slack_configured,
+    slack_token_store,
 )
 from kobo_api.config import Config, GroupChoice
 from kobo_api.groups import OktaGroupResolver, OktaPeopleSearch
@@ -1169,6 +1173,123 @@ def test_restart_deploy_propagates_client_error():
     client = KubectlCLI(runner=runner)
     with pytest.raises(ClientError):
         client.restart_deploy("clio", "clio")
+
+
+# --- KubectlCLI.secret_literals (two-replica safety: the Slack token store) ----
+#
+# Obviously-fake token literals only. `kubectl get secret -o json` puts the
+# Secret's base64 values on STDOUT, so unlike every other read above, this
+# one's stdout is secret-bearing: nothing here may log it or let it reach a
+# raised exception (CommandRunner's own failure message embeds `stderr or
+# stdout`, so the failure path has to be re-raised, unchained).
+
+SECRET_CONFIG_TOKEN = "xoxe.xoxp-TEST-config"
+SECRET_REFRESH_TOKEN = "xoxe-TEST-refresh"
+
+
+def _secret_get_json(**literals: str) -> str:
+    data = {
+        key: base64.b64encode(value.encode()).decode() for key, value in literals.items()
+    }
+    return json.dumps({"kind": "Secret", "metadata": {"name": "kobo-slack-tokens"}, "data": data})
+
+
+def test_secret_literals_argv_and_base64_decode():
+    runner = RecordingRunner(
+        results=[
+            (
+                0,
+                _secret_get_json(
+                    config_token=SECRET_CONFIG_TOKEN, refresh_token=SECRET_REFRESH_TOKEN
+                ),
+                "",
+            )
+        ]
+    )
+    client = KubectlCLI(runner=runner)
+
+    assert client.secret_literals("kobo", "kobo-slack-tokens") == {
+        "config_token": SECRET_CONFIG_TOKEN,
+        "refresh_token": SECRET_REFRESH_TOKEN,
+    }
+    assert runner.calls == [
+        ["kubectl", "-n", "kobo", "get", "secret", "kobo-slack-tokens", "-o", "json"]
+    ]
+
+
+def test_secret_literals_missing_secret_raises_naming_only_namespace_and_name():
+    runner = RecordingRunner(
+        results=[(1, "", 'Error from server (NotFound): secrets "kobo-slack-tokens" not found')]
+    )
+    client = KubectlCLI(runner=runner)
+
+    with pytest.raises(ClientError) as exc_info:
+        client.secret_literals("kobo", "kobo-slack-tokens")
+
+    assert "kobo/kobo-slack-tokens" in str(exc_info.value)
+
+
+def test_secret_literals_failure_cannot_leak_stdout_into_the_raised_error():
+    # CommandRunner.run's own ClientError message is `f"... failed (rc=N):
+    # {stderr or stdout}"` and it carries stdout/stderr on the exception --
+    # for THIS command, stdout is the Secret's (base64) values. A kubectl
+    # that fails with an empty stderr after already printing part of the
+    # JSON must not put any of it into the error, its attributes, or the
+    # chained cause a traceback would print.
+    leaky_stdout = _secret_get_json(
+        config_token=SECRET_CONFIG_TOKEN, refresh_token=SECRET_REFRESH_TOKEN
+    )
+    encoded = base64.b64encode(SECRET_REFRESH_TOKEN.encode()).decode()
+    runner = RecordingRunner(results=[(1, leaky_stdout, "")])
+    client = KubectlCLI(runner=runner)
+
+    with pytest.raises(ClientError) as exc_info:
+        client.secret_literals("kobo", "kobo-slack-tokens")
+
+    error = exc_info.value
+    for leak in (leaky_stdout, encoded, SECRET_REFRESH_TOKEN, SECRET_CONFIG_TOKEN):
+        assert leak not in str(error)
+        assert leak not in error.stdout
+        assert leak not in error.stderr
+        assert leak not in str(error.__cause__ or "")
+    # The original (whose message embeds that stdout) is still the implicit
+    # context, as it is for any raise inside an except block -- what keeps
+    # it out of a printed traceback is the `from None` suppression.
+    assert error.__cause__ is None
+    assert error.__suppress_context__ is True
+
+
+def test_secret_literals_unparsable_output_raises_naming_only_namespace_and_name():
+    runner = RecordingRunner(results=[(0, "not json at all", "")])
+    client = KubectlCLI(runner=runner)
+
+    with pytest.raises(ClientError) as exc_info:
+        client.secret_literals("kobo", "kobo-slack-tokens")
+
+    assert "kobo/kobo-slack-tokens" in str(exc_info.value)
+    assert "not json at all" not in str(exc_info.value)
+
+
+def test_secret_literals_undecodable_value_raises_without_the_value():
+    runner = RecordingRunner(
+        results=[(0, json.dumps({"data": {"config_token": "!!!not base64!!!"}}), "")]
+    )
+    client = KubectlCLI(runner=runner)
+
+    with pytest.raises(ClientError) as exc_info:
+        client.secret_literals("kobo", "kobo-slack-tokens")
+
+    assert "kobo/kobo-slack-tokens" in str(exc_info.value)
+    assert "!!!not base64!!!" not in str(exc_info.value)
+
+
+def test_secret_literals_empty_data_reads_as_an_empty_mapping():
+    # A Secret that exists but carries no data is not an error here -- the
+    # store above it decides whether a MISSING KEY is fatal, and says which.
+    runner = RecordingRunner(results=[(0, json.dumps({"kind": "Secret"}), "")])
+    client = KubectlCLI(runner=runner)
+
+    assert client.secret_literals("kobo", "kobo-slack-tokens") == {}
 
 
 # --- image_tag (digest-pinned deploy fix, live incident) -----------------------
@@ -2359,6 +2480,227 @@ def test_slack_malformed_tokens_file_raises_client_error_naming_path(tmp_path):
         client.create_app({"display_information": {"name": "clio"}})
 
     assert str(tokens_path) in str(exc_info.value)
+
+
+# --- Slack token stores (two-replica safety) ------------------------------------
+#
+# Two pods can hit the same expired config token at the same moment, and
+# Slack's refresh token is single-use: the store is the only thing both
+# pods share, so rotation reads it before spending a refresh token and
+# again after a rotate fails, and converges on whichever pair won.
+
+
+class _MemorySlackTokenStore:
+    """A SlackTokenStore standing in for one both pods can see (the
+    Kubernetes Secret in a real two-replica room). `pair` is settable
+    straight from a request handler, which is how these tests express
+    "the other process rotated while this call was in flight"."""
+
+    def __init__(self, config_token: str, refresh_token: str):
+        self.pair = (config_token, refresh_token)
+        self.writes: list[tuple[str, str]] = []
+
+    def read(self) -> tuple[str, str]:
+        return self.pair
+
+    def write(self, config_token: str, refresh_token: str) -> None:
+        self.pair = (config_token, refresh_token)
+        self.writes.append(self.pair)
+
+
+def test_file_slack_token_store_round_trips_the_pair(tmp_path):
+    tokens_path = _write_slack_tokens_file(
+        tmp_path, config_token="xoxe.xoxp-TEST-config", refresh_token="xoxe-TEST-refresh"
+    )
+    store = FileSlackTokenStore(tokens_path)
+
+    assert store.read() == ("xoxe.xoxp-TEST-config", "xoxe-TEST-refresh")
+
+    store.write("xoxe.xoxp-TEST-next", "xoxe-TEST-next-refresh")
+
+    assert store.read() == ("xoxe.xoxp-TEST-next", "xoxe-TEST-next-refresh")
+    assert "# GITIGNORED" in tokens_path.read_text()
+
+
+def test_slack_client_wraps_a_bare_path_in_a_file_store(tmp_path):
+    # Backward compatibility: every existing caller and test passes a Path.
+    tokens_path = _write_slack_tokens_file(
+        tmp_path, config_token="xoxe.xoxp-TEST-config", refresh_token="xoxe-TEST-refresh"
+    )
+    client = HttpxSlackClient(tokens_path)
+
+    assert isinstance(client._store, FileSlackTokenStore)
+    assert client._store.read() == ("xoxe.xoxp-TEST-config", "xoxe-TEST-refresh")
+
+
+def test_kube_slack_token_store_reads_the_two_secret_keys():
+    kubectl = FakeKubectl(
+        secrets={
+            ("kobo", "kobo-slack-tokens"): {
+                "config_token": "xoxe.xoxp-TEST-config",
+                "refresh_token": "xoxe-TEST-refresh",
+            }
+        }
+    )
+    store = KubeSlackTokenStore(kubectl, "kobo", "kobo-slack-tokens")
+
+    assert store.read() == ("xoxe.xoxp-TEST-config", "xoxe-TEST-refresh")
+
+
+def test_kube_slack_token_store_writes_both_keys_through_apply_secret():
+    kubectl = FakeKubectl()
+    store = KubeSlackTokenStore(kubectl, "kobo", "kobo-slack-tokens")
+
+    store.write("xoxe.xoxp-TEST-new", "xoxe-TEST-new-refresh")
+
+    assert kubectl.secrets_applied == [
+        (
+            "kobo",
+            "kobo-slack-tokens",
+            {
+                "config_token": "xoxe.xoxp-TEST-new",
+                "refresh_token": "xoxe-TEST-new-refresh",
+            },
+        )
+    ]
+    assert store.read() == ("xoxe.xoxp-TEST-new", "xoxe-TEST-new-refresh")
+
+
+def test_kube_slack_token_store_missing_key_names_namespace_name_and_key_only():
+    kubectl = FakeKubectl(
+        secrets={("kobo", "kobo-slack-tokens"): {"config_token": "xoxe.xoxp-TEST-config"}}
+    )
+    store = KubeSlackTokenStore(kubectl, "kobo", "kobo-slack-tokens")
+
+    with pytest.raises(ClientError) as exc_info:
+        store.read()
+
+    message = str(exc_info.value)
+    assert "kobo/kobo-slack-tokens" in message
+    assert "refresh_token" in message
+    assert "xoxe.xoxp-TEST-config" not in message
+
+
+def test_slack_rotation_skips_slack_when_the_store_already_holds_a_newer_token():
+    # The other pod rotated between this pod's read and this pod's auth
+    # failure. Its pair is already in the store and this pod's refresh
+    # token is already spent -- calling rotate with it would burn the
+    # single-use token the other pod just issued.
+    store = _MemorySlackTokenStore("xoxe.xoxp-TEST-old-config", "xoxe-TEST-old-refresh")
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        calls.append(path)
+        if path == "/api/apps.manifest.create":
+            if request.headers.get("authorization") == "Bearer xoxe.xoxp-TEST-old-config":
+                store.pair = ("xoxe.xoxp-TEST-other-config", "xoxe-TEST-other-refresh")
+                return httpx.Response(200, json={"ok": False, "error": "token_expired"})
+            assert (
+                request.headers.get("authorization")
+                == "Bearer xoxe.xoxp-TEST-other-config"
+            )
+            return httpx.Response(200, json={"ok": True, "app_id": "A0OTHER"})
+        raise AssertionError(f"unexpected path {path}")
+
+    client = HttpxSlackClient(
+        store, http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+
+    assert client.create_app({"display_information": {"name": "clio"}}) == "A0OTHER"
+    assert calls == ["/api/apps.manifest.create", "/api/apps.manifest.create"]
+    assert store.writes == []
+
+
+def test_slack_rotation_failure_returns_the_other_processs_token_when_the_store_moved():
+    # Both pods called rotate with the same refresh token; the other pod's
+    # call won and this one's lost (Slack rejects an already-spent refresh
+    # token). The winner's pair is in the store, so this pod uses it
+    # instead of failing the create.
+    store = _MemorySlackTokenStore("xoxe.xoxp-TEST-old-config", "xoxe-TEST-old-refresh")
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        calls.append(path)
+        if path == "/api/apps.manifest.create":
+            if request.headers.get("authorization") == "Bearer xoxe.xoxp-TEST-old-config":
+                return httpx.Response(200, json={"ok": False, "error": "token_expired"})
+            assert (
+                request.headers.get("authorization")
+                == "Bearer xoxe.xoxp-TEST-other-config"
+            )
+            return httpx.Response(200, json={"ok": True, "app_id": "A0OTHER"})
+        if path == "/api/tooling.tokens.rotate":
+            store.pair = ("xoxe.xoxp-TEST-other-config", "xoxe-TEST-other-refresh")
+            return httpx.Response(200, json={"ok": False, "error": "invalid_refresh_token"})
+        raise AssertionError(f"unexpected path {path}")
+
+    client = HttpxSlackClient(
+        store, http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+
+    assert client.create_app({"display_information": {"name": "clio"}}) == "A0OTHER"
+    assert calls == [
+        "/api/apps.manifest.create",
+        "/api/tooling.tokens.rotate",
+        "/api/apps.manifest.create",
+    ]
+    # This pod never overwrote the winner's pair.
+    assert store.writes == []
+
+
+def test_slack_rotation_failure_raises_when_the_store_is_unchanged():
+    # Nobody else rotated: the rotate really did fail and the caller must
+    # see it, exactly as before.
+    store = _MemorySlackTokenStore("xoxe.xoxp-TEST-old-config", "xoxe-TEST-old-refresh")
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        calls.append(path)
+        if path == "/api/apps.manifest.create":
+            return httpx.Response(200, json={"ok": False, "error": "token_expired"})
+        if path == "/api/tooling.tokens.rotate":
+            return httpx.Response(200, json={"ok": False, "error": "invalid_refresh_token"})
+        raise AssertionError(f"unexpected path {path}")
+
+    client = HttpxSlackClient(
+        store, http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+
+    with pytest.raises(SlackApiError) as exc_info:
+        client.create_app({"display_information": {"name": "clio"}})
+
+    assert "invalid_refresh_token" in str(exc_info.value)
+    assert "xoxe-TEST-old-refresh" not in str(exc_info.value)
+    assert calls == ["/api/apps.manifest.create", "/api/tooling.tokens.rotate"]
+    assert store.pair == ("xoxe.xoxp-TEST-old-config", "xoxe-TEST-old-refresh")
+
+
+def test_slack_delete_app_rotation_also_skips_slack_when_the_store_moved():
+    # delete_app threads the failed token through the same way create_app
+    # does -- the retry-exactly-once rule is unchanged either way.
+    store = _MemorySlackTokenStore("xoxe.xoxp-TEST-old-config", "xoxe-TEST-old-refresh")
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        calls.append(path)
+        if path == "/api/apps.manifest.delete":
+            if request.headers.get("authorization") == "Bearer xoxe.xoxp-TEST-old-config":
+                store.pair = ("xoxe.xoxp-TEST-other-config", "xoxe-TEST-other-refresh")
+                return httpx.Response(200, json={"ok": False, "error": "invalid_auth"})
+            return httpx.Response(200, json={"ok": True})
+        raise AssertionError(f"unexpected path {path}")
+
+    client = HttpxSlackClient(
+        store, http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+
+    assert client.delete_app("A0FAKE") is True
+    assert calls == ["/api/apps.manifest.delete", "/api/apps.manifest.delete"]
+    assert store.writes == []
 
 
 # --- Slack.delete_app (Task 3: agent destruction's Slack step) -------------------
@@ -6044,6 +6386,53 @@ def test_clients_real_wires_slack_when_tokens_path_set(tmp_path):
     )
     clients = Clients.real(config)
     assert isinstance(clients.slack, HttpxSlackClient)
+    assert isinstance(clients.slack._store, FileSlackTokenStore)
+
+
+# --- Slack token store selection (two-replica safety) -------------------------
+
+
+def test_slack_configured_true_for_either_setting(tmp_path):
+    assert slack_configured(Config()) is False
+    assert slack_configured(Config(slack_tokens_path=tmp_path / "slack.local.yaml")) is True
+    assert slack_configured(Config(slack_tokens_secret="kobo/kobo-slack-tokens")) is True
+
+
+def test_slack_token_store_none_when_neither_setting_is_configured():
+    assert slack_token_store(Config(), FakeKubectl()) is None
+
+
+def test_slack_token_store_prefers_the_secret_and_warns_once(tmp_path, caplog):
+    config = Config(
+        slack_tokens_path=tmp_path / "slack.local.yaml",
+        slack_tokens_secret="kobo/kobo-slack-tokens",
+    )
+    kubectl = FakeKubectl()
+
+    with caplog.at_level(logging.WARNING, logger="kobo_api.clients"):
+        store = slack_token_store(config, kubectl)
+
+    assert isinstance(store, KubeSlackTokenStore)
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "slack_tokens_secret" in warnings[0].getMessage()
+    assert "slack_tokens_path" in warnings[0].getMessage()
+
+
+def test_clients_real_wires_slack_from_the_secret_store(tmp_path):
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        slack_tokens_secret="kobo/kobo-slack-tokens",
+    )
+    clients = Clients.real(config)
+
+    assert isinstance(clients.slack, HttpxSlackClient)
+    store = clients.slack._store
+    assert isinstance(store, KubeSlackTokenStore)
+    # The same kubectl the rest of the room shells out through -- one
+    # binary, one runner, no second client built just for this read.
+    assert store._kubectl is clients.kubectl
 
 
 def test_clients_real_wires_storage_client_unconditionally():

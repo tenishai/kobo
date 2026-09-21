@@ -1394,6 +1394,25 @@ class KubectlClient(Protocol):
         """
         ...
 
+    def secret_literals(self, namespace: str, name: str) -> dict[str, str]:
+        """The Secret `name`'s data as plain, base64-DECODED values — the
+        read half of `apply_secret` above.
+
+        Used by `KubeSlackTokenStore` (below) to keep the Slack
+        config-token pair in a Secret rather than on a ReadWriteOnce disk,
+        so the room can run more than one replica. An absent Secret raises
+        `ClientError`; a Secret that exists with no data reads as `{}` (the
+        store above decides which missing KEY is fatal and says which).
+
+        The returned values are live credentials and this call's stdout
+        carries them: no implementation may log that stdout, nor let it
+        reach a raised exception — see `KubectlCLI.secret_literals` for
+        what that costs (an unchained re-raise, since `CommandRunner`'s own
+        failure message embeds `stderr or stdout`). Errors name only
+        `namespace`/`name`, never a value.
+        """
+        ...
+
     def deployment_status_json(self, namespace: str, deploy: str) -> dict:
         """The live Deployment's full status as a decoded JSON dict
         (`kubectl get deploy ... -o json`).
@@ -1496,6 +1515,43 @@ class KubectlCLI:
         self._runner.run(
             [self._kubectl, "-n", namespace, "rollout", "restart", f"deploy/{deploy}"]
         )
+
+    def secret_literals(self, namespace: str, name: str) -> dict[str, str]:
+        try:
+            out = self._runner.run(
+                [self._kubectl, "-n", namespace, "get", "secret", name, "-o", "json"]
+            )
+        except ClientError as exc:
+            # NOT `from exc`, unlike every other re-raise in this class:
+            # CommandRunner.run's message is built from `stderr or stdout`,
+            # and THIS command's stdout is the Secret's own (base64) data.
+            # A chained cause is printed in full by any traceback, so the
+            # sanitized message here would be worth nothing with the
+            # original still hanging off it. The underlying stdout/stderr
+            # are dropped for the same reason; only the exit code survives.
+            raise ClientError(
+                f"kubectl get secret {namespace}/{name} failed",
+                returncode=exc.returncode,
+            ) from None
+
+        try:
+            data = json.loads(out).get("data") or {}
+            return {
+                key: base64.b64decode(value).decode() for key, value in data.items()
+            }
+        except (ValueError, TypeError, AttributeError):
+            # Every way this read can be malformed, and all of them
+            # ValueError-family or a shape that isn't a mapping: bad JSON,
+            # a non-object payload, a value that isn't base64 or isn't
+            # UTF-8 underneath. Same no-chaining rule as above -- `out` IS
+            # the secret material, and a JSONDecodeError/binascii error
+            # embeds the text it choked on. Never name a key here either: a
+            # malformed read gives no ground to trust which key the failure
+            # belongs to.
+            raise ClientError(
+                f"kubectl get secret {namespace}/{name} returned data this room "
+                "could not read"
+            ) from None
 
     def apply_secret(self, namespace: str, name: str, literals: dict[str, str]) -> None:
         literal_args = [f"--from-literal={key}={value}" for key, value in literals.items()]
@@ -1661,25 +1717,160 @@ def _write_slack_tokens(tokens_path: Path, config_token: str, refresh_token: str
     os.replace(tmp_path, tokens_path)
 
 
+# The two keys a `KubeSlackTokenStore`'s Secret holds. Deliberately shorter
+# and flatter than the file store's `slack_app_config_token`/`slack_app_
+# config_refresh_token` line keys: a Secret's data keys must be valid
+# config-map key names, and an operator creating this Secret by hand types
+# them (`--from-literal=config_token=...`).
+_SECRET_TOKEN_KEY = "config_token"
+_SECRET_REFRESH_KEY = "refresh_token"
+
+
+@runtime_checkable
+class SlackTokenStore(Protocol):
+    """Where the Slack app-configuration pair lives between rotations.
+
+    The seam exists because the pair is the only mutable state kobo keeps
+    outside Postgres, and a file on a ReadWriteOnce disk is what pins the
+    room to a single replica. The room's Postgres never holds a credential,
+    so the two-replica answer is a Kubernetes Secret, not a table.
+
+    Implementations must be safe to read at any moment from any replica:
+    `HttpxSlackClient` re-reads before spending a refresh token and again
+    after a rotate fails, and treats a changed pair as "another process
+    rotated", so a store that cached would defeat the whole arrangement.
+    """
+
+    def read(self) -> tuple[str, str]:
+        """The current (config_token, refresh_token). Raises `ClientError`
+        when the pair cannot be read — never naming a value."""
+        ...
+
+    def write(self, config_token: str, refresh_token: str) -> None:
+        """Persist a freshly rotated pair, both values together."""
+        ...
+
+
+class FileSlackTokenStore:
+    """The gitignored local YAML file (`slack_tokens_path`): local dev,
+    single-process installs, and every test that predates this seam.
+
+    A thin wrapper over `_read_slack_tokens`/`_write_slack_tokens`, whose
+    behavior — tolerant line parse, comment-preserving atomic rewrite,
+    errors naming only the path — is unchanged and still the contract.
+    """
+
+    def __init__(self, path: Path):
+        self._path = path
+
+    def read(self) -> tuple[str, str]:
+        return _read_slack_tokens(self._path)
+
+    def write(self, config_token: str, refresh_token: str) -> None:
+        _write_slack_tokens(self._path, config_token, refresh_token)
+
+
+class KubeSlackTokenStore:
+    """A Kubernetes Secret holding the pair under `config_token` /
+    `refresh_token` — the store that lets the room run more than one
+    replica, since every replica reads and writes the same object instead
+    of its own copy of a mounted file.
+
+    Reads go through `KubectlClient.secret_literals` and writes through the
+    same `apply_secret` upsert the room already delivers agent Slack tokens
+    with, so nothing new touches a credential on its way to kubectl. Both
+    keys are always written together: a half-written pair would leave the
+    room holding a config token it cannot rotate.
+    """
+
+    def __init__(self, kubectl: KubectlClient, namespace: str, name: str):
+        self._kubectl = kubectl
+        self._namespace = namespace
+        self._name = name
+
+    def read(self) -> tuple[str, str]:
+        literals = self._kubectl.secret_literals(self._namespace, self._name)
+        for key in (_SECRET_TOKEN_KEY, _SECRET_REFRESH_KEY):
+            if not literals.get(key):
+                raise ClientError(
+                    f"slack tokens secret {self._namespace}/{self._name} is "
+                    f"missing key {key!r}"
+                )
+        return literals[_SECRET_TOKEN_KEY], literals[_SECRET_REFRESH_KEY]
+
+    def write(self, config_token: str, refresh_token: str) -> None:
+        self._kubectl.apply_secret(
+            self._namespace,
+            self._name,
+            {_SECRET_TOKEN_KEY: config_token, _SECRET_REFRESH_KEY: refresh_token},
+        )
+
+
+def slack_configured(config: Config) -> bool:
+    """Whether Slack connect is wired at all: EITHER store is configured.
+
+    The one place that question is answered (same single-helper posture as
+    `cabal_enabled` above) so adding the Secret store could not leave some
+    call site still asking the narrower "is slack_tokens_path set", which
+    would read a perfectly wired two-replica room as unconfigured.
+    """
+    return bool(config.slack_tokens_secret or config.slack_tokens_path)
+
+
+def slack_token_store(config: Config, kubectl: KubectlClient) -> SlackTokenStore | None:
+    """The store `Clients.real` hands `HttpxSlackClient`, or None when
+    Slack connect isn't configured at all.
+
+    The Secret wins when both are set: a room that names a Secret is a
+    deployed room, and silently rotating into a mounted file there would
+    put the live pair somewhere only one replica can see. One WARNING says
+    so (the app configures no logging, so INFO would never reach pod logs
+    — same reasoning as `kobo_api.org._disclose_overrides`).
+    """
+    if config.slack_tokens_secret:
+        if config.slack_tokens_path:
+            log.warning(
+                "slack_tokens_secret is set, so slack_tokens_path (%s) is ignored: "
+                "the config-token pair lives in the Secret",
+                config.slack_tokens_path,
+            )
+        namespace, _, name = config.slack_tokens_secret.partition("/")
+        return KubeSlackTokenStore(kubectl, namespace, name)
+    if config.slack_tokens_path:
+        return FileSlackTokenStore(config.slack_tokens_path)
+    return None
+
+
 class HttpxSlackClient:
     """Slack Web API client for app-manifest creation, with automatic
     config-token rotation.
 
     Slack's app-config tokens expire in ~12h; `create_app` reads the current
-    token from `tokens_path` on every call (never cached across calls) so a
+    token from the store on every call (never cached across calls) so a
     rotation from a previous call — or from outside this process entirely —
     is always picked up fresh. On `ok: false` with error `token_expired` or
     `invalid_auth`, it rotates the pair exactly once (persisting the new pair
-    to `tokens_path` before using it) and retries the create exactly once;
+    to the store before using it) and retries the create exactly once;
     a second auth failure after that raises rather than looping forever.
+
+    With two replicas both replicas can hit the same expired token at the
+    same moment, and there is no lock: `_rotate` instead makes the race
+    convergent by re-reading the store around Slack's single-use refresh
+    token. See its docstring.
     """
 
-    def __init__(self, tokens_path: Path, http_client: httpx.Client | None = None):
-        self._tokens_path = tokens_path
+    def __init__(
+        self,
+        store: SlackTokenStore | Path,
+        http_client: httpx.Client | None = None,
+    ):
+        # A bare Path still works, and means the file store: every caller
+        # and test that predates the seam passes one.
+        self._store = FileSlackTokenStore(store) if isinstance(store, Path) else store
         self._client = http_client or httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0))
 
     def create_app(self, manifest: dict) -> str:
-        config_token, _ = _read_slack_tokens(self._tokens_path)
+        config_token, _ = self._store.read()
         return self._create_app(manifest, config_token, retried=False)
 
     def _create_app(self, manifest: dict, config_token: str, *, retried: bool) -> str:
@@ -1694,20 +1885,39 @@ class HttpxSlackClient:
 
         error = body.get("error", "unknown_error")
         if error in _SLACK_AUTH_ERRORS and not retried:
-            new_config_token = self._rotate()
+            new_config_token = self._rotate(config_token)
             return self._create_app(manifest, new_config_token, retried=True)
 
         # Never include `manifest` or any token material here — just Slack's
         # own error code.
         raise SlackApiError(f"slack app creation failed: {error}")
 
-    def _rotate(self) -> str:
+    def _rotate(self, failed_config_token: str) -> str:
         """Rotate the config-token pair via `tooling.tokens.rotate` and
-        persist the new pair to `tokens_path` BEFORE returning it — see the
+        persist the new pair to the store BEFORE returning it — see the
         class docstring and `_write_slack_tokens` for why persist-first is
         load-bearing (the refresh token is single-use).
+
+        The same single-use refresh token is what makes two replicas
+        dangerous: both can reach this at once, and the loser of that race
+        would spend a token the winner already spent. Rather than a lock,
+        the store is re-read at both points where the winner's work is
+        already visible in it:
+
+        - before calling Slack, if the stored config token is no longer the
+          one that just failed auth, someone else has already rotated —
+          their token is returned and Slack is never called;
+        - after a failed rotate, if the stored refresh token is no longer
+          the one this call spent, someone else's rotate landed in between
+          and their config token is returned instead of raising.
+
+        A rotate that fails with the store untouched is a real failure and
+        still raises, exactly as before.
         """
-        _, refresh_token = _read_slack_tokens(self._tokens_path)
+        stored_config_token, refresh_token = self._store.read()
+        if stored_config_token != failed_config_token:
+            return stored_config_token
+
         resp = self._client.post(
             f"{_SLACK_API_BASE}/tooling.tokens.rotate",
             data={"refresh_token": refresh_token},
@@ -1715,15 +1925,23 @@ class HttpxSlackClient:
         body = resp.json()
         if not body.get("ok"):
             error = body.get("error", "unknown_error")
+            try:
+                current_config_token, current_refresh_token = self._store.read()
+            except ClientError:
+                # A store that can't be re-read tells us nothing about who
+                # won; report Slack's own failure rather than this one.
+                current_config_token, current_refresh_token = "", refresh_token
+            if current_refresh_token != refresh_token:
+                return current_config_token
             raise SlackApiError(f"slack token rotation failed: {error}")
 
         new_config_token = body["token"]
         new_refresh_token = body["refresh_token"]
-        _write_slack_tokens(self._tokens_path, new_config_token, new_refresh_token)
+        self._store.write(new_config_token, new_refresh_token)
         return new_config_token
 
     def delete_app(self, app_id: str) -> bool:
-        config_token, _ = _read_slack_tokens(self._tokens_path)
+        config_token, _ = self._store.read()
         return self._delete_app(app_id, config_token, retried=False)
 
     def _delete_app(self, app_id: str, config_token: str, *, retried: bool) -> bool:
@@ -1738,7 +1956,7 @@ class HttpxSlackClient:
 
         error = body.get("error", "unknown_error")
         if error in _SLACK_AUTH_ERRORS and not retried:
-            new_config_token = self._rotate()
+            new_config_token = self._rotate(config_token)
             return self._delete_app(app_id, new_config_token, retried=True)
         if error in _SLACK_ALREADY_GONE_ERRORS:
             return False
@@ -3657,9 +3875,10 @@ class Clients:
     cloud: CloudClient
     agent: AgentClient
     kubectl: KubectlClient
-    # None when Slack connect isn't configured (no slack_tokens_path) — routes
-    # must 503 with a clear "Slack is not configured" error in that case,
-    # keeping local setups without Slack tokens working untouched.
+    # None when Slack connect isn't configured (neither token store — see
+    # `slack_configured`) — routes must 503 with a clear "Slack is not
+    # configured" error in that case, keeping local setups without Slack
+    # tokens working untouched.
     slack: SlackClient | None = None
     # Unlike slack, ImageClient is always constructible (the vertex project
     # fields it needs already exist in Config) — Clients.real() below never
@@ -3719,12 +3938,18 @@ class Clients:
         # goes stale, instead of each shelling out to `gcloud auth
         # print-access-token` (~1-2s live) on every single call.
         gcloud_token = CachedGcloudToken()
+        # Built before the `cls(...)` call rather than inline: the Slack
+        # token store may itself be kubectl-backed, and it reads the pair
+        # through this same client (one binary, one runner) rather than a
+        # second one built just for that.
+        kubectl = KubectlCLI(runner=runner)
+        slack_store = slack_token_store(config, kubectl)
         return cls(
             github=GhCLI(runner=runner, token_provider=token_provider),
             gojira=HttpxGojiraClient(config.gojira_url, token=config.gojira_token),
             cloud=GcloudClient(config.gcp_project, runner=runner),
             agent=KubectlAgentClient(),
-            kubectl=KubectlCLI(runner=runner),
+            kubectl=kubectl,
             image=VertexImageClient(
                 config.vertex_project, config.avatar_location, config.avatar_model,
                 token_provider=gcloud_token,
@@ -3734,9 +3959,7 @@ class Clients:
                 token_provider=gcloud_token,
             ),
             storage=HttpxStorageClient(config.gcp_project, token_provider=gcloud_token),
-            slack=HttpxSlackClient(config.slack_tokens_path)
-            if config.slack_tokens_path
-            else None,
+            slack=HttpxSlackClient(slack_store) if slack_store is not None else None,
             # Same "is this configured" gate as slack above, but via the
             # shared `cabal_enabled` truthiness check (kobo_api.clients)
             # rather than a single field, since being wired needs all three

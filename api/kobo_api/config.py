@@ -267,6 +267,17 @@ class Config(BaseModel):
     # Path to the gitignored Slack config-token pair (P2c); None means Slack
     # connect is unconfigured — Clients.real() gates on this to leave slack=None.
     slack_tokens_path: Path | None = None
+    # The Kubernetes Secret holding that same pair, as "<namespace>/<name>"
+    # (keys `config_token` and `refresh_token`). Set this instead of
+    # slack_tokens_path to run more than one replica: a file on a
+    # ReadWriteOnce volume is what pins the room to one pod, and rotation
+    # rewrites it. Both set = the Secret wins, with a WARNING
+    # (kobo_api.clients.slack_token_store). The namespace is explicit, never
+    # detected from inside the pod, so the Secret a room reads and writes is
+    # always the one its own config names. Deployment-local like
+    # slack_tokens_path above and deliberately absent from org.py's ORG_KEYS:
+    # it names an object in THIS cluster, not anything the org hands out.
+    slack_tokens_secret: str = ""
     # Emails allowed to use the Slack connect routes once IAP is enabled
     # (Task 5) — main.py's `_slack_operator_block` 403s any other caller on
     # both routes, before their existing checks. Empty (the default) leaves
@@ -448,6 +459,33 @@ class Config(BaseModel):
         if v is not None:
             return Path(v).expanduser()
         return v
+
+    @model_validator(mode="after")
+    def _slack_tokens_secret_names_a_namespace_and_a_name(self) -> Config:
+        """A non-empty `slack_tokens_secret` must read `<namespace>/<name>`,
+        both halves non-empty and neither carrying whitespace or a second
+        slash — the shape `kobo_api.clients.slack_token_store` splits on.
+
+        Same "fail loudly at construction" posture as the validators below:
+        a half-written value here (just a name, say) would build a store
+        pointed at an empty namespace, and the room would only find out the
+        first time Slack's config token expired — the one moment losing the
+        pair is unrecoverable, since the refresh token is single-use.
+        """
+        value = self.slack_tokens_secret
+        if not value:
+            return self
+        namespace, slash, name = value.partition("/")
+        if not slash or not namespace or not name or "/" in name:
+            raise ValueError(
+                f"slack_tokens_secret {value!r} must be '<namespace>/<name>'"
+            )
+        if any(ch.isspace() for ch in value):
+            raise ValueError(
+                f"slack_tokens_secret {value!r} must be '<namespace>/<name>' "
+                "with no spaces"
+            )
+        return self
 
     @model_validator(mode="after")
     def _admin_groups_must_be_configured_groups(self) -> Config:
