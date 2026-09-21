@@ -60,12 +60,14 @@ def test_same_agent_same_hash_is_rejected(session):
 
 
 import json
+from contextlib import contextmanager
 from datetime import timedelta
 
 from kobo_api.clients import _build_learnings_envelope
 from kobo_api.learnings import (
     CANDIDATE_CAP,
     CONTENT_MAX_CHARS,
+    LEARNINGS_SWEEP_LOCK_ID,
     RAW_SCAN_CAP,
     clean_edited_statement,
     content_hash,
@@ -76,6 +78,7 @@ from kobo_api.learnings import (
     parse_reply,
     run_nightly,
     seconds_until_next_utc_midnight,
+    single_sweeper,
     store_candidates,
 )
 from kobo_api.models import LEARNING_DENIED, LEARNING_EXPIRED
@@ -698,3 +701,146 @@ def test_clean_edited_statement_rejects_any_non_space_whitespace():
     assert clean_edited_statement("a b") is None
     assert clean_edited_statement("a b") is None
     assert clean_edited_statement("a b") == "a b"  # a plain space is fine
+
+
+# --- single_sweeper (two-replica safety) --------------------------------------
+#
+# Two replicas both run the lifespan loop, so both wake at boot and after
+# every UTC midnight. On Postgres the sweep is claimed with a session-level
+# advisory lock held on its own connection for the whole sweep; on SQLite
+# (one process by construction) the guard is a no-op that always sweeps.
+
+
+class _FakeResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar(self):
+        return self._value
+
+
+class _FakeConnection:
+    def __init__(self, acquired: bool):
+        self._acquired = acquired
+        self.statements: list[tuple[str, dict | None]] = []
+        self.closed = False
+
+    def execute(self, statement, params=None):
+        sql = str(statement)
+        self.statements.append((sql, params))
+        return _FakeResult(self._acquired if "pg_try_advisory_lock" in sql else True)
+
+    def close(self):
+        self.closed = True
+
+
+class _FakePostgresEngine:
+    def __init__(self, acquired: bool = True):
+        self.dialect = SimpleNamespace(name="postgresql")
+        self.connection = _FakeConnection(acquired)
+        self.connects = 0
+
+    def connect(self):
+        self.connects += 1
+        return self.connection
+
+
+class _FakeSqliteEngine:
+    dialect = SimpleNamespace(name="sqlite")
+
+    def connect(self):
+        raise AssertionError("sqlite must not open a second connection")
+
+
+def _locked(connection) -> list[str]:
+    return [sql for sql, _ in connection.statements]
+
+
+def test_single_sweeper_on_sqlite_always_sweeps_without_a_lock():
+    with single_sweeper(_FakeSqliteEngine()) as acquired:
+        assert acquired is True
+
+
+def test_single_sweeper_on_postgres_acquires_on_a_dedicated_connection():
+    engine = _FakePostgresEngine(acquired=True)
+
+    with single_sweeper(engine) as acquired:
+        assert acquired is True
+        # Still held, and the connection still open, for the whole sweep.
+        assert engine.connection.closed is False
+        assert all("unlock" not in sql for sql in _locked(engine.connection))
+
+    assert engine.connects == 1
+    assert any("pg_try_advisory_lock" in sql for sql in _locked(engine.connection))
+    assert any("pg_advisory_unlock" in sql for sql in _locked(engine.connection))
+    assert engine.connection.closed is True
+    assert engine.connection.statements[0][1] == {"key": LEARNINGS_SWEEP_LOCK_ID}
+
+
+def test_single_sweeper_unlocks_and_closes_even_when_the_sweep_raises():
+    engine = _FakePostgresEngine(acquired=True)
+
+    with pytest.raises(RuntimeError), single_sweeper(engine):
+        raise RuntimeError("one agent's DB hiccup")
+
+    assert any("pg_advisory_unlock" in sql for sql in _locked(engine.connection))
+    assert engine.connection.closed is True
+
+
+def test_single_sweeper_reports_not_acquired_and_never_unlocks():
+    engine = _FakePostgresEngine(acquired=False)
+
+    with single_sweeper(engine) as acquired:
+        assert acquired is False
+
+    # Never unlock a lock this process does not hold -- that would hand the
+    # round to nobody and let a third replica in mid-sweep.
+    assert all("pg_advisory_unlock" not in sql for sql in _locked(engine.connection))
+    assert engine.connection.closed is True
+
+
+def test_run_nightly_skips_the_whole_sweep_when_another_instance_holds_the_lock(
+    session, monkeypatch, caplog
+):
+    monkeypatch.setattr(session, "close", lambda: None)
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    _seed_ready(session)
+    stale = AgentLearning(
+        agent_name="wren",
+        day="2026-08-01",
+        content="a pending row old enough to expire",
+        kind="fact",
+        source="Slack",
+        evidence="",
+        content_hash="deadbeef",
+        created_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=30),
+    )
+    session.add(stale)
+    session.commit()
+    cabal = StubCabal(json.dumps({"candidates": [_candidate()]}))
+
+    @contextmanager
+    def taken(engine):
+        yield False
+
+    monkeypatch.setattr("kobo_api.learnings.single_sweeper", taken)
+
+    with caplog.at_level(logging.WARNING, logger="kobo.learnings"):
+        run_nightly(_app(lambda: session, cabal, _cabal_enabled_config()))
+
+    # Nothing at all: no relay, and not even the expiry bookkeeping.
+    assert cabal.calls == []
+    session.refresh(stale)
+    assert stale.status == LEARNING_PENDING
+    assert any("another instance" in r.getMessage() for r in caplog.records)
+
+
+def test_run_nightly_sweeps_on_sqlite_where_the_guard_is_a_no_op(session, monkeypatch):
+    monkeypatch.setattr(session, "close", lambda: None)
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    _seed_ready(session)
+    cabal = StubCabal(json.dumps({"candidates": [_candidate()]}))
+
+    run_nightly(_app(lambda: session, cabal, _cabal_enabled_config()))
+
+    assert len(cabal.calls) == 1
