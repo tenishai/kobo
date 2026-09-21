@@ -320,6 +320,115 @@ def test_list_skills_prunes_ledger_rows_missing_from_repo(session_factory, confi
     assert response.json()["skills"] == []
 
 
+class _ChangingSkillGitHub(_SkillSeedingGitHub):
+    """Each clone materializes the NEXT tree in `trees` (the last one
+    repeats). Models what a replica actually sees when its 60s per-process
+    listing cache was filled before another replica added a skill: the
+    first read is the stale view, a re-read is the truth."""
+
+    def __init__(self, *, trees: list[dict[str, str]], **kwargs):
+        super().__init__(**kwargs)
+        self._trees = trees
+        self.clone_count = 0
+
+    def clone(self, repo: str, dest: Path) -> None:
+        tree = self._trees[min(self.clone_count, len(self._trees) - 1)]
+        self.clone_count += 1
+        self._local_skills = {
+            f"{skill_id}/SKILL.md": content for skill_id, content in tree.items()
+        }
+        super().clone(repo, dest)
+
+
+def test_list_skills_confirms_a_prune_against_a_fresh_listing(session_factory, config):
+    # The listing is a 60s PER-PROCESS cache: a skill added on replica A is
+    # invisible to replica B for up to a minute, and B's reconcile would
+    # otherwise prune the just-added row -- losing its catalog provenance
+    # for good. A prune has to be confirmed against a fresh read first.
+    github = _ChangingSkillGitHub(
+        trees=[{}, {SAMPLE_SKILL_ID: SAMPLE_CONTENT}]  # stale view, then the truth
+    )
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(
+        session_factory,
+        config,
+        skills=[{"name": SAMPLE_SKILL_ID, "team": SAMPLE_TEAM, "sha": SAMPLE_SKILL_SHA}],
+    )
+
+    response = client.get(f"/api/agents/{AGENT_NAME}/skills")
+
+    assert response.status_code == 200
+    skills = response.json()["skills"]
+    assert [s["name"] for s in skills] == [SAMPLE_SKILL_ID]
+    # Provenance survived: the row was never pruned and re-healed as local.
+    assert skills[0]["source"] == "catalog"
+    assert skills[0]["team"] == SAMPLE_TEAM
+    assert github.clone_count == 2  # once cached, once confirming
+
+    session = session_factory()
+    try:
+        agent = session.query(Agent).filter_by(name=AGENT_NAME).one()
+        assert [e["name"] for e in agent.skills] == [SAMPLE_SKILL_ID]
+        assert agent.skills[0]["team"] == SAMPLE_TEAM
+    finally:
+        session.close()
+
+
+def test_list_skills_still_prunes_what_the_fresh_listing_also_lacks(session_factory, config):
+    # The confirm read is a second opinion, not an amnesty: a row the
+    # bundle genuinely no longer carries still goes.
+    github = _ChangingSkillGitHub(trees=[{}])
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config, skills=[{"name": "ghost", "source": "local"}])
+
+    response = client.get(f"/api/agents/{AGENT_NAME}/skills")
+
+    assert response.json()["skills"] == []
+    assert github.clone_count == 2
+
+
+def test_list_skills_does_not_reclone_when_nothing_would_be_pruned(session_factory, config):
+    # The confirm read costs a real clone, so it only happens when a prune
+    # is actually on the table.
+    github = _ChangingSkillGitHub(trees=[{SAMPLE_SKILL_ID: SAMPLE_CONTENT}])
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(
+        session_factory,
+        config,
+        skills=[{"name": SAMPLE_SKILL_ID, "team": SAMPLE_TEAM, "sha": SAMPLE_SKILL_SHA}],
+    )
+
+    response = client.get(f"/api/agents/{AGENT_NAME}/skills")
+
+    assert [s["name"] for s in response.json()["skills"]] == [SAMPLE_SKILL_ID]
+    assert github.clone_count == 1
+
+
+def test_list_skills_keeps_the_ledger_when_the_confirming_read_fails(
+    session_factory, config, monkeypatch
+):
+    # The confirm read is the same clone as any other and can fail. A
+    # failure there must degrade exactly like the first read's does: keep
+    # the ledger, prune nothing.
+    github = _ChangingSkillGitHub(trees=[{}])
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config, skills=[{"name": "kept", "source": "local"}])
+
+    real_clone = github.clone
+
+    def flaky_clone(repo: str, dest: Path) -> None:
+        if github.clone_count >= 1:
+            raise ClientError("gh: rate limited")
+        real_clone(repo, dest)
+
+    monkeypatch.setattr(github, "clone", flaky_clone)
+
+    response = client.get(f"/api/agents/{AGENT_NAME}/skills")
+
+    assert response.status_code == 200
+    assert [s["name"] for s in response.json()["skills"]] == ["kept"]
+
+
 def test_list_skills_repo_failure_degrades_to_ledger_and_never_prunes(
     session_factory, config
 ):

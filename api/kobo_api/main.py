@@ -44,6 +44,7 @@ from kobo_api.clients import (
     _join_text_parts,
     cabal_enabled,
     filter_cabal_event_stream,
+    probe_slack_token_store,
 )
 from kobo_api.config import SHARED_GROUP, Config
 from kobo_api.db import init_db, make_engine, make_session_factory
@@ -791,7 +792,13 @@ def _background_refresh_catalogs(app: FastAPI, engine) -> None:
     The ingest itself runs under `app.state.catalog_ingest_lock` -- fixed
     round 1's concurrency fix -- so this thread can never race a manual
     `POST /api/catalogs/refresh` (or a concurrent cold-start inline ingest)
-    into two simultaneous `engine.begin()` writers.
+    into two simultaneous `engine.begin()` writers WITHIN THIS PROCESS. It
+    says nothing about another replica: a plain `threading.Lock` is not
+    visible outside one interpreter. What serializes replicas is the
+    transaction-scoped advisory lock `ingest_indexes` itself takes as the
+    first statement of its rebuild (`kobo_api.search`, Postgres only) --
+    without it two overlapping refreshes each DELETE what the other has
+    not committed yet, and every catalog row ends up duplicated.
     """
     state = app.state
     try:
@@ -1991,11 +1998,14 @@ def create_app(
     # the single-flight guard, true exactly while a background refresh
     # thread is in flight, checked and set together with `catalog_loaded_at`
     # under `catalog_lock` so N concurrent stale hits spawn exactly one
-    # thread. `catalog_ingest_lock` is the ONE true mutual exclusion for the
-    # ingest itself — held around every `ingest_indexes` call (cold-inline,
-    # background, and the manual refresh route) so two of sqlite's
-    # `engine.begin()` writers can never run concurrently, past the busy
-    # timeout, regardless of which of those three call sites is running.
+    # thread. `catalog_ingest_lock` is this PROCESS's mutual exclusion for
+    # the ingest itself — held around every `ingest_indexes` call
+    # (cold-inline, background, and the manual refresh route) so two of
+    # sqlite's `engine.begin()` writers can never run concurrently, past
+    # the busy timeout, regardless of which of those three call sites is
+    # running. It cannot serialize replicas (a threading.Lock is visible to
+    # one interpreter only); the advisory lock inside `ingest_indexes`
+    # (kobo_api.search) is the half that does.
     app.state.catalog_loaded_at = None
     app.state.catalog_lock = threading.Lock()
     app.state.catalog_refreshing = False
@@ -4487,15 +4497,49 @@ def create_app(
             # write below starts from whatever the DB holds NOW, never
             # from a copy that's already stale by the time it's used.
             session.refresh(agent)
-            known = [e for e in agent.skills if e["name"] in set(repo_ids)]
-            known_names = {e["name"] for e in known}
-            discovered = [
-                {"name": skill_id, "source": "local"}
-                for skill_id in repo_ids
-                if skill_id not in known_names
-            ]
-            merged = known + discovered
-            pruned = [e["name"] for e in agent.skills if e["name"] not in set(repo_ids)]
+
+            def _reconcile(ids: list[str]) -> tuple[list[dict], list[str]]:
+                present = set(ids)
+                known = [e for e in agent.skills if e["name"] in present]
+                known_names = {e["name"] for e in known}
+                discovered = [
+                    {"name": skill_id, "source": "local"}
+                    for skill_id in ids
+                    if skill_id not in known_names
+                ]
+                return (
+                    known + discovered,
+                    [e["name"] for e in agent.skills if e["name"] not in present],
+                )
+
+            merged, pruned = _reconcile(repo_ids)
+            if pruned:
+                # `list_repo_skills` answers from a 60s PER-PROCESS cache,
+                # so a skill added through another replica (or through this
+                # one before its own cache filled) is invisible here for up
+                # to a minute -- and pruning is destructive: the row's
+                # catalog provenance (team, sha) cannot be recovered once
+                # it's gone, since a re-discovered skill only ever heals
+                # back as "local". Confirm against a fresh listing before
+                # removing anything, and prune only what is STILL missing.
+                # Only when a prune is actually on the table: the confirm
+                # read is another real clone.
+                bust_repo_skills_cache(agent.repo_full_name)
+                try:
+                    confirmed_ids = list_repo_skills(
+                        app.state.clients.github, agent.repo_full_name
+                    )
+                except ClientError as exc:
+                    # Same degrade-to-the-ledger rule the first read has:
+                    # an unreachable repo is never evidence of absence.
+                    log.warning(
+                        "skills repo re-listing failed for %s: %s", name, exc
+                    )
+                    confirmed_ids = None
+                if confirmed_ids is None:
+                    merged, pruned = list(agent.skills), []
+                else:
+                    merged, pruned = _reconcile(confirmed_ids)
             if pruned:
                 log.info(
                     "skills reconcile pruned %s for %s (absent from bundle)",
@@ -7394,6 +7438,12 @@ def build_default_app() -> FastAPI:
     # Built from the MERGED config, same as the engine above — everything
     # downstream of boot sees org values as if they'd always been local.
     clients = Clients.real(config)
+    # Boot-time write probe for the Slack token Secret: rotation is the one
+    # write whose failure is unrecoverable, and it happens ~12h after boot
+    # with nobody watching. One idempotent apply here says now, in the
+    # startup logs, whether the room can do it at all. Fail-soft by
+    # design -- see the probe's own docstring.
+    probe_slack_token_store(clients)
     # Boot-time dispatch-pairs resync (final-review fix round, HIGH-2a): a
     # no-op if the switchboard isn't wired, fail-soft otherwise -- see
     # `_boot_sync_dispatch_pairs`'s own docstring for why this belongs

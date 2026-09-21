@@ -20,13 +20,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
 
 from kobo_api.clients import ClientError
 from kobo_api.db import make_engine
+from kobo_api.learnings import LEARNINGS_SWEEP_LOCK_ID
 from kobo_api.search import (
+    CATALOG_INGEST_LOCK_ID,
     CATALOG_TTL_S,
     CatalogEntry,
     catalog_is_empty,
@@ -1175,3 +1179,65 @@ def test_marketplace_cli_only_surfaces_are_never_ingested(engine):
     ingest_indexes(engine, storage, {"skill": "skills-bucket"})
     ids = sorted(e.id for e in search(engine, "skill", ""))
     assert ids == ["gcp-audit", "networking"]
+
+
+# --- ingest_indexes: the cross-replica write lock -----------------------------
+#
+# The rebuild is DELETE + bulk INSERT in one transaction. A per-process
+# threading.Lock serializes threads inside one replica and nothing else: at
+# READ COMMITTED, a second replica's DELETE cannot see the first's
+# uncommitted rows, so both INSERT and every catalog row ends up duplicated.
+# A transaction-scoped advisory lock is what actually serializes the two.
+#
+# Driven through a fake connection rather than the real engine so the
+# STATEMENT ORDER is assertable (the lock has to come first, before the
+# DELETE). The whole module also runs against a real Postgres when
+# POSTGRES_TEST_URL is set, which exercises the live statement for real.
+
+
+class _RecordingConn:
+    def __init__(self):
+        self.statements: list[tuple[str, object]] = []
+
+    def execute(self, statement, params=None):
+        self.statements.append((str(statement), params))
+
+
+class _FakeEngine:
+    def __init__(self, dialect_name: str):
+        self.dialect = SimpleNamespace(name=dialect_name)
+        self.conn = _RecordingConn()
+
+    @contextmanager
+    def begin(self):
+        yield self.conn
+
+
+def test_ingest_takes_an_advisory_transaction_lock_first_on_postgres(storage, monkeypatch):
+    monkeypatch.setattr("kobo_api.search.ensure_fts", lambda engine: None)
+    engine = _FakeEngine("postgresql")
+
+    ingest_indexes(engine, storage, {})
+
+    first_sql, first_params = engine.conn.statements[0]
+    assert "pg_advisory_xact_lock" in first_sql
+    assert first_params == {"key": CATALOG_INGEST_LOCK_ID}
+    # And it really is FIRST -- a lock taken after the DELETE would leave
+    # the window it exists to close wide open.
+    assert "DELETE" in engine.conn.statements[1][0]
+
+
+def test_ingest_takes_no_lock_on_sqlite(storage, monkeypatch):
+    monkeypatch.setattr("kobo_api.search.ensure_fts", lambda engine: None)
+    engine = _FakeEngine("sqlite")
+
+    ingest_indexes(engine, storage, {})
+
+    assert "DELETE" in engine.conn.statements[0][0]
+    assert all("advisory" not in sql for sql, _ in engine.conn.statements)
+
+
+def test_the_two_advisory_lock_keys_are_distinct():
+    # A shared key would make a catalog refresh and a learnings sweep
+    # exclude each other for no reason.
+    assert CATALOG_INGEST_LOCK_ID != LEARNINGS_SWEEP_LOCK_ID

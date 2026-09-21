@@ -1728,6 +1728,25 @@ def _write_slack_tokens(tokens_path: Path, config_token: str, refresh_token: str
 _SECRET_TOKEN_KEY = "config_token"
 _SECRET_REFRESH_KEY = "refresh_token"
 
+# How hard a freshly rotated pair is persisted before the room gives up on
+# it. The Kube store's write is two kubectl round trips over the network,
+# attempted at the one moment a failure is unrecoverable: Slack has already
+# spent the old refresh token, so a pair lost here is lost for good. A few
+# attempts with a short backoff cover the transient failures (a timeout, a
+# brief API-server blip) that make up nearly all of them.
+SLACK_STORE_WRITE_ATTEMPTS = 3
+SLACK_STORE_WRITE_BACKOFF_S = 0.5
+
+# What an operator is told when that final attempt fails. It names the exact
+# state the room is in and the only move that recovers it -- never a value,
+# and never a token fragment.
+SLACK_ROTATION_LOST = (
+    "Slack rotated the app-configuration token pair, but this room could not "
+    "store the new pair, and the pair it replaced is now spent. Re-issue the "
+    "token pair on Slack's app configuration page and update the room's token "
+    "store with it."
+)
+
 
 @runtime_checkable
 class SlackTokenStore(Protocol):
@@ -1809,20 +1828,15 @@ class KubeSlackTokenStore:
         )
 
 
-def slack_configured(config: Config) -> bool:
-    """Whether Slack connect is wired at all: EITHER store is configured.
-
-    The one place that question is answered (same single-helper posture as
-    `cabal_enabled` above) so adding the Secret store could not leave some
-    call site still asking the narrower "is slack_tokens_path set", which
-    would read a perfectly wired two-replica room as unconfigured.
-    """
-    return bool(config.slack_tokens_secret or config.slack_tokens_path)
-
-
 def slack_token_store(config: Config, kubectl: KubectlClient) -> SlackTokenStore | None:
     """The store `Clients.real` hands `HttpxSlackClient`, or None when
     Slack connect isn't configured at all.
+
+    This is the ONE place "is Slack wired" is decided: returning None here
+    is what leaves `Clients.slack` None, and every other call site in the
+    room (the connect route's 503, the destroy step) branches on that field
+    rather than re-deriving the question from config — so neither store can
+    be added or removed without every gate following automatically.
 
     The Secret wins when both are set: a room that names a Secret is a
     deployed room, and silently rotating into a mounted file there would
@@ -1842,6 +1856,41 @@ def slack_token_store(config: Config, kubectl: KubectlClient) -> SlackTokenStore
     if config.slack_tokens_path:
         return FileSlackTokenStore(config.slack_tokens_path)
     return None
+
+
+def probe_slack_token_store(clients: Clients) -> None:
+    """Prove at boot that the room can WRITE its Slack token Secret, by
+    writing back the pair it already holds (an idempotent apply that
+    changes nothing).
+
+    Rotation's failure mode is silent and delayed: a room with read-only
+    access to that Secret works perfectly until the config token expires
+    ~12h later, and discovers it cannot store the replacement at the exact
+    moment the old pair has already been spent (see `_persist`). This turns
+    that into one ERROR at startup, hours before it can cost anything.
+
+    Never raises and never blocks boot: a room that cannot reach the Secret
+    right now still serves every route that has nothing to do with Slack.
+    Only the Secret store is probed -- the file store's write is a local
+    atomic rewrite with no such failure mode, and rewriting a developer's
+    tokens file at every import would be a surprise.
+
+    Called once per process from `kobo_api.main.build_default_app`, never
+    from `create_app`, so tests that build their own app see nothing of it.
+    """
+    store = getattr(clients.slack, "_store", None)
+    if not isinstance(store, KubeSlackTokenStore):
+        return
+    try:
+        store.write(*store.read())
+    except ClientError as exc:
+        log.error(
+            "cannot write the slack token secret %s/%s (%s): slack app-config "
+            "token rotation will fail until the room can write it",
+            store._namespace,
+            store._name,
+            exc,
+        )
 
 
 class HttpxSlackClient:
@@ -1866,11 +1915,16 @@ class HttpxSlackClient:
         self,
         store: SlackTokenStore | Path,
         http_client: httpx.Client | None = None,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
     ):
         # A bare Path still works, and means the file store: every caller
         # and test that predates the seam passes one.
         self._store = FileSlackTokenStore(store) if isinstance(store, Path) else store
         self._client = http_client or httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0))
+        # Injected purely so the persist retry's backoff costs a test
+        # nothing; no caller in the room passes anything but the default.
+        self._sleep = sleep
 
     def create_app(self, manifest: dict) -> str:
         config_token, _ = self._store.read()
@@ -1919,6 +1973,10 @@ class HttpxSlackClient:
         """
         stored_config_token, refresh_token = self._store.read()
         if stored_config_token != failed_config_token:
+            log.warning(
+                "slack config token was rotated by another process; using the "
+                "pair now in the store instead of rotating again"
+            )
             return stored_config_token
 
         resp = self._client.post(
@@ -1935,13 +1993,53 @@ class HttpxSlackClient:
                 # won; report Slack's own failure rather than this one.
                 current_config_token, current_refresh_token = "", refresh_token
             if current_refresh_token != refresh_token:
+                log.warning(
+                    "slack token rotation failed (%s) because another process "
+                    "spent the refresh token first; using the pair it stored",
+                    error,
+                )
                 return current_config_token
             raise SlackApiError(f"slack token rotation failed: {error}")
 
         new_config_token = body["token"]
         new_refresh_token = body["refresh_token"]
-        self._store.write(new_config_token, new_refresh_token)
+        self._persist(new_config_token, new_refresh_token)
         return new_config_token
+
+    def _persist(self, config_token: str, refresh_token: str) -> None:
+        """Write a freshly issued pair to the store, retried.
+
+        The one genuinely unrecoverable moment in this class: Slack has
+        already spent the old refresh token by the time this runs, so a
+        pair that never lands in the store is gone, and the room can never
+        rotate again without a human re-issuing it. The Kube store's write
+        is two kubectl round trips, so the failures worth surviving are
+        exactly the transient ones -- hence the retry, and hence a final
+        failure that says what has to be done rather than only that
+        something broke.
+        """
+        for attempt in range(1, SLACK_STORE_WRITE_ATTEMPTS + 1):
+            try:
+                self._store.write(config_token, refresh_token)
+                return
+            except ClientError as exc:
+                # The store's own messages name only the file path or the
+                # namespace/name, never a value -- see FileSlackTokenStore
+                # and KubeSlackTokenStore.
+                log.warning(
+                    "slack token store write failed (attempt %d of %d): %s",
+                    attempt,
+                    SLACK_STORE_WRITE_ATTEMPTS,
+                    exc,
+                )
+                if attempt < SLACK_STORE_WRITE_ATTEMPTS:
+                    self._sleep(SLACK_STORE_WRITE_BACKOFF_S * attempt)
+
+        log.error("%s", SLACK_ROTATION_LOST)
+        # Unchained: the underlying store error is already logged above, and
+        # what the caller needs here is the recovery instruction, not the
+        # kubectl failure that happens to be last.
+        raise SlackApiError(SLACK_ROTATION_LOST) from None
 
     def delete_app(self, app_id: str) -> bool:
         config_token, _ = self._store.read()

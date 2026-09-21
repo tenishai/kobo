@@ -724,6 +724,11 @@ class _FakeConnection:
         self._acquired = acquired
         self.statements: list[tuple[str, dict | None]] = []
         self.closed = False
+        self.options: dict = {}
+
+    def execution_options(self, **options):
+        self.options.update(options)
+        return self
 
     def execute(self, statement, params=None):
         sql = str(statement)
@@ -735,14 +740,24 @@ class _FakeConnection:
 
 
 class _FakePostgresEngine:
+    """A NEW connection per `connect()` -- a fake that handed back one
+    shared object could not tell a dedicated connection from a pooled one,
+    which is the whole property the lock depends on."""
+
     def __init__(self, acquired: bool = True):
         self.dialect = SimpleNamespace(name="postgresql")
-        self.connection = _FakeConnection(acquired)
-        self.connects = 0
+        self._acquired = acquired
+        self.connections: list[_FakeConnection] = []
+
+    @property
+    def connection(self) -> _FakeConnection:
+        assert len(self.connections) == 1, "expected exactly one connection"
+        return self.connections[0]
 
     def connect(self):
-        self.connects += 1
-        return self.connection
+        connection = _FakeConnection(self._acquired)
+        self.connections.append(connection)
+        return connection
 
 
 class _FakeSqliteEngine:
@@ -770,11 +785,25 @@ def test_single_sweeper_on_postgres_acquires_on_a_dedicated_connection():
         assert engine.connection.closed is False
         assert all("unlock" not in sql for sql in _locked(engine.connection))
 
-    assert engine.connects == 1
+    # One connection, and BOTH the lock and the unlock landed on it: a
+    # session-level advisory lock belongs to the connection that took it.
+    assert len(engine.connections) == 1
     assert any("pg_try_advisory_lock" in sql for sql in _locked(engine.connection))
     assert any("pg_advisory_unlock" in sql for sql in _locked(engine.connection))
     assert engine.connection.closed is True
     assert engine.connection.statements[0][1] == {"key": LEARNINGS_SWEEP_LOCK_ID}
+
+
+def test_single_sweeper_holds_its_connection_in_autocommit():
+    # Without this the connection sits idle-in-transaction for the whole
+    # sweep (SQLAlchemy 2 autobegins on the first execute), pinning the
+    # oldest running transaction for as long as the sweep takes.
+    engine = _FakePostgresEngine(acquired=True)
+
+    with single_sweeper(engine):
+        pass
+
+    assert engine.connection.options == {"isolation_level": "AUTOCOMMIT"}
 
 
 def test_single_sweeper_unlocks_and_closes_even_when_the_sweep_raises():

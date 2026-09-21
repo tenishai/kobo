@@ -456,12 +456,19 @@ def single_sweeper(engine) -> Iterator[bool]:
 
     On SQLite there is one process by construction, so the guard is a
     no-op that always yields True and never opens a second connection.
+
+    AUTOCOMMIT, deliberately: SQLAlchemy autobegins a transaction on the
+    first execute, and this connection is held for the whole sweep -- it
+    would otherwise sit idle-in-transaction the entire time, pinning the
+    database's oldest running transaction behind a sweep that does its
+    real work on a different connection. The lock is session-level, not
+    transactional, so it needs no transaction to survive.
     """
     if engine.dialect.name != "postgresql":
         yield True
         return
 
-    connection = engine.connect()
+    connection = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
     try:
         acquired = bool(
             connection.execute(
