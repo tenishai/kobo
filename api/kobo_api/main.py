@@ -127,10 +127,10 @@ from kobo_api.personas import (
     read_index as personas_read_index,
 )
 from kobo_api.provisioner import (
-    PIPELINE,
     STEP_LABELS,
     interrupted_sweep_loop,
     naive_utc,
+    pipeline_for,
     reset_failed_steps,
     run_pipeline,
     sweep_interrupted,
@@ -3430,7 +3430,7 @@ def create_app(
                 agent_id,
                 config=cfg,
                 clients=app.state.clients,
-                steps=PIPELINE,
+                steps=pipeline_for(agent),
             )
         except Exception as exc:
             # Broad by design: a request boundary, not a specific expected
@@ -3738,7 +3738,7 @@ def create_app(
                 agent_id,
                 config=cfg,
                 clients=app.state.clients,
-                steps=PIPELINE,
+                steps=pipeline_for(agent),
             )
         except Exception as exc:
             # Broad by design, same as create_agent's guard above (this

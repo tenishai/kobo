@@ -1734,33 +1734,27 @@ def test_onboard_step_happy_path_sets_app_id_and_polls_to_active(session_factory
     assert gojira.calls.count("app_status:1") == 3
 
 
-def test_onboard_step_create_app_receives_expected_arguments(session_factory, config, monkeypatch):
+def test_onboard_step_create_app_receives_expected_arguments(session_factory, config):
+    # `workload_class` became an argument when connected agents arrived
+    # (design 2026-09-21), since a team's own code may serve no HTTP port.
+    # A composed agent always runs the room's one runtime, which always
+    # does -- so it asks for the ordinary class, exactly as before.
     repo = _repo_full_name(config)
     session, agent = _make_agent(session_factory, repo_full_name=repo)
     gojira = FakeGojira(activate_after=1)
-
-    seen = {}
-    real_create_app = gojira.create_app
-
-    def _spy_create_app(*, name, repo_full_name, cluster, namespace):
-        seen.update(
-            name=name, repo_full_name=repo_full_name, cluster=cluster, namespace=namespace
-        )
-        return real_create_app(
-            name=name, repo_full_name=repo_full_name, cluster=cluster, namespace=namespace
-        )
-
-    monkeypatch.setattr(gojira, "create_app", _spy_create_app)
     ctx = _make_ctx(session, agent, config, _clients(gojira=gojira))
 
     OnboardStep().run(ctx)
 
-    assert seen == {
-        "name": AGENT_NAME,
-        "repo_full_name": repo,
-        "cluster": config.gojira_cluster,
-        "namespace": AGENT_NAME,
-    }
+    assert gojira.create_app_calls == [
+        {
+            "name": AGENT_NAME,
+            "repo_full_name": repo,
+            "cluster": config.gojira_cluster,
+            "namespace": AGENT_NAME,
+            "workload_class": "agent",
+        }
+    ]
 
 
 def test_onboard_step_raises_with_failed_step_names(session_factory, config):

@@ -450,6 +450,7 @@ class FakeGitHub:
         track_pushed_content: bool = False,
         pr_url: str = "https://github.com/acme-corp/example-org-skills/pull/1",
         open_prs: dict[str, str] | None = None,
+        merge_pr_results: list[bool] | None = None,
         intake_files: dict[str, str] | None = None,
         intake_commit_shas: dict[str, str] | None = None,
         rev_parse_results: dict[str, str | None] | None = None,
@@ -477,6 +478,11 @@ class FakeGitHub:
         self._pr_url = pr_url
         self.open_pr_calls: list[dict] = []
         self._open_prs: dict[str, str] = dict(open_prs) if open_prs else {}
+        self.merge_pr_calls: list[tuple[str, str]] = []
+        self._merge_pr_results = (
+            list(merge_pr_results) if merge_pr_results else [True]
+        )
+        self._merge_pr_index = 0
         self._commit_push_results = list(commit_push_results) if commit_push_results else [True]
         self._commit_push_index = 0
         self._knowledge_files = dict(knowledge_files) if knowledge_files else None
@@ -710,6 +716,24 @@ class FakeGitHub:
         self.calls.append(f"find_pr:{repo}:{branch}")
         return self._open_prs.get(f"{repo}#{branch}")
 
+    def merge_pr(self, repo: str, pr_url: str) -> bool:
+        """Records `(repo, pr_url)` into `merge_pr_calls` and replays
+        `merge_pr_results` (holding at the last entry once exhausted, same
+        convention as `commit_push_results`). Default True: the room's own
+        wiring pull request merges, which is the wired happy path. False is
+        how a test models GitHub declining (a protected branch, a required
+        review) -- never an exception, since the real client answers False
+        there rather than raising.
+        """
+        self.calls.append(f"merge_pr:{repo}:{pr_url}")
+        self.merge_pr_calls.append((repo, pr_url))
+        result = self._merge_pr_results[
+            min(self._merge_pr_index, len(self._merge_pr_results) - 1)
+        ]
+        if self._merge_pr_index < len(self._merge_pr_results) - 1:
+            self._merge_pr_index += 1
+        return result
+
     def local_head(self, workdir: Path) -> str:
         self.calls.append(f"local_head:{workdir}")
         self.local_head_calls.append(workdir)
@@ -881,10 +905,25 @@ class FakeGojira:
         self._apps: dict[int, dict] = {}
         self._next_id = 1
         self.reprovision_calls: list[int] = []
+        # One dict per `create_app`, every keyword it was given -- the seam
+        # for asserting which workload class an agent was onboarded under,
+        # without a test having to spy on the method itself.
+        self.create_app_calls: list[dict] = []
         self.calls: list[str] = []
 
-    def create_app(self, *, name, repo_full_name, cluster, namespace) -> int:
+    def create_app(
+        self, *, name, repo_full_name, cluster, namespace, workload_class="agent"
+    ) -> int:
         self.calls.append(f"create_app:{repo_full_name}")
+        self.create_app_calls.append(
+            {
+                "name": name,
+                "repo_full_name": repo_full_name,
+                "cluster": cluster,
+                "namespace": namespace,
+                "workload_class": workload_class,
+            }
+        )
         if repo_full_name in self._conflict_repos:
             raise GojiraConflict(f"app already connected for {repo_full_name!r}")
         app_id = self._next_id
@@ -895,6 +934,7 @@ class FakeGojira:
             "repo_full_name": repo_full_name,
             "cluster": cluster,
             "namespace": namespace,
+            "workload_class": workload_class,
             "status": "pending",
             "polls": 0,
             "setup_pr_url": None,

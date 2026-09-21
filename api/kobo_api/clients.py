@@ -232,6 +232,21 @@ class GitHubClient(Protocol):
         """
         ...
 
+    def merge_pr(self, repo: str, pr_url: str) -> bool:
+        """Merge the pull request at `pr_url`. True when it is merged (or was
+        already), False when GitHub refuses to merge it, `ClientError` for
+        anything else.
+
+        The False answer is the whole point of this method having one: a
+        protected branch, a required review, or a required check is an
+        ORDINARY outcome for a repo the room does not own (connected-agents
+        design 2026-09-21) — the caller turns it into one plain sentence
+        naming the pull request, and a person merges it. Only a failure
+        nobody could merge their way out of (bad credentials, an
+        unreachable API) is an error.
+        """
+        ...
+
     def local_head(self, workdir: Path) -> str:
         """The just-pushed local clone's head commit sha (`git rev-parse HEAD`
         against `workdir`), not a fresh API read.
@@ -365,6 +380,38 @@ def _gh_returned_404(exc: ClientError) -> bool:
     return "(HTTP 404)" in exc.stderr
 
 
+# Fragments of what `gh pr merge` prints when GitHub declines to merge, as
+# opposed to failing. Matched case-insensitively as substrings of the whole
+# error, the same "classify by a stable fragment, never by exact text"
+# discipline `_gh_returned_404` above and `destroy._is_already_archived`
+# already hold -- GitHub is free to reword these sentences, and the merge
+# refusal arrives as a GraphQL message rather than an HTTP status marker, so
+# there is no code to key on here the way there is for a 404.
+_MERGE_REFUSED_FRAGMENTS = (
+    "not mergeable",
+    "base branch policy",
+    "required status check",
+    "review is required",
+    "approving review is required",
+    "protected branch",
+)
+
+# What `gh pr merge` says when somebody merged the pull request first. That
+# is the outcome the caller wanted, so it reads as success, not refusal.
+_MERGE_ALREADY_DONE_FRAGMENT = "already merged"
+
+
+def _gh_declined_the_merge(exc: ClientError) -> bool:
+    """Whether `exc` is GitHub declining to merge rather than failing."""
+    message = f"{exc} {exc.stderr}".lower()
+    return any(fragment in message for fragment in _MERGE_REFUSED_FRAGMENTS)
+
+
+def _gh_says_already_merged(exc: ClientError) -> bool:
+    message = f"{exc} {exc.stderr}".lower()
+    return _MERGE_ALREADY_DONE_FRAGMENT in message
+
+
 class GhCLI:
     """git + gh backed GitHubClient.
 
@@ -484,6 +531,23 @@ class GhCLI:
             env=self._env(),
         )
         return out if out else None
+
+    def merge_pr(self, repo: str, pr_url: str) -> bool:
+        try:
+            self._runner.run(
+                [self._gh, "pr", "merge", pr_url, "--merge"], env=self._env()
+            )
+        except ClientError as exc:
+            if _gh_says_already_merged(exc):
+                return True
+            if _gh_declined_the_merge(exc):
+                # Logged at info, not warning: this is the owner's own repo
+                # policy working as intended, and the caller already turns it
+                # into something a person can act on.
+                log.info("github declined to merge %s in %s", pr_url, repo)
+                return False
+            raise
+        return True
 
     def local_head(self, workdir: Path) -> str:
         return self._runner.run(
@@ -606,9 +670,22 @@ class GhCLI:
 @runtime_checkable
 class GojiraClient(Protocol):
     def create_app(
-        self, *, name: str, repo_full_name: str, cluster: str, namespace: str
+        self,
+        *,
+        name: str,
+        repo_full_name: str,
+        cluster: str,
+        namespace: str,
+        workload_class: str = "agent",
     ) -> int:
-        """POST /api/v1/apps; returns the new app id. Raises GojiraConflict on 409."""
+        """POST /api/v1/apps; returns the new app id. Raises GojiraConflict on 409.
+
+        `workload_class` chooses how the platform runs and probes the
+        workload. It defaults to the one every composed agent has always
+        sent; a connected agent that serves no HTTP port asks for whichever
+        class this deployment names for that (connected-agents design
+        2026-09-21), since the ordinary class probes a port over HTTP.
+        """
         ...
 
     def app_status(self, app_id: int) -> dict:
@@ -662,13 +739,15 @@ class HttpxGojiraClient:
             return {"Authorization": f"Bearer {self._token}"}
         return {}
 
-    def create_app(self, *, name, repo_full_name, cluster, namespace) -> int:
+    def create_app(
+        self, *, name, repo_full_name, cluster, namespace, workload_class="agent"
+    ) -> int:
         resp = self._client.post(
             f"{self._base_url}/api/v1/apps",
             json={
                 "name": name,
                 "repo_full_name": repo_full_name,
-                "workload_class": "agent",
+                "workload_class": workload_class,
                 "environments": [{"name": "dev", "cluster": cluster, "namespace": namespace}],
                 "auto_merge_setup_pr": True,
             },
