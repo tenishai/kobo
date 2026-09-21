@@ -12,11 +12,31 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from kobo_api.models import Base
 
+# How long a SQLite connection waits for a write lock before giving up.
+# The default is 5s, which a single-process room never noticed -- but the
+# provisioning heartbeat now writes the agents table from a second thread
+# while the pipeline is committing its own rows, and "database is locked"
+# there would cost a beat (or, on the pipeline's side, a step). Only ever
+# a WAIT: it changes nothing when there is no contention.
+SQLITE_BUSY_TIMEOUT_S = 30
+
 
 def make_engine(url: str) -> Engine:
-    connect_args = {}
+    connect_args: dict[str, object] = {}
     if url.startswith("sqlite"):
         connect_args["check_same_thread"] = False
+        connect_args["timeout"] = SQLITE_BUSY_TIMEOUT_S
+    elif url.startswith("postgresql"):
+        # Pin the SESSION's timezone, not just the server's default. Two
+        # columns the interruption sweep (kobo_api.provisioner) compares
+        # against one 60-second cutoff are written differently -- an agent's
+        # `created_at` as an aware datetime, its `run_heartbeat_at` as naive
+        # UTC -- and both land in TIMESTAMP WITHOUT TIME ZONE, which keeps
+        # whatever wall-clock numbers it is given. A session running on any
+        # other TimeZone would skew one against the other by hours, quietly,
+        # and the only symptom would be live runs swept (or dead ones never
+        # swept) near a boundary.
+        connect_args["options"] = "-c timezone=UTC"
     return create_engine(url, connect_args=connect_args)
 
 

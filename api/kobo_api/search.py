@@ -57,6 +57,15 @@ log = logging.getLogger(__name__)
 # operator's own now-button regardless of this value.
 CATALOG_TTL_S = 300
 
+# The Postgres advisory-lock key `ingest_indexes` claims for the duration of
+# its rebuild transaction, so two replicas refreshing at the same moment
+# cannot both DELETE-then-INSERT and double every row. Any fixed 64-bit
+# integer does; this one is the ASCII bytes of "kobocat", deliberately
+# distinct from `kobo_api.learnings.LEARNINGS_SWEEP_LOCK_ID` -- a shared key
+# would make a catalog refresh and a nightly sweep exclude each other for no
+# reason at all.
+CATALOG_INGEST_LOCK_ID = 0x6B6F626F636174
+
 _COLUMNS = "id, name, description, team, tags, kind, sha, builtin"
 
 _INSERT_SQL = (
@@ -506,6 +515,21 @@ def ingest_indexes(
     ]
 
     with engine.begin() as conn:
+        if _is_postgres(engine):
+            # FIRST statement in the transaction, before the DELETE: the
+            # rebuild is DELETE-then-INSERT, and at READ COMMITTED a second
+            # replica's DELETE cannot see the first replica's uncommitted
+            # rows -- so without this, two refreshes that overlap both
+            # insert and every catalog row ends up duplicated. The
+            # per-process `threading.Lock` around the call sites
+            # (kobo_api.main) only ever serialized threads inside ONE
+            # replica. Transaction-scoped (`_xact_`), so it is released by
+            # the commit or rollback of this very block, with nothing to
+            # leak if the ingest raises.
+            conn.execute(
+                text("SELECT pg_advisory_xact_lock(:key)"),
+                {"key": CATALOG_INGEST_LOCK_ID},
+            )
         conn.execute(text("DELETE FROM catalog_fts"))
         if rows:
             conn.execute(text(_INSERT_SQL), rows)

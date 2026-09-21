@@ -376,11 +376,17 @@ _DESTROY_FUNCS = {
 # `_destroying_lock`) and `_run_destroy_body_and_release` frees it in a
 # `finally` once the thread's body returns, however it returns.
 #
-# In-process only (a plain set + Lock, not a cross-process lock): this
-# guards against duplicate launches within a single app replica only —
-# sufficient because kobo-api is deployed single-replica today, the same
-# documented caveat `provisioner.run_pipeline` already carries for its own
-# concurrency story.
+# In-process only (a plain set + Lock, not a cross-process lock): with more
+# than one replica this is best-effort, and two pods CAN run this ledger for
+# the same agent at once. What stands between a caller and that is the
+# route's own status gate (`kobo_api.main`'s destroy route commits
+# DESTROYING before launching), not this registry. The exposure is small
+# because every step here tolerates "already gone" by design: the worst case
+# is a spurious DESTROY_FAILED from two threads racing the same commits on
+# steps that each individually do no harm twice. There is no conditional
+# row claim (`provisioner._claim_step`'s shape) because destroy has no
+# step-reset path to pair one with -- a claim that only matched PENDING
+# would turn every resume into a silent no-op.
 _destroying_agent_ids: set[int] = set()
 _destroying_lock = threading.Lock()
 

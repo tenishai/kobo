@@ -131,6 +131,42 @@ def test_slack_tokens_path_expands_tilde(tmp_path):
     assert config.slack_tokens_path == Path.home() / "slack.local.yaml"
 
 
+# --- slack_tokens_secret (two-replica safety) ------------------------------
+
+
+def test_slack_tokens_secret_default_empty():
+    assert Config().slack_tokens_secret == ""
+
+
+def test_slack_tokens_secret_accepts_namespace_slash_name(tmp_path):
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text("slack_tokens_secret: kobo/kobo-slack-tokens\n")
+
+    config = Config.load(yaml_path)
+
+    assert config.slack_tokens_secret == "kobo/kobo-slack-tokens"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["kobo-slack-tokens", "kobo/", "/kobo-slack-tokens", "kobo/ns/name", "kobo / name"],
+)
+def test_slack_tokens_secret_rejects_anything_but_namespace_slash_name(value):
+    with pytest.raises(ValidationError) as exc_info:
+        Config(slack_tokens_secret=value)
+
+    assert "slack_tokens_secret" in str(exc_info.value)
+
+
+def test_slack_tokens_secret_is_not_org_settable():
+    # Deployment-local, exactly like slack_tokens_path: it names a Secret in
+    # THIS cluster's namespace, not anything the org hands out.
+    from kobo_api.org import ORG_KEYS
+
+    assert "slack_tokens_secret" not in ORG_KEYS
+    assert "slack_tokens_path" not in ORG_KEYS
+
+
 # --- avatar_model / avatar_location (P2d: ImageClient) --------------------
 
 

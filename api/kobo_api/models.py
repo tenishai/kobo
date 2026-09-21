@@ -172,6 +172,16 @@ class Agent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
+    # Liveness of the process currently running this agent's pipeline
+    # (`kobo_api.provisioner`): refreshed on a short interval for as long as
+    # a run is in flight, and never touched otherwise. This is what lets
+    # `sweep_interrupted` tell a provision whose process died from one that
+    # is simply still working -- with rolling updates, a new pod boots while
+    # the old one is mid-pipeline, and a sweep without this would fail a
+    # live run and let a retry execute the same steps twice. NULL means no
+    # run has ever beaten for this row (every row that predates the column
+    # included), which the sweep reads against the row's own age.
+    run_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     steps: Mapped[list[AgentStep]] = relationship(
         back_populates="agent", order_by="AgentStep.id"

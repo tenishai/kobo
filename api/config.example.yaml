@@ -129,6 +129,13 @@ db_url: sqlite:///kobo.db
 # real token values in this (or any tracked) file.
 slack_tokens_path: null
 
+# The same pair, kept in a Kubernetes Secret instead of a file, as
+# "<namespace>/<name>" with keys config_token and refresh_token. Set this
+# rather than slack_tokens_path to run more than one replica: a file on a
+# ReadWriteOnce volume is what holds the room to a single pod, and rotation
+# rewrites it. Both set means the Secret wins, with a warning in the logs.
+# slack_tokens_secret: kobo/kobo-slack-tokens
+
 # Emails allowed to use the Slack connect routes once IAP is enabled (see
 # iap_audience below) — everyone else gets a 403. Empty (the default) leaves
 # Slack connect open to anyone who can reach this room, matching today's

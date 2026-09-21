@@ -17,9 +17,11 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from kobo_api.models import (
@@ -49,6 +51,11 @@ KNOWN_WINDOW_DAYS = 90
 KNOWN_LIST_CAP = 40
 EDITED_LEARNING_MAX_CHARS = 200
 KNOWN_STATEMENT_MAX_CHARS = 400
+# The Postgres advisory-lock key the nightly sweep claims, so exactly one
+# replica sweeps per round. Any fixed 64-bit integer does; this one is the
+# ASCII bytes of "kobolrn", which makes it recognizable in pg_locks and
+# unlikely to collide with a key anything else in this database picks.
+LEARNINGS_SWEEP_LOCK_ID = 0x6B6F626F6C726E
 _KNOWN_LABELS = {
     LEARNING_PENDING: "pending",
     LEARNING_APPROVED: "remembered",
@@ -430,16 +437,103 @@ def _relay_reply_not_completed(raw: object) -> bool:
     return status.get("state") != "completed"
 
 
+@contextmanager
+def single_sweeper(engine) -> Iterator[bool]:
+    """Claim the right to sweep this round, and say whether it was won.
+
+    Every replica runs `nightly_loop`, so every replica wakes at boot and
+    after every UTC midnight: without this, two pods relay a learnings task
+    to the same agents in the same minute and each stores what comes back.
+
+    On Postgres the claim is `pg_try_advisory_lock` -- non-blocking, so the
+    loser skips the round rather than queueing to redo work the winner is
+    already doing. Advisory locks belong to the SESSION that took them, so
+    this holds a DEDICATED connection for the whole sweep: a pooled one
+    handed back mid-sweep would carry the lock off to whatever ran next,
+    and the explicit unlock in the `finally` is what releases it (returning
+    a connection to the pool does not end the backend session, so a missing
+    unlock would wedge every later round until the pod restarted).
+
+    On SQLite there is one process by construction, so the guard is a
+    no-op that always yields True and never opens a second connection.
+
+    AUTOCOMMIT, deliberately: SQLAlchemy autobegins a transaction on the
+    first execute, and this connection is held for the whole sweep -- it
+    would otherwise sit idle-in-transaction the entire time, pinning the
+    database's oldest running transaction behind a sweep that does its
+    real work on a different connection. The lock is session-level, not
+    transactional, so it needs no transaction to survive.
+    """
+    if engine.dialect.name != "postgresql":
+        yield True
+        return
+
+    connection = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+    try:
+        acquired = bool(
+            connection.execute(
+                text("SELECT pg_try_advisory_lock(:key)"),
+                {"key": LEARNINGS_SWEEP_LOCK_ID},
+            ).scalar()
+        )
+        if not acquired:
+            # Never unlock here: this process holds nothing, and
+            # pg_advisory_unlock would be a claim on the winner's lock.
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            connection.execute(
+                text("SELECT pg_advisory_unlock(:key)"),
+                {"key": LEARNINGS_SWEEP_LOCK_ID},
+            )
+    finally:
+        connection.close()
+
+
 def run_nightly(app) -> None:
-    """One sweep, synchronous (runs via asyncio.to_thread): expire stale
-    pending rows, then relay a learnings task to every due ready agent and
-    store what comes back. The whole per-agent body is wrapped in its own
-    `except Exception` -- one agent's DB hiccup (or anything else
-    unanticipated) is logged and skipped, never aborting the rest of the
-    fleet, on top of the narrower relay-specific catch below (which keeps
-    its own specific log message for that one well-understood failure
-    mode). With cabal unwired the sweep still expires (bookkeeping needs no
-    relay) and does nothing else."""
+    """One sweep, synchronous (runs via asyncio.to_thread) and claimed by
+    exactly one replica (`single_sweeper` above): expire stale pending
+    rows, then relay a learnings task to every due ready agent and store
+    what comes back. With cabal unwired the sweep still expires
+    (bookkeeping needs no relay) and does nothing else.
+
+    The guard wraps the WHOLE sweep, expiry included: expiry is a write
+    like any other, and two replicas flipping the same rows is the same
+    duplicated work the relay half is guarded against.
+    """
+    now = datetime.now(UTC)
+    session = app.state.session_factory()
+    try:
+        with single_sweeper(session.get_bind()) as acquired:
+            if not acquired:
+                # WARNING, not INFO: the app configures no logging, so INFO
+                # from this module never reaches pod logs (same reasoning as
+                # kobo_api.org._disclose_overrides) -- and a replica quietly
+                # doing nothing every night is exactly what an operator
+                # needs to be able to see.
+                log.warning(
+                    "learnings: another instance is sweeping, skipping this round"
+                )
+                return
+            _sweep(session, app.state.config, app.state.clients, now)
+    finally:
+        session.close()
+
+
+def _sweep(session, config, clients, now: datetime) -> None:
+    """The sweep itself, once this process has claimed the round. The whole
+    per-agent body is wrapped in its own `except Exception` -- one agent's
+    DB hiccup (or anything else unanticipated) is logged and skipped, never
+    aborting the rest of the fleet, on top of the narrower relay-specific
+    catch below (which keeps its own specific log message for that one
+    well-understood failure mode).
+
+    The imports are deferred, as they were inside `run_nightly` before this
+    split: kobo_api.clients imports this module, so a module-level import
+    here would be circular.
+    """
     import httpx
 
     from kobo_api.clients import (
@@ -450,51 +544,44 @@ def run_nightly(app) -> None:
     )
     from kobo_api.models import Agent, AgentStatus
 
-    now = datetime.now(UTC)
-    config = app.state.config
-    clients = app.state.clients
-    session = app.state.session_factory()
-    try:
-        expire_stale(session, now)
-        if not (cabal_enabled(config) and clients.cabal is not None):
-            return
-        ready = [
-            row.name
-            for row in session.query(Agent).filter_by(status=AgentStatus.READY).all()
-        ]
-        day = now.date().isoformat()
-        for name in due_agents(session, ready, now):
+    expire_stale(session, now)
+    if not (cabal_enabled(config) and clients.cabal is not None):
+        return
+    ready = [
+        row.name
+        for row in session.query(Agent).filter_by(status=AgentStatus.READY).all()
+    ]
+    day = now.date().isoformat()
+    for name in due_agents(session, ready, now):
+        try:
+            envelope = _build_learnings_envelope(
+                day, known_statements(session, name, now)
+            )
             try:
-                envelope = _build_learnings_envelope(
-                    day, known_statements(session, name, now)
-                )
-                try:
-                    raw = clients.cabal.relay(name, envelope)
-                    reply = _extract_relay_reply(raw)
-                except (CabalError, httpx.HTTPError, ValueError) as exc:
-                    log.warning("learnings relay failed for %s: %s", name, exc)
-                    continue
-                if _relay_reply_not_completed(raw):
-                    log.warning(
-                        "learnings task not completed for %s (old runtime or "
-                        "refusal): %s",
-                        name,
-                        reply[:200],
-                    )
-                    continue
-                candidates = parse_reply(reply)
-                stored = store_candidates(session, name, day, candidates, now=now)
-                log.info(
-                    "learnings: %s proposed %d, stored %d new",
-                    name,
-                    len(candidates),
-                    stored,
-                )
-            except Exception:
-                log.exception("learnings sweep failed for %s", name)
+                raw = clients.cabal.relay(name, envelope)
+                reply = _extract_relay_reply(raw)
+            except (CabalError, httpx.HTTPError, ValueError) as exc:
+                log.warning("learnings relay failed for %s: %s", name, exc)
                 continue
-    finally:
-        session.close()
+            if _relay_reply_not_completed(raw):
+                log.warning(
+                    "learnings task not completed for %s (old runtime or "
+                    "refusal): %s",
+                    name,
+                    reply[:200],
+                )
+                continue
+            candidates = parse_reply(reply)
+            stored = store_candidates(session, name, day, candidates, now=now)
+            log.info(
+                "learnings: %s proposed %d, stored %d new",
+                name,
+                len(candidates),
+                stored,
+            )
+        except Exception:
+            log.exception("learnings sweep failed for %s", name)
+            continue
 
 
 async def nightly_loop(app) -> None:

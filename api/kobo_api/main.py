@@ -44,6 +44,7 @@ from kobo_api.clients import (
     _join_text_parts,
     cabal_enabled,
     filter_cabal_event_stream,
+    probe_slack_token_store,
 )
 from kobo_api.config import SHARED_GROUP, Config
 from kobo_api.db import init_db, make_engine, make_session_factory
@@ -128,6 +129,8 @@ from kobo_api.personas import (
 from kobo_api.provisioner import (
     PIPELINE,
     STEP_LABELS,
+    interrupted_sweep_loop,
+    naive_utc,
     reset_failed_steps,
     run_pipeline,
     sweep_interrupted,
@@ -791,7 +794,13 @@ def _background_refresh_catalogs(app: FastAPI, engine) -> None:
     The ingest itself runs under `app.state.catalog_ingest_lock` -- fixed
     round 1's concurrency fix -- so this thread can never race a manual
     `POST /api/catalogs/refresh` (or a concurrent cold-start inline ingest)
-    into two simultaneous `engine.begin()` writers.
+    into two simultaneous `engine.begin()` writers WITHIN THIS PROCESS. It
+    says nothing about another replica: a plain `threading.Lock` is not
+    visible outside one interpreter. What serializes replicas is the
+    transaction-scoped advisory lock `ingest_indexes` itself takes as the
+    first statement of its rebuild (`kobo_api.search`, Postgres only) --
+    without it two overlapping refreshes each DELETE what the other has
+    not committed yet, and every catalog row ends up duplicated.
     """
     state = app.state
     try:
@@ -1711,18 +1720,22 @@ def get_session(request: Request) -> Iterator[Session]:
 
 @asynccontextmanager
 async def _room_lifespan(app: FastAPI):
-    """mcp_lifespan plus the room's own background work (the learnings
-    nightly loop). TestClient instances used without `with` never enter
-    lifespans at all, so unit tests see no background task unless they
-    opt in."""
+    """mcp_lifespan plus the room's own background work: the learnings
+    nightly loop, and the periodic sweep for provisioning runs whose
+    process is gone (boot-only would never catch a pipeline killed just
+    after the last boot). TestClient instances used without `with` never
+    enter lifespans at all, so unit tests see no background task unless
+    they opt in."""
     async with mcp_lifespan(app):
         nightly = asyncio.create_task(learnings_nightly_loop(app))
+        sweeper = asyncio.create_task(interrupted_sweep_loop(app))
         try:
             yield
         finally:
-            nightly.cancel()
-            with suppress(asyncio.CancelledError):
-                await nightly
+            for task in (nightly, sweeper):
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
 
 
 def _teach_task_not_completed(raw: object) -> bool:
@@ -1991,11 +2004,14 @@ def create_app(
     # the single-flight guard, true exactly while a background refresh
     # thread is in flight, checked and set together with `catalog_loaded_at`
     # under `catalog_lock` so N concurrent stale hits spawn exactly one
-    # thread. `catalog_ingest_lock` is the ONE true mutual exclusion for the
-    # ingest itself — held around every `ingest_indexes` call (cold-inline,
-    # background, and the manual refresh route) so two of sqlite's
-    # `engine.begin()` writers can never run concurrently, past the busy
-    # timeout, regardless of which of those three call sites is running.
+    # thread. `catalog_ingest_lock` is this PROCESS's mutual exclusion for
+    # the ingest itself — held around every `ingest_indexes` call
+    # (cold-inline, background, and the manual refresh route) so two of
+    # sqlite's `engine.begin()` writers can never run concurrently, past
+    # the busy timeout, regardless of which of those three call sites is
+    # running. It cannot serialize replicas (a threading.Lock is visible to
+    # one interpreter only); the advisory lock inside `ingest_indexes`
+    # (kobo_api.search) is the half that does.
     app.state.catalog_loaded_at = None
     app.state.catalog_lock = threading.Lock()
     app.state.catalog_refreshing = False
@@ -3371,6 +3387,12 @@ def create_app(
             created_by=created_by,
             group_name=payload.group_name,
             skip_baseline=payload.skip_baseline,
+            # Born in flight, so born with a heartbeat: PENDING is a swept
+            # status (kobo_api.provisioner.sweep_interrupted), and leaning
+            # on the NULL-heartbeat branch's created_at grace would make a
+            # new agent's safety depend on a rule written for rows that
+            # predate the column.
+            run_heartbeat_at=naive_utc(datetime.now(UTC)),
         )
         session.add(agent)
         try:
@@ -3683,6 +3705,13 @@ def create_app(
         # idempotent, so this doesn't change its behavior.
         agent.status = AgentStatus.PROVISIONING
         agent.error = None
+        # Stamped in the SAME commit that puts the row back in flight. A
+        # retried row still carries the PREVIOUS run's heartbeat, which is
+        # already past the sweep's cutoff, and the new run's first beat is
+        # a write that is allowed to fail (logged and skipped, never
+        # raised) -- so without this, one failed first beat leaves a live
+        # retry sweepable on the very next tick, in any replica.
+        agent.run_heartbeat_at = naive_utc(datetime.now(UTC))
         session.commit()
 
         agent_id = agent.id
@@ -4471,31 +4500,58 @@ def create_app(
         # repo-only ids surface as local AND heal the ledger, DB-only rows
         # prune (removed by PR = not on the agent). A repo read failure
         # degrades to the ledger read and never prunes.
+        repo = agent.repo_full_name
+        # Everything the pre-clone decision needs, read here and then the
+        # transaction RELEASED: reading `agent` at all has autobegun one,
+        # and each listing below is a real `git clone` taking seconds. A
+        # transaction held open across two of those pins a connection (and,
+        # on Postgres, the oldest running snapshot) for the whole round
+        # trip. `session.rollback()` writes nothing -- it just ends the read
+        # transaction; the authoritative re-read happens after the clones.
+        ledger_names = {e["name"] for e in agent.skills}
+        session.rollback()
+
         try:
-            repo_ids = list_repo_skills(
-                app.state.clients.github, agent.repo_full_name
-            )
+            repo_ids = list_repo_skills(app.state.clients.github, repo)
         except ClientError as exc:
             log.warning("skills repo listing failed for %s: %s", name, exc)
             repo_ids = None
+
+        if repo_ids is not None and ledger_names - set(repo_ids):
+            # A prune looks possible. `list_repo_skills` answers from a 60s
+            # PER-PROCESS cache, so a skill added through another replica
+            # (or through this one before its own cache filled) is
+            # invisible here for up to a minute -- and pruning is
+            # destructive: the row's catalog provenance (team, sha) cannot
+            # be recovered once it's gone, since a re-discovered skill only
+            # ever heals back as "local". Confirm against a fresh listing
+            # before removing anything. Only when a prune is on the table:
+            # the confirm read is another real clone.
+            bust_repo_skills_cache(repo)
+            try:
+                repo_ids = list_repo_skills(app.state.clients.github, repo)
+            except ClientError as exc:
+                # Same degrade-to-the-ledger rule the first read has: an
+                # unreachable repo is never evidence of absence.
+                log.warning("skills repo re-listing failed for %s: %s", name, exc)
+                repo_ids = None
+
         if repo_ids is not None:
-            # The clone above takes real wall-clock time (seconds, not
-            # milliseconds) -- long enough for a POST to one of the
-            # kobo-lane skills-mutation routes to land in that window and
-            # commit against the ledger this request loaded before the
-            # clone even started. Re-read right before merging so the
-            # write below starts from whatever the DB holds NOW, never
-            # from a copy that's already stale by the time it's used.
+            # Both clones are done; open a fresh transaction now. The
+            # re-read is load-bearing: a POST to one of the kobo-lane
+            # skills-mutation routes can have landed and committed while
+            # those clones ran, and the write below must start from
+            # whatever the DB holds NOW.
             session.refresh(agent)
-            known = [e for e in agent.skills if e["name"] in set(repo_ids)]
+            present = set(repo_ids)
+            known = [e for e in agent.skills if e["name"] in present]
             known_names = {e["name"] for e in known}
-            discovered = [
+            merged = known + [
                 {"name": skill_id, "source": "local"}
                 for skill_id in repo_ids
                 if skill_id not in known_names
             ]
-            merged = known + discovered
-            pruned = [e["name"] for e in agent.skills if e["name"] not in set(repo_ids)]
+            pruned = [e["name"] for e in agent.skills if e["name"] not in present]
             if pruned:
                 log.info(
                     "skills reconcile pruned %s for %s (absent from bundle)",
@@ -7394,6 +7450,12 @@ def build_default_app() -> FastAPI:
     # Built from the MERGED config, same as the engine above — everything
     # downstream of boot sees org values as if they'd always been local.
     clients = Clients.real(config)
+    # Boot-time write probe for the Slack token Secret: rotation is the one
+    # write whose failure is unrecoverable, and it happens ~12h after boot
+    # with nobody watching. One idempotent apply here says now, in the
+    # startup logs, whether the room can do it at all. Fail-soft by
+    # design -- see the probe's own docstring.
+    probe_slack_token_store(clients)
     # Boot-time dispatch-pairs resync (final-review fix round, HIGH-2a): a
     # no-op if the switchboard isn't wired, fail-soft otherwise -- see
     # `_boot_sync_dispatch_pairs`'s own docstring for why this belongs

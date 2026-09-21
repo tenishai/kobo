@@ -1139,6 +1139,16 @@ class FakeKubectl:
     when set, raises `ClientError(apply_secret_error)` instead of recording
     — the seam for exercising `wire_slack`'s/the route's failure handling.
 
+    `secrets` (two-replica safety) seeds the `{(namespace, name): literals}`
+    map `secret_literals` reads back, already decoded — the fake stands in
+    for the Secret itself, not for kubectl's base64-carrying JSON. Every
+    `apply_secret` upserts into that same map, so a store that writes a
+    rotated pair and reads it back sees what a cluster would.
+    `secret_read_error`, when set, makes every read raise instead. An
+    `apply_secret(dry_run=True)` (the boot-time writability check) records
+    into `secret_write_checks` and touches neither `secrets_applied` nor
+    `secrets`, exactly as a server dry-run persists nothing.
+
     `deployment_status` (Task 6) is the same kind of `{(namespace, deploy):
     payload}` map for `deployment_status_json`, the chat route's
     delivery-aware-copy probe (`kobo_api.knowledge.rollout_in_progress`). An
@@ -1165,6 +1175,8 @@ class FakeKubectl:
         service_accounts: dict[tuple[str, str], str] | None = None,
         images: dict[tuple[str, str], str] | None = None,
         apply_secret_error: str | None = None,
+        secrets: dict[tuple[str, str], dict[str, str]] | None = None,
+        secret_read_error: str | None = None,
         deployment_status: dict[tuple[str, str], dict] | None = None,
         deployment_status_error: str | None = None,
         restart_error: str | None = None,
@@ -1174,6 +1186,12 @@ class FakeKubectl:
         self._service_accounts = dict(service_accounts) if service_accounts else {}
         self._images = dict(images) if images else {}
         self._apply_secret_error = apply_secret_error
+        # Public: a test asserting a probe persisted nothing reads the
+        # whole map back, and one modelling another replica's rotation
+        # writes into it.
+        self.secrets = {key: dict(value) for key, value in (secrets or {}).items()}
+        self._secret_read_error = secret_read_error
+        self.secret_write_checks: list[tuple[str, str]] = []
         self._deployment_status = dict(deployment_status) if deployment_status else {}
         self._deployment_status_error = deployment_status_error
         self._restart_error = restart_error
@@ -1199,10 +1217,37 @@ class FakeKubectl:
     def deploy_image(self, namespace: str, deploy: str) -> str:
         return self._images.get((namespace, deploy), FAKE_DEPLOY_IMAGE_DEFAULT)
 
-    def apply_secret(self, namespace: str, name: str, literals: dict[str, str]) -> None:
+    def apply_secret(
+        self,
+        namespace: str,
+        name: str,
+        literals: dict[str, str],
+        *,
+        dry_run: bool = False,
+    ) -> None:
         if self._apply_secret_error is not None:
             raise ClientError(self._apply_secret_error)
+        if dry_run:
+            # A server dry-run persists nothing, so it lands in neither
+            # `secrets_applied` (which records real writes) nor `secrets`
+            # (the stored state) -- only here.
+            self.secret_write_checks.append((namespace, name))
+            return
         self.secrets_applied.append((namespace, name, dict(literals)))
+        # Also the upsert a real apply is, so a write-then-read round trip
+        # (KubeSlackTokenStore's rotation) behaves here the way it does in
+        # a cluster rather than reading back whatever was there before.
+        self.secrets[(namespace, name)] = dict(literals)
+
+    def secret_literals(self, namespace: str, name: str) -> dict[str, str]:
+        if self._secret_read_error is not None:
+            raise ClientError(self._secret_read_error)
+        try:
+            return dict(self.secrets[(namespace, name)])
+        except KeyError:
+            # Errors name the object, never a value — the real
+            # KubectlCLI.secret_literals' own contract.
+            raise ClientError(f"kubectl get secret {namespace}/{name} failed") from None
 
     def deployment_status_json(self, namespace: str, deploy: str) -> dict:
         if self._deployment_status_error is not None:

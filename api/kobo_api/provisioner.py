@@ -44,16 +44,18 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
-from sqlalchemy import update
+from sqlalchemy import and_, or_, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from kobo_api.clients import Clients
 from kobo_api.config import Config
+from kobo_api.db import SQLITE_BUSY_TIMEOUT_S
 from kobo_api.models import Agent, AgentStatus, AgentStep, StepStatus
 from kobo_api.pairs import sync_dispatch_pairs_best_effort
 from kobo_api.steps import (
@@ -71,6 +73,132 @@ from kobo_api.steps import (
 )
 
 log = logging.getLogger(__name__)
+
+# How often a running pipeline says it is still alive, and how long a row
+# may go unheard from before another process may declare it interrupted.
+# The threshold is several intervals, not one: a beat is a small write that
+# can be delayed by a slow database, a GC pause, or a busy pod, and the
+# cost of being wrong here is failing a healthy provision.
+RUN_HEARTBEAT_INTERVAL_S = 10.0
+RUN_STALE_AFTER_S = 60.0
+# How often every replica re-runs the sweep. Boot alone is not enough: with
+# rolling updates a pipeline killed a minute before the last boot would
+# never be swept by anyone, and a room that is not redeployed for a week
+# would leave it wedged for a week.
+INTERRUPTED_SWEEP_INTERVAL_S = 60.0
+# Prefix for the ticker threads, so a leak is greppable in a stack dump
+# (and assertable in a test).
+HEARTBEAT_THREAD_NAME = "kobo-heartbeat"
+# How long `stop()` waits for the ticker to notice. Strictly greater than a
+# beat's worst case, which is one interval of waiting plus a database write
+# that may itself sit on SQLite's busy timeout while the pipeline thread
+# commits (`kobo_api.db.SQLITE_BUSY_TIMEOUT_S`).
+HEARTBEAT_JOIN_TIMEOUT_S = RUN_HEARTBEAT_INTERVAL_S + SQLITE_BUSY_TIMEOUT_S + 10.0
+
+
+def naive_utc(moment: datetime) -> datetime:
+    """UTC with the tzinfo dropped, matching what the DB actually stores:
+    these columns are plain `DateTime`, and SQLAlchemy strips tzinfo on
+    both engines this room runs (the same normalization
+    `kobo_api.learnings._naive_utc` does for its own comparisons).
+
+    Public, and the ONE spelling of this for everything that touches
+    `run_heartbeat_at`: the routes that put a row in flight
+    (`kobo_api.main`'s create and retry) stamp the same column this
+    module's heartbeat and sweep compare, and a second spelling of "now"
+    among them is exactly how a 60-second cutoff goes quietly wrong.
+    """
+    if moment.tzinfo is None:
+        return moment
+    return moment.astimezone(UTC).replace(tzinfo=None)
+
+
+class _Heartbeat:
+    """Says, on a short interval, that this process is still running
+    `agent_id`'s pipeline.
+
+    Its own thread and its own session per beat, deliberately: the pipeline
+    session belongs to the pipeline thread (SQLAlchemy sessions are not
+    thread-safe), and a beat must keep landing during a SINGLE long step --
+    the build wait runs for minutes, and a heartbeat written only at step
+    boundaries would go stale in the middle of a healthy provision.
+
+    A failed beat is logged and skipped, never raised: the database being
+    briefly unavailable is not a reason to fail a provision, and the worst
+    case of several missed beats is another replica sweeping this run --
+    which is exactly the same outcome as this process having died, the
+    thing the sweep is allowed to be wrong about in only that direction.
+    """
+
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        agent_id: int,
+        *,
+        interval_s: float = RUN_HEARTBEAT_INTERVAL_S,
+        now: Callable[[], datetime] | None = None,
+    ):
+        self._session_factory = session_factory
+        self._agent_id = agent_id
+        self._interval_s = interval_s
+        self._now = now or (lambda: datetime.now(UTC))
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        # One beat inline before the thread exists, so the row is marked
+        # live the moment the run begins rather than one interval later.
+        self._beat()
+        self._thread = threading.Thread(
+            target=self._loop,
+            name=f"{HEARTBEAT_THREAD_NAME}-{self._agent_id}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            # Joined, not merely signalled: the run's own thread must not
+            # return while a beat for it is still in flight, or a caller
+            # that saw the run finish could still watch the row's heartbeat
+            # move afterward. The timeout is sized ABOVE a beat's worst
+            # case -- a beat can sit on SQLite's busy timeout waiting for
+            # the pipeline's own commit -- so reaching it means something
+            # is genuinely wrong rather than merely slow, and the thread is
+            # a daemon so a stuck one can never hold up the process.
+            self._thread.join(timeout=HEARTBEAT_JOIN_TIMEOUT_S)
+            if self._thread.is_alive():
+                log.warning(
+                    "heartbeat thread for agent %s did not stop within %ss",
+                    self._agent_id,
+                    HEARTBEAT_JOIN_TIMEOUT_S,
+                )
+            self._thread = None
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self._interval_s):
+            self._beat()
+
+    def _beat(self) -> None:
+        session = self._session_factory()
+        try:
+            session.execute(
+                update(Agent)
+                .where(Agent.id == self._agent_id)
+                .values(run_heartbeat_at=naive_utc(self._now()))
+            )
+            session.commit()
+        except Exception:
+            log.warning(
+                "heartbeat write failed for agent %s", self._agent_id, exc_info=True
+            )
+            try:
+                session.rollback()
+            except Exception:  # best-effort cleanup only
+                log.warning("heartbeat rollback failed", exc_info=True)
+        finally:
+            session.close()
 
 
 class Step(Protocol):
@@ -155,6 +283,13 @@ def _run_pipeline_body(
 
         try:
             agent.status = AgentStatus.PROVISIONING
+            # In the same commit that puts the row in flight, always: a row
+            # is sweepable from the instant its status says a run is
+            # happening, and the routes that flip it (create, retry) stamp
+            # this for the same reason. Redundant with the ticker's first
+            # beat and deliberately so -- a beat is a write that is allowed
+            # to fail, and this one is not on its own.
+            agent.run_heartbeat_at = naive_utc(datetime.now(UTC))
             session.commit()
 
             workdir = config.workdir / agent.name
@@ -291,6 +426,52 @@ def _run_pipeline_body(
         session.close()
 
 
+def _run_pipeline_with_heartbeat(
+    session_factory: sessionmaker[Session],
+    agent_id: int,
+    *,
+    config: Config,
+    clients: Clients,
+    steps: list[Step],
+    heartbeat_interval_s: float,
+    now: Callable[[], datetime] | None,
+) -> None:
+    """`_run_pipeline_body` with a heartbeat running alongside it.
+
+    Wrapped here rather than inside the body so the liveness signal covers
+    the run from its very first moment to its very last, engine-level
+    recovery included, and so every existing direct caller of
+    `_run_pipeline_body` (the engine's own tests) is untouched.
+    """
+    beat = _Heartbeat(
+        session_factory, agent_id, interval_s=heartbeat_interval_s, now=now
+    )
+    try:
+        try:
+            beat.start()
+        except Exception:
+            # Inside the try, so a ticker that cannot start does not cost
+            # the provision. The two failures are not comparable: a run
+            # without a heartbeat is recoverable (the sweep fails it, the
+            # user retries), while a run that never happens at all leaves
+            # an agent wedged with nothing to resume.
+            log.warning(
+                "could not start the heartbeat for agent %s; the run continues "
+                "but may be swept as interrupted",
+                agent_id,
+                exc_info=True,
+            )
+        _run_pipeline_body(
+            session_factory, agent_id, config=config, clients=clients, steps=steps
+        )
+    finally:
+        # The run is over: stop claiming it is alive. In a `finally` so a
+        # crash inside the body can never leave a ticker beating for a
+        # pipeline that is not running -- which would make the row
+        # permanently unsweepable.
+        beat.stop()
+
+
 def run_pipeline(
     session_factory: sessionmaker[Session],
     agent_id: int,
@@ -298,6 +479,8 @@ def run_pipeline(
     config: Config,
     clients: Clients,
     steps: list[Step],
+    heartbeat_interval_s: float = RUN_HEARTBEAT_INTERVAL_S,
+    now: Callable[[], datetime] | None = None,
 ) -> threading.Thread:
     """Fire the pipeline for `agent_id` on a daemon thread and return it immediately.
 
@@ -305,22 +488,63 @@ def run_pipeline(
     so it's safe to call this from a request handler and let the request return
     before provisioning finishes.
 
+    For as long as that thread runs, a second (also daemon) thread refreshes
+    `Agent.run_heartbeat_at` every `heartbeat_interval_s` — that is what
+    tells `sweep_interrupted` in ANOTHER replica that this run is alive and
+    must not be failed out from under it. Both the interval and the clock
+    are injectable for tests; nothing in the room passes either.
+
     Not safe to call twice concurrently for the same agent_id (racing writers
     to the same AgentStep rows); callers must serialize that themselves - the
     API route does this later by gating on agent status.
     """
     thread = threading.Thread(
-        target=_run_pipeline_body,
+        target=_run_pipeline_with_heartbeat,
         args=(session_factory, agent_id),
-        kwargs={"config": config, "clients": clients, "steps": steps},
+        kwargs={
+            "config": config,
+            "clients": clients,
+            "steps": steps,
+            "heartbeat_interval_s": heartbeat_interval_s,
+            "now": now,
+        },
         daemon=True,
     )
     thread.start()
     return thread
 
 
-def sweep_interrupted(session_factory: sessionmaker[Session]) -> int:
-    """Fail every agent left wedged in PENDING/PROVISIONING by a process restart.
+async def interrupted_sweep_loop(
+    app, *, interval_s: float = INTERRUPTED_SWEEP_INTERVAL_S
+) -> None:
+    """Re-run `sweep_interrupted` every `interval_s`, for the life of the
+    process (the lifespan owns it, same shape as the learnings nightly
+    loop).
+
+    Sleeps FIRST: `build_default_app` already sweeps synchronously at boot,
+    so starting with another one would just repeat it. Unguarded by any
+    lock, unlike the learnings sweep: this one is idempotent and touches
+    only rows nobody is running, so two replicas doing it at the same
+    moment write the same FAILED twice and agree. Cancellation passes
+    through untouched; everything else is logged and the loop lives on.
+    """
+    import asyncio
+
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            await asyncio.to_thread(sweep_interrupted, app.state.session_factory)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("interrupted sweep failed")
+
+
+def sweep_interrupted(
+    session_factory: sessionmaker[Session], *, now: datetime | None = None
+) -> int:
+    """Fail every agent left wedged in PENDING/PROVISIONING by a process
+    that is no longer running its pipeline.
 
     `_run_pipeline_body` is the only thing that ever moves an agent OUT of
     PENDING/PROVISIONING, and it only runs inside the daemon thread
@@ -328,20 +552,45 @@ def sweep_interrupted(session_factory: sessionmaker[Session]) -> int:
     that thread is mid-flight, the thread is simply gone — nothing ever
     revisits the agent's row again. `retry_agent`'s gate only accepts FAILED,
     so an agent stuck in PENDING/PROVISIONING is wedged forever short of a
-    manual DB edit. Call this once at process startup, before serving any
-    requests (`build_default_app` — never `create_app`, so test fixtures'
-    isolated agents are unaffected), to land every such agent in FAILED
-    instead, where the existing retry path already knows how to pick it back
-    up. Any AgentStep row a dead thread left RUNNING is swept the same way,
-    so `reset_failed_steps` sees it too.
+    manual DB edit. This lands every such agent in FAILED instead, where the
+    existing retry path already knows how to pick it back up. Any AgentStep
+    row a dead thread left RUNNING is swept the same way, so
+    `reset_failed_steps` sees it too.
+
+    Liveness, not "in flight": a rolling update starts a new pod WHILE the
+    old one is still provisioning, so a sweep that failed every in-flight
+    row would kill live runs, and the user's retry could then run the same
+    steps in two processes at once. A row is only swept when its heartbeat
+    (`Agent.run_heartbeat_at`, refreshed throughout a run by `_Heartbeat`)
+    is older than `RUN_STALE_AFTER_S` — or, for a row that has never had a
+    heartbeat at all (every row predating the column, and the seconds
+    between a create landing and its thread's first beat), when the ROW
+    itself is that old.
+
+    Safe to run from anywhere, any number of times, in any number of
+    replicas: it is idempotent, and two replicas sweeping the same dead row
+    simply write the same FAILED twice. It runs at boot
+    (`build_default_app`) and then periodically in every replica
+    (`interrupted_sweep_loop`) — boot alone would never sweep a pipeline
+    killed a minute after the last boot.
 
     Returns the number of agents swept; logs a summary line when nonzero.
     """
+    cutoff = naive_utc(now or datetime.now(UTC)) - timedelta(seconds=RUN_STALE_AFTER_S)
     session = session_factory()
     try:
         wedged = (
             session.query(Agent)
-            .filter(Agent.status.in_([AgentStatus.PENDING, AgentStatus.PROVISIONING]))
+            .filter(
+                Agent.status.in_([AgentStatus.PENDING, AgentStatus.PROVISIONING]),
+                or_(
+                    and_(
+                        Agent.run_heartbeat_at.is_not(None),
+                        Agent.run_heartbeat_at < cutoff,
+                    ),
+                    and_(Agent.run_heartbeat_at.is_(None), Agent.created_at < cutoff),
+                ),
+            )
             .all()
         )
         for agent in wedged:
