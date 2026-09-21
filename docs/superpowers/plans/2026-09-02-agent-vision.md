@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- The org/vendor name (acme) NEVER appears in daedalus or kobo source, comments, or string literals; no em dashes (use "--" in comments).
+- The client's name NEVER appears in daedalus or kobo source, comments, or string literals; no em dashes (use "--" in comments).
 - Exact bounds: per-image size cap 20 MB pre-encoding (`_IMAGE_MAX_BYTES = 20 * 1024 * 1024`, checked against `file["size"]` BEFORE download); per-message cap 4 images (`_IMAGE_CAP = 4`); accepted mimetypes exactly `{"image/png", "image/jpeg", "image/gif", "image/webp"}`.
 - Bounds are announced, never silent: skipped files append a parenthetical note to the message text (exact copy in Task 3).
 - An image-only Slack message (no text) still reaches the agent (`text` falls back to `"(image)"`); a message with neither text nor images is ignored exactly as an empty message is today.

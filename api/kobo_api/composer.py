@@ -294,7 +294,7 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
         # Explicit names, never a github.* glob -- the bundle's allow list is
         # law, and a glob would silently grant every tool the provider grows
         # later. open_pr is the one write (PR-only by ruling); the read
-        # quartet (2026-08-28, the acme-schema-survey unblock) rides the
+        # quartet (2026-08-28, the schema-survey unblock) rides the
         # same mint-per-call broker token.
         allow.extend(
             [

@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Build-log viewer (2026-08-27 feedback: kodama parity). A collapsed
+  // Build-log viewer (2026-08-27 feedback: parity with the org's PaaS). A collapsed
   // card on the Overview tab; expanding it fetches the tail of the agent
   // repo's most recent workflow-run log -- failed steps only when the run
   // failed, whole log otherwise (the server decides). Lazy on purpose:

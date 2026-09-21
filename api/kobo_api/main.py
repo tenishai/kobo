@@ -3740,7 +3740,7 @@ def create_app(
         # a value re-read after the pipeline thread is already running.
         return JSONResponse({"name": name, "status": AgentStatus.PROVISIONING}, status_code=202)
 
-    # --- Build-log viewer (2026-08-27 feedback: kodama parity) ------------------
+    # --- Build-log viewer (2026-08-27 feedback: parity with the org's PaaS) ------------------
 
     _BUILD_LOG_TAIL_LINES = 400
 

@@ -2165,7 +2165,7 @@ def test_create_agent_launch_failure_with_session_close_raising_still_returns_50
 def test_create_accepts_a_room_registry_runtime(client, monkeypatch):
     r = client.post("/api/agents", json={
         "name": "sdk-one", "persona": "helpful-generalist",
-        "runtime_image": "registry.example/agents/acme-agent-sdk:1.0",
+        "runtime_image": "registry.example/agents/org-agent-sdk:1.0",
     })
     assert r.status_code in (200, 201, 202), r.text
 
@@ -2257,12 +2257,12 @@ def test_create_accepts_a_configured_runtime_from_another_registry_host(client):
     cfg = client.app.state.config
     original = cfg.runtimes
     cfg.runtimes = [RuntimeChoice(
-        image="us-docker.pkg.dev/p/apps/acme-agent-runtime:1.0", label="acme-runtime"
+        image="us-docker.pkg.dev/p/apps/org-agent-runtime:1.0", label="org-runtime"
     )]
     try:
         r = client.post("/api/agents", json={
             "name": "sdk-four", "persona": "helpful-generalist",
-            "runtime_image": "us-docker.pkg.dev/p/apps/acme-agent-runtime:1.0",
+            "runtime_image": "us-docker.pkg.dev/p/apps/org-agent-runtime:1.0",
         })
         assert r.status_code in (200, 201, 202), r.text
         r2 = client.post("/api/agents", json={
@@ -2311,7 +2311,7 @@ def test_archetype_ignores_client_supplied_skills_and_runtime(client, session_fa
     r = _create_guide(
         client,
         skills=[{"id": "word-games", "team": "shared"}],
-        runtime_image="registry.example/agents/acme-agent-sdk:1.0",
+        runtime_image="registry.example/agents/org-agent-sdk:1.0",
     )
     assert r.status_code == 201, r.text
 

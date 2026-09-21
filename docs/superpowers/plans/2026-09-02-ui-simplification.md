@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- The org/vendor name (acme) NEVER appears in source, comments, or string literals.
+- The client's name NEVER appears in source, comments, or string literals.
 - NO EM DASHES in `.svelte` files (`ui/src/lib/copy.test.ts` fails the suite on them); avoid them in `.ts` too (use `--` in comments).
 - All UI commands run from `ui/`: tests `npx vitest run <file>` (full suite `npx vitest run`), type check `npm run check`.
 - kobo work happens on branch `feat/ui-simplification` in `~/Documents/GitHub/kobo`, branched from current `main`.

@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-14
 **Status:** Approved in conversation (Kyle), spec for implementation
-**Scope:** kobo (api + ui + composer), acme-skills marketplace (one new skill), kobo-config (org.yaml keys)
+**Scope:** kobo (api + ui + composer), the org's skills marketplace (one new skill), kobo-config (org.yaml keys)
 
 ## Why
 
@@ -56,7 +56,7 @@ style can never erode conduct.
 
 ### 1.2 The skill (marketplace)
 
-One new skill, `team-guide` **1.0.0**, published to the acme-skills
+One new skill, `team-guide` **1.0.0**, published to the org's skills
 marketplace under the publish law (frontmatter carries version + profiles;
 validate before push — a bad skill bricks all publishes). Auto-attached at
 kiosk birth. Content, two halves:

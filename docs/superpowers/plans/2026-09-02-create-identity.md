@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- No vendor/org name (acme) in source, comments, or string literals; NO EM DASHES in kobo content (use "--"; copy.test.ts enforces .svelte).
+- No client name in source, comments, or string literals; NO EM DASHES in kobo content (use "--"; copy.test.ts enforces .svelte).
 - Exact values: `SUGGESTION_COUNT = 3`; `exclude` cap 20; `round` 0-20; request `what_they_do` max 2000; persona body clipped to first 2000 chars server-side; avatar caps unchanged (4 MiB generated, 2 MiB upload).
 - AvatarStep: SKIPPED on any failure, never FAILED; idempotent (skips when `agent.avatar_png` already set); never blocks READY.
 - API tests from `api/`: `uv run python -m pytest tests/<file> -x -q` (full: `uv run python -m pytest tests/ -q`; if the venv's `.pth` files go macOS-hidden again, `chflags nohidden .venv/lib/python3.12/site-packages/*.pth`). UI from `ui/`: `npx vitest run <file>`, full suite + `npm run check`.
