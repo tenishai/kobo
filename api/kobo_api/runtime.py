@@ -1,10 +1,12 @@
 """Changing an existing agent's runtime image (#15).
 
-`runtime_image` used to be create-time only: the composer baked it into the
-agent repo's `Dockerfile` once and nothing could move it afterwards, so
-switching an agent to a different runtime meant destroy-and-recreate —
-which discards Slack wiring, accumulated agent memory and channel
-membership, none of which is a runtime concern.
+Every agent is BUILT on the org default (`Config.runtime_image`) — there is
+no runtime choice at create time. This module is the only way that moves
+afterwards, and it exists for two jobs: pinning one agent to a specific tag
+or digest of the org runtime, and carrying an agent that was created on an
+older alternative runtime back onto the default. Without it either job
+means destroy-and-recreate — which discards Slack wiring, accumulated agent
+memory and channel membership, none of which is a runtime concern.
 
 THE VALUE LIVES IN TWO PLACES AND BOTH HAVE TO MOVE TOGETHER. The
 `Dockerfile`'s `FROM` ref is what a build actually uses, but
@@ -33,26 +35,27 @@ from kobo_api.clients import GitHubClient
 from kobo_api.composer import update_dockerfile_runtime_image
 
 
-def validate_runtime_image(runtime_image: str, *, configured: set[str], org_default: str) -> str | None:
+def validate_runtime_image(runtime_image: str, *, org_default: str) -> str | None:
     """`None` when `runtime_image` may be used, else the rejection copy.
 
-    THE SAME GATE CREATE USES, lifted so a mutation cannot be the one path
-    that bypasses it. `create_agent` has always refused a runtime that is
-    neither exactly a configured runtime (operator-vetted config — the sdk
-    runtime lives on a different regional host than the daedalus default)
-    nor a freeform ref under the org default's registry root; existence is
-    CI's problem, a bad tag fails the first build loudly, provenance is
-    ours. A change route that accepted anything would make "which images
-    may this org run" a question of which endpoint you asked.
+    PROVENANCE IS THE WHOLE RULE: an image may be any ref under the org
+    default's own registry root, and nothing else. Existence is CI's
+    problem — a bad tag fails the first build loudly — but a foreign
+    registry is not something a room ever runs, so it is refused before it
+    can reach a Dockerfile.
+
+    The root is derived from `org_default` rather than configured beside
+    it, so the one runtime an org builds on is also the one thing that says
+    where its images come from; there is no second list to drift from it.
 
     Returns the message rather than raising, because both callers answer
     422 with it in a JSON body and neither wants an exception to format.
     """
     registry_root = org_default.rsplit("/", 1)[0] + "/"
-    if runtime_image not in configured and not runtime_image.startswith(registry_root):
+    if not runtime_image.startswith(registry_root):
         return (
-            "runtime_image must be one of the configured runtimes or live "
-            f"under {registry_root!r} (got {runtime_image!r})"
+            f"runtime_image must live under {registry_root!r} "
+            f"(got {runtime_image!r})"
         )
     return None
 

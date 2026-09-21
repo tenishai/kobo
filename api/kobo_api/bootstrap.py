@@ -139,7 +139,6 @@ _ORG_YAML_TOKENS = {
     "liminal_url": "__KOBO_LIMINAL_URL__",
     "argus_url": "__KOBO_ARGUS_URL__",
     "argus_project": "__KOBO_ARGUS_PROJECT__",
-    "runtimes": "__KOBO_RUNTIMES__",
     "reader_groups": "__KOBO_READER_GROUPS__",
 }
 
@@ -167,7 +166,6 @@ def _org_yaml_context(config: Config) -> dict[str, object]:
         "liminal_url": config.liminal_url,
         "argus_url": config.argus_url,
         "argus_project": config.argus_project,
-        "runtimes": [{"image": r.image, "label": r.label} for r in config.runtimes],
         "reader_groups": config.reader_groups,
         "gcp_project": config.gcp_project,
         "vertex_project": config.vertex_project,

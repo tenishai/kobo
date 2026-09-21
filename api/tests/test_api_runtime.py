@@ -27,10 +27,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import ClientError, Clients
-from kobo_api.config import Config, RuntimeChoice
+from kobo_api.config import Config
 from kobo_api.main import _runtime_image_for_repo, create_app
 from kobo_api.models import Agent, AgentStatus, Base
 from kobo_api.personas import seed_default_personas
+from kobo_api.runtime import validate_runtime_image
 from tests.fakes import (
     FAKE_DOCKERFILE_OLD_IMAGE,
     FakeAgent,
@@ -48,11 +49,15 @@ PERSONA = "helpful-generalist"
 REPO = "acme/agent-clio"
 PERSONAS_BUCKET = "personas-bucket"
 
-# A second operator-vetted runtime, on a DIFFERENT registry host than the
-# org default — the real reason `validate_runtime_image` accepts a
-# configured image outright rather than only checking the registry root
-# (the sdk runtime lives on its own regional host).
-OTHER_RUNTIME = "eu.registry.example/agents/sdk-runtime:v2"
+# A second ref under the org default's own registry root — the per-agent
+# pin this route exists to set. Derived from the default rather than
+# written out, because the root is the whole rule.
+OTHER_RUNTIME = Config().runtime_image.rsplit("/", 1)[0] + "/daedalus-runtime:v9"
+
+# An image OUTSIDE that root, as an agent created back when the room
+# offered a second runtime still carries in its row. Nothing accepts it any
+# more; the re-pin paths must keep using it all the same.
+RETIRED_RUNTIME = "eu.registry.example/agents/sdk-runtime:v2"
 
 
 class _CapturingGitHub(FakeGitHub):
@@ -92,11 +97,7 @@ def session_factory(tmp_path):
 
 @pytest.fixture
 def config(tmp_path):
-    return Config(
-        workdir=tmp_path / "work",
-        personas_bucket=PERSONAS_BUCKET,
-        runtimes=[RuntimeChoice(image=OTHER_RUNTIME, label="SDK runtime")],
-    )
+    return Config(workdir=tmp_path / "work", personas_bucket=PERSONAS_BUCKET)
 
 
 def _make_client(session_factory, config, *, github=None):
@@ -224,9 +225,9 @@ def test_patch_runtime_refuses_an_image_this_org_does_not_run(session_factory, c
     )
 
     assert response.status_code == 422
-    # The same rule create enforces, stated the same way — the point of
-    # sharing `validate_runtime_image` rather than writing a second check.
-    assert "must be one of the configured runtimes" in response.json()["error"]
+    # Provenance is the whole rule: the org default's own registry root,
+    # and nothing else. There is no second list of accepted images.
+    assert "must live under 'registry.example/agents/'" in response.json()["error"]
     assert _stored_runtime(session_factory) is None
 
 
@@ -251,6 +252,35 @@ def test_patch_runtime_accepts_a_freeform_ref_under_the_org_registry_root(sessio
 
     assert response.status_code == 200
     assert _stored_runtime(session_factory) == f"{root}experimental:sha-abc123"
+
+
+def test_an_agent_on_a_retired_runtime_keeps_repinning_and_can_be_moved_onto_the_default(
+    session_factory, config
+):
+    """An agent created back when the room offered a second runtime still
+    has that image in its row, and nothing would accept it today.
+
+    Two halves, both required. The re-pin paths (wire_slack,
+    upload_intake_file, both tooling uploads) read `_runtime_image_for_repo`
+    and never validate — a teach note on such an agent must not error, and
+    must not quietly rebuild it on an image it does not run. And this route
+    is how it gets moved, so it has to take a row it would itself refuse as
+    the INPUT while validating only the target.
+    """
+    assert validate_runtime_image(RETIRED_RUNTIME, org_default=config.runtime_image)
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config, runtime_image=RETIRED_RUNTIME)
+
+    # The accessor every re-pinning caller reads, asked exactly as they ask it.
+    assert _runtime_image_for_repo(client.app, REPO) == RETIRED_RUNTIME
+
+    response = client.patch(
+        f"/api/agents/{AGENT_NAME}/runtime", json={"runtime_image": config.runtime_image}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["previous_runtime_image"] == RETIRED_RUNTIME
+    assert _stored_runtime(session_factory) == config.runtime_image
 
 
 def test_patch_runtime_push_failure_502s_and_leaves_the_row_at_its_old_value(

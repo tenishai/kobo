@@ -6,7 +6,7 @@ asserting mocks.
 
 from kobo_api.config import Config, GroupChoice, ModelChoice
 from kobo_api.main import create_app
-from kobo_api.org import ORG_KEYS, OrgState, load_org_config
+from kobo_api.org import ORG_KEYS, RETIRED_ORG_KEYS, OrgState, load_org_config
 from tests.fakes import FakeGitHub
 
 ORG_REPO = "acme-corp/kobo-config"
@@ -269,7 +269,6 @@ def test_org_keys_is_exactly_the_brief_set():
         "liminal_url",
         "argus_url",
         "argus_project",
-        "runtimes",
         "reader_groups",
             "gcp_project",
             "vertex_project",
@@ -291,6 +290,58 @@ def test_org_keys_is_exactly_the_brief_set():
             "mcp",
         }
     )
+
+
+def test_retired_keys_are_disjoint_from_org_keys():
+    """A retired key is ACCEPTED but never merged, so it must not also be a
+    live key -- overlap would mean the drop below silently defeated a field
+    an org can still set."""
+    assert RETIRED_ORG_KEYS == frozenset({"runtimes"})
+    assert not (RETIRED_ORG_KEYS & ORG_KEYS)
+
+
+def test_retired_runtimes_key_still_loads_and_never_reaches_config(caplog):
+    """A deployment's org.yaml may still carry `runtimes:`, and an
+    unrecognized key unwires ALL org config -- catalogs, MCP, the lot. So
+    the key stays accepted and is dropped before the merge."""
+    import logging
+
+    local = Config(org_repo=ORG_REPO)
+    github = FakeGitHub(
+        org_yaml=(
+            "github_org: acme-corp\n"
+            "runtimes:\n"
+            "  - image: eu.registry.example/agents/sdk-runtime:v2\n"
+            "    label: SDK runtime\n"
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="kobo_api.org"):
+        merged, org = load_org_config(local, github)
+
+    assert org.wired is True
+    assert org.error is None
+    assert merged.github_org == "acme-corp"
+    assert not hasattr(merged, "runtimes")
+    assert "runtimes" not in merged.model_dump()
+    expected = (
+        "org.yaml key 'runtimes' is retired and ignored: "
+        "every agent builds on runtime_image"
+    )
+    assert [r.getMessage() for r in caplog.records] == [expected]
+
+
+def test_a_still_unknown_key_beside_a_retired_one_is_unwired():
+    """Accepting a retired key is not a crack in the allowlist: anything
+    else unrecognized still unwires, same as before."""
+    local = Config(org_repo=ORG_REPO)
+    github = FakeGitHub(org_yaml="runtimes: []\nnot_a_key: 1\n")
+
+    merged, org = load_org_config(local, github)
+
+    assert merged is local
+    assert org.wired is False
+    assert org.error == "org.yaml has an unrecognized key: 'not_a_key'"
 
 
 def test_override_of_explicit_local_value_is_disclosed(caplog):
