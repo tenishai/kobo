@@ -183,6 +183,12 @@ new pod is ready before an old one goes away. Give the container a `preStop` hoo
 for a few seconds before shutdown — the load balancer needs that long to stop sending the pod
 new requests, and without it a roll drops the connections in flight.
 
+Get onto this version first, though, before switching the strategy. A running provision proves
+it is alive by writing a heartbeat, and versions before this one never wrote one — so a new pod
+booting beside an old one would read the old pod's live provisions as interrupted and fail them.
+Roll this version out under the existing `Recreate` strategy (or at a moment when nothing is
+provisioning), and switch to rolling updates once every pod is beating.
+
 Three more things to expect. On a cold start straight to two replicas, both pods run migrations
 and one loses the race and restarts once; it is harmless and it settles by itself. Session-level
 advisory locks belong to a database connection, so route the room through a direct connection or

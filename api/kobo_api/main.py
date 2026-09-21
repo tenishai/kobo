@@ -130,6 +130,7 @@ from kobo_api.provisioner import (
     PIPELINE,
     STEP_LABELS,
     interrupted_sweep_loop,
+    naive_utc,
     reset_failed_steps,
     run_pipeline,
     sweep_interrupted,
@@ -3386,6 +3387,12 @@ def create_app(
             created_by=created_by,
             group_name=payload.group_name,
             skip_baseline=payload.skip_baseline,
+            # Born in flight, so born with a heartbeat: PENDING is a swept
+            # status (kobo_api.provisioner.sweep_interrupted), and leaning
+            # on the NULL-heartbeat branch's created_at grace would make a
+            # new agent's safety depend on a rule written for rows that
+            # predate the column.
+            run_heartbeat_at=naive_utc(datetime.now(UTC)),
         )
         session.add(agent)
         try:
@@ -3698,6 +3705,13 @@ def create_app(
         # idempotent, so this doesn't change its behavior.
         agent.status = AgentStatus.PROVISIONING
         agent.error = None
+        # Stamped in the SAME commit that puts the row back in flight. A
+        # retried row still carries the PREVIOUS run's heartbeat, which is
+        # already past the sweep's cutoff, and the new run's first beat is
+        # a write that is allowed to fail (logged and skipped, never
+        # raised) -- so without this, one failed first beat leaves a live
+        # retry sweepable on the very next tick, in any replica.
+        agent.run_heartbeat_at = naive_utc(datetime.now(UTC))
         session.commit()
 
         agent_id = agent.id
@@ -4486,65 +4500,58 @@ def create_app(
         # repo-only ids surface as local AND heal the ledger, DB-only rows
         # prune (removed by PR = not on the agent). A repo read failure
         # degrades to the ledger read and never prunes.
+        repo = agent.repo_full_name
+        # Everything the pre-clone decision needs, read here and then the
+        # transaction RELEASED: reading `agent` at all has autobegun one,
+        # and each listing below is a real `git clone` taking seconds. A
+        # transaction held open across two of those pins a connection (and,
+        # on Postgres, the oldest running snapshot) for the whole round
+        # trip. `session.rollback()` writes nothing -- it just ends the read
+        # transaction; the authoritative re-read happens after the clones.
+        ledger_names = {e["name"] for e in agent.skills}
+        session.rollback()
+
         try:
-            repo_ids = list_repo_skills(
-                app.state.clients.github, agent.repo_full_name
-            )
+            repo_ids = list_repo_skills(app.state.clients.github, repo)
         except ClientError as exc:
             log.warning("skills repo listing failed for %s: %s", name, exc)
             repo_ids = None
+
+        if repo_ids is not None and ledger_names - set(repo_ids):
+            # A prune looks possible. `list_repo_skills` answers from a 60s
+            # PER-PROCESS cache, so a skill added through another replica
+            # (or through this one before its own cache filled) is
+            # invisible here for up to a minute -- and pruning is
+            # destructive: the row's catalog provenance (team, sha) cannot
+            # be recovered once it's gone, since a re-discovered skill only
+            # ever heals back as "local". Confirm against a fresh listing
+            # before removing anything. Only when a prune is on the table:
+            # the confirm read is another real clone.
+            bust_repo_skills_cache(repo)
+            try:
+                repo_ids = list_repo_skills(app.state.clients.github, repo)
+            except ClientError as exc:
+                # Same degrade-to-the-ledger rule the first read has: an
+                # unreachable repo is never evidence of absence.
+                log.warning("skills repo re-listing failed for %s: %s", name, exc)
+                repo_ids = None
+
         if repo_ids is not None:
-            # The clone above takes real wall-clock time (seconds, not
-            # milliseconds) -- long enough for a POST to one of the
-            # kobo-lane skills-mutation routes to land in that window and
-            # commit against the ledger this request loaded before the
-            # clone even started. Re-read right before merging so the
-            # write below starts from whatever the DB holds NOW, never
-            # from a copy that's already stale by the time it's used.
+            # Both clones are done; open a fresh transaction now. The
+            # re-read is load-bearing: a POST to one of the kobo-lane
+            # skills-mutation routes can have landed and committed while
+            # those clones ran, and the write below must start from
+            # whatever the DB holds NOW.
             session.refresh(agent)
-
-            def _reconcile(ids: list[str]) -> tuple[list[dict], list[str]]:
-                present = set(ids)
-                known = [e for e in agent.skills if e["name"] in present]
-                known_names = {e["name"] for e in known}
-                discovered = [
-                    {"name": skill_id, "source": "local"}
-                    for skill_id in ids
-                    if skill_id not in known_names
-                ]
-                return (
-                    known + discovered,
-                    [e["name"] for e in agent.skills if e["name"] not in present],
-                )
-
-            merged, pruned = _reconcile(repo_ids)
-            if pruned:
-                # `list_repo_skills` answers from a 60s PER-PROCESS cache,
-                # so a skill added through another replica (or through this
-                # one before its own cache filled) is invisible here for up
-                # to a minute -- and pruning is destructive: the row's
-                # catalog provenance (team, sha) cannot be recovered once
-                # it's gone, since a re-discovered skill only ever heals
-                # back as "local". Confirm against a fresh listing before
-                # removing anything, and prune only what is STILL missing.
-                # Only when a prune is actually on the table: the confirm
-                # read is another real clone.
-                bust_repo_skills_cache(agent.repo_full_name)
-                try:
-                    confirmed_ids = list_repo_skills(
-                        app.state.clients.github, agent.repo_full_name
-                    )
-                except ClientError as exc:
-                    # Same degrade-to-the-ledger rule the first read has:
-                    # an unreachable repo is never evidence of absence.
-                    log.warning(
-                        "skills repo re-listing failed for %s: %s", name, exc
-                    )
-                    confirmed_ids = None
-                if confirmed_ids is None:
-                    merged, pruned = list(agent.skills), []
-                else:
-                    merged, pruned = _reconcile(confirmed_ids)
+            present = set(repo_ids)
+            known = [e for e in agent.skills if e["name"] in present]
+            known_names = {e["name"] for e in known}
+            merged = known + [
+                {"name": skill_id, "source": "local"}
+                for skill_id in repo_ids
+                if skill_id not in known_names
+            ]
+            pruned = [e["name"] for e in agent.skills if e["name"] not in present]
             if pruned:
                 log.info(
                     "skills reconcile pruned %s for %s (absent from bundle)",

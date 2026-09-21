@@ -606,6 +606,35 @@ def test_run_pipeline_stops_the_heartbeat_when_a_step_fails(session_factory, con
     assert agent.status == AgentStatus.FAILED
 
 
+def test_a_heartbeat_that_cannot_start_does_not_cost_the_provision(
+    session_factory, config, monkeypatch
+):
+    # A run without a heartbeat is recoverable -- the sweep fails it and
+    # the user retries. A run that never happens leaves an agent wedged
+    # with nothing to resume. So the ticker is allowed to fail.
+    import kobo_api.provisioner as provisioner_module
+
+    def refuse_to_start(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(provisioner_module._Heartbeat, "start", refuse_to_start)
+
+    agent_id = _make_agent(session_factory, "agent-no-ticker")
+    calls: list[str] = []
+    run_pipeline(
+        session_factory,
+        agent_id,
+        config=config,
+        clients=NO_CLIENTS,
+        steps=[RecordingStep(name="step-a", calls=calls)],
+    ).join(timeout=JOIN_TIMEOUT)
+
+    agent, rows = _load(session_factory, agent_id)
+    assert agent.status == AgentStatus.READY
+    assert calls == ["step-a"]
+    assert rows["step-a"].status == StepStatus.DONE
+
+
 def test_retry_after_a_sweep_still_resumes_the_pipeline(session_factory, config):
     """The whole point of the sweep: a genuinely dead run lands in FAILED,
     where the existing retry path can pick it back up.

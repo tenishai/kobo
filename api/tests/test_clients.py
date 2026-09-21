@@ -2577,8 +2577,8 @@ def test_slack_client_wraps_a_bare_path_in_a_file_store(tmp_path):
     )
     client = HttpxSlackClient(tokens_path)
 
-    assert isinstance(client._store, FileSlackTokenStore)
-    assert client._store.read() == ("xoxe.xoxp-TEST-config", "xoxe-TEST-refresh")
+    assert isinstance(client.token_store, FileSlackTokenStore)
+    assert client.token_store.read() == ("xoxe.xoxp-TEST-config", "xoxe-TEST-refresh")
 
 
 def test_kube_slack_token_store_reads_the_two_secret_keys():
@@ -2921,7 +2921,30 @@ def test_slack_rotation_logs_when_a_failed_rotate_finds_the_store_moved(caplog):
 # --- probe_slack_token_store (boot-time write probe) --------------------------
 
 
-def test_probe_writes_the_pair_the_secret_store_already_holds():
+def test_probe_checks_writability_without_persisting_anything():
+    # A probe that actually WROTE would be a lost update: another replica
+    # can rotate between this probe's read and its write, and writing back
+    # the pair this process read would restore a refresh token Slack has
+    # already spent -- causing the exact lockout the probe exists to catch
+    # early. A server dry-run runs authorization and admission and stores
+    # nothing.
+    live = {"config_token": "xoxe.xoxp-TEST-config", "refresh_token": "xoxe-TEST-refresh"}
+    kubectl = FakeKubectl(secrets={("kobo", "kobo-slack-tokens"): live})
+    clients = _clients_with_slack(
+        HttpxSlackClient(KubeSlackTokenStore(kubectl, "kobo", "kobo-slack-tokens"))
+    )
+
+    probe_slack_token_store(clients)
+
+    assert kubectl.secret_write_checks == [("kobo", "kobo-slack-tokens")]
+    # Not one real apply, and the stored pair is byte-identical to before.
+    assert kubectl.secrets_applied == []
+    assert kubectl.secrets == {("kobo", "kobo-slack-tokens"): live}
+
+
+def test_probe_leaves_a_pair_another_replica_rotated_untouched():
+    # The race the probe must not lose: the store moves between the read
+    # and the check. Nothing this process does may put the old pair back.
     kubectl = FakeKubectl(
         secrets={
             ("kobo", "kobo-slack-tokens"): {
@@ -2930,19 +2953,23 @@ def test_probe_writes_the_pair_the_secret_store_already_holds():
             }
         }
     )
-    clients = _clients_with_slack(HttpxSlackClient(KubeSlackTokenStore(kubectl, "kobo", "kobo-slack-tokens")))
+    store = KubeSlackTokenStore(kubectl, "kobo", "kobo-slack-tokens")
+    rotated = {
+        "config_token": "xoxe.xoxp-TEST-other-config",
+        "refresh_token": "xoxe-TEST-other-refresh",
+    }
+    real_check = kubectl.apply_secret
 
-    probe_slack_token_store(clients)
+    def rotate_then_check(namespace, name, literals, *, dry_run=False):
+        # Another replica lands its rotation in the window.
+        kubectl.secrets[(namespace, name)] = dict(rotated)
+        real_check(namespace, name, literals, dry_run=dry_run)
 
-    # An idempotent apply of exactly what was there: the probe proves the
-    # room can WRITE that Secret without changing the live pair.
-    assert kubectl.secrets_applied == [
-        (
-            "kobo",
-            "kobo-slack-tokens",
-            {"config_token": "xoxe.xoxp-TEST-config", "refresh_token": "xoxe-TEST-refresh"},
-        )
-    ]
+    kubectl.apply_secret = rotate_then_check
+
+    probe_slack_token_store(_clients_with_slack(HttpxSlackClient(store)))
+
+    assert kubectl.secrets == {("kobo", "kobo-slack-tokens"): rotated}
 
 
 def test_probe_failure_logs_one_error_naming_the_secret_and_never_raises(caplog):
@@ -2957,6 +2984,46 @@ def test_probe_failure_logs_one_error_naming_the_secret_and_never_raises(caplog)
     message = errors[0].getMessage()
     assert "kobo/kobo-slack-tokens" in message
     assert "rotation" in message
+
+
+def test_apply_secret_server_dry_run_argv():
+    # Server-side, not client-side: only a server dry-run actually reaches
+    # the API server's authorization and admission, which is the whole
+    # question the probe asks.
+    runner = RecordingRunner(results=[(0, "<rendered secret yaml>", ""), (0, "", "")])
+    client = KubectlCLI(runner=runner)
+
+    client.apply_secret("kobo", "kobo-slack-tokens", {"config_token": "x"}, dry_run=True)
+
+    assert runner.calls[1] == ["kubectl", "apply", "-f", "-", "--dry-run=server"]
+
+
+def test_apply_secret_without_dry_run_argv_is_unchanged():
+    runner = RecordingRunner(results=[(0, "<rendered secret yaml>", ""), (0, "", "")])
+    client = KubectlCLI(runner=runner)
+
+    client.apply_secret("kobo", "kobo-slack-tokens", {"config_token": "x"})
+
+    assert runner.calls[1] == ["kubectl", "apply", "-f", "-"]
+
+
+def test_kube_store_check_writable_names_the_secret_when_it_is_refused():
+    kubectl = FakeKubectl(
+        secrets={
+            ("kobo", "kobo-slack-tokens"): {
+                "config_token": "xoxe.xoxp-TEST-config",
+                "refresh_token": "xoxe-TEST-refresh",
+            }
+        },
+        apply_secret_error="secrets is forbidden: cannot patch resource",
+    )
+    store = KubeSlackTokenStore(kubectl, "kobo", "kobo-slack-tokens")
+
+    with pytest.raises(ClientError) as exc_info:
+        store.check_writable()
+
+    assert "kobo/kobo-slack-tokens" in str(exc_info.value)
+    assert "xoxe" not in str(exc_info.value)
 
 
 def test_probe_does_nothing_for_the_file_store_or_no_slack(tmp_path, caplog):
@@ -6681,7 +6748,7 @@ def test_clients_real_wires_slack_when_tokens_path_set(tmp_path):
     )
     clients = Clients.real(config)
     assert isinstance(clients.slack, HttpxSlackClient)
-    assert isinstance(clients.slack._store, FileSlackTokenStore)
+    assert isinstance(clients.slack.token_store, FileSlackTokenStore)
 
 
 # --- Slack token store selection (two-replica safety) -------------------------
@@ -6717,7 +6784,7 @@ def test_clients_real_wires_slack_from_the_secret_store(tmp_path):
     clients = Clients.real(config)
 
     assert isinstance(clients.slack, HttpxSlackClient)
-    store = clients.slack._store
+    store = clients.slack.token_store
     assert isinstance(store, KubeSlackTokenStore)
     # The same kubectl the rest of the room shells out through -- one
     # binary, one runner, no second client built just for this read.

@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from datetime import UTC, datetime, timedelta
 
 import jwt
 import pytest
@@ -33,6 +34,7 @@ from kobo_api.config import Config
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import create_app, get_session
 from kobo_api.models import Agent, AgentStatus, Base
+from kobo_api.provisioner import sweep_interrupted
 from tests.fakes import (
     FakeAgent,
     FakeCabal,
@@ -1264,6 +1266,87 @@ def test_retry_agent_race_second_call_409s_and_pipeline_fires_once(
     assert second.status_code == 409
     assert "error" in second.json()
     assert len(recorded_agent_ids) == 1
+
+
+# --- The heartbeat stamp on the way in flight (two-replica safety) -----------
+#
+# `sweep_interrupted` (kobo_api.provisioner) fails an in-flight row whose
+# heartbeat is stale. A row is in flight the moment the ROUTE commits it,
+# which is before the pipeline thread exists -- so the route has to stamp
+# the heartbeat in that same commit. A retry is the sharp case: the row
+# already carries the PREVIOUS run's heartbeat, which is long past the
+# cutoff, and the first beat of the new run is a write that is allowed to
+# fail (it is logged and skipped, never raised). Without the stamp, one
+# failed first beat leaves a live retry sweepable on the very next tick.
+
+
+def _sweeping_pipeline_is_replaced(monkeypatch):
+    """No pipeline at all: no thread, and therefore no heartbeat. What is
+    left is exactly what the ROUTE committed, which is what these tests
+    are about."""
+    import kobo_api.main as main_module
+
+    monkeypatch.setattr(main_module, "run_pipeline", lambda *args, **kwargs: None)
+
+
+def test_retry_stamps_the_heartbeat_so_a_live_retry_is_not_swept(
+    session_factory, config, clients, monkeypatch
+):
+    _sweeping_pipeline_is_replaced(monkeypatch)
+    seed_session = session_factory()
+    seed_session.add(
+        Agent(
+            name=AGENT_NAME,
+            persona=PERSONA,
+            model_id=config.models[0].id,
+            status=AgentStatus.FAILED,
+            error="boom",
+            # A row that has been sitting failed for days: its heartbeat is
+            # the last run's, far outside any cutoff.
+            created_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=3),
+            run_heartbeat_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=3),
+        )
+    )
+    seed_session.commit()
+    seed_session.close()
+
+    retry_client = TestClient(create_app(session_factory, config=config, clients=clients))
+    assert retry_client.post(f"/api/agents/{AGENT_NAME}/retry").status_code == 202
+
+    # Another replica sweeps right now, before the new run's first beat.
+    assert sweep_interrupted(session_factory) == 0
+
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).one()
+    assert agent.status == AgentStatus.PROVISIONING
+    assert agent.error is None
+    session.close()
+
+
+def test_create_stamps_the_heartbeat_so_a_new_agent_is_not_swept(
+    session_factory, config, clients, monkeypatch
+):
+    # Create gets a grace period from its own fresh created_at, but only
+    # for as long as the cutoff -- and it costs nothing to be explicit
+    # rather than to lean on a NULL branch meant for legacy rows.
+    _sweeping_pipeline_is_replaced(monkeypatch)
+    create_client = TestClient(create_app(session_factory, config=config, clients=clients))
+
+    response = create_client.post(
+        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM}
+    )
+    assert response.status_code == 201, response.text
+
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).one()
+    assert agent.run_heartbeat_at is not None
+    # Pretend the row itself is old enough to be swept on the NULL branch:
+    # the stamp, not created_at, is what keeps it alive.
+    agent.created_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=3)
+    session.commit()
+    session.close()
+
+    assert sweep_interrupted(session_factory) == 0
 
 
 # --- Launch guard (run_pipeline/Thread.start() failing post-commit) ---------------

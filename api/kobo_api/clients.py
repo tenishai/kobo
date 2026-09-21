@@ -1375,9 +1375,24 @@ class KubectlClient(Protocol):
         """
         ...
 
-    def apply_secret(self, namespace: str, name: str, literals: dict[str, str]) -> None:
+    def apply_secret(
+        self,
+        namespace: str,
+        name: str,
+        literals: dict[str, str],
+        *,
+        dry_run: bool = False,
+    ) -> None:
         """Idempotent upsert of a generic Secret `name` in `namespace` whose
         data is exactly `literals` (e.g. `{"SLACK_BOT_TOKEN": ..., "SLACK_APP_TOKEN": ...}`).
+
+        `dry_run=True` asks the API SERVER whether this write would be
+        allowed -- authorization and admission run in full, nothing is
+        persisted. It exists for `KubeSlackTokenStore.check_writable`: a
+        boot-time probe that actually wrote would be a lost update, since
+        another replica can rotate the pair between this process's read and
+        its write, and writing back what it read would restore a refresh
+        token Slack has already spent.
 
         Used by `kobo_api.slack_setup.wire_slack` to deliver the pasted
         Slack tokens to the agent's namespace: a `create secret --dry-run
@@ -1553,7 +1568,14 @@ class KubectlCLI:
                 "could not read"
             ) from None
 
-    def apply_secret(self, namespace: str, name: str, literals: dict[str, str]) -> None:
+    def apply_secret(
+        self,
+        namespace: str,
+        name: str,
+        literals: dict[str, str],
+        *,
+        dry_run: bool = False,
+    ) -> None:
         literal_args = [f"--from-literal={key}={value}" for key, value in literals.items()]
         try:
             # redact_args=True: this stage's argv is the only place either
@@ -1586,9 +1608,15 @@ class KubectlCLI:
             ) from None
 
         try:
-            self._runner.run(
-                [self._kubectl, "apply", "-f", "-"], stdin=manifest_yaml, redact_args=True
-            )
+            # `--dry-run=server` (never `client`): the whole question a
+            # caller asks with dry_run is whether the API SERVER would let
+            # this write through, which means reaching its authorization
+            # and admission chain. A client dry-run never leaves the
+            # machine and would answer nothing.
+            apply_argv = [self._kubectl, "apply", "-f", "-"]
+            if dry_run:
+                apply_argv.append("--dry-run=server")
+            self._runner.run(apply_argv, stdin=manifest_yaml, redact_args=True)
         except ClientError as exc:
             # Same reasoning as above, defense-in-depth: this stage's argv
             # carries no secret material (the manifest is piped via stdin),
@@ -1772,6 +1800,13 @@ class SlackTokenStore(Protocol):
         """Persist a freshly rotated pair, both values together."""
         ...
 
+    def check_writable(self) -> None:
+        """Raise `ClientError` (naming only the store) if this process
+        could not persist a rotated pair right now. Must PERSIST NOTHING:
+        the point is to learn at boot what would otherwise only surface
+        ~12h later, at the one moment a failure costs the live pair."""
+        ...
+
 
 class FileSlackTokenStore:
     """The gitignored local YAML file (`slack_tokens_path`): local dev,
@@ -1790,6 +1825,12 @@ class FileSlackTokenStore:
 
     def write(self, config_token: str, refresh_token: str) -> None:
         _write_slack_tokens(self._path, config_token, refresh_token)
+
+    def check_writable(self) -> None:
+        """Nothing to check. The write is a local atomic rewrite of a file
+        this process already reads, with no authorization step that could
+        succeed for the read and fail for the write -- and a dry run that
+        actually touched the file would be a worse answer than no answer."""
 
 
 class KubeSlackTokenStore:
@@ -1827,6 +1868,36 @@ class KubeSlackTokenStore:
             {_SECRET_TOKEN_KEY: config_token, _SECRET_REFRESH_KEY: refresh_token},
         )
 
+    def check_writable(self) -> None:
+        """Ask the API server whether this room could persist a rotated
+        pair, and persist nothing (`apply_secret(dry_run=True)`).
+
+        Deliberately NOT a write-back of the pair just read: `kubectl
+        apply` is last-write-wins, so another replica rotating inside that
+        window would have its brand-new pair overwritten with the one this
+        process read moments earlier -- whose refresh token Slack has
+        already spent. A probe that can cause the lockout it screens for is
+        worse than no probe.
+
+        The pair it just read is what gets submitted, so admission sees a
+        realistically-shaped object rather than a placeholder.
+        """
+        config_token, refresh_token = self.read()
+        try:
+            self._kubectl.apply_secret(
+                self._namespace,
+                self._name,
+                {_SECRET_TOKEN_KEY: config_token, _SECRET_REFRESH_KEY: refresh_token},
+                dry_run=True,
+            )
+        except ClientError as exc:
+            # `apply_secret`'s message names the Secret but not its
+            # namespace; the caller logs this verbatim, so say which one.
+            raise ClientError(
+                f"slack tokens secret {self._namespace}/{self._name} is not "
+                f"writable by this room: {exc}"
+            ) from None
+
 
 def slack_token_store(config: Config, kubectl: KubectlClient) -> SlackTokenStore | None:
     """The store `Clients.real` hands `HttpxSlackClient`, or None when
@@ -1859,9 +1930,8 @@ def slack_token_store(config: Config, kubectl: KubectlClient) -> SlackTokenStore
 
 
 def probe_slack_token_store(clients: Clients) -> None:
-    """Prove at boot that the room can WRITE its Slack token Secret, by
-    writing back the pair it already holds (an idempotent apply that
-    changes nothing).
+    """Ask at boot whether this room could persist a rotated Slack token
+    pair, and change nothing either way (`SlackTokenStore.check_writable`).
 
     Rotation's failure mode is silent and delayed: a room with read-only
     access to that Secret works perfectly until the config token expires
@@ -1871,24 +1941,19 @@ def probe_slack_token_store(clients: Clients) -> None:
 
     Never raises and never blocks boot: a room that cannot reach the Secret
     right now still serves every route that has nothing to do with Slack.
-    Only the Secret store is probed -- the file store's write is a local
-    atomic rewrite with no such failure mode, and rewriting a developer's
-    tokens file at every import would be a surprise.
 
     Called once per process from `kobo_api.main.build_default_app`, never
     from `create_app`, so tests that build their own app see nothing of it.
     """
-    store = getattr(clients.slack, "_store", None)
-    if not isinstance(store, KubeSlackTokenStore):
+    store = getattr(clients.slack, "token_store", None)
+    if store is None:
         return
     try:
-        store.write(*store.read())
+        store.check_writable()
     except ClientError as exc:
         log.error(
-            "cannot write the slack token secret %s/%s (%s): slack app-config "
-            "token rotation will fail until the room can write it",
-            store._namespace,
-            store._name,
+            "%s: slack app-config token rotation will fail until the room can "
+            "write it",
             exc,
         )
 
@@ -1925,6 +1990,14 @@ class HttpxSlackClient:
         # Injected purely so the persist retry's backoff costs a test
         # nothing; no caller in the room passes anything but the default.
         self._sleep = sleep
+
+    @property
+    def token_store(self) -> SlackTokenStore:
+        """The store this client rotates against. Public because the
+        boot-time probe (`probe_slack_token_store`) needs it, and reaching
+        through a private attribute from another module for that would make
+        the seam an accident rather than a contract."""
+        return self._store
 
     def create_app(self, manifest: dict) -> str:
         config_token, _ = self._store.read()
