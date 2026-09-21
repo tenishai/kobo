@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -17,7 +19,13 @@ from sqlalchemy.orm import sessionmaker
 from kobo_api.clients import Clients
 from kobo_api.db import init_db
 from kobo_api.models import Agent, AgentStatus, AgentStep, StepStatus
-from kobo_api.provisioner import reset_failed_steps, run_pipeline, sweep_interrupted
+from kobo_api.provisioner import (
+    HEARTBEAT_THREAD_NAME,
+    RUN_STALE_AFTER_S,
+    reset_failed_steps,
+    run_pipeline,
+    sweep_interrupted,
+)
 from tests.fakes import FakeCabal
 
 # No real backend is touched by the toy steps below, so every client slot is None.
@@ -331,13 +339,31 @@ def test_reset_failed_steps_only_resets_failed_rows(session_factory, config):
 # --- sweep_interrupted -------------------------------------------------------------
 
 
-def _seed_agent(session_factory, name: str, status: AgentStatus) -> int:
+def _seed_agent(
+    session_factory,
+    name: str,
+    status: AgentStatus,
+    *,
+    age_s: float = RUN_STALE_AFTER_S * 2,
+    heartbeat_age_s: float | None = None,
+) -> int:
+    """An agent row `age_s` old (default: comfortably older than the
+    staleness threshold, which is what an in-flight row left behind by a
+    PRIOR process looks like), whose heartbeat is `heartbeat_age_s` old --
+    None meaning no heartbeat at all, the shape of every row written
+    before the column existed.
+    """
+    now = datetime.now(UTC).replace(tzinfo=None)
     session = session_factory()
     agent = Agent(
         name=name,
         persona="helpful-generalist",
         model_id="vertex_ai/claude-sonnet-4-5",
         status=status,
+        created_at=now - timedelta(seconds=age_s),
+        run_heartbeat_at=(
+            None if heartbeat_age_s is None else now - timedelta(seconds=heartbeat_age_s)
+        ),
     )
     session.add(agent)
     session.commit()
@@ -404,6 +430,220 @@ def test_sweep_interrupted_flips_pending_and_provisioning_agents_and_running_ste
     assert ready_steps["repo"].status == StepStatus.DONE  # untouched
 
     session.close()
+
+
+def test_sweep_interrupted_leaves_a_live_run_alone(session_factory, config):
+    """The rolling-update case: a NEW pod boots while the OLD pod is still
+    provisioning. A boot sweep that took every in-flight row would fail a
+    provision that is alive and well, and the user's retry would then run
+    the same steps in two processes at once.
+    """
+    live_id = _seed_agent(
+        session_factory, "agent-live", AgentStatus.PROVISIONING, heartbeat_age_s=0
+    )
+    _seed_step(session_factory, live_id, "onboard", StepStatus.RUNNING)
+
+    assert sweep_interrupted(session_factory) == 0
+
+    session = session_factory()
+    live = session.get(Agent, live_id)
+    assert live.status == AgentStatus.PROVISIONING
+    assert live.error is None
+    assert {s.name: s.status for s in live.steps} == {"onboard": StepStatus.RUNNING}
+    session.close()
+
+
+def test_sweep_interrupted_fails_a_run_whose_heartbeat_went_stale(session_factory, config):
+    """And the other half: a process that died mid-provision stops beating,
+    so its row IS swept -- and, unlike a boot-only sweep, it is swept by
+    whatever replica notices, not only by one that happens to start after.
+    """
+    dead_id = _seed_agent(
+        session_factory,
+        "agent-dead",
+        AgentStatus.PROVISIONING,
+        heartbeat_age_s=RUN_STALE_AFTER_S * 2,
+    )
+    _seed_step(session_factory, dead_id, "onboard", StepStatus.RUNNING)
+
+    assert sweep_interrupted(session_factory) == 1
+
+    session = session_factory()
+    dead = session.get(Agent, dead_id)
+    assert dead.status == AgentStatus.FAILED
+    assert {s.name: s.status for s in dead.steps} == {"onboard": StepStatus.FAILED}
+    session.close()
+
+
+def test_sweep_interrupted_fails_an_old_row_that_never_had_a_heartbeat(
+    session_factory, config
+):
+    # Every row written before this column existed. An in-flight row that
+    # old was left behind by a process that is long gone.
+    legacy_id = _seed_agent(
+        session_factory, "agent-legacy", AgentStatus.PROVISIONING, heartbeat_age_s=None
+    )
+
+    assert sweep_interrupted(session_factory) == 1
+
+    session = session_factory()
+    assert session.get(Agent, legacy_id).status == AgentStatus.FAILED
+    session.close()
+
+
+def test_sweep_interrupted_leaves_a_just_created_row_without_a_heartbeat_alone(
+    session_factory, config
+):
+    # A create that landed a moment ago: the row exists, the thread is
+    # starting, the first beat has not been written yet. Sweeping it would
+    # fail a provision seconds after the user asked for it.
+    fresh_id = _seed_agent(
+        session_factory,
+        "agent-fresh",
+        AgentStatus.PENDING,
+        age_s=0,
+        heartbeat_age_s=None,
+    )
+
+    assert sweep_interrupted(session_factory) == 0
+
+    session = session_factory()
+    assert session.get(Agent, fresh_id).status == AgentStatus.PENDING
+    session.close()
+
+
+def _heartbeat_threads() -> list[threading.Thread]:
+    return [t for t in threading.enumerate() if t.name.startswith(HEARTBEAT_THREAD_NAME)]
+
+
+def test_run_pipeline_keeps_the_heartbeat_fresh_for_the_whole_run(
+    session_factory, config
+):
+    """Including during ONE long step: the build wait is a single step that
+    can run for minutes, so a heartbeat written only at step boundaries
+    would go stale in the middle of a perfectly healthy provision.
+    """
+    seen: list[datetime | None] = []
+
+    @dataclass
+    class SlowStep:
+        name: str = "slow"
+
+        def run(self, ctx) -> str:
+            for _ in range(40):
+                session = session_factory()
+                try:
+                    beat = session.get(Agent, ctx.agent.id).run_heartbeat_at
+                finally:
+                    session.close()
+                if beat is not None and beat not in seen:
+                    seen.append(beat)
+                if len(seen) >= 2:
+                    break
+                time.sleep(0.01)
+            return "ok"
+
+    agent_id = _make_agent(session_factory, "agent-beating")
+    thread = run_pipeline(
+        session_factory,
+        agent_id,
+        config=config,
+        clients=NO_CLIENTS,
+        steps=[SlowStep()],
+        heartbeat_interval_s=0.01,
+    )
+    thread.join(timeout=JOIN_TIMEOUT)
+
+    # At least two DISTINCT beats landed inside one step's run.
+    assert len(seen) >= 2
+
+
+def test_run_pipeline_stops_the_heartbeat_when_the_run_ends(session_factory, config):
+    before = len(_heartbeat_threads())
+    agent_id = _make_agent(session_factory, "agent-stops")
+    calls: list[str] = []
+
+    thread = run_pipeline(
+        session_factory,
+        agent_id,
+        config=config,
+        clients=NO_CLIENTS,
+        steps=[RecordingStep(name="step-a", calls=calls)],
+        heartbeat_interval_s=0.01,
+    )
+    thread.join(timeout=JOIN_TIMEOUT)
+
+    # The ticker is joined by the run itself, so it is already gone by the
+    # time the pipeline thread returns -- no per-provision thread leak.
+    assert len(_heartbeat_threads()) == before
+
+    session = session_factory()
+    beat = session.get(Agent, agent_id).run_heartbeat_at
+    session.close()
+    time.sleep(0.05)  # several intervals: a live ticker would move it
+    session = session_factory()
+    assert session.get(Agent, agent_id).run_heartbeat_at == beat
+    session.close()
+
+
+def test_run_pipeline_stops_the_heartbeat_when_a_step_fails(session_factory, config):
+    before = len(_heartbeat_threads())
+    agent_id = _make_agent(session_factory, "agent-stops-on-failure")
+    calls: list[str] = []
+
+    thread = run_pipeline(
+        session_factory,
+        agent_id,
+        config=config,
+        clients=NO_CLIENTS,
+        steps=[RecordingStep(name="step-a", calls=calls, fail_times=1)],
+        heartbeat_interval_s=0.01,
+    )
+    thread.join(timeout=JOIN_TIMEOUT)
+
+    assert len(_heartbeat_threads()) == before
+    agent, _ = _load(session_factory, agent_id)
+    assert agent.status == AgentStatus.FAILED
+
+
+def test_retry_after_a_sweep_still_resumes_the_pipeline(session_factory, config):
+    """The whole point of the sweep: a genuinely dead run lands in FAILED,
+    where the existing retry path can pick it back up.
+    """
+    agent_id = _make_agent(session_factory, "agent-resumed")
+    calls: list[str] = []
+    steps = [
+        RecordingStep(name="step-a", calls=calls),
+        RecordingStep(name="step-b", calls=calls),
+    ]
+
+    session = session_factory()
+    agent = session.get(Agent, agent_id)
+    agent.status = AgentStatus.PROVISIONING
+    agent.created_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+        seconds=RUN_STALE_AFTER_S * 2
+    )
+    session.add(AgentStep(agent_id=agent_id, name="step-a", status=StepStatus.RUNNING))
+    session.commit()
+    session.close()
+
+    assert sweep_interrupted(session_factory) == 1
+
+    session = session_factory()
+    reset_failed_steps(session, agent_id)
+    session.close()
+
+    run_pipeline(
+        session_factory, agent_id, config=config, clients=NO_CLIENTS, steps=steps
+    ).join(timeout=JOIN_TIMEOUT)
+
+    agent, rows = _load(session_factory, agent_id)
+    assert agent.status == AgentStatus.READY
+    assert calls == ["step-a", "step-b"]
+    assert {name: row.status for name, row in rows.items()} == {
+        "step-a": StepStatus.DONE,
+        "step-b": StepStatus.DONE,
+    }
 
 
 def test_sweep_interrupted_is_a_noop_on_a_clean_table(session_factory, config):

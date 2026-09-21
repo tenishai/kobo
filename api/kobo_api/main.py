@@ -129,6 +129,7 @@ from kobo_api.personas import (
 from kobo_api.provisioner import (
     PIPELINE,
     STEP_LABELS,
+    interrupted_sweep_loop,
     reset_failed_steps,
     run_pipeline,
     sweep_interrupted,
@@ -1718,18 +1719,22 @@ def get_session(request: Request) -> Iterator[Session]:
 
 @asynccontextmanager
 async def _room_lifespan(app: FastAPI):
-    """mcp_lifespan plus the room's own background work (the learnings
-    nightly loop). TestClient instances used without `with` never enter
-    lifespans at all, so unit tests see no background task unless they
-    opt in."""
+    """mcp_lifespan plus the room's own background work: the learnings
+    nightly loop, and the periodic sweep for provisioning runs whose
+    process is gone (boot-only would never catch a pipeline killed just
+    after the last boot). TestClient instances used without `with` never
+    enter lifespans at all, so unit tests see no background task unless
+    they opt in."""
     async with mcp_lifespan(app):
         nightly = asyncio.create_task(learnings_nightly_loop(app))
+        sweeper = asyncio.create_task(interrupted_sweep_loop(app))
         try:
             yield
         finally:
-            nightly.cancel()
-            with suppress(asyncio.CancelledError):
-                await nightly
+            for task in (nightly, sweeper):
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
 
 
 def _teach_task_not_completed(raw: object) -> bool:

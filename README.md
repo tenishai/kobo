@@ -162,15 +162,32 @@ kubectl -n <namespace> create secret generic <name> \
   --from-literal=config_token=... --from-literal=refresh_token=...
 ```
 
+Create it imperatively, exactly like that, and leave it out of GitOps. **The room writes this
+Secret at runtime**, every time Slack rotates the pair, so it must not be managed by External
+Secrets, by Argo CD (self-heal or prune), by any other reconciler, or co-managed with someone
+else's `kubectl apply`. Anything that reverts it puts a spent refresh token back — single-use,
+already consumed — and the room is locked out of Slack until a human issues a new pair by hand.
+The room's service account needs `get`, `create`, `patch`, and `update` on that one Secret; it
+proves it can write it once at startup (an idempotent re-apply of the pair already there) and
+logs an ERROR naming the Secret if it cannot, rather than discovering it half a day later when
+the token expires.
+
 Slack's refresh token is single-use, so both replicas rotate against that one object: each
 re-reads it before spending a refresh token and again after a failed rotation, and takes the
 other's pair when it finds one. The nightly learnings sweep is claimed by a Postgres advisory
-lock, so exactly one replica sweeps per round and the other logs that it skipped.
+lock, so exactly one replica sweeps per round and the other logs that it skipped; the catalog
+rebuild takes one too.
 
 Roll with `maxSurge: 1`, `maxUnavailable: 0` (a `RollingUpdate` strategy, not `Recreate`), so a
 new pod is ready before an old one goes away. Give the container a `preStop` hook that sleeps
 for a few seconds before shutdown — the load balancer needs that long to stop sending the pod
 new requests, and without it a roll drops the connections in flight.
+
+Three more things to expect. On a cold start straight to two replicas, both pods run migrations
+and one loses the race and restarts once; it is harmless and it settles by itself. Session-level
+advisory locks belong to a database connection, so route the room through a direct connection or
+a pooler in session mode — transaction pooling breaks them. The MCP rate limit counts per
+replica, so two pods allow twice the configured rate overall.
 
 **Org wiring**: a room serves one org. The org's config repo carries `org.yaml` — catalogs,
 models, groups, admin groups, the runtime pin — cloned at boot and merged over local defaults.
