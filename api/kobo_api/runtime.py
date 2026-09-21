@@ -35,6 +35,18 @@ from kobo_api.clients import GitHubClient
 from kobo_api.composer import update_dockerfile_runtime_image
 
 
+def registry_root_of(org_default: str) -> str:
+    """Where this room's images come from, derived from the one runtime it
+    builds on rather than configured beside it.
+
+    Named once because two unrelated readers ask it: the runtime-image
+    validator below, which refuses a ref from anywhere else, and the
+    connect scan, which warns when a team's own base image comes from
+    somewhere else. Two derivations of the same rule would be two rules.
+    """
+    return org_default.rsplit("/", 1)[0] + "/"
+
+
 def validate_runtime_image(runtime_image: str, *, org_default: str) -> str | None:
     """`None` when `runtime_image` may be used, else the rejection copy.
 
@@ -51,7 +63,7 @@ def validate_runtime_image(runtime_image: str, *, org_default: str) -> str | Non
     Returns the message rather than raising, because both callers answer
     422 with it in a JSON body and neither wants an exception to format.
     """
-    registry_root = org_default.rsplit("/", 1)[0] + "/"
+    registry_root = registry_root_of(org_default)
     if not runtime_image.startswith(registry_root):
         return (
             f"runtime_image must live under {registry_root!r} "

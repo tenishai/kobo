@@ -47,6 +47,7 @@ from kobo_api.clients import (
     probe_slack_token_store,
 )
 from kobo_api.config import SHARED_GROUP, Config
+from kobo_api.connect_scan import NAME_TAKEN, ScanReport, scan_repo
 from kobo_api.db import init_db, make_engine, make_session_factory
 from kobo_api.metrics import install as install_metrics
 from kobo_api.tracing import install as install_tracing
@@ -60,7 +61,12 @@ from kobo_api.intake import (
     list_intake,
     upload_intake_file,
 )
-from kobo_api.kinds import is_connected
+from kobo_api.kinds import (
+    KIND_CONNECTED,
+    RUN_MODE_HEADLESS,
+    RUN_MODE_HTTP,
+    is_connected,
+)
 from kobo_api.knowledge import (
     KnowledgeError,
     delete_knowledge_file,
@@ -281,6 +287,41 @@ class CreateAgentRequest(BaseModel):
     # Optional style overlay for archetype personas (style-not-identity;
     # subordinate to the constitution — see kobo_api/archetypes.py).
     voice: str | None = None
+
+
+class ScanRepoRequest(BaseModel):
+    """POST /api/connect/scan body (connected-agents design 2026-09-21).
+
+    The same three fields the connect body opens with, because the scan's
+    answer depends on all three: the repository it reads, the name it
+    checks against the room, and how the agent says it runs (which decides
+    whether an unexposed port is worth mentioning, and whether the room has
+    a class for it at all).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    repo: str
+    name: str
+    run_mode: str = RUN_MODE_HTTP
+
+
+class ConnectAgentRequest(ScanRepoRequest):
+    """POST /api/agents/connect body.
+
+    `group_name` is the same ACL namespace `CreateAgentRequest` carries and
+    is gated by the same helper, never a looser one: a connected agent runs
+    a team's own code with the room's model access, so the question of who
+    owns it matters more here, not less.
+
+    `secret_names` are names only. The room never holds a connected agent's
+    secrets in this version: it passes the names to the deploy platform so
+    the pod mounts them, and the pod does not start until the owner creates
+    them, which the scan report says plainly.
+    """
+
+    group_name: str | None = None
+    secret_names: list[str] = []
 
 
 class NameSuggestionsRequest(BaseModel):
@@ -1000,6 +1041,188 @@ def _room_edits_this_agent_or_409(agent: Agent) -> JSONResponse | None:
             },
             status_code=409,
         )
+    return None
+
+
+# The two ways an agent can run, and the one sentence the room says when a
+# caller names anything else. Both routes below check this before the scan,
+# because the run mode decides what the scan even looks for.
+RUN_MODES = (RUN_MODE_HTTP, RUN_MODE_HEADLESS)
+RUN_MODE_REFUSAL = "pick how this agent runs: it serves HTTP, or it has no HTTP port"
+
+# A Kubernetes Secret name is a DNS-1123 subdomain, and the room checks that
+# here rather than letting the deploy platform reject the whole app later
+# for one mistyped name.
+SECRET_NAME_RE = re.compile(
+    r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+)
+MAX_SECRET_NAME_LENGTH = 63
+# Eight is well past what any agent here mounts and low enough that a
+# pasted list cannot turn into an unbounded column.
+MAX_SECRET_NAMES = 8
+
+# What a connected agent's `persona` column holds. The column is NOT NULL
+# and a connected agent has no persona -- the room did not compose it -- so
+# this is one fixed value that deliberately matches no catalog entry,
+# rather than a real persona id nothing would ever read.
+CONNECTED_PERSONA = "connected"
+
+# The room's own team axis does not apply to a repository it did not
+# compose: there are no skills to draw from a team's catalog.
+CONNECTED_TEAM = "shared"
+
+
+def _connect_fields_block(payload: ScanRepoRequest) -> JSONResponse | None:
+    """None when the name and run mode are shapes the room can work with.
+
+    Shared by the scan and the connect routes so a name the room would
+    refuse cannot come back from a scan looking available.
+    """
+    name_reason = validate_name(payload.name)
+    if name_reason is not None:
+        return JSONResponse(
+            {"error": f"invalid name ({name_reason}): {payload.name!r}"}, status_code=422
+        )
+    if payload.run_mode not in RUN_MODES:
+        return JSONResponse({"error": RUN_MODE_REFUSAL}, status_code=422)
+    return None
+
+
+def _clean_secret_names(values: list[str]) -> list[str] | str:
+    """The secret names to record, or the refusal sentence.
+
+    Returns the message rather than raising, the same shape `clean_tags`
+    uses for the same reason: the caller answers 422 with it and has no
+    exception to format. Duplicates are dropped rather than refused (a
+    pasted list repeating a name means one mount either way), in the order
+    they were given, so what the owner sees back is what they wrote.
+    """
+    cleaned: list[str] = []
+    for value in values:
+        name = value.strip()
+        if len(name) > MAX_SECRET_NAME_LENGTH:
+            # The name itself is not echoed back: it is long enough to
+            # swamp the sentence, and the caller has it in front of them.
+            return (
+                f"a secret name can be at most {MAX_SECRET_NAME_LENGTH} characters"
+            )
+        if not SECRET_NAME_RE.match(name):
+            return (
+                f"{name!r} does not look like a secret name. Use lowercase "
+                "letters, numbers, dashes and dots"
+            )
+        if name not in cleaned:
+            cleaned.append(name)
+    if len(cleaned) > MAX_SECRET_NAMES:
+        return f"this room takes at most {MAX_SECRET_NAMES} secret names"
+    return cleaned
+
+
+def _scan_report_body(report: ScanReport) -> dict:
+    """The scan as the form reads it: codes for the UI to key on, sentences
+    for a person to read, and the list of what will be added."""
+    return {
+        "blockers": [
+            {"code": finding.code, "message": finding.message}
+            for finding in report.blockers
+        ],
+        "warnings": [
+            {"code": finding.code, "message": finding.message}
+            for finding in report.warnings
+        ],
+        "adds": list(report.adds),
+    }
+
+
+def _group_choice_block(
+    app: FastAPI, request: Request, cfg: Config, group_name: str | None
+) -> JSONResponse | None:
+    """None when this caller may put a new agent in `group_name`; the
+    refusal body otherwise.
+
+    Access control (Task B2): once the room has named its groups
+    (`cfg.groups` non-empty), every new agent must declare which one it
+    belongs to -- this IS the ACL namespace `_visible_agents` filters on,
+    so an agent with no group would be invisible to everyone but its owner
+    and the room's operators, forever, the moment groups turn on. A room
+    that hasn't named any groups yet stays exactly as today: `group_name`
+    is optional and stored verbatim, unvalidated (pinned by
+    test_create_agent_stores_group_name_verbatim_when_provided /
+    test_create_agent_omitted_group_name_defaults_to_none, Task A2).
+
+    Access control (final-review fix round, HIGH-1: consent). Being a NAME
+    in cfg.groups was the only thing checked at first -- any signed-in
+    caller could claim ANY configured group and inherit its implicit
+    same-group wire pairs (kobo_api.pairs.allowed_pairs) the moment this
+    agent goes READY, with no consent from anyone already in that group.
+    That nullifies spec section 5's request-and-accept handshake for
+    cross-group access by letting a caller simply BE the other group
+    instead of asking it to accept an invite. An operator is exempt --
+    plain email or group-based (`_is_admin`) -- may assign any configured
+    group, the same standing every other operator-vs-owner gate in this
+    file grants (operator-status-by-group ruling: an admin group is
+    operator status everywhere, this consent check included). Everyone else
+    must have the claimed group in their OWN resolved membership
+    (`clients.groups.groups_for`), fail-closed the same way
+    `_visible_agents` treats a `None` answer: a resolver that can't answer
+    right now grants nothing, never "assume it's fine."
+
+    IAP-off dev rooms keep today's behavior untouched: the same
+    config-level bypass idiom `_owner_or_operator_or_403`/`_operator_block`
+    already use elsewhere in this file ("the room trusts its perimeter only
+    when it has one") -- with no verified email ever available, there is no
+    identity to check membership against, so gating here would just lock
+    out every caller in every IAP-off room (local dev, most of this test
+    suite) instead of the callers this fix actually targets.
+
+    SHARED_GROUP is exempt from this whole consent check, not just from its
+    resolver answer (shared-group + group-requests wave): this gate exists
+    to stop a caller CLAIMING someone else's real group without asking;
+    "shared" isn't anyone's group to protect -- every signed-in caller is
+    already, unconditionally, a member of the commons, so there is nothing
+    here for a resolver to confirm one way or the other.
+
+    One helper rather than one copy per route (connected-agents design
+    2026-09-21): create and connect both put a new agent into a group, and
+    a gate that answered differently in the two places would be a way in
+    through whichever one was weaker.
+    """
+    if not cfg.groups:
+        return None
+
+    configured_group_names = {g.name for g in cfg.groups}
+    if group_name is None:
+        return JSONResponse({"error": "pick a group for this agent"}, status_code=422)
+    # SHARED_GROUP (shared-group + group-requests wave) is always a valid
+    # choice even though it never appears in `cfg.groups` -- the commons is
+    # usable by everyone, room-config-independent.
+    if group_name != SHARED_GROUP and group_name not in configured_group_names:
+        return JSONResponse(
+            {"error": f"unknown group: {group_name!r}"}, status_code=422
+        )
+
+    if cfg.iap_audience and group_name != SHARED_GROUP:
+        email = (getattr(request.state, "iap_email", None) or "").lower()
+        if not _is_admin(request):
+            clients: Clients | None = app.state.clients
+            resolver = clients.groups if clients is not None else None
+            caller_groups = resolver.groups_for(email) if resolver is not None else None
+            if caller_groups is None:
+                return JSONResponse(
+                    {
+                        "error": (
+                            "Group membership could not be confirmed "
+                            "right now. Try again shortly."
+                        )
+                    },
+                    status_code=403,
+                )
+            if group_name not in caller_groups:
+                return JSONResponse(
+                    {"error": f"You are not a member of {group_name}."},
+                    status_code=403,
+                )
+
     return None
 
 
@@ -3101,92 +3324,12 @@ def create_app(
                 {"error": "that doesn't look like a team name"}, status_code=422
             )
 
-        # Access control (Task B2): once the room has named its groups
-        # (`cfg.groups` non-empty), every new agent must declare which one
-        # it belongs to -- this IS the ACL namespace `_visible_agents`
-        # filters on, so an agent with no group would be invisible to
-        # everyone but its owner and the room's operators, forever, the
-        # moment groups turn on. A room that hasn't named any groups yet
-        # stays exactly as today: `group_name` is optional and stored
-        # verbatim, unvalidated (pinned by
-        # test_create_agent_stores_group_name_verbatim_when_provided /
-        # test_create_agent_omitted_group_name_defaults_to_none, Task A2).
-        if cfg.groups:
-            configured_group_names = {g.name for g in cfg.groups}
-            if payload.group_name is None:
-                return JSONResponse(
-                    {"error": "pick a group for this agent"}, status_code=422
-                )
-            # SHARED_GROUP (shared-group + group-requests wave) is always a
-            # valid choice even though it never appears in `cfg.groups` --
-            # the commons is usable by everyone, room-config-independent.
-            if (
-                payload.group_name != SHARED_GROUP
-                and payload.group_name not in configured_group_names
-            ):
-                return JSONResponse(
-                    {"error": f"unknown group: {payload.group_name!r}"}, status_code=422
-                )
-
-            # Access control (final-review fix round, HIGH-1: consent).
-            # Being a NAME in cfg.groups was the only thing checked above --
-            # any signed-in caller could claim ANY configured group and
-            # inherit its implicit same-group wire pairs (kobo_api.pairs.
-            # allowed_pairs) the moment this agent goes READY, with no
-            # consent from anyone already in that group. That nullifies
-            # spec section 5's request-and-accept handshake for cross-group
-            # access by letting a caller simply BE the other group instead
-            # of asking it to accept an invite. An operator is exempt --
-            # plain email or group-based (`_is_admin`) -- may assign any
-            # configured group, the same standing every other operator-vs-
-            # owner gate in this file grants (operator-status-by-group
-            # ruling: an admin group is operator status everywhere, this
-            # consent check included). Everyone else must have the claimed
-            # group in their OWN
-            # resolved membership (`clients.groups.groups_for`), fail-closed
-            # the same way `_visible_agents` treats a `None` answer: a
-            # resolver that can't answer right now grants nothing, never
-            # "assume it's fine."
-            #
-            # IAP-off dev rooms keep today's behavior untouched: the same
-            # config-level bypass idiom `_owner_or_operator_or_403`/`_
-            # operator_block` already use elsewhere in this file ("the room
-            # trusts its perimeter only when it has one") -- with no
-            # verified email ever available, there is no identity to check
-            # membership against, so gating here would just lock out every
-            # caller in every IAP-off room (local dev, most of this test
-            # suite) instead of the callers this fix actually targets.
-            #
-            # SHARED_GROUP is exempt from this whole consent check, not just
-            # from its resolver answer (shared-group + group-requests wave):
-            # this gate exists to stop a caller CLAIMING someone else's real
-            # group without asking; "shared" isn't anyone's group to
-            # protect -- every signed-in caller is already, unconditionally,
-            # a member of the commons, so there is nothing here for a
-            # resolver to confirm one way or the other.
-            if cfg.iap_audience and payload.group_name != SHARED_GROUP:
-                email = (getattr(request.state, "iap_email", None) or "").lower()
-                if not _is_admin(request):
-                    clients: Clients | None = app.state.clients
-                    resolver = clients.groups if clients is not None else None
-                    caller_groups = (
-                        resolver.groups_for(email) if resolver is not None else None
-                    )
-                    if caller_groups is None:
-                        return JSONResponse(
-                            {
-                                "error": (
-                                    "Group membership could not be confirmed "
-                                    "right now. Try again shortly."
-                                )
-                            },
-                            status_code=403,
-                        )
-                    if payload.group_name not in caller_groups:
-                        return JSONResponse(
-                            {"error": f"You are not a member of {payload.group_name}."},
-                            status_code=403,
-                        )
+        # The gate both create and connect run (see `_group_choice_block`
+        # for the whole rule, and for why it is one helper rather than
+        # one copy per route).
+        blocked = _group_choice_block(app, request, cfg, payload.group_name)
+        if blocked is not None:
+            return blocked
 
         cleaned_tags = clean_tags(payload.purpose_tags)
         if isinstance(cleaned_tags, str):
@@ -3519,6 +3662,180 @@ def create_app(
             # one) and always returns the 503 below, never a raw 500.
             log.exception(
                 "create_agent: failed to start provisioning for agent %s", agent_id
+            )
+            return _fail_launch(request.app.state.session_factory, session, agent_id, exc)
+
+        return JSONResponse({"name": payload.name, "status": status}, status_code=201)
+
+    @app.post("/api/connect/scan")
+    def scan_connect_repo(
+        payload: ScanRepoRequest, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """What the room can honestly say about a repository before anyone
+        commits to it (connected-agents design 2026-09-21).
+
+        Read-only: four GitHub reads and one database question, no clone and
+        no row. It is safe to call as often as the form wants, and the
+        connect route runs the same scan again for itself rather than
+        trusting the answer the browser is holding.
+        """
+        cfg: Config = app.state.config
+
+        blocked = _connect_fields_block(payload)
+        if blocked is not None:
+            return blocked
+
+        clients: Clients | None = app.state.clients
+        if clients is None or clients.github is None:
+            return JSONResponse(
+                {"error": "the room can't reach GitHub right now"}, status_code=503
+            )
+
+        report = scan_repo(
+            clients.github,
+            clients.gojira,
+            session,
+            cfg,
+            repo=payload.repo.strip(),
+            name=payload.name,
+            run_mode=payload.run_mode,
+        )
+        return JSONResponse(_scan_report_body(report))
+
+    @app.post("/api/agents/connect", status_code=201)
+    def connect_agent(
+        payload: ConnectAgentRequest, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Take on a repository a team already owns.
+
+        Same order as create, and for the same reasons: everything that can
+        be answered from the request alone, then the group gate, then the
+        work (here, the scan), and the name collision last because it costs
+        a database round trip and a malformed request is a 422 whether or
+        not the name happens to collide too.
+
+        The scan runs here as well as in the form because a report the
+        browser holds is a claim about a repository some minutes ago:
+        access can be withdrawn, a Dockerfile can be deleted, a repository
+        can be connected to the deploy platform by somebody else. The
+        refusal carries every blocker's code AND its sentence, so the form
+        can say why without scanning a second time.
+        """
+        cfg: Config = app.state.config
+
+        blocked = _connect_fields_block(payload)
+        if blocked is not None:
+            return blocked
+
+        secret_names = _clean_secret_names(payload.secret_names)
+        if isinstance(secret_names, str):
+            return JSONResponse({"error": secret_names}, status_code=422)
+
+        blocked = _group_choice_block(app, request, cfg, payload.group_name)
+        if blocked is not None:
+            return blocked
+
+        clients: Clients | None = app.state.clients
+        if clients is None or clients.github is None:
+            return JSONResponse(
+                {"error": "the room can't reach GitHub right now"}, status_code=503
+            )
+
+        repo = payload.repo.strip()
+        report = scan_repo(
+            clients.github,
+            clients.gojira,
+            session,
+            cfg,
+            repo=repo,
+            name=payload.name,
+            run_mode=payload.run_mode,
+        )
+        # A taken name is the one blocker this route does not answer with,
+        # because it already has an answer for it: the 409 below, the same
+        # one create gives, in the same words. The scan still reports it --
+        # the form needs it before anyone presses Connect.
+        repo_blockers = [
+            finding for finding in report.blockers if finding.code != NAME_TAKEN
+        ]
+        if repo_blockers:
+            return JSONResponse(
+                {
+                    "error": "this repository is not ready to connect yet",
+                    "blockers": [
+                        {"code": finding.code, "message": finding.message}
+                        for finding in repo_blockers
+                    ],
+                },
+                status_code=422,
+            )
+
+        existing = session.query(Agent).filter_by(name=payload.name).first()
+        if existing is not None:
+            return JSONResponse({"error": f"name taken: {payload.name!r}"}, status_code=409)
+
+        created_by = getattr(request.state, "iap_email", None)
+
+        agent = Agent(
+            name=payload.name,
+            # No persona, no skills, no team catalog and no purpose tags:
+            # none of them describes a repository the room did not compose,
+            # and every one of them is hidden on a connected agent's page.
+            persona=CONNECTED_PERSONA,
+            team=CONNECTED_TEAM,
+            # Model access by default, the same as a composed agent
+            # (operator ruling 2026-09-21). `Config.models` carries at
+            # least one entry by construction, so there is always a room
+            # default to record.
+            model_id=cfg.models[0].id,
+            skills=[],
+            kind=KIND_CONNECTED,
+            run_mode=payload.run_mode,
+            secret_names=secret_names,
+            # The route records the repository; `ConnectStep` checks it and
+            # creates nothing.
+            repo_full_name=repo,
+            status=AgentStatus.PENDING,
+            created_by=created_by,
+            group_name=payload.group_name,
+            run_heartbeat_at=naive_utc(datetime.now(UTC)),
+        )
+        session.add(agent)
+        try:
+            session.commit()
+        except IntegrityError:
+            # Same read-then-act race the create route has, answered the
+            # same way: the unique constraint is the real gate.
+            session.rollback()
+            return JSONResponse({"error": f"name taken: {payload.name!r}"}, status_code=409)
+
+        # WARNING rather than INFO because INFO does not reach the pod logs
+        # here (`kobo_api.org`'s `_disclose_overrides` records the same
+        # finding). Arbitrary code with the room's model access is the risk
+        # this whole feature carries, and who took it on, for which
+        # repository, is the part of that a log can answer later.
+        log.warning(
+            "connect: %s connected %s as agent %s",
+            created_by or "an unidentified caller", repo, agent.name,
+        )
+
+        status = agent.status
+        agent_id = agent.id
+
+        try:
+            run_pipeline(
+                request.app.state.session_factory,
+                agent_id,
+                config=cfg,
+                clients=clients,
+                steps=pipeline_for(agent),
+            )
+        except Exception as exc:
+            # Same launch-failure recovery as create: nothing will ever move
+            # this agent out of PENDING, so it lands in FAILED here rather
+            # than wedged.
+            log.exception(
+                "connect_agent: failed to start provisioning for agent %s", agent_id
             )
             return _fail_launch(request.app.state.session_factory, session, agent_id, exc)
 
