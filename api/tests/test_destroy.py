@@ -35,6 +35,7 @@ from kobo_api.destroy import (
     _is_repo_not_found,
     run_destroy,
 )
+from kobo_api.kinds import KIND_COMPOSED, KIND_CONNECTED
 from kobo_api.models import A2AInvite, Agent, AgentStatus, AgentStep, StepStatus
 from tests.fakes import FakeCabal, FakeCloud, FakeGitHub, FakeGojira, FakeSlack
 
@@ -59,6 +60,7 @@ def _make_ctx_agent(
     slack_app_self_service: bool = False,
     repo_full_name: str | None = None,
     status=AgentStatus.READY,
+    kind: str = KIND_COMPOSED,
 ):
     """Persist an Agent and return (session, agent) still open (expire_on_
     commit=False), for step-level tests that build a DestroyCtx directly —
@@ -73,6 +75,7 @@ def _make_ctx_agent(
         slack_app_id=slack_app_id,
         slack_app_self_service=slack_app_self_service,
         repo_full_name=repo_full_name,
+        kind=kind,
     )
     session.add(agent)
     session.commit()
@@ -451,6 +454,45 @@ def test_destroy_slack_self_service_no_app_id_keeps_no_id_tolerance(
 # --- _destroy_repo -----------------------------------------------------------------
 
 
+def test_destroy_repo_leaves_a_connected_agents_repository_alone(session_factory, config):
+    """The one branch that is the difference between a clean destroy and
+    archiving a team's repository. This step does NOT self-neutralise the
+    way destroy-slack does: `repo_full_name` is set for a connected agent
+    (the connect route records it), so without this it would happily rename
+    and archive somebody else's repo."""
+    session, agent = _make_ctx_agent(
+        session_factory, repo_full_name=f"{OWNER}/team-chatbot", kind=KIND_CONNECTED
+    )
+    fake_github = FakeGitHub(existing_repos={f"{OWNER}/team-chatbot"})
+    ctx = _ctx(session, agent, config, github=fake_github)
+
+    detail = _destroy_repo(ctx)
+
+    assert detail == "the repository belongs to its team and is left as it is"
+    assert fake_github.calls == []
+    assert fake_github.renamed == {}
+    assert fake_github.archived == set()
+    session.close()
+
+
+def test_destroy_repo_still_archives_a_repository_the_room_owns(session_factory, config):
+    """The composed side of that same branch, pinned here so the connected
+    one can never be widened into "never archive anything"."""
+    session, agent = _make_ctx_agent(
+        session_factory, repo_full_name=REPO, kind=KIND_COMPOSED
+    )
+    fake_github = FakeGitHub(existing_repos={REPO})
+    ctx = _ctx(session, agent, config, github=fake_github)
+
+    target = f"{OWNER}/archived-agent-{AGENT_NAME}-{agent.id}"
+    detail = _destroy_repo(ctx)
+
+    assert detail == f"archived as {target}"
+    assert fake_github.renamed[REPO] == target
+    assert target in fake_github.archived
+    session.close()
+
+
 def test_destroy_repo_no_repo_full_name_is_done_without_calling_github(session_factory, config):
     session, agent = _make_ctx_agent(session_factory, repo_full_name=None)
     fake_github = FakeGitHub()
@@ -576,6 +618,25 @@ def _cabal_enabled_config(config):
             "agent_endpoint_template": "http://agent-{name}.default.svc.cluster.local",
         }
     )
+
+
+def test_destroy_directory_says_a_connected_agent_was_never_listed(
+    session_factory, config, monkeypatch
+):
+    """A connected agent has no switchboard identity: the pipeline that
+    built it skips the directory step entirely, so there is nothing to
+    retire even with the switchboard fully configured and reachable."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    session, agent = _make_ctx_agent(session_factory, kind=KIND_CONNECTED)
+    fake_cabal = FakeCabal()
+    ctx = _ctx(session, agent, cfg, cabal=fake_cabal)
+
+    detail = _destroy_directory(ctx)
+
+    assert detail == "never listed in the directory"
+    assert fake_cabal.absorb_calls == []
+    session.close()
 
 
 def test_destroy_directory_disabled_is_done_with_note_and_never_calls_cabal(
@@ -728,6 +789,51 @@ def test_run_destroy_happy_path_deletes_agent_and_all_steps(session_factory, con
     # destroy-access ran too — the GSA and its group membership are both gone.
     assert email not in fake_cloud.gsas
     assert (email, config.model_group) not in fake_cloud.group_members
+
+    session = session_factory()
+    assert session.get(Agent, agent_id) is None
+    assert session.query(AgentStep).filter_by(agent_id=agent_id).count() == 0
+    session.close()
+
+
+def test_run_destroy_of_a_connected_agent_tears_down_everything_but_the_repository(
+    session_factory, config, monkeypatch
+):
+    """Engine-level: the whole ledger runs to forget, the row is gone, and
+    the team still has its repository and its directory untouched. Platform,
+    namespace and model access come down exactly as for a composed agent."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    repo = f"{OWNER}/team-chatbot"
+    agent_id = _seed_agent(
+        session_factory,
+        status=AgentStatus.READY,
+        gojira_app_id=7,
+        repo_full_name=repo,
+        kind=KIND_CONNECTED,
+    )
+    fake_github = FakeGitHub(existing_repos={repo})
+    fake_gojira = FakeGojira()
+    fake_cabal = FakeCabal()
+    fake_cloud = FakeCloud(project=cfg.gcp_project)
+    email = f"agent-{AGENT_NAME}@{cfg.gcp_project}.iam.gserviceaccount.com"
+    fake_cloud.gsas.add(email)
+    fake_cloud.group_members.add((email, cfg.model_group))
+
+    thread = run_destroy(
+        session_factory,
+        agent_id,
+        _clients(github=fake_github, gojira=fake_gojira, cloud=fake_cloud, cabal=fake_cabal),
+        cfg,
+    )
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+
+    assert fake_gojira.delete_calls == [(7, True)]
+    assert email not in fake_cloud.gsas
+    assert (email, cfg.model_group) not in fake_cloud.group_members
+    assert fake_github.calls == []
+    assert fake_cabal.absorb_calls == []
 
     session = session_factory()
     assert session.get(Agent, agent_id) is None
