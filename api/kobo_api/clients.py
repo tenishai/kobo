@@ -1576,11 +1576,14 @@ class KubectlCLI:
             # place the literal secret values ever appear. Re-raise with a
             # message built from just the underlying stderr/stdout instead,
             # so a failure here can never leak `literals`' values the way
-            # letting the original exception propagate would.
+            # letting the original exception propagate would. Unchained for
+            # the same reason: a chained cause prints its own message, argv
+            # and all, in any traceback. stdout is dropped because this
+            # stage's stdout is the rendered Secret manifest.
             raise ClientError(
-                f"kubectl create secret {name!r} (dry-run) failed: {exc.stderr or exc.stdout}",
-                returncode=exc.returncode, stdout=exc.stdout, stderr=exc.stderr,
-            ) from exc
+                f"kubectl create secret {name!r} (dry-run) failed: {exc.stderr}",
+                returncode=exc.returncode, stdout="", stderr=exc.stderr,
+            ) from None
 
         try:
             self._runner.run(
@@ -1594,7 +1597,7 @@ class KubectlCLI:
             raise ClientError(
                 f"kubectl apply of secret {name!r} failed: {exc.stderr or exc.stdout}",
                 returncode=exc.returncode, stdout=exc.stdout, stderr=exc.stderr,
-            ) from exc
+            ) from None
 
 
 # --- Slack (Web API: manifest app creation + config-token rotation) -----------

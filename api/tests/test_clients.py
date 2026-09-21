@@ -1259,6 +1259,34 @@ def test_secret_literals_failure_cannot_leak_stdout_into_the_raised_error():
     assert error.__suppress_context__ is True
 
 
+def test_apply_secret_failure_cannot_leak_literals_through_the_traceback():
+    # Stage 1's argv is the one place the literal values exist, and the
+    # runner's own error message embeds that argv; its stdout is the
+    # rendered manifest. Neither may reach the message, the attributes, or
+    # a cause a traceback would print.
+    import traceback
+
+    # Built at runtime: a traceback prints the source of the calling line, so
+    # a value spelled out there would show up in `printed` on its own.
+    value = "-".join(["secret", "value"])
+    encoded = base64.b64encode(value.encode()).decode()
+    literals = {"TOKEN": value}
+    runner = RecordingRunner(results=[(1, f"data:\n  TOKEN: {encoded}\n", "boom")])
+    client = KubectlCLI(runner=runner)
+
+    with pytest.raises(ClientError) as exc_info:
+        client.apply_secret("kobo", "kobo-slack-tokens", literals)
+
+    error = exc_info.value
+    printed = "".join(traceback.format_exception(error))
+    for leak in (value, encoded):
+        assert leak not in str(error)
+        assert leak not in error.stdout
+        assert leak not in printed
+    assert error.__cause__ is None
+    assert error.__suppress_context__ is True
+
+
 def test_secret_literals_unparsable_output_raises_naming_only_namespace_and_name():
     runner = RecordingRunner(results=[(0, "not json at all", "")])
     client = KubectlCLI(runner=runner)
