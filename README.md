@@ -152,6 +152,26 @@ No baked configuration or secrets — mount a config file and point `KOBO_CONFIG
 `ui_dist: /srv/ui` so the API serves the baked UI. Listens on `:8080`, runs non-root, with
 `git`, `gh`, `kubectl`, and `gcloud` on `PATH` for the operations the API shells out to.
 
+**Two replicas**: a room can run more than one pod once nothing it writes lives on a disk only
+one pod can mount. Point `db_url` at Postgres, drop `slack_tokens_path` and the `/data` volume
+with it, and set `slack_tokens_secret: <namespace>/<name>` instead. Create that Secret first,
+with the two keys the room reads and rewrites:
+
+```
+kubectl -n <namespace> create secret generic <name> \
+  --from-literal=config_token=... --from-literal=refresh_token=...
+```
+
+Slack's refresh token is single-use, so both replicas rotate against that one object: each
+re-reads it before spending a refresh token and again after a failed rotation, and takes the
+other's pair when it finds one. The nightly learnings sweep is claimed by a Postgres advisory
+lock, so exactly one replica sweeps per round and the other logs that it skipped.
+
+Roll with `maxSurge: 1`, `maxUnavailable: 0` (a `RollingUpdate` strategy, not `Recreate`), so a
+new pod is ready before an old one goes away. Give the container a `preStop` hook that sleeps
+for a few seconds before shutdown — the load balancer needs that long to stop sending the pod
+new requests, and without it a roll drops the connections in flight.
+
 **Org wiring**: a room serves one org. The org's config repo carries `org.yaml` — catalogs,
 models, groups, admin groups, the runtime pin — cloned at boot and merged over local defaults.
 The bootstrap CLI stands up a new org (config repo, buckets, seeded personas) idempotently.
