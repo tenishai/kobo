@@ -20,7 +20,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -216,14 +216,18 @@ class SkillPick(BaseModel):
 
 
 class CreateAgentRequest(BaseModel):
+    # Unknown keys are IGNORED, not refused. Pydantic's own default, stated
+    # here because it is a compatibility decision rather than an accident:
+    # a browser tab or MCP client loaded before a field was retired keeps
+    # sending it, and a create that 422'd (or 500'd) on a key the room no
+    # longer reads would break callers that are asking for exactly what
+    # they now get anyway. `runtime_image` is the field that made this
+    # concrete -- every agent builds on `Config.runtime_image`, and
+    # `PATCH /api/agents/{name}/runtime` is where a per-agent pin moves.
+    model_config = ConfigDict(extra="ignore")
+
     name: str
     persona: str
-    # Per-agent runtime image (IE-4526): optional; None means the org-wide
-    # default, resolved at compose/re-pin time rather than stored -- so
-    # default-runtime agents keep following the org pin. Validated in the
-    # route against the org default's registry root: a runtime from a
-    # foreign registry never reaches a Dockerfile.
-    runtime_image: str | None = None
     # The creating team (Task 5, bucket catalogs) — same slug shape as
     # `CreatePersonaRequest.team` below. Optional, defaulting to "shared"
     # (Persona v3 / teamless create addendum): the create modal drops the
@@ -588,10 +592,10 @@ class AgentRuntimePatch(BaseModel):
     omitted `runtime_image` is a malformed request rather than a no-op.
 
     Plain `str` for the same reason its sibling gives — the registry-root
-    and configured-runtime rules live in `kobo_api.runtime.
-    validate_runtime_image`, shared with create, and a caller who names an
-    image this org does not run should read that rule stated plainly, not a
-    generic RequestValidationError from a pydantic pattern."""
+    rule lives in `kobo_api.runtime.validate_runtime_image`, and a caller
+    who names an image this org does not run should read that rule stated
+    plainly, not a generic RequestValidationError from a pydantic
+    pattern."""
 
     runtime_image: str
 
@@ -1773,9 +1777,15 @@ def _teach_task_not_completed(raw: object) -> bool:
 
 def _runtime_image_for_repo(app, repo: str) -> str:
     """The Dockerfile pin a fast-lane commit should carry for `repo`'s agent:
-    the agent's own runtime when it set one (IE-4526), the org default
+    the agent's own runtime when its row names one, the org default
     otherwise. Falls back to the org default when the row can't be found --
-    a mirror commit must never crash over a lookup."""
+    a mirror commit must never crash over a lookup.
+
+    The row wins even when it names an image the create-time rule would no
+    longer accept: an agent built on a runtime the room has since retired
+    must keep rebuilding on the image it actually runs, so this path never
+    validates. `PATCH /api/agents/{name}/runtime` is where such an agent
+    moves onto the org default, deliberately and once."""
     try:
         with app.state.session_factory() as session:
             row = session.query(Agent).filter_by(repo_full_name=repo).first()
@@ -2109,17 +2119,6 @@ def create_app(
         return {
             "models": [{"id": m.id, "label": m.label} for m in cfg.models],
             "default": cfg.models[0].id,
-        }
-
-    @app.get("/api/catalog/runtimes")
-    def catalog_runtimes() -> dict:
-        """The create modal's runtime dropdown (IE-4526): the org default
-        first (implicit), then the configured extras. An empty extras list
-        hides the dropdown client-side -- default-only rooms never see it."""
-        cfg: Config = app.state.config
-        return {
-            "runtimes": [{"image": r.image, "label": r.label} for r in cfg.runtimes],
-            "default": cfg.runtime_image,
         }
 
     @app.get("/api/catalog/observability")
@@ -3242,7 +3241,6 @@ def create_app(
             # ACL namespace.
             payload.group_name = SHARED_GROUP
             payload.team = SHARED_GROUP
-            payload.runtime_image = None
             # Attach the packaged guide skill when the marketplace has it;
             # skip silently when it hasn't published it yet (a kiosk without
             # the skill still has its constitution from the persona). Forced
@@ -3330,30 +3328,6 @@ def create_app(
             )
         model_id = payload.model if payload.model is not None else cfg.models[0].id
 
-        # Per-agent runtime (IE-4526): allowed iff it lives in the same
-        # registry root as the org default -- existence is CI's problem
-        # (a bad tag fails the first build loudly), provenance is ours.
-        runtime_image = (payload.runtime_image or "").strip() or None
-        if runtime_image is not None:
-            # Two ways in: exactly a configured runtime (operator-vetted
-            # config, any registry the org publishes to -- the sdk runtime
-            # lives on a different regional host than the daedalus default),
-            # or a freeform ref under the org default's registry root.
-            #
-            # THE RULE MOVED, THE RULE DID NOT CHANGE (#15): it now lives in
-            # `kobo_api.runtime.validate_runtime_image` so the PATCH route
-            # that changes a runtime after create refuses on exactly these
-            # grounds. A mutation that accepted what a create rejects would
-            # make "which images may this org run" depend on which endpoint
-            # you asked.
-            rejection = validate_runtime_image(
-                runtime_image,
-                configured={r.image for r in cfg.runtimes},
-                org_default=cfg.runtime_image,
-            )
-            if rejection is not None:
-                return JSONResponse({"error": rejection}, status_code=422)
-
         # Checked last (a DB round-trip) rather than first: a malformed request
         # is a 422 regardless of whether the name happens to collide too.
         existing = session.query(Agent).filter_by(name=payload.name).first()
@@ -3376,7 +3350,10 @@ def create_app(
             team=payload.team,
             purpose_tags=encode_tags(cleaned_tags),
             model_id=model_id,
-            runtime_image=runtime_image,
+            # No `runtime_image` here, deliberately: every agent builds on
+            # the org default, and a NULL column keeps following that pin
+            # as it moves. Only `PATCH /api/agents/{name}/runtime` fills it.
+
             # Archetype marker (team-guide spec 2026-09-14, Task 2b). Read
             # straight off the payload, exactly as `payload.persona`/
             # `payload.team` above are: the archetype branch far above
@@ -5633,11 +5610,13 @@ def create_app(
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         """Re-point an agent at a different runtime image without destroying
-        it. Before this existed the only way to change a runtime was
-        destroy-and-recreate, which discards Slack wiring (whose tokens are
-        supplied by hand — `wire_slack` cannot create a Slack app),
-        accumulated agent memory, and channel membership. None of that is a
-        runtime concern.
+        it. Agents are built on the org default, so this is how an operator
+        pins one to a specific tag or digest of it, and how an agent created
+        on a runtime the room has since retired is carried back onto it. The
+        alternative is destroy-and-recreate, which discards Slack wiring
+        (whose tokens are supplied by hand — `wire_slack` cannot create a
+        Slack app), accumulated agent memory, and channel membership. None
+        of that is a runtime concern.
 
         Owner-or-operator and ready-gated, same gate as the metadata route
         below: this mutates the agent's repo and rolls its pod.
@@ -5662,11 +5641,7 @@ def create_app(
         runtime_image = payload.runtime_image.strip()
         if not runtime_image:
             return JSONResponse({"error": "runtime_image can't be blank"}, status_code=422)
-        rejection = validate_runtime_image(
-            runtime_image,
-            configured={r.image for r in cfg.runtimes},
-            org_default=cfg.runtime_image,
-        )
+        rejection = validate_runtime_image(runtime_image, org_default=cfg.runtime_image)
         if rejection is not None:
             return JSONResponse({"error": rejection}, status_code=422)
 

@@ -3133,9 +3133,8 @@ def test_decide_learnings_bulk_audit_row_logs_tool_status_and_arguments(
 
 
 def _under_org_registry(config, tag: str) -> str:
-    """A freeform ref under the org default's registry root — accepted by
-    `validate_runtime_image` without the room having to configure it, which
-    keeps these tests off the `runtimes` fixture list."""
+    """A ref under the org default's registry root — the one shape
+    `validate_runtime_image` accepts."""
     return config.runtime_image.rsplit("/", 1)[0] + f"/{tag}"
 
 
@@ -3179,7 +3178,7 @@ def test_set_runtime_image_refuses_an_image_the_org_does_not_run(
     app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
     mcp = build_mcp_server(app)
 
-    with pytest.raises(ToolError, match="configured runtimes"):
+    with pytest.raises(ToolError, match="must live under"):
         _call_tool(
             mcp,
             "kobo_set_runtime_image",

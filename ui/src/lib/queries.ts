@@ -159,7 +159,6 @@ import {
   fetchGroups,
   fetchModels,
   fetchObservability,
-  fetchRuntimes,
   fetchRecommendedSkills,
   fetchNameSuggestions,
   fetchOrgStatus,
@@ -259,24 +258,11 @@ export function modelsQuery() {
   });
 }
 
-/** The room's named ACL groups (access-control Task B2) — `[]` when the
- * room hasn't configured any, in which case the create modal's group
- * picker doesn't render at all. Same "doesn't change on its own in the
- * background" reasoning as `modelsQuery`: no polling. */
-/** The runtime dropdown's choices (IE-4526). Same no-polling reasoning as
- * `modelsQuery`: org config only changes with a room restart. */
-export function runtimesQuery() {
-  return queryOptions({
-    queryKey: ["catalog", "runtimes"] as const,
-    queryFn: fetchRuntimes,
-  });
-}
-
 /** The org's observability catalog (Task 4 of the observability-catalog
  * addendum: `GET /api/catalog/observability`) -- a dashboard base URL +
  * project, both `null` unless the room config carries both. Long
  * `staleTime`, same "doesn't change on its own in the background" reasoning
- * as `modelsQuery`/`runtimesQuery`: this config only changes on a room
+ * as `modelsQuery`: this config only changes on a room
  * roll. Shared across every mounted `AgentCard` and the detail page under
  * one cache entry (`["catalog", "observability"]`), so many cards on the
  * dashboard grid cost one network request, not one each. */
@@ -288,6 +274,10 @@ export function observabilityQuery() {
   });
 }
 
+/** The room's named ACL groups (access-control Task B2) — `[]` when the
+ * room hasn't configured any, in which case the create modal's group
+ * picker doesn't render at all. Same "doesn't change on its own in the
+ * background" reasoning as `modelsQuery`: no polling. */
 export function groupsQuery() {
   return queryOptions({
     queryKey: ["catalog", "groups"] as const,

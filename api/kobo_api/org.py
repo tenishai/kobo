@@ -54,7 +54,6 @@ ORG_KEYS = frozenset(
         "liminal_url",
         "argus_url",
         "argus_project",
-        "runtimes",
         "reader_groups",
         "gcp_project",
         "vertex_project",
@@ -78,6 +77,23 @@ ORG_KEYS = frozenset(
         "mcp",
     }
 )
+
+# Keys an org.yaml may still carry that no longer map to anything on
+# `Config`. They are ACCEPTED and then dropped: an unrecognized key unwires
+# ALL org config (see `load_org_config` below), so removing a Config field
+# whose key is already written into a deployment's org.yaml would degrade
+# that room's whole catalog surface on the next boot. Retiring the key here
+# instead of deleting it outright keeps boot safe while the file catches up.
+# Disjoint from ORG_KEYS by construction — a key is live or retired, never
+# both. `_disclose_retired` says so once per boot rather than letting the
+# key look honored.
+RETIRED_ORG_KEYS = frozenset({"runtimes"})
+
+# What each retired key's WARNING says, so an operator reading pod logs
+# learns what replaced it rather than only that the key did nothing.
+_RETIRED_REASONS = {
+    "runtimes": "every agent builds on runtime_image",
+}
 
 
 @dataclass
@@ -148,6 +164,18 @@ def _disclose_overrides(local: Config, merged: Config, org_keys: set[str]) -> No
             )
 
 
+def _disclose_retired(present: set[str]) -> None:
+    """Say which retired keys org.yaml still carries, one WARNING each.
+    Same level and reasoning as `_disclose_overrides` above: the app
+    configures no logging, so INFO from this module never reaches pod logs,
+    and a key that reads as configured but changes nothing is exactly the
+    kind of silence that costs a debugging session."""
+    for key in sorted(present & RETIRED_ORG_KEYS):
+        log.warning(
+            "org.yaml key %r is retired and ignored: %s", key, _RETIRED_REASONS[key]
+        )
+
+
 def load_org_config(local: Config, github: GitHubClient) -> tuple[Config, OrgState]:
     """Clone `local.org_repo`, read its `org.yaml`, and merge validated org
     values over `local`.
@@ -199,13 +227,16 @@ def load_org_config(local: Config, github: GitHubClient) -> tuple[Config, OrgSta
                 f"org.yaml must be a mapping, got {type(data).__name__}",
             )
 
-        unknown_keys = sorted(set(data) - ORG_KEYS)
+        unknown_keys = sorted(set(data) - ORG_KEYS - RETIRED_ORG_KEYS)
         if unknown_keys:
             return local, OrgState(
                 False,
                 local.org_repo,
                 f"org.yaml has an unrecognized key: {unknown_keys[0]!r}",
             )
+
+        _disclose_retired(set(data))
+        data = {k: v for k, v in data.items() if k not in RETIRED_ORG_KEYS}
 
         try:
             merged = _revalidate(local.model_copy(update=data))

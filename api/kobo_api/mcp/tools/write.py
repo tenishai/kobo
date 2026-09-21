@@ -671,7 +671,6 @@ def register(mcp: FastMCP, app: Any) -> None:
         skills: list[dict] | None = None,
         tags: list[str] | None = None,
         skip_baseline: bool = False,
-        runtime_image: str | None = None,
         archetype: str | None = None,
         voice: str | None = None,
     ) -> dict:
@@ -686,10 +685,9 @@ def register(mcp: FastMCP, app: Any) -> None:
         for you. `skills`, when given, is a list of `{"id", "team"}` picks
         from the room's skills catalog; `tags` is a short list of purpose
         tags. Every new agent ships the baseline tooling pack (leakguard
-        and probe guard) unless skip_baseline is true. `runtime_image`
-        (optional, IE-4526) pins this agent to a custom runtime image from
-        the room's own registry; omitted means the org default, which keeps
-        following the org pin. archetype="team_guide" deploys a team's
+        and probe guard) unless skip_baseline is true. Every agent is built
+        on the room's one runtime; there is no choice to make here.
+        archetype="team_guide" deploys a team's
         informational guide; forces persona/tools/tags. `voice` (optional)
         is a style overlay for archetype personas -- ignored unless
         `archetype` is set. Returns the agent's
@@ -747,7 +745,6 @@ def register(mcp: FastMCP, app: Any) -> None:
                     purpose_tags=list(tags or []),
                     group_name=group,
                     skip_baseline=skip_baseline,
-                    runtime_image=runtime_image,
                     archetype=archetype,
                     voice=voice,
                 )
@@ -934,22 +931,20 @@ def register(mcp: FastMCP, app: Any) -> None:
     async def kobo_set_runtime_image(ctx: Context, agent: str, runtime_image: str) -> dict:
         """Move an existing agent onto a different runtime image (#15).
 
-        Before this existed, `runtime_image` could only be chosen at create
-        time, so changing it meant destroying the agent and building a
-        replacement -- which throws away Slack wiring (whose tokens are
-        supplied by hand at Slack's own site), everything the agent has
-        learned or been taught, and its channel membership. This changes
-        the runtime and leaves all three alone.
+        Every agent is built on the room's one runtime, so this tool is for
+        two jobs: pinning an agent to a specific tag or digest of it, and
+        carrying an agent created on a runtime the room has since retired
+        back onto the current one. The alternative is destroying the agent
+        and building a replacement -- which throws away Slack wiring (whose
+        tokens are supplied by hand at Slack's own site), everything the
+        agent has learned or been taught, and its channel membership. This
+        changes the runtime and leaves all three alone.
 
-        `runtime_image` must name one of the room's configured runtimes or
-        live under the org's own registry root -- the same rule
-        `kobo_create_agent` enforces, so a change cannot smuggle in an
-        image a create would have refused. The room's configured runtimes
-        are served at `GET /api/catalog/runtimes`; there is no read tool
-        for them, so a caller that cannot reach that route should pass an
-        image it already knows and read the rejection copy if it is
-        refused. You must own `agent` (or be a room operator), and `agent`
-        must be READY.
+        `runtime_image` must live under the room's own registry root; an
+        image from anywhere else is refused. There is no read tool listing
+        what the room runs, so pass an image you already know and read the
+        rejection copy if it is refused. You must own `agent` (or be a room
+        operator), and `agent` must be READY.
 
         NOT DESTRUCTIVE OF DATA, but it does roll the pod: landing the
         change pushes a commit, and the agent repo's CI rebuilds and

@@ -2159,27 +2159,12 @@ def test_create_agent_launch_failure_with_session_close_raising_still_returns_50
     session.close()
 
 
-# --- per-agent runtime image (IE-4526) ---------------------------------------
+# --- every agent builds on the one runtime -----------------------------------
 
 
-def test_create_accepts_a_room_registry_runtime(client, monkeypatch):
-    r = client.post("/api/agents", json={
-        "name": "sdk-one", "persona": "helpful-generalist",
-        "runtime_image": "registry.example/agents/org-agent-sdk:1.0",
-    })
-    assert r.status_code in (200, 201, 202), r.text
-
-
-def test_create_refuses_a_foreign_registry_runtime(client):
-    r = client.post("/api/agents", json={
-        "name": "sdk-two", "persona": "helpful-generalist",
-        "runtime_image": "docker.io/evil/runtime:latest",
-    })
-    assert r.status_code == 422
-    assert "registry" in r.json()["error"] or "runtime_image" in r.json()["error"]
-
-
-def test_create_without_runtime_stays_on_the_org_default(client, session_factory):
+def test_create_leaves_the_runtime_column_null(client, session_factory):
+    """A NULL column keeps the agent following the org pin as it moves;
+    only `PATCH /api/agents/{name}/runtime` ever fills it."""
     r = client.post("/api/agents", json={
         "name": "sdk-three", "persona": "helpful-generalist",
     })
@@ -2192,12 +2177,27 @@ def test_create_without_runtime_stays_on_the_org_default(client, session_factory
     session.close()
 
 
-def test_catalog_runtimes_shape(client):
-    r = client.get("/api/catalog/runtimes")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["runtimes"] == []
-    assert body["default"]
+def test_create_ignores_a_runtime_image_an_older_client_still_sends(client, session_factory):
+    """A browser tab or MCP client loaded before the field was retired
+    keeps sending it. Ignored silently (`CreateAgentRequest`'s own
+    `extra="ignore"`) -- never a 422, and never a 500 -- because the caller
+    is asking for exactly the runtime it now gets anyway."""
+    r = client.post("/api/agents", json={
+        "name": "sdk-four", "persona": "helpful-generalist",
+        "runtime_image": "docker.io/evil/runtime:latest",
+    })
+
+    assert r.status_code in (200, 201, 202), r.text
+    from kobo_api.models import Agent
+
+    session = session_factory()
+    row = session.query(Agent).filter_by(name="sdk-four").first()
+    assert row is not None and row.runtime_image is None
+    session.close()
+
+
+def test_runtimes_catalog_route_is_gone(client):
+    assert client.get("/api/catalog/runtimes").status_code == 404
 
 
 def test_observability_catalog_empty_without_config(client):
@@ -2251,33 +2251,10 @@ def test_observability_catalog_both_or_nothing_url_only(client):
         cfg.argus_url, cfg.argus_project = old
 
 
-def test_create_accepts_a_configured_runtime_from_another_registry_host(client):
-    from kobo_api.config import RuntimeChoice
-
-    cfg = client.app.state.config
-    original = cfg.runtimes
-    cfg.runtimes = [RuntimeChoice(
-        image="us-docker.pkg.dev/p/apps/org-agent-runtime:1.0", label="org-runtime"
-    )]
-    try:
-        r = client.post("/api/agents", json={
-            "name": "sdk-four", "persona": "helpful-generalist",
-            "runtime_image": "us-docker.pkg.dev/p/apps/org-agent-runtime:1.0",
-        })
-        assert r.status_code in (200, 201, 202), r.text
-        r2 = client.post("/api/agents", json={
-            "name": "sdk-five", "persona": "helpful-generalist",
-            "runtime_image": "us-docker.pkg.dev/p/apps/other-thing:1.0",
-        })
-        assert r2.status_code == 422
-    finally:
-        cfg.runtimes = original
-
-
 # --- team-guide archetype (spec 2026-09-14) ---------------------------------
 #
 # The create route's archetype lane FORCES the bundle surface (persona,
-# skills, runtime, tags, ACL namespace) and ignores whatever the client sent
+# skills, tags, ACL namespace) and ignores whatever the client sent
 # for those — "cannot act" is a property of the composed bundle, not of a UI
 # default. This module's `config` fixture names no groups, so `group_name`
 # reaches the route unvalidated (exactly as the pre-groups tests above rely
@@ -2307,12 +2284,8 @@ def test_archetype_forces_tags_persona_and_commons_namespace(client):
     assert agent["group_name"] == "shared"
 
 
-def test_archetype_ignores_client_supplied_skills_and_runtime(client, session_factory):
-    r = _create_guide(
-        client,
-        skills=[{"id": "word-games", "team": "shared"}],
-        runtime_image="registry.example/agents/org-agent-sdk:1.0",
-    )
+def test_archetype_ignores_client_supplied_skills(client, session_factory):
+    r = _create_guide(client, skills=[{"id": "word-games", "team": "shared"}])
     assert r.status_code == 201, r.text
 
     agent = client.get(f"/api/agents/{r.json()['name']}").json()

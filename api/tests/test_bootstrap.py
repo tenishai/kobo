@@ -89,7 +89,6 @@ def test_render_org_yaml_golden_with_computed_defaults():
         "liminal_url": "",
         "argus_url": None,
         "argus_project": None,
-        "runtimes": [],
         "reader_groups": [],
         "gcp_project": "acme-project",
         "vertex_project": "acme-models",

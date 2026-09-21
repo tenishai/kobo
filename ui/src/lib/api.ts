@@ -450,9 +450,6 @@ export async function createAgent(body: {
    * enough), both server-side (the real gate) and by the create modal's own
    * required `<select>` (UX only). */
   group_name?: string | null;
-  /** Per-agent runtime image (IE-4526) — omitted means the org default,
-   * and the agent keeps following the org-wide runtime pin. */
-  runtime_image?: string;
   /** Archetype create lane (team-guide spec 2026-09-14): set to
    * `"team_guide"` to deploy a team's guide instead of an ordinary agent —
    * the server then forces persona/tools/tags/visibility/skills and
@@ -501,18 +498,6 @@ export async function destroyAgent(name: string): Promise<{ status: string }> {
  * move to search: skills and personas are now `searchSkills`/`searchPersonas`
  * below, but the model list is small and fixed, so it's still fetched
  * whole. */
-/** The runtime dropdown's choices (IE-4526): the org default plus any
- * configured extras. An empty extras list hides the dropdown. */
-export async function fetchRuntimes(): Promise<{
-  runtimes: { image: string; label: string }[];
-  default: string;
-}> {
-  const res = await fetch("/api/catalog/runtimes");
-  return parse<{ runtimes: { image: string; label: string }[]; default: string }>(
-    res,
-  );
-}
-
 export async function fetchModels(): Promise<{
   models: { id: string; label: string }[];
   default: string;
