@@ -35,6 +35,7 @@ const BASE_AGENT: AgentSummary = {
   group_name: null,
   archetype: null,
   purpose_tags: [],
+  kind: "composed",
 };
 
 describe("AgentCard — owner line (Task A3)", () => {

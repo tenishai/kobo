@@ -3491,6 +3491,12 @@ def create_app(
                     # loaded on `a` with no extra query.
                     "archetype": a.archetype,
                     "purpose_tags": decode_tags(a.purpose_tags),
+                    # Connected agents (design 2026-09-21): the dashboard
+                    # card carries the marker, so the list needs it for
+                    # the same reason `archetype` above is here -- a
+                    # per-agent fetch to learn it would be one round trip
+                    # per card.
+                    "kind": a.kind,
                 }
                 for a in agents
             ],
@@ -3549,6 +3555,10 @@ def create_app(
                 "created_by": agent.created_by,
                 "group_name": agent.group_name,
                 "archetype": agent.archetype,
+                # Connected agents (design 2026-09-21): which tabs the page
+                # may offer at all is a property of the kind, so the page
+                # reads it from the same fetch that draws the header.
+                "kind": agent.kind,
                 "pending_learnings": session.query(AgentLearning)
                 .filter_by(agent_name=agent.name, status=LEARNING_PENDING)
                 .count(),

@@ -127,8 +127,11 @@ def register(mcp: FastMCP, app: Any) -> None:
     @audited("kobo_list_agents")
     async def kobo_list_agents(ctx: Context) -> list[dict]:
         """List every agent you may see in this room: its name, ACL
-        group, skills team, owner, status, and purpose. The same
-        visibility rules the room's own agent list applies.
+        group, skills team, owner, status, purpose, and kind. The same
+        visibility rules the room's own agent list applies. A `composed`
+        agent was built by the room and has a persona, skills and chat; a
+        `connected` one is a team's own repo the room only deploys, and
+        has none of those.
         """
         email = get_user_email(ctx)
         session = app.state.session_factory()
@@ -142,6 +145,7 @@ def register(mcp: FastMCP, app: Any) -> None:
                     "owner": agent.created_by,
                     "status": agent.status,
                     "purpose": decode_tags(agent.purpose_tags),
+                    "kind": agent.kind,
                 }
                 for agent in agents
             ]
@@ -151,10 +155,12 @@ def register(mcp: FastMCP, app: Any) -> None:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     @audited("kobo_get_agent")
     async def kobo_get_agent(ctx: Context, name: str) -> dict:
-        """Get one agent's card: its persona, team, purpose, model,
+        """Get one agent's card: its kind, persona, team, purpose, model,
         status, and status checklist -- plus its skills, Slack wiring,
         avatar/repo facts, and pending-learnings state, the same detail
-        the room's own agent page shows. Answers "agent not found" both
+        the room's own agent page shows. A `connected` agent is a team's
+        own repo the room only deploys, so its persona, skills and chat
+        fields carry nothing to act on. Answers "agent not found" both
         for a name that does not exist and for one you are not allowed to
         see -- the two are never told apart.
         """
@@ -202,6 +208,7 @@ def register(mcp: FastMCP, app: Any) -> None:
                 "model_label": _model_label(cfg, agent.model_id),
                 "skills": agent.skills,
                 "status": agent.status,
+                "kind": agent.kind,
                 "repo_full_name": agent.repo_full_name,
                 "steps": [
                     {"name": step.name, "status": step.status, "error": step.error}

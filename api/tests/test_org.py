@@ -157,6 +157,23 @@ def test_db_url_in_org_yaml_is_rejected_as_unknown_key():
     assert "db_url" in org.error
 
 
+def test_connected_headless_class_in_org_yaml_is_rejected_as_unknown_key():
+    """The headless workload class names a class THIS deploy platform
+    offers, so it is deployment-local like slack_tokens_secret and
+    deliberately absent from ORG_KEYS. An org.yaml that sets it fails the
+    same way any other unrecognized key does, and the room keeps its own
+    value -- which, empty, is what keeps the run mode switched off."""
+    local = Config(org_repo=ORG_REPO)
+    github = FakeGitHub(org_yaml="connected_headless_class: agent-headless\n")
+
+    merged, org = load_org_config(local, github)
+
+    assert merged is local
+    assert merged.connected_headless_class == ""
+    assert org.wired is False
+    assert "connected_headless_class" in org.error
+
+
 def test_workdir_in_org_yaml_is_rejected_as_unknown_key():
     local = Config(org_repo=ORG_REPO)
     github = FakeGitHub(org_yaml="workdir: /tmp/somewhere-else\n")
