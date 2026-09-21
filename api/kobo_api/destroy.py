@@ -48,7 +48,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from kobo_api.clients import ClientError, cabal_enabled
 from kobo_api.config import Config
 from kobo_api.directory import retire_directory
-from kobo_api.kinds import is_connected
+from kobo_api.kinds import KIND_COMPOSED, is_connected
 from kobo_api.models import A2AInvite, Agent, AgentStatus, AgentStep, RepoAccess, StepStatus
 from kobo_api.pairs import sync_dispatch_pairs_best_effort
 from kobo_api.provisioner import _get_or_create_step
@@ -262,11 +262,19 @@ def _destroy_repo(ctx: DestroyCtx) -> str:
     its own recorded-field check, this one would NOT neutralise itself:
     `repo_full_name` is set for a connected agent too, and the rename below
     would take somebody else's repository away from them.
+
+    The check here asks for an EXPLICIT `composed`, rather than asking
+    `is_connected` the way every other reader of the kind does. Those
+    readers fail open to composed, which is the harmless direction for
+    them; here it is the destructive one. So a kind this code does not
+    recognise — a future one, a bad write, a half-applied migration —
+    leaves the repository alone rather than archiving it on a guess. The
+    room can always archive a repository later; it cannot give one back.
     """
     agent = ctx.agent
     github = ctx.clients.github
 
-    if is_connected(agent):
+    if agent.kind != KIND_COMPOSED:
         return "the repository belongs to its team and is left as it is"
 
     if agent.repo_full_name is None:

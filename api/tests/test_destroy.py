@@ -475,6 +475,27 @@ def test_destroy_repo_leaves_a_connected_agents_repository_alone(session_factory
     session.close()
 
 
+@pytest.mark.parametrize("kind", ["something-else", "adopted", ""])
+def test_destroy_repo_archives_only_for_an_explicitly_composed_agent(
+    session_factory, config, kind
+):
+    """`is_connected` fails open to composed, which everywhere else is the
+    safe direction and here is the destructive one. A kind this code does
+    not recognise -- a future one, a bad write, a half-finished migration --
+    must not be read as permission to archive somebody's repository."""
+    session, agent = _make_ctx_agent(
+        session_factory, repo_full_name=f"{OWNER}/team-chatbot", kind=kind
+    )
+    fake_github = FakeGitHub(existing_repos={f"{OWNER}/team-chatbot"})
+    ctx = _ctx(session, agent, config, github=fake_github)
+
+    detail = _destroy_repo(ctx)
+
+    assert detail == "the repository belongs to its team and is left as it is"
+    assert fake_github.calls == []
+    session.close()
+
+
 def test_destroy_repo_still_archives_a_repository_the_room_owns(session_factory, config):
     """The composed side of that same branch, pinned here so the connected
     one can never be widened into "never archive anything"."""
