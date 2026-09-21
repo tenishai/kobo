@@ -2120,7 +2120,7 @@ def test_rewire_is_idempotent(tmp_path):
 
 def test_bundle_spec_dockerfile_uses_the_given_runtime(tmp_path):
     spec = _make_spec()
-    spec.runtime_image = "us-east4-docker.pkg.dev/p/apps/acme-agent-sdk:1.2"
+    spec.runtime_image = "us-east4-docker.pkg.dev/p/apps/org-agent-sdk:1.2"
     compose(spec, tmp_path / "out")
     text = (tmp_path / "out" / "Dockerfile").read_text()
-    assert "FROM us-east4-docker.pkg.dev/p/apps/acme-agent-sdk:1.2" in text
+    assert "FROM us-east4-docker.pkg.dev/p/apps/org-agent-sdk:1.2" in text

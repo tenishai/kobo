@@ -111,7 +111,7 @@
       id="repo-access-draft"
       class="repo-access__draft"
       rows="3"
-      placeholder="example-org/example-repo"
+      placeholder="your-org/example-repo"
       bind:value={draft}
     ></textarea>
     {#if invalid.length > 0}

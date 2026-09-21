@@ -160,7 +160,7 @@ C) Demand-driven growth: write keys/principals per explicit ruling;
 ## The dogfood case, made concrete: ledger's four lanes (2026-09-03)
 
 The audit agent this arc was always going to serve now EXISTS: `ledger`
-(persona ledger-keeper, group infra-engineering, repo example-org/agent-ledger),
+(persona ledger-keeper, owned by the SRE group, in its own agent repo),
 built 2026-09-03 entirely through the kobo MCP connector -- two marketplace
 skills (gcp-access-audit, iam-binding-evidence), an enforcement tool
 (audit-provenance: pre_task computes the evidence-chain decision points in
@@ -168,45 +168,45 @@ code and injects them as notices; post_draft blocks gapless bundles and
 annotates identifiers that appeared in no input), and an approved repo
 grant. Its four external lanes are the concrete requirements this arc's
 decision unblocks. Every fact below is read from the shipped
-infra-audit-mcp client code, not remembered.
+predecessor audit server's client code, not remembered.
 
 **Lane 1 -- GitHub (READY, waiting only on the runtime roll).** The
-room's PR-broker grant for example-org/global-iam-permissions is approved.
+room's PR-broker grant for the org's IAM-permissions repo is approved.
 The github read quartet (read_file / list_prs / get_pr / list_releases)
 is merged on upstream daedalus main (PR #23) but absent from the fleet
 runtime c1992f2-t0161; the next canonical runtime pin lights this lane
 with no further access work. No liminal dependency.
 
-**Lane 2 -- AWS CloudTrail Lake, acme-it (access design settled by
+**Lane 2 -- AWS CloudTrail Lake, the audit account (access design settled by
 precedent; tool surface is the open question).** The old server already
 runs the exact pattern proposed: the workload's GCP service account gets
 an OIDC token (audience=sts.amazonaws.com) and calls
-sts:AssumeRoleWithWebIdentity against a role in acme-it (account
-052257306451), then queries the CloudTrail Lake event data store
-`acme-okta-logs` in us-east-2 via cloudtrail:StartQuery /
+sts:AssumeRoleWithWebIdentity against a role in the audit account,
+then queries the CloudTrail Lake event data store holding the identity
+provider's logs via cloudtrail:StartQuery /
 GetQueryResults. NOTE: this is CloudTrail Lake SQL, NOT Athena -- the
 scoped policy needs cloudtrail:StartQuery, cloudtrail:GetQueryResults,
 cloudtrail:DescribeQuery on the event-data-store ARN, not
 athena:*/glue/s3 (unless we deliberately move to Athena federation, a
 separate decision). Ledger's principal exists:
-`agent-ledger@example-project.iam.gserviceaccount.com` (workload
-identity, KSA agent-ledger, ns ledger). Execution is one of: add this
+the agent's birth service account (workload identity, its own KSA
+and namespace). Execution is one of: add this
 GSA to the existing audit role's trust policy, or mint a twin role
 `ledger-audit-readonly` scoped identically. Both are one small PR once a
 tool surface exists to consume it.
 
-**Lane 3 -- Slack #ask-access-request (scopes known; reuse available).**
-The old server reads the channel with a bot token (GSM:
-audit-mcp-slack-bot-token) holding channels:history, deliberately using
+**Lane 3 -- the Slack access-request channel (scopes known; reuse available).**
+The old server reads the channel with a bot token (held in the cloud
+secret manager) holding channels:history, deliberately using
 conversations.history + conversations.replies rather than
 search.messages (bot-token search is unreliable and the thread ROOT
 carries the emails -- documented in the client). Ledger can reuse that
 bot or get a twin; the missing piece is again the tool surface, not the
 access.
 
-**Lane 4 -- Jira AREQ board (the arc's scoped-key model, live
-precedent).** The old server authenticates as the shared service account
-automation@example.com with a read-only PAT from GSM (basic auth, REST
+**Lane 4 -- the Jira access-request board (the arc's scoped-key model, live
+precedent).** The old server authenticates as a shared automation service account
+with a read-only PAT from the cloud secret manager (basic auth, REST
 /rest/api/3/issue). Ledger's need: read AREQ tickets and their comments
 to verify a VP-or-above approval comment exists. That is exactly the
 "one read service account per vendor + vendor-scoped key" middle ground
@@ -226,11 +226,11 @@ any gateway could do it -- IAM roles, conditions, and resource ARNs are
 the native scoping primitives -- and where NO stored credential is
 needed at all: every kobo agent already has its own GCP service account
 (workload identity, created at birth), GCP federates to AWS via
-AssumeRoleWithWebIdentity (the shipped audit-mcp precedent) and to Azure
+AssumeRoleWithWebIdentity (the shipped audit-server precedent) and to Azure
 via federated credentials. So for cloud lanes, liminal's credential
 custody problem (K1/K4, resolver, OpenBao) largely DISSOLVES: the
 gateway would forward identity, not inject secrets. Proposed simplified
-grant model: declare agent cloud access in example-org/global-iam-permissions
+grant model: declare agent cloud access in the org's IAM-permissions repo
 the same way team access is declared -- the agent's GSA as a principal
 in the existing YAML+terraform machinery (per-service scoped role, PR
 lane, drift detection, and the access-ledger diff chain all come free,
@@ -254,7 +254,7 @@ grant itself (revoke the role or binding); (b) the tool surface for
 cloud calls is the agent runtime's own (a provider like the github
 sidecar, or a direct SDK tool), sized per integration; (c) a
 `CloudAccess` row type in kobo (request -> operator approve ->
-generated PR against global-iam-permissions) stays the target shape for
+generated PR against the org's IAM-permissions repo) stays the target shape for
 "simplified".
 
 **The tool-surface decision (what actually blocks lanes 2-4).** Three
@@ -281,7 +281,7 @@ honestly.
 
 Kobo-deployed agents need to reach external / third-party MCP servers
 (Atlassian's hosted MCP, Datadog, ...). Two identity models were floated:
-per-agent org identities (agent@example.com -- an agent managed by a
+per-agent org identities (`<human>-agent@<org domain>` -- an agent managed by a
 human, granted org tooling like a person) versus room-held privileged
 credentials with kobo-side RBAC scoping each agent down to approved
 resources (specific Jira boards, Confluence spaces, Datadog dashboards).
@@ -426,10 +426,10 @@ per-owner consents.
 - Whether cabal should mint a limenal-scoped token distinct from
   CABAL_COLLEAGUE_TOKEN, or the colleague JWT grows limenal claims.
 
-## 2026-09-04 addendum: the AREQ tactical bridge shipped (and what it is not)
+## 2026-09-04 addendum: the access-request tracker bridge shipped (and what it is not)
 
-Ruling (operator, 2026-09-04): ledger reads AREQ now, on the
-jiraautomation read PAT, while the liminal hardening PRs work through
+Ruling (operator, 2026-09-04): ledger reads the access-request board now, on the
+shared automation account's read PAT, while the liminal hardening PRs work through
 review -- so the dogfood case keeps moving. The shape is deliberately the
 PR broker's custody model applied to reads, NOT an env-secret in the
 agent's namespace:
@@ -446,7 +446,7 @@ agent's namespace:
   crosses the boundary (the resource-guard-theater finding, honored).
 - daedalus grew the client half (`tools.jira` sidecar) and, in the same
   wave, `tools.slack_read` -- the channel-allowlisted thread reader that
-  closes the #ask-access-request lane with zero new credentials (the
+  closes the Slack access-request lane with zero new credentials (the
   pod's own bot token + channel membership as Slack's second wall).
 
 None of this displaces the liminal path: when the gateway lands, the

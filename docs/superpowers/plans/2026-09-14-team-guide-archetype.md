@@ -6,7 +6,7 @@
 
 **Architecture:** The archetype lane renders a packaged persona template at create time and stores it as an ordinary room persona (`team-guide-<group>`), so compose (`_resolve_persona_body`) and every downstream step run unchanged. Forcing (tools, tags, visibility, skills) happens in the create route before the shared create body. Observability links mirror the `catalog/runtimes` pattern end to end.
 
-**Tech Stack:** FastAPI + SQLAlchemy (kobo api), Svelte + tanstack-query (kobo ui), acme-skills marketplace (publish law), gojira agent-class pipeline (untouched).
+**Tech Stack:** FastAPI + SQLAlchemy (kobo api), Svelte + tanstack-query (kobo ui), the org's skills marketplace (publish law), gojira agent-class pipeline (untouched).
 
 ## Global Constraints
 
@@ -478,20 +478,20 @@ def test_observability_catalog_returns_configured_values(client):
 ### Task 7: The team-guide skill (marketplace)
 
 **Files:**
-- Create (fresh clone): `<clone>/skills/team-guide/SKILL.md` in `example-org/acme-skills`
+- Create (fresh clone): `<clone>/skills/team-guide/SKILL.md` in the org's skills marketplace repo
 
-- [ ] **Step 1: Clone + branch** (kyle-example identity): `git clone https://github.com/example-org/acme-skills ~/Documents/GitHub/acme-skills && cd ~/Documents/GitHub/acme-skills && git checkout -b feat/team-guide-skill`. Read one existing skill's frontmatter (`skills/kobo-mcp-usage/SKILL.md`) and the validator (`tools/skill_catalog/schema.py`) to copy the exact frontmatter field shapes.
+- [ ] **Step 1: Clone + branch** (the client-org git identity): `git clone <the org's skills marketplace repo> ~/Documents/GitHub/org-skills && cd ~/Documents/GitHub/org-skills && git checkout -b feat/team-guide-skill`. Read one existing skill's frontmatter (`skills/kobo-mcp-usage/SKILL.md`) and the validator (`tools/skill_catalog/schema.py`) to copy the exact frontmatter field shapes.
 
 - [ ] **Step 2: Write** `skills/team-guide/SKILL.md` with frontmatter (exact keys per the validator; values): `name: team-guide`, `description: How a team's informational guide interviews, answers, and never acts`, `version: 1.0.0`, `tags: [sre-core, onboarding]` (adjust the domain tag to one the validator's fixed set actually contains — read `schema.py` first), `profiles: [agent-sdk]`, `owner: sre`. Body: the interview knowledge map (mission / services owned / repos / tooling+vendors / technologies / oncall+escalation / rituals / glossary / roles / access how-tos), one-question-at-a-time + follow-the-thread + periodic summarize-and-ask-what's-missing + Teach-gesture nudge rules; the conduct half (refuse actions with the friendly why, provenance honesty, cross-team etiquette, report repeated untaught questions as teaching gaps; you may use list_colleagues/ask_colleague to introduce OTHER teams' guides — find them by the team-guide purpose tag).
 
 - [ ] **Step 3: Validate locally** exactly as CI does: `python tools/ci_publish.py --validate-only` if that flag exists (read the script header), else run the schema/frontmatter modules over the corpus the way the script's main does. Expected: zero errors (the brick law).
 
-- [ ] **Step 4: PR** — push branch, `gh pr create -R example-org/acme-skills` titled `feat: team-guide 1.0.0 - the informational kiosk skill`; body notes it's additive (no existing-skill edits → no version-bump interactions). Merge is Kyle's/Rich's; the kiosk create lane attaches the skill only once published (Task 2's `_skill_exists` fallback covers the gap).
+- [ ] **Step 4: PR** — push branch, `gh pr create` against the org's skills marketplace repo titled `feat: team-guide 1.0.0 - the informational kiosk skill`; body notes it's additive (no existing-skill edits → no version-bump interactions). Merge is Kyle's/Rich's; the kiosk create lane attaches the skill only once published (Task 2's `_skill_exists` fallback covers the gap).
 
 ### Task 8: Rollout (operator-gated where marked)
 
-- [ ] **Step 1 (GATE, build):** fleet runtime re-pin with daedalus #49+#52: `cd ~/Documents/GitHub/daedalus && git checkout main && git pull`, build the fleet runtime image with the standing build shape (`docker buildx build --platform linux/amd64 --build-context liminal=../liminal -t us-east4-docker.pkg.dev/example-project/ai-agents/acme-runtime:<sha7>-t<HHMM> --push docker/` — copy the exact command from the last fleet build, `git log` in daedalus or the argus-deploy-arc memory), then update `runtime_image` in kobo-config org.yaml to the new tag.
-- [ ] **Step 2:** org.yaml adds `argus_url: https://argus-dev.example.net` and `argus_project: ai-agents-dev` (same commit as the pin).
+- [ ] **Step 1 (GATE, build):** fleet runtime re-pin with daedalus #49+#52: `cd ~/Documents/GitHub/daedalus && git checkout main && git pull`, build the fleet runtime image with the standing build shape (`docker buildx build --platform linux/amd64 --build-context liminal=../liminal -t <registry>/<fleet-runtime>:<sha7>-t<HHMM> --push docker/` — copy the exact command from the last fleet build, `git log` in daedalus or the argus-deploy-arc memory), then update `runtime_image` in kobo-config org.yaml to the new tag.
+- [ ] **Step 2:** org.yaml adds `argus_url: <the deployment's argus URL>` and `argus_project: ai-agents-dev` (same commit as the pin).
 - [ ] **Step 3:** build kobo image `kobo:<sha7>` (standard buildx --push), hand Kyle the roll command. **KYLE:** roll.
 - [ ] **Step 4 (dogfood):** via UI or MCP, deploy the SRE group's guide (name Kyle's choice, voice optional), verify: pod Ready on the NEW runtime tag; chat greets with mission + first interview question; asking it to open a PR → warm refusal; second create attempt for sre → 409; agent card shows Observability link resolving to its argus dashboard; `list_colleagues` from another agent shows the guide.
 - [ ] **Step 5:** memory + spec status update; register follow-ups (discovery UX arc, ambient absorption revisit).

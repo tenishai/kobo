@@ -1,4 +1,4 @@
-"""The build-log viewer route (2026-08-27 feedback: kodama parity). Drives
+"""The build-log viewer route (2026-08-27 feedback: parity with the org's PaaS). Drives
 the same create_app client as every route test; the GitHub side is the
 suite's own FakeGitHub grown two members."""
 

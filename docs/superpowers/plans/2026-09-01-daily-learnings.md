@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- The org/vendor name (acme) NEVER appears in daedalus or kobo source, comments, or string literals.
+- The client's name NEVER appears in daedalus or kobo source, comments, or string literals.
 - No em dashes in kobo `.svelte` copy (enforced by `ui/src/lib/copy.test.ts`); house style avoids them everywhere -- use `--` in comments.
 - Candidate bounds (both sides validate independently): max 10 per run, content <= 400 chars, evidence <= 200 chars, source <= 512 chars, kind in `("fact", "procedure")`.
 - Lifecycle numbers: journal retention 7 days, agent due after 24 hours, pending expiry 14 days.
@@ -2898,7 +2898,7 @@ git -C ~/Documents/GitHub/kobo commit -m "fix(skills): reconcile the ledger from
 1. daedalus branch -> PR -> coworker review -> merge -> build runtime image tagged `<sha>-t<techne_version>`.
 2. kobo branch -> merge -> build kobo image.
 3. Kyle rolls kobo (`kubectl -n kobo set image ...` -- classifier-blocked for the agent, Kyle runs it).
-4. `runtime_image` re-pin in example-org/kobo-config org.yaml AFTER the new runtime image exists (sequence law).
+4. `runtime_image` re-pin in the deployment's kobo-config org.yaml AFTER the new runtime image exists (sequence law).
 5. Agents pick up the journal + learnings handler on their next natural rebuild/roll.
 6. Wire acceptance: converse with the wren fixture in Slack, wait for (or manually trigger) the nightly sweep, verify a pending card appears, approve it, verify techne provenance reads `intake:learning-...`.
 
