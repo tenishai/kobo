@@ -21,9 +21,9 @@ from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import Clients, ClientError
 from kobo_api.config import Config
-from kobo_api.main import _maybe_refresh_catalogs, create_app
+from kobo_api.main import _maybe_refresh_catalogs, configured_catalogs, create_app
 from kobo_api.models import Base
-from kobo_api.search import CATALOG_TTL_S
+from kobo_api.search import CATALOG_TTL_S, ingest_indexes
 from tests.fakes import (
     FakeAgent,
     FakeCloud,
@@ -269,6 +269,38 @@ def test_ttl_lock_serializes_concurrent_refreshes(config, tmp_path):
 
     assert storage.calls.count("read_bytes:skills-bucket:index.json") == 1
     assert storage.calls.count("read_bytes:personas-bucket:index.json") == 1
+
+
+def test_a_hit_during_another_threads_ingest_does_not_spawn_a_second_refresh(config, tmp_path):
+    """The window the racing test above can only hit by luck, held open on
+    purpose: another thread's cold ingest has committed its rows and still
+    holds `catalog_ingest_lock`, but has not recorded `catalog_loaded_at`
+    yet. A hit landing there must not read that as a warm restart."""
+    storage = FakeStorage(
+        buckets={
+            "skills-bucket": {"index.json": (_index_bytes(SKILL_ENTRIES), {})},
+            "personas-bucket": {"index.json": (_index_bytes(PERSONA_ENTRIES), {})},
+        }
+    )
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    app = create_app(session_factory, config=config, clients=_minimal_clients(storage=storage))
+
+    ingest_indexes(engine, storage, configured_catalogs(config))
+    reads_after_first_ingest = len(storage.calls)
+    assert app.state.catalog_loaded_at is None
+
+    with app.state.catalog_ingest_lock:
+        _maybe_refresh_catalogs(app, engine)
+
+    for thread in threading.enumerate():
+        if thread is not threading.current_thread() and thread.daemon:
+            thread.join(timeout=2)
+    assert len(storage.calls) == reads_after_first_ingest
+    assert app.state.catalog_refreshing is False
 
 
 # --- Stale-while-revalidate (Task 3 perf fix) --------------------------------

@@ -756,7 +756,12 @@ def _maybe_refresh_catalogs(app: FastAPI, engine) -> None:
             return
         cold = state.catalog_loaded_at is None and catalog_is_empty(engine)
         if not cold:
-            if state.catalog_refreshing:
+            # An ingest holding `catalog_ingest_lock` right now covers this
+            # hit too. Without this, a request landing after a cold ingest
+            # commits its rows but before it records `catalog_loaded_at`
+            # (both happen under that lock) reads "rows present, never
+            # loaded here" as a warm restart and spawns a second refresh.
+            if state.catalog_refreshing or state.catalog_ingest_lock.locked():
                 return
             state.catalog_refreshing = True
 
