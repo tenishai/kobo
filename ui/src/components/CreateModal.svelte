@@ -90,7 +90,6 @@
     createAgentMutation,
     groupsQuery,
     modelsQuery,
-    runtimesQuery,
     nameSuggestionsQuery,
     orgStatusQuery,
     personasSearchQuery,
@@ -103,7 +102,6 @@
 
   const queryClient = useQueryClient();
   const models = createQuery(() => (modelsQuery()));
-  const runtimes = createQuery(() => (runtimesQuery()));
   const groups = createQuery(() => (groupsQuery()));
   const orgStatus = createQuery(() => (orgStatusQuery()));
   const mutation = createMutation(() => (createAgentMutation(queryClient)));
@@ -115,15 +113,10 @@
   // to, so a persona must be explicitly picked).
   let personaOverride = $state<string | null>(null);
   let modelOverride = $state<string | null>(null);
-  // Runtime (IE-4526): null = the org default. The dropdown only renders
-  // when the room configured extra runtimes at all.
-  let runtimeOverride = $state<string | null>(null);
   let submitError = $state<string | null>(null);
 
   const selectedPersona = $derived(personaOverride ?? "");
   const selectedModel = $derived(modelOverride ?? models.data?.default ?? "");
-  const selectedRuntime = $derived(runtimeOverride ?? runtimes.data?.default ?? "");
-  const runtimeChoicesAvailable = $derived((runtimes.data?.runtimes?.length ?? 0) > 0);
 
   // --- Name: client-side check, only rendered once there's something to
   // say about it (an empty field isn't "invalid", it's just empty) --------
@@ -716,12 +709,6 @@
         // wave) -- the bench no longer picks them.
         skills: [],
         model: selectedModel,
-        // Only sent when it differs from the org default: a default-runtime
-        // agent stores null and keeps following the org pin.
-        runtime_image:
-          runtimeChoicesAvailable && selectedRuntime !== runtimes.data?.default
-            ? selectedRuntime
-            : undefined,
         purpose_tags: purposeTags,
         group_name: groupOptionsAvailable ? groupValue : undefined,
       },
@@ -1162,30 +1149,6 @@
           </select>
         {/if}
       </div>
-
-      {#if runtimeChoicesAvailable && runtimes.data}
-        <div class="create-form__field">
-          <label class="create-form__label" for="create-runtime">Runtime</label>
-          <select
-            id="create-runtime"
-            class="create-form__input"
-            value={selectedRuntime}
-            onchange={(event) =>
-              (runtimeOverride = (event.currentTarget as HTMLSelectElement).value)}
-          >
-            <option value={runtimes.data.default}>Default (daedalus)</option>
-            {#each runtimes.data.runtimes ?? [] as runtime (runtime.image)}
-              {#if runtime.image !== runtimes.data.default}
-                <option value={runtime.image}>{runtime.label}</option>
-              {/if}
-            {/each}
-          </select>
-          <p class="create-form__help">
-            Which runtime this agent's image builds from. Default follows the
-            room's org-wide pin.
-          </p>
-        </div>
-      {/if}
 
       {#if submitError}
         <p class="create-form__status create-form__status--error" role="alert">
