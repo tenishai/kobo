@@ -1,4 +1,8 @@
-# External MCP access for agents -- EVALUATED, pending peer review
+# External access for agents: Connections, the gateway lane, the cloud lane
+
+(Originally "External MCP access for agents", 2026-09-02. Revised
+2026-09-21 -- see the REVISION section; the 2026-09-02 evaluation is kept
+in full below it.)
 
 Status: full evaluation complete 2026-09-02 (three parallel
 investigations: current MCP auth spec + industry landscape, vendor auth
@@ -7,6 +11,155 @@ recommended design exists (section "THE RECOMMENDATION" below) and the
 operator has provisionally shaped it; it now goes to a coworker for
 review before anything is built. The original discovery notes are
 preserved below the recommendation for full context.
+
+## REVISION 2026-09-21: Connections -- the admin home for every vendor relationship
+
+Operator direction (2026-09-21): the admin level of kobo is THE place an
+organisation attaches its vendors -- cloud accounts (AWS / GCP / Azure),
+SaaS (tracker, chat, monitoring), and alerting. Those org-level service
+accounts and keys are the ROOT from which narrow per-agent access is
+granted. Agents never hold the root credential; they hold enough to
+REQUEST a slice, and an operator approves it.
+
+This is the "Connections registry" this document already named
+(Approaches, option 1) promoted from a supporting table to a first-class
+admin area. Everything in THE RECOMMENDATION below still stands. This
+revision adds the admin surface, names two seams, and records what has
+shipped since.
+
+### What has shipped since 2026-09-02
+
+- liminal hardening L1-L8: fixed and merged upstream (2026-09-07).
+- C1: cabal mints the short-lived liminal-audience token
+  (`POST /auth/liminal-token`, cabal #143); live on the fleet gateway.
+- daedalus liminal sidecar: written, in review (daedalus #35). Cloud
+  lane precedent via workload federation: daedalus #28.
+- The tracker read bridge (2026-09-04 addendum) and the Slack thread
+  reader: live, as interim lanes.
+- K1-K4 (custody, resolver endpoint, caller proof, ServiceAccess rows):
+  NOT started. They are what this revision schedules.
+
+### What a Connection is
+
+One row per vendor relationship, owned by admins (the existing
+`operators` / `admin_groups` gate; no new permission model):
+
+- `kind` (aws | gcp | azure | atlassian | slack | datadog | alerts ...)
+  and a display name.
+- `auth`: `federation` (clouds: no stored secret at all; the row records
+  the account / project / tenant and the role or binding convention) or
+  `secret` (SaaS: a REFERENCE into the secret backend, never the value).
+- `scoping`: `principal` | `scoped-key` | `none` -- the honest scoping
+  model already defined above, shown plainly in the UI.
+- `status`: last verified, by which check, and what the root identity
+  can currently see. A Connection that cannot verify says so.
+
+What the root credential is FOR, and nothing else: (1) verification,
+(2) DISCOVERY -- listing the resources an agent could be granted (buckets,
+projects, boards, channels) so a person picks from a list instead of
+typing an ARN, and (3) applying or generating the approved grant. It is
+never delivered to an agent, a pod, or a bundle.
+
+### Grants: the two lanes are unchanged
+
+- SaaS lane: `ServiceAccess` rows (request -> approve in the Access tab
+  -> synced into liminal's policy store; liminal enforces per call).
+- Cloud lane: `CloudAccess` rows (request -> approve -> generated PR
+  against the org's IAM-permissions repo, binding the AGENT'S OWN birth
+  identity to a scoped role). No gateway hop; the provider's audit log is
+  the record; revoking the grant is the kill switch. Ruled 2026-09-03 and
+  unchanged.
+- Agent-initiated requests arrive through the same rows (the agent asks,
+  a person approves); an agent can never approve.
+
+The three custody patterns kobo grew in the meantime -- the PR broker's
+GitHub App, the tracker bridge's mounted PAT plus `jira_read_agents`
+allowlist, and per-agent Slack tokens applied into the agent's namespace
+-- become Connections over time. They are NOT migrated in v1; the
+config.py comment that calls ServiceAccess "the real fix" for the
+allowlist is the marker for that work.
+
+### Who decides: bab. Who holds credentials: Connections.
+
+RULED (operator, 2026-09-21): **Connections owns credentials and vendor
+relationships. bab's console owns permissions.** bab (actor -> action ->
+object; allow / approve / deny) plans its console as a kobo module
+(what-can, playground, grants behind the write gate). Connections does
+not grow a permission editor of its own: where bab is present, an access
+request asks bab for the verdict and `approve` lands in the Access tab;
+where bab is absent, every request is `approve` (today's behaviour). bab
+never touches a credential, and Connections never stores a permission
+tuple.
+
+### Two seams (added because of the packaged path)
+
+The suite is also being packaged as a single image of colocated daemons
+with no Kubernetes, no OpenBao and no observability platform. kobo is in
+that image. So neither of these may be a hard dependency:
+
+- `SecretBackend` -- put / reference / resolve. Implementations:
+  OpenBao (the deployed path; through ladon once it is finished),
+  cabal-core's encrypted store (the packaged path; it already serves
+  liminal's resolver contract), and the mounted-file convention the
+  current brokers use. This SUPERSEDES "Secrets live in OpenBao" above
+  and K1's wording: the room database holds grant rows and a secret
+  REFERENCE; which backend resolves it is deployment configuration.
+- `AlertSink` -- Alertmanager routing in the deployed path; a plain
+  webhook in the packaged path.
+
+Same convention as every other kobo backend: absent = feature off.
+
+### First Connection: alerts
+
+Verified 2026-09-21: the observability platform evaluates rules (ruler
+groups exist for the platform, gojira and kobo) but nothing routes them
+-- no receiver, no route, and the ruler has no Alertmanager URL. Rulings
+(operator, 2026-09-21): alerts land in Slack; there are two audiences,
+the AGENT level (the team's own channel) and the ADMIN level (one
+SRE-managed channel that receives everything); an agent's channel gets
+its alerts by default, behind a checkbox on the agent's Slack page.
+
+- The `alerts` Connection holds the Slack alerting bot (a secret
+  reference) and names the admin channel.
+- The per-agent choice is agent configuration. kobo already composes the
+  agent's deploy contract, and the observe step already carries that
+  contract to the observability platform, so the choice travels there --
+  no second wiring path.
+- The observability platform renders routing from it: everything to the
+  admin channel; alerts labelled for an agent also to that agent's
+  channel when the box is ticked. Owed on that side first: ruler ->
+  Alertmanager URL, born-observed apps pushing their rules to the ruler,
+  and `agent` / `team` labels on alerts (today only `severity`).
+- Open: whether the Slack page needs a typed channel id at all, or picks
+  from the channels the agent's bot has been invited to.
+
+### Order of work
+
+Operator roadmap (2026-09-21): the observability platform to good working
+order first, alert routing included; THEN ladon is finished as the next
+gojira plugin so deployed-path secrets are managed in one place, and the
+OpenBao `SecretBackend` moves behind it.
+
+1. Connections v1: the registry, the admin page, `SecretBackend` with the
+   mounted-file and OpenBao implementations, and the `alerts` Connection
+   end to end.
+2. Second vendor: Atlassian's hosted MCP on the gateway (wave B below),
+   with K2/K3 and ServiceAccess rows; retires the tracker bridge.
+3. Cloud Connections: discovery plus CloudAccess generated PRs.
+4. Agent-initiated requests; bab verdicts when bab's deploy and console
+   increments land; migrate the PR broker and Slack custody.
+
+### Open questions (this revision)
+
+1. K3 still stands: how does kobo prove liminal is serving the persona
+   it names before releasing a credential?
+2. Discovery reach: the root identity must list resources without being
+   able to read them. Per cloud, which read-metadata-only role is that?
+3. If agents ever share a runtime (kobo #13), pod identity stops being a
+   boundary and the cloud lane's "agent's own birth identity" becomes
+   brokered impersonation. CloudAccess must not assume a pod per agent.
+4. bab lists "IAM rendering from grants" as open; CloudAccess generated
+   PRs are the same territory. One emitter, owned where?
 
 ## THE RECOMMENDATION (2026-09-02): "liminal gates, kobo governs, the vendor scopes"
 
@@ -26,8 +179,9 @@ preserved below the recommendation for full context.
   requests a named slice -> operator approves in the Access tab), synced
   into liminal's policy; plus a credential endpoint implementing
   liminal's EXISTING resolver contract (GET /admin/secrets/{persona}/
-  {handler}). Secrets live in OpenBao -- room Postgres holds grant rows
-  and a bao path, NEVER the credential.
+  {handler}). Secrets live in the configured secret backend (OpenBao in
+  the deployed path; see the 2026-09-21 revision) -- room Postgres holds
+  grant rows and a secret reference, NEVER the credential.
 - THE VENDOR does resource scoping (the correction to both earlier
   leanings): no gateway argument-filtering "resource guard" (proven
   unenforceable -- free-text JQL/CQL reaches any project; vendor tool
