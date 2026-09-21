@@ -35,6 +35,7 @@ import logging
 import shutil
 import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -60,6 +61,7 @@ from kobo_api.colleagues import deliver_pass
 from kobo_api.composer import BundleSpec, _colleagues_md, _self_md, compose, validate_agent_yaml
 from kobo_api.config import Config, vertex_location_for
 from kobo_api.directory import sync_directory
+from kobo_api.kinds import RUN_MODE_HEADLESS, is_connected
 from kobo_api.metadata import (
     commit_card_metadata,
     generate_capability,
@@ -880,6 +882,61 @@ class RepoStep:
         return f"created {repo}"
 
 
+class ConnectStep:
+    """RepoStep's counterpart for an agent the room did not build: checks
+    that the repository the route recorded is one this room may work with,
+    and creates nothing at all.
+
+    Two checks, in the order a person would make them. The organisation
+    first, because the room holds one GitHub App installation and cannot
+    reach outside it -- a repository elsewhere is not "missing", it is out
+    of scope, and saying so is more useful than a not-found. Then whether
+    the App can actually see the repository, which is one answer for "the
+    name is wrong" and "nobody granted the room access": from here the two
+    are genuinely indistinguishable (`repo_exists` collapses 403 and 404
+    alike, as `gh` itself largely does), so the message names both.
+
+    Both messages land verbatim on `AgentStep.error`, which any viewer of
+    the agent can read -- so they carry the repository name and nothing
+    else, never a client's own error text.
+    """
+
+    name = "connect"
+    label = "Repository connected"
+
+    def run(self, ctx: Ctx) -> str:
+        agent = ctx.agent
+        org = ctx.config.github_org
+        repo = agent.repo_full_name or ""
+
+        if not repo:
+            raise RuntimeError("no repository is recorded for this agent. Connect it again")
+
+        # Exactly one slash, both halves non-empty. `owner/a/b` would pass an
+        # owner check and then travel into every path the room builds from
+        # this value, so the shape is settled once, here.
+        parts = repo.split("/")
+        if len(parts) != 2 or not all(parts):
+            raise RuntimeError(
+                f"{repo} does not look like a repository name. Give the owner and "
+                f"the repository name, like {org}/example"
+            )
+
+        if parts[0] != org:
+            raise RuntimeError(
+                f"{repo} is not in {org}. This room can only connect repositories "
+                f"in {org}."
+            )
+
+        if not ctx.clients.github.repo_exists(repo):
+            raise RuntimeError(
+                f"{repo} could not be reached. Check the name, and that this room "
+                "has been given access to it."
+            )
+
+        return f"connected {repo}"
+
+
 class AvatarStep:
     """A face at birth: generates the agent's avatar and pushes it to its
     just-created repo, mirroring `kobo_api.main.generate_avatar`'s own
@@ -946,24 +1003,52 @@ class AvatarStep:
         # exception on the whole agent. Both degrade to the exact same
         # generic, tag-free prompt a plain unresolved persona already falls
         # back to.
+        # A connected agent has no persona row to describe -- its character
+        # is its own code, which the room has not read -- so its prompt is
+        # built from what the room does know: the name it was given here and
+        # the purpose its owner wrote down. That is also its fallback, so
+        # the guard below covers both kinds without a second one.
+        connected = is_connected(agent)
+        generic_description = (
+            f"an agent named {agent.name}" if connected else f"A {agent.persona} agent."
+        )
+
         engine = ctx.session.get_bind()
         try:
-            persona_entry = get_entry(engine, "persona", agent.persona, team=None)
-            if persona_entry is not None:
-                persona_description = persona_entry.description
-            else:
-                log.warning(
-                    "persona %r not in the catalog, using generic text for avatar prompt",
-                    agent.persona,
-                )
-                persona_description = f"A {agent.persona} agent."
+            persona_description = generic_description
+            if not connected:
+                persona_entry = get_entry(engine, "persona", agent.persona, team=None)
+                if persona_entry is not None:
+                    persona_description = persona_entry.description
+                else:
+                    log.warning(
+                        "persona %r not in the catalog, using generic text for avatar prompt",
+                        agent.persona,
+                    )
             tags = decode_tags(agent.purpose_tags)
         except Exception as exc:  # degrade to the generic fallback, never fail the agent
             log.warning(
                 "avatar step %s for %s: %s", "persona/tags lookup", agent.name, exc
             )
-            persona_description = f"A {agent.persona} agent."
+            persona_description = generic_description
             tags = []
+
+        return self._generate_and_store(ctx, persona_description, tags)
+
+    def _generate_and_store(
+        self, ctx: Ctx, persona_description: str, tags: list[str]
+    ) -> str:
+        """Generate the picture, cache it on the row, and -- only for an
+        agent whose repo the room owns -- commit it into the bundle.
+
+        The repo half is the one thing the two kinds differ on. A connected
+        repo belongs to its team and the room never pushes to it, so the
+        room's own cached copy is the whole of it there: the picture is
+        something the room draws to show the agent by, not a file it puts in
+        somebody else's tree.
+        """
+        agent = ctx.agent
+        clients = ctx.clients
 
         prompt = avatar_prompt(agent.name, persona_description, tags)
 
@@ -995,11 +1080,13 @@ class AvatarStep:
                 f"generated avatar exceeded the {AVATAR_MAX_BYTES}-byte cap ({len(png)} bytes)"
             )
 
-        try:
-            sha = set_avatar(clients.github, repo=agent.repo_full_name, png=png)
-        except Exception as exc:  # push-side failure, same skip treatment
-            log.warning("avatar step %s for %s: %s", "save", agent.name, exc)
-            raise StepSkipped("couldn't save the picture") from exc
+        sha: str | None = None
+        if not is_connected(agent):
+            try:
+                sha = set_avatar(clients.github, repo=agent.repo_full_name, png=png)
+            except Exception as exc:  # push-side failure, same skip treatment
+                log.warning("avatar step %s for %s: %s", "save", agent.name, exc)
+                raise StepSkipped("couldn't save the picture") from exc
 
         # No explicit commit here: `_run_pipeline_body` (kobo_api.
         # provisioner, ~227-229) already commits the session right after
@@ -1020,6 +1107,8 @@ class AvatarStep:
             log.warning("avatar step %s for %s: %s", "encode", agent.name, exc)
             raise StepSkipped("couldn't save the picture") from exc
 
+        if sha is None:
+            return "generated and saved avatar"
         return f"generated and saved avatar ({sha})"
 
 
@@ -1064,6 +1153,35 @@ def _wait_active(ctx: Ctx, app_id: int) -> str:
     )
 
 
+# The deploy platform's ordinary workload class: one HTTP port, probed.
+# Every composed agent runs the room's one runtime, which always serves
+# that, so this is what they have always been onboarded as.
+WORKLOAD_CLASS_AGENT = "agent"
+
+# What the room says when a connected agent asks to run with no HTTP port
+# and this deployment's platform has no class for that. Worded identically
+# to the connect route's own refusal (connected-agents design 2026-09-21):
+# it is the same fact, and a person reading it on a step should not have to
+# work out that it is the same one.
+HEADLESS_UNAVAILABLE = "agents with no HTTP port are not available in this room yet"
+
+
+def _workload_class_for(agent: Agent, config: Config) -> str:
+    """Which class the deploy platform should run this agent under.
+
+    Only a connected agent can bring something that serves no HTTP port, and
+    only then does this differ from the ordinary class. The headless class is
+    named by the deployment rather than hardcoded, and an empty name means
+    the platform here does not offer one -- so the room says so plainly
+    instead of handing the platform a blank class and letting it answer.
+    """
+    if not is_connected(agent) or agent.run_mode != RUN_MODE_HEADLESS:
+        return WORKLOAD_CLASS_AGENT
+    if not config.connected_headless_class:
+        raise RuntimeError(HEADLESS_UNAVAILABLE)
+    return config.connected_headless_class
+
+
 class OnboardStep:
     """Connects the pushed repo to gojira and waits for it to reach `active`."""
 
@@ -1074,6 +1192,7 @@ class OnboardStep:
         agent = ctx.agent
         config = ctx.config
         gojira = ctx.clients.gojira
+        workload_class = _workload_class_for(agent, config)
 
         try:
             app_id = gojira.create_app(
@@ -1081,6 +1200,7 @@ class OnboardStep:
                 repo_full_name=agent.repo_full_name,
                 cluster=config.gojira_cluster,
                 namespace=agent.name,
+                workload_class=workload_class,
             )
         except GojiraConflict as exc:
             if agent.gojira_app_id is None:
@@ -1175,7 +1295,12 @@ class AccessStep:
         email = cloud.ensure_gsa(gsa_name)
         cloud.bind_workload_identity(email, namespace=agent.name, ksa=gsa_name)
         cloud.add_to_group(email, config.model_group)
-        if config.memory_replica_bucket:
+        # Connected agents get no memory prefix (design 2026-09-21): the
+        # room replicates the memory its OWN runtime keeps, and it has not
+        # read a team's code, so it has nothing to say about whether that
+        # code keeps any or where. Identity and model access above are
+        # unchanged -- those are the room's to grant either way.
+        if config.memory_replica_bucket and not is_connected(agent):
             # Agent memory replication (Task 14): write access to THIS
             # agent's own prefix and nothing wider -- the same per-agent
             # namespace (`{agent.name}/`) `kobo_api.composer._litestream_
@@ -1267,6 +1392,81 @@ def _append_secrets_from(data: dict, entry: str) -> None:
     data["secrets_from"] = secrets_from
 
 
+def _prepare_wire_clone(ctx: Ctx) -> Path:
+    """A fresh clone of the agent's repo under `workdir/wire`, for either
+    wiring step to edit. Shared rather than written twice so the two can
+    never drift on the retry safety: a prior attempt may have left a partial
+    clone behind (mirrors RepoStep's compose_dir rmtree).
+    """
+    clone_dir = ctx.workdir / "wire"
+    shutil.rmtree(clone_dir, ignore_errors=True)
+    ctx.clients.github.clone(ctx.agent.repo_full_name, clone_dir)
+    return clone_dir
+
+
+def _write_service_account(k8s_base: Path, agent, config) -> None:
+    """Write the agent's KSA manifest. Shared by both wiring steps: the
+    identity a connected agent runs under is exactly the identity a composed
+    one runs under, and this is the manifest that says so.
+
+    Registering it in kustomization.yaml is a separate call on purpose --
+    the two wiring steps register different sets of files -- but neither may
+    skip it: gojira's generator preserves registered entries, it does not
+    scan the directory (see `_register_resources`).
+    """
+    # gsa_email() is prefix-agnostic — build the full "agent-<name>" id
+    # here, same as AccessStep does for cloud.ensure_gsa().
+    sa_email = gsa_email(f"agent-{agent.name}", config.gcp_project)
+    (k8s_base / "serviceaccount.yaml").write_text(
+        SERVICEACCOUNT_YAML_TEMPLATE.format(name=agent.name, gsa_email=sa_email)
+    )
+
+
+def _set_service_account_and_model_env(
+    data: dict, agent, config, *, merge_env: bool
+) -> None:
+    """The half of gojira.yaml both kinds of agent need: which service
+    account the pod runs as, and the two model env vars its client reads.
+
+    Shared so the two wiring steps cannot drift on the model location in
+    particular -- see the note below on why that must resolve through
+    `vertex_location_for` rather than reading `config.vertex_location`.
+
+    `merge_env` is the one thing they differ on, and it is a question of
+    who owns the file. The room writes a composed agent's gojira.yaml
+    wholesale, so assigning over `env` there loses nothing. A connected
+    agent's gojira.yaml is its team's, and whatever is in `env` is what
+    their own code runs on -- so those keys are kept and only the two model
+    keys are set.
+    """
+    data["service_account"] = f"agent-{agent.name}"
+    model_env = {
+        "VERTEXAI_PROJECT": config.vertex_project,
+        # Model-specific Vertex location (Gemini-3.1-Pro-Preview arc): this
+        # is the env var the deployed pod's own LiteLLM client actually
+        # reads, so it must resolve through the same vertex_location_for
+        # lookup RepoStep's BundleSpec.vertex_location uses at compose time
+        # — never config.vertex_location directly, or a global-only preview
+        # would still 404 against the org's regional default at runtime.
+        "VERTEXAI_LOCATION": vertex_location_for(config, agent.model_id),
+    }
+    if not merge_env:
+        data["env"] = model_env
+        return
+
+    existing = data.get("env")
+    if existing is not None and not isinstance(existing, dict):
+        # A non-mapping `env` is not something the deploy platform could
+        # ever have run, so there is nothing here to preserve. Logged
+        # rather than raised: the wiring is still correct, and the file was
+        # already broken before the room read it.
+        log.warning(
+            "gojira.yaml for %s has a non-mapping env; replacing it", agent.name
+        )
+        existing = None
+    data["env"] = {**(existing or {}), **model_env}
+
+
 def _update_gojira_yaml(gojira_yaml_path, agent, config) -> None:
     """Round-trip `gojira.yaml`, setting the service_account/env/data_mount
     keys the platform needs to wire the KSA, model env, and techne PVC into
@@ -1285,17 +1485,7 @@ def _update_gojira_yaml(gojira_yaml_path, agent, config) -> None:
     this feature existed.
     """
     data = yaml.safe_load(gojira_yaml_path.read_text()) or {}
-    data["service_account"] = f"agent-{agent.name}"
-    data["env"] = {
-        "VERTEXAI_PROJECT": config.vertex_project,
-        # Model-specific Vertex location (Gemini-3.1-Pro-Preview arc): this
-        # is the env var the deployed pod's own LiteLLM client actually
-        # reads, so it must resolve through the same vertex_location_for
-        # lookup RepoStep's BundleSpec.vertex_location uses at compose time
-        # — never config.vertex_location directly, or a global-only preview
-        # would still 404 against the org's regional default at runtime.
-        "VERTEXAI_LOCATION": vertex_location_for(config, agent.model_id),
-    }
+    _set_service_account_and_model_env(data, agent, config, merge_env=False)
     data["data_mount"] = {
         "pvc": f"agent-{agent.name}-techne",
         "path": "/techne",
@@ -1346,19 +1536,10 @@ class WireStep:
         github = ctx.clients.github
         gojira = ctx.clients.gojira
 
-        clone_dir = ctx.workdir / "wire"
-        # Retry safety (mirrors RepoStep's compose_dir rmtree): a prior
-        # attempt may have left a partial clone behind.
-        shutil.rmtree(clone_dir, ignore_errors=True)
-        github.clone(agent.repo_full_name, clone_dir)
+        clone_dir = _prepare_wire_clone(ctx)
 
         k8s_base = clone_dir / "k8s" / "base"
-        # gsa_email() is prefix-agnostic — build the full "agent-<name>" id
-        # here, same as AccessStep does for cloud.ensure_gsa().
-        sa_email = gsa_email(f"agent-{agent.name}", config.gcp_project)
-        (k8s_base / "serviceaccount.yaml").write_text(
-            SERVICEACCOUNT_YAML_TEMPLATE.format(name=agent.name, gsa_email=sa_email)
-        )
+        _write_service_account(k8s_base, agent, config)
         (k8s_base / "pvc.yaml").write_text(PVC_YAML_TEMPLATE.format(name=agent.name))
 
         # The P0 gotcha, encoded: both new manifests MUST be registered here,
@@ -1394,6 +1575,233 @@ class WireStep:
 
         gojira.reprovision(agent.gojira_app_id)
         return _wait_active(ctx, agent.gojira_app_id)
+
+
+# The branch the room proposes its wiring on, and what the pull request is
+# called. Fixed rather than per-attempt: a fresh branch every retry would
+# leave a trail of abandoned pull requests in somebody else's repo, and the
+# fixed name is what lets a retry find the one already open (`find_pr`).
+CONNECTED_WIRE_BRANCH = "kobo/wire"
+CONNECTED_WIRE_TITLE = "kobo: service account and model access"
+
+# Written for the owner reviewing it, who should be able to tell what this
+# changes without reading the diff -- including the one thing about it that
+# is not a plain addition: gojira.yaml is parsed and written back, so
+# comments and key order in that file do not survive.
+CONNECTED_WIRE_BODY = (
+    "This adds the service account the agent runs as, and the two "
+    "environment variables its model access needs.\n\n"
+    "Files changed:\n"
+    "- k8s/base/serviceaccount.yaml: added, the agent's Kubernetes service "
+    "account.\n"
+    "- k8s/base/kustomization.yaml: that manifest added to the resources "
+    "list.\n"
+    "- gojira.yaml: service_account, the two VERTEXAI_ environment "
+    "variables, and any secret names given when the agent was connected. "
+    "Existing environment variables are kept.\n\n"
+    "gojira.yaml is rewritten from its parsed form, so comments and key "
+    "order in that one file are not preserved.\n"
+)
+
+# What the room says rather than taking over identity wiring a team already
+# set for itself. Named once because two different checks raise it.
+CONNECTED_WIRE_TAKEOVER = (
+    "this repository already sets its own service account. Remove it from "
+    "gojira.yaml and k8s/base/serviceaccount.yaml, or ask an operator, then "
+    "press Retry"
+)
+
+# A branch with no pull request behind it: pushing it again fails non
+# fast-forward, and git's own stderr on the step is something no Retry can
+# clear. Say what is in the way instead.
+CONNECTED_WIRE_BRANCH_IN_THE_WAY = (
+    f"the branch {CONNECTED_WIRE_BRANCH} is already in this repository. Delete "
+    "it, or open a pull request from it, then press Retry"
+)
+
+# Everything this step says when a client fails underneath it. Fixed
+# sentences, never the client's own text: whatever is raised here lands
+# verbatim on `AgentStep.error`, which any viewer of the agent can read, and
+# a `gh` or platform error carries a command line, a URL, and sometimes a
+# token. The detail goes to the log instead (same split `AvatarStep` holds).
+CONNECTED_WIRE_GITHUB_UNAVAILABLE = (
+    "could not reach GitHub for this repository. Try again in a moment, then "
+    "press Retry"
+)
+CONNECTED_WIRE_PLATFORM_UNAVAILABLE = (
+    "the deploy platform did not answer. Try again in a moment, then press Retry"
+)
+
+
+@contextmanager
+def _sanitized(what: str, agent_name: str, message: str):
+    """Turn any `ClientError` raised inside into `message`, logging the real
+    one server-side. See `CONNECTED_WIRE_GITHUB_UNAVAILABLE` for why."""
+    try:
+        yield
+    except ClientError as exc:
+        log.warning("connected wire step %s for %s: %s", what, agent_name, exc)
+        raise RuntimeError(message) from exc
+
+
+def _refuse_service_account_takeover(clone_dir: Path, agent, config) -> None:
+    """Refuse to overwrite identity wiring the repository already carries.
+
+    A repository that names its own service account, in either file, is
+    telling the room something; moving the agent onto an identity its owner
+    did not choose, silently, is not the room's to do. Byte-equal content
+    is the room's OWN wiring from a prior attempt, which is a retry, not a
+    choice, and passes.
+    """
+    expected_name = f"agent-{agent.name}"
+    sa_path = clone_dir / "k8s" / "base" / "serviceaccount.yaml"
+    if sa_path.exists():
+        ours = SERVICEACCOUNT_YAML_TEMPLATE.format(
+            name=agent.name, gsa_email=gsa_email(expected_name, config.gcp_project)
+        )
+        if sa_path.read_text() != ours:
+            raise RuntimeError(CONNECTED_WIRE_TAKEOVER)
+
+    data = yaml.safe_load((clone_dir / "gojira.yaml").read_text()) or {}
+    declared = data.get("service_account")
+    if declared and declared != expected_name:
+        raise RuntimeError(CONNECTED_WIRE_TAKEOVER)
+
+
+class ConnectedWireStep:
+    """WireStep's counterpart for a repository the room does not own: the
+    same wiring, proposed as a pull request instead of pushed.
+
+    That is the rule the whole connected pipeline rests on -- the room never
+    pushes to a connected repo's branches. What it wants arrives as a pull
+    request, and it tries to merge its own; when GitHub says no (a protected
+    branch is the owner's own opt-out), the step fails with the link and one
+    instruction. The pipeline already resumes from a failed step, so nobody
+    has to hold a thread open waiting for a person.
+
+    Less lands here than in WireStep, and each absence is deliberate: no
+    memory volume (the room does not replicate a team's own storage, so
+    there is no PVC and no `data_mount`), and no colleague pass (a connected
+    agent has no switchboard identity to carry one).
+
+    Idempotent on retry in both of the ways this can be re-entered. If a
+    pull request from the branch is already open, it is merged rather than
+    reopened -- pushing the branch a second time is exactly how this would
+    fail forever. And if the wiring is already on the default branch (a
+    person merged it between attempts), the freshly cloned tree already
+    reads the way this step would write it, so there is nothing to propose
+    and the step goes straight on to the platform.
+    """
+
+    name = "wire"
+    label = "Deploy wiring"
+
+    def run(self, ctx: Ctx) -> str:
+        agent = ctx.agent
+        config = ctx.config
+        github = ctx.clients.github
+        repo = agent.repo_full_name
+
+        with _sanitized("clone", agent.name, CONNECTED_WIRE_GITHUB_UNAVAILABLE):
+            clone_dir = _prepare_wire_clone(ctx)
+
+        k8s_base = clone_dir / "k8s" / "base"
+        gojira_yaml_path = clone_dir / "gojira.yaml"
+        wire_paths = [
+            k8s_base / "serviceaccount.yaml",
+            k8s_base / "kustomization.yaml",
+            gojira_yaml_path,
+        ]
+
+        _refuse_service_account_takeover(clone_dir, agent, config)
+
+        before = _snapshot(wire_paths)
+        _write_service_account(k8s_base, agent, config)
+        _register_resources(k8s_base / "kustomization.yaml", ["serviceaccount.yaml"])
+        _update_connected_gojira_yaml(gojira_yaml_path, agent, config)
+
+        if _snapshot(wire_paths) == before:
+            # Already wired on the default branch. Still reprovision: the
+            # attempt that got the wiring merged may have died before the
+            # platform ever regenerated against it, and this step must not
+            # return without confirming the app is active (WireStep's own
+            # invariant, for the same reason).
+            return self._reprovision_and_wait(ctx)
+
+        with _sanitized("find_pr", agent.name, CONNECTED_WIRE_GITHUB_UNAVAILABLE):
+            pr_url = github.find_pr(repo, branch=CONNECTED_WIRE_BRANCH)
+
+        if pr_url is None:
+            # No pull request, but the branch may still be there: a closed
+            # one leaves it behind, and so does a merged one in a
+            # repository that does not delete merged branches.
+            with _sanitized(
+                "branch_exists", agent.name, CONNECTED_WIRE_GITHUB_UNAVAILABLE
+            ):
+                leftover = github.branch_exists(repo, CONNECTED_WIRE_BRANCH)
+            if leftover:
+                raise RuntimeError(CONNECTED_WIRE_BRANCH_IN_THE_WAY)
+
+            with _sanitized("open_pr", agent.name, CONNECTED_WIRE_GITHUB_UNAVAILABLE):
+                pr_url = github.open_pr(
+                    clone_dir,
+                    repo=repo,
+                    branch=CONNECTED_WIRE_BRANCH,
+                    title=CONNECTED_WIRE_TITLE,
+                    body=CONNECTED_WIRE_BODY,
+                )
+
+        with _sanitized("merge_pr", agent.name, CONNECTED_WIRE_GITHUB_UNAVAILABLE):
+            merged = github.merge_pr(repo, pr_url)
+
+        if not merged:
+            # The message a viewer reads on the failed step. A link and one
+            # instruction: nothing here is the room's to fix.
+            raise RuntimeError(f"Merge this pull request, then press Retry: {pr_url}")
+
+        return self._reprovision_and_wait(ctx)
+
+    def _reprovision_and_wait(self, ctx: Ctx) -> str:
+        app_id = ctx.agent.gojira_app_id
+        with _sanitized(
+            "reprovision", ctx.agent.name, CONNECTED_WIRE_PLATFORM_UNAVAILABLE
+        ):
+            ctx.clients.gojira.reprovision(app_id)
+        with _sanitized(
+            "wait_active", ctx.agent.name, CONNECTED_WIRE_PLATFORM_UNAVAILABLE
+        ):
+            return _wait_active(ctx, app_id)
+
+
+def _snapshot(paths: list[Path]) -> dict[str, str | None]:
+    """What each of `paths` holds right now, `None` for one that is absent.
+
+    How `ConnectedWireStep` tells "there is a change to propose" from "the
+    wiring is already here". Deliberately a content comparison of the three
+    files the room writes rather than a git diff: the step must answer the
+    question from the clone it already has, and nothing else in the tree is
+    any of its business.
+    """
+    return {
+        str(path): path.read_text() if path.exists() else None for path in paths
+    }
+
+
+def _update_connected_gojira_yaml(gojira_yaml_path: Path, agent, config) -> None:
+    """The connected half of the gojira.yaml contract: the service account
+    and model env every agent needs, plus whichever Secrets the owner told
+    the room their namespace will hold.
+
+    No `data_mount` and no room-minted secret: the room holds none of this
+    agent's secrets, and `secret_names` are names only -- the pod does not
+    start until the owner creates them, which the connect report says
+    plainly.
+    """
+    data = yaml.safe_load(gojira_yaml_path.read_text()) or {}
+    _set_service_account_and_model_env(data, agent, config, merge_env=True)
+    for secret_name in agent.secret_names or []:
+        _append_secrets_from(data, secret_name)
+    gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
 # --- BuildStep ------------------------------------------------------------------
@@ -1514,7 +1922,14 @@ class BuildStep:
             new_sha = github.head_sha(agent.repo_full_name)
             if sha is not None and new_sha != sha:
                 head_advances += 1
-                if head_advances > BUILD_MAX_HEAD_ADVANCES:
+                # The cap exists because nothing else pushes to a repo the
+                # room owns, so more movement than the setup PR explains is
+                # an anomaly worth stopping for. On a team's own repo that
+                # reasoning does not hold: other people push there, and a
+                # head that keeps moving is ordinary. The watch restarts on
+                # each new head and the overall poll budget below -- which
+                # an advance never resets -- is what bounds the step.
+                if head_advances > BUILD_MAX_HEAD_ADVANCES and not is_connected(agent):
                     if sha not in observed_shas:
                         observed_shas.append(sha)
                     if new_sha not in observed_shas:

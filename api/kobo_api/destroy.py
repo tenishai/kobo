@@ -48,6 +48,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from kobo_api.clients import ClientError, cabal_enabled
 from kobo_api.config import Config
 from kobo_api.directory import retire_directory
+from kobo_api.kinds import KIND_COMPOSED, is_connected
 from kobo_api.models import A2AInvite, Agent, AgentStatus, AgentStep, RepoAccess, StepStatus
 from kobo_api.pairs import sync_dispatch_pairs_best_effort
 from kobo_api.provisioner import _get_or_create_step
@@ -254,9 +255,27 @@ def _destroy_repo(ctx: DestroyCtx) -> str:
     `_is_already_archived`) — any other archive failure (including a 404,
     which would be a genuinely unexpected state right after a successful
     rename or a corroborated existence check) propagates as a real failure.
+
+    A connected agent's repository is its team's, and the room has never
+    written a line to it (connected-agents design 2026-09-21) — so this
+    step does nothing at all there. Unlike destroy-slack, which no-ops on
+    its own recorded-field check, this one would NOT neutralise itself:
+    `repo_full_name` is set for a connected agent too, and the rename below
+    would take somebody else's repository away from them.
+
+    The check here asks for an EXPLICIT `composed`, rather than asking
+    `is_connected` the way every other reader of the kind does. Those
+    readers fail open to composed, which is the harmless direction for
+    them; here it is the destructive one. So a kind this code does not
+    recognise — a future one, a bad write, a half-applied migration —
+    leaves the repository alone rather than archiving it on a guess. The
+    room can always archive a repository later; it cannot give one back.
     """
     agent = ctx.agent
     github = ctx.clients.github
+
+    if agent.kind != KIND_COMPOSED:
+        return "the repository belongs to its team and is left as it is"
 
     if agent.repo_full_name is None:
         return "no repo to archive"
@@ -304,7 +323,17 @@ def _destroy_directory(ctx: DestroyCtx) -> str:
     permanently stuck for something the operator has no way to fix
     mid-destroy. A later re-registration (`POST .../directory/sync`, or the
     switchboard's own recovery) resolves it independently of this ledger.
+
+    A connected agent is the one case where "never registered" IS knowable
+    from the row: its pipeline has no directory step at all (connected-
+    agents design 2026-09-21), so there is nothing to retire and the
+    switchboard is not asked. Retiring an entry that was never made would
+    do no harm -- absorb is 404-tolerant -- but it would put something
+    untrue on the ledger a person reads.
     """
+    if is_connected(ctx.agent):
+        return "never listed in the directory"
+
     if not cabal_enabled(ctx.config):
         return "The directory entry stays until the switchboard returns."
 

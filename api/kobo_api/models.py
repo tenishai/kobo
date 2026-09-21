@@ -18,6 +18,8 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
+from kobo_api.kinds import KIND_COMPOSED
+
 
 class Base(DeclarativeBase):
     pass
@@ -93,6 +95,35 @@ class Agent(Base):
     # (fresh DBs get it free via create_all):
     #   ALTER TABLE agents ADD COLUMN archetype VARCHAR(64);
     archetype: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Which of the two kinds of agent this row is (connected-agents design
+    # 2026-09-21): `composed`, the room's own repo and bundle, or
+    # `connected`, a team's existing repo the room only deploys. Values are
+    # `kobo_api.kinds.KIND_COMPOSED`/`KIND_CONNECTED`.
+    # NOT nullable, unlike archetype above: this is not a create-time lane
+    # marker read at one point, it is the question the pipeline selector,
+    # the destroy ledger, both read routes and the UI's tab model each ask,
+    # and a NULL would make "does the room own this repo" three-valued at
+    # every one of them -- with the wrong answer being destructive at the
+    # destroy ledger. Every pre-existing row is composed, which is what the
+    # server default records once and for all.
+    kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=KIND_COMPOSED, server_default=KIND_COMPOSED
+    )
+    # Connected agents only: how the team's own code runs, `http` (it
+    # serves a port the deploy platform can probe) or `headless` (it does
+    # not). Nullable because a composed agent has no such question to
+    # answer -- it is always the room's one runtime, which always serves
+    # HTTP -- so NULL here means "not asked", never "unknown".
+    run_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Connected agents only: the names of Kubernetes Secrets the owner
+    # creates in the agent's own namespace, passed through to the deploy
+    # platform so the pod mounts them. The room never holds their contents.
+    # Non-nullable with an empty-list default for the same reason
+    # `skills` above is: the readers iterate it, and a NULL would make
+    # every one of them spell the same `or []`.
+    secret_names: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
     skills: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=AgentStatus.PENDING

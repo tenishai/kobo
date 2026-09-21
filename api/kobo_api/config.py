@@ -278,6 +278,17 @@ class Config(BaseModel):
     # slack_tokens_path above and deliberately absent from org.py's ORG_KEYS:
     # it names an object in THIS cluster, not anything the org hands out.
     slack_tokens_secret: str = ""
+    # The deploy platform's workload class for a connected agent that has
+    # no HTTP port (connected-agents design 2026-09-21): a single-replica
+    # workload with no network probes. Empty (the default) means this
+    # deploy platform does not offer one yet, and the room refuses that
+    # run mode with a plain sentence rather than onboarding something the
+    # platform would immediately probe to death -- "absent = feature off",
+    # the same convention skills_bucket holds. Deployment-local like
+    # slack_tokens_secret above and deliberately absent from org.py's
+    # ORG_KEYS: it names a class THIS cluster's deploy platform offers,
+    # not anything the org hands out.
+    connected_headless_class: str = ""
     # Emails allowed to use the Slack connect routes once IAP is enabled
     # (Task 5) — main.py's `_slack_operator_block` 403s any other caller on
     # both routes, before their existing checks. Empty (the default) leaves

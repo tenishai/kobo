@@ -542,14 +542,21 @@ def _sweep(session, config, clients, now: datetime) -> None:
         _extract_relay_reply,
         cabal_enabled,
     )
+    from kobo_api.kinds import is_connected
     from kobo_api.models import Agent, AgentStatus
 
     expire_stale(session, now)
     if not (cabal_enabled(config) and clients.cabal is not None):
         return
+    # Connected agents are left out (design 2026-09-21): they have no
+    # switchboard identity, so the relay below could only ever fail -- once
+    # per agent, every night, for as long as the agent exists. Filtered in
+    # python rather than in the query so the one reader of the kind stays
+    # `is_connected`, and so a future kind is included by default.
     ready = [
         row.name
         for row in session.query(Agent).filter_by(status=AgentStatus.READY).all()
+        if not is_connected(row)
     ]
     day = now.date().isoformat()
     for name in due_agents(session, ready, now):

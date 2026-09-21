@@ -450,6 +450,8 @@ class FakeGitHub:
         track_pushed_content: bool = False,
         pr_url: str = "https://github.com/acme-corp/example-org-skills/pull/1",
         open_prs: dict[str, str] | None = None,
+        existing_branches: set[str] | None = None,
+        merge_pr_results: list[bool] | None = None,
         intake_files: dict[str, str] | None = None,
         intake_commit_shas: dict[str, str] | None = None,
         rev_parse_results: dict[str, str | None] | None = None,
@@ -460,6 +462,7 @@ class FakeGitHub:
         archive_error: str | None = None,
         agent_card: dict | None = None,
         clone_tree: dict[str, str] | None = None,
+        extra_clone_files: dict[str, str] | None = None,
     ):
         self.repos: set[str] = set(existing_repos) if existing_repos else set()
         self._rename_error = rename_error
@@ -477,6 +480,14 @@ class FakeGitHub:
         self._pr_url = pr_url
         self.open_pr_calls: list[dict] = []
         self._open_prs: dict[str, str] = dict(open_prs) if open_prs else {}
+        self._existing_branches: set[str] = (
+            set(existing_branches) if existing_branches else set()
+        )
+        self.merge_pr_calls: list[tuple[str, str]] = []
+        self._merge_pr_results = (
+            list(merge_pr_results) if merge_pr_results else [True]
+        )
+        self._merge_pr_index = 0
         self._commit_push_results = list(commit_push_results) if commit_push_results else [True]
         self._commit_push_index = 0
         self._knowledge_files = dict(knowledge_files) if knowledge_files else None
@@ -503,6 +514,9 @@ class FakeGitHub:
         )
         self._agent_card = dict(agent_card) if agent_card is not None else None
         self._clone_tree = dict(clone_tree) if clone_tree is not None else None
+        self._extra_clone_files = (
+            dict(extra_clone_files) if extra_clone_files is not None else None
+        )
         self._pushed_trees: list[dict[str, bytes]] = []
 
         self._head_sha = head_sha
@@ -644,6 +658,22 @@ class FakeGitHub:
                 raw = content.encode("utf-8") if isinstance(content, str) else content
                 target.write_bytes(raw)
 
+        self._write_extra_clone_files(dest)
+
+    def _write_extra_clone_files(self, dest: Path) -> None:
+        """Lay `extra_clone_files` over the generated tree, last, so a test
+        can add a file the scaffolding has no knob for (a team's own
+        serviceaccount.yaml) or replace one wholesale (a gojira.yaml that
+        already carries env of its own). `clone_tree`, by contrast,
+        REPLACES the tree; this one adds to it.
+        """
+        if not self._extra_clone_files:
+            return
+        for rel_path, content in self._extra_clone_files.items():
+            target = dest / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+
     def commit_push(self, workdir: Path, message: str) -> bool:
         self.calls.append(f"commit_push:{message}")
         self.pushes.append((workdir, message))
@@ -704,11 +734,42 @@ class FakeGitHub:
         )
         self._snapshot_pushed_content(repo, workdir)
         self._open_prs[f"{repo}#{branch}"] = self._pr_url
+        self._existing_branches.add(f"{repo}#{branch}")
         return self._pr_url
 
     def find_pr(self, repo: str, *, branch: str) -> str | None:
         self.calls.append(f"find_pr:{repo}:{branch}")
         return self._open_prs.get(f"{repo}#{branch}")
+
+    def branch_exists(self, repo: str, branch: str) -> bool:
+        """True for any `repo#branch` named in `existing_branches`. Default
+        empty: a repository with no leftover branches is the wired happy
+        path, same convention as every other knob here.
+
+        `open_pr` registers its own branch here too, so a second call
+        against the same fake sees the branch that call pushed -- which is
+        what the real repository would show.
+        """
+        self.calls.append(f"branch_exists:{repo}:{branch}")
+        return f"{repo}#{branch}" in self._existing_branches
+
+    def merge_pr(self, repo: str, pr_url: str) -> bool:
+        """Records `(repo, pr_url)` into `merge_pr_calls` and replays
+        `merge_pr_results` (holding at the last entry once exhausted, same
+        convention as `commit_push_results`). Default True: the room's own
+        wiring pull request merges, which is the wired happy path. False is
+        how a test models GitHub declining (a protected branch, a required
+        review) -- never an exception, since the real client answers False
+        there rather than raising.
+        """
+        self.calls.append(f"merge_pr:{repo}:{pr_url}")
+        self.merge_pr_calls.append((repo, pr_url))
+        result = self._merge_pr_results[
+            min(self._merge_pr_index, len(self._merge_pr_results) - 1)
+        ]
+        if self._merge_pr_index < len(self._merge_pr_results) - 1:
+            self._merge_pr_index += 1
+        return result
 
     def local_head(self, workdir: Path) -> str:
         self.calls.append(f"local_head:{workdir}")
@@ -881,10 +942,25 @@ class FakeGojira:
         self._apps: dict[int, dict] = {}
         self._next_id = 1
         self.reprovision_calls: list[int] = []
+        # One dict per `create_app`, every keyword it was given -- the seam
+        # for asserting which workload class an agent was onboarded under,
+        # without a test having to spy on the method itself.
+        self.create_app_calls: list[dict] = []
         self.calls: list[str] = []
 
-    def create_app(self, *, name, repo_full_name, cluster, namespace) -> int:
+    def create_app(
+        self, *, name, repo_full_name, cluster, namespace, workload_class="agent"
+    ) -> int:
         self.calls.append(f"create_app:{repo_full_name}")
+        self.create_app_calls.append(
+            {
+                "name": name,
+                "repo_full_name": repo_full_name,
+                "cluster": cluster,
+                "namespace": namespace,
+                "workload_class": workload_class,
+            }
+        )
         if repo_full_name in self._conflict_repos:
             raise GojiraConflict(f"app already connected for {repo_full_name!r}")
         app_id = self._next_id
@@ -895,6 +971,7 @@ class FakeGojira:
             "repo_full_name": repo_full_name,
             "cluster": cluster,
             "namespace": namespace,
+            "workload_class": workload_class,
             "status": "pending",
             "polls": 0,
             "setup_pr_url": None,

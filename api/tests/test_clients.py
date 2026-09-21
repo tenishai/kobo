@@ -764,6 +764,199 @@ def test_rename_repo_and_archive_repo_pass_gh_token_env_when_provider_set():
     assert runner.envs == [{"GH_TOKEN": "ghs_faketoken123"}, {"GH_TOKEN": "ghs_faketoken123"}]
 
 
+# --- GitHub (GhCLI.merge_pr — connected agents, design 2026-09-21) ----------------
+#
+# The room asks GitHub to merge its own wiring pull request. GitHub refusing
+# that (a protected branch, a required review, a required check) is an
+# ORDINARY answer, not a transport failure: the step turns it into one plain
+# sentence naming the pull request, and a person merges it. So merge_pr
+# answers False there and raises only for failures nobody can act on, the
+# same "classify gh's stderr by its stable markers" discipline
+# `_gh_returned_404` and `destroy._is_already_archived` already hold.
+
+REVIEW_REQUIRED_STDERR = (
+    "GraphQL: At least 1 approving review is required by reviewers with "
+    "write access. (mergePullRequest)"
+)
+
+
+def test_merge_pr_argv_and_true_when_merged():
+    runner = RecordingRunner(results=[(0, "", "")])
+    client = GhCLI(runner=runner)
+
+    merged = client.merge_pr("acme/clio", "https://github.com/acme/clio/pull/4")
+
+    assert runner.calls == [
+        ["gh", "pr", "merge", "https://github.com/acme/clio/pull/4", "--merge"]
+    ]
+    assert merged is True
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "X https://github.com/acme/clio/pull/4 is already merged",
+        (
+            "GraphQL: Pull request Pull request has already been merged. "
+            "(mergePullRequest)"
+        ),
+    ],
+)
+def test_merge_pr_true_when_the_pull_request_was_already_merged(stderr):
+    runner = RecordingRunner(results=[(1, "", stderr)])
+    client = GhCLI(runner=runner)
+
+    assert client.merge_pr("acme/clio", "https://github.com/acme/clio/pull/4") is True
+
+
+def test_merge_pr_falls_back_to_squash_then_rebase_when_a_method_is_not_allowed():
+    """A repository that allows only one merge method refuses the others by
+    name. The operator ruling is that the room merges by default, so it
+    asks the ways the repository might accept rather than giving up on the
+    first no."""
+    runner = RecordingRunner(
+        results=[
+            (1, "", "GraphQL: Merge commits are not allowed on this repository."),
+            (1, "", "GraphQL: Squash merges are not allowed on this repository."),
+            (0, "", ""),
+        ]
+    )
+    client = GhCLI(runner=runner)
+
+    merged = client.merge_pr("acme/clio", "https://github.com/acme/clio/pull/4")
+
+    assert merged is True
+    assert [call[-1] for call in runner.calls] == ["--merge", "--squash", "--rebase"]
+
+
+def test_merge_pr_stops_at_the_first_method_the_repository_accepts():
+    runner = RecordingRunner(
+        results=[
+            (1, "", "GraphQL: Merge commits are not allowed on this repository."),
+            (0, "", ""),
+        ]
+    )
+    client = GhCLI(runner=runner)
+
+    assert client.merge_pr("acme/clio", "https://github.com/acme/clio/pull/4") is True
+    assert [call[-1] for call in runner.calls] == ["--merge", "--squash"]
+
+
+def test_merge_pr_false_when_the_repository_allows_no_method_the_room_can_use():
+    runner = RecordingRunner(
+        results=[
+            (1, "", "GraphQL: Merge commits are not allowed on this repository."),
+            (1, "", "GraphQL: Squash merges are not allowed on this repository."),
+            (1, "", "GraphQL: Rebase merges are not allowed on this repository."),
+        ]
+    )
+    client = GhCLI(runner=runner)
+
+    assert client.merge_pr("acme/clio", "https://github.com/acme/clio/pull/4") is False
+
+
+def test_merge_pr_stops_asking_once_a_method_is_refused_for_another_reason():
+    """A method the repository does allow, refused on the pull request's own
+    merits, is the answer for every other method too: asking again would
+    only add noise to somebody else's repository."""
+    runner = RecordingRunner(
+        results=[
+            (1, "", "GraphQL: Merge commits are not allowed on this repository."),
+            (1, "", REVIEW_REQUIRED_STDERR),
+        ]
+    )
+    client = GhCLI(runner=runner)
+
+    assert client.merge_pr("acme/clio", "https://github.com/acme/clio/pull/4") is False
+    assert [call[-1] for call in runner.calls] == ["--merge", "--squash"]
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "GraphQL: Pull request is not mergeable (mergePullRequest)",
+        (
+            "GraphQL: Pull request is not mergeable: the base branch policy "
+            "prohibits the merge. (mergePullRequest)"
+        ),
+        REVIEW_REQUIRED_STDERR,
+        "GraphQL: Required status check \"build\" is expected. (mergePullRequest)",
+        "GraphQL: Changes must be approved: review is required (mergePullRequest)",
+        "gh: Protected branch update failed (HTTP 405)",
+        (
+            "GraphQL: Pull request is in a merge queue and cannot be merged "
+            "directly (mergePullRequest)"
+        ),
+    ],
+)
+def test_merge_pr_false_when_github_refuses_the_merge(stderr):
+    runner = RecordingRunner(results=[(1, "", stderr)])
+    client = GhCLI(runner=runner)
+
+    assert client.merge_pr("acme/clio", "https://github.com/acme/clio/pull/4") is False
+
+
+def test_merge_pr_raises_for_a_failure_nobody_can_merge_their_way_out_of():
+    runner = RecordingRunner(results=[(1, "", "gh: Bad credentials (HTTP 401)")])
+    client = GhCLI(runner=runner)
+
+    with pytest.raises(ClientError):
+        client.merge_pr("acme/clio", "https://github.com/acme/clio/pull/4")
+
+
+def test_merge_pr_classifies_on_stderr_alone_never_the_command_line():
+    """A ClientError's message embeds the argv and the pull request URL, so a
+    pull request whose branch happens to be named "not-mergeable" would
+    classify itself if the message were read. Only what GitHub said counts."""
+    runner = RecordingRunner(
+        results=[(1, "", "gh: Bad credentials (HTTP 401)")]
+    )
+    client = GhCLI(runner=runner)
+
+    with pytest.raises(ClientError):
+        client.merge_pr("acme/clio", "https://github.com/acme/clio/pull/not-mergeable")
+
+
+def test_merge_pr_passes_gh_token_env_when_provider_set():
+    runner = RecordingRunner(results=[(0, "", "")])
+    client = GhCLI(runner=runner, token_provider=lambda: "ghs_faketoken123")
+
+    client.merge_pr("acme/clio", "https://github.com/acme/clio/pull/4")
+
+    assert runner.envs == [{"GH_TOKEN": "ghs_faketoken123"}]
+
+
+# --- GitHub (GhCLI.branch_exists — connected agents, review fix) -----------------
+
+
+def test_branch_exists_argv_and_true_when_the_branch_is_there():
+    runner = RecordingRunner(results=[(0, '{"name":"kobo/wire"}', "")])
+    client = GhCLI(runner=runner)
+
+    assert client.branch_exists("acme/clio", "kobo/wire") is True
+    assert runner.calls == [["gh", "api", "repos/acme/clio/branches/kobo/wire"]]
+
+
+def test_branch_exists_false_on_a_404():
+    runner = RecordingRunner(
+        results=[(1, '{"message":"Branch not found"}', "gh: Not Found (HTTP 404)")]
+    )
+    client = GhCLI(runner=runner)
+
+    assert client.branch_exists("acme/clio", "kobo/wire") is False
+
+
+def test_branch_exists_raises_for_any_other_failure():
+    """Unlike repo_exists, this never collapses every failure to False: a
+    401 answered "no branch here" would send the caller straight into a
+    push that then fails for a reason it has already ruled out."""
+    runner = RecordingRunner(results=[(1, "", "gh: Bad credentials (HTTP 401)")])
+    client = GhCLI(runner=runner)
+
+    with pytest.raises(ClientError):
+        client.branch_exists("acme/clio", "kobo/wire")
+
+
 # --- Cloud (GcloudClient) -----------------------------------------------------
 
 
@@ -1398,6 +1591,31 @@ def test_gojira_create_app_request_shape_and_auth_header():
         "auto_merge_setup_pr": True,
     }
     assert captured["auth"] == "Bearer secret-token"
+
+
+def test_gojira_create_app_carries_the_workload_class_it_is_given():
+    """Connected agents (design 2026-09-21): a team's own code may have no
+    HTTP port at all, and the platform's probing is chosen by this field --
+    so it is an argument now, not a constant. The default stays "agent",
+    which is what every composed agent has always sent."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(201, json={"id": 7})
+
+    client = HttpxGojiraClient(
+        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    client.create_app(
+        name="clio",
+        repo_full_name="acme/clio",
+        cluster="dev",
+        namespace="clio",
+        workload_class="agent-headless",
+    )
+
+    assert captured["json"]["workload_class"] == "agent-headless"
 
 
 def test_gojira_create_app_no_token_sends_no_auth_header():

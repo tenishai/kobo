@@ -995,7 +995,26 @@ def test_list_agents_empty_when_none_created(client):
     assert response.json() == {"agents": [], "groups_unavailable": False}
 
 
+def test_list_agents_marks_an_agent_the_room_composed(client):
+    """`kind` rides the LIST as well as the detail, the same reason
+    `archetype` does: the dashboard card carries the marker, and a
+    per-agent fetch to learn it would be one round trip per card."""
+    client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM})
+
+    response = client.get("/api/agents")
+
+    assert response.json()["agents"][0]["kind"] == "composed"
+
+
 # --- GET /api/agents/{name} --------------------------------------------------------
+
+
+def test_get_agent_marks_an_agent_the_room_composed(client):
+    client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM})
+
+    response = client.get(f"/api/agents/{AGENT_NAME}")
+
+    assert response.json()["kind"] == "composed"
 
 
 def test_get_agent_unknown_name_returns_404(client):

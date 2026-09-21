@@ -56,12 +56,15 @@ from sqlalchemy.orm import Session, sessionmaker
 from kobo_api.clients import Clients
 from kobo_api.config import Config
 from kobo_api.db import SQLITE_BUSY_TIMEOUT_S
+from kobo_api.kinds import is_connected
 from kobo_api.models import Agent, AgentStatus, AgentStep, StepStatus
 from kobo_api.pairs import sync_dispatch_pairs_best_effort
 from kobo_api.steps import (
     AccessStep,
     AvatarStep,
     BuildStep,
+    ConnectedWireStep,
+    ConnectStep,
     DeployStep,
     DirectoryStep,
     HelloStep,
@@ -367,6 +370,14 @@ def _run_pipeline_body(
                 agent.status = AgentStatus.READY
                 agent.error = None
                 session.commit()
+            if failed_step_name is None and not is_connected(agent):
+                # Both hooks below are about colleagues, and a connected
+                # agent has none: no switchboard identity, no pass, nothing
+                # to deliver a roster to and nobody to pair it with. Running
+                # them anyway would be harmless (both are gated and
+                # fail-soft) but would also be a lie about what the room
+                # just did.
+                #
                 # Access-control arc, Task C4: a newly-READY agent joins its
                 # group's implicit pairs (kobo_api.pairs.allowed_pairs,
                 # recomputed fresh right here) -- push the switchboard's
@@ -676,8 +687,43 @@ PIPELINE: list[Step] = [
     HelloStep(),
 ]
 
+# The shorter list a team's own repo runs through (connected-agents design
+# 2026-09-21). Four steps are literally the same objects as above -- what
+# the room grants an agent, and what it watches, does not depend on who
+# wrote the code. Three differ, and each difference is the same rule said
+# three ways: the room does not own this repository. `ConnectStep` verifies
+# one that already exists instead of creating one; `AvatarStep` reads the
+# agent's kind and keeps the picture in the room rather than committing it;
+# `ConnectedWireStep` proposes the wiring as a pull request rather than
+# pushing it.
+#
+# Two steps are absent rather than skipped. A connected agent has no
+# switchboard identity to list in the directory, and nothing the room knows
+# how to say hello to -- an empty step would be a checklist line promising
+# something that is not coming.
+CONNECTED_PIPELINE: list[Step] = [
+    ConnectStep(),
+    AvatarStep(),
+    OnboardStep(),
+    AccessStep(),
+    ConnectedWireStep(),
+    BuildStep(),
+    DeployStep(),
+]
+
+
+def pipeline_for(agent: Agent) -> list[Step]:
+    """The step list this agent's kind runs. The single place the choice is
+    made, so a caller never spells the comparison itself."""
+    return CONNECTED_PIPELINE if is_connected(agent) else PIPELINE
+
+
 # The UI's checklist vocabulary: step name -> human-readable label, sourced
 # from each step's own `.label` (part of the `Step` Protocol above, alongside
 # `name`/`run`) so this dict can't drift from what each step actually
-# declares of itself.
-STEP_LABELS: dict[str, str] = {step.name: step.label for step in PIPELINE}
+# declares of itself. Built from the UNION of both lists: a name missing
+# here degrades to a raw slug on the detail route, and the checklist would
+# render it.
+STEP_LABELS: dict[str, str] = {
+    step.name: step.label for step in (*PIPELINE, *CONNECTED_PIPELINE)
+}

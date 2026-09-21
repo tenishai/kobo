@@ -1,6 +1,8 @@
 # Connected agents: bring your own repo -- design
 
-Status: design for review, 2026-09-21. Nothing built.
+Status: approved by the operator 2026-09-21; amended the same day after reading the code
+(wiring by pull request, no waiting state, same organisation only, more than one column).
+Plan: `docs/superpowers/plans/2026-09-21-connected-agents.md`.
 
 ## Why
 
@@ -33,7 +35,9 @@ not pretend to manage what it does not.
 | Deploy, build log, status, rollback, ownership, observability | yes | yes |
 | Destroy | archives the repo | leaves the repo alone |
 
-`agents.kind` is `composed` (default, every existing row) or `connected`. One migration.
+`agents.kind` is `composed` (default, every existing row) or `connected`. A connected row
+also records `run_mode` (`http` or `headless`) and `secret_names`, because a pipeline step
+only sees the row. One migration.
 
 A later kind, "adopted" (a team repo that carries a real bundle on the room's runtime and
 so can have every tab), is deliberately out of this version. The scan notices a `bundle/`
@@ -43,15 +47,17 @@ directory and says so; it offers nothing yet.
 
 "Connect your own agent" sits beside "Create agent". One form, four fields:
 
-1. **Repository** -- `owner/name`. It must be in an organisation where the room's GitHub
-   App is installed with write access.
+1. **Repository** -- `owner/name`. In this version it must be in the room's own GitHub
+   organisation (`github_org`), and the room's GitHub App must be able to write to it. The
+   room holds one App installation; reaching other organisations is later work.
 2. **Name** -- the agent's name in the room. Same rules and the same collision check as
    create.
 3. **Group** -- who owns it. Same control as create.
 4. **How does it run?** -- "It serves HTTP on port 8080 and answers `/healthz`" or "It has
    no HTTP port (a chat bot or a worker)".
 
-Then **Scan**, which reads the repo through the GitHub API (no clone) and shows a short
+Then **Scan**, which reads the repo through the GitHub API (no clone; this is a new
+capability for the room's GitHub client, which today can only clone) and shows a short
 report, and **Connect**, enabled when there are no blockers.
 
 ### The scan
@@ -75,8 +81,9 @@ Warnings (shown, never blocking):
 - "Serves HTTP" was chosen but nothing in the Dockerfile exposes 8080. The deploy will
   prove it either way; this only warns early.
 
-The report always ends with the list of what the room will add to the repo, by pull
-request: `gojira.yaml`, `k8s/`, and one CI workflow. Nothing else, ever.
+The report always ends with the list of what will be added to the repo, by pull request:
+`gojira.yaml`, `k8s/` (including one service account manifest), and one CI workflow.
+Nothing else, ever.
 
 ### The pipeline
 
@@ -86,18 +93,19 @@ The existing step engine, with a shorter list for `kind = connected`:
 |---|---|---|
 | repo | create from the composed bundle | **connect**: verify access, record the repo; creates nothing |
 | avatar | generate, commit to repo | generate, store in the room only |
-| onboard | deploy platform app, class `agent`, setup PR auto-merged | same call, with the class chosen by "how does it run", the service account and model env passed IN the call so they land in the one setup PR; auto-merge unless the owner ticks "I will review the pull request myself" |
+| onboard | deploy platform app, class `agent`, setup PR auto-merged | same call, with the class chosen by "how does it run"; setup PR auto-merged |
 | access | service account, workload identity, model group | same |
-| wire | commits service account, memory volume, model env to the repo | **skipped**: the room never pushes to a connected repo's branch |
-| build / deploy | watch CI, watch the rollout | same |
+| wire | pushes service account, memory volume, model env to the repo | **by pull request**: service account manifest plus `service_account`, model env and any secret names in `gojira.yaml`; no memory volume, no switchboard secret. The room tries to merge it and says so plainly if it cannot |
+| build / deploy | watch CI, watch the rollout | same checks; the build watcher follows the branch head instead of treating a new commit as an anomaly, because other people push to a team's repo |
 | directory / hello | list in the switchboard, first contact | **skipped** |
 
-Rule that keeps this honest: after the setup PR, the room never writes to a connected repo
-again. Changing the class or env later is a new PR the owner merges.
+Rule that keeps this honest: the room never pushes to a connected repo's branches. Every
+change it wants arrives as a pull request: the deploy platform's setup PR, then the room's
+wiring PR. After those two it proposes nothing further unless the owner asks.
 
-If the setup PR cannot auto-merge, the agent shows "waiting for your team to merge the setup
-pull request" with the link, and the pipeline resumes when it is merged. The run heartbeat
-keeps beating while it waits, so the interrupted-run sweep does not fail it.
+When a pull request cannot be merged by the room (a protected branch), the step fails with
+the link and one instruction: merge it, then press Retry. The pipeline already resumes from
+the failed step, so no waiting state is needed and no thread is held open for days.
 
 ### No HTTP port
 
@@ -151,17 +159,22 @@ without being destroyed and recreated.
 
 ## Build order
 
-1. `agents.kind` + migration; the pipeline picks its step list by kind; destroy honours
-   kind. No UI. (Proves nothing composed changes.)
-2. The scan, as an API route with tests against a fake GitHub client.
-3. Connect form + the connected agent page.
-4. "Convert to connected".
-5. `agent-headless` on the deploy platform (their repo; agreed in the coordination thread
-   first), then enable the second run mode.
+1. The row and the engine: `kind`, `run_mode`, `secret_names` + migration; the pipeline
+   picks its step list by kind; destroy honours kind; both read routes and the MCP read
+   tools show `kind`. No UI, no new route. (Proves nothing composed changes.)
+2. The GitHub client learns to read without cloning (permissions, one file, the root
+   listing, branch protection, merge a pull request); the scan as a module and a route.
+3. The connect route.
+4. Connect form + the connected agent page (the first kind-driven tab model).
+5. "Convert to connected".
+6. The headless run mode: accepted by the API from day one but answered "not available
+   yet" until a deployment names the deploy platform's class for it (absent = feature
+   off). Enabling it is configuration once that class exists.
 
 ## Open questions
 
-1. Auto-merge the setup PR by default, or make the owner merge it? This design says
-   auto-merge with an opt-out, because "connect and it deploys" is the point.
-2. Should connect be open to anyone who can create, or operator-approved for the first
-   few? This design says the same gate as create.
+1. RESOLVED (operator, 2026-09-21): auto-merge by default. The opt-out is dropped from this
+   version; a protected branch is the natural opt-out.
+3. Later, with the deploy platform's owners: let its connect call carry the service
+   account, env and secret names, so the two pull requests become one.
+2. RESOLVED (operator, 2026-09-21): the same gate as create.

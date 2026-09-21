@@ -60,6 +60,7 @@ from kobo_api.intake import (
     list_intake,
     upload_intake_file,
 )
+from kobo_api.kinds import is_connected
 from kobo_api.knowledge import (
     KnowledgeError,
     delete_knowledge_file,
@@ -127,10 +128,10 @@ from kobo_api.personas import (
     read_index as personas_read_index,
 )
 from kobo_api.provisioner import (
-    PIPELINE,
     STEP_LABELS,
     interrupted_sweep_loop,
     naive_utc,
+    pipeline_for,
     reset_failed_steps,
     run_pipeline,
     sweep_interrupted,
@@ -964,6 +965,72 @@ def _ready_agent_or_error(
     if agent.status != AgentStatus.READY:
         return JSONResponse({"error": not_ready_message}, status_code=409)
     return agent
+
+
+def _room_edits_this_agent_or_409(agent: Agent) -> JSONResponse | None:
+    """None when the room may write to this agent's repository; a 409 body
+    otherwise (connected-agents design 2026-09-21).
+
+    The design's one rule is that the room never pushes to a connected
+    repo's branches. Two steps in the connected pipeline honour that by
+    construction, but every route below that edits a bundle -- knowledge,
+    skills, intake, teach, learnings, tooling, Slack wiring, runtime,
+    metadata, avatar -- clones the agent's repo and pushes to its DEFAULT
+    BRANCH, gated only on "ready" and "owner or operator", both of which a
+    connected agent passes the moment it goes READY. So the rule has to be
+    said once more, here, and called by each of them.
+
+    409 rather than 403: the caller is allowed to ask, and nothing about
+    who they are would change the answer. It is the agent that has no such
+    thing to change.
+
+    A gate, not a filter: this is called as early as the agent row is in
+    hand and always BEFORE any clone, so a refused call costs nothing and
+    leaves nothing behind. Read routes do not call it -- listing an empty
+    set of skills is honest, and a connected agent's build log and status
+    are as real as any other's.
+    """
+    if is_connected(agent):
+        return JSONResponse(
+            {
+                "error": (
+                    "this agent's repository belongs to its team, so the room "
+                    "does not change it"
+                )
+            },
+            status_code=409,
+        )
+    return None
+
+
+def _room_may_commit_to_repo(app: FastAPI, repo: str) -> bool:
+    """Whether the room owns `repo` and so may commit to it, asked by
+    repository name rather than by agent row.
+
+    The background archive lanes below take a repo name, not an agent, and
+    run on their own thread after their route has returned. Every route
+    that queues one already calls `_room_edits_this_agent_or_409`, so this
+    can only ever say no if a route stopped calling it -- which is the
+    point of asking twice. A WARNING rather than a quiet return, for that
+    reason: reaching here means a gate went missing upstream.
+
+    A repo with no agent row is left alone to behave exactly as it did
+    before this existed, rather than being refused on a row that was never
+    the question.
+    """
+    session = app.state.session_factory()
+    try:
+        agent = session.query(Agent).filter_by(repo_full_name=repo).first()
+    finally:
+        session.close()
+    if agent is not None and is_connected(agent):
+        log.warning(
+            "archive lane reached a connected agent's repository (%s); not "
+            "committing",
+            repo,
+        )
+        return False
+    return True
 
 
 def _sync_directory_best_effort(clients: Clients, config: Config, agent: Agent) -> None:
@@ -1839,6 +1906,8 @@ def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> No
     all now pass `app` as this function's first argument; behavior is
     otherwise byte-identical to the closure this replaces.
     """
+    if not _room_may_commit_to_repo(app, repo):
+        return
     try:
         upload_intake_file(
             app.state.clients.github,
@@ -1897,6 +1966,9 @@ def _decide_learning(
     )
     if isinstance(agent, JSONResponse):
         return agent
+    blocked = _room_edits_this_agent_or_409(agent)
+    if blocked is not None:
+        return blocked
     gate = _decider_or_403(agent, request, session)
     if gate is not None:
         return gate
@@ -3430,7 +3502,7 @@ def create_app(
                 agent_id,
                 config=cfg,
                 clients=app.state.clients,
-                steps=PIPELINE,
+                steps=pipeline_for(agent),
             )
         except Exception as exc:
             # Broad by design: a request boundary, not a specific expected
@@ -3491,6 +3563,12 @@ def create_app(
                     # loaded on `a` with no extra query.
                     "archetype": a.archetype,
                     "purpose_tags": decode_tags(a.purpose_tags),
+                    # Connected agents (design 2026-09-21): the dashboard
+                    # card carries the marker, so the list needs it for
+                    # the same reason `archetype` above is here -- a
+                    # per-agent fetch to learn it would be one round trip
+                    # per card.
+                    "kind": a.kind,
                 }
                 for a in agents
             ],
@@ -3549,6 +3627,10 @@ def create_app(
                 "created_by": agent.created_by,
                 "group_name": agent.group_name,
                 "archetype": agent.archetype,
+                # Connected agents (design 2026-09-21): which tabs the page
+                # may offer at all is a property of the kind, so the page
+                # reads it from the same fetch that draws the header.
+                "kind": agent.kind,
                 "pending_learnings": session.query(AgentLearning)
                 .filter_by(agent_name=agent.name, status=LEARNING_PENDING)
                 .count(),
@@ -3728,7 +3810,7 @@ def create_app(
                 agent_id,
                 config=cfg,
                 clients=app.state.clients,
-                steps=PIPELINE,
+                steps=pipeline_for(agent),
             )
         except Exception as exc:
             # Broad by design, same as create_agent's guard above (this
@@ -4252,6 +4334,8 @@ def create_app(
         below in save_knowledge (no relay ever reached the agent) calls
         save_knowledge_file directly without archive_only -- that commit
         IS the delivery, so it must keep CI."""
+        if not _room_may_commit_to_repo(app, repo):
+            return
         try:
             save_knowledge_file(
                 app.state.clients.github, repo, filename, content, archive_only=True
@@ -4272,6 +4356,8 @@ def create_app(
         Critical 2 fix: archive_only=True, same reasoning as the save side
         -- the degraded synchronous lane below in delete_knowledge keeps
         CI, since that delete IS the delivery."""
+        if not _room_may_commit_to_repo(app, repo):
+            return
         try:
             delete_knowledge_file(
                 app.state.clients.github, repo, filename, archive_only=True
@@ -4313,6 +4399,9 @@ def create_app(
         agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -4368,6 +4457,9 @@ def create_app(
         agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -4595,6 +4687,9 @@ def create_app(
         agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -4664,6 +4759,9 @@ def create_app(
         agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -4741,6 +4839,9 @@ def create_app(
         agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -4825,6 +4926,9 @@ def create_app(
         agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -4917,6 +5021,9 @@ def create_app(
         agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -4976,6 +5083,9 @@ def create_app(
         agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
 
         text = payload.text
         if not text.strip():
@@ -5155,6 +5265,17 @@ def create_app(
         background_tasks: BackgroundTasks,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
+        # `_decide_learning` below carries the same guard, so every id would
+        # be refused anyway -- but this route answers 200 with a per-id
+        # status code, and fifty buried 409s is a worse answer than one.
+        # Resolved here without `_ready_agent_or_error` so that a name the
+        # caller cannot see keeps today's per-id behaviour exactly.
+        agent = _visible_agent_or_404(session, request, name)
+        if not isinstance(agent, JSONResponse):
+            blocked = _room_edits_this_agent_or_409(agent)
+            if blocked is not None:
+                return blocked
+
         results = [
             {
                 "id": learning_id,
@@ -5208,6 +5329,8 @@ def create_app(
         history/CI parity. Failure is logged, never surfaced: the tool
         already landed on the agent's volume; only the repo's own copy is
         missing until a later upload lands it."""
+        if not _room_may_commit_to_repo(app, repo):
+            return
         try:
             upload_tooling_file(
                 app.state.clients.github,
@@ -5286,6 +5409,9 @@ def create_app(
         agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -5406,6 +5532,9 @@ def create_app(
         agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -5450,6 +5579,9 @@ def create_app(
         agent = _ready_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -5529,6 +5661,9 @@ def create_app(
         )
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -5615,6 +5750,9 @@ def create_app(
         )
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -5695,6 +5833,9 @@ def create_app(
         )
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -5750,6 +5891,9 @@ def create_app(
         )
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -5822,6 +5966,9 @@ def create_app(
         )
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -5914,6 +6061,9 @@ def create_app(
         )
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -6251,6 +6401,9 @@ def create_app(
         )
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -6337,6 +6490,9 @@ def create_app(
         )
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate

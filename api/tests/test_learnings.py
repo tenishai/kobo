@@ -293,6 +293,7 @@ from types import SimpleNamespace
 
 from kobo_api.clients import CabalError
 from kobo_api.config import Config
+from kobo_api.kinds import KIND_COMPOSED, KIND_CONNECTED
 from kobo_api.models import Agent, AgentStatus
 
 
@@ -349,13 +350,14 @@ def _app(session_factory_fn, cabal, config):
     )
 
 
-def _seed_ready(session, name="wren"):
+def _seed_ready(session, name="wren", kind=KIND_COMPOSED):
     session.add(
         Agent(
             name=name,
             persona="helpful-generalist",
             model_id="vertex_ai/claude-sonnet-4-5",
             status=AgentStatus.READY,
+            kind=kind,
         )
     )
     session.commit()
@@ -377,6 +379,21 @@ def test_run_nightly_stores_candidates_for_due_agent(session, monkeypatch):
     assert len(cabal.calls) == 1
     assert cabal.calls[0][0] == "wren"
     assert session.query(AgentLearning).filter_by(agent_name="wren").count() == 1
+
+
+def test_run_nightly_never_asks_a_connected_agent_what_it_learned(session, monkeypatch):
+    """A connected agent has no switchboard identity, so the relay could
+    only ever fail -- once per agent, every night, forever. It is not asked
+    at all."""
+    monkeypatch.setattr(session, "close", lambda: None)
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    _seed_ready(session, name="wren", kind=KIND_CONNECTED)
+    cabal = StubCabal(json.dumps({"candidates": [_candidate()]}))
+
+    run_nightly(_app(lambda: session, cabal, _cabal_enabled_config()))
+
+    assert cabal.calls == []
+    assert session.query(AgentLearning).count() == 0
 
 
 def test_run_nightly_relays_the_known_list_in_the_envelope(session, monkeypatch):

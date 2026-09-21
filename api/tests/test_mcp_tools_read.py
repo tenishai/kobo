@@ -44,6 +44,7 @@ from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import Clients
 from kobo_api.config import SHARED_GROUP, Config, GroupChoice, MCPConfig
+from kobo_api.kinds import KIND_COMPOSED, KIND_CONNECTED
 from kobo_api.main import create_app
 from kobo_api.mcp import audit, authz, rate_limit
 from kobo_api.mcp.jwt import mint
@@ -188,6 +189,7 @@ def _seed_agent(
     team=None,
     purpose_tags=None,
     status=AgentStatus.READY,
+    kind=KIND_COMPOSED,
 ):
     session = session_factory()
     session.add(
@@ -201,6 +203,7 @@ def _seed_agent(
             group_name=group_name,
             team=team,
             purpose_tags=encode_tags(purpose_tags) if purpose_tags else None,
+            kind=kind,
         )
     )
     session.commit()
@@ -423,8 +426,29 @@ def test_list_agents_returns_name_group_team_owner_status_purpose(session_factor
             "owner": OWNER_A_EMAIL,
             "status": AgentStatus.READY,
             "purpose": ["billing", "support"],
+            "kind": KIND_COMPOSED,
         }
     ]
+
+
+def test_list_agents_says_which_agents_a_team_connected(session_factory, config):
+    """An MCP caller reading the roster has to be able to tell the two
+    apart without asking for each card: a connected agent has no persona,
+    no skills and no chat, so a client that treats every row alike would
+    offer things that cannot work."""
+    _seed_agent(
+        session_factory,
+        name="agent-a",
+        created_by=OWNER_A_EMAIL,
+        group_name=GROUP_A,
+        kind=KIND_CONNECTED,
+    )
+    app = _app(session_factory, config, groups_resolver=_resolver())
+    mcp = build_mcp_server(app)
+
+    result = _call_tool(mcp, "kobo_list_agents", _ctx_for(OWNER_A_EMAIL))
+
+    assert result[0]["kind"] == KIND_CONNECTED
 
 
 def test_list_agents_visibility_parity_email_a_sees_its_own_not_email_bs(
@@ -504,6 +528,7 @@ def test_get_agent_returns_a_detail_dict_with_status_checklist(session_factory, 
     assert result["purpose"] == ["billing"]
     assert result["status"] == AgentStatus.READY
     assert result["steps"] == [{"name": "clone", "status": "done", "error": None}]
+    assert result["kind"] == KIND_COMPOSED
     assert "created_at" in result
 
 

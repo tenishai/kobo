@@ -36,6 +36,11 @@ export type AgentSummary = {
    * the team-guide pre-check (does group X already have a guide?) off the
    * list it already holds, with no per-agent detail fetch. `[]` when none. */
   purpose_tags: string[];
+  /** Connected agents (design 2026-09-21): `"composed"` for an agent the
+   * room built and whose repo it owns, `"connected"` for a team's own repo
+   * the room only deploys. Present on the list as well as the detail so a
+   * card can carry the marker without a per-agent fetch. */
+  kind: string;
 };
 
 export type StepView = {
