@@ -35,6 +35,7 @@ import logging
 import shutil
 import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -908,11 +909,23 @@ class ConnectStep:
         org = ctx.config.github_org
         repo = agent.repo_full_name or ""
 
-        owner, _, _ = repo.partition("/")
-        if owner != org:
+        if not repo:
+            raise RuntimeError("no repository is recorded for this agent. Connect it again")
+
+        # Exactly one slash, both halves non-empty. `owner/a/b` would pass an
+        # owner check and then travel into every path the room builds from
+        # this value, so the shape is settled once, here.
+        parts = repo.split("/")
+        if len(parts) != 2 or not all(parts):
             raise RuntimeError(
-                f"{repo or 'that repository'} is not in {org}. This room can only "
-                f"connect repositories in {org}."
+                f"{repo} does not look like a repository name. Give the owner and "
+                f"the repository name, like {org}/example"
+            )
+
+        if parts[0] != org:
+            raise RuntimeError(
+                f"{repo} is not in {org}. This room can only connect repositories "
+                f"in {org}."
             )
 
         if not ctx.clients.github.repo_exists(repo):
@@ -1409,16 +1422,25 @@ def _write_service_account(k8s_base: Path, agent, config) -> None:
     )
 
 
-def _set_service_account_and_model_env(data: dict, agent, config) -> None:
+def _set_service_account_and_model_env(
+    data: dict, agent, config, *, merge_env: bool
+) -> None:
     """The half of gojira.yaml both kinds of agent need: which service
     account the pod runs as, and the two model env vars its client reads.
 
     Shared so the two wiring steps cannot drift on the model location in
     particular -- see the note below on why that must resolve through
     `vertex_location_for` rather than reading `config.vertex_location`.
+
+    `merge_env` is the one thing they differ on, and it is a question of
+    who owns the file. The room writes a composed agent's gojira.yaml
+    wholesale, so assigning over `env` there loses nothing. A connected
+    agent's gojira.yaml is its team's, and whatever is in `env` is what
+    their own code runs on -- so those keys are kept and only the two model
+    keys are set.
     """
     data["service_account"] = f"agent-{agent.name}"
-    data["env"] = {
+    model_env = {
         "VERTEXAI_PROJECT": config.vertex_project,
         # Model-specific Vertex location (Gemini-3.1-Pro-Preview arc): this
         # is the env var the deployed pod's own LiteLLM client actually
@@ -1428,6 +1450,21 @@ def _set_service_account_and_model_env(data: dict, agent, config) -> None:
         # would still 404 against the org's regional default at runtime.
         "VERTEXAI_LOCATION": vertex_location_for(config, agent.model_id),
     }
+    if not merge_env:
+        data["env"] = model_env
+        return
+
+    existing = data.get("env")
+    if existing is not None and not isinstance(existing, dict):
+        # A non-mapping `env` is not something the deploy platform could
+        # ever have run, so there is nothing here to preserve. Logged
+        # rather than raised: the wiring is still correct, and the file was
+        # already broken before the room read it.
+        log.warning(
+            "gojira.yaml for %s has a non-mapping env; replacing it", agent.name
+        )
+        existing = None
+    data["env"] = {**(existing or {}), **model_env}
 
 
 def _update_gojira_yaml(gojira_yaml_path, agent, config) -> None:
@@ -1448,7 +1485,7 @@ def _update_gojira_yaml(gojira_yaml_path, agent, config) -> None:
     this feature existed.
     """
     data = yaml.safe_load(gojira_yaml_path.read_text()) or {}
-    _set_service_account_and_model_env(data, agent, config)
+    _set_service_account_and_model_env(data, agent, config, merge_env=False)
     data["data_mount"] = {
         "pvc": f"agent-{agent.name}-techne",
         "path": "/techne",
@@ -1546,12 +1583,89 @@ class WireStep:
 # fixed name is what lets a retry find the one already open (`find_pr`).
 CONNECTED_WIRE_BRANCH = "kobo/wire"
 CONNECTED_WIRE_TITLE = "kobo: service account and model access"
+
+# Written for the owner reviewing it, who should be able to tell what this
+# changes without reading the diff -- including the one thing about it that
+# is not a plain addition: gojira.yaml is parsed and written back, so
+# comments and key order in that file do not survive.
 CONNECTED_WIRE_BODY = (
     "This adds the service account the agent runs as, and the two "
     "environment variables its model access needs.\n\n"
-    "Nothing else in the repository is touched, and after this the room "
-    "proposes no further changes unless you ask.\n"
+    "Files changed:\n"
+    "- k8s/base/serviceaccount.yaml: added, the agent's Kubernetes service "
+    "account.\n"
+    "- k8s/base/kustomization.yaml: that manifest added to the resources "
+    "list.\n"
+    "- gojira.yaml: service_account, the two VERTEXAI_ environment "
+    "variables, and any secret names given when the agent was connected. "
+    "Existing environment variables are kept.\n\n"
+    "gojira.yaml is rewritten from its parsed form, so comments and key "
+    "order in that one file are not preserved.\n"
 )
+
+# What the room says rather than taking over identity wiring a team already
+# set for itself. Named once because two different checks raise it.
+CONNECTED_WIRE_TAKEOVER = (
+    "this repository already sets its own service account. Remove it from "
+    "gojira.yaml and k8s/base/serviceaccount.yaml, or ask an operator, then "
+    "press Retry"
+)
+
+# A branch with no pull request behind it: pushing it again fails non
+# fast-forward, and git's own stderr on the step is something no Retry can
+# clear. Say what is in the way instead.
+CONNECTED_WIRE_BRANCH_IN_THE_WAY = (
+    f"the branch {CONNECTED_WIRE_BRANCH} is already in this repository. Delete "
+    "it, or open a pull request from it, then press Retry"
+)
+
+# Everything this step says when a client fails underneath it. Fixed
+# sentences, never the client's own text: whatever is raised here lands
+# verbatim on `AgentStep.error`, which any viewer of the agent can read, and
+# a `gh` or platform error carries a command line, a URL, and sometimes a
+# token. The detail goes to the log instead (same split `AvatarStep` holds).
+CONNECTED_WIRE_GITHUB_UNAVAILABLE = (
+    "could not reach GitHub for this repository. Try again in a moment, then "
+    "press Retry"
+)
+CONNECTED_WIRE_PLATFORM_UNAVAILABLE = (
+    "the deploy platform did not answer. Try again in a moment, then press Retry"
+)
+
+
+@contextmanager
+def _sanitized(what: str, agent_name: str, message: str):
+    """Turn any `ClientError` raised inside into `message`, logging the real
+    one server-side. See `CONNECTED_WIRE_GITHUB_UNAVAILABLE` for why."""
+    try:
+        yield
+    except ClientError as exc:
+        log.warning("connected wire step %s for %s: %s", what, agent_name, exc)
+        raise RuntimeError(message) from exc
+
+
+def _refuse_service_account_takeover(clone_dir: Path, agent, config) -> None:
+    """Refuse to overwrite identity wiring the repository already carries.
+
+    A repository that names its own service account, in either file, is
+    telling the room something; moving the agent onto an identity its owner
+    did not choose, silently, is not the room's to do. Byte-equal content
+    is the room's OWN wiring from a prior attempt, which is a retry, not a
+    choice, and passes.
+    """
+    expected_name = f"agent-{agent.name}"
+    sa_path = clone_dir / "k8s" / "base" / "serviceaccount.yaml"
+    if sa_path.exists():
+        ours = SERVICEACCOUNT_YAML_TEMPLATE.format(
+            name=agent.name, gsa_email=gsa_email(expected_name, config.gcp_project)
+        )
+        if sa_path.read_text() != ours:
+            raise RuntimeError(CONNECTED_WIRE_TAKEOVER)
+
+    data = yaml.safe_load((clone_dir / "gojira.yaml").read_text()) or {}
+    declared = data.get("service_account")
+    if declared and declared != expected_name:
+        raise RuntimeError(CONNECTED_WIRE_TAKEOVER)
 
 
 class ConnectedWireStep:
@@ -1586,10 +1700,11 @@ class ConnectedWireStep:
         agent = ctx.agent
         config = ctx.config
         github = ctx.clients.github
-        gojira = ctx.clients.gojira
         repo = agent.repo_full_name
 
-        clone_dir = _prepare_wire_clone(ctx)
+        with _sanitized("clone", agent.name, CONNECTED_WIRE_GITHUB_UNAVAILABLE):
+            clone_dir = _prepare_wire_clone(ctx)
+
         k8s_base = clone_dir / "k8s" / "base"
         gojira_yaml_path = clone_dir / "gojira.yaml"
         wire_paths = [
@@ -1597,6 +1712,8 @@ class ConnectedWireStep:
             k8s_base / "kustomization.yaml",
             gojira_yaml_path,
         ]
+
+        _refuse_service_account_takeover(clone_dir, agent, config)
 
         before = _snapshot(wire_paths)
         _write_service_account(k8s_base, agent, config)
@@ -1609,26 +1726,51 @@ class ConnectedWireStep:
             # platform ever regenerated against it, and this step must not
             # return without confirming the app is active (WireStep's own
             # invariant, for the same reason).
-            gojira.reprovision(agent.gojira_app_id)
-            return _wait_active(ctx, agent.gojira_app_id)
+            return self._reprovision_and_wait(ctx)
 
-        pr_url = github.find_pr(repo, branch=CONNECTED_WIRE_BRANCH)
+        with _sanitized("find_pr", agent.name, CONNECTED_WIRE_GITHUB_UNAVAILABLE):
+            pr_url = github.find_pr(repo, branch=CONNECTED_WIRE_BRANCH)
+
         if pr_url is None:
-            pr_url = github.open_pr(
-                clone_dir,
-                repo=repo,
-                branch=CONNECTED_WIRE_BRANCH,
-                title=CONNECTED_WIRE_TITLE,
-                body=CONNECTED_WIRE_BODY,
-            )
+            # No pull request, but the branch may still be there: a closed
+            # one leaves it behind, and so does a merged one in a
+            # repository that does not delete merged branches.
+            with _sanitized(
+                "branch_exists", agent.name, CONNECTED_WIRE_GITHUB_UNAVAILABLE
+            ):
+                leftover = github.branch_exists(repo, CONNECTED_WIRE_BRANCH)
+            if leftover:
+                raise RuntimeError(CONNECTED_WIRE_BRANCH_IN_THE_WAY)
 
-        if not github.merge_pr(repo, pr_url):
+            with _sanitized("open_pr", agent.name, CONNECTED_WIRE_GITHUB_UNAVAILABLE):
+                pr_url = github.open_pr(
+                    clone_dir,
+                    repo=repo,
+                    branch=CONNECTED_WIRE_BRANCH,
+                    title=CONNECTED_WIRE_TITLE,
+                    body=CONNECTED_WIRE_BODY,
+                )
+
+        with _sanitized("merge_pr", agent.name, CONNECTED_WIRE_GITHUB_UNAVAILABLE):
+            merged = github.merge_pr(repo, pr_url)
+
+        if not merged:
             # The message a viewer reads on the failed step. A link and one
             # instruction: nothing here is the room's to fix.
             raise RuntimeError(f"Merge this pull request, then press Retry: {pr_url}")
 
-        gojira.reprovision(agent.gojira_app_id)
-        return _wait_active(ctx, agent.gojira_app_id)
+        return self._reprovision_and_wait(ctx)
+
+    def _reprovision_and_wait(self, ctx: Ctx) -> str:
+        app_id = ctx.agent.gojira_app_id
+        with _sanitized(
+            "reprovision", ctx.agent.name, CONNECTED_WIRE_PLATFORM_UNAVAILABLE
+        ):
+            ctx.clients.gojira.reprovision(app_id)
+        with _sanitized(
+            "wait_active", ctx.agent.name, CONNECTED_WIRE_PLATFORM_UNAVAILABLE
+        ):
+            return _wait_active(ctx, app_id)
 
 
 def _snapshot(paths: list[Path]) -> dict[str, str | None]:
@@ -1656,7 +1798,7 @@ def _update_connected_gojira_yaml(gojira_yaml_path: Path, agent, config) -> None
     plainly.
     """
     data = yaml.safe_load(gojira_yaml_path.read_text()) or {}
-    _set_service_account_and_model_env(data, agent, config)
+    _set_service_account_and_model_env(data, agent, config, merge_env=True)
     for secret_name in agent.secret_names or []:
         _append_secrets_from(data, secret_name)
     gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))

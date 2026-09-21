@@ -21,7 +21,7 @@ from dataclasses import dataclass
 import pytest
 import yaml
 
-from kobo_api.clients import Clients
+from kobo_api.clients import ClientError, Clients
 from kobo_api.kinds import (
     KIND_COMPOSED,
     KIND_CONNECTED,
@@ -227,6 +227,44 @@ def test_connect_step_refuses_a_repo_outside_the_rooms_organisation(session_fact
 
     message = str(exc_info.value)
     assert config.github_org in message
+    assert "—" not in message
+    assert github.calls == []
+
+
+def test_connect_step_refuses_an_agent_with_no_repository_recorded(session_factory, config):
+    """Its own sentence rather than the out-of-organisation one: an empty
+    value is not a repository somewhere else, it is a row that never got
+    one, and telling somebody their blank is in the wrong organisation
+    helps nobody."""
+    session, agent = _make_agent(session_factory, config, repo_full_name="")
+    github = FakeGitHub()
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    with pytest.raises(RuntimeError) as exc_info:
+        ConnectStep().run(ctx)
+
+    message = str(exc_info.value)
+    assert message == "no repository is recorded for this agent. Connect it again"
+    assert github.calls == []
+
+
+@pytest.mark.parametrize(
+    "repo", ["example-org/team/chatbot", "example-org", "example-org/"]
+)
+def test_connect_step_refuses_anything_that_is_not_one_owner_and_one_name(
+    session_factory, config, repo
+):
+    """`owner/a/b` passes an owner check and then travels into every path
+    the room builds from it. One slash, both halves non-empty, or nothing."""
+    session, agent = _make_agent(session_factory, config, repo_full_name=repo)
+    github = FakeGitHub(existing_repos={repo})
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    with pytest.raises(RuntimeError) as exc_info:
+        ConnectStep().run(ctx)
+
+    message = str(exc_info.value)
+    assert "does not look like a repository name" in message
     assert "—" not in message
     assert github.calls == []
 
@@ -463,6 +501,201 @@ def test_connected_wire_step_sets_the_service_account_and_model_env_only(
     }
     assert "data_mount" not in data
     assert data.get("secrets_from", []) == []
+
+
+def _gojira_yaml_with(**extra) -> str:
+    """A team's own gojira.yaml, as a hand-written file would look."""
+    data = {"app": REPO_NAME, "class": "agent", **extra}
+    return yaml.safe_dump(data, sort_keys=False)
+
+
+def test_connected_wire_step_keeps_a_teams_own_env_and_only_adds_the_model_keys(
+    session_factory, config
+):
+    """The room owns a composed agent's gojira.yaml and writes `env`
+    wholesale. It does not own this one: assigning over `env` here would
+    silently delete the settings the team's own code runs on."""
+    github = FakeGitHub(
+        pr_url=WIRE_PR_URL,
+        extra_clone_files={
+            "gojira.yaml": _gojira_yaml_with(
+                env={"LOG_LEVEL": "debug", "FEATURE_X": "on"}
+            )
+        },
+    )
+    wiring = _wire_ctx(session_factory, config, github=github)
+
+    ConnectedWireStep().run(wiring.ctx)
+
+    data = yaml.safe_load((wiring.ctx.workdir / "wire" / "gojira.yaml").read_text())
+    assert data["env"] == {
+        "LOG_LEVEL": "debug",
+        "FEATURE_X": "on",
+        "VERTEXAI_PROJECT": config.vertex_project,
+        "VERTEXAI_LOCATION": config.vertex_location,
+    }
+
+
+def test_connected_wire_step_refuses_to_take_over_a_service_account_in_gojira_yaml(
+    session_factory, config
+):
+    """A repository that already names its own service account is telling
+    the room something. Overwriting it would move the agent onto an
+    identity its owner did not choose, silently."""
+    github = FakeGitHub(
+        pr_url=WIRE_PR_URL,
+        extra_clone_files={
+            "gojira.yaml": _gojira_yaml_with(service_account="team-runner")
+        },
+    )
+    wiring = _wire_ctx(session_factory, config, github=github)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        ConnectedWireStep().run(wiring.ctx)
+
+    assert str(exc_info.value) == (
+        "this repository already sets its own service account. Remove it from "
+        "gojira.yaml and k8s/base/serviceaccount.yaml, or ask an operator, "
+        "then press Retry"
+    )
+    assert wiring.github.open_pr_calls == []
+    assert _repo_mutations(wiring.github) == []
+
+
+def test_connected_wire_step_refuses_to_overwrite_a_service_account_manifest(
+    session_factory, config
+):
+    github = FakeGitHub(
+        pr_url=WIRE_PR_URL,
+        extra_clone_files={
+            "k8s/base/serviceaccount.yaml": (
+                "apiVersion: v1\nkind: ServiceAccount\n"
+                "metadata: {name: team-runner, namespace: team}\n"
+            )
+        },
+    )
+    wiring = _wire_ctx(session_factory, config, github=github)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        ConnectedWireStep().run(wiring.ctx)
+
+    assert "already sets its own service account" in str(exc_info.value)
+    assert wiring.github.open_pr_calls == []
+
+
+def test_connected_wire_step_accepts_its_own_manifest_from_a_prior_attempt(
+    session_factory, config
+):
+    """The takeover check must not fire on the room's OWN wiring: byte-equal
+    content is a retry, not a team's choice."""
+    from kobo_api.steps import SERVICEACCOUNT_YAML_TEMPLATE
+
+    sa_email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    github = FakeGitHub(
+        pr_url=WIRE_PR_URL,
+        extra_clone_files={
+            "k8s/base/serviceaccount.yaml": SERVICEACCOUNT_YAML_TEMPLATE.format(
+                name=AGENT_NAME, gsa_email=sa_email
+            ),
+            "gojira.yaml": _gojira_yaml_with(service_account=f"agent-{AGENT_NAME}"),
+        },
+    )
+    wiring = _wire_ctx(session_factory, config, github=github)
+
+    note = ConnectedWireStep().run(wiring.ctx)
+
+    assert "active" in note
+
+
+def test_connected_wire_step_refuses_a_leftover_branch_with_no_pull_request(
+    session_factory, config
+):
+    """A closed-unmerged pull request leaves its branch behind, and pushing
+    that branch again fails non fast-forward with git's own stderr, which
+    no Retry can clear. Say what is in the way instead."""
+    repo = _repo(config)
+    github = FakeGitHub(pr_url=WIRE_PR_URL, existing_branches={f"{repo}#{WIRE_BRANCH}"})
+    wiring = _wire_ctx(session_factory, config, github=github)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        ConnectedWireStep().run(wiring.ctx)
+
+    assert str(exc_info.value) == (
+        f"the branch {WIRE_BRANCH} is already in this repository. Delete it, "
+        "or open a pull request from it, then press Retry"
+    )
+    assert wiring.github.open_pr_calls == []
+
+
+def test_connected_wire_step_uses_an_open_pull_request_over_the_branch_check(
+    session_factory, config
+):
+    """The branch existing is expected when its pull request is open: that
+    is the retry path, and it merges rather than complaining."""
+    repo = _repo(config)
+    existing = "https://github.com/example-org/team-chatbot/pull/9"
+    github = FakeGitHub(
+        pr_url=WIRE_PR_URL,
+        open_prs={f"{repo}#{WIRE_BRANCH}": existing},
+        existing_branches={f"{repo}#{WIRE_BRANCH}"},
+    )
+    wiring = _wire_ctx(session_factory, config, github=github)
+
+    ConnectedWireStep().run(wiring.ctx)
+
+    assert wiring.github.merge_pr_calls == [(repo, existing)]
+
+
+@pytest.mark.parametrize(
+    "broken",
+    ["clone_error", "find_pr", "branch_exists", "open_pr", "merge_pr", "reprovision"],
+)
+def test_connected_wire_step_never_puts_a_clients_own_error_text_on_the_step(
+    session_factory, config, broken
+):
+    """Whatever this step raises lands verbatim on `AgentStep.error`, which
+    any viewer of the agent can read. A `gh` or platform error carries a
+    command line, a URL and sometimes a token; none of that belongs there."""
+    secret = "ghs_notatoken_but_shaped_like_one"
+    github = FakeGitHub(
+        pr_url=WIRE_PR_URL,
+        clone_error=secret if broken == "clone_error" else None,
+    )
+    wiring = _wire_ctx(session_factory, config, github=github)
+
+    def _boom(*args, **kwargs):
+        raise ClientError(secret)
+
+    if broken in {"find_pr", "branch_exists", "open_pr", "merge_pr"}:
+        setattr(wiring.github, broken, _boom)
+    if broken == "reprovision":
+        wiring.gojira.reprovision = _boom
+
+    with pytest.raises(RuntimeError) as exc_info:
+        ConnectedWireStep().run(wiring.ctx)
+
+    message = str(exc_info.value)
+    assert secret not in message
+    assert "—" not in message
+    assert message
+
+
+def test_connected_wire_step_pull_request_body_names_the_files_it_touches(
+    session_factory, config
+):
+    """An owner reviewing this has to be able to tell, without reading the
+    diff, exactly what it changes and that their gojira.yaml comes back
+    reformatted."""
+    wiring = _wire_ctx(session_factory, config)
+
+    ConnectedWireStep().run(wiring.ctx)
+
+    body = wiring.github.open_pr_calls[0]["body"]
+    assert "k8s/base/serviceaccount.yaml" in body
+    assert "k8s/base/kustomization.yaml" in body
+    assert "gojira.yaml" in body
+    assert "comments" in body
+    assert "—" not in body
 
 
 def test_connected_wire_step_carries_the_owners_own_secret_names(session_factory, config):

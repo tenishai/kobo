@@ -232,10 +232,27 @@ class GitHubClient(Protocol):
         """
         ...
 
+    def branch_exists(self, repo: str, branch: str) -> bool:
+        """Whether `branch` exists in `repo`.
+
+        Deliberately NOT `repo_exists`-shaped: that one collapses every
+        failure to False, which is right for "is there a repo here at all"
+        and wrong here. Only a 404 means "no such branch"; anything else
+        raises, because answering "no branch" to a 401 would send the
+        caller into a push that then fails for a reason it believed it had
+        already ruled out.
+        """
+        ...
+
     def merge_pr(self, repo: str, pr_url: str) -> bool:
         """Merge the pull request at `pr_url`. True when it is merged (or was
         already), False when GitHub refuses to merge it, `ClientError` for
         anything else.
+
+        Tries each of `MERGE_METHODS` in turn: a repository may allow only
+        one of them and refuses the others by name. A refusal about the
+        pull request itself (rather than the method) is the answer for
+        every method, so it stops there.
 
         The False answer is the whole point of this method having one: a
         protected branch, a required review, or a required check is an
@@ -380,13 +397,22 @@ def _gh_returned_404(exc: ClientError) -> bool:
     return "(HTTP 404)" in exc.stderr
 
 
+# The merge methods `merge_pr` will ask for, in order. A repository may
+# allow only one of the three, and refuses the others by name -- the
+# operator ruling is that the room merges by default, so it asks the ways
+# the repository might accept rather than giving up on the first no.
+MERGE_METHODS = ("--merge", "--squash", "--rebase")
+
 # Fragments of what `gh pr merge` prints when GitHub declines to merge, as
-# opposed to failing. Matched case-insensitively as substrings of the whole
-# error, the same "classify by a stable fragment, never by exact text"
-# discipline `_gh_returned_404` above and `destroy._is_already_archived`
-# already hold -- GitHub is free to reword these sentences, and the merge
-# refusal arrives as a GraphQL message rather than an HTTP status marker, so
-# there is no code to key on here the way there is for a 404.
+# opposed to failing. Matched case-insensitively as substrings of gh's
+# STDERR ONLY -- never of the ClientError's message, which embeds the argv
+# and the pull request URL, so a branch or repository whose name contains
+# one of these words would otherwise classify itself. Same "classify by a
+# stable fragment, never by exact text" discipline `_gh_returned_404` above
+# and `destroy._is_already_archived` already hold: GitHub is free to reword
+# these sentences, and a merge refusal arrives as a GraphQL message rather
+# than an HTTP status marker, so there is no code to key on the way there
+# is for a 404.
 _MERGE_REFUSED_FRAGMENTS = (
     "not mergeable",
     "base branch policy",
@@ -394,22 +420,41 @@ _MERGE_REFUSED_FRAGMENTS = (
     "review is required",
     "approving review is required",
     "protected branch",
+    # A repository that merges through a queue does not accept a direct
+    # merge from anyone, the room included. Not an error: a person moves it
+    # through the queue.
+    "merge queue",
 )
 
-# What `gh pr merge` says when somebody merged the pull request first. That
-# is the outcome the caller wanted, so it reads as success, not refusal.
-_MERGE_ALREADY_DONE_FRAGMENT = "already merged"
+# How GitHub says "this repository does not do it that way" -- about the
+# METHOD, not about this pull request. The only refusal worth answering by
+# asking again with a different method.
+_MERGE_METHOD_REFUSED_FRAGMENTS = (
+    "are not allowed on this repository",
+    "merge method is not allowed",
+)
+
+# What `gh pr merge` says when somebody merged the pull request first, in
+# both of the phrasings seen (gh's own one-liner and GitHub's GraphQL
+# message). That is the outcome the caller wanted, so it reads as success.
+_MERGE_ALREADY_DONE_FRAGMENTS = ("already merged", "already been merged")
 
 
 def _gh_declined_the_merge(exc: ClientError) -> bool:
     """Whether `exc` is GitHub declining to merge rather than failing."""
-    message = f"{exc} {exc.stderr}".lower()
-    return any(fragment in message for fragment in _MERGE_REFUSED_FRAGMENTS)
+    stderr = exc.stderr.lower()
+    return any(fragment in stderr for fragment in _MERGE_REFUSED_FRAGMENTS)
+
+
+def _gh_refused_the_merge_method(exc: ClientError) -> bool:
+    """Whether `exc` is about the merge METHOD rather than this pull request."""
+    stderr = exc.stderr.lower()
+    return any(fragment in stderr for fragment in _MERGE_METHOD_REFUSED_FRAGMENTS)
 
 
 def _gh_says_already_merged(exc: ClientError) -> bool:
-    message = f"{exc} {exc.stderr}".lower()
-    return _MERGE_ALREADY_DONE_FRAGMENT in message
+    stderr = exc.stderr.lower()
+    return any(fragment in stderr for fragment in _MERGE_ALREADY_DONE_FRAGMENTS)
 
 
 class GhCLI:
@@ -532,22 +577,48 @@ class GhCLI:
         )
         return out if out else None
 
-    def merge_pr(self, repo: str, pr_url: str) -> bool:
+    def branch_exists(self, repo: str, branch: str) -> bool:
         try:
             self._runner.run(
-                [self._gh, "pr", "merge", pr_url, "--merge"], env=self._env()
+                [self._gh, "api", f"repos/{repo}/branches/{branch}"], env=self._env()
             )
         except ClientError as exc:
-            if _gh_says_already_merged(exc):
-                return True
-            if _gh_declined_the_merge(exc):
-                # Logged at info, not warning: this is the owner's own repo
-                # policy working as intended, and the caller already turns it
-                # into something a person can act on.
-                log.info("github declined to merge %s in %s", pr_url, repo)
+            if _gh_returned_404(exc):
                 return False
             raise
         return True
+
+    def merge_pr(self, repo: str, pr_url: str) -> bool:
+        for method in MERGE_METHODS:
+            try:
+                self._runner.run(
+                    [self._gh, "pr", "merge", pr_url, method], env=self._env()
+                )
+            except ClientError as exc:
+                if _gh_says_already_merged(exc):
+                    return True
+                if _gh_refused_the_merge_method(exc):
+                    # About the method, not this pull request: the next one
+                    # may be the one this repository allows.
+                    log.info(
+                        "github does not allow %s in %s; trying the next method",
+                        method, repo,
+                    )
+                    continue
+                if _gh_declined_the_merge(exc):
+                    # Logged at info, not warning: this is the owner's own repo
+                    # policy working as intended, and the caller already turns it
+                    # into something a person can act on. Refused on the pull
+                    # request's own merits, so another method would be refused
+                    # the same way -- stop asking.
+                    log.info("github declined to merge %s in %s", pr_url, repo)
+                    return False
+                raise
+            else:
+                return True
+
+        log.info("github allows none of %s in %s", ", ".join(MERGE_METHODS), repo)
+        return False
 
     def local_head(self, workdir: Path) -> str:
         return self._runner.run(
