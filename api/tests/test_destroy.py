@@ -30,6 +30,7 @@ from kobo_api.destroy import (
     _destroy_forget,
     _destroy_platform,
     _destroy_repo,
+    _destroy_secrets,
     _destroy_slack,
     _is_already_archived,
     _is_repo_not_found,
@@ -37,13 +38,23 @@ from kobo_api.destroy import (
 )
 from kobo_api.kinds import KIND_COMPOSED, KIND_CONNECTED
 from kobo_api.models import A2AInvite, Agent, AgentStatus, AgentStep, StepStatus
-from tests.fakes import FakeCabal, FakeCloud, FakeGitHub, FakeGojira, FakeSlack
+from tests.fakes import (
+    FakeCabal,
+    FakeCloud,
+    FakeGitHub,
+    FakeGojira,
+    FakeLadon,
+    FakeSlack,
+)
 
 AGENT_NAME = "clio"
 PERSONA = "helpful-generalist"
 MODEL_ID = "vertex_ai/claude-sonnet-4-5"
 OWNER = "acme-corp"
 REPO = f"{OWNER}/agent-{AGENT_NAME}"
+# The person the secrets platform records a removal against: an agent's
+# own creator, which is the only name the destroy ledger has to give it.
+OWNER_EMAIL = "owner@example.com"
 
 JOIN_TIMEOUT = 5
 
@@ -83,7 +94,16 @@ def _make_ctx_agent(
 
 
 def _ctx(
-    session, agent, config, *, github=None, gojira=None, slack=None, cloud=None, cabal=None
+    session,
+    agent,
+    config,
+    *,
+    github=None,
+    gojira=None,
+    slack=None,
+    cloud=None,
+    cabal=None,
+    ladon=None,
 ) -> DestroyCtx:
     # `cloud` defaults to a fresh, unseeded FakeCloud rather than None: since
     # destroy-access (unlike the other steps) has no `agent.<field>` gate and
@@ -99,6 +119,7 @@ def _ctx(
         kubectl=None,
         slack=slack,
         cabal=cabal,
+        ladon=ladon,
     )
     return DestroyCtx(agent=agent, session=session, config=config, clients=clients)
 
@@ -115,7 +136,9 @@ def _seed_agent(session_factory, *, name: str = AGENT_NAME, **kwargs) -> int:
     return agent_id
 
 
-def _clients(*, github=None, gojira=None, slack=None, cloud=None, cabal=None) -> Clients:
+def _clients(
+    *, github=None, gojira=None, slack=None, cloud=None, cabal=None, ladon=None
+) -> Clients:
     # Same default-to-a-working-FakeCloud rationale as `_ctx` above, for the
     # engine-level (run_destroy) tests.
     return Clients(
@@ -126,6 +149,7 @@ def _clients(*, github=None, gojira=None, slack=None, cloud=None, cabal=None) ->
         kubectl=None,
         slack=slack,
         cabal=cabal,
+        ladon=ladon,
     )
 
 
@@ -135,6 +159,7 @@ def _clients(*, github=None, gojira=None, slack=None, cloud=None, cabal=None) ->
 def test_destroy_steps_order_is_fixed():
     assert DESTROY_STEPS == (
         "destroy-platform",
+        "destroy-secrets",
         "destroy-access",
         "destroy-slack",
         "destroy-repo",
@@ -1570,3 +1595,165 @@ def test_run_destroy_releases_the_registry_slot_when_the_thread_fails_to_launch(
     session = session_factory()
     assert session.get(Agent, agent_id) is None
     session.close()
+
+
+# --- destroy-secrets ----------------------------------------------------------
+#
+# The step that closes the gap the secrets platform integration documented:
+# secrets written through the platform used to stay behind when the agent
+# was destroyed, which is a live credential at a path nobody is watching.
+
+
+def _ladon_holding_everything(name: str = AGENT_NAME) -> FakeLadon:
+    ladon = FakeLadon()
+    for purpose in ("cabal", "slack", "env"):
+        ladon.stored[f"apps/{name}/{purpose}"] = {"A_KEY": "not-a-real-value"}
+    return ladon
+
+
+def test_destroy_secrets_removes_all_three_paths_and_their_cluster_objects(
+    session_factory, config
+):
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+    ladon = _ladon_holding_everything()
+
+    detail = _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+
+    assert [path for _, path in ladon.deletes] == [
+        f"apps/{AGENT_NAME}/cabal",
+        f"apps/{AGENT_NAME}/slack",
+        f"apps/{AGENT_NAME}/env",
+    ]
+    assert [name for *_, name in ladon.unsyncs] == [
+        f"{AGENT_NAME}-cabal",
+        f"{AGENT_NAME}-slack",
+        f"{AGENT_NAME}-env",
+    ]
+    assert ladon.stored == {}
+    assert "removed" in detail
+    session.close()
+
+
+def test_destroy_secrets_takes_the_cluster_object_away_before_the_path(
+    session_factory, config
+):
+    # The other way round leaves the cluster reconciling a path that is
+    # gone on purpose, and the Kubernetes Secret it owns still sitting in
+    # the namespace.
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+
+    order: list[str] = []
+
+    class _Ordered(FakeLadon):
+        def unsync(self, acting_email, app, k8s_namespace, name):
+            order.append(f"unsync:{name}")
+            super().unsync(acting_email, app, k8s_namespace, name)
+
+        def delete_secret(self, acting_email, path):
+            order.append(f"delete:{path}")
+            super().delete_secret(acting_email, path)
+
+    _destroy_secrets(_ctx(session, agent, config, ladon=_Ordered()))
+
+    assert order[0] == f"unsync:{AGENT_NAME}-cabal"
+    assert order[1] == f"delete:apps/{AGENT_NAME}/cabal"
+    session.close()
+
+
+def test_destroy_secrets_records_the_removal_against_the_agents_creator(
+    session_factory, config
+):
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = f"  {OWNER_EMAIL} "
+    ladon = _ladon_holding_everything()
+
+    _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+
+    assert {email for email, _ in ladon.deletes} == {OWNER_EMAIL}
+    assert {call[0] for call in ladon.unsyncs} == {OWNER_EMAIL}
+    session.close()
+
+
+def test_destroy_secrets_run_twice_is_the_same_answer(session_factory, config):
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+    ladon = _ladon_holding_everything()
+
+    first = _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+    second = _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+
+    assert first == second
+    session.close()
+
+
+def test_destroy_secrets_skips_a_room_with_no_secrets_platform(session_factory, config):
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+
+    detail = _destroy_secrets(_ctx(session, agent, config, ladon=None))
+
+    assert "no secrets platform" in detail
+    session.close()
+
+
+def test_destroy_secrets_leaves_the_paths_when_nobody_is_on_record(
+    session_factory, config
+):
+    # The platform records every removal against a person. Deleting
+    # credentials under nobody's name is worse than leaving them for an
+    # operator, and this is a note rather than a failure so an otherwise
+    # clean destroy is not held hostage to it.
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = None
+    ladon = _ladon_holding_everything()
+
+    detail = _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+
+    assert "no person on record" in detail
+    assert ladon.deletes == []
+    assert ladon.unsyncs == []
+    session.close()
+
+
+def test_destroy_secrets_note_never_carries_an_em_dash(session_factory, config):
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = None
+
+    assert "—" not in _destroy_secrets(_ctx(session, agent, config, ladon=None))
+    assert "—" not in _destroy_secrets(
+        _ctx(session, agent, config, ladon=FakeLadon())
+    )
+    session.close()
+
+
+def test_destroy_secrets_that_the_lane_refuses_fails_the_step(session_factory, config):
+    # A refusal is not "already gone" (the lane answers 200 for that), so
+    # it stops the ledger at this step rather than marking a credential
+    # removed that is still live. The run resumes here.
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+    ladon = FakeLadon(delete_error="that namespace is not yours")
+
+    with pytest.raises(ClientError):
+        _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+    session.close()
+
+
+def test_a_full_destroy_run_removes_the_stored_secrets_too(session_factory, config):
+    ladon = _ladon_holding_everything()
+    agent_id = _seed_agent(
+        session_factory,
+        status=AgentStatus.READY,
+        gojira_app_id=None,
+        repo_full_name=None,
+        created_by=OWNER_EMAIL,
+    )
+
+    thread = run_destroy(session_factory, agent_id, _clients(ladon=ladon), config)
+    assert thread is not None
+    thread.join(timeout=JOIN_TIMEOUT)
+
+    assert ladon.stored == {}
+    assert len(ladon.unsyncs) == 3

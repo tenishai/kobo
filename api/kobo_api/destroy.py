@@ -75,8 +75,16 @@ log = logging.getLogger(__name__)
 # already tolerates "already delisted"), so there's no reason to rush it
 # earlier — but it must run before destroy-forget deletes the row this
 # step still reads (agent.name).
+# "destroy-secrets" (secrets and environment design, 2026-09-22) sits
+# immediately after "destroy-platform", and that order is the point of it:
+# the workload is already stopped, so taking its Kubernetes Secrets away
+# cannot stop a pod that was still serving. It closes the gap the secrets
+# platform integration documented in so many words -- secrets written
+# through the platform were not removed when the agent was destroyed --
+# which left a live credential at a path nobody was watching.
 DESTROY_STEPS = (
     "destroy-platform",
+    "destroy-secrets",
     "destroy-access",
     "destroy-slack",
     "destroy-repo",
@@ -89,12 +97,21 @@ DESTROY_STEPS = (
 # so the two can never drift apart.
 DESTROY_STEP_LABELS: dict[str, str] = {
     "destroy-platform": "Platform teardown",
+    "destroy-secrets": "Stored secrets",
     "destroy-access": "Model access",
     "destroy-slack": "Slack app",
     "destroy-repo": "Repository archive",
     "destroy-directory": "Directory listing",
     "destroy-forget": "Room record",
 }
+
+# Every purpose the room writes under `apps/<agent>/`: the colleague pass,
+# the pasted Slack tokens, and whatever an owner added in the Secrets and
+# environment panel. Each one has a Kubernetes Secret named after it
+# (`<agent>-cabal`, `<agent>-slack`, `<agent>-env`), which is what
+# `secrets_from` in the agent's gojira.yaml names and what the destroy
+# step below takes away with the path.
+SECRET_PURPOSES = ("cabal", "slack", "env")
 
 
 @dataclass
@@ -139,6 +156,61 @@ def _destroy_platform(ctx: DestroyCtx) -> str:
             "; ".join(failures),
         )
     return json.dumps(result)
+
+
+def _destroy_secrets(ctx: DestroyCtx) -> str:
+    """Remove everything this agent's secrets are held in on the secrets
+    platform: the three cluster objects that deliver them, then the three
+    paths that hold them (secrets and environment design, 2026-09-22).
+
+    Three purposes, because the room writes three: `cabal` (the colleague
+    pass), `slack` (the tokens an owner pasted) and `env` (whatever they
+    added in the panel). Named as a fixed list rather than discovered,
+    for the reason `destroy-access` gives about the GSA: nothing on the
+    agent's row records which of them were ever written, and asking about
+    a path that was never there costs one call and answers cleanly.
+
+    Order is load-bearing WITHIN each purpose. The ExternalSecret goes
+    first: deleting the path underneath a live one leaves the cluster
+    reconciling a path that is gone on purpose, an error in the operator's
+    log every interval, and the Kubernetes Secret it owns still sitting
+    there. Deleting the object first takes that Secret with it, which is
+    the whole point of the step.
+
+    Idempotent end to end, by the lane's own contract: an object already
+    gone and a path already gone are both successes, so a retried destroy
+    does not fail on work a prior attempt finished.
+
+    Two ways this completes with a note rather than doing anything. A room
+    with no secrets platform configured never wrote through it, so there
+    is nothing there to remove and nothing to say beyond that. An agent
+    with nobody on record has no person for the platform to record the
+    removal against; the room would rather leave the paths and say so than
+    delete credentials under no one's name, and an operator can remove
+    them with their own identity. Neither is a failure, for the reason
+    `destroy-directory` gives: holding an otherwise-clean destroy hostage
+    to something an operator cannot fix mid-run leaves a fully
+    teardown-able agent stuck.
+    """
+    agent = ctx.agent
+    ladon = ctx.clients.ladon
+    if ladon is None:
+        return "no secrets platform configured; nothing was stored through one"
+
+    acting_email = (agent.created_by or "").strip()
+    if not acting_email:
+        return (
+            "no person on record to remove these on behalf of; the stored "
+            "secrets stay until an operator removes them"
+        )
+
+    removed = []
+    for purpose in SECRET_PURPOSES:
+        path = f"apps/{agent.name}/{purpose}"
+        ladon.unsync(acting_email, agent.name, agent.name, f"{agent.name}-{purpose}")
+        ladon.delete_secret(acting_email, path)
+        removed.append(purpose)
+    return f"removed: {', '.join(removed)}"
 
 
 def _destroy_access(ctx: DestroyCtx) -> str:
@@ -390,6 +462,7 @@ def _destroy_forget(ctx: DestroyCtx) -> str:
 
 _DESTROY_FUNCS = {
     "destroy-platform": _destroy_platform,
+    "destroy-secrets": _destroy_secrets,
     "destroy-access": _destroy_access,
     "destroy-slack": _destroy_slack,
     "destroy-repo": _destroy_repo,
