@@ -533,6 +533,33 @@ export type ConnectAgentBody = ScanRepoBody & {
   confirm_repo_owner: boolean;
 };
 
+/** One row in the Repository field's typeahead: a repository the room's
+ * GitHub App can already reach. `private` is shown as a one-word marker so
+ * a person knows which of two similarly named repositories they are
+ * pointing at. The name and that marker are the whole row, and the whole
+ * response: the connect route reads GitHub's own answer for everything
+ * else rather than a browser's copy of it. */
+export type ConnectRepoOption = {
+  full_name: string;
+  private: boolean;
+};
+
+/** `GET /api/connect/repos`'s answer: at most ten matches, and whether
+ * more matched than came back. */
+export type ConnectRepoMatches = {
+  repos: ConnectRepoOption[];
+  truncated: boolean;
+};
+
+/** `GET /api/connect/repos`: the repositories the room's GitHub App
+ * installation can reach whose name starts with (or contains) `q`. An
+ * empty `q` answers with nothing, which is the rule and not an edge case:
+ * the field never offers a list, only what somebody is already typing. */
+export async function searchConnectRepos(q: string): Promise<ConnectRepoMatches> {
+  const res = await fetch(`/api/connect/repos?q=${encodeURIComponent(q)}`);
+  return parse<ConnectRepoMatches>(res);
+}
+
 export async function scanRepo(body: ScanRepoBody): Promise<ScanReport> {
   const res = await fetch("/api/connect/scan", {
     method: "POST",

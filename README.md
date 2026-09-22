@@ -47,6 +47,9 @@ Kobo is opinionated by design:
 - **Create**: describe the job (or paste a full persona document — the discovery metadata
   distills itself in the background), pick a name from the ceremony, pick skills, pick a
   group, click Create. Minutes later the agent answers its first hello.
+- **Connect your own**: take on a repository your team already owns and let the room deploy
+  it. The repository field searches the repositories the room's GitHub App can reach as you
+  type, and the room proposes its setup by pull request.
 - **Chat & teach**: talk to any agent you can see. Press *Teach this* on any exchange and the
   fact is in the agent's memory in seconds, provenance-stamped with your identity. Corrections
   retire stale facts in-session via the agent's own belief-revision pass.

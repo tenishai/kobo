@@ -195,6 +195,7 @@ import {
   saveLocalSkill,
   saveSlackChannels,
   scanRepo,
+  searchConnectRepos,
   searchPeople,
   searchPersonas,
   searchSkills,
@@ -537,6 +538,24 @@ export function createAgentMutation(queryClient: QueryClient) {
       queryClient.invalidateQueries({ queryKey: ["agents"] });
     },
   };
+}
+
+/**
+ * The Repository field's typeahead. A query, not a mutation: the same
+ * search from two people is the same answer, and the room's own listing
+ * behind it is cached for five minutes anyway.
+ *
+ * Disabled below one character, which is the field's rule rather than an
+ * optimisation: nothing is offered on focus or on a click, so an empty
+ * box asks the room nothing.
+ */
+export function connectReposQuery(q: string) {
+  const trimmed = q.trim();
+  return queryOptions({
+    queryKey: ["connect", "repos", trimmed] as const,
+    queryFn: () => searchConnectRepos(trimmed),
+    enabled: trimmed.length >= 1,
+  });
 }
 
 /**

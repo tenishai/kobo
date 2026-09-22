@@ -88,6 +88,7 @@ from kobo_api.metadata import (
     skill_descriptions_for_agent,
     tooling_filenames_for,
 )
+from kobo_api.repo_search import MAX_QUERY_CHARS, RepoIndex
 from kobo_api.runtime import commit_runtime_image, validate_runtime_image
 from kobo_api.models import (
     GROUP_REQUEST_DECLINED,
@@ -1139,14 +1140,34 @@ CONVERT_REFUSED_STATUSES = (
 SCAN_LIMIT = 10
 SCAN_BUCKET = "connect-scan"
 
+# How many repository searches one caller may run in `rate_limit.WINDOW_S`.
+# Far past anyone typing a repository name into a form (the field is
+# debounced, so a long name costs a handful) and far below anything that
+# could walk an organisation a prefix at a time. Its own bucket, so
+# somebody who has typed a lot can still scan the repository they were
+# looking for.
+REPO_SEARCH_LIMIT = 60
+REPO_SEARCH_BUCKET = "connect-repos"
+
 # What a scan or a connect answers when GitHub itself cannot be read. A
 # report saying "nothing wrong" would be a lie, and the raw client error
 # is never shown to a caller (`generate_avatar`'s precedent, same shape).
 REPO_UNREADABLE = "the repository could not be read right now, try again shortly"
 
+# What the connect routes answer when the room has no GitHub client at
+# all: not a fact about any repository, and the same sentence wherever it
+# is said.
+GITHUB_UNREACHABLE = "the room can't reach GitHub right now"
+
+# The repository typeahead's own version of REPO_UNREADABLE: it was asking
+# for a listing, not a repository. Said rather than answered with an empty
+# list, because an installation with nothing in it and a listing the room
+# could not read look identical in a dropdown and are not the same thing.
+REPOS_UNREADABLE = "the room could not list its repositories right now, try again shortly"
+
 
 def _scan_caller(request: Request) -> str:
-    """Who this scan counts against.
+    """Who this scan (or repository search) counts against.
 
     The verified IAP email when there is one. A room with no perimeter has
     no identity to count by, so it counts by the client's address instead:
@@ -2408,6 +2429,15 @@ def create_app(
     app.state.config = config
     app.state.clients = clients
     app.state.session_factory = session_factory
+    # The repository typeahead's cache (kobo_api.repo_search): one listing
+    # for the whole room, so it lives on the app rather than being rebuilt
+    # per request. None when the room has no GitHub client, which is the
+    # same "nothing to ask" the route answers 503 for.
+    app.state.repo_index = (
+        RepoIndex(clients.github)
+        if clients is not None and clients.github is not None
+        else None
+    )
     # `org` defaults to None in the signature (not a shared OrgState(...)
     # instance) so every create_app() call gets its own object here rather
     # than every caller that omits `org` pointing at one mutable instance in
@@ -3788,6 +3818,66 @@ def create_app(
 
         return JSONResponse({"name": payload.name, "status": status}, status_code=201)
 
+    # The repository field's typeahead (kobo_api/repo_search.py). Signed-in
+    # only, which is the app-wide IAP middleware every `/api/*` route
+    # already carries.
+    #
+    # Not group-gated, unlike the scan next door, for two reasons. The
+    # group is chosen AFTER the repository on this form, so a gate here
+    # would refuse the first field for an answer the person has not given
+    # yet. And there is far less to gate: the scan reads what is INSIDE a
+    # private repository, while this only says that a name the caller was
+    # already typing belongs to something the room's App can reach.
+    #
+    # What bounds it instead is the pair below. The prefix rule
+    # (`repo_search._rank`) means a query only ever names repositories
+    # somebody was already typing -- there is no query that returns the
+    # organisation -- and the rate limit means nobody walks the alphabet
+    # through it anyway.
+    @app.get("/api/connect/repos")
+    def list_connect_repos(
+        request: Request, q: str = Query("", max_length=MAX_QUERY_CHARS)
+    ) -> JSONResponse:
+        if not q.strip():
+            # Answered before the client is even looked at, and before the
+            # limit is spent: an empty query is not a search, and a room
+            # with no GitHub still has nothing to say about one.
+            return JSONResponse({"repos": [], "truncated": False})
+
+        if not rate_limit.check(
+            _scan_caller(request), limit=REPO_SEARCH_LIMIT, bucket=REPO_SEARCH_BUCKET
+        ):
+            return JSONResponse(
+                {"error": "that is a lot of searching. Wait a minute"}, status_code=429
+            )
+
+        clients: Clients | None = app.state.clients
+        index: RepoIndex | None = app.state.repo_index
+        if clients is None or clients.github is None or index is None:
+            return JSONResponse({"error": GITHUB_UNREACHABLE}, status_code=503)
+
+        try:
+            matches, truncated = index.search(q)
+        except ClientError as exc:
+            # The client's own text never reaches the caller (same shape as
+            # the scan's own backend failures next door).
+            log.warning("repository search could not list the installation: %s", exc)
+            return JSONResponse({"error": REPOS_UNREADABLE}, status_code=502)
+
+        return JSONResponse(
+            {
+                # The name and one word about it, which is all the field
+                # shows. The default branch is not sent: nothing on this
+                # form uses it, and the connect route reads GitHub's own
+                # answer for itself rather than a browser's copy of it.
+                "repos": [
+                    {"full_name": repo.full_name, "private": repo.private}
+                    for repo in matches
+                ],
+                "truncated": truncated,
+            }
+        )
+
     @app.post("/api/connect/scan")
     def scan_connect_repo(
         payload: ScanRepoRequest, request: Request, session: Session = Depends(get_session)  # noqa: B008
@@ -3827,7 +3917,7 @@ def create_app(
         clients: Clients | None = app.state.clients
         if clients is None or clients.github is None:
             return JSONResponse(
-                {"error": "the room can't reach GitHub right now"}, status_code=503
+                {"error": GITHUB_UNREACHABLE}, status_code=503
             )
 
         try:
@@ -3903,7 +3993,7 @@ def create_app(
         clients: Clients | None = app.state.clients
         if clients is None or clients.github is None:
             return JSONResponse(
-                {"error": "the room can't reach GitHub right now"}, status_code=503
+                {"error": GITHUB_UNREACHABLE}, status_code=503
             )
 
         try:

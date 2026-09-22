@@ -1238,6 +1238,86 @@ def test_branch_protected_raises_for_a_failure_that_is_not_about_this_branch():
         client.branch_protected("acme/clio", "main")
 
 
+def _installation_page(names: list[str], **overrides) -> str:
+    """One `GET /installation/repositories` page, in GitHub's own shape."""
+    repositories = [
+        {
+            "full_name": name,
+            "archived": overrides.get("archived", False),
+            "private": overrides.get("private", True),
+            "default_branch": overrides.get("default_branch", "main"),
+            "pushed_at": overrides.get("pushed_at", "2026-09-01T00:00:00Z"),
+        }
+        for name in names
+    ]
+    return json.dumps({"total_count": len(repositories), "repositories": repositories})
+
+
+def test_list_installation_repos_argv_and_fields():
+    runner = RecordingRunner(
+        results=[(0, _installation_page(["example-org/clio"], archived=True), "")]
+    )
+    client = GhCLI(runner=runner)
+
+    repos = client.list_installation_repos()
+
+    assert runner.calls == [
+        ["gh", "api", "installation/repositories?per_page=100&page=1"]
+    ]
+    assert len(repos) == 1
+    assert repos[0].full_name == "example-org/clio"
+    assert repos[0].archived is True
+    assert repos[0].private is True
+    assert repos[0].default_branch == "main"
+    assert repos[0].pushed_at == "2026-09-01T00:00:00Z"
+
+
+def test_list_installation_repos_follows_pages_until_a_short_one():
+    """A full page means there may be another; a short page is the end. The
+    installation can see more repositories than one page holds, and a
+    typeahead over the first hundred alphabetically would quietly hide the
+    rest."""
+    first = _installation_page([f"example-org/repo-{i:03d}" for i in range(100)])
+    second = _installation_page(["example-org/last-one"])
+    runner = RecordingRunner(results=[(0, first, ""), (0, second, "")])
+    client = GhCLI(runner=runner)
+
+    repos = client.list_installation_repos()
+
+    assert runner.calls == [
+        ["gh", "api", "installation/repositories?per_page=100&page=1"],
+        ["gh", "api", "installation/repositories?per_page=100&page=2"],
+    ]
+    assert len(repos) == 101
+    assert repos[-1].full_name == "example-org/last-one"
+
+
+def test_list_installation_repos_empty_when_the_installation_sees_nothing():
+    runner = RecordingRunner(results=[(0, _installation_page([]), "")])
+    client = GhCLI(runner=runner)
+
+    assert client.list_installation_repos() == []
+
+
+def test_list_installation_repos_raises_when_github_will_not_answer():
+    """Not a finding about any repository: an App-less token cannot ask this
+    at all, and answering "no repositories" would read as an empty room."""
+    runner = RecordingRunner(results=[BAD_CREDENTIALS])
+    client = GhCLI(runner=runner)
+
+    with pytest.raises(ClientError):
+        client.list_installation_repos()
+
+
+def test_list_installation_repos_passes_gh_token_env_when_provider_set():
+    runner = RecordingRunner(results=[(0, _installation_page(["example-org/clio"]), "")])
+    client = GhCLI(runner=runner, token_provider=lambda: "ghs_faketoken123")
+
+    client.list_installation_repos()
+
+    assert runner.envs == [{"GH_TOKEN": "ghs_faketoken123"}]
+
+
 def test_the_read_methods_pass_gh_token_env_when_provider_set():
     runner = RecordingRunner(results=[(0, REPO_JSON, ""), (0, "", ""), (0, "true", "")])
     client = GhCLI(runner=runner, token_provider=lambda: "ghs_faketoken123")
