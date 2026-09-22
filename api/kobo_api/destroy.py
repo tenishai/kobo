@@ -75,16 +75,25 @@ log = logging.getLogger(__name__)
 # already tolerates "already delisted"), so there's no reason to rush it
 # earlier — but it must run before destroy-forget deletes the row this
 # step still reads (agent.name).
-# "destroy-secrets" (secrets and environment design, 2026-09-22) sits
-# immediately after "destroy-platform", and that order is the point of it:
-# the workload is already stopped, so taking its Kubernetes Secrets away
-# cannot stop a pod that was still serving. It closes the gap the secrets
-# platform integration documented in so many words -- secrets written
-# through the platform were not removed when the agent was destroyed --
-# which left a live credential at a path nobody was watching.
+# "destroy-secrets" (secrets and environment design, 2026-09-22) runs
+# FIRST, before the platform teardown, and that order is the point of it.
+# Removing an ExternalSecret is a write into the agent's own Kubernetes
+# namespace, and "destroy-platform" is the step that deletes that
+# namespace: run after it, every removal would be aimed at a namespace
+# that is no longer there. Going first also means the credentials are the
+# first thing to stop existing, which is the right order for a teardown
+# whose whole point is that a destroyed agent leaves no live secret
+# behind. The cost is one moment where a still-running pod has lost its
+# Secrets; it is already being destroyed, and a pod that cannot read a
+# credential it is about to lose is not a regression.
+#
+# It closes the gap the secrets platform integration documented in so many
+# words -- secrets written through the platform were not removed when the
+# agent was destroyed -- which left a live credential at a path nobody was
+# watching.
 DESTROY_STEPS = (
-    "destroy-platform",
     "destroy-secrets",
+    "destroy-platform",
     "destroy-access",
     "destroy-slack",
     "destroy-repo",
@@ -120,6 +129,14 @@ class DestroyCtx:
     session: Session
     config: Config
     clients: Clients
+    # Who asked for this destruction: the verified caller on the DELETE
+    # that started it, threaded down from the route (secrets and
+    # environment design, 2026-09-22). Only "destroy-secrets" reads it, and
+    # it reads it because the secrets platform records every removal
+    # against a person and the person who pressed destroy IS that person.
+    # None for a resume with no request behind it, or a room with no
+    # identity perimeter, where the agent's own creator stands in.
+    acting_email: str | None = None
 
 
 def _destroy_platform(ctx: DestroyCtx) -> str:
@@ -160,8 +177,9 @@ def _destroy_platform(ctx: DestroyCtx) -> str:
 
 def _destroy_secrets(ctx: DestroyCtx) -> str:
     """Remove everything this agent's secrets are held in on the secrets
-    platform: the three cluster objects that deliver them, then the three
-    paths that hold them (secrets and environment design, 2026-09-22).
+    platform: for each purpose, the cluster object that delivers it and
+    then the path that holds it (secrets and environment design,
+    2026-09-22).
 
     Three purposes, because the room writes three: `cabal` (the colleague
     pass), `slack` (the tokens an owner pasted) and `env` (whatever they
@@ -176,6 +194,13 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
     log every interval, and the Kubernetes Secret it owns still sitting
     there. Deleting the object first takes that Secret with it, which is
     the whole point of the step.
+
+    All three are ATTEMPTED whichever ones fail, the same way
+    `_destroy_platform` reads gojira's whole failure list rather than
+    stopping at the first: a lane that refuses one path is no reason to
+    leave the other two live. What failed is collected and raised at the
+    end, naming what DID go, so the ledger's error says how far the run
+    got and a resume does not have to guess.
 
     Idempotent end to end, by the lane's own contract: an object already
     gone and a path already gone are both successes, so a retried destroy
@@ -197,19 +222,46 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
     if ladon is None:
         return "no secrets platform configured; nothing was stored through one"
 
-    acting_email = (agent.created_by or "").strip()
+    # The operator who pressed destroy, and only then the agent's creator.
+    # The platform records this name against the removal, so the person who
+    # actually asked for it is the honest answer; `created_by` is the
+    # fallback for a resume with no request behind it (the ledger retries
+    # itself) and for a room with no identity perimeter.
+    acting_email = (ctx.acting_email or agent.created_by or "").strip()
     if not acting_email:
         return (
             "no person on record to remove these on behalf of; the stored "
             "secrets stay until an operator removes them"
         )
 
-    removed = []
+    removed: list[str] = []
+    failures: list[str] = []
     for purpose in SECRET_PURPOSES:
         path = f"apps/{agent.name}/{purpose}"
-        ladon.unsync(acting_email, agent.name, agent.name, f"{agent.name}-{purpose}")
-        ladon.delete_secret(acting_email, path)
+        try:
+            ladon.unsync(acting_email, agent.name, agent.name, f"{agent.name}-{purpose}")
+            ladon.delete_secret(acting_email, path)
+        except ClientError as exc:
+            log.warning(
+                "destroy-secrets: could not remove %s for agent %s: %s",
+                purpose,
+                agent.name,
+                exc,
+            )
+            failures.append(purpose)
+            continue
         removed.append(purpose)
+
+    if failures:
+        # Raised, not noted: unlike the directory listing, a secret left
+        # behind is a live credential, and a step that reported success
+        # over one would be the exact gap this step exists to close. The
+        # message says what DID go so a resume reads as progress rather
+        # than as a run starting over.
+        raise RuntimeError(
+            f"could not remove {', '.join(failures)}"
+            + (f" (removed: {', '.join(removed)})" if removed else "")
+        )
     return f"removed: {', '.join(removed)}"
 
 
@@ -502,6 +554,7 @@ def _run_destroy_body_and_release(
     agent_id: int,
     clients: Clients,
     config: Config,
+    acting_email: str | None = None,
 ) -> None:
     """Runs `_run_destroy_body`, then always frees `agent_id`'s in-flight
     slot (registered by `run_destroy` just before this function's thread was
@@ -510,7 +563,7 @@ def _run_destroy_body_and_release(
     recovery path.
     """
     try:
-        _run_destroy_body(session_factory, agent_id, clients, config)
+        _run_destroy_body(session_factory, agent_id, clients, config, acting_email)
     finally:
         with _destroying_lock:
             _destroying_agent_ids.discard(agent_id)
@@ -521,6 +574,7 @@ def _run_destroy_body(
     agent_id: int,
     clients: Clients,
     config: Config,
+    acting_email: str | None = None,
 ) -> None:
     session = session_factory()
     try:
@@ -552,7 +606,13 @@ def _run_destroy_body(
             agent.error = None
             session.commit()
 
-            ctx = DestroyCtx(agent=agent, session=session, config=config, clients=clients)
+            ctx = DestroyCtx(
+                agent=agent,
+                session=session,
+                config=config,
+                clients=clients,
+                acting_email=acting_email,
+            )
 
             failed_step_name: str | None = None
             for name in DESTROY_STEPS:
@@ -668,6 +728,7 @@ def run_destroy(
     agent_id: int,
     clients: Clients,
     config: Config,
+    acting_email: str | None = None,
 ) -> threading.Thread | None:
     """Fire the destroy ledger for `agent_id` on a daemon thread and return
     it immediately — mirrors `kobo_api.provisioner.run_pipeline`'s exact
@@ -702,7 +763,7 @@ def run_destroy(
     try:
         thread = threading.Thread(
             target=_run_destroy_body_and_release,
-            args=(session_factory, agent_id, clients, config),
+            args=(session_factory, agent_id, clients, config, acting_email),
             daemon=True,
         )
         thread.start()

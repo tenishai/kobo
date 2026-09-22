@@ -1695,6 +1695,14 @@ class FakeLadon:
     answers with the names actually written and a route's read-after-write
     reads like the real lane's would.
 
+    `missing_k8s_namespaces`, when given, names Kubernetes namespaces that
+    no longer exist. `unsync` against one of those is a plain SUCCESS that
+    records nothing, which is what the real lane answers: a namespace that
+    is gone holds no ExternalSecret, so the lane's own read finds nothing
+    and reports `state: "absent"` with a 200. Modelled here so a test can
+    prove a teardown does not wedge on a namespace somebody already
+    removed.
+
     `put_error`/`sync_error`/`read_error`/`delete_error`/`unsync_error`,
     when set, make the matching method raise `ClientError(that message)`
     instead of recording -- the seam for exercising a caller's failure
@@ -1711,6 +1719,7 @@ class FakeLadon:
         read_error: str | None = None,
         delete_error: str | None = None,
         unsync_error: str | None = None,
+        missing_k8s_namespaces: set[str] | None = None,
         updated_at: str | None = "2026-09-22T10:00:00.000000Z",
     ):
         self._put_error = put_error
@@ -1718,6 +1727,7 @@ class FakeLadon:
         self._read_error = read_error
         self._delete_error = delete_error
         self._unsync_error = unsync_error
+        self._missing_k8s_namespaces = set(missing_k8s_namespaces or ())
         self._updated_at = updated_at
         self.puts: list[tuple[str, str, dict[str, str]]] = []
         self.removes: list[tuple[str, str, list[str]]] = []
@@ -1725,6 +1735,7 @@ class FakeLadon:
         self.reads: list[tuple[str, str]] = []
         self.deletes: list[tuple[str, str]] = []
         self.unsyncs: list[tuple[str, str, str, str]] = []
+        self.absent_unsyncs: list[tuple[str, str, str, str]] = []
         self.stored: dict[str, dict[str, str]] = {}
 
     def put_secret(
@@ -1769,6 +1780,13 @@ class FakeLadon:
         self.stored.pop(path, None)
 
     def unsync(self, acting_email: str, app: str, k8s_namespace: str, name: str) -> None:
+        if k8s_namespace in self._missing_k8s_namespaces:
+            # A namespace that is gone holds no ExternalSecret, so the real
+            # lane's read finds nothing and answers `state: "absent"` with
+            # a 200. Recorded as `absent_unsyncs` rather than `unsyncs`, so
+            # a test can tell "nothing to remove" from "removed".
+            self.absent_unsyncs.append((acting_email, app, k8s_namespace, name))
+            return
         if self._unsync_error is not None:
             raise ClientError(self._unsync_error)
         self.unsyncs.append((acting_email, app, k8s_namespace, name))

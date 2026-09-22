@@ -104,6 +104,7 @@ def _ctx(
     cloud=None,
     cabal=None,
     ladon=None,
+    acting_email=None,
 ) -> DestroyCtx:
     # `cloud` defaults to a fresh, unseeded FakeCloud rather than None: since
     # destroy-access (unlike the other steps) has no `agent.<field>` gate and
@@ -121,7 +122,13 @@ def _ctx(
         cabal=cabal,
         ladon=ladon,
     )
-    return DestroyCtx(agent=agent, session=session, config=config, clients=clients)
+    return DestroyCtx(
+        agent=agent,
+        session=session,
+        config=config,
+        clients=clients,
+        acting_email=acting_email,
+    )
 
 
 def _seed_agent(session_factory, *, name: str = AGENT_NAME, **kwargs) -> int:
@@ -158,8 +165,8 @@ def _clients(
 
 def test_destroy_steps_order_is_fixed():
     assert DESTROY_STEPS == (
-        "destroy-platform",
         "destroy-secrets",
+        "destroy-platform",
         "destroy-access",
         "destroy-slack",
         "destroy-repo",
@@ -1685,6 +1692,16 @@ def test_destroy_secrets_run_twice_is_the_same_answer(session_factory, config):
     second = _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
 
     assert first == second
+    # The second run really did run: the lane's already-gone answer is a
+    # success, so every call is made again and the step reports the same
+    # three purposes rather than short-circuiting on state it kept.
+    assert [path for _, path in ladon.deletes] == [
+        f"apps/{AGENT_NAME}/cabal",
+        f"apps/{AGENT_NAME}/slack",
+        f"apps/{AGENT_NAME}/env",
+    ] * 2
+    assert len(ladon.unsyncs) == 6
+    assert ladon.stored == {}
     session.close()
 
 
@@ -1730,14 +1747,16 @@ def test_destroy_secrets_note_never_carries_an_em_dash(session_factory, config):
 
 def test_destroy_secrets_that_the_lane_refuses_fails_the_step(session_factory, config):
     # A refusal is not "already gone" (the lane answers 200 for that), so
-    # it stops the ledger at this step rather than marking a credential
+    # it fails the ledger at this step rather than marking a credential
     # removed that is still live. The run resumes here.
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = OWNER_EMAIL
     ladon = FakeLadon(delete_error="that namespace is not yours")
 
-    with pytest.raises(ClientError):
+    with pytest.raises(RuntimeError) as exc:
         _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+
+    assert "could not remove cabal, slack, env" in str(exc.value)
     session.close()
 
 
@@ -1757,3 +1776,127 @@ def test_a_full_destroy_run_removes_the_stored_secrets_too(session_factory, conf
 
     assert ladon.stored == {}
     assert len(ladon.unsyncs) == 3
+
+
+def test_destroy_secrets_records_the_removal_against_the_operator_who_asked(
+    session_factory, config
+):
+    # The platform records every removal against a person, and the person
+    # who pressed destroy is that person. `created_by` may have left the
+    # company; the operator doing this is here.
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+    ladon = _ladon_holding_everything()
+
+    _destroy_secrets(
+        _ctx(session, agent, config, ladon=ladon, acting_email="ops@example.com")
+    )
+
+    assert {email for email, _ in ladon.deletes} == {"ops@example.com"}
+    assert {call[0] for call in ladon.unsyncs} == {"ops@example.com"}
+    session.close()
+
+
+def test_destroy_secrets_falls_back_to_the_creator_when_no_caller_is_named(
+    session_factory, config
+):
+    # A resume has no request behind it: the ledger retried itself, so
+    # there is no verified caller to name and the agent's own creator is
+    # the honest fallback.
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+    ladon = _ladon_holding_everything()
+
+    _destroy_secrets(_ctx(session, agent, config, ladon=ladon, acting_email=None))
+
+    assert {email for email, _ in ladon.deletes} == {OWNER_EMAIL}
+    session.close()
+
+
+def test_destroy_secrets_attempts_all_three_even_when_one_refuses(
+    session_factory, config
+):
+    # A lane that refuses one path is no reason to leave the other two
+    # live. The step still fails, so the ledger can be resumed, and its
+    # message says how far the run got.
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+
+    class _RefusesSlack(FakeLadon):
+        def delete_secret(self, acting_email, path):
+            if path.endswith("/slack"):
+                raise ClientError("that namespace is not yours")
+            super().delete_secret(acting_email, path)
+
+    ladon = _RefusesSlack()
+    for purpose in ("cabal", "slack", "env"):
+        ladon.stored[f"apps/{AGENT_NAME}/{purpose}"] = {"A_KEY": "not-a-real-value"}
+
+    with pytest.raises(RuntimeError) as exc:
+        _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+
+    assert "slack" in str(exc.value)
+    assert "cabal" in str(exc.value)
+    assert "env" in str(exc.value)
+    # The two that could go, went.
+    assert f"apps/{AGENT_NAME}/cabal" not in ladon.stored
+    assert f"apps/{AGENT_NAME}/env" not in ladon.stored
+    session.close()
+
+
+def test_destroy_secrets_does_not_wedge_on_a_namespace_that_is_already_gone(
+    session_factory, config
+):
+    # The ledger removes secrets before it deletes the namespace, so this
+    # should not arise -- but a resumed run, or a namespace an operator
+    # removed by hand, must not stop a teardown. The lane answers a gone
+    # namespace with "there is nothing here", which is a success.
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+    ladon = FakeLadon(missing_k8s_namespaces={AGENT_NAME})
+    for purpose in ("cabal", "slack", "env"):
+        ladon.stored[f"apps/{AGENT_NAME}/{purpose}"] = {"A_KEY": "not-a-real-value"}
+
+    detail = _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+
+    assert "removed" in detail
+    assert ladon.unsyncs == []
+    assert len(ladon.absent_unsyncs) == 3
+    # The KV paths still go: the namespace being gone says nothing about
+    # what the platform is holding.
+    assert ladon.stored == {}
+    session.close()
+
+
+def test_the_secrets_step_runs_before_the_platform_takes_the_namespace_away(
+    session_factory, config
+):
+    # The order is the whole point: removing an ExternalSecret is a write
+    # into the agent's namespace, and destroy-platform is what deletes
+    # that namespace.
+    assert DESTROY_STEPS.index("destroy-secrets") < DESTROY_STEPS.index(
+        "destroy-platform"
+    )
+
+
+def test_a_full_destroy_run_names_the_operator_who_asked(session_factory, config):
+    ladon = _ladon_holding_everything()
+    agent_id = _seed_agent(
+        session_factory,
+        status=AgentStatus.READY,
+        gojira_app_id=None,
+        repo_full_name=None,
+        created_by=OWNER_EMAIL,
+    )
+
+    thread = run_destroy(
+        session_factory,
+        agent_id,
+        _clients(ladon=ladon),
+        config,
+        acting_email="ops@example.com",
+    )
+    assert thread is not None
+    thread.join(timeout=JOIN_TIMEOUT)
+
+    assert {email for email, _ in ladon.deletes} == {"ops@example.com"}

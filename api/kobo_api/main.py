@@ -5092,6 +5092,13 @@ def create_app(
                 agent_id,
                 app.state.clients,
                 cfg,
+                # Who pressed destroy. Only the stored-secrets step reads
+                # it, and it reads it because the secrets platform records
+                # every removal against a person: the operator doing this
+                # is that person, and the agent's creator (who may have
+                # left) is the fallback for a resume with no request
+                # behind it.
+                acting_email=getattr(request.state, "iap_email", None),
             )
         except Exception as exc:
             # Same wedge as create_agent's/retry_agent's launch guards: the

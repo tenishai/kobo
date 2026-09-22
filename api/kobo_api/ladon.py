@@ -188,9 +188,20 @@ class LadonClient(Protocol):
         Run BEFORE `delete_secret` for the same path: an object left behind
         over a deleted path is one the cluster keeps reconciling and
         failing. Idempotent the same way -- an object already gone is a
-        success. Raises `ClientError` on a refusal, and also when the lane
-        reports that a DIFFERENT object now stands at the name (`recreated`):
-        what this call removed is gone, and what is there now is not it.
+        success.
+
+        A Kubernetes namespace that no longer exists is one of those
+        already-gone answers, not an error: the lane reads the object,
+        finds nothing (a namespace that is gone holds no ExternalSecret),
+        and reports `state: "absent"` with a 200. Nothing in the room
+        should depend on that, because the destroy ledger removes secrets
+        BEFORE it deletes the namespace -- but a resumed run, or a
+        namespace an operator removed by hand, must not wedge a teardown,
+        and it does not.
+
+        Raises `ClientError` on a refusal, and also when the lane reports
+        that a DIFFERENT object now stands at the name (`recreated`): what
+        this call removed is gone, and what is there now is not it.
         """
         ...
 
