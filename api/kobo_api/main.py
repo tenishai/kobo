@@ -1140,6 +1140,15 @@ CONVERT_REFUSED_STATUSES = (
 SCAN_LIMIT = 10
 SCAN_BUCKET = "connect-scan"
 
+# How many repository searches one caller may run in `rate_limit.WINDOW_S`.
+# Far past anyone typing a repository name into a form (the field is
+# debounced, so a long name costs a handful) and far below anything that
+# could walk an organisation a prefix at a time. Its own bucket, so
+# somebody who has typed a lot can still scan the repository they were
+# looking for.
+REPO_SEARCH_LIMIT = 60
+REPO_SEARCH_BUCKET = "connect-repos"
+
 # What a scan or a connect answers when GitHub itself cannot be read. A
 # report saying "nothing wrong" would be a lie, and the raw client error
 # is never shown to a caller (`generate_avatar`'s precedent, same shape).
@@ -3811,19 +3820,36 @@ def create_app(
 
     # The repository field's typeahead (kobo_api/repo_search.py). Signed-in
     # only, which is the app-wide IAP middleware every `/api/*` route
-    # already carries, and deliberately NOT group-gated the way the scan
-    # next door is: the scan reads what is INSIDE a private repository, and
-    # this one only says that a name the caller was already typing belongs
-    # to something the room's App can reach. There is nothing here a person
-    # could not learn by typing the same name into the form and pressing
-    # Scan, and no listing at all without a query.
+    # already carries.
+    #
+    # Not group-gated, unlike the scan next door, for two reasons. The
+    # group is chosen AFTER the repository on this form, so a gate here
+    # would refuse the first field for an answer the person has not given
+    # yet. And there is far less to gate: the scan reads what is INSIDE a
+    # private repository, while this only says that a name the caller was
+    # already typing belongs to something the room's App can reach.
+    #
+    # What bounds it instead is the pair below. The prefix rule
+    # (`repo_search._rank`) means a query only ever names repositories
+    # somebody was already typing -- there is no query that returns the
+    # organisation -- and the rate limit means nobody walks the alphabet
+    # through it anyway.
     @app.get("/api/connect/repos")
-    def list_connect_repos(q: str = Query("", max_length=MAX_QUERY_CHARS)) -> JSONResponse:
+    def list_connect_repos(
+        request: Request, q: str = Query("", max_length=MAX_QUERY_CHARS)
+    ) -> JSONResponse:
         if not q.strip():
-            # Answered before the client is even looked at: an empty query
-            # is not a search, and a room with no GitHub still has nothing
-            # to say about one.
+            # Answered before the client is even looked at, and before the
+            # limit is spent: an empty query is not a search, and a room
+            # with no GitHub still has nothing to say about one.
             return JSONResponse({"repos": [], "truncated": False})
+
+        if not rate_limit.check(
+            _scan_caller(request), limit=REPO_SEARCH_LIMIT, bucket=REPO_SEARCH_BUCKET
+        ):
+            return JSONResponse(
+                {"error": "that is a lot of searching. Wait a minute"}, status_code=429
+            )
 
         clients: Clients | None = app.state.clients
         index: RepoIndex | None = app.state.repo_index
@@ -3840,12 +3866,12 @@ def create_app(
 
         return JSONResponse(
             {
+                # The name and one word about it, which is all the field
+                # shows. The default branch is not sent: nothing on this
+                # form uses it, and the connect route reads GitHub's own
+                # answer for itself rather than a browser's copy of it.
                 "repos": [
-                    {
-                        "full_name": repo.full_name,
-                        "private": repo.private,
-                        "default_branch": repo.default_branch,
-                    }
+                    {"full_name": repo.full_name, "private": repo.private}
                     for repo in matches
                 ],
                 "truncated": truncated,

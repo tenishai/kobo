@@ -49,6 +49,7 @@ from kobo_api.kinds import (
 from kobo_api.main import (
     GITHUB_UNREACHABLE,
     MAX_SECRET_NAMES,
+    REPO_SEARCH_LIMIT,
     REPOS_UNREADABLE,
     SCAN_LIMIT,
     create_app,
@@ -358,16 +359,8 @@ def test_repos_names_the_matches_best_first(client_for):
     assert response.status_code == 200
     assert response.json() == {
         "repos": [
-            {
-                "full_name": f"{ORG}/chatbot-archive",
-                "private": False,
-                "default_branch": "trunk",
-            },
-            {
-                "full_name": f"{ORG}/team-chatbot",
-                "private": True,
-                "default_branch": "main",
-            },
+            {"full_name": f"{ORG}/chatbot-archive", "private": False},
+            {"full_name": f"{ORG}/team-chatbot", "private": True},
         ],
         "truncated": False,
     }
@@ -394,9 +387,12 @@ def test_repos_refuses_a_query_longer_than_the_bound(client):
 
 
 def test_repos_accepts_a_query_right_at_the_bound(client):
+    """Taken and answered, rather than refused: a hundred characters is a
+    query nothing could match, not a query nobody may ask."""
     response = client.get("/api/connect/repos", params={"q": "x" * 100})
 
     assert response.status_code == 200
+    assert response.json() == {"repos": [], "truncated": False}
 
 
 def test_repos_says_so_when_the_room_has_no_github_at_all(session_factory, config):
@@ -430,6 +426,40 @@ def test_repos_is_not_group_gated(grouped_client):
     response = grouped_client.get("/api/connect/repos?q=team")
 
     assert response.status_code == 200
+    assert response.json() == {
+        "repos": [{"full_name": REPO, "private": True}],
+        "truncated": False,
+    }
+
+
+def test_repos_searches_only_as_often_as_a_person_could_type(client):
+    """A ceiling of its own, on its own bucket. The prefix rule is what
+    keeps this from being a listing; the limit is what keeps somebody from
+    walking the alphabet through it anyway."""
+    for _ in range(REPO_SEARCH_LIMIT):
+        assert client.get("/api/connect/repos?q=team").status_code == 200
+
+    response = client.get("/api/connect/repos?q=team")
+
+    assert response.status_code == 429
+    assert response.json() == {"error": "that is a lot of searching. Wait a minute"}
+
+
+def test_a_refused_search_does_not_spend_the_rooms_scans(client):
+    """Its own bucket: somebody who has typed a lot can still scan the
+    repository they were looking for."""
+    for _ in range(REPO_SEARCH_LIMIT + 1):
+        client.get("/api/connect/repos?q=team")
+
+    assert client.post("/api/connect/scan", json=_payload()).status_code == 200
+
+
+def test_an_empty_query_is_not_counted_against_the_search_limit(client):
+    """It reads nothing and answers nothing, so it costs nothing."""
+    for _ in range(REPO_SEARCH_LIMIT + 5):
+        assert client.get("/api/connect/repos?q=").status_code == 200
+
+    assert client.get("/api/connect/repos?q=team").status_code == 200
 
 
 def test_repos_reads_the_listing_once_inside_the_ttl_and_again_after(client_for):
