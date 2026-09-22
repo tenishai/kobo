@@ -77,11 +77,25 @@ since the panel exists for connected agents too):
   the ExternalSecret exists (`sync`), and on the first ever secret appends `<agent>-env` to
   `secrets_from` and commits (composed) or opens the wiring pull request (connected). The
   response says which of those happened. Values never appear in logs, audit rows or errors.
-  Removing the LAST key is allowed and is the mirror of that first write: the path and the
-  ExternalSecret are deleted and the `secrets_from` entry comes back out, because a pod whose
-  `envFrom` names a Secret that no longer exists does not start. The wiring change rides its
-  own branch (`kobo/secrets-wiring`), separate from the environment one (`kobo/env`), so a
-  pending pull request for one is never mistaken for the other.
+  Removing the LAST key is allowed and is the mirror of that first write, in the opposite
+  ORDER: the `secrets_from` entry comes out before the Secret goes, because a pod whose
+  `envFrom` names a Secret that no longer exists does not start. A composed agent gets the
+  commit, then the deletes, then the deploy. A connected agent gets a pull request and nothing
+  deleted at all -- the response says `pending_unwire`, the stored secret outlives the request
+  that has to merge first, and the next save finishes the removal once the line is off the
+  default branch.
+
+  The wiring change rides its own branch (`kobo/secrets-wiring`), separate from the environment
+  one (`kobo/env`), so a pending pull request for one is never mistaken for the other. Before
+  any write, the wiring branch is reconciled against what the save wants: a request of the
+  room's own proposing the OPPOSITE change is closed with a comment and its branch removed,
+  because merging it later would put the file back to naming a Secret that is not there (or not
+  naming one that is). A request that already proposes the right change is reused, and "already
+  proposes" is read from the branch head rather than assumed.
+
+  The room deletes only branches it can prove it made: the branch's diff against the default
+  branch must touch `gojira.yaml` alone, and every commit on it must carry the room's own
+  commit identity. A comparison that cannot be made at all is a refusal, not a pass.
 - `GET` and `PUT /api/agents/{name}/env` for the plain variables, `PUT` with the same body
   shape; writes `env` in `gojira.yaml` by commit or pull request and triggers a deploy.
 - MCP parity, because every room surface has it: `kobo_list_agent_secrets` (names only),
