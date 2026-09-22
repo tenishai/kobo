@@ -296,7 +296,7 @@ class RepoWarmer:
         """
         try:
             self._index.warm()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(
                 "could not warm the repository listing, the next search will try: %s",
                 exc,

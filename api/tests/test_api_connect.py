@@ -180,6 +180,18 @@ def _row(session_factory, name=AGENT_NAME) -> Agent | None:
         session.close()
 
 
+def _wait_until(done, deadline_s=POLL_DEADLINE_S):
+    """Waits on a background thread of the room's own, for the cases that
+    are about one having been started. The only sleeping in this file,
+    same as `_poll_until` below and for the same reason."""
+    deadline = time.monotonic() + deadline_s
+    while time.monotonic() < deadline:
+        if done():
+            return
+        time.sleep(POLL_INTERVAL_S)
+    raise AssertionError("the background work never happened")
+
+
 def _poll_until(client, name, statuses, deadline_s=POLL_DEADLINE_S):
     deadline = time.monotonic() + deadline_s
     body = None
@@ -528,6 +540,46 @@ def test_an_empty_query_is_not_counted_against_the_search_limit(client):
         assert client.get("/api/connect/repos?q=").status_code == 200
 
     assert client.get("/api/connect/repos?q=team").status_code == 200
+
+
+def test_the_room_warms_the_repository_listing_when_it_boots(client_for):
+    """Nobody should pay for the cold read. Entering the lifespan is what
+    a real boot does; a TestClient used without `with` never does, which
+    is why the rest of these cases see no background thread."""
+    github = FakeGitHub(
+        existing_repos={REPO},
+        installation_repos=[_typeahead_repo(f"{ORG}/team-chatbot")],
+    )
+    typeahead = client_for(github)
+
+    with typeahead:
+        _wait_until(lambda: "list_installation_repos" in github.calls)
+        # And the first search is answered out of the warm listing.
+        assert typeahead.get("/api/connect/repos?q=chat").status_code == 200
+
+    assert github.calls.count("list_installation_repos") == 1
+    assert not typeahead.app.state.repo_warmer.is_running()
+
+
+def test_a_boot_whose_warm_fails_still_serves_the_room(client_for, caplog):
+    """A GitHub that will not answer at boot is a logged line, not a
+    refused start -- and the next search tries again for itself."""
+    github = FakeGitHub(
+        existing_repos={REPO},
+        installation_repos_error="gh: Bad credentials (HTTP 401)",
+    )
+    typeahead = client_for(github)
+
+    with caplog.at_level(logging.WARNING), typeahead:
+        _wait_until(lambda: "list_installation_repos" in github.calls)
+        assert typeahead.get("/api/agents").status_code == 200
+
+    assert "could not warm the repository listing" in caplog.text
+
+
+def test_a_room_with_no_github_warms_nothing(session_factory, config):
+    with TestClient(create_app(session_factory, config=config, clients=None)) as client:
+        assert client.app.state.repo_warmer is None
 
 
 def test_repos_reads_the_listing_once_inside_the_ttl_and_again_after(client_for):
