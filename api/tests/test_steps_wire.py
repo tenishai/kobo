@@ -1196,3 +1196,42 @@ def test_deploy_step_raises_naming_got_and_expected_on_wrong_service_account(
     assert "default" in message
     assert f"agent-{AGENT_NAME}" in message
     assert "concurrent CI apply" in message
+
+
+def test_a_rerun_of_the_wiring_keeps_an_owners_own_environment_variables(
+    session_factory, config
+):
+    """The Secrets and environment panel writes into exactly the mapping
+    this step edits (design 2026-09-22). Assigning over it, which is what
+    this step used to do for a composed agent, meant any later reprovision
+    -- a retry, a runtime re-pin, a resumed pipeline -- silently wiped an
+    owner's own variables. The two model keys still win on their own
+    names, which is why an owner is refused those at the panel."""
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=1)
+    github = FakeGitHub(
+        extra_clone_files={
+            "gojira.yaml": (
+                "app: clio\n"
+                "env:\n"
+                "  API_BASE: https://example.test\n"
+                "  VERTEXAI_LOCATION: somewhere-stale\n"
+            )
+        }
+    )
+    gojira = FakeGojira(activate_after=1)
+    gojira.create_app(
+        name=AGENT_NAME,
+        repo_full_name=repo,
+        cluster=config.gojira_cluster,
+        namespace=AGENT_NAME,
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github, gojira=gojira))
+
+    WireStep().run(ctx)
+
+    written = yaml.safe_load((ctx.workdir / "wire" / "gojira.yaml").read_text())
+    assert written["env"]["API_BASE"] == "https://example.test"
+    # The room's own keys are the room's, whatever the file said.
+    assert written["env"]["VERTEXAI_PROJECT"] == config.vertex_project
+    assert written["env"]["VERTEXAI_LOCATION"] == config.vertex_location

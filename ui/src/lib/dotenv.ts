@@ -22,6 +22,10 @@ export const MAX_KEYS = 100;
  * server says it. */
 export const ROOM_SETS_THIS_ONE = "the room sets this one";
 
+/** And about a key the container sets. A different sentence because it is
+ * a different fact with a different fix. */
+export const CONTAINER_SETS_THIS_ONE = "the container sets this one";
+
 /** Every key the room fills in on an agent's behalf: the colleague pass,
  * the three Slack values, and the two model-access variables. */
 export const RESERVED_KEYS = [
@@ -31,6 +35,18 @@ export const RESERVED_KEYS = [
   "SLACK_SIGNING_SECRET",
   "VERTEXAI_PROJECT",
   "VERTEXAI_LOCATION",
+];
+
+/** Names the runtime owns: how the container finds its binaries, its
+ * interpreter, and the shared objects it loads before any of the agent's
+ * own code runs. Not the room's to set and not an owner's either. */
+export const CONTAINER_KEYS = [
+  "PATH",
+  "HOME",
+  "PYTHONPATH",
+  "PYTHONHOME",
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
 ];
 
 /**
@@ -47,6 +63,9 @@ export function keyRefusal(key: string): string | null {
   }
   if (RESERVED_KEYS.includes(key)) {
     return `${key}: ${ROOM_SETS_THIS_ONE}`;
+  }
+  if (CONTAINER_KEYS.includes(key)) {
+    return `${key}: ${CONTAINER_SETS_THIS_ONE}`;
   }
   return null;
 }

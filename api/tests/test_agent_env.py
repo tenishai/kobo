@@ -15,6 +15,7 @@ import yaml
 
 from kobo_api.agent_env import (
     COMMITTED,
+    CONTAINER_SETS_THIS_ONE,
     ENV_BRANCH,
     ENV_PR_ALREADY_OPEN,
     ENV_PR_BODY,
@@ -101,6 +102,32 @@ def test_a_name_the_room_manages_is_refused_with_the_rooms_own_sentence(key):
     assert key in refusal
 
 
+@pytest.mark.parametrize(
+    "key",
+    ["PATH", "HOME", "PYTHONPATH", "PYTHONHOME", "LD_PRELOAD", "LD_LIBRARY_PATH"],
+)
+def test_a_name_the_container_owns_is_refused_with_its_own_sentence(key):
+    # A different fact from "the room sets this one", and a different fix:
+    # nobody here decided these, the image and the runtime did, and
+    # overwriting one gives an agent that cannot find its own interpreter
+    # rather than a custom variable.
+    refusal = key_refusal(key)
+    assert refusal is not None
+    assert CONTAINER_SETS_THIS_ONE in refusal
+    assert key in refusal
+
+
+def test_a_container_name_is_refused_on_a_whole_write_too_either_side():
+    assert CONTAINER_SETS_THIS_ONE in (write_refusal({"PATH": "/tmp"}, [], []) or "")
+    assert CONTAINER_SETS_THIS_ONE in (write_refusal({}, ["LD_PRELOAD"], []) or "")
+
+
+def test_a_name_that_merely_starts_like_a_container_one_is_fine():
+    # Exact names only: `PATH_PREFIX` is an ordinary variable.
+    assert key_refusal("PATH_PREFIX") is None
+    assert key_refusal("HOME_PAGE_URL") is None
+
+
 def test_no_refusal_sentence_carries_an_em_dash():
     # These land in front of a person. Plain punctuation, same as every
     # other user-facing sentence in this room.
@@ -108,6 +135,7 @@ def test_no_refusal_sentence_carries_an_em_dash():
         key_refusal("lower"),
         key_refusal("A" * 65),
         key_refusal("SLACK_BOT_TOKEN"),
+        key_refusal("LD_PRELOAD"),
         write_refusal({"A": "1"}, ["A"], []),
         write_refusal({f"K{i}": "1" for i in range(MAX_KEYS + 1)}, [], []),
     ]

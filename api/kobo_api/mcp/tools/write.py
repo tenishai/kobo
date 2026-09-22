@@ -529,6 +529,28 @@ def _skill_team(entry: dict) -> str:
     return "shared"
 
 
+def _bad_request(exc: Exception) -> str:
+    """The refusal for a payload model this module built by hand, from the
+    field NAMES that failed and nothing else.
+
+    Never `str(exc)`. Pydantic renders the offending input in its own
+    message -- `Input should be a valid string [type=string_type,
+    input_value=...]` -- and a tool argument here can be a secret value or
+    a whole pasted file. `kobo_api.main._validation_error_message` is the
+    same wall the HTTP surface put up for the same reason (a Slack token
+    echoed back out of a 422), so it is shared rather than written twice.
+    """
+    from kobo_api.main import _validation_error_message
+
+    if not hasattr(exc, "errors"):
+        # A `TypeError` from building the model with the wrong argument
+        # shape entirely. Its text is about the CALL, not about a value,
+        # but it is not this module's to guess at either, so it gets the
+        # same generic sentence a field-less validation failure gets.
+        return "that request wasn't quite right. Check the fields and try again"
+    return _validation_error_message(exc)
+
+
 def _agent_route_result(response: JSONResponse) -> dict:
     """Table (A) from this module's own docstring -- the shared status
     translation for every agent-scoped write tool.
@@ -753,7 +775,7 @@ def register(mcp: FastMCP, app: Any) -> None:
                     voice=voice,
                 )
             except (TypeError, ValidationError) as exc:
-                raise ToolError(f"that request wasn't quite right: {exc}") from exc
+                raise ToolError(_bad_request(exc)) from exc
 
             response = await _off_loop(create_agent_endpoint,payload=payload, request=req, session=session)
         finally:
@@ -1133,7 +1155,7 @@ def register(mcp: FastMCP, app: Any) -> None:
             try:
                 payload = RepoAccessRequest(repositories=repositories)
             except ValidationError as exc:
-                raise ToolError(f"that request wasn't quite right: {exc}") from exc
+                raise ToolError(_bad_request(exc)) from exc
             response = await _off_loop(
                 request_repo_access_endpoint,
                 name=agent,
@@ -1184,7 +1206,7 @@ def register(mcp: FastMCP, app: Any) -> None:
             try:
                 payload = RepoAccessDecision(ids=ids, decision=decision)
             except ValidationError as exc:
-                raise ToolError(f"that request wasn't quite right: {exc}") from exc
+                raise ToolError(_bad_request(exc)) from exc
             response = await _off_loop(
                 decide_repo_access_endpoint, payload=payload, request=req, session=session
             )
@@ -1352,7 +1374,7 @@ def register(mcp: FastMCP, app: Any) -> None:
                 purpose_tags=purpose_tags or [],
             )
         except (TypeError, ValidationError) as exc:
-            raise ToolError(f"that request wasn't quite right: {exc}") from exc
+            raise ToolError(_bad_request(exc)) from exc
 
         session = app.state.session_factory()
         try:
@@ -1443,7 +1465,7 @@ def register(mcp: FastMCP, app: Any) -> None:
             try:
                 payload = LearningsBulkPayload(ids=ids, action=action)
             except ValidationError as exc:
-                raise ToolError(f"that request wasn't quite right: {exc}") from exc
+                raise ToolError(_bad_request(exc)) from exc
             response = await _off_loop(
                 bulk_decide_learnings_endpoint,
                 name=agent,
@@ -1468,14 +1490,23 @@ def register(mcp: FastMCP, app: Any) -> None:
     async def kobo_set_agent_secrets(
         ctx: Context,
         agent: str,
-        secret_values: dict[str, str] | None = None,
+        # `dict[str, Any]`, not `dict[str, str]`, and this is a safety
+        # decision rather than a loose one. The SDK validates a tool's
+        # arguments against its own schema BEFORE this function runs, and
+        # pydantic renders the offending input in that error
+        # (`input_value=...`) -- which for this argument is a credential.
+        # Declared wide, the room's own `AgentEnvWrite` is the validator,
+        # `_bad_request` is the message, and nothing outside this module
+        # ever holds the value. The docstring is what tells a client these
+        # are strings.
+        secret_values: dict[str, Any] | None = None,
         remove: list[str] | None = None,
     ) -> dict:
         """Add, change or remove `agent`'s secrets in one call -- the same
         write the room's own Secrets and environment panel makes.
 
-        `secret_values` is a name-to-value mapping to store, `remove` a
-        list of names to take away; a name in both is refused. Names are upper snake
+        `secret_values` is a name-to-value mapping of STRINGS to store,
+        `remove` a list of names to take away; a name in both is refused. Names are upper snake
         case (`[A-Z][A-Z0-9_]*`), 64 characters at most, 100 keys at most,
         and the names the room fills in itself are refused with "the room
         sets this one" -- the colleague pass, the Slack values, and the
@@ -1520,15 +1551,18 @@ def register(mcp: FastMCP, app: Any) -> None:
     async def kobo_set_agent_env(
         ctx: Context,
         agent: str,
-        variables: dict[str, str] | None = None,
+        # Wide for the same reason as the secrets tool above, and kept the
+        # same so the two cannot drift: the room's own model is the
+        # validator and the room's own sentence is the refusal.
+        variables: dict[str, Any] | None = None,
         remove: list[str] | None = None,
     ) -> dict:
         """Add, change or remove `agent`'s plain environment variables --
         the other half of the room's Secrets and environment panel.
 
-        `variables` is a name-to-value mapping and `remove` a list of names
-        to take away, the same shape and the same name rules as
-        kobo_set_agent_secrets. The difference is where these are kept and
+        `variables` is a name-to-value mapping of STRINGS and `remove` a
+        list of names to take away, the same shape and the same name rules
+        as kobo_set_agent_secrets. The difference is where these are kept and
         who can read them: these live in the agent's own files, in the
         open, so use them for values that are not sensitive and use
         kobo_set_agent_secrets for anything else.
@@ -1560,7 +1594,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         ctx: Context,
         endpoint: Callable[..., Any],
         agent: str,
-        values: dict[str, str] | None,
+        values: dict[str, Any] | None,
         remove: list[str] | None,
         payload_model: Any,
     ) -> dict:
@@ -1582,7 +1616,7 @@ def register(mcp: FastMCP, app: Any) -> None:
             try:
                 payload = payload_model(set=values or {}, remove=list(remove or []))
             except ValidationError as exc:
-                raise ToolError(f"that request wasn\'t quite right: {exc}") from exc
+                raise ToolError(_bad_request(exc)) from exc
             response = await _off_loop(
                 endpoint, name=agent, payload=payload, request=req, session=session
             )

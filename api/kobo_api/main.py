@@ -20,7 +20,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -1012,19 +1012,28 @@ def _fail_launch(
     return JSONResponse({"error": error_message}, status_code=503)
 
 
-def _validation_error_message(exc: RequestValidationError) -> str:
-    """A plain-language message for the app-wide `RequestValidationError`
-    handler (`create_app`, below) — the P2c final-review fix for FastAPI's
-    *default* 422 handler, which was still live (no handler had been
-    registered to override it). That default renders `exc.errors()`
-    verbatim, and Pydantic's own "missing field" error carries an `input`
-    key holding the ENTIRE submitted request body — so a `/slack/connect`
-    call missing `channel` but carrying `bot_token`/`app_token` echoed both
-    pasted Slack tokens straight back in the response body. This handler
-    replaces that default globally (every route, not just Slack's) with the
-    house `{"error": ...}` shape, built ONLY from each error's field
-    location (`loc`) — never from `input`, which must never appear here or
-    in anything this function returns.
+def _validation_error_message(exc: RequestValidationError | ValidationError) -> str:
+    """A plain-language message for a validation failure, built ONLY from
+    each error's field location.
+
+    Written for the app-wide `RequestValidationError` handler (`create_app`,
+    below) — the P2c final-review fix for FastAPI's *default* 422 handler,
+    which was still live (no handler had been registered to override it).
+    That default renders `exc.errors()` verbatim, and Pydantic's own
+    "missing field" error carries an `input` key holding the ENTIRE
+    submitted request body — so a `/slack/connect` call missing `channel`
+    but carrying `bot_token`/`app_token` echoed both pasted Slack tokens
+    straight back in the response body. This handler replaces that default
+    globally (every route, not just Slack's) with the house
+    `{"error": ...}` shape, built from `loc` and never from `input`, which
+    must never appear here or in anything this function returns.
+
+    It takes a bare pydantic `ValidationError` too, and that is not a
+    convenience: `str()` on one of those renders the offending INPUT the
+    same way, so every place that builds a model by hand and reports the
+    failure needs this rather than an f-string. The MCP write tools
+    (`kobo_api.mcp.tools.write`) are those places, and a tool argument can
+    be a secret value.
 
     Field names alone (e.g. "channel", "messages.0.role") are just the
     request's own declared shape, not secret, so naming them is safe and

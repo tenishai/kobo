@@ -3504,3 +3504,81 @@ def test_a_connected_agents_write_comes_back_with_the_pull_request(
     assert result["wiring"] == "pull_request"
     assert result["pull_request"] == "https://example.test/pull/7"
     assert github.pushes == []
+
+
+def test_a_bad_secret_value_is_refused_by_field_name_and_never_echoed(
+    session_factory, config, fake_storage
+):
+    # Pydantic renders the offending INPUT in its own message
+    # (`input_value=...`). A tool argument here can be a credential, so
+    # the refusal is built from the field names that failed and nothing
+    # else -- in the answer AND in the audit row.
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(
+        _secrets_app(session_factory, config, fake_storage, ladon=FakeLadon())
+    )
+
+    with pytest.raises(ToolError) as exc:
+        _call_tool(
+            mcp,
+            "kobo_set_agent_secrets",
+            _ctx_for(MEMBER_A_EMAIL),
+            agent=SECRETS_AGENT,
+            secret_values={"API_KEY": {"not": SECRET_VALUE}},
+        )
+
+    assert SECRET_VALUE not in str(exc.value)
+    assert "input_value" not in str(exc.value)
+    assert "set" in str(exc.value)
+    row = _last_audit_row(session_factory)
+    assert SECRET_VALUE not in (row.error or "")
+    assert SECRET_VALUE not in row.redacted_args
+
+
+def test_an_over_long_secret_value_is_refused_without_repeating_it(
+    session_factory, config, fake_storage
+):
+    from kobo_api.agent_env import MAX_ENV_VALUE_LENGTH
+
+    oversized = "z" * (MAX_ENV_VALUE_LENGTH + 1)
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(
+        _secrets_app(session_factory, config, fake_storage, ladon=FakeLadon())
+    )
+
+    with pytest.raises(ToolError) as exc:
+        _call_tool(
+            mcp,
+            "kobo_set_agent_secrets",
+            _ctx_for(MEMBER_A_EMAIL),
+            agent=SECRETS_AGENT,
+            secret_values={"API_KEY": oversized},
+        )
+
+    assert oversized not in str(exc.value)
+    assert "z" * 100 not in str(exc.value)
+    row = _last_audit_row(session_factory)
+    assert "z" * 100 not in (row.error or "")
+    assert "z" * 100 not in row.redacted_args
+
+
+def test_the_same_wall_stands_on_the_environment_tool(
+    session_factory, config, fake_storage
+):
+    # Not sensitive, but the argument still must not be echoed through a
+    # pydantic message: the two tools share one builder for exactly that
+    # reason, so neither can drift.
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage))
+
+    with pytest.raises(ToolError) as exc:
+        _call_tool(
+            mcp,
+            "kobo_set_agent_env",
+            _ctx_for(MEMBER_A_EMAIL),
+            agent=SECRETS_AGENT,
+            variables={"API_BASE": ["not", "a", "string"]},
+        )
+
+    assert "input_value" not in str(exc.value)
+    assert "not" not in str(exc.value)

@@ -73,6 +73,13 @@ MAX_ENV_VALUE_LENGTH = 8192
 # refusal below and the panel's own inline copy both use it.
 ROOM_SETS_THIS_ONE = "the room sets this one"
 
+# And what it says about a key the CONTAINER sets. A different sentence
+# because it is a different fact: nobody in this room decided these, the
+# image and the runtime did, and an owner who overwrote one would not get
+# a custom variable, they would get an agent that cannot find its own
+# interpreter or its own binaries.
+CONTAINER_SETS_THIS_ONE = "the container sets this one"
+
 # The two model-access variables `kobo_api.steps._set_service_account_and_
 # model_env` writes into every agent's `gojira.yaml`. Spelled out here
 # rather than imported from that module: this is the list of names an owner
@@ -92,6 +99,28 @@ RESERVED_KEYS = frozenset(
         "SLACK_APP_TOKEN",
         "SLACK_SIGNING_SECRET",
         *MODEL_ENV_KEYS,
+    }
+)
+
+# Names the RUNTIME owns, on both lists. Not the room's to set and not an
+# owner's either: each of these decides how the container finds something
+# it cannot run without.
+#
+# `PATH` and `HOME` are how a process finds its binaries and its own
+# directory. `PYTHONPATH` and `PYTHONHOME` decide which interpreter and
+# which libraries the agent imports, and a wrong one is a container that
+# does not boot. `LD_PRELOAD` and `LD_LIBRARY_PATH` decide which shared
+# objects load into every process in the container before its own code
+# runs, which is not a setting so much as a way to run arbitrary code
+# inside the pod; nothing an owner needs is on the other side of it.
+CONTAINER_KEYS = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
     }
 )
 
@@ -119,9 +148,10 @@ def key_refusal(key: str) -> str | None:
     """The plain sentence refusing `key`, or None when it is allowed.
 
     Checked in the order a person would: is this a name at all, is it a
-    reasonable length, and is it one the room already fills in. The
-    reserved check comes last so a mistyped reserved name reads as a
-    mistyped name, which is what it is.
+    reasonable length, is it one the room already fills in, and is it one
+    the container owns. The two reserved checks come last so a mistyped
+    reserved name reads as a mistyped name, which is what it is, and they
+    are separate because they are different facts with different fixes.
     """
     if not KEY_RE.match(key):
         return (
@@ -132,6 +162,8 @@ def key_refusal(key: str) -> str | None:
         return f"{key}: keep a name to {MAX_KEY_LENGTH} characters or fewer"
     if key in RESERVED_KEYS:
         return f"{key}: {ROOM_SETS_THIS_ONE}"
+    if key in CONTAINER_KEYS:
+        return f"{key}: {CONTAINER_SETS_THIS_ONE}"
     return None
 
 
