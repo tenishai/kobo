@@ -482,6 +482,7 @@ class FakeGitHub:
         extra_clone_files: dict[str, str] | None = None,
         repo_access_error: str | None = None,
         repo_files: dict[str, str] | None = None,
+        branch_files: dict[str, dict[str, str]] | None = None,
         root_entries: list[str] | None = None,
         can_write: bool = True,
         default_branch: str = "main",
@@ -504,6 +505,7 @@ class FakeGitHub:
         self._pushed_content: dict[str, dict[str, bytes]] = {}
         self._pr_url = pr_url
         self.open_pr_calls: list[dict] = []
+        self.deleted_branches: list[tuple[str, str]] = []
         self._open_prs: dict[str, str] = dict(open_prs) if open_prs else {}
         self._existing_branches: set[str] = (
             set(existing_branches) if existing_branches else set()
@@ -560,6 +562,11 @@ class FakeGitHub:
         self._run_index_by_sha: dict[str, int] = {}
         self._run_id_to_sha: dict[int, str] = {}
         self._repo_access_error = repo_access_error
+        self._branch_files = (
+            {branch: dict(files) for branch, files in branch_files.items()}
+            if branch_files
+            else {}
+        )
         self._repo_files = (
             dict(repo_files)
             if repo_files is not None
@@ -612,12 +619,19 @@ class FakeGitHub:
             full_name=full_name,
         )
 
-    def read_file(self, repo: str, path: str) -> str | None:
+    def read_file(self, repo: str, path: str, ref: str | None = None) -> str | None:
         """Whatever `repo_files` holds at `path`, None otherwise -- the same
         "nothing to read" the real client answers for a missing, oversized
         or non-file path. Not keyed by repo: every test here scans one.
+
+        `ref` reads from `branch_files` instead, a `{branch: {path: text}}`
+        map -- what a PROPOSED change contains, as opposed to what is
+        merged. A branch with no entry there answers None for every path,
+        which is the honest stand-in for a branch that does not exist.
         """
-        self.calls.append(f"read_file:{repo}:{path}")
+        self.calls.append(f"read_file:{repo}:{path}" + (f"@{ref}" if ref else ""))
+        if ref is not None:
+            return self._branch_files.get(ref, {}).get(path)
         return self._repo_files.get(path)
 
     def list_root(self, repo: str) -> list[str]:
@@ -855,6 +869,20 @@ class FakeGitHub:
     def find_pr(self, repo: str, *, branch: str) -> str | None:
         self.calls.append(f"find_pr:{repo}:{branch}")
         return self._open_prs.get(f"{repo}#{branch}")
+
+    def delete_branch(self, repo: str, branch: str) -> bool:
+        """Forget `repo#branch` (and anything `branch_files` held for it),
+        recording the call. True when it was there, False when it was not
+        -- the real client's already-gone answer.
+        """
+        self.calls.append(f"delete_branch:{repo}:{branch}")
+        self.deleted_branches.append((repo, branch))
+        self._branch_files.pop(branch, None)
+        key = f"{repo}#{branch}"
+        if key in self._existing_branches:
+            self._existing_branches.discard(key)
+            return True
+        return False
 
     def branch_exists(self, repo: str, branch: str) -> bool:
         """True for any `repo#branch` named in `existing_branches`. Default

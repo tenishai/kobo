@@ -19,7 +19,9 @@ What every case here is really checking is one of three promises:
 
 from __future__ import annotations
 
+import tempfile
 import time
+from pathlib import Path
 
 import jwt
 import pytest
@@ -29,7 +31,16 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from kobo_api.agent_env import ENV_PR_ALREADY_OPEN, ROOM_SETS_THIS_ONE
+from kobo_api.agent_env import (
+    ENV_BRANCH,
+    ENV_PR_ALREADY_OPEN,
+    MAX_ENV_VALUE_LENGTH,
+    MAX_KEYS,
+    ROOM_SETS_THIS_ONE,
+    SECRETS_WIRING_BRANCH,
+    UNREADABLE_GOJIRA_YAML,
+    UNREADABLE_REPOSITORY,
+)
 from kobo_api.clients import Clients
 from kobo_api.config import Config
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
@@ -345,22 +356,62 @@ def test_removing_a_secret_names_it_to_the_lane_and_leaves_the_rest(
     assert ladon.removes == [(OWNER, f"apps/{AGENT}/env", ["DB_URL"])]
 
 
-def test_removing_the_last_secret_is_refused_in_the_rooms_own_words(
+def test_removing_the_last_secret_takes_the_path_the_object_and_the_line(
+    session_factory, config, fake_storage, _key
+):
+    # Emptying the list is allowed, and it is a DELETE rather than a write
+    # of nothing: the path goes, the ExternalSecret goes (taking the
+    # Kubernetes Secret with it), and the line naming that Secret comes
+    # out of gojira.yaml in the same call. A pod whose envFrom names a
+    # Secret that no longer exists does not start.
+    ladon = FakeLadon()
+    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    github = _github(
+        repo_files={
+            "gojira.yaml": BASE_GOJIRA_YAML + f"secrets_from:\n  - {AGENT}-env\n"
+        }
+    )
+    client, clients = _client(
+        session_factory, config, fake_storage, _key, ladon=ladon, github=github
+    )
+
+    body = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"remove": ["API_KEY"]},
+        headers=_as(_key),
+    ).json()
+
+    assert body["keys"] == []
+    assert body["emptied"] is True
+    assert body["wiring"] == "committed"
+    assert body["secret_name"] is None
+    assert ladon.deletes == [(OWNER, f"apps/{AGENT}/env")]
+    assert ladon.unsyncs == [(OWNER, AGENT, AGENT, f"{AGENT}-env")]
+    assert ladon.puts == []
+    pushed = yaml.safe_load(github.pushed_file("gojira.yaml"))
+    assert pushed["secrets_from"] == []
+    assert clients.gojira.reprovision_calls
+
+
+def test_emptying_an_agent_that_was_never_wired_touches_no_repository(
     session_factory, config, fake_storage, _key
 ):
     ladon = FakeLadon()
     ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+    github = _github()
+    client, _ = _client(
+        session_factory, config, fake_storage, _key, ladon=ladon, github=github
+    )
 
-    resp = client.put(
+    body = client.put(
         f"/api/agents/{AGENT}/secrets",
         json={"remove": ["API_KEY"]},
         headers=_as(_key),
-    )
+    ).json()
 
-    assert resp.status_code == 422
-    assert "destroy the agent" in resp.json()["error"]
-    assert ladon.puts == []
+    assert body["emptied"] is True
+    assert body["wiring"] == "unchanged"
+    assert github.pushes == []
 
 
 @pytest.mark.parametrize(
@@ -429,6 +480,10 @@ def test_an_agent_with_nobody_on_record_is_refused_rather_than_written_anonymous
 def test_a_lane_failure_never_repeats_the_platforms_own_text_or_the_value(
     session_factory, config, fake_storage, _key, caplog
 ):
+    # The platform's own sentence can quote the request it refused, and
+    # that request carried a value. So neither the response NOR the log
+    # gets it: what is logged is the exception's class and the agent's
+    # name, which is what an operator acts on.
     ladon = FakeLadon(put_error=f"refused the body {VALUE}")
     client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
 
@@ -442,6 +497,11 @@ def test_a_lane_failure_never_repeats_the_platforms_own_text_or_the_value(
     assert resp.status_code == 502
     assert VALUE not in resp.text
     assert "refused the body" not in resp.text
+    assert VALUE not in caplog.text
+    assert "refused the body" not in caplog.text
+    # Still enough to act on.
+    assert AGENT in caplog.text
+    assert "ClientError" in caplog.text
 
 
 def test_a_stranger_cannot_write_an_agents_secrets(
@@ -487,17 +547,27 @@ def test_a_connected_agents_first_secret_is_proposed_not_pushed(
     assert body["wiring"] == "pull_request"
     assert body["pull_request"] == PR_URL
     assert github.pushes == []
-    assert github.open_pr_calls[0]["branch"] == "kobo/env"
+    # Its own branch, not the environment one: the line it proposes is
+    # always the same, and a pending environment request is a different
+    # change entirely.
+    assert github.open_pr_calls[0]["branch"] == SECRETS_WIRING_BRANCH
     # Stored all the same: the value is on the platform whether or not
     # anybody has merged the one line that names it yet.
     assert ladon.puts[0][2] == {"API_KEY": VALUE}
 
 
-def test_a_connected_agents_later_secret_reuses_the_open_pull_request(
+def test_a_connected_agents_later_secret_reuses_a_request_that_carries_the_line(
     session_factory, config, fake_storage, _key
 ):
     ladon = FakeLadon()
-    github = _github(open_prs={f"{REPO}#kobo/env": PR_URL})
+    github = _github(
+        open_prs={f"{REPO}#{SECRETS_WIRING_BRANCH}": PR_URL},
+        branch_files={
+            SECRETS_WIRING_BRANCH: {
+                "gojira.yaml": BASE_GOJIRA_YAML + f"secrets_from:\n  - {AGENT}-env\n"
+            }
+        },
+    )
     client, _ = _client(
         session_factory,
         config,
@@ -517,6 +587,80 @@ def test_a_connected_agents_later_secret_reuses_the_open_pull_request(
     assert body["wiring"] == "pull_request"
     assert body["pull_request"] == PR_URL
     assert github.open_pr_calls == []
+
+
+def test_an_open_environment_request_does_not_block_a_connected_agents_first_secret(
+    session_factory, config, fake_storage, _key
+):
+    # The exact scenario the two branches exist for: somebody saved an
+    # environment variable, the request is still open, and now they add a
+    # secret. The wiring is a SECOND pull request, on its own branch,
+    # carrying its own line.
+    ladon = FakeLadon()
+    github = _github(
+        open_prs={f"{REPO}#{ENV_BRANCH}": "https://example.test/pull/env"},
+        # So the pull request's own content can be read back below: the
+        # fake snapshots what `open_pr` was handed, and a later clone
+        # reflects it.
+        track_pushed_content=True,
+    )
+    client, _ = _client(
+        session_factory,
+        config,
+        fake_storage,
+        _key,
+        kind=KIND_CONNECTED,
+        ladon=ladon,
+        github=github,
+    )
+
+    body = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"set": {"API_KEY": VALUE}},
+        headers=_as(_key),
+    ).json()
+
+    assert body["wiring"] == "pull_request"
+    assert body["pull_request"] == PR_URL
+    assert body["pull_request"] != "https://example.test/pull/env"
+    assert [call["branch"] for call in github.open_pr_calls] == [SECRETS_WIRING_BRANCH]
+    assert github.pushes == []
+    # And what it proposes really is the wiring line.
+    with tempfile.TemporaryDirectory() as tmp:
+        proposed = Path(tmp)
+        github.clone(REPO, proposed)
+        data = yaml.safe_load((proposed / "gojira.yaml").read_text())
+    assert data["secrets_from"] == [f"{AGENT}-env"]
+
+
+def test_a_secrets_request_that_does_not_carry_the_line_is_in_the_way(
+    session_factory, config, fake_storage, _key
+):
+    # An open request on the wiring branch whose own file does not say
+    # this. Reusing it would report a change as proposed that is not in it.
+    ladon = FakeLadon()
+    github = _github(
+        open_prs={f"{REPO}#{SECRETS_WIRING_BRANCH}": PR_URL},
+        branch_files={SECRETS_WIRING_BRANCH: {"gojira.yaml": BASE_GOJIRA_YAML}},
+    )
+    client, _ = _client(
+        session_factory,
+        config,
+        fake_storage,
+        _key,
+        kind=KIND_CONNECTED,
+        ladon=ladon,
+        github=github,
+    )
+
+    resp = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"set": {"API_KEY": VALUE}},
+        headers=_as(_key),
+    )
+
+    assert resp.status_code == 409
+    assert PR_URL in resp.json()["error"]
 
 
 # --- Reading and writing environment variables --------------------------------
@@ -705,3 +849,195 @@ def test_an_agent_nobody_can_see_is_a_404_on_every_one_of_the_four(
         kwargs = {"json": {}} if method == "put" else {}
         resp = call(f"/api/agents/nobody/{path}", headers=_as(_key), **kwargs)
         assert resp.status_code == 404, (method, path)
+
+
+# --- the file, and the repository, the room may not be able to read -----------
+
+
+def test_an_unparseable_gojira_yaml_stops_a_secret_before_it_is_stored(
+    session_factory, config, fake_storage, _key
+):
+    # The wiring line could never be added to a file nobody can parse, so
+    # finding that out first costs one read. Finding it out afterwards
+    # would leave a value stored that the agent can never read.
+    ladon = FakeLadon()
+    github = _github(repo_files={"gojira.yaml": "env: [unclosed\n"})
+    client, _ = _client(
+        session_factory, config, fake_storage, _key, ladon=ladon, github=github
+    )
+
+    resp = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"set": {"API_KEY": VALUE}},
+        headers=_as(_key),
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["error"] == UNREADABLE_GOJIRA_YAML
+    assert ladon.puts == []
+    assert ladon.syncs == []
+
+
+def test_an_unparseable_gojira_yaml_is_named_on_the_environment_read_too(
+    session_factory, config, fake_storage, _key
+):
+    github = _github(repo_files={"gojira.yaml": "env: [unclosed\n"})
+    client, _ = _client(session_factory, config, fake_storage, _key, github=github)
+
+    resp = client.get(f"/api/agents/{AGENT}/env", headers=_as(_key))
+
+    assert resp.status_code == 409
+    assert resp.json()["error"] == UNREADABLE_GOJIRA_YAML
+
+
+def test_a_repository_the_room_cannot_read_says_so_rather_than_no_file(
+    session_factory, config, fake_storage, _key
+):
+    github = FakeGitHub(existing_repos=set(), repo_files={})
+    client, _ = _client(session_factory, config, fake_storage, _key, github=github)
+
+    resp = client.get(f"/api/agents/{AGENT}/env", headers=_as(_key))
+
+    assert resp.status_code == 409
+    assert resp.json()["error"] == UNREADABLE_REPOSITORY
+
+
+def test_a_secrets_read_that_the_lane_refuses_is_a_plain_failure(
+    session_factory, config, fake_storage, _key, caplog
+):
+    ladon = FakeLadon(read_error="that namespace is not yours")
+    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+
+    with caplog.at_level("WARNING"):
+        resp = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key))
+
+    assert resp.status_code == 502
+    assert "that namespace is not yours" not in resp.text
+    assert "that namespace is not yours" not in caplog.text
+
+
+# --- the deploy a retry would otherwise never make ----------------------------
+
+
+def test_an_environment_save_that_changes_nothing_still_triggers_a_deploy(
+    session_factory, config, fake_storage, _key
+):
+    # The case this exists for: a save whose push landed and whose
+    # reprovision then failed. A retry has nothing left to push, so
+    # refusing to reprovision would leave that change undeployed forever.
+    github = _github(
+        repo_files={"gojira.yaml": "name: clio\nenv:\n  API_BASE: https://example.test\n"}
+    )
+    client, clients = _client(
+        session_factory, config, fake_storage, _key, github=github
+    )
+
+    body = client.put(
+        f"/api/agents/{AGENT}/env",
+        json={"set": {"API_BASE": "https://example.test"}},
+        headers=_as(_key),
+    ).json()
+
+    assert body["wiring"] == "unchanged"
+    assert github.pushes == []
+    assert clients.gojira.reprovision_calls
+
+
+# --- who the platform records a read against ----------------------------------
+
+
+def test_a_read_names_the_caller_not_the_creator(
+    session_factory, config, fake_storage, _key
+):
+    # The platform's audit answers "who asked about this path", and the
+    # person who opened the panel is the honest answer. An operator
+    # reading somebody else's agent is recorded as themselves.
+    ladon = FakeLadon()
+    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    operator = "ops@example.com"
+    operator_config = config.model_copy(update={"operators": [operator]})
+    client, _ = _client(
+        session_factory, operator_config, fake_storage, _key, ladon=ladon
+    )
+
+    client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key, operator))
+
+    assert ladon.reads == [(operator, f"apps/{AGENT}/env")]
+
+
+def test_a_read_of_an_agent_with_no_creator_still_answers(
+    session_factory, config, fake_storage, _key
+):
+    # A write refuses when there is nobody to record it against; a read
+    # never does, because the caller IS that person. An agent whose
+    # creator has left is still one its operator can open the panel on.
+    ladon = FakeLadon()
+    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    operator = "ops@example.com"
+    operator_config = config.model_copy(update={"operators": [operator]})
+    client, _ = _client(
+        session_factory,
+        operator_config,
+        fake_storage,
+        _key,
+        ladon=ladon,
+        created_by=None,
+    )
+
+    resp = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key, operator))
+
+    assert resp.status_code == 200
+    assert resp.json()["keys"] == ["API_KEY"]
+
+
+# --- the two caps, at the request rather than at the lane ---------------------
+
+
+def test_more_keys_than_a_list_may_hold_is_refused(
+    session_factory, config, fake_storage, _key
+):
+    ladon = FakeLadon()
+    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+
+    resp = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"set": {f"K{i}": VALUE for i in range(MAX_KEYS + 1)}},
+        headers=_as(_key),
+    )
+
+    assert resp.status_code == 422
+    assert ladon.puts == []
+
+
+def test_a_value_longer_than_the_ceiling_is_refused(
+    session_factory, config, fake_storage, _key
+):
+    ladon = FakeLadon()
+    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+
+    resp = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"set": {"API_KEY": "x" * (MAX_ENV_VALUE_LENGTH + 1)}},
+        headers=_as(_key),
+    )
+
+    assert resp.status_code == 422
+    assert ladon.puts == []
+    # And the oversized value is not echoed back in the refusal.
+    assert "x" * 100 not in resp.text
+
+
+def test_a_write_that_fills_a_list_exactly_to_the_cap_is_allowed(
+    session_factory, config, fake_storage, _key
+):
+    ladon = FakeLadon()
+    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+
+    resp = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"set": {f"K{i}": VALUE for i in range(MAX_KEYS)}},
+        headers=_as(_key),
+    )
+
+    assert resp.status_code == 200
+    assert len(resp.json()["keys"]) == MAX_KEYS

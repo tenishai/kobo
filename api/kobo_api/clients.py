@@ -295,8 +295,15 @@ class GitHubClient(Protocol):
         """
         ...
 
-    def read_file(self, repo: str, path: str) -> str | None:
-        """The text of one file in `repo`'s default branch, or None.
+    def read_file(self, repo: str, path: str, ref: str | None = None) -> str | None:
+        """The text of one file in `repo`, at `ref` when one is named and
+        the default branch otherwise, or None.
+
+        `ref` is a branch name, and it is how a caller reads what a
+        PROPOSED change contains rather than what is merged: the secrets
+        wiring checks the branch behind its own open pull request before
+        treating that request as already carrying the line
+        (`kobo_api.agent_env`).
 
         None for every "there is nothing here to read": no such file, a
         path the room may not read, anything that is not a plain file (a
@@ -388,6 +395,19 @@ class GitHubClient(Protocol):
         that same branch a second time and fail non-fast-forward against the
         remote branch run 1 already pushed. Checking this first lets the
         caller report "skipped" with the existing PR's URL instead.
+        """
+        ...
+
+    def delete_branch(self, repo: str, branch: str) -> bool:
+        """Delete `branch` from `repo`. True when it was deleted, False
+        when it was not there, `ClientError` for anything else.
+
+        Only ever called on a branch the ROOM created and named
+        (`kobo_api.agent_env.SECRETS_WIRING_BRANCH`, `ENV_BRANCH`), and
+        only when no pull request is open from it -- a merged-and-not-
+        deleted branch of the room's own is the room's to recycle, and
+        refusing to touch it would leave a panel permanently unable to
+        save. Every other branch in a repository belongs to its team.
         """
         ...
 
@@ -763,6 +783,25 @@ class GhCLI:
             raise
         return True
 
+    def delete_branch(self, repo: str, branch: str) -> bool:
+        try:
+            self._runner.run(
+                [
+                    self._gh, "api", "-X", "DELETE",
+                    # One path segment, and a branch name may hold slashes
+                    # of its own -- the same encoding `branch_protected`
+                    # below documents, for the same reason.
+                    f"repos/{repo}/git/refs/heads/{quote(branch, safe='')}",
+                ],
+                env=self._env(),
+            )
+        except ClientError as exc:
+            if _gh_returned_404(exc):
+                # Already gone, which is what the caller wanted.
+                return False
+            raise
+        return True
+
     def repo_access(self, repo: str) -> RepoAccessInfo:
         try:
             out = self._runner.run([self._gh, "api", f"repos/{repo}"], env=self._env())
@@ -783,10 +822,13 @@ class GhCLI:
             full_name=data.get("full_name") or "",
         )
 
-    def read_file(self, repo: str, path: str) -> str | None:
+    def read_file(self, repo: str, path: str, ref: str | None = None) -> str | None:
+        endpoint = f"repos/{repo}/contents/{path}"
+        if ref:
+            endpoint = f"{endpoint}?ref={quote(ref, safe='')}"
         try:
             out = self._runner.run(
-                [self._gh, "api", f"repos/{repo}/contents/{path}"], env=self._env()
+                [self._gh, "api", endpoint], env=self._env()
             )
         except ClientError as exc:
             if _gh_returned_404(exc) or _gh_returned_403(exc):

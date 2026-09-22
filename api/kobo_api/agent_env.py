@@ -251,6 +251,44 @@ def wire_env_secret(data: dict, agent_name: str) -> bool:
     return True
 
 
+def has_env_secret(data: dict, agent_name: str) -> bool:
+    """Whether a parsed `gojira.yaml` already names this agent's own
+    secrets Secret in `secrets_from`.
+
+    Asked of the DEFAULT branch to decide whether the wiring line still
+    has to be added, and of a proposed branch's head to decide whether an
+    open pull request is already carrying it -- one question, so one
+    function, because two spellings of it could disagree.
+    """
+    existing = data.get("secrets_from")
+    entry = env_secret_name(agent_name)
+    return isinstance(existing, list) and entry in existing
+
+
+def unwire_env_secret(data: dict, agent_name: str) -> bool:
+    """Remove `<agent>-env` from a parsed `gojira.yaml`'s `secrets_from`,
+    in place. True when it was there.
+
+    The mirror of `wire_env_secret`, and the reason emptying the secrets
+    list is allowed rather than refused: an agent with no secrets left
+    should not carry a line naming a Kubernetes Secret that no longer
+    exists, because the deploy platform turns that line into an `envFrom`
+    and a pod whose `envFrom` names a missing Secret does not start.
+
+    Everything else in the list is left exactly where it is: a team's own
+    entries on a connected agent's file are none of this function's
+    business.
+    """
+    existing = data.get("secrets_from")
+    if not isinstance(existing, list):
+        return False
+    entry = env_secret_name(agent_name)
+    if entry not in existing:
+        return False
+    data["secrets_from"] = [name for name in existing if name != entry]
+    return True
+
+
 def _as_text(value: object) -> str:
     """One YAML scalar as the text a form field would hold. Booleans keep
     YAML's own lowercase spelling rather than Python's."""
@@ -263,39 +301,52 @@ def _as_text(value: object) -> str:
 
 # --- Getting an edit into the agent's repository ------------------------------
 
-# The branch the room proposes a connected agent's change on. Fixed rather
-# than per-save, for the reason `kobo_api.steps.CONNECTED_WIRE_BRANCH`
-# gives: a fresh branch per attempt leaves a trail of abandoned pull
-# requests in somebody else's repository.
+# The two branches the room proposes a connected agent's changes on.
+# SEPARATE, and that is the whole reason there are two: the wiring branch
+# carries one line that is always the same (`<agent>-env` in
+# `secrets_from`) and is safe to leave open across many saves, while the
+# environment branch carries whatever a person just typed and is a
+# different change every time. Sharing one branch meant a pending
+# environment pull request could be mistaken for a wiring one and reported
+# as already carrying a line it had never seen.
+#
+# Fixed names rather than per-save, for the reason `kobo_api.steps.
+# CONNECTED_WIRE_BRANCH` gives: a fresh branch per attempt leaves a trail
+# of abandoned pull requests in somebody else's repository.
 ENV_BRANCH = "kobo/env"
-ENV_PR_TITLE = "kobo: secrets and environment"
+SECRETS_WIRING_BRANCH = "kobo/secrets-wiring"
+
+ENV_PR_TITLE = "kobo: environment variables"
+SECRETS_WIRING_PR_TITLE = "kobo: read the agent's own secrets"
 
 ENV_PR_BODY = (
-    "This changes the environment the agent runs with.\n\n"
+    "This changes the environment variables the agent runs with.\n\n"
     "Files changed:\n"
-    "- gojira.yaml: the `env` mapping, the `secrets_from` list, or both. "
-    "Secret VALUES are not here and never will be: they are held in the "
-    "secrets platform and delivered to the namespace as a Kubernetes "
-    "Secret, and this file only names it.\n\n"
+    "- gojira.yaml: the `env` mapping. These are values that are not "
+    "sensitive; secrets are held in the secrets platform and never appear "
+    "in this file.\n\n"
     "gojira.yaml is rewritten from its parsed form, so comments and key "
     "order in that one file are not preserved.\n"
 )
 
-# What the room says when a pull request it opened before is still open and
-# this save is not the same change. Pushing the branch again would fail
-# non fast-forward, and reusing the open pull request would report a change
-# as proposed that is not in it.
+SECRETS_WIRING_PR_BODY = (
+    "This lets the agent read the secrets its owner added in the room.\n\n"
+    "Files changed:\n"
+    "- gojira.yaml: one entry added to `secrets_from`, naming the "
+    "Kubernetes Secret the secrets platform delivers into this agent's "
+    "namespace. Secret VALUES are not here and never will be: this file "
+    "only names the Secret.\n\n"
+    "gojira.yaml is rewritten from its parsed form, so comments and key "
+    "order in that one file are not preserved.\n"
+)
+
+# What the room says when a pull request it opened before is still open on
+# the same branch and this save is not the same change. Pushing the branch
+# again would fail non fast-forward, and reusing the open pull request
+# would report a change as proposed that is not in it.
 ENV_PR_ALREADY_OPEN = (
     "a pull request with this agent's environment is already open. Merge or "
     "close it, then save again: "
-)
-
-# A branch with no pull request behind it. Same sentence shape as
-# `kobo_api.steps.CONNECTED_WIRE_BRANCH_IN_THE_WAY`, and the same reason:
-# git's own non fast-forward stderr is something no retry can clear.
-ENV_BRANCH_IN_THE_WAY = (
-    f"the branch {ENV_BRANCH} is already in this repository. Delete it, or "
-    "open a pull request from it, then save again"
 )
 
 # How a change reached the agent's repository. `unchanged` means the file
@@ -304,16 +355,41 @@ COMMITTED = "committed"
 PULL_REQUEST = "pull_request"
 UNCHANGED = "unchanged"
 
+# The two ways `gojira.yaml` can be unreadable rather than absent. Named
+# once because both the read and the write answer with it, and because
+# neither is something a retry fixes: somebody has to edit the file.
+UNREADABLE_GOJIRA_YAML = (
+    "this agent's gojira.yaml cannot be read as YAML, so the room cannot "
+    "change its environment. Fix that file, then save again."
+)
+MISSING_GOJIRA_YAML = (
+    "this agent's repository has no gojira.yaml, so there is nothing to "
+    "set the environment on"
+)
+# Told apart from "no file" on purpose (there is no such file vs. the room
+# may not look): one is the team's to fix and the other is an access
+# problem, and answering the first for the second sends somebody hunting
+# for a file that is sitting right there.
+UNREADABLE_REPOSITORY = (
+    "the room cannot read this agent's repository right now, so it cannot "
+    "read or change its environment"
+)
+
 
 class RepoBusy(ClientError):
     """Something an OWNER can clear is standing in front of this change:
-    a pull request the room opened before, or the branch it would push.
+    a pull request the room opened before, or a file nothing here can
+    parse.
 
     A `ClientError` subclass so every existing `except ClientError` still
     catches it, and its own type so a route can tell "say this sentence to
     the person" from "the platform was unreachable, say the house line".
     Nothing here is retryable by the room; all of it is retryable by a
-    person who merges, closes or deletes something.
+    person who merges, closes or fixes something.
+
+    A leftover BRANCH is deliberately not one of these any more: a branch
+    the room named itself, with no pull request open from it, is the
+    room's to recycle (see `_propose`).
     """
 
 
@@ -327,6 +403,26 @@ class RepoEdit:
     pull_request: str | None = None
 
 
+def parse_gojira_yaml(text: str | None) -> dict:
+    """One `gojira.yaml`'s text as a mapping, or `RepoBusy`.
+
+    Empty and absent both read as an empty mapping, because a repository
+    that has not been wired yet is not an error. A file that does not
+    PARSE is, and so is one that parses to something other than a mapping:
+    neither is a state the deploy platform could have run, and writing
+    over it would throw away whatever a person meant to put there. Both
+    answer the same sentence, which names the file, because "your YAML is
+    broken" and "your YAML is a list" are the same job to fix.
+    """
+    try:
+        data = yaml.safe_load(text or "") or {}
+    except (yaml.YAMLError, UnicodeDecodeError) as exc:
+        raise RepoBusy(UNREADABLE_GOJIRA_YAML) from exc
+    if not isinstance(data, dict):
+        raise RepoBusy(UNREADABLE_GOJIRA_YAML)
+    return data
+
+
 def read_repo_env(github: GitHubClient, repo: str) -> dict[str, str]:
     """The environment variables `repo`'s `gojira.yaml` carries, by a plain
     file read rather than a clone.
@@ -336,21 +432,20 @@ def read_repo_env(github: GitHubClient, repo: str) -> dict[str, str]:
     the panel is showing. `edit_gojira_yaml` still clones, because a write
     has to push what it produced.
 
-    A file that is missing, empty, unparseable, or not a mapping all read
-    as no variables: none of those is a state the deploy platform could
-    have run, and a read is not the place to say so. `ClientError` from the
-    repository itself still propagates -- "I could not look" is not "there
-    is nothing there".
+    Permission is checked FIRST, the way the connect scan does, because
+    `GitHubClient.read_file` answers None for a file the room may not read
+    exactly as it does for a file that is not there. Those are different
+    answers to a person -- one is "add the file", the other is "the room
+    lost access to this repository" -- and collapsing them would send
+    somebody hunting for a file sitting in front of them.
+
+    A missing or empty file reads as no variables. An unparseable one is
+    `RepoBusy`, not an empty read: showing an empty list over a file
+    nobody here could parse invites a save that would overwrite it.
     """
-    text = github.read_file(repo, "gojira.yaml")
-    try:
-        data = yaml.safe_load(text or "") or {}
-    except yaml.YAMLError:
-        log.warning("gojira.yaml in %s does not parse; reading no env from it", repo)
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    return read_env(data)
+    if not github.repo_access(repo).visible:
+        raise RepoBusy(UNREADABLE_REPOSITORY)
+    return read_env(parse_gojira_yaml(github.read_file(repo, "gojira.yaml")))
 
 
 def edit_gojira_yaml(
@@ -362,33 +457,39 @@ def edit_gojira_yaml(
     gojira_app_id: int | None,
     edit: Callable[[dict], bool],
     message: str,
-    reuse_open_pr: bool = False,
+    branch: str = ENV_BRANCH,
+    title: str = ENV_PR_TITLE,
+    body: str = ENV_PR_BODY,
+    carries: Callable[[dict], bool] | None = None,
 ) -> RepoEdit:
     """Clone `repo`, run `edit` over its parsed `gojira.yaml`, and get the
     result in front of the deploy platform the way this KIND of agent
     allows.
 
     `edit` returns whether it changed anything. An edit that changed
-    nothing ends here: no push, no pull request, no reprovision, and a
-    retried save answers exactly what the first one did.
+    nothing still asks the platform to regenerate (composed agents only):
+    a reprovision is cheap and idempotent, and the case that matters is a
+    save whose push landed and whose reprovision then failed -- a retry
+    has nothing left to push, and refusing to reprovision would leave that
+    change undeployed forever. The answer says `unchanged`, and the route
+    says a deploy was triggered anyway.
 
     A COMPOSED agent's repository is the room's, so the change is committed
-    to its default branch and the platform is asked to regenerate. The
-    reprovision is fired and not waited on, unlike `kobo_api.slack_setup.
-    wire_slack`: that call is finishing a setup somebody is watching, and
-    this one is a settings save that should not hold a browser open for up
-    to five minutes. What the panel promises is that the change reaches the
-    agent the next time it starts, which is true the moment the push lands.
+    to its default branch. The reprovision is fired and not waited on,
+    unlike `kobo_api.slack_setup.wire_slack`: that call is finishing a
+    setup somebody is watching, and this one is a settings save that should
+    not hold a browser open for up to five minutes. What the panel promises
+    is that the change reaches the agent the next time it starts, which is
+    true the moment the push lands.
 
     A CONNECTED agent's repository belongs to its team, and the room never
     pushes to its branches (design 2026-09-21). The change is proposed on
-    `ENV_BRANCH` instead and the pull request's link comes back for the
-    owner to merge. `reuse_open_pr` is for the one edit that is always the
-    same one line (appending `<agent>-env` to `secrets_from`): an open pull
-    request already carries it, so the answer is that link rather than a
-    refusal. Every other save refuses while one is open, because pushing
-    the branch again would fail and reusing the open request would report a
-    change as proposed that is not in it.
+    `branch` instead and the pull request's link comes back for the owner
+    to merge. `carries`, when given, is asked of the gojira.yaml AT THAT
+    BRANCH's head: a pull request whose branch already holds this exact
+    change is the answer rather than a refusal, and one that does not is
+    in the way. Without it, any open pull request on the branch is in the
+    way.
 
     Raises `ClientError` for anything the repository or the platform
     refuses; no secret value passes through here at all.
@@ -399,50 +500,76 @@ def edit_gojira_yaml(
 
         gojira_yaml_path = workdir / "gojira.yaml"
         if not gojira_yaml_path.exists():
-            raise ClientError(
-                "this agent's repository has no gojira.yaml, so there is "
-                "nothing to set the environment on"
-            )
-        data = yaml.safe_load(gojira_yaml_path.read_text()) or {}
-        if not edit(data):
-            return RepoEdit(how=UNCHANGED)
-        gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
+            raise RepoBusy(MISSING_GOJIRA_YAML)
+        try:
+            text = gojira_yaml_path.read_text()
+        except UnicodeDecodeError as exc:
+            raise RepoBusy(UNREADABLE_GOJIRA_YAML) from exc
+        data = parse_gojira_yaml(text)
+        changed_here = edit(data)
 
         if connected:
-            return _propose(github, workdir, repo, reuse_open_pr=reuse_open_pr)
+            if not changed_here:
+                return RepoEdit(how=UNCHANGED)
+            gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
+            return _propose(
+                github,
+                workdir,
+                repo,
+                branch=branch,
+                title=title,
+                body=body,
+                carries=carries,
+            )
 
-        changed = github.commit_push(workdir, message)
+        pushed = False
+        if changed_here:
+            gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
+            pushed = github.commit_push(workdir, message)
 
-    if changed and gojira_app_id is not None:
-        # Outside the clone: the push has landed, and the platform
-        # regenerating the Deployment has nothing to do with the working
-        # tree any more.
+    if gojira_app_id is not None:
+        # Outside the clone, and fired whether or not anything was pushed.
+        # A reprovision is idempotent and cheap; the expensive case is the
+        # save whose push landed and whose reprovision failed, where a
+        # retry has nothing to push and would otherwise never deploy.
         gojira.reprovision(gojira_app_id)
-    return RepoEdit(how=COMMITTED if changed else UNCHANGED)
+    return RepoEdit(how=COMMITTED if pushed else UNCHANGED)
 
 
 def _propose(
-    github: GitHubClient, workdir: Path, repo: str, *, reuse_open_pr: bool
+    github: GitHubClient,
+    workdir: Path,
+    repo: str,
+    *,
+    branch: str,
+    title: str,
+    body: str,
+    carries: Callable[[dict], bool] | None,
 ) -> RepoEdit:
     """The connected half of `edit_gojira_yaml`: one pull request on
-    `ENV_BRANCH`, or a plain sentence saying what is in the way."""
-    open_pr = github.find_pr(repo, branch=ENV_BRANCH)
+    `branch`, or a plain sentence saying what is in the way."""
+    open_pr = github.find_pr(repo, branch=branch)
     if open_pr is not None:
-        if reuse_open_pr:
+        # An open pull request is only "already carrying this" if its own
+        # branch actually says so. Assuming it did was the bug: a pull
+        # request opened for one change was reported as proposing another
+        # it had never seen.
+        if carries is not None and carries(
+            parse_gojira_yaml(github.read_file(repo, "gojira.yaml", ref=branch))
+        ):
             return RepoEdit(how=PULL_REQUEST, pull_request=open_pr)
         raise RepoBusy(f"{ENV_PR_ALREADY_OPEN}{open_pr}")
 
     # No pull request, but the branch may still be there: a closed one
     # leaves it behind, and so does a merged one in a repository that does
-    # not delete merged branches.
-    if github.branch_exists(repo, ENV_BRANCH):
-        raise RepoBusy(ENV_BRANCH_IN_THE_WAY)
+    # not delete merged branches. This branch is one the room named itself
+    # and nothing is open from it, so it is the room's to recycle --
+    # refusing here would leave the panel permanently unable to save on a
+    # repository whose owner merged the room's last pull request and did
+    # not tick the delete-branch box.
+    if github.branch_exists(repo, branch):
+        log.info("recycling the room's own leftover branch %s in %s", branch, repo)
+        github.delete_branch(repo, branch)
 
-    url = github.open_pr(
-        workdir,
-        repo=repo,
-        branch=ENV_BRANCH,
-        title=ENV_PR_TITLE,
-        body=ENV_PR_BODY,
-    )
+    url = github.open_pr(workdir, repo=repo, branch=branch, title=title, body=body)
     return RepoEdit(how=PULL_REQUEST, pull_request=url)

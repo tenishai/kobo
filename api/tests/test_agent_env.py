@@ -15,18 +15,29 @@ import yaml
 
 from kobo_api.agent_env import (
     COMMITTED,
+    ENV_BRANCH,
+    ENV_PR_ALREADY_OPEN,
     ENV_PR_BODY,
     MAX_KEYS,
     PULL_REQUEST,
     ROOM_SETS_THIS_ONE,
+    SECRETS_WIRING_BRANCH,
+    SECRETS_WIRING_PR_BODY,
+    SECRETS_WIRING_PR_TITLE,
     UNCHANGED,
+    UNREADABLE_GOJIRA_YAML,
+    UNREADABLE_REPOSITORY,
+    RepoBusy,
     apply_env,
     edit_gojira_yaml,
     env_secret_name,
+    has_env_secret,
     key_refusal,
     merged_names,
     read_env,
+    read_repo_env,
     secret_path,
+    unwire_env_secret,
     wire_env_secret,
     write_refusal,
 )
@@ -316,6 +327,24 @@ def _edit_env(values, remove=()):
     return lambda data: apply_env(data, values, list(remove))
 
 
+def _wire(github, gojira=None):
+    """The one-line secrets wiring edit, on its own branch, asking of a
+    proposed branch's head whether it already carries the line."""
+    return edit_gojira_yaml(
+        github,
+        gojira or _gojira(),
+        repo=REPO,
+        connected=True,
+        gojira_app_id=APP_ID,
+        edit=lambda data: wire_env_secret(data, AGENT),
+        message="kobo: read the agent's own secrets",
+        branch=SECRETS_WIRING_BRANCH,
+        title=SECRETS_WIRING_PR_TITLE,
+        body=SECRETS_WIRING_PR_BODY,
+        carries=lambda data: has_env_secret(data, AGENT),
+    )
+
+
 def test_a_composed_agents_change_is_committed_and_the_platform_is_asked_to_rebuild():
     github = FakeGitHub(existing_repos={REPO})
     gojira = _gojira()
@@ -338,7 +367,12 @@ def test_a_composed_agents_change_is_committed_and_the_platform_is_asked_to_rebu
     assert pushed["env"]["API_BASE"] == "https://example.test"
 
 
-def test_a_composed_agents_change_that_is_already_there_pushes_nothing():
+def test_a_composed_agents_change_that_is_already_there_pushes_nothing_but_still_deploys():
+    # Nothing to push, and the platform is asked to regenerate anyway: a
+    # reprovision is cheap and idempotent, and the case that matters is a
+    # save whose push landed and whose reprovision then failed. A retry has
+    # nothing left to push, so refusing to reprovision would leave that
+    # change undeployed forever.
     github = FakeGitHub(
         existing_repos={REPO},
         extra_clone_files={"gojira.yaml": "name: clio\nenv:\n  API_BASE: https://example.test\n"},
@@ -357,7 +391,7 @@ def test_a_composed_agents_change_that_is_already_there_pushes_nothing():
 
     assert result.how == UNCHANGED
     assert github.pushes == []
-    assert gojira.reprovision_calls == []
+    assert gojira.reprovision_calls == [APP_ID]
 
 
 def test_a_connected_agents_change_is_proposed_never_pushed():
@@ -402,12 +436,66 @@ def test_a_connected_agents_second_change_refuses_while_one_is_open():
     assert github.open_pr_calls == []
 
 
-def test_the_one_line_wiring_edit_reuses_a_pull_request_that_already_carries_it():
-    # Appending `<agent>-env` to secrets_from is always the same one line,
-    # so an open request already proposes it. Refusing here would fail a
-    # secret write whose value has already been stored.
+def test_the_wiring_edit_reuses_a_pull_request_whose_branch_really_carries_the_line():
+    # Only when the BRANCH says so. Assuming an open request carried it was
+    # the bug: a request opened for something else was reported as
+    # proposing a line it had never seen.
     github = FakeGitHub(
-        existing_repos={REPO}, open_prs={f"{REPO}#kobo/env": "https://example.test/pr/1"}
+        existing_repos={REPO},
+        open_prs={f"{REPO}#{SECRETS_WIRING_BRANCH}": "https://example.test/pr/1"},
+        branch_files={
+            SECRETS_WIRING_BRANCH: {
+                "gojira.yaml": f"name: clio\nsecrets_from:\n  - {AGENT}-env\n"
+            }
+        },
+    )
+
+    result = _wire(github)
+
+    assert result.how == PULL_REQUEST
+    assert result.pull_request == "https://example.test/pr/1"
+    assert github.open_pr_calls == []
+
+
+def test_the_wiring_edit_refuses_a_pull_request_whose_branch_does_not_carry_the_line():
+    github = FakeGitHub(
+        existing_repos={REPO},
+        open_prs={f"{REPO}#{SECRETS_WIRING_BRANCH}": "https://example.test/pr/1"},
+        branch_files={SECRETS_WIRING_BRANCH: {"gojira.yaml": "name: clio\n"}},
+    )
+
+    with pytest.raises(RepoBusy) as exc:
+        _wire(github)
+
+    assert "https://example.test/pr/1" in str(exc.value)
+    assert github.open_pr_calls == []
+
+
+def test_an_open_environment_request_never_stands_in_for_the_wiring_one():
+    # The two changes live on two branches. Sharing one meant a pending
+    # environment request could be mistaken for a wiring one.
+    github = FakeGitHub(
+        existing_repos={REPO},
+        open_prs={f"{REPO}#{ENV_BRANCH}": "https://example.test/pr/env"},
+        pr_url="https://example.test/pr/wiring",
+    )
+
+    result = _wire(github)
+
+    assert result.pull_request == "https://example.test/pr/wiring"
+    assert github.open_pr_calls[0]["branch"] == SECRETS_WIRING_BRANCH
+    assert github.open_pr_calls[0]["title"] == SECRETS_WIRING_PR_TITLE
+
+
+def test_a_leftover_branch_of_the_rooms_own_is_recycled_rather_than_refused():
+    # A merged pull request in a repository that does not delete branches
+    # leaves this behind. It is a branch the room named itself with nothing
+    # open from it, so refusing would leave the panel permanently unable to
+    # save on somebody's repository for a box they did not tick.
+    github = FakeGitHub(
+        existing_repos={REPO},
+        existing_branches={f"{REPO}#{ENV_BRANCH}"},
+        pr_url="https://example.test/pr/2",
     )
 
     result = edit_gojira_yaml(
@@ -416,32 +504,36 @@ def test_the_one_line_wiring_edit_reuses_a_pull_request_that_already_carries_it(
         repo=REPO,
         connected=True,
         gojira_app_id=APP_ID,
-        edit=lambda data: wire_env_secret(data, AGENT),
-        message="kobo: secrets wiring",
-        reuse_open_pr=True,
+        edit=_edit_env({"API_BASE": "https://example.test"}),
+        message="kobo: environment variables",
     )
 
     assert result.how == PULL_REQUEST
-    assert result.pull_request == "https://example.test/pr/1"
-    assert github.open_pr_calls == []
+    assert github.deleted_branches == [(REPO, ENV_BRANCH)]
+    assert github.open_pr_calls[0]["branch"] == ENV_BRANCH
 
 
-def test_a_leftover_branch_with_no_pull_request_is_named_rather_than_pushed_over():
-    github = FakeGitHub(existing_repos={REPO}, existing_branches={f"{REPO}#kobo/env"})
+def test_a_branch_with_an_open_pull_request_is_never_deleted():
+    # Only a branch with nothing open from it is the room's to recycle.
+    github = FakeGitHub(
+        existing_repos={REPO},
+        existing_branches={f"{REPO}#{ENV_BRANCH}"},
+        open_prs={f"{REPO}#{ENV_BRANCH}": "https://example.test/pr/1"},
+    )
 
-    with pytest.raises(ClientError) as exc:
+    with pytest.raises(RepoBusy) as exc:
         edit_gojira_yaml(
             github,
             _gojira(),
             repo=REPO,
             connected=True,
             gojira_app_id=APP_ID,
-            edit=_edit_env({"API_BASE": "https://example.test"}),
+            edit=_edit_env({"SECOND": "change"}),
             message="kobo: environment variables",
         )
 
-    assert "kobo/env" in str(exc.value)
-    assert github.open_pr_calls == []
+    assert str(exc.value) == f"{ENV_PR_ALREADY_OPEN}https://example.test/pr/1"
+    assert github.deleted_branches == []
 
 
 def test_a_connected_agents_change_that_is_already_there_proposes_nothing():
@@ -483,5 +575,103 @@ def test_a_repository_with_no_gojira_yaml_is_a_plain_sentence_not_a_crash():
 
 
 def test_the_pull_request_body_promises_no_secret_value_is_in_the_file():
-    assert "VALUES are not here" in ENV_PR_BODY
+    assert "VALUES are not here" in SECRETS_WIRING_PR_BODY
+    assert "—" not in SECRETS_WIRING_PR_BODY
     assert "—" not in ENV_PR_BODY
+
+
+# --- a file, or a repository, the room cannot read -----------------------------
+
+
+def test_an_unparseable_gojira_yaml_is_a_named_refusal_not_an_empty_read():
+    # Showing an empty list over a file nobody here could parse invites a
+    # save that would overwrite whatever a person meant to put there.
+    github = FakeGitHub(
+        existing_repos={REPO}, repo_files={"gojira.yaml": "env: [unclosed\n"}
+    )
+
+    with pytest.raises(RepoBusy) as exc:
+        read_repo_env(github, REPO)
+
+    assert str(exc.value) == UNREADABLE_GOJIRA_YAML
+    assert "gojira.yaml" in str(exc.value)
+
+
+def test_a_gojira_yaml_that_is_not_a_mapping_reads_the_same_way():
+    github = FakeGitHub(
+        existing_repos={REPO}, repo_files={"gojira.yaml": "- one\n- two\n"}
+    )
+
+    with pytest.raises(RepoBusy):
+        read_repo_env(github, REPO)
+
+
+def test_a_missing_gojira_yaml_reads_as_no_variables():
+    # Not every repository has been wired yet, and that is not an error.
+    github = FakeGitHub(existing_repos={REPO}, repo_files={})
+
+    assert read_repo_env(github, REPO) == {}
+
+
+def test_a_repository_the_room_cannot_read_is_told_apart_from_a_missing_file():
+    # `read_file` answers None for both, so permission is checked first,
+    # the way the connect scan does. "Add the file" and "the room lost
+    # access to this repository" are different things to tell somebody.
+    github = FakeGitHub(existing_repos=set(), repo_files={})
+
+    with pytest.raises(RepoBusy) as exc:
+        read_repo_env(github, REPO)
+
+    assert str(exc.value) == UNREADABLE_REPOSITORY
+
+
+def test_an_unparseable_file_stops_a_write_before_anything_is_pushed():
+    github = FakeGitHub(
+        existing_repos={REPO}, extra_clone_files={"gojira.yaml": "env: [unclosed\n"}
+    )
+
+    with pytest.raises(RepoBusy) as exc:
+        edit_gojira_yaml(
+            github,
+            _gojira(),
+            repo=REPO,
+            connected=False,
+            gojira_app_id=APP_ID,
+            edit=_edit_env({"API_BASE": "https://example.test"}),
+            message="kobo: environment variables",
+        )
+
+    assert str(exc.value) == UNREADABLE_GOJIRA_YAML
+    assert github.pushes == []
+
+
+# --- taking the wiring line back out ------------------------------------------
+
+
+def test_unwire_removes_the_entry_and_leaves_every_other_one():
+    data = {"secrets_from": [f"{AGENT}-cabal", f"{AGENT}-env", "a-team-secret"]}
+
+    assert unwire_env_secret(data, AGENT) is True
+    assert data["secrets_from"] == [f"{AGENT}-cabal", "a-team-secret"]
+
+
+def test_unwire_is_a_no_op_when_the_entry_is_not_there():
+    data = {"secrets_from": [f"{AGENT}-cabal"]}
+
+    assert unwire_env_secret(data, AGENT) is False
+    assert data["secrets_from"] == [f"{AGENT}-cabal"]
+
+
+def test_unwire_on_a_file_with_no_list_is_a_no_op():
+    data: dict = {}
+
+    assert unwire_env_secret(data, AGENT) is False
+
+
+def test_wire_and_unwire_agree_with_has_env_secret():
+    data: dict = {}
+    assert has_env_secret(data, AGENT) is False
+    wire_env_secret(data, AGENT)
+    assert has_env_secret(data, AGENT) is True
+    unwire_env_secret(data, AGENT)
+    assert has_env_secret(data, AGENT) is False
