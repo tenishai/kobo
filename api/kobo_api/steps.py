@@ -1578,7 +1578,13 @@ class WireStep:
         # time that push lands and any reprovision it triggers regenerates
         # the Deployment's envFrom.
         if cabal_enabled(config) and ctx.clients.cabal is not None:
-            deliver_pass(ctx.clients.kubectl, ctx.clients.cabal, agent)
+            # `ctx.clients.ladon` is None unless the secrets platform's
+            # machine lane is configured, in which case it replaces the
+            # direct Secret write inside `deliver_pass` -- same Secret
+            # name either way, so nothing else in this step changes.
+            deliver_pass(
+                ctx.clients.kubectl, ctx.clients.cabal, agent, ctx.clients.ladon
+            )
 
         changed = github.commit_push(clone_dir, "kobo: wire service account, PVC, model env")
         if not changed:

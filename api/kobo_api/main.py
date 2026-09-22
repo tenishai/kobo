@@ -6368,6 +6368,15 @@ def create_app(
                 bot_token=payload.bot_token,
                 app_token=payload.app_token,
                 runtime_image=agent.runtime_image or cfg.runtime_image,
+                # None unless the secrets platform's machine lane is
+                # configured, in which case the token delivery rides it
+                # instead of a direct Secret write (kobo_api.ladon).
+                ladon=clients.ladon,
+                # The person doing the wiring, since this IS a request with
+                # a verified caller behind it; the agent's creator is the
+                # fallback for a room with no identity perimeter in front
+                # of it, matching what the background pipeline can name.
+                acting_email=getattr(request.state, "iap_email", None) or agent.created_by,
             )
         except ClientError as exc:
             log.warning("slack connect failed: %s", exc)

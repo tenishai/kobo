@@ -61,6 +61,7 @@ from tests.fakes import (
     FakeGitHub,
     FakeGojira,
     FakeKubectl,
+    FakeLadon,
     FakeSlack,
     FakeStorage,
 )
@@ -198,6 +199,7 @@ def _make_client(
     gojira=None,
     slack=_SLACK_UNSET,
     storage=None,
+    ladon=None,
     iap_jwks_fetcher=None,
 ):
     if storage is None:
@@ -219,6 +221,9 @@ def _make_client(
                 kubectl=kubectl if kubectl is not None else FakeKubectl(),
                 slack=FakeSlack() if slack is _SLACK_UNSET else slack,
                 storage=storage,
+                # None (the default) is a room with no secrets platform
+                # configured: token delivery stays the direct Secret write.
+                ladon=ladon,
             ),
             iap_jwks_fetcher=iap_jwks_fetcher,
         )
@@ -536,6 +541,106 @@ def test_connect_slack_rewrites_dockerfile_to_configured_runtime_image(session_f
     )
     assert BOT_TOKEN not in github.captured_dockerfile
     assert APP_TOKEN not in github.captured_dockerfile
+
+
+def test_connect_slack_through_the_secrets_platform_records_the_caller(
+    session_factory, config
+):
+    # The lane configured: the tokens go to the secrets platform instead of
+    # straight into the namespace, recorded against the VERIFIED caller
+    # doing the wiring -- not the agent's creator, who is someone else here.
+    private_key, jwk = _generate_jwk()
+    iap_config = config.model_copy(update={"iap_audience": IAP_AUDIENCE})
+    ladon = FakeLadon()
+    kubectl = FakeKubectl()
+    gojira, app_id = _onboarded_gojira()
+    client = _make_client(
+        session_factory, iap_config, github=_CapturingGitHub(), kubectl=kubectl,
+        gojira=gojira, ladon=ladon, iap_jwks_fetcher=_fetcher(jwk),
+    )
+    _seed_agent(
+        session_factory, iap_config, gojira_app_id=app_id, slack_app_id=APP_ID,
+        slack_channels=[CHANNEL], created_by=OPERATOR_EMAIL,
+    )
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/slack/connect",
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+        headers={ASSERTION_HEADER: _sign(private_key, email=OPERATOR_EMAIL)},
+    )
+
+    assert response.status_code == 200
+    assert ladon.puts == [
+        (
+            OPERATOR_EMAIL,
+            f"apps/{AGENT_NAME}/slack",
+            {"SLACK_BOT_TOKEN": BOT_TOKEN, "SLACK_APP_TOKEN": APP_TOKEN},
+        )
+    ]
+    assert ladon.syncs == [
+        (
+            OPERATOR_EMAIL,
+            AGENT_NAME,
+            f"apps/{AGENT_NAME}/slack",
+            AGENT_NAME,
+            f"{AGENT_NAME}-slack",
+        )
+    ]
+    # Never both writers for one Secret name.
+    assert kubectl.secrets_applied == []
+
+
+def test_connect_slack_through_the_secrets_platform_falls_back_to_the_creator(
+    session_factory, config
+):
+    # No identity perimeter in front of the room (IAP off): the agent's
+    # creator is the only person there is to name, same as the background
+    # pipeline's colleague-pass delivery.
+    ladon = FakeLadon()
+    gojira, app_id = _onboarded_gojira()
+    client = _make_client(
+        session_factory, config, github=_CapturingGitHub(), gojira=gojira, ladon=ladon
+    )
+    _seed_agent(
+        session_factory, config, gojira_app_id=app_id, slack_app_id=APP_ID,
+        slack_channels=[CHANNEL], created_by=OPERATOR_EMAIL,
+    )
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/slack/connect",
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+    )
+
+    assert response.status_code == 200
+    assert ladon.puts[0][0] == OPERATOR_EMAIL
+
+
+def test_connect_slack_secrets_platform_failure_is_the_same_502_as_a_failed_write(
+    session_factory, config
+):
+    github = _CapturingGitHub()
+    gojira, app_id = _onboarded_gojira()
+    client = _make_client(
+        session_factory, config, github=github, gojira=gojira,
+        ladon=FakeLadon(put_error="the secrets platform is unavailable right now"),
+    )
+    _seed_agent(
+        session_factory, config, gojira_app_id=app_id, slack_app_id=APP_ID,
+        slack_channels=[CHANNEL], created_by=OPERATOR_EMAIL,
+    )
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/slack/connect",
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"error": "couldn't set up Slack. Try again."}
+    assert github.pushes == []
+    # Not recorded as connected: nothing was delivered.
+    session = session_factory()
+    assert session.query(Agent).filter_by(name=AGENT_NAME).first().slack_wired is False
+    session.close()
 
 
 def test_connect_slack_unknown_agent_returns_404(session_factory, config):

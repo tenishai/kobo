@@ -31,12 +31,16 @@ from tests.fakes import (
     FakeGitHub,
     FakeGojira,
     FakeKubectl,
+    FakeLadon,
 )
 
 REPO = "acme/agent-clio"
 NAME = "clio"
 BOT_TOKEN = "xoxb-super-secret-bot-token"
 APP_TOKEN = "xapp-super-secret-app-token"
+# The human doing the wiring, recorded against every write the secrets
+# platform's machine lane performs.
+OPERATOR = "someone@example.com"
 # The "current" configured runtime image every wire_slack test passes by
 # default — deliberately distinct from FakeGitHub's own FAKE_DOCKERFILE_OLD_IMAGE
 # default so a test that doesn't override either sees the FROM line actually
@@ -487,6 +491,89 @@ def test_wire_slack_tokens_absent_from_every_file_written_to_the_clone():
     assert APP_TOKEN not in github.captured_agent_yaml
     assert BOT_TOKEN not in github.captured_gojira_yaml
     assert APP_TOKEN not in github.captured_gojira_yaml
+
+
+# --- wire_slack through the secrets platform's machine lane ------------------
+
+
+def test_wire_slack_through_the_lane_stores_both_tokens_and_syncs_one_secret():
+    ladon = FakeLadon()
+
+    _wire(ladon=ladon, acting_email=OPERATOR)
+
+    assert ladon.puts == [
+        (
+            OPERATOR,
+            f"apps/{NAME}/slack",
+            {"SLACK_BOT_TOKEN": BOT_TOKEN, "SLACK_APP_TOKEN": APP_TOKEN},
+        )
+    ]
+    # The same Secret name and namespace the direct write used, so step 2's
+    # `secrets_from` entry and the running pod are untouched.
+    assert ladon.syncs == [
+        (OPERATOR, NAME, f"apps/{NAME}/slack", NAME, f"{NAME}-slack")
+    ]
+
+
+def test_wire_slack_through_the_lane_writes_no_secret_directly():
+    kubectl = FakeKubectl()
+
+    _wire(kubectl=kubectl, ladon=FakeLadon(), acting_email=OPERATOR)
+
+    assert kubectl.secrets_applied == []
+
+
+def test_wire_slack_through_the_lane_still_wires_the_repo_and_reprovisions():
+    github = _CapturingGitHub()
+    gojira, app_id = _onboarded_gojira()
+
+    sha, _github, _kubectl, _gojira = _wire(
+        github=github, gojira=gojira, app_id=app_id,
+        ladon=FakeLadon(), acting_email=OPERATOR,
+    )
+
+    assert sha == FAKE_LOCAL_HEAD_DEFAULT
+    gojira_yaml = yaml.safe_load(github.captured_gojira_yaml)
+    assert gojira_yaml["secrets_from"] == [f"{NAME}-slack"]
+    assert gojira.reprovision_calls == [app_id]
+
+
+def test_wire_slack_lane_failure_stops_before_the_push_with_no_fallback_write():
+    # A lane failure fails this call the way a failed apply_secret does:
+    # nothing pushed, nothing reprovisioned, and no direct Secret written.
+    github = _CapturingGitHub()
+    kubectl = FakeKubectl()
+    gojira, app_id = _onboarded_gojira()
+
+    with pytest.raises(ClientError, match="unavailable"):
+        _wire(
+            github=github, kubectl=kubectl, gojira=gojira, app_id=app_id,
+            ladon=FakeLadon(put_error="the secrets platform is unavailable right now"),
+            acting_email=OPERATOR,
+        )
+
+    assert github.pushes == []
+    assert gojira.reprovision_calls == []
+    assert kubectl.secrets_applied == []
+
+
+def test_wire_slack_lane_failure_never_leaks_either_token():
+    with pytest.raises(ClientError) as exc_info:
+        _wire(ladon=FakeLadon(sync_error="the cluster refused it"), acting_email=OPERATOR)
+
+    assert BOT_TOKEN not in str(exc_info.value)
+    assert APP_TOKEN not in str(exc_info.value)
+
+
+def test_wire_slack_through_the_lane_refuses_a_delivery_with_nobody_to_record():
+    kubectl = FakeKubectl()
+    ladon = FakeLadon()
+
+    with pytest.raises(ClientError):
+        _wire(kubectl=kubectl, ladon=ladon, acting_email=None)
+
+    assert ladon.puts == []
+    assert kubectl.secrets_applied == []
 
 
 # --- rewire_slack_channels -----------------------------------------------------

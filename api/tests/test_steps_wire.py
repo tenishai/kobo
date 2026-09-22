@@ -37,6 +37,7 @@ from tests.fakes import (
     FakeGitHub,
     FakeGojira,
     FakeKubectl,
+    FakeLadon,
 )
 
 AGENT_NAME = "clio"
@@ -67,6 +68,7 @@ def _make_agent(
     model_id: str = MODEL_ID,
     repo_full_name: str | None = None,
     gojira_app_id: int | None = None,
+    created_by: str | None = None,
 ):
     session = session_factory()
     agent = Agent(
@@ -76,6 +78,7 @@ def _make_agent(
         skills=[],
         repo_full_name=repo_full_name,
         gojira_app_id=gojira_app_id,
+        created_by=created_by,
     )
     session.add(agent)
     session.commit()
@@ -88,9 +91,10 @@ def _make_ctx(session, agent, config, clients) -> Ctx:
     return Ctx(agent=agent, session=session, config=config, clients=clients, workdir=workdir)
 
 
-def _clients(*, github=None, gojira=None, kubectl=None, cabal=None) -> Clients:
+def _clients(*, github=None, gojira=None, kubectl=None, cabal=None, ladon=None) -> Clients:
     return Clients(
-        github=github, gojira=gojira, cloud=None, agent=None, kubectl=kubectl, cabal=cabal
+        github=github, gojira=gojira, cloud=None, agent=None, kubectl=kubectl,
+        cabal=cabal, ladon=ladon,
     )
 
 
@@ -535,6 +539,89 @@ def test_wire_step_mint_failure_propagates_before_the_push(session_factory, conf
         WireStep().run(ctx)
 
     assert not any(call.startswith("commit_push:") for call in github.calls)
+
+
+def test_wire_step_delivers_the_colleague_pass_through_the_secrets_platform(
+    session_factory, config, monkeypatch
+):
+    """With the secrets platform's machine lane wired (`clients.ladon`), the
+    colleague pass goes to the platform under the agent's own path and comes
+    back as the SAME `{name}-cabal` Secret -- so this step's gojira.yaml
+    edit and the pod behind it are unchanged, and nothing is written into
+    the namespace directly."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    repo = _repo_full_name(config)
+    cfg = _wire_cabal_enabled_config(config)
+    session, agent = _make_agent(
+        session_factory, repo_full_name=repo, gojira_app_id=1,
+        created_by="someone@example.com",
+    )
+    github = FakeGitHub()
+    gojira = FakeGojira(activate_after=1)
+    gojira.create_app(name=AGENT_NAME, repo_full_name=repo, cluster=cfg.gojira_cluster, namespace=AGENT_NAME)
+    kubectl = FakeKubectl()
+    cabal = FakeCabal(mint_colleague_result="minted-token-value")
+    ladon = FakeLadon()
+    ctx = _make_ctx(
+        session, agent, cfg,
+        _clients(github=github, gojira=gojira, kubectl=kubectl, cabal=cabal, ladon=ladon),
+    )
+
+    WireStep().run(ctx)
+
+    assert ladon.puts == [
+        (
+            "someone@example.com",
+            f"apps/{AGENT_NAME}/cabal",
+            {"CABAL_COLLEAGUE_TOKEN": "minted-token-value"},
+        )
+    ]
+    assert ladon.syncs == [
+        (
+            "someone@example.com",
+            AGENT_NAME,
+            f"apps/{AGENT_NAME}/cabal",
+            AGENT_NAME,
+            f"{AGENT_NAME}-cabal",
+        )
+    ]
+    assert kubectl.secrets_applied == []
+    # The contract in the repo is untouched: the same secrets_from entry
+    # the direct write produced.
+    gojira_yaml = yaml.safe_load((ctx.workdir / "wire" / "gojira.yaml").read_text())
+    assert f"{AGENT_NAME}-cabal" in gojira_yaml["secrets_from"]
+
+
+def test_wire_step_secrets_platform_failure_propagates_before_the_push(
+    session_factory, config, monkeypatch
+):
+    """A lane failure fails this step exactly the way a failed direct write
+    does -- before the push, and with no fallback to writing the Secret
+    itself (two writers for one Secret name is two sources of truth)."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    repo = _repo_full_name(config)
+    cfg = _wire_cabal_enabled_config(config)
+    session, agent = _make_agent(
+        session_factory, repo_full_name=repo, gojira_app_id=1,
+        created_by="someone@example.com",
+    )
+    github = FakeGitHub()
+    gojira = FakeGojira(activate_after=1)
+    gojira.create_app(name=AGENT_NAME, repo_full_name=repo, cluster=cfg.gojira_cluster, namespace=AGENT_NAME)
+    kubectl = FakeKubectl()
+    ctx = _make_ctx(
+        session, agent, cfg,
+        _clients(
+            github=github, gojira=gojira, kubectl=kubectl, cabal=FakeCabal(),
+            ladon=FakeLadon(put_error="the secrets platform is unavailable right now"),
+        ),
+    )
+
+    with pytest.raises(ClientError, match="unavailable"):
+        WireStep().run(ctx)
+
+    assert not any(call.startswith("commit_push:") for call in github.calls)
+    assert kubectl.secrets_applied == []
 
 
 def test_wire_step_secret_delivery_failure_propagates_before_the_push(

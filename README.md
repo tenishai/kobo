@@ -195,6 +195,26 @@ advisory locks belong to a database connection, so route the room through a dire
 a pooler in session mode — transaction pooling breaks them. The MCP rate limit counts per
 replica, so two pods allow twice the configured rate overall.
 
+**Secrets platform**: a room can hand the two secrets it creates for an agent — the pass that
+lets agents talk to each other, and the Slack tokens an operator pastes in — to a secrets
+platform instead of writing them into the agent's namespace itself. Set all three of
+`ladon_url` (the platform's base URL), `ladon_audience` (the audience its machine lane expects
+in an identity token) and `ladon_namespace` (the team namespace this room's secrets live in
+over there). With any of the three missing the room writes those Secrets directly, exactly as
+it always has.
+
+What changes with it on: the values are stored once on the platform, recorded against the
+person whose action produced them (the creator of the agent, or whoever is wiring Slack), and
+the platform delivers them into the agent's namespace as the same Secret names the deploy
+contract already names — so nothing about a running pod, a repo's `gojira.yaml`, or a deploy
+changes. The room authenticates as its own workload identity; there is no token to configure
+or store, which is also why this is a deployment setting and not something an org config hands
+out, and why a local room leaves it off. There is deliberately no fallback: if the platform
+refuses or is unreachable, the step fails with that platform's own sentence and is retried,
+rather than quietly writing the Secret a second way and leaving two sources of truth. The
+room's own Slack app-config token pair (`slack_tokens_secret` above) is unaffected and stays
+where it is.
+
 **Org wiring**: a room serves one org. The org's config repo carries `org.yaml` — catalogs,
 models, groups, admin groups, the runtime pin — cloned at boot and merged over local defaults.
 The bootstrap CLI stands up a new org (config repo, buckets, seeded personas) idempotently.
