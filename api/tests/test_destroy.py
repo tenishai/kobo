@@ -1900,3 +1900,77 @@ def test_a_full_destroy_run_names_the_operator_who_asked(session_factory, config
     thread.join(timeout=JOIN_TIMEOUT)
 
     assert {email for email, _ in ladon.deletes} == {"ops@example.com"}
+
+
+def test_destroy_secrets_counts_an_unexpected_failure_and_keeps_going(
+    session_factory, config
+):
+    # Not only ClientError: a connection reset arriving as something else
+    # would otherwise abort the two purposes after it, which is the exact
+    # failure this collection exists to prevent.
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+
+    class _SurprisesOnCabal(FakeLadon):
+        def unsync(self, acting_email, app, k8s_namespace, name):
+            if name.endswith("-cabal"):
+                raise RuntimeError("something nobody wrapped")
+            super().unsync(acting_email, app, k8s_namespace, name)
+
+    ladon = _SurprisesOnCabal()
+    for purpose in ("cabal", "slack", "env"):
+        ladon.stored[f"apps/{AGENT_NAME}/{purpose}"] = {"A_KEY": "not-a-real-value"}
+
+    with pytest.raises(RuntimeError) as exc:
+        _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+
+    assert "cabal" in str(exc.value)
+    assert "slack, env" in str(exc.value)
+    assert f"apps/{AGENT_NAME}/slack" not in ladon.stored
+    assert f"apps/{AGENT_NAME}/env" not in ladon.stored
+    session.close()
+
+
+def test_an_object_recreated_under_the_same_name_fails_only_that_purpose(
+    session_factory, config
+):
+    # `recreated` means what the lane deleted is gone and something else
+    # now stands at the name. That is a failure for this purpose, because
+    # a live ExternalSecret nobody here knows about was left behind -- and
+    # it is not a reason to stop removing the other two.
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+
+    class _Recreates(FakeLadon):
+        def unsync(self, acting_email, app, k8s_namespace, name):
+            if name.endswith("-slack"):
+                raise ClientError(f"something else now stands at {name}")
+            super().unsync(acting_email, app, k8s_namespace, name)
+
+    ladon = _Recreates()
+    for purpose in ("cabal", "slack", "env"):
+        ladon.stored[f"apps/{AGENT_NAME}/{purpose}"] = {"A_KEY": "not-a-real-value"}
+
+    with pytest.raises(RuntimeError) as exc:
+        _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+
+    assert "could not remove slack" in str(exc.value)
+    assert "removed: cabal, env" in str(exc.value)
+    session.close()
+
+
+def test_destroy_secrets_never_logs_what_the_lane_said(session_factory, config, caplog):
+    # A step's error string lands on AgentStep.error, which any viewer of
+    # the agent can read, and the platform's own sentence can quote the
+    # request it refused.
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+    ladon = FakeLadon(delete_error="refused the body not-a-real-value")
+
+    with caplog.at_level("WARNING"), pytest.raises(RuntimeError):
+        _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+
+    assert "not-a-real-value" not in caplog.text
+    assert "refused the body" not in caplog.text
+    assert "ClientError" in caplog.text
+    session.close()

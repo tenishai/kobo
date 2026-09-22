@@ -206,6 +206,29 @@ MAX_READ_FILE_BYTES = 256 * 1024
 
 
 @dataclass(frozen=True)
+class BranchComparison:
+    """What one branch changed against a repository's default branch.
+
+    `files` is every path the branch touches, and `authors` every author
+    email on the commits it adds. Both are what the room needs to prove a
+    branch is its OWN before recycling it: a branch named
+    `kobo/secrets-wiring` that changes anything but `gojira.yaml`, or that
+    carries a commit by a person, was made by somebody else and is not the
+    room's to delete.
+
+    `found` is False when the comparison could not be made at all (either
+    ref is gone). A caller must treat that as "cannot prove it", never as
+    "nothing changed": an empty `files` from a failed lookup and an empty
+    `files` from an identical branch are the same value and opposite
+    answers.
+    """
+
+    found: bool
+    files: tuple[str, ...]
+    authors: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class RepoAccessInfo:
     """What the room can do with a repository it does not own.
 
@@ -398,6 +421,17 @@ class GitHubClient(Protocol):
         """
         ...
 
+    def compare(self, repo: str, base: str, head: str) -> BranchComparison:
+        """What `head` changed against `base` in `repo`: the paths it
+        touches and the authors of the commits it adds.
+
+        The one read that can tell a branch the room made from a branch
+        that merely shares its name. `BranchComparison.found` is False when
+        either ref is missing, which a caller must never read as "nothing
+        changed" (see that class's own docstring).
+        """
+        ...
+
     def delete_branch(self, repo: str, branch: str) -> bool:
         """Delete `branch` from `repo`. True when it was deleted, False
         when it was not there, `ClientError` for anything else.
@@ -420,6 +454,21 @@ class GitHubClient(Protocol):
         raises, because answering "no branch" to a 401 would send the
         caller into a push that then fails for a reason it believed it had
         already ruled out.
+        """
+        ...
+
+    def close_pr(self, repo: str, pr_url: str, comment: str) -> None:
+        """Close the pull request at `pr_url`, leaving `comment` on it
+        first so nobody finds a request of the room's closed with no word
+        about why.
+
+        Only ever called on a pull request the room itself opened, and only
+        when a later change in the room has made it wrong to merge: an
+        unwire request still open when somebody adds a secret back would,
+        merged, take the line away from an agent that needs it.
+
+        Closing one that is already closed (or merged) is not an error:
+        this is reached from a retry as easily as from a first attempt.
         """
         ...
 
@@ -783,15 +832,57 @@ class GhCLI:
             raise
         return True
 
+    def compare(self, repo: str, base: str, head: str) -> BranchComparison:
+        try:
+            out = self._runner.run(
+                [
+                    self._gh, "api",
+                    # Both refs are one path segment each here, so a slash
+                    # in a branch name has to be encoded -- unlike the git
+                    # refs route `delete_branch` below uses.
+                    f"repos/{repo}/compare/{quote(base, safe='')}...{quote(head, safe='')}",
+                ],
+                env=self._env(),
+            )
+        except ClientError as exc:
+            if _gh_returned_404(exc):
+                return BranchComparison(found=False, files=(), authors=())
+            raise
+        payload = json.loads(out) if out else {}
+        if not isinstance(payload, dict):
+            return BranchComparison(found=False, files=(), authors=())
+        files = tuple(
+            str(entry.get("filename", ""))
+            for entry in payload.get("files") or []
+            if isinstance(entry, dict)
+        )
+        authors = []
+        for commit in payload.get("commits") or []:
+            if not isinstance(commit, dict):
+                continue
+            # The git author recorded IN the commit, not GitHub's guess at
+            # which account it belongs to: the room commits under its own
+            # name and email, and that is the thing to match.
+            detail = commit.get("commit") or {}
+            author = detail.get("author") if isinstance(detail, dict) else None
+            if isinstance(author, dict):
+                authors.append(str(author.get("email", "")))
+        return BranchComparison(found=True, files=files, authors=tuple(authors))
+
     def delete_branch(self, repo: str, branch: str) -> bool:
         try:
             self._runner.run(
                 [
                     self._gh, "api", "-X", "DELETE",
-                    # One path segment, and a branch name may hold slashes
-                    # of its own -- the same encoding `branch_protected`
-                    # below documents, for the same reason.
-                    f"repos/{repo}/git/refs/heads/{quote(branch, safe='')}",
+                    # The branch name goes in RAW, unlike `branch_protected`
+                    # below. That route takes the name as one path segment,
+                    # so a slash in it has to be encoded; this one takes a
+                    # git REF, where `heads/kobo/secrets-wiring` is the
+                    # whole thing and the slashes are part of the path.
+                    # Encoding them asked GitHub to delete a ref literally
+                    # named `heads/kobo%2Fsecrets-wiring`, which is a 404,
+                    # which this method then reported as "already gone".
+                    f"repos/{repo}/git/refs/heads/{branch}",
                 ],
                 env=self._env(),
             )
@@ -930,6 +1021,24 @@ class GhCLI:
                 return False
             raise
         return out.strip() == "true"
+
+    def close_pr(self, repo: str, pr_url: str, comment: str) -> None:
+        # The comment first, so a closed request always carries the reason
+        # even if the close itself then fails and is retried.
+        self._runner.run(
+            [self._gh, "pr", "comment", pr_url, "--repo", repo, "--body", comment],
+            env=self._env(),
+        )
+        try:
+            self._runner.run(
+                [self._gh, "pr", "close", pr_url, "--repo", repo], env=self._env()
+            )
+        except ClientError as exc:
+            if _gh_says_already_merged(exc) or _gh_returned_404(exc):
+                # Already closed, already merged, or gone. Each is the
+                # state this call wanted; a retry must not fail on one.
+                return
+            raise
 
     def merge_pr(self, repo: str, pr_url: str) -> bool:
         for method in MERGE_METHODS:

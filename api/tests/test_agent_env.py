@@ -22,14 +22,18 @@ from kobo_api.agent_env import (
     MAX_KEYS,
     PULL_REQUEST,
     ROOM_SETS_THIS_ONE,
+    SECRETS_UNWIRE_PR_BODY,
     SECRETS_WIRING_BRANCH,
     SECRETS_WIRING_PR_BODY,
     SECRETS_WIRING_PR_TITLE,
     UNCHANGED,
     UNREADABLE_GOJIRA_YAML,
     UNREADABLE_REPOSITORY,
+    WIRING_PR_ALREADY_OPEN,
+    DeployTriggerFailed,
     RepoBusy,
     apply_env,
+    branch_not_ours,
     edit_gojira_yaml,
     env_secret_name,
     has_env_secret,
@@ -42,7 +46,7 @@ from kobo_api.agent_env import (
     wire_env_secret,
     write_refusal,
 )
-from kobo_api.clients import ClientError
+from kobo_api.clients import COMMIT_AUTHOR_EMAIL, BranchComparison, ClientError
 from tests.fakes import FakeGitHub, FakeGojira
 
 AGENT = "clio"
@@ -703,3 +707,212 @@ def test_wire_and_unwire_agree_with_has_env_secret():
     assert has_env_secret(data, AGENT) is True
     unwire_env_secret(data, AGENT)
     assert has_env_secret(data, AGENT) is False
+
+
+# --- proving a branch is the room's before deleting it ------------------------
+
+
+def _leftover(comparison=None):
+    return FakeGitHub(
+        existing_repos={REPO},
+        existing_branches={f"{REPO}#{ENV_BRANCH}"},
+        comparisons={ENV_BRANCH: comparison} if comparison is not None else None,
+        pr_url="https://example.test/pr/2",
+    )
+
+
+def test_a_branch_touching_only_gojira_yaml_under_the_rooms_name_is_recycled():
+    github = _leftover(
+        BranchComparison(
+            found=True, files=("gojira.yaml",), authors=(COMMIT_AUTHOR_EMAIL,)
+        )
+    )
+
+    result = edit_gojira_yaml(
+        github,
+        _gojira(),
+        repo=REPO,
+        connected=True,
+        gojira_app_id=APP_ID,
+        edit=_edit_env({"API_BASE": "https://example.test"}),
+        message="kobo: environment variables",
+    )
+
+    assert result.how == PULL_REQUEST
+    assert github.deleted_branches == [(REPO, ENV_BRANCH)]
+
+
+def test_a_branch_touching_another_file_is_refused_by_name():
+    github = _leftover(
+        BranchComparison(
+            found=True,
+            files=("gojira.yaml", "src/main.py"),
+            authors=(COMMIT_AUTHOR_EMAIL,),
+        )
+    )
+
+    with pytest.raises(RepoBusy) as exc:
+        edit_gojira_yaml(
+            github,
+            _gojira(),
+            repo=REPO,
+            connected=True,
+            gojira_app_id=APP_ID,
+            edit=_edit_env({"API_BASE": "https://example.test"}),
+            message="kobo: environment variables",
+        )
+
+    assert str(exc.value) == branch_not_ours(ENV_BRANCH)
+    assert github.deleted_branches == []
+    assert github.open_pr_calls == []
+
+
+def test_a_branch_carrying_a_persons_commit_is_refused_too():
+    # A person has been working here, whatever the branch is called.
+    github = _leftover(
+        BranchComparison(
+            found=True,
+            files=("gojira.yaml",),
+            authors=(COMMIT_AUTHOR_EMAIL, "someone@example.com"),
+        )
+    )
+
+    with pytest.raises(RepoBusy):
+        edit_gojira_yaml(
+            github,
+            _gojira(),
+            repo=REPO,
+            connected=True,
+            gojira_app_id=APP_ID,
+            edit=_edit_env({"API_BASE": "https://example.test"}),
+            message="kobo: environment variables",
+        )
+
+    assert github.deleted_branches == []
+
+
+def test_a_comparison_that_could_not_be_made_is_a_refusal_not_a_pass():
+    # The important half: an empty file list from a failed lookup and an
+    # empty one from an identical branch are the same value, so treating
+    # "cannot tell" as "fine" would delete exactly the branches this check
+    # protects.
+    github = _leftover(BranchComparison(found=False, files=(), authors=()))
+
+    with pytest.raises(RepoBusy):
+        edit_gojira_yaml(
+            github,
+            _gojira(),
+            repo=REPO,
+            connected=True,
+            gojira_app_id=APP_ID,
+            edit=_edit_env({"API_BASE": "https://example.test"}),
+            message="kobo: environment variables",
+        )
+
+    assert github.deleted_branches == []
+
+
+def test_the_rooms_own_commit_identity_matches_whatever_its_case():
+    github = _leftover(
+        BranchComparison(
+            found=True,
+            files=("gojira.yaml",),
+            authors=(COMMIT_AUTHOR_EMAIL.upper(),),
+        )
+    )
+
+    edit_gojira_yaml(
+        github,
+        _gojira(),
+        repo=REPO,
+        connected=True,
+        gojira_app_id=APP_ID,
+        edit=_edit_env({"API_BASE": "https://example.test"}),
+        message="kobo: environment variables",
+    )
+
+    assert github.deleted_branches == [(REPO, ENV_BRANCH)]
+
+
+# --- the two refusal sentences name their own branch --------------------------
+
+
+def test_the_wiring_refusal_says_wiring_and_the_environment_one_says_variables():
+    # "Your environment request is open" in front of somebody adding a
+    # SECRET names the wrong thing to go and merge.
+    assert "secrets wiring" in WIRING_PR_ALREADY_OPEN
+    assert "environment variables" in ENV_PR_ALREADY_OPEN
+    assert "—" not in WIRING_PR_ALREADY_OPEN
+    assert "—" not in branch_not_ours(ENV_BRANCH)
+
+
+def test_both_pull_request_bodies_warn_that_the_file_is_rewritten():
+    for body in (ENV_PR_BODY, SECRETS_WIRING_PR_BODY, SECRETS_UNWIRE_PR_BODY):
+        assert "rewritten from its parsed form" in body
+        assert "NOT preserved" in body
+        assert "—" not in body
+
+
+# --- a deploy the platform would not run --------------------------------------
+
+
+def test_a_reprovision_failure_says_whether_anything_was_pushed():
+    github = FakeGitHub(existing_repos={REPO})
+    gojira = _gojira()
+    gojira.reprovision_error = "the platform is having a moment"
+
+    with pytest.raises(DeployTriggerFailed) as exc:
+        edit_gojira_yaml(
+            github,
+            gojira,
+            repo=REPO,
+            connected=False,
+            gojira_app_id=APP_ID,
+            edit=_edit_env({"API_BASE": "https://example.test"}),
+            message="kobo: environment variables",
+        )
+
+    assert exc.value.pushed is True
+
+
+def test_a_reprovision_failure_on_a_no_op_save_says_nothing_was_pushed():
+    github = FakeGitHub(
+        existing_repos={REPO},
+        extra_clone_files={"gojira.yaml": "name: clio\nenv:\n  A: b\n"},
+    )
+    gojira = _gojira()
+    gojira.reprovision_error = "the platform is having a moment"
+
+    with pytest.raises(DeployTriggerFailed) as exc:
+        edit_gojira_yaml(
+            github,
+            gojira,
+            repo=REPO,
+            connected=False,
+            gojira_app_id=APP_ID,
+            edit=_edit_env({"A": "b"}),
+            message="kobo: environment variables",
+        )
+
+    assert exc.value.pushed is False
+
+
+def test_the_reprovision_can_be_held_back_for_a_caller_with_more_to_do():
+    # Removing an agent's last secret commits the line away first, deletes
+    # the Secret, and only then asks for a deploy.
+    github = FakeGitHub(existing_repos={REPO})
+    gojira = _gojira()
+
+    edit_gojira_yaml(
+        github,
+        gojira,
+        repo=REPO,
+        connected=False,
+        gojira_app_id=APP_ID,
+        edit=_edit_env({"API_BASE": "https://example.test"}),
+        message="kobo: environment variables",
+        reprovision=False,
+    )
+
+    assert github.pushes
+    assert gojira.reprovision_calls == []

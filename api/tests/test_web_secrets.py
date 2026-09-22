@@ -250,6 +250,9 @@ def test_a_room_with_no_secrets_platform_says_so_rather_than_failing(
         "updated_at": None,
         "platform": False,
         "secret_name": None,
+        # Not "unreadable": there is nothing to read, which is a
+        # different sentence from "the room cannot ask right now".
+        "unreadable": False,
     }
 
 
@@ -633,15 +636,21 @@ def test_an_open_environment_request_does_not_block_a_connected_agents_first_sec
     assert data["secrets_from"] == [f"{AGENT}-env"]
 
 
-def test_a_secrets_request_that_does_not_carry_the_line_is_in_the_way(
+def test_a_stale_unwire_request_is_closed_before_a_secret_is_added_back(
     session_factory, config, fake_storage, _key
 ):
-    # An open request on the wiring branch whose own file does not say
-    # this. Reusing it would report a change as proposed that is not in it.
+    # The room proposed taking the line away, nobody merged it, and now
+    # somebody is adding a secret. Merging that request later would take
+    # the line from an agent that needs it, so it is closed with a word
+    # about why and its branch removed, and a fresh request proposes the
+    # line again.
     ladon = FakeLadon()
     github = _github(
-        open_prs={f"{REPO}#{SECRETS_WIRING_BRANCH}": PR_URL},
+        open_prs={f"{REPO}#{SECRETS_WIRING_BRANCH}": "https://example.test/pull/stale"},
+        # The branch head does NOT carry the line: this request proposes
+        # removing it.
         branch_files={SECRETS_WIRING_BRANCH: {"gojira.yaml": BASE_GOJIRA_YAML}},
+        track_pushed_content=True,
     )
     client, _ = _client(
         session_factory,
@@ -653,14 +662,101 @@ def test_a_secrets_request_that_does_not_carry_the_line_is_in_the_way(
         github=github,
     )
 
-    resp = client.put(
+    body = client.put(
         f"/api/agents/{AGENT}/secrets",
         json={"set": {"API_KEY": VALUE}},
         headers=_as(_key),
+    ).json()
+
+    assert [url for _, url, _ in github.close_pr_calls] == [
+        "https://example.test/pull/stale"
+    ]
+    assert "Superseded" in github.close_pr_calls[0][2]
+    assert github.deleted_branches == [(REPO, SECRETS_WIRING_BRANCH)]
+    assert body["wiring"] == "pull_request"
+    assert body["pull_request"] == PR_URL
+    with tempfile.TemporaryDirectory() as tmp:
+        proposed = Path(tmp)
+        github.clone(REPO, proposed)
+        data = yaml.safe_load((proposed / "gojira.yaml").read_text())
+    assert data["secrets_from"] == [f"{AGENT}-env"]
+
+
+def test_a_stale_wire_request_is_closed_before_the_last_secret_is_removed(
+    session_factory, config, fake_storage, _key
+):
+    # The mirror. The room proposed adding the line, nobody merged it, and
+    # the last secret is going away: merged later, that request would name
+    # a Secret that no longer exists, and the agent would not start.
+    ladon = FakeLadon()
+    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    github = _github(
+        open_prs={f"{REPO}#{SECRETS_WIRING_BRANCH}": "https://example.test/pull/stale"},
+        # The branch head DOES carry the line: this request proposes
+        # adding it.
+        branch_files={
+            SECRETS_WIRING_BRANCH: {
+                "gojira.yaml": BASE_GOJIRA_YAML + f"secrets_from:\n  - {AGENT}-env\n"
+            }
+        },
+    )
+    client, _ = _client(
+        session_factory,
+        config,
+        fake_storage,
+        _key,
+        kind=KIND_CONNECTED,
+        ladon=ladon,
+        github=github,
     )
 
-    assert resp.status_code == 409
-    assert PR_URL in resp.json()["error"]
+    body = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"remove": ["API_KEY"]},
+        headers=_as(_key),
+    ).json()
+
+    assert [url for _, url, _ in github.close_pr_calls] == [
+        "https://example.test/pull/stale"
+    ]
+    assert github.deleted_branches == [(REPO, SECRETS_WIRING_BRANCH)]
+    # The default branch never had the line, so there is nothing to
+    # propose removing and the deletes can happen now.
+    assert body["emptied"] is True
+    assert ladon.deletes == [(OWNER, f"apps/{AGENT}/env")]
+
+
+def test_an_open_request_that_already_proposes_this_is_reused_not_reopened(
+    session_factory, config, fake_storage, _key
+):
+    ladon = FakeLadon()
+    github = _github(
+        open_prs={f"{REPO}#{SECRETS_WIRING_BRANCH}": PR_URL},
+        branch_files={
+            SECRETS_WIRING_BRANCH: {
+                "gojira.yaml": BASE_GOJIRA_YAML + f"secrets_from:\n  - {AGENT}-env\n"
+            }
+        },
+    )
+    client, _ = _client(
+        session_factory,
+        config,
+        fake_storage,
+        _key,
+        kind=KIND_CONNECTED,
+        ladon=ladon,
+        github=github,
+    )
+
+    body = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"set": {"API_KEY": VALUE}},
+        headers=_as(_key),
+    ).json()
+
+    assert body["pull_request"] == PR_URL
+    assert github.close_pr_calls == []
+    assert github.open_pr_calls == []
 
 
 # --- Reading and writing environment variables --------------------------------
@@ -1041,3 +1137,324 @@ def test_a_write_that_fills_a_list_exactly_to_the_cap_is_allowed(
 
     assert resp.status_code == 200
     assert len(resp.json()["keys"]) == MAX_KEYS
+
+
+# --- emptying: the line goes before the Secret does ----------------------------
+#
+# The invariant every case here defends: gojira.yaml must never name a
+# Kubernetes Secret that does not exist. The deploy platform turns
+# `secrets_from` into `envFrom`, and a pod whose envFrom names a missing
+# Secret does not start at all.
+
+
+def _wired_github(**kwargs):
+    return _github(
+        repo_files={
+            "gojira.yaml": BASE_GOJIRA_YAML + f"secrets_from:\n  - {AGENT}-env\n"
+        },
+        **kwargs,
+    )
+
+
+def test_a_composed_agent_commits_the_line_away_before_deleting_the_secret(
+    session_factory, config, fake_storage, _key
+):
+    order: list[str] = []
+
+    class _Ordered(FakeLadon):
+        def unsync(self, acting_email, app, k8s_namespace, name):
+            order.append("unsync")
+            super().unsync(acting_email, app, k8s_namespace, name)
+
+        def delete_secret(self, acting_email, path):
+            order.append("delete")
+            super().delete_secret(acting_email, path)
+
+    class _OrderedGitHub(FakeGitHub):
+        def commit_push(self, workdir, message):
+            order.append("push")
+            return super().commit_push(workdir, message)
+
+    ladon = _Ordered()
+    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    github = _OrderedGitHub(
+        existing_repos={REPO},
+        repo_files={
+            "gojira.yaml": BASE_GOJIRA_YAML + f"secrets_from:\n  - {AGENT}-env\n"
+        },
+        extra_clone_files={
+            "gojira.yaml": BASE_GOJIRA_YAML + f"secrets_from:\n  - {AGENT}-env\n"
+        },
+        pr_url=PR_URL,
+    )
+    client, clients = _client(
+        session_factory, config, fake_storage, _key, ladon=ladon, github=github
+    )
+
+    body = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"remove": ["API_KEY"]},
+        headers=_as(_key),
+    ).json()
+
+    assert order == ["push", "unsync", "delete"]
+    assert body["emptied"] is True
+    assert body["pending_unwire"] is False
+    pushed = yaml.safe_load(github.pushed_file("gojira.yaml"))
+    assert pushed["secrets_from"] == []
+    # And the deploy is asked for after the Secret is gone, not between.
+    assert clients.gojira.reprovision_calls
+
+
+def test_a_connected_agent_proposes_the_removal_and_deletes_nothing(
+    session_factory, config, fake_storage, _key
+):
+    ladon = FakeLadon()
+    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    github = _wired_github()
+    client, clients = _client(
+        session_factory,
+        config,
+        fake_storage,
+        _key,
+        kind=KIND_CONNECTED,
+        ladon=ladon,
+        github=github,
+    )
+
+    body = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"remove": ["API_KEY"]},
+        headers=_as(_key),
+    ).json()
+
+    assert body["pending_unwire"] is True
+    assert body["emptied"] is False
+    assert body["wiring"] == "pull_request"
+    assert body["pull_request"] == PR_URL
+    # Nothing was taken away: the file still names the Secret.
+    assert ladon.deletes == []
+    assert ladon.unsyncs == []
+    assert ladon.stored[f"apps/{AGENT}/env"] == {"API_KEY": VALUE}
+    assert clients.gojira.reprovision_calls == []
+
+
+def test_the_save_after_that_pull_request_merges_finishes_the_removal(
+    session_factory, config, fake_storage, _key
+):
+    # The default branch no longer names the Secret, so there is nothing
+    # left to propose and the deletes can happen.
+    ladon = FakeLadon()
+    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    github = _github()
+    client, _ = _client(
+        session_factory,
+        config,
+        fake_storage,
+        _key,
+        kind=KIND_CONNECTED,
+        ladon=ladon,
+        github=github,
+    )
+
+    body = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"remove": ["API_KEY"]},
+        headers=_as(_key),
+    ).json()
+
+    assert body["emptied"] is True
+    assert body["pending_unwire"] is False
+    assert ladon.deletes == [(OWNER, f"apps/{AGENT}/env")]
+    assert github.open_pr_calls == []
+
+
+def test_a_removal_that_fails_halfway_leaves_the_line_gone_and_retries_cleanly(
+    session_factory, config, fake_storage, _key
+):
+    # The commit lands, the lane refuses the delete. The agent is left
+    # with a file that names nothing and a stored Secret nobody reads,
+    # which is the safe half to be stuck on: a retry finishes it.
+    ladon = FakeLadon(delete_error="the platform is having a moment")
+    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    github = _wired_github(track_pushed_content=True)
+    client, _ = _client(
+        session_factory, config, fake_storage, _key, ladon=ladon, github=github
+    )
+
+    resp = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"remove": ["API_KEY"]},
+        headers=_as(_key),
+    )
+
+    assert resp.status_code == 502
+    # Never "couldn't store that": nothing was being stored.
+    assert "store" not in resp.json()["error"]
+    assert "remove" in resp.json()["error"]
+    # The line is gone even though the Secret is not.
+    assert github.pushes
+
+
+def test_retrying_a_finished_removal_never_recreates_the_path(
+    session_factory, config, fake_storage, _key
+):
+    # The dangerous retry: keys gone, line gone. An empty `put_secret`
+    # here would create the path again, and the sync behind it would put
+    # an ExternalSecret back over a Secret nothing wants.
+    ladon = FakeLadon()
+    github = _github()
+    client, _ = _client(
+        session_factory, config, fake_storage, _key, ladon=ladon, github=github
+    )
+
+    body = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"remove": ["API_KEY"]},
+        headers=_as(_key),
+    ).json()
+
+    assert body["emptied"] is True
+    assert body["keys"] == []
+    assert ladon.puts == []
+    assert ladon.syncs == []
+    assert ladon.stored == {}
+
+
+def test_a_repository_the_room_cannot_read_never_reads_as_not_wired(
+    session_factory, config, fake_storage, _key
+):
+    # The wiring question goes through the same visibility gate the
+    # environment read does. Answering "not wired" for an unreadable
+    # repository would have the room propose a line already sitting on
+    # the default branch.
+    ladon = FakeLadon()
+    github = FakeGitHub(existing_repos=set(), repo_files={})
+    client, _ = _client(
+        session_factory, config, fake_storage, _key, ladon=ladon, github=github
+    )
+
+    resp = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"set": {"API_KEY": VALUE}},
+        headers=_as(_key),
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["error"] == UNREADABLE_REPOSITORY
+    assert ladon.puts == []
+
+
+# --- a branch that carries the room's name and not its work -------------------
+
+
+def test_a_branch_the_room_did_not_make_is_never_deleted(
+    session_factory, config, fake_storage, _key
+):
+    from kobo_api.clients import BranchComparison
+
+    github = _github(
+        existing_branches={f"{REPO}#{ENV_BRANCH}"},
+        comparisons={
+            ENV_BRANCH: BranchComparison(
+                found=True,
+                files=("gojira.yaml", "src/main.py"),
+                authors=("someone@example.com",),
+            )
+        },
+    )
+    client, _ = _client(
+        session_factory, config, fake_storage, _key, kind=KIND_CONNECTED, github=github
+    )
+
+    resp = client.put(
+        f"/api/agents/{AGENT}/env",
+        json={"set": {"API_BASE": "https://example.test"}},
+        headers=_as(_key),
+    )
+
+    assert resp.status_code == 409
+    assert "the room did not make it" in resp.json()["error"]
+    assert github.deleted_branches == []
+    assert github.open_pr_calls == []
+
+
+# --- nobody to read as --------------------------------------------------------
+
+
+def test_a_read_with_nobody_to_act_as_says_so_rather_than_an_empty_list(
+    session_factory, config, fake_storage, _key
+):
+    # An empty list and "the room cannot ask" look the same to a person
+    # and mean opposite things. The panel shows one line for the second.
+    ladon = FakeLadon()
+    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    plain = config.model_copy(update={"iap_audience": ""})
+    client, _ = _client(
+        session_factory, plain, fake_storage, _key, ladon=ladon, created_by=None
+    )
+
+    body = client.get(f"/api/agents/{AGENT}/secrets").json()
+
+    assert body["platform"] is True
+    assert body["unreadable"] is True
+    assert body["keys"] == []
+    assert ladon.reads == []
+
+
+def test_an_ordinary_read_is_not_marked_unreadable(
+    session_factory, config, fake_storage, _key
+):
+    ladon = FakeLadon()
+    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+
+    assert (
+        client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()["unreadable"]
+        is False
+    )
+
+
+# --- the deploy trigger, told apart from the save ------------------------------
+
+
+def test_a_no_op_save_whose_deploy_fails_says_the_files_were_unchanged(
+    session_factory, config, fake_storage, _key
+):
+    github = _github(
+        repo_files={"gojira.yaml": "name: clio\nenv:\n  API_BASE: https://example.test\n"}
+    )
+    client, clients = _client(
+        session_factory, config, fake_storage, _key, github=github
+    )
+    clients.gojira.reprovision_error = "the platform is having a moment"
+
+    resp = client.put(
+        f"/api/agents/{AGENT}/env",
+        json={"set": {"API_BASE": "https://example.test"}},
+        headers=_as(_key),
+    )
+
+    assert resp.status_code == 502
+    assert "already said this" in resp.json()["error"]
+    assert "redeploy did not work" in resp.json()["error"]
+    assert github.pushes == []
+
+
+def test_a_real_save_whose_deploy_fails_says_the_change_is_saved(
+    session_factory, config, fake_storage, _key
+):
+    github = _github()
+    client, clients = _client(
+        session_factory, config, fake_storage, _key, github=github
+    )
+    clients.gojira.reprovision_error = "the platform is having a moment"
+
+    resp = client.put(
+        f"/api/agents/{AGENT}/env",
+        json={"set": {"API_BASE": "https://example.test"}},
+        headers=_as(_key),
+    )
+
+    assert resp.status_code == 502
+    assert "is saved" in resp.json()["error"]
+    assert github.pushes

@@ -44,7 +44,12 @@ from pathlib import Path
 
 import yaml
 
-from kobo_api.clients import ClientError, GitHubClient, GojiraClient
+from kobo_api.clients import (
+    COMMIT_AUTHOR_EMAIL,
+    ClientError,
+    GitHubClient,
+    GojiraClient,
+)
 
 log = logging.getLogger(__name__)
 
@@ -348,17 +353,33 @@ def _as_text(value: object) -> str:
 ENV_BRANCH = "kobo/env"
 SECRETS_WIRING_BRANCH = "kobo/secrets-wiring"
 
+# The one file either edit writes, and what a branch has to be limited to
+# before the room will delete it.
+GOJIRA_YAML = "gojira.yaml"
+
+# What a branch is compared AGAINST. `HEAD` resolves to the repository's
+# own default branch whatever it is called, so nothing here has to know
+# whether a team calls it main, master or something else.
+DEFAULT_BRANCH_REF = "HEAD"
+
 ENV_PR_TITLE = "kobo: environment variables"
 SECRETS_WIRING_PR_TITLE = "kobo: read the agent's own secrets"
+
+# The sentence both bodies end on, because it is the one thing about
+# either change that is not a plain addition and the one thing an owner
+# reviewing it cannot see from the diff alone until it is too late.
+_REWRITTEN_FROM_PARSED = (
+    "gojira.yaml is rewritten from its parsed form, so comments, blank "
+    "lines and key order in that one file are NOT preserved. Nothing else "
+    "in the repository is touched.\n"
+)
 
 ENV_PR_BODY = (
     "This changes the environment variables the agent runs with.\n\n"
     "Files changed:\n"
     "- gojira.yaml: the `env` mapping. These are values that are not "
     "sensitive; secrets are held in the secrets platform and never appear "
-    "in this file.\n\n"
-    "gojira.yaml is rewritten from its parsed form, so comments and key "
-    "order in that one file are not preserved.\n"
+    "in this file.\n\n" + _REWRITTEN_FROM_PARSED
 )
 
 SECRETS_WIRING_PR_BODY = (
@@ -367,19 +388,46 @@ SECRETS_WIRING_PR_BODY = (
     "- gojira.yaml: one entry added to `secrets_from`, naming the "
     "Kubernetes Secret the secrets platform delivers into this agent's "
     "namespace. Secret VALUES are not here and never will be: this file "
-    "only names the Secret.\n\n"
-    "gojira.yaml is rewritten from its parsed form, so comments and key "
-    "order in that one file are not preserved.\n"
+    "only names the Secret.\n\n" + _REWRITTEN_FROM_PARSED
+)
+
+SECRETS_UNWIRE_PR_TITLE = "kobo: the agent has no secrets of its own"
+
+SECRETS_UNWIRE_PR_BODY = (
+    "The agent's owner removed the last secret it had in the room, so it "
+    "no longer needs the line that names one.\n\n"
+    "Files changed:\n"
+    "- gojira.yaml: one entry removed from `secrets_from`.\n\n"
+    "Merging this is what finishes the removal. The stored secret is kept "
+    "until then, on purpose: taking it away while this file still names it "
+    "would stop the agent from starting.\n\n" + _REWRITTEN_FROM_PARSED
 )
 
 # What the room says when a pull request it opened before is still open on
 # the same branch and this save is not the same change. Pushing the branch
 # again would fail non fast-forward, and reusing the open pull request
 # would report a change as proposed that is not in it.
+#
+# One sentence per branch, because the two branches carry different
+# changes and "your environment request is open" in front of somebody
+# adding a SECRET names the wrong thing to go and merge.
 ENV_PR_ALREADY_OPEN = (
-    "a pull request with this agent's environment is already open. Merge or "
-    "close it, then save again: "
+    "a pull request with this agent's environment variables is already "
+    "open. Merge or close it, then save again: "
 )
+WIRING_PR_ALREADY_OPEN = (
+    "a pull request with this agent's secrets wiring is already open. "
+    "Merge or close it, then save again: "
+)
+
+# What the room says about a branch that carries its name and not its
+# work. Never deleted: the room proves a branch is its own before
+# recycling one, and cannot prove this.
+def branch_not_ours(branch: str) -> str:
+    return (
+        f"a branch named {branch} already exists and the room did not make "
+        "it. Rename or delete it, then try again."
+    )
 
 # How a change reached the agent's repository. `unchanged` means the file
 # already said this, which is what a retried save answers.
@@ -425,6 +473,22 @@ class RepoBusy(ClientError):
     """
 
 
+class DeployTriggerFailed(ClientError):
+    """The repository change landed and the platform would not regenerate.
+
+    Carries `pushed` because the two cases need two different sentences.
+    A save that pushed something and then failed here HAS changed the
+    agent's files, and a retry will find nothing to push; a save that
+    changed nothing and failed here changed nothing at all. Telling
+    somebody "couldn't save" for the first would be a lie about their own
+    file.
+    """
+
+    def __init__(self, message: str, *, pushed: bool) -> None:
+        super().__init__(message)
+        self.pushed = pushed
+
+
 @dataclass(frozen=True)
 class RepoEdit:
     """What happened to the agent's repository, in the words a route hands
@@ -455,6 +519,29 @@ def parse_gojira_yaml(text: str | None) -> dict:
     return data
 
 
+def read_default_gojira(github: GitHubClient, repo: str) -> dict:
+    """`repo`'s `gojira.yaml` on its default branch, parsed.
+
+    Permission is checked FIRST, the way the connect scan does, because
+    `GitHubClient.read_file` answers None for a file the room may not read
+    exactly as it does for a file that is not there. Those are different
+    answers to a person -- one is "add the file", the other is "the room
+    lost access to this repository" -- and collapsing them would send
+    somebody hunting for a file sitting in front of them. It matters more
+    for the WIRING question than for the variables: an unreadable
+    repository answering "no variables" is merely unhelpful, but one
+    answering "not wired" would have the room propose a line that is
+    already there.
+
+    A missing or empty file parses to an empty mapping. An unparseable one
+    is `RepoBusy`, not an empty read: showing an empty list over a file
+    nobody here could parse invites a save that would overwrite it.
+    """
+    if not github.repo_access(repo).visible:
+        raise RepoBusy(UNREADABLE_REPOSITORY)
+    return parse_gojira_yaml(github.read_file(repo, GOJIRA_YAML))
+
+
 def read_repo_env(github: GitHubClient, repo: str) -> dict[str, str]:
     """The environment variables `repo`'s `gojira.yaml` carries, by a plain
     file read rather than a clone.
@@ -463,21 +550,8 @@ def read_repo_env(github: GitHubClient, repo: str) -> dict[str, str]:
     GitHub read gives exactly what the default branch holds, which is what
     the panel is showing. `edit_gojira_yaml` still clones, because a write
     has to push what it produced.
-
-    Permission is checked FIRST, the way the connect scan does, because
-    `GitHubClient.read_file` answers None for a file the room may not read
-    exactly as it does for a file that is not there. Those are different
-    answers to a person -- one is "add the file", the other is "the room
-    lost access to this repository" -- and collapsing them would send
-    somebody hunting for a file sitting in front of them.
-
-    A missing or empty file reads as no variables. An unparseable one is
-    `RepoBusy`, not an empty read: showing an empty list over a file
-    nobody here could parse invites a save that would overwrite it.
     """
-    if not github.repo_access(repo).visible:
-        raise RepoBusy(UNREADABLE_REPOSITORY)
-    return read_env(parse_gojira_yaml(github.read_file(repo, "gojira.yaml")))
+    return read_env(read_default_gojira(github, repo))
 
 
 def edit_gojira_yaml(
@@ -493,6 +567,8 @@ def edit_gojira_yaml(
     title: str = ENV_PR_TITLE,
     body: str = ENV_PR_BODY,
     carries: Callable[[dict], bool] | None = None,
+    already_open: str = ENV_PR_ALREADY_OPEN,
+    reprovision: bool = True,
 ) -> RepoEdit:
     """Clone `repo`, run `edit` over its parsed `gojira.yaml`, and get the
     result in front of the deploy platform the way this KIND of agent
@@ -552,6 +628,7 @@ def edit_gojira_yaml(
                 title=title,
                 body=body,
                 carries=carries,
+                already_open=already_open,
             )
 
         pushed = False
@@ -559,12 +636,22 @@ def edit_gojira_yaml(
             gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
             pushed = github.commit_push(workdir, message)
 
-    if gojira_app_id is not None:
+    if reprovision and gojira_app_id is not None:
         # Outside the clone, and fired whether or not anything was pushed.
         # A reprovision is idempotent and cheap; the expensive case is the
         # save whose push landed and whose reprovision failed, where a
         # retry has nothing to push and would otherwise never deploy.
-        gojira.reprovision(gojira_app_id)
+        #
+        # `reprovision=False` is for the one caller that has more to do
+        # before the platform should regenerate: removing an agent's last
+        # secret commits the line away FIRST, then deletes the Secret, and
+        # only then asks for a deploy -- see the secrets route.
+        try:
+            gojira.reprovision(gojira_app_id)
+        except ClientError as exc:
+            # Named apart from every other failure here, because what a
+            # person should be told depends on whether their file changed.
+            raise DeployTriggerFailed(str(exc), pushed=pushed) from exc
     return RepoEdit(how=COMMITTED if pushed else UNCHANGED)
 
 
@@ -577,6 +664,7 @@ def _propose(
     title: str,
     body: str,
     carries: Callable[[dict], bool] | None,
+    already_open: str,
 ) -> RepoEdit:
     """The connected half of `edit_gojira_yaml`: one pull request on
     `branch`, or a plain sentence saying what is in the way."""
@@ -590,18 +678,48 @@ def _propose(
             parse_gojira_yaml(github.read_file(repo, "gojira.yaml", ref=branch))
         ):
             return RepoEdit(how=PULL_REQUEST, pull_request=open_pr)
-        raise RepoBusy(f"{ENV_PR_ALREADY_OPEN}{open_pr}")
+        raise RepoBusy(f"{already_open}{open_pr}")
 
     # No pull request, but the branch may still be there: a closed one
     # leaves it behind, and so does a merged one in a repository that does
-    # not delete merged branches. This branch is one the room named itself
-    # and nothing is open from it, so it is the room's to recycle --
-    # refusing here would leave the panel permanently unable to save on a
-    # repository whose owner merged the room's last pull request and did
-    # not tick the delete-branch box.
+    # not delete merged branches. A branch the ROOM made, with nothing
+    # open from it, is the room's to recycle -- refusing would leave the
+    # panel permanently unable to save on a repository whose owner merged
+    # the room's last pull request without ticking delete-branch.
     if github.branch_exists(repo, branch):
+        require_our_branch(github, repo, branch)
         log.info("recycling the room's own leftover branch %s in %s", branch, repo)
         github.delete_branch(repo, branch)
 
     url = github.open_pr(workdir, repo=repo, branch=branch, title=title, body=body)
     return RepoEdit(how=PULL_REQUEST, pull_request=url)
+
+
+def require_our_branch(github: GitHubClient, repo: str, branch: str) -> None:
+    """Raise unless `branch` is one the room made, and only the room.
+
+    The room deletes this branch, and a name is not ownership: a team that
+    happens to use `kobo/env` for something of their own would have that
+    work destroyed by a save in a panel they never opened. So the branch
+    has to prove itself against the default branch, on two counts, and
+    both have to hold:
+
+    - it touches `gojira.yaml` and nothing else, because that is the only
+      file either of the room's two edits writes; and
+    - every commit on it is authored by the room's own commit identity,
+      because a person's commit on this branch means a person has been
+      working here.
+
+    A comparison that could not be made at all (`found` false) is a
+    refusal too, and that is the important half: an empty file list from a
+    failed lookup and an empty file list from an identical branch are the
+    same value, so treating "cannot tell" as "fine" would delete exactly
+    the branches this check exists to protect.
+    """
+    comparison = github.compare(repo, DEFAULT_BRANCH_REF, branch)
+    if not comparison.found:
+        raise RepoBusy(branch_not_ours(branch))
+    if set(comparison.files) - {GOJIRA_YAML}:
+        raise RepoBusy(branch_not_ours(branch))
+    if any(author.lower() != COMMIT_AUTHOR_EMAIL.lower() for author in comparison.authors):
+        raise RepoBusy(branch_not_ours(branch))

@@ -18,6 +18,8 @@ from pathlib import Path
 import yaml
 
 from kobo_api.clients import (
+    COMMIT_AUTHOR_EMAIL,
+    BranchComparison,
     CabalError,
     ChatMessage,
     ClientError,
@@ -483,6 +485,7 @@ class FakeGitHub:
         repo_access_error: str | None = None,
         repo_files: dict[str, str] | None = None,
         branch_files: dict[str, dict[str, str]] | None = None,
+        comparisons: dict[str, BranchComparison] | None = None,
         root_entries: list[str] | None = None,
         can_write: bool = True,
         default_branch: str = "main",
@@ -506,10 +509,17 @@ class FakeGitHub:
         self._pr_url = pr_url
         self.open_pr_calls: list[dict] = []
         self.deleted_branches: list[tuple[str, str]] = []
+        self.close_pr_calls: list[tuple[str, str, str]] = []
+        self._comparisons = dict(comparisons or {})
         self._open_prs: dict[str, str] = dict(open_prs) if open_prs else {}
         self._existing_branches: set[str] = (
             set(existing_branches) if existing_branches else set()
         )
+        # A pull request open from a branch means that branch is there.
+        # Seeded rather than left to each caller so a test that models an
+        # open request never also has to remember to model its head, and
+        # so `branch_exists`/`compare` answer what the repository would.
+        self._existing_branches.update(self._open_prs)
         self.merge_pr_calls: list[tuple[str, str]] = []
         self._merge_pr_results = (
             list(merge_pr_results) if merge_pr_results else [True]
@@ -870,6 +880,24 @@ class FakeGitHub:
         self.calls.append(f"find_pr:{repo}:{branch}")
         return self._open_prs.get(f"{repo}#{branch}")
 
+    def compare(self, repo: str, base: str, head: str) -> BranchComparison:
+        """Whatever `comparisons` holds for `head`, else a comparison that
+        touches `gojira.yaml` alone under the room's own commit identity --
+        the wired happy path, so a test only configures this when it is
+        modelling a branch somebody ELSE made.
+
+        A branch named in neither `comparisons` nor `existing_branches`
+        answers `found=False`, the real client's "either ref is gone".
+        """
+        self.calls.append(f"compare:{repo}:{base}...{head}")
+        if head in self._comparisons:
+            return self._comparisons[head]
+        if f"{repo}#{head}" not in self._existing_branches:
+            return BranchComparison(found=False, files=(), authors=())
+        return BranchComparison(
+            found=True, files=("gojira.yaml",), authors=(COMMIT_AUTHOR_EMAIL,)
+        )
+
     def delete_branch(self, repo: str, branch: str) -> bool:
         """Forget `repo#branch` (and anything `branch_files` held for it),
         recording the call. True when it was there, False when it was not
@@ -895,6 +923,16 @@ class FakeGitHub:
         """
         self.calls.append(f"branch_exists:{repo}:{branch}")
         return f"{repo}#{branch}" in self._existing_branches
+
+    def close_pr(self, repo: str, pr_url: str, comment: str) -> None:
+        """Records `(repo, pr_url, comment)` into `close_pr_calls` and
+        forgets the pull request, so a later `find_pr` for the branch it
+        was open on answers None -- what the real repository would say."""
+        self.calls.append(f"close_pr:{repo}:{pr_url}")
+        self.close_pr_calls.append((repo, pr_url, comment))
+        for key, url in list(self._open_prs.items()):
+            if key.startswith(f"{repo}#") and url == pr_url:
+                del self._open_prs[key]
 
     def merge_pr(self, repo: str, pr_url: str) -> bool:
         """Records `(repo, pr_url)` into `merge_pr_calls` and replays
@@ -1085,6 +1123,7 @@ class FakeGojira:
         self._apps: dict[int, dict] = {}
         self._next_id = 1
         self.reprovision_calls: list[int] = []
+        self.reprovision_error: str | None = None
         # One dict per `create_app`, every keyword it was given -- the seam
         # for asserting which workload class an agent was onboarded under,
         # without a test having to spy on the method itself.
@@ -1140,6 +1179,11 @@ class FakeGojira:
 
     def reprovision(self, app_id: int) -> None:
         self.calls.append(f"reprovision:{app_id}")
+        # Set by a test to model a platform that took the push but will
+        # not regenerate: the one failure whose right sentence depends on
+        # whether anything was actually pushed first.
+        if getattr(self, "reprovision_error", None):
+            raise ClientError(self.reprovision_error)
         self.reprovision_calls.append(app_id)
         app = self._apps[app_id]
         app["status"] = "pending"

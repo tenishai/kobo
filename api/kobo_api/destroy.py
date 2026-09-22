@@ -202,6 +202,12 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
     end, naming what DID go, so the ledger's error says how far the run
     got and a resume does not have to guess.
 
+    ANY exception counts, not only `ClientError`. A connection reset
+    reaching this loop as something else entirely would otherwise abort
+    the two purposes after it, which is the failure mode this collection
+    exists to prevent -- and "the lane raised something unexpected" is
+    exactly when leaving a credential behind matters most.
+
     Idempotent end to end, by the lane's own contract: an object already
     gone and a path already gone are both successes, so a retried destroy
     does not fail on work a prior attempt finished.
@@ -241,12 +247,17 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
         try:
             ladon.unsync(acting_email, agent.name, agent.name, f"{agent.name}-{purpose}")
             ladon.delete_secret(acting_email, path)
-        except ClientError as exc:
+        except Exception as exc:  # noqa: BLE001 - one purpose failing is not three
+            # The exception's CLASS and nothing else, the same rule the
+            # secrets routes hold: the platform's own sentence can quote
+            # the request it refused, and a destroy step's error string
+            # lands on `AgentStep.error`, which any viewer of the agent
+            # can read.
             log.warning(
-                "destroy-secrets: could not remove %s for agent %s: %s",
+                "destroy-secrets: could not remove %s for agent %s (%s)",
                 purpose,
                 agent.name,
-                exc,
+                type(exc).__name__,
             )
             failures.append(purpose)
             continue
