@@ -43,9 +43,16 @@
   import StepChecklist from "../components/StepChecklist.svelte";
   import ThreadPanel from "../components/ThreadPanel.svelte";
   import ToolingPanel from "../components/ToolingPanel.svelte";
-  import { ApiError, errorMessage, KIND_CONNECTED } from "../lib/api";
+  import {
+    ApiError,
+    errorMessage,
+    KIND_CONNECTED,
+    RUN_MODE_HEADLESS,
+    RUN_MODE_HTTP,
+  } from "../lib/api";
   import {
     agentQuery,
+    convertToConnectedMutation,
     generateAvatarMutation,
     invitesQuery,
     observabilityQuery,
@@ -124,6 +131,43 @@
     ...personasSearchQuery(personaSearchTerm ?? "", null),
     enabled: personaSearchTerm !== null,
   })));
+
+  // "Convert to connected" (connected-agents design 2026-09-21): the one
+  // operator action for an agent the room composed whose repository has
+  // stopped running the room's runtime. Lives here rather than inside
+  // DangerZone because it is not a destruction: nothing is torn down, and
+  // folding it into the destroy card would put a one-way change behind a
+  // heading people already read as "do not touch".
+  //
+  // Whether to offer it at all is read off `destroy_visible`, the operator
+  // flag the detail already carries: the server's convert gate is the same
+  // operator gate that flag is computed from (`_convert_operator_block`
+  // beside `_operator_block`, main.py, with a test pinning the two
+  // together). The route stays the real enforcement boundary either way,
+  // exactly as the Danger zone's own comment says of itself.
+  const convert = createMutation(() => (convertToConnectedMutation(queryClient, name)));
+  let convertConfirming = $state(false);
+  // Null until the operator picks one: an agent the room composed has no
+  // run mode recorded, so there is nothing to preselect and the room would
+  // only be guessing on their behalf.
+  let convertRunMode = $state<string | null>(null);
+  let convertError = $state<string | null>(null);
+
+  function handleConvert(): void {
+    if (convertRunMode === null || convert.isPending) {
+      return;
+    }
+    convertError = null;
+    convert.mutate(convertRunMode, {
+      onSuccess: () => {
+        convertConfirming = false;
+        toast.success("Converted", `The room no longer edits ${name}.`);
+      },
+      onError: (error: unknown) => {
+        convertError = errorMessage(error, "Couldn't convert this agent. Try again.");
+      },
+    });
+  }
 
   const retry = createMutation(() => (retryAgentMutation(queryClient, name)));
   const generateAvatar = createMutation(() => (generateAvatarMutation(queryClient, name)));
@@ -649,6 +693,81 @@
     </div>
     {/if}
 
+    <!-- Operator-only, and only for an agent the room composed that has
+         settled: a pending or provisioning agent is still being built, and
+         a destroying one is on its way out. -->
+    {#if !connected && data.destroy_visible && (data.status === "ready" || data.status === "failed")}
+      <section class="convert-card" aria-labelledby="convert-heading">
+        <h2 id="convert-heading" class="convert-card__heading">Convert to connected</h2>
+        <p class="convert-card__lead">
+          For an agent whose repository no longer runs the room's runtime.
+        </p>
+        {#if !convertConfirming}
+          <button
+            type="button"
+            class="convert-card__open"
+            onclick={() => {
+              convertError = null;
+              convertConfirming = true;
+            }}
+          >
+            Convert to connected
+          </button>
+        {:else}
+          <p class="convert-card__copy">
+            The room stops editing this agent: no chat, learnings, teach, skills, tooling or Slack from here. Its repository, deployment and identity stay as they are. This cannot be undone from the room.
+          </p>
+          <fieldset class="convert-card__fieldset">
+            <legend class="convert-card__legend">How does it run?</legend>
+            <label class="convert-card__choice">
+              <input
+                type="radio"
+                name="convert-run-mode"
+                value={RUN_MODE_HTTP}
+                checked={convertRunMode === RUN_MODE_HTTP}
+                onchange={() => (convertRunMode = RUN_MODE_HTTP)}
+              />
+              It serves web traffic (port 8080, answers /healthz)
+            </label>
+            <label class="convert-card__choice">
+              <input
+                type="radio"
+                name="convert-run-mode"
+                value={RUN_MODE_HEADLESS}
+                checked={convertRunMode === RUN_MODE_HEADLESS}
+                onchange={() => (convertRunMode = RUN_MODE_HEADLESS)}
+              />
+              It has no web address (a chat bot or a worker)
+            </label>
+          </fieldset>
+          <div class="convert-card__actions">
+            <button
+              type="button"
+              class="convert-card__confirm"
+              disabled={convertRunMode === null || convert.isPending}
+              onclick={handleConvert}
+            >
+              {convert.isPending ? "Converting…" : "Convert this agent"}
+            </button>
+            <button
+              type="button"
+              class="convert-card__cancel"
+              disabled={convert.isPending}
+              onclick={() => {
+                convertConfirming = false;
+                convertError = null;
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        {/if}
+        {#if convertError}
+          <p class="convert-card__error" role="alert">{convertError}</p>
+        {/if}
+      </section>
+    {/if}
+
     {#if data.destroy_visible}
       <DangerZone
         agentName={data.name}
@@ -1045,5 +1164,103 @@
     background: var(--panel);
     color: var(--muted);
     font-size: 0.9rem;
+  }
+
+  /* The same card idiom as the Danger zone below it, without the `--fail`
+     heading: this changes what the room will do next, it destroys
+     nothing. */
+  .convert-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+    padding: var(--space-lg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel);
+  }
+
+  .convert-card__heading {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .convert-card__lead,
+  .convert-card__copy {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+
+  .convert-card__fieldset {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    margin: 0;
+    padding: 0;
+    border: none;
+  }
+
+  .convert-card__legend {
+    padding: 0;
+    color: var(--ink);
+    font-weight: 600;
+    font-size: 0.85rem;
+  }
+
+  .convert-card__choice {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    color: var(--ink);
+    font-size: 0.9rem;
+  }
+
+  .convert-card__actions {
+    display: flex;
+    gap: var(--space-sm);
+  }
+
+  .convert-card__open,
+  .convert-card__confirm {
+    align-self: flex-start;
+    padding: var(--space-xs) var(--space-md);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .convert-card__open:hover:not(:disabled),
+  .convert-card__confirm:hover:not(:disabled) {
+    filter: brightness(1.05);
+  }
+
+  .convert-card__open:disabled,
+  .convert-card__confirm:disabled,
+  .convert-card__cancel:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .convert-card__cancel {
+    padding: var(--space-xs) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--ink);
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .convert-card__error {
+    margin: 0;
+    color: var(--fail);
+    font-size: 0.85rem;
   }
 </style>

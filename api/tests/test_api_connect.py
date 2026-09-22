@@ -1,5 +1,7 @@
-"""Tests for the two connect routes: the scan a team runs before it commits
-to anything, and the connect that actually takes its repository on.
+"""Tests for the three connect routes: the scan a team runs before it commits
+to anything, the connect that actually takes its repository on, and the
+operator-only convert that turns an agent the room composed into a connected
+one.
 
 Both run the same scan server-side. A report the browser is holding is a
 claim about a repository some minutes ago, and the route has to answer for
@@ -19,8 +21,11 @@ from __future__ import annotations
 
 import logging
 import time
+from types import SimpleNamespace
 
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -34,12 +39,19 @@ from kobo_api.connect_scan import (
     REPO_NOT_IN_ORG,
     REPO_NOT_VISIBLE,
 )
-from kobo_api.kinds import KIND_CONNECTED, RUN_MODE_HEADLESS, RUN_MODE_HTTP
+from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
+from kobo_api.kinds import (
+    KIND_COMPOSED,
+    KIND_CONNECTED,
+    RUN_MODE_HEADLESS,
+    RUN_MODE_HTTP,
+)
 from kobo_api.main import MAX_SECRET_NAMES, SCAN_LIMIT, create_app
 from kobo_api.mcp import rate_limit
 from kobo_api.models import Agent, AgentStatus, Base
 from tests.fakes import (
     FakeAgent,
+    FakeCabal,
     FakeCloud,
     FakeGitHub,
     FakeGojira,
@@ -653,3 +665,420 @@ def test_connect_takes_a_group_the_room_has_named(grouped_client, session_factor
 
     assert response.status_code == 201, response.text
     assert _row(session_factory).group_name == "payments-eng"
+
+
+# --- POST /api/agents/{name}/convert-to-connected ----------------------------------
+#
+# The one operator action for an agent the room composed whose repository has
+# since stopped running the room's runtime (design 2026-09-21, "Converting an
+# existing agent"). It changes one row and retires one directory entry.
+# Nothing is redeployed, no repository is touched, and the room cannot undo
+# it.
+#
+# The gate is the room's operator gate, proven here through the real IAP
+# middleware with a real ES256 keypair (the idiom test_web_destroy.py
+# established) rather than a mock, since "operator-only" is the whole of the
+# protection this route has.
+
+OPERATOR_EMAIL = "Ops@Example.com"
+NON_OPERATOR_EMAIL = "someone-else@example.com"
+AUDIENCE = "test-audience"
+KID = "test-key-1"
+
+CONVERT_PATH = f"/api/agents/{AGENT_NAME}/convert-to-connected"
+
+IN_FLIGHT_409 = {
+    "error": "this agent is still being created or destroyed, so it cannot be converted yet"
+}
+ALREADY_409 = {"error": "this agent is already connected"}
+
+
+def _generate_jwk(kid: str = KID):
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    jwk = jwt.algorithms.ECAlgorithm.to_jwk(private_key.public_key(), as_dict=True)
+    jwk["kid"] = kid
+    jwk["use"] = "sig"
+    jwk["alg"] = "ES256"
+    return private_key, jwk
+
+
+def _sign(private_key, *, email: str | None, kid: str = KID) -> str:
+    now = int(time.time())
+    claims = {
+        "aud": AUDIENCE,
+        "iss": IAP_ISSUER,
+        "iat": now,
+        "exp": now + 3600,
+        "sub": "accounts.google.com:1234567890",
+    }
+    if email is not None:
+        claims["email"] = email
+    return jwt.encode(claims, private_key, algorithm="ES256", headers={"kid": kid})
+
+
+def _fetcher(jwk):
+    def fetch():
+        return {"keys": [jwk]}
+
+    return fetch
+
+
+def _seed_composed(
+    session_factory,
+    *,
+    status=AgentStatus.READY,
+    kind=KIND_COMPOSED,
+    name=AGENT_NAME,
+    secret_names=None,
+):
+    """One agent row as the create route leaves it: the room's own repository,
+    a real persona, and whatever status this case is about."""
+    session = session_factory()
+    session.add(
+        Agent(
+            name=name,
+            persona="helpful-generalist",
+            model_id="m",
+            skills=[],
+            kind=kind,
+            repo_full_name=f"{ORG}/agent-{name}",
+            status=status,
+            secret_names=secret_names if secret_names is not None else [],
+            run_mode=RUN_MODE_HTTP if kind == KIND_CONNECTED else None,
+        )
+    )
+    session.commit()
+    session.close()
+
+
+@pytest.fixture
+def switchboard(session_factory, config, fake_storage, monkeypatch):
+    """A room with the switchboard wired, the fakes the convert route must
+    not touch, and a client over both.
+
+    The switchboard has to be genuinely on for the retire to be attempted at
+    all (`cabal_enabled` reads two config keys and the operator token), and
+    the point of most of these cases is what the route does NOT do, which
+    only means something when the clients that could have done it are there.
+    """
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": "http://agent-{name}.internal",
+        }
+    )
+    fakes = SimpleNamespace(
+        github=FakeGitHub(existing_repos={REPO}),
+        gojira=FakeGojira(),
+        kubectl=FakeKubectl(),
+        cabal=FakeCabal(),
+        config=cfg,
+    )
+    clients = Clients(
+        github=fakes.github,
+        gojira=fakes.gojira,
+        cloud=FakeCloud(),
+        agent=FakeAgent(),
+        kubectl=fakes.kubectl,
+        storage=fake_storage,
+        image=FakeImage(),
+        cabal=fakes.cabal,
+    )
+    fakes.client = TestClient(create_app(session_factory, config=cfg, clients=clients))
+    return fakes
+
+
+@pytest.fixture
+def gated(session_factory, config, clients):
+    """The same room with the operator gate genuinely on: named operators and
+    IAP, so every request has to carry a signed assertion."""
+    private_key, jwk = _generate_jwk()
+    cfg = config.model_copy(
+        update={"operators": [OPERATOR_EMAIL], "iap_audience": AUDIENCE}
+    )
+    client = TestClient(
+        create_app(
+            session_factory,
+            config=cfg,
+            clients=clients,
+            iap_jwks_fetcher=_fetcher(jwk),
+        )
+    )
+    return SimpleNamespace(
+        client=client,
+        headers=lambda email: {ASSERTION_HEADER: _sign(private_key, email=email)},
+    )
+
+
+# --- the gate ---------------------------------------------------------------------
+
+
+def test_convert_refuses_a_caller_who_is_not_an_operator(gated, session_factory):
+    _seed_composed(session_factory)
+
+    response = gated.client.post(
+        CONVERT_PATH,
+        json={"run_mode": RUN_MODE_HTTP},
+        headers=gated.headers(NON_OPERATOR_EMAIL),
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": "Converting agents is operator-only on this room"
+    }
+    assert _row(session_factory).kind == KIND_COMPOSED
+
+
+def test_the_page_hides_the_action_from_exactly_the_caller_the_route_refuses(
+    gated, session_factory
+):
+    """The page has no signal of its own for this: it reads `destroy_visible`,
+    the operator flag already on the detail. That is only honest while the
+    two gates agree, so the same caller who is refused above must also see
+    the flag false here."""
+    _seed_composed(session_factory)
+
+    response = gated.client.get(
+        f"/api/agents/{AGENT_NAME}", headers=gated.headers(NON_OPERATOR_EMAIL)
+    )
+
+    assert response.status_code == 200
+    assert response.json()["destroy_visible"] is False
+
+
+def test_an_operator_may_convert(gated, session_factory):
+    _seed_composed(session_factory)
+
+    response = gated.client.post(
+        CONVERT_PATH,
+        json={"run_mode": RUN_MODE_HTTP},
+        headers=gated.headers(OPERATOR_EMAIL.lower()),
+    )
+
+    assert response.status_code == 200, response.text
+    assert _row(session_factory).kind == KIND_CONNECTED
+
+
+def test_a_caller_who_is_not_an_operator_is_refused_before_the_agent_is_looked_up(
+    gated
+):
+    """Info-safe, the same discipline destroy's own gate keeps: a
+    non-operator learns nothing about which agents exist."""
+    response = gated.client.post(
+        "/api/agents/no-such-agent/convert-to-connected",
+        json={"run_mode": RUN_MODE_HTTP},
+        headers=gated.headers(NON_OPERATOR_EMAIL),
+    )
+
+    assert response.status_code == 403
+
+
+# --- refusals ---------------------------------------------------------------------
+
+
+def test_convert_refuses_an_agent_that_is_already_connected(client, session_factory):
+    _seed_composed(session_factory, kind=KIND_CONNECTED)
+
+    response = client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+
+    assert response.status_code == 409
+    assert response.json() == ALREADY_409
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        AgentStatus.PENDING,
+        AgentStatus.PROVISIONING,
+        AgentStatus.DESTROYING,
+        AgentStatus.DESTROY_FAILED,
+    ],
+)
+def test_convert_refuses_an_agent_mid_flight(client, session_factory, status):
+    """Provisioning and destroying both have a thread of their own holding
+    this row, and both read the kind as they go."""
+    _seed_composed(session_factory, status=status)
+
+    response = client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+
+    assert response.status_code == 409
+    assert response.json() == IN_FLIGHT_409
+    assert _row(session_factory).kind == KIND_COMPOSED
+
+
+@pytest.mark.parametrize("status", [AgentStatus.READY, AgentStatus.FAILED])
+def test_convert_takes_a_ready_or_failed_agent(client, session_factory, status):
+    """A failed agent is the likelier case of the two: its repository stopped
+    running the room's runtime, which is how it failed in the first place."""
+    _seed_composed(session_factory, status=status)
+
+    response = client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+
+    assert response.status_code == 200, response.text
+    assert _row(session_factory).kind == KIND_CONNECTED
+
+
+def test_convert_refuses_a_run_mode_the_room_does_not_have(client, session_factory):
+    _seed_composed(session_factory)
+
+    response = client.post(CONVERT_PATH, json={"run_mode": "magic"})
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "error": "pick how this agent runs: it serves HTTP, or it has no HTTP port"
+    }
+    assert _row(session_factory).kind == KIND_COMPOSED
+
+
+def test_convert_refuses_headless_until_the_room_has_a_class_for_it(
+    client, session_factory
+):
+    _seed_composed(session_factory)
+
+    response = client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HEADLESS})
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "error": "agents with no HTTP port are not available in this room yet"
+    }
+    assert _row(session_factory).kind == KIND_COMPOSED
+
+
+def test_convert_takes_headless_once_the_deploy_platform_names_a_class(
+    session_factory, clients, tmp_path
+):
+    config = Config(
+        workdir=tmp_path / "work",
+        skills_bucket="skills-bucket",
+        personas_bucket="personas-bucket",
+        github_org=ORG,
+        connected_headless_class="agent-headless",
+    )
+    client = TestClient(create_app(session_factory, config=config, clients=clients))
+    _seed_composed(session_factory)
+
+    response = client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HEADLESS})
+
+    assert response.status_code == 200, response.text
+    assert _row(session_factory).run_mode == RUN_MODE_HEADLESS
+
+
+def test_convert_404s_on_an_agent_this_room_does_not_have(client):
+    response = client.post(
+        "/api/agents/no-such-agent/convert-to-connected",
+        json={"run_mode": RUN_MODE_HTTP},
+    )
+
+    assert response.status_code == 404
+
+
+# --- what it actually does --------------------------------------------------------
+
+
+def test_convert_answers_with_the_two_things_it_changed(switchboard, session_factory):
+    _seed_composed(session_factory)
+
+    response = switchboard.client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "name": AGENT_NAME,
+        "kind": KIND_CONNECTED,
+        "run_mode": RUN_MODE_HTTP,
+    }
+
+
+def test_convert_leaves_the_secret_names_alone(switchboard, session_factory):
+    """Nothing about the deployment changes here, so the names of the Secrets
+    it already mounts are not the room's to rewrite."""
+    _seed_composed(session_factory, secret_names=["chat-tokens"])
+
+    switchboard.client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+
+    assert _row(session_factory).secret_names == ["chat-tokens"]
+
+
+def test_convert_deploys_nothing_and_touches_no_repository(
+    switchboard, session_factory
+):
+    _seed_composed(session_factory)
+
+    switchboard.client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+
+    assert switchboard.github.calls == []
+    assert switchboard.github.cloned == []
+    assert switchboard.github.pushes == []
+    assert switchboard.github.created_from_dir == []
+    assert switchboard.gojira.calls == []
+    assert switchboard.kubectl.calls == []
+    assert switchboard.kubectl.restarts == []
+
+
+def test_convert_retires_the_switchboard_identity(switchboard, session_factory):
+    """A connected agent has no directory entry: the pipeline that builds one
+    has no directory step. An agent that was composed does have one, and it
+    stops being true the moment the kind changes."""
+    _seed_composed(session_factory)
+
+    switchboard.client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+
+    assert switchboard.cabal.absorb_calls == [AGENT_NAME]
+
+
+def test_a_switchboard_that_cannot_be_reached_does_not_fail_the_convert(
+    session_factory, config, fake_storage, monkeypatch
+):
+    """Best effort, the same standing the destroy ledger's own directory step
+    has: the row is the thing that matters, and a stale directory entry is
+    resolved by a later sync rather than by holding this up."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": "http://agent-{name}.internal",
+        }
+    )
+    clients = Clients(
+        github=FakeGitHub(),
+        gojira=FakeGojira(),
+        cloud=FakeCloud(),
+        agent=FakeAgent(),
+        kubectl=FakeKubectl(),
+        storage=fake_storage,
+        image=FakeImage(),
+        cabal=FakeCabal(absorb_error="switchboard is down"),
+    )
+    client = TestClient(create_app(session_factory, config=cfg, clients=clients))
+    _seed_composed(session_factory)
+
+    response = client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+
+    assert response.status_code == 200, response.text
+    assert _row(session_factory).kind == KIND_CONNECTED
+
+
+def test_convert_says_who_converted_what(client, session_factory, caplog):
+    """One line per convert, at WARNING for the same reason the connect's own
+    line is: INFO does not reach the pod logs here, and this is the one
+    record that an agent's page went quiet on purpose."""
+    _seed_composed(session_factory)
+
+    with caplog.at_level(logging.WARNING, logger="kobo_api.main"):
+        client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if "convert" in record.getMessage()
+    ]
+    assert any(AGENT_NAME in line for line in lines), lines
+
+
+def test_the_page_reads_as_connected_afterwards(client, session_factory):
+    _seed_composed(session_factory)
+
+    client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+
+    body = client.get(f"/api/agents/{AGENT_NAME}").json()
+    assert body["kind"] == KIND_CONNECTED

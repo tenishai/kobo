@@ -143,6 +143,7 @@ import {
   chatWithAgent,
   connectAgent,
   connectSlack,
+  convertToConnected,
   createAgent,
   createInvite,
   createPersona,
@@ -592,6 +593,26 @@ export function retryAgentMutation(queryClient: QueryClient, name: string) {
 export function destroyAgentMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: () => destroyAgent(name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+  };
+}
+
+/**
+ * Turns an agent the room composed into a connected one (connected-agents
+ * design 2026-09-21): the operator action for an agent whose repository has
+ * stopped running the room's runtime. Invalidates `["agents"]` on success,
+ * the same broad key the two mutations above use and for the same reason:
+ * the kind changes what the detail page offers at all, and the card in the
+ * list carries the marker too.
+ */
+export function convertToConnectedMutation(
+  queryClient: QueryClient,
+  name: string,
+) {
+  return {
+    mutationFn: (runMode: string) => convertToConnected(name, runMode),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents"] });
     },

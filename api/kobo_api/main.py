@@ -52,7 +52,7 @@ from kobo_api.db import init_db, make_engine, make_session_factory
 from kobo_api.metrics import install as install_metrics
 from kobo_api.tracing import install as install_tracing
 from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
-from kobo_api.directory import sync_directory
+from kobo_api.directory import retire_directory, sync_directory
 from kobo_api.iap import HttpsOnlyMiddleware, IapMiddleware, IapVerifier
 from kobo_api.intake import (
     INTAKE_MAX_BYTES,
@@ -181,7 +181,11 @@ from kobo_api.slack_state import (
     encode_channels,
 )
 from kobo_api.static_ui import mount_ui
-from kobo_api.steps import _resolve_persona_body, refresh_after_capability_distill
+from kobo_api.steps import (
+    HEADLESS_UNAVAILABLE,
+    _resolve_persona_body,
+    refresh_after_capability_distill,
+)
 from kobo_api.teach import format_note, note_filename
 from kobo_api.tooling import (
     ToolingError,
@@ -329,6 +333,20 @@ class ConnectAgentRequest(ScanRepoRequest):
 
     secret_names: list[str] = []
     confirm_repo_owner: bool = False
+
+
+class ConvertToConnectedRequest(BaseModel):
+    """POST /api/agents/{name}/convert-to-connected body.
+
+    One field, and it is required: an agent the room composed has no
+    `run_mode` recorded (only a connected agent can bring something that
+    serves no HTTP port), so there is no old value to keep and no default
+    the room could pick on the operator's behalf without guessing.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    run_mode: str
 
 
 class NameSuggestionsRequest(BaseModel):
@@ -1086,6 +1104,25 @@ REPO_OWNER_REFUSAL = (
     "confirm that you own this repository or have its owner's agreement"
 )
 
+# What the room says when an operator asks to convert an agent it cannot
+# convert. Two sentences, because the two reasons are nothing alike: one is
+# already what it was asked to become, the other is being worked on right
+# now by a thread that reads its kind as it goes.
+ALREADY_CONNECTED_REFUSAL = "this agent is already connected"
+CONVERT_IN_FLIGHT_REFUSAL = (
+    "this agent is still being created or destroyed, so it cannot be converted yet"
+)
+
+# The statuses a convert refuses. READY and FAILED are the two it takes: a
+# failed agent is the likelier of the two to want this, since a repository
+# that stopped running the room's runtime is how it failed.
+CONVERT_REFUSED_STATUSES = (
+    AgentStatus.PENDING,
+    AgentStatus.PROVISIONING,
+    AgentStatus.DESTROYING,
+    AgentStatus.DESTROY_FAILED,
+)
+
 # How many scans one caller may run in `rate_limit.WINDOW_S`. Far past any
 # form filling itself in and far below anything that could walk the
 # organisation: the scan reads private repositories with the room's own
@@ -1684,6 +1721,32 @@ def _admin_operator_block(request: Request, config: Config) -> JSONResponse | No
         return None
     return JSONResponse(
         {"error": "Syncing the switchboard is operator-only on this room"}, status_code=403
+    )
+
+
+def _convert_operator_block(request: Request, config: Config) -> JSONResponse | None:
+    """None when the caller may convert a composed agent into a connected one
+    (connected-agents design 2026-09-21); a 403 body otherwise. Same
+    semantics family as `_operator_block`/`_admin_operator_block` above, and
+    kept as its own function for the same reason those are: the copy names
+    its own action.
+
+    Its answer is byte-for-byte `_operator_block`'s today, and the page
+    depends on that: the agent detail has no `can_convert` flag of its own,
+    so the UI reads `destroy_visible` (computed by `_operator_block`) to
+    decide whether to offer this action at all. A test pins the two together
+    for exactly one caller -- a non-operator refused here sees
+    `destroy_visible` false there -- so a future divergence has to be
+    deliberate and comes with a flag of its own.
+    """
+    if not config.operators and not config.admin_groups:
+        return None
+    if not config.iap_audience:
+        return None
+    if _is_admin(request):
+        return None
+    return JSONResponse(
+        {"error": "Converting agents is operator-only on this room"}, status_code=403
     )
 
 
@@ -3938,6 +4001,123 @@ def create_app(
             return _fail_launch(request.app.state.session_factory, session, agent_id, exc)
 
         return JSONResponse({"name": payload.name, "status": status}, status_code=201)
+
+    @app.post("/api/agents/{name}/convert-to-connected")
+    def convert_to_connected(
+        name: str,
+        payload: ConvertToConnectedRequest,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Say out loud that the room no longer edits this agent.
+
+        For an agent the room composed whose repository has since stopped
+        running the room's runtime: a team took the code somewhere of its
+        own, and every tab that clones and pushes is now a lie the page
+        keeps telling. This is how such an agent gets an honest page
+        without being destroyed and recreated (design 2026-09-21,
+        "Converting an existing agent").
+
+        It changes two columns and retires one directory entry. It does
+        NOT redeploy, rebuild, or touch the repository in any way: what is
+        running keeps running, under the same identity, from the same
+        image. The agent's own history stays too -- its steps, its
+        learnings, its Slack record -- because every one of them really
+        happened; what changes is what the room will do NEXT, which is
+        nothing. `secret_names` is left as it is for the same reason: the
+        deployment is not being rewritten, so the Secrets it already
+        mounts are not the room's to edit here.
+
+        Operator-only, and rare. There is no MCP tool for it: an agent
+        cannot ask to be cut loose, and a person doing this has the page
+        in front of them.
+
+        One way only. The room cannot convert back, because it has no way
+        to know whether a bundle it stopped maintaining is still there,
+        and a half-composed agent is worse than either kind. The confirm
+        copy on the page says so.
+        """
+        cfg: Config = app.state.config
+
+        # Gate FIRST, before the agent even exists check: info-safe, the
+        # same discipline destroy's own gate keeps.
+        block = _convert_operator_block(request, cfg)
+        if block is not None:
+            return block
+
+        if payload.run_mode not in RUN_MODES:
+            return JSONResponse({"error": RUN_MODE_REFUSAL}, status_code=422)
+        if payload.run_mode == RUN_MODE_HEADLESS and not cfg.connected_headless_class:
+            # The same sentence the scan and the onboard step say, from the
+            # same constant: a room without a class for it cannot run one
+            # whichever door the agent came in through.
+            return JSONResponse({"error": HEADLESS_UNAVAILABLE}, status_code=422)
+
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        if is_connected(agent):
+            return JSONResponse(
+                {"error": ALREADY_CONNECTED_REFUSAL}, status_code=409
+            )
+        if agent.status in CONVERT_REFUSED_STATUSES:
+            # A provisioning or destroying agent has a thread of its own
+            # holding this row, and both of those read the kind as they go
+            # (`pipeline_for`, the destroy ledger's repo and directory
+            # steps): changing it underneath them would fork a run halfway
+            # through. READY and FAILED are both settled.
+            return JSONResponse(
+                {"error": CONVERT_IN_FLIGHT_REFUSAL}, status_code=409
+            )
+
+        agent.kind = KIND_CONNECTED
+        agent.run_mode = payload.run_mode
+        session.commit()
+
+        caller = getattr(request.state, "iap_email", None)
+        # WARNING for the same reason the connect's own line is (INFO does
+        # not reach the pod logs here): this is the one record that an
+        # agent's page went quiet on purpose rather than by a bug.
+        log.warning(
+            "convert: %s converted agent %s to connected",
+            caller or "an unidentified caller",
+            agent.name,
+        )
+
+        clients: Clients | None = app.state.clients
+        if (
+            cabal_enabled(cfg)
+            and clients is not None
+            and clients.cabal is not None
+        ):
+            try:
+                # Broad on purpose, exactly as the destroy ledger's own
+                # directory step is: a raw transport failure never reaches
+                # `CabalError`, and the row has already committed. A stale
+                # directory entry is resolved by a later sync; holding a
+                # finished convert hostage to the switchboard is not.
+                retire_directory(clients.cabal, agent)
+            except Exception:
+                log.warning(
+                    "convert: could not retire the directory entry for agent %s",
+                    agent.name,
+                    exc_info=True,
+                )
+
+        # The switchboard's policy source is recomputed from scratch (the
+        # same fail-soft seam every other standing change in this room uses)
+        # rather than reasoned about here: the pipeline that builds a
+        # connected agent never syncs pairs, so a converted agent has just
+        # arrived at a standing nothing else in its lifetime will resync.
+        # `allowed_pairs` reads rows, not kinds, so what this actually
+        # writes today is whatever those rows say -- which is the point of
+        # recomputing rather than editing.
+        _sync_dispatch_pairs(session)
+
+        return JSONResponse(
+            {"name": agent.name, "kind": agent.kind, "run_mode": agent.run_mode}
+        )
 
     @app.get("/api/agents")
     def list_agents(request: Request, session: Session = Depends(get_session)) -> dict:  # noqa: B008

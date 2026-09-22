@@ -842,3 +842,79 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
     expect(screen.queryByRole("tab", { name: "Chat" })).toBeNull();
   });
 });
+
+describe("AgentDetail convert to connected (design 2026-09-21)", () => {
+  // The operator action for an agent the room composed whose repository has
+  // stopped running the room's runtime. Offered off `destroy_visible`, the
+  // operator flag the detail already carries: the server's convert gate is
+  // the same operator gate that flag is computed from.
+  const OPERATOR_VIEW = { ...READY_AGENT, destroy_visible: true };
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.stubGlobal("EventSource", NoopEventSource);
+    location.hash = "#/agents/warden";
+    window.dispatchEvent(new Event("hashchange"));
+    stubFetch({ ...BASE_ROUTES, "/api/agents/warden": OPERATOR_VIEW });
+  });
+
+  it("offers the action to an operator looking at a composed, ready agent", async () => {
+    renderWithClient(AgentDetail);
+
+    expect(
+      await screen.findByRole("button", { name: "Convert to connected" }),
+    ).not.toBeNull();
+  });
+
+  it("says what stops working, and asks how the agent runs before it will convert", async () => {
+    renderWithClient(AgentDetail);
+    await fireEvent.click(
+      await screen.findByRole("button", { name: "Convert to connected" }),
+    );
+
+    expect(
+      screen.getByText(
+        "The room stops editing this agent: no chat, learnings, teach, skills, tooling or Slack from here. Its repository, deployment and identity stay as they are. This cannot be undone from the room.",
+      ),
+    ).not.toBeNull();
+    const confirm = screen.getByRole("button", {
+      name: "Convert this agent",
+    }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+
+    await fireEvent.click(
+      screen.getByLabelText("It serves web traffic (port 8080, answers /healthz)"),
+    );
+    expect(confirm.disabled).toBe(false);
+  });
+
+  it("hides the action from a caller who is not an operator", async () => {
+    stubFetch({ ...BASE_ROUTES, "/api/agents/warden": READY_AGENT });
+    renderWithClient(AgentDetail);
+
+    await screen.findByRole("heading", { name: "warden" });
+    expect(screen.queryByRole("button", { name: "Convert to connected" })).toBeNull();
+  });
+
+  it("hides the action on an agent that is already connected", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": { ...OPERATOR_VIEW, kind: "connected" },
+    });
+    renderWithClient(AgentDetail);
+
+    await screen.findByRole("heading", { name: "warden" });
+    expect(screen.queryByRole("button", { name: "Convert to connected" })).toBeNull();
+  });
+
+  it("hides the action while the agent is still being provisioned", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": { ...OPERATOR_VIEW, status: "provisioning" },
+    });
+    renderWithClient(AgentDetail);
+
+    await screen.findByRole("heading", { name: "warden" });
+    expect(screen.queryByRole("button", { name: "Convert to connected" })).toBeNull();
+  });
+});
