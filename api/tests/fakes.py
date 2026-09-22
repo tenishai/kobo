@@ -579,15 +579,22 @@ class FakeGitHub:
         """Visibility comes from `existing_repos`, exactly as `repo_exists`
         reads it, so one knob answers both. `can_write` and `default_branch`
         are their own knobs, defaulting to the wired happy path; a repo the
-        fake has never heard of is invisible and carries neither.
+        fake has never heard of is invisible and carries none of them.
+
+        Resolved case-insensitively, answering with the spelling
+        `existing_repos` holds -- which is what GitHub itself does, and
+        what the room's canonical-name handling is written against.
         """
         self.calls.append(f"repo_access:{repo}")
-        if repo not in self.repos:
+        known = {existing.lower(): existing for existing in self.repos}
+        full_name = known.get(repo.lower())
+        if full_name is None:
             return RepoAccessInfo(visible=False, can_write=False, default_branch="")
         return RepoAccessInfo(
             visible=True,
             can_write=self._can_write,
             default_branch=self._default_branch,
+            full_name=full_name,
         )
 
     def read_file(self, repo: str, path: str) -> str | None:
