@@ -32,10 +32,17 @@
     errorMessage,
     RUN_MODE_HEADLESS,
     RUN_MODE_HTTP,
+    type ConnectRepoOption,
     type ScanFinding,
     type ScanReport,
   } from "../lib/api";
-  import { connectAgentMutation, groupsQuery, scanRepoMutation } from "../lib/queries";
+  import { debounced } from "../lib/debounce";
+  import {
+    connectAgentMutation,
+    connectReposQuery,
+    groupsQuery,
+    scanRepoMutation,
+  } from "../lib/queries";
   import { navigate } from "../lib/router.svelte";
   import { toast } from "../lib/toast.svelte";
   import { validateName } from "../lib/validate";
@@ -47,6 +54,14 @@
   // no class for one, so seeing it once is enough to know the second option
   // is not available in this room at all.
   const HEADLESS_UNAVAILABLE = "headless_unavailable";
+
+  // The Repository field is a combobox over the repositories the room's
+  // GitHub App can already reach. It never offers a list: nothing is shown
+  // on focus or on a click, and rows arrive only once somebody types. The
+  // quiet spell before a search is short enough to feel immediate and long
+  // enough that a typed name is one request, not twelve.
+  const REPO_SEARCH_DEBOUNCE_MS = 200;
+  const REPO_LIST_ID = "connect-repo-list";
 
   const queryClient = useQueryClient();
   const groups = createQuery(() => (groupsQuery()));
@@ -101,6 +116,91 @@
 
   const nameError = $derived(name.length > 0 ? validateName(name) : null);
   const nameValid = $derived(name.length > 0 && nameError === null);
+
+  // The search term the field is actually asking about, a debounce behind
+  // what has been typed. Same "debounced into a plain $state the query
+  // options read" idiom AccessPanel's own people search uses.
+  let repoSearchTerm = $state("");
+  // Set the moment a repository is picked or the list is dismissed, and
+  // cleared by the next real keystroke. Without it, picking a row would
+  // reopen the list a fifth of a second later over the value just filled
+  // in. `oninput` fires on genuine typing only, never on the programmatic
+  // write a pick makes.
+  let repoListDismissed = $state(false);
+  // Which row the keyboard is on, or -1 for none. None by default, so
+  // Enter over a fully typed `owner/name` cannot swap it for whichever
+  // row happened to be first.
+  let activeRepo = $state(-1);
+
+  const repoMatches = createQuery(() => (connectReposQuery(repoSearchTerm)));
+
+  const commitRepoSearch = debounced((value: string) => {
+    repoSearchTerm = value;
+  }, REPO_SEARCH_DEBOUNCE_MS);
+
+  $effect(() => {
+    const value = repo;
+    commitRepoSearch(value.trim());
+    return () => {
+      commitRepoSearch.cancel();
+    };
+  });
+
+  const repoSuggestions = $derived(repoMatches.data?.repos ?? []);
+  const repoListOpen = $derived(
+    !repoListDismissed && repo.trim().length >= 1 && repoSuggestions.length > 0,
+  );
+  const repoMatchesTruncated = $derived(
+    repoListOpen && repoMatches.data?.truncated === true,
+  );
+
+  function handleRepoTyped(): void {
+    repoListDismissed = false;
+    activeRepo = -1;
+  }
+
+  function pickRepo(option: ConnectRepoOption): void {
+    repo = option.full_name;
+    repoListDismissed = true;
+    activeRepo = -1;
+  }
+
+  function handleRepoKeydown(event: KeyboardEvent): void {
+    if (!repoListOpen) {
+      return;
+    }
+    if (event.key === "Escape") {
+      // Stopped here rather than allowed to bubble: the modal closes on
+      // Escape, and the first press is about the list, not the form.
+      event.preventDefault();
+      event.stopPropagation();
+      repoListDismissed = true;
+      activeRepo = -1;
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      activeRepo = (activeRepo + 1) % repoSuggestions.length;
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      activeRepo =
+        activeRepo <= 0 ? repoSuggestions.length - 1 : activeRepo - 1;
+      return;
+    }
+    if (event.key === "Enter") {
+      // Always swallowed while the list is open, so Enter never submits
+      // the form out from under an open dropdown. With no row highlighted
+      // it just closes the list and leaves what was typed alone.
+      event.preventDefault();
+      if (activeRepo >= 0) {
+        pickRepo(repoSuggestions[activeRepo]);
+      } else {
+        repoListDismissed = true;
+      }
+    }
+  }
 
   const repoValue = $derived(repo.trim());
   /** owner/name, the shape the server takes. Checked here only so Scan is
@@ -162,6 +262,9 @@
       connectBlockers = [];
       submitError = null;
       nameTaken = null;
+      repoSearchTerm = "";
+      repoListDismissed = false;
+      activeRepo = -1;
     }
   });
 
@@ -253,18 +356,69 @@
   <form class="connect-form" onsubmit={handleSubmit}>
     <div class="connect-form__field">
       <label class="connect-form__label" for="connect-repo">Repository</label>
-      <input
-        id="connect-repo"
-        class="connect-form__input"
-        type="text"
-        bind:value={repo}
-        placeholder="owner/name"
-        autocomplete="off"
-        spellcheck="false"
-      />
+      <div class="connect-form__combobox">
+        <input
+          id="connect-repo"
+          class="connect-form__input"
+          type="text"
+          role="combobox"
+          aria-expanded={repoListOpen}
+          aria-controls={REPO_LIST_ID}
+          aria-autocomplete="list"
+          aria-activedescendant={activeRepo >= 0
+            ? `${REPO_LIST_ID}-${activeRepo}`
+            : undefined}
+          bind:value={repo}
+          oninput={handleRepoTyped}
+          onkeydown={handleRepoKeydown}
+          placeholder="owner/name"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        {#if repoListOpen}
+          <ul
+            id={REPO_LIST_ID}
+            class="connect-form__suggestions"
+            role="listbox"
+            aria-label="Repositories"
+          >
+            <!-- The row is the option. Its mousedown is swallowed so the
+                 field keeps focus through the click, and the whole row
+                 picks rather than a button inside it, which would put an
+                 interactive control inside an option.
+
+                 The keyboard never lands here: this is the
+                 aria-activedescendant pattern, where focus stays on the
+                 input and the arrow keys and Enter are handled there. A
+                 key handler on the row would be a control nobody can
+                 reach. -->
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            {#each repoSuggestions as option, index (option.full_name)}
+              <li
+                id={`${REPO_LIST_ID}-${index}`}
+                class="connect-form__suggestion"
+                class:connect-form__suggestion--active={index === activeRepo}
+                role="option"
+                aria-selected={index === activeRepo}
+                onmousedown={(event) => event.preventDefault()}
+                onclick={() => pickRepo(option)}
+              >
+                <span>{option.full_name}</span>
+                <span class="connect-form__suggestion-kind">
+                  {option.private ? "Private" : "Public"}
+                </span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+      {#if repoMatchesTruncated}
+        <p class="connect-form__help">More matched. Keep typing to narrow it down.</p>
+      {/if}
       <p class="connect-form__help">
-        The repository to deploy, as owner/name. The room reads it, and
-        proposes its setup by pull request. It never pushes to your branches.
+        Start typing to search the repositories the room's GitHub App can
+        reach. The room proposes its setup by pull request and never pushes to
+        your branches.
       </p>
     </div>
 
@@ -509,6 +663,50 @@
   .connect-form__input:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
+  }
+
+  /* The list sits directly under the input and over whatever follows it,
+     so the fields below do not jump as rows arrive. */
+  .connect-form__combobox {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .connect-form__suggestions {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    left: 0;
+    z-index: 1;
+    max-height: 15rem;
+    margin: var(--space-2xs) 0 0;
+    padding: 0;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    list-style: none;
+  }
+
+  .connect-form__suggestion {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
+    color: var(--ink);
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+
+  .connect-form__suggestion:hover,
+  .connect-form__suggestion--active {
+    background: var(--bg);
+  }
+
+  .connect-form__suggestion-kind {
+    color: var(--muted);
+    font-size: 0.75rem;
   }
 
   .connect-form__choice {

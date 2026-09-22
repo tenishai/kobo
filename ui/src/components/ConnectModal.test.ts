@@ -450,3 +450,124 @@ describe("ConnectModal — connecting", () => {
     expect(connectButton().disabled).toBe(true);
   });
 });
+
+// --- the repository field's typeahead ---------------------------------------
+//
+// The field searches the repositories the room's GitHub App can already
+// reach (`GET /api/connect/repos`). It never offers a list: nothing is
+// shown on focus or on a click, and rows arrive only once somebody types.
+
+const REPO_MATCHES = {
+  repos: [
+    {
+      full_name: "example-org/team-chatbot",
+      private: true,
+      default_branch: "main",
+    },
+    {
+      full_name: "example-org/chat-archive",
+      private: false,
+      default_branch: "trunk",
+    },
+  ],
+  truncated: false,
+};
+
+function repoInput(): HTMLInputElement {
+  return screen.getByLabelText("Repository") as HTMLInputElement;
+}
+
+async function typeRepo(value: string): Promise<void> {
+  await fireEvent.input(repoInput(), { target: { value } });
+}
+
+describe("ConnectModal — finding a repository", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    stubConnectRoutes({ "/api/connect/repos": REPO_MATCHES });
+  });
+
+  it("offers the repositories that match what has been typed", async () => {
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByText("No groups are configured yet.");
+    await typeRepo("chat");
+
+    const options = await screen.findAllByRole("option");
+    expect(
+      options.map((option) =>
+        (option.textContent ?? "").replace(/\s+/g, " ").trim(),
+      ),
+    ).toEqual([
+      "example-org/team-chatbot Private",
+      "example-org/chat-archive Public",
+    ]);
+    expect(repoInput().getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("offers nothing while the field is empty", async () => {
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByText("No groups are configured yet.");
+    await fireEvent.focus(repoInput());
+    await fireEvent.click(repoInput());
+
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(repoInput().getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("fills the field with the highlighted repository when Enter is pressed", async () => {
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByText("No groups are configured yet.");
+    await typeRepo("chat");
+    await screen.findAllByRole("option");
+
+    await fireEvent.keyDown(repoInput(), { key: "ArrowDown" });
+    await fireEvent.keyDown(repoInput(), { key: "Enter" });
+
+    expect(repoInput().value).toBe("example-org/team-chatbot");
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("closes the list on Escape and leaves what was typed alone", async () => {
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByText("No groups are configured yet.");
+    await typeRepo("chat");
+    await screen.findAllByRole("option");
+
+    await fireEvent.keyDown(repoInput(), { key: "Escape" });
+
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(repoInput().value).toBe("chat");
+  });
+
+  it("fills the field with the repository that was clicked", async () => {
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByText("No groups are configured yet.");
+    await typeRepo("chat");
+    const options = await screen.findAllByRole("option");
+
+    await fireEvent.click(options[1]);
+
+    expect(repoInput().value).toBe("example-org/chat-archive");
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("says when more repositories matched than it can show", async () => {
+    vi.unstubAllGlobals();
+    stubConnectRoutes({
+      "/api/connect/repos": { ...REPO_MATCHES, truncated: true },
+    });
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByText("No groups are configured yet.");
+    await typeRepo("chat");
+
+    expect(
+      await screen.findByText("More matched. Keep typing to narrow it down."),
+    ).not.toBeNull();
+  });
+});
