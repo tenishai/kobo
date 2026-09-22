@@ -61,6 +61,7 @@ from tests.fakes import (
     FakeGitHub,
     FakeGojira,
     FakeKubectl,
+    FakeLadon,
     FakeName,
     FakeSlack,
     FakeStorage,
@@ -212,6 +213,7 @@ def _app(
     slack=None,
     cabal=None,
     name=None,
+    ladon=None,
 ):
     clients = Clients(
         github=github if github is not None else FakeGitHub(),
@@ -224,6 +226,7 @@ def _app(
         slack=slack,
         cabal=cabal,
         name=name,
+        ladon=ladon,
     )
     return create_app(session_factory, config=config, clients=clients)
 
@@ -362,7 +365,7 @@ def test_build_mcp_server_registers_the_six_write_tools_alongside_the_read_ones(
     } <= names
 
 
-def test_build_mcp_server_registers_exactly_the_twenty_four_named_tools(
+def test_build_mcp_server_registers_exactly_the_named_tools(
     session_factory, config, fake_storage
 ):
     """Coverage folded in from Task 8's review: the subset check just
@@ -379,10 +382,12 @@ def test_build_mcp_server_registers_exactly_the_twenty_four_named_tools(
     5's `kobo_create_skill`/`kobo_create_tool`, the persona wave's own
     `kobo_list_personas` (Task 4) plus `kobo_create_persona` (Task 5), and
     the MCP learnings trio (Task 8) -- `kobo_list_learnings`,
-    `kobo_decide_learning`, `kobo_decide_learnings_bulk` -- one-for-one. A
-    stray extra registration (a copy-paste twin, a leftover experiment) or
-    a dropped one would fail this even though both narrower `<=` checks
-    above would stay green.
+    `kobo_decide_learning`, `kobo_decide_learnings_bulk` -- plus the
+    secrets and environment trio (design 2026-09-22) --
+    `kobo_list_agent_secrets`, `kobo_set_agent_secrets`,
+    `kobo_set_agent_env` -- one-for-one. A stray extra registration (a
+    copy-paste twin, a leftover experiment) or a dropped one would fail
+    this even though both narrower `<=` checks above would stay green.
     """
     app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
 
@@ -415,6 +420,9 @@ def test_build_mcp_server_registers_exactly_the_twenty_four_named_tools(
         "kobo_decide_repo_access",
         "kobo_decide_learning",
         "kobo_decide_learnings_bulk",
+        "kobo_list_agent_secrets",
+        "kobo_set_agent_secrets",
+        "kobo_set_agent_env",
     }
 
 
@@ -3215,3 +3223,362 @@ def test_set_runtime_image_refuses_an_image_the_org_does_not_run(
             agent="ward",
             runtime_image="docker.io/somebody/whatever:latest",
         )
+
+
+# --- The secrets and environment trio (design 2026-09-22) ---------------------
+#
+# All three go through the same routes the room's own panel drives, so what
+# is worth pinning here is the tool surface: a value goes in and never
+# comes out, a key the room manages is refused, an agent somebody else owns
+# is not tellable from one that does not exist, and a room with no secrets
+# platform says so rather than asking for a retry.
+
+SECRETS_AGENT = "clio"
+SECRETS_REPO = REPO_TEMPLATE.format(name=SECRETS_AGENT)
+# Never a real credential: a placeholder standing in for one, so a test can
+# prove it reaches the lane and appears in no tool result or audit row.
+SECRET_VALUE = "not-a-real-key-value"
+
+SECRETS_GOJIRA_YAML = "name: clio\nservice_account: agent-clio\n"
+
+
+def _secrets_app(session_factory, config, fake_storage, *, ladon=None, github=None):
+    return _app(
+        session_factory,
+        config,
+        groups_resolver=_resolver(),
+        storage=fake_storage,
+        ladon=ladon,
+        github=github
+        or FakeGitHub(
+            existing_repos={SECRETS_REPO},
+            repo_files={"gojira.yaml": SECRETS_GOJIRA_YAML},
+            extra_clone_files={"gojira.yaml": SECRETS_GOJIRA_YAML},
+        ),
+    )
+
+
+def _seed_secrets_agent(session_factory, *, created_by=MEMBER_A_EMAIL):
+    _seed_agent(
+        session_factory,
+        name=SECRETS_AGENT,
+        created_by=created_by,
+        group_name=GROUP_A,
+        repo_full_name=SECRETS_REPO,
+    )
+
+
+def test_list_agent_secrets_answers_names_and_never_a_value(
+    session_factory, config, fake_storage
+):
+    ladon = FakeLadon()
+    ladon.stored[f"apps/{SECRETS_AGENT}/env"] = {"API_KEY": SECRET_VALUE}
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage, ladon=ladon))
+
+    result = _call_tool(
+        mcp, "kobo_list_agent_secrets", _ctx_for(MEMBER_A_EMAIL), agent=SECRETS_AGENT
+    )
+
+    assert result["secrets"] == ["API_KEY"]
+    assert result["secrets_available"] is True
+    assert result["delivered_as"] == f"{SECRETS_AGENT}-env"
+    assert SECRET_VALUE not in json.dumps(result)
+
+
+def test_list_agent_secrets_says_when_the_room_keeps_none(
+    session_factory, config, fake_storage
+):
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage, ladon=None))
+
+    result = _call_tool(
+        mcp, "kobo_list_agent_secrets", _ctx_for(MEMBER_A_EMAIL), agent=SECRETS_AGENT
+    )
+
+    assert result["secrets_available"] is False
+    assert result["secrets"] == []
+    # The other half still answers, which is why this is one tool and not
+    # two.
+    assert result["env"] == {}
+
+
+def test_list_agent_secrets_hides_an_agent_the_caller_does_not_own(
+    session_factory, config, fake_storage
+):
+    _seed_secrets_agent(session_factory, created_by="someone-else@example.com")
+    mcp = build_mcp_server(
+        _secrets_app(session_factory, config, fake_storage, ladon=FakeLadon())
+    )
+
+    with pytest.raises(ToolError, match="agent not found"):
+        _call_tool(
+            mcp, "kobo_list_agent_secrets", _ctx_for(MEMBER_A_EMAIL), agent=SECRETS_AGENT
+        )
+
+
+def test_set_agent_secrets_stores_the_value_and_reports_the_wiring(
+    session_factory, config, fake_storage
+):
+    ladon = FakeLadon()
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage, ladon=ladon))
+
+    result = _call_tool(
+        mcp,
+        "kobo_set_agent_secrets",
+        _ctx_for(MEMBER_A_EMAIL),
+        agent=SECRETS_AGENT,
+        secret_values={"API_KEY": SECRET_VALUE},
+    )
+
+    assert result["secrets"] == ["API_KEY"]
+    assert result["wiring"] == "committed"
+    assert ladon.puts[0][2] == {"API_KEY": SECRET_VALUE}
+    assert SECRET_VALUE not in json.dumps(result)
+
+
+def test_set_agent_secrets_never_puts_a_value_in_the_audit_row(
+    session_factory, config, fake_storage
+):
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(
+        _secrets_app(session_factory, config, fake_storage, ladon=FakeLadon())
+    )
+
+    _call_tool(
+        mcp,
+        "kobo_set_agent_secrets",
+        _ctx_for(MEMBER_A_EMAIL),
+        agent=SECRETS_AGENT,
+        secret_values={"API_KEY": SECRET_VALUE},
+    )
+
+    row = _last_audit_row(session_factory)
+    assert row.tool == "kobo_set_agent_secrets"
+    # `set` matches the audit layer's own "secret"/"value" substring rule,
+    # so the whole mapping is redacted before the row is ever written.
+    assert SECRET_VALUE not in row.redacted_args
+    assert "REDACTED" in row.redacted_args
+
+
+def test_set_agent_secrets_refuses_a_key_the_room_manages(
+    session_factory, config, fake_storage
+):
+    ladon = FakeLadon()
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage, ladon=ladon))
+
+    with pytest.raises(ToolError, match="the room sets this one"):
+        _call_tool(
+            mcp,
+            "kobo_set_agent_secrets",
+            _ctx_for(MEMBER_A_EMAIL),
+            agent=SECRETS_AGENT,
+            secret_values={"SLACK_BOT_TOKEN": SECRET_VALUE},
+        )
+    assert ladon.puts == []
+
+
+def test_set_agent_secrets_in_a_room_with_no_platform_says_so_rather_than_try_again(
+    session_factory, config, fake_storage
+):
+    # A standing fact the caller can act on (use environment variables
+    # instead), not an outage. The house "did not answer" phrasing every
+    # other 5xx gets would tell them to retry forever.
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage, ladon=None))
+
+    with pytest.raises(ToolError, match="no secrets platform configured"):
+        _call_tool(
+            mcp,
+            "kobo_set_agent_secrets",
+            _ctx_for(MEMBER_A_EMAIL),
+            agent=SECRETS_AGENT,
+            secret_values={"API_KEY": SECRET_VALUE},
+        )
+
+
+def test_set_agent_secrets_hides_an_agent_the_caller_does_not_own(
+    session_factory, config, fake_storage
+):
+    ladon = FakeLadon()
+    _seed_secrets_agent(session_factory, created_by="someone-else@example.com")
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage, ladon=ladon))
+
+    with pytest.raises(ToolError, match="agent not found"):
+        _call_tool(
+            mcp,
+            "kobo_set_agent_secrets",
+            _ctx_for(MEMBER_A_EMAIL),
+            agent=SECRETS_AGENT,
+            secret_values={"API_KEY": SECRET_VALUE},
+        )
+    assert ladon.puts == []
+
+
+def test_set_agent_env_writes_the_variable_and_hands_back_what_the_files_hold(
+    session_factory, config, fake_storage
+):
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage))
+
+    result = _call_tool(
+        mcp,
+        "kobo_set_agent_env",
+        _ctx_for(MEMBER_A_EMAIL),
+        agent=SECRETS_AGENT,
+        variables={"API_BASE": "https://example.test"},
+    )
+
+    assert result["env"] == {"API_BASE": "https://example.test"}
+    assert result["wiring"] == "committed"
+
+
+def test_set_agent_env_works_without_a_secrets_platform(
+    session_factory, config, fake_storage
+):
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage, ladon=None))
+
+    result = _call_tool(
+        mcp,
+        "kobo_set_agent_env",
+        _ctx_for(MEMBER_A_EMAIL),
+        agent=SECRETS_AGENT,
+        variables={"API_BASE": "https://example.test"},
+    )
+
+    assert result["env"] == {"API_BASE": "https://example.test"}
+
+
+def test_set_agent_env_refuses_a_key_the_room_manages(
+    session_factory, config, fake_storage
+):
+    github = FakeGitHub(
+        existing_repos={SECRETS_REPO},
+        repo_files={"gojira.yaml": SECRETS_GOJIRA_YAML},
+        extra_clone_files={"gojira.yaml": SECRETS_GOJIRA_YAML},
+    )
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage, github=github))
+
+    with pytest.raises(ToolError, match="the room sets this one"):
+        _call_tool(
+            mcp,
+            "kobo_set_agent_env",
+            _ctx_for(MEMBER_A_EMAIL),
+            agent=SECRETS_AGENT,
+            variables={"VERTEXAI_PROJECT": "somewhere else"},
+        )
+    assert github.pushes == []
+
+
+def test_a_connected_agents_write_comes_back_with_the_pull_request(
+    session_factory, config, fake_storage
+):
+    github = FakeGitHub(
+        existing_repos={SECRETS_REPO},
+        repo_files={"gojira.yaml": SECRETS_GOJIRA_YAML},
+        extra_clone_files={"gojira.yaml": SECRETS_GOJIRA_YAML},
+        pr_url="https://example.test/pull/7",
+    )
+    _seed_agent(
+        session_factory,
+        name=SECRETS_AGENT,
+        created_by=MEMBER_A_EMAIL,
+        group_name=GROUP_A,
+        repo_full_name=SECRETS_REPO,
+        kind=KIND_CONNECTED,
+    )
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage, github=github))
+
+    result = _call_tool(
+        mcp,
+        "kobo_set_agent_env",
+        _ctx_for(MEMBER_A_EMAIL),
+        agent=SECRETS_AGENT,
+        variables={"API_BASE": "https://example.test"},
+    )
+
+    assert result["wiring"] == "pull_request"
+    assert result["pull_request"] == "https://example.test/pull/7"
+    assert github.pushes == []
+
+
+def test_a_bad_secret_value_is_refused_by_field_name_and_never_echoed(
+    session_factory, config, fake_storage
+):
+    # Pydantic renders the offending INPUT in its own message
+    # (`input_value=...`). A tool argument here can be a credential, so
+    # the refusal is built from the field names that failed and nothing
+    # else -- in the answer AND in the audit row.
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(
+        _secrets_app(session_factory, config, fake_storage, ladon=FakeLadon())
+    )
+
+    with pytest.raises(ToolError) as exc:
+        _call_tool(
+            mcp,
+            "kobo_set_agent_secrets",
+            _ctx_for(MEMBER_A_EMAIL),
+            agent=SECRETS_AGENT,
+            secret_values={"API_KEY": {"not": SECRET_VALUE}},
+        )
+
+    assert SECRET_VALUE not in str(exc.value)
+    assert "input_value" not in str(exc.value)
+    assert "set" in str(exc.value)
+    row = _last_audit_row(session_factory)
+    assert SECRET_VALUE not in (row.error or "")
+    assert SECRET_VALUE not in row.redacted_args
+
+
+def test_an_over_long_secret_value_is_refused_without_repeating_it(
+    session_factory, config, fake_storage
+):
+    from kobo_api.agent_env import MAX_ENV_VALUE_LENGTH
+
+    oversized = "z" * (MAX_ENV_VALUE_LENGTH + 1)
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(
+        _secrets_app(session_factory, config, fake_storage, ladon=FakeLadon())
+    )
+
+    with pytest.raises(ToolError) as exc:
+        _call_tool(
+            mcp,
+            "kobo_set_agent_secrets",
+            _ctx_for(MEMBER_A_EMAIL),
+            agent=SECRETS_AGENT,
+            secret_values={"API_KEY": oversized},
+        )
+
+    assert oversized not in str(exc.value)
+    assert "z" * 100 not in str(exc.value)
+    row = _last_audit_row(session_factory)
+    assert "z" * 100 not in (row.error or "")
+    assert "z" * 100 not in row.redacted_args
+
+
+def test_the_same_wall_stands_on_the_environment_tool(
+    session_factory, config, fake_storage
+):
+    # Not sensitive, but the argument still must not be echoed through a
+    # pydantic message: the two tools share one builder for exactly that
+    # reason, so neither can drift.
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage))
+
+    with pytest.raises(ToolError) as exc:
+        _call_tool(
+            mcp,
+            "kobo_set_agent_env",
+            _ctx_for(MEMBER_A_EMAIL),
+            agent=SECRETS_AGENT,
+            variables={"API_BASE": ["not", "a", "string"]},
+        )
+
+    assert "input_value" not in str(exc.value)
+    assert "not" not in str(exc.value)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -658,3 +659,178 @@ def test_deliver_secret_trims_the_acting_email():
 
     assert ladon.puts[0][0] == EMAIL
     assert ladon.syncs[0][0] == EMAIL
+
+
+# --- list_keys: the one read, names only --------------------------------------
+
+
+def test_list_keys_asks_the_lane_in_the_query_string_and_returns_names():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(
+            200,
+            json={
+                "namespace": NAMESPACE,
+                "path": f"apps/{AGENT}/env",
+                "keys": ["API_KEY", "DB_URL"],
+                "version": 2,
+                "updated_at": "2026-09-22T10:00:00.000000Z",
+            },
+        )
+
+    answer = _client(handler, token="an-id-token").list_keys(EMAIL, f"apps/{AGENT}/env")
+
+    assert captured["method"] == "GET"
+    assert captured["url"] == (
+        f"{URL}/api/service/secrets?acting_email={quote(EMAIL, safe='')}"
+        f"&namespace={NAMESPACE}&path=apps%2F{AGENT}%2Fenv"
+    )
+    assert captured["auth"] == "Bearer an-id-token"
+    assert answer.exists is True
+    assert answer.keys == ["API_KEY", "DB_URL"]
+    assert answer.updated_at == "2026-09-22T10:00:00.000000Z"
+
+
+def test_list_keys_on_a_path_with_nothing_at_it_is_an_empty_answer_not_a_failure():
+    # The lane says 404 for a path that is not there. An agent whose owner
+    # has never added a secret is the ordinary case, not an error.
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": "there is no secret at ..."})
+
+    answer = _client(handler).list_keys(EMAIL, f"apps/{AGENT}/env")
+
+    assert answer.exists is False
+    assert answer.keys == []
+    assert answer.updated_at is None
+
+
+def test_list_keys_raises_when_the_lane_refuses_for_any_other_reason():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"error": "that namespace is not yours"})
+
+    with pytest.raises(ClientError) as exc:
+        _client(handler).list_keys(EMAIL, f"apps/{AGENT}/env")
+
+    assert "that namespace is not yours" in str(exc.value)
+
+
+def test_list_keys_sorts_whatever_order_the_lane_answered_in():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"keys": ["ZED", "ALPHA"], "updated_at": None})
+
+    assert _client(handler).list_keys(EMAIL, f"apps/{AGENT}/env").keys == ["ALPHA", "ZED"]
+
+
+# --- delete_secret / unsync: the destroy half ---------------------------------
+
+
+def test_delete_secret_request_shape_and_auth_header():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.content)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"applied": True, "keys": [], "deleted": True})
+
+    _client(handler, token="an-id-token").delete_secret(EMAIL, f"apps/{AGENT}/env")
+
+    assert captured["method"] == "DELETE"
+    assert captured["url"] == f"{URL}/api/service/secrets"
+    assert captured["json"] == {
+        "acting_email": EMAIL,
+        "namespace": NAMESPACE,
+        "path": f"apps/{AGENT}/env",
+        "apply": True,
+    }
+    assert captured["auth"] == "Bearer an-id-token"
+
+
+def test_delete_secret_of_a_path_already_gone_is_a_success():
+    # The lane answers 200 with `deleted: false`. A destroy step that fails
+    # when it is run twice is a destroy step nobody can retry.
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"applied": True, "keys": [], "deleted": False})
+
+    _client(handler).delete_secret(EMAIL, f"apps/{AGENT}/env")
+
+
+def test_delete_secret_raises_the_lanes_own_sentence_on_a_refusal():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"error": "that namespace is not yours"})
+
+    with pytest.raises(ClientError) as exc:
+        _client(handler).delete_secret(EMAIL, f"apps/{AGENT}/env")
+
+    assert "that namespace is not yours" in str(exc.value)
+
+
+def test_unsync_request_shape_names_the_object_and_nothing_else():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "applied": True,
+                "state": "gone",
+                "recreated": False,
+                "removes_target_secret": True,
+                "deleted": True,
+            },
+        )
+
+    _client(handler).unsync(EMAIL, AGENT, AGENT, f"{AGENT}-env")
+
+    assert captured["method"] == "DELETE"
+    assert captured["url"] == f"{URL}/api/service/sync"
+    assert captured["json"] == {
+        "acting_email": EMAIL,
+        "namespace": NAMESPACE,
+        "app": AGENT,
+        "k8s_namespace": AGENT,
+        "name": f"{AGENT}-env",
+        "apply": True,
+    }
+
+
+def test_unsync_of_an_object_already_gone_is_a_success():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"applied": True, "state": "absent", "deleted": False}
+        )
+
+    _client(handler).unsync(EMAIL, AGENT, AGENT, f"{AGENT}-env")
+
+
+def test_unsync_raises_when_the_object_belongs_to_another_field_manager():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={"error": "that object is managed by kustomize"})
+
+    with pytest.raises(ClientError) as exc:
+        _client(handler).unsync(EMAIL, AGENT, AGENT, f"{AGENT}-env")
+
+    assert "that object is managed by kustomize" in str(exc.value)
+
+
+def test_unsync_says_so_when_the_delete_left_a_new_object_standing():
+    # `recreated` means what this call removed is gone and something else
+    # now stands at the name. A caller that read `deleted` and stopped would
+    # leave a live ExternalSecret it does not know about.
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"applied": True, "state": "recreated", "recreated": True, "deleted": True}
+        )
+
+    with pytest.raises(ClientError) as exc:
+        _client(handler).unsync(EMAIL, AGENT, AGENT, f"{AGENT}-env")
+
+    assert f"{AGENT}-env" in str(exc.value)

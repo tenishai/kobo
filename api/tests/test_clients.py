@@ -7794,3 +7794,112 @@ def test_installation_token_provider_wired_into_boot_org_clone_gh_cli():
     github = GhCLI(runner=CommandRunner(), token_provider=installation_token_provider(config))
     assert github._token_provider is not None
     assert github._token_provider.__self__._app_id == "123"
+
+
+# --- GitHub (delete_branch / compare -- the room recycling its own branch) -----
+
+
+def test_delete_branch_sends_the_ref_path_with_its_slash_intact():
+    """The git-refs route takes a REF, not a path segment: `heads/kobo/env`
+    is the whole thing and its slashes are part of the path. Encoding them
+    asked GitHub to delete a ref literally named `heads/kobo%2Fenv`, which
+    is a 404, which this method then reported as "already gone" -- so a
+    branch the room meant to recycle stayed exactly where it was."""
+    runner = RecordingRunner(results=[(0, "", "")])
+    client = GhCLI(runner=runner)
+
+    assert client.delete_branch("acme/clio", "kobo/secrets-wiring") is True
+    assert runner.calls == [
+        [
+            "gh", "api", "-X", "DELETE",
+            "repos/acme/clio/git/refs/heads/kobo/secrets-wiring",
+        ]
+    ]
+    # And the same spelling `branch_exists` asks about, which is the point:
+    # one of them finding a branch the other cannot delete is the bug.
+    assert "heads/kobo/secrets-wiring" in runner.calls[0][-1]
+
+
+def test_delete_branch_false_when_it_is_already_gone():
+    runner = RecordingRunner(
+        results=[(1, '{"message":"Reference does not exist"}', "gh: Not Found (HTTP 404)")]
+    )
+    client = GhCLI(runner=runner)
+
+    assert client.delete_branch("acme/clio", "kobo/env") is False
+
+
+def test_delete_branch_raises_for_any_other_failure():
+    runner = RecordingRunner(results=[(1, "", "gh: Bad credentials (HTTP 401)")])
+    client = GhCLI(runner=runner)
+
+    with pytest.raises(ClientError):
+        client.delete_branch("acme/clio", "kobo/env")
+
+
+def test_compare_reports_the_files_and_the_commit_authors():
+    payload = json.dumps(
+        {
+            "files": [{"filename": "gojira.yaml"}],
+            "commits": [
+                {"commit": {"author": {"email": "noreply@kobo.dev"}}},
+                {"commit": {"author": {"email": "noreply@kobo.dev"}}},
+            ],
+        }
+    )
+    runner = RecordingRunner(results=[(0, payload, "")])
+    client = GhCLI(runner=runner)
+
+    answer = client.compare("acme/clio", "HEAD", "kobo/env")
+
+    assert answer.found is True
+    assert answer.files == ("gojira.yaml",)
+    assert answer.authors == ("noreply@kobo.dev", "noreply@kobo.dev")
+    # Both refs are ONE path segment on this route, unlike the git-refs
+    # route above, so a slash in a branch name has to be encoded here.
+    assert runner.calls == [["gh", "api", "repos/acme/clio/compare/HEAD...kobo%2Fenv"]]
+
+
+def test_compare_of_a_ref_that_is_not_there_is_not_found_rather_than_empty():
+    """An empty file list from a failed lookup and an empty one from an
+    identical branch are the same value and opposite answers, which is why
+    `found` exists and why a caller must check it."""
+    runner = RecordingRunner(
+        results=[(1, '{"message":"Not Found"}', "gh: Not Found (HTTP 404)")]
+    )
+    client = GhCLI(runner=runner)
+
+    answer = client.compare("acme/clio", "HEAD", "kobo/env")
+
+    assert answer.found is False
+    assert answer.files == ()
+
+
+def test_compare_raises_for_any_other_failure():
+    runner = RecordingRunner(results=[(1, "", "gh: Bad credentials (HTTP 401)")])
+    client = GhCLI(runner=runner)
+
+    with pytest.raises(ClientError):
+        client.compare("acme/clio", "HEAD", "kobo/env")
+
+
+def test_close_pr_comments_before_it_closes():
+    """A closed request of the room's always carries the reason, even if
+    the close itself then fails and is retried."""
+    runner = RecordingRunner(results=[(0, "", ""), (0, "", "")])
+    client = GhCLI(runner=runner)
+
+    client.close_pr("acme/clio", "https://example.test/pull/1", "superseded")
+
+    assert runner.calls[0][:3] == ["gh", "pr", "comment"]
+    assert runner.calls[0][-1] == "superseded"
+    assert runner.calls[1][:3] == ["gh", "pr", "close"]
+
+
+def test_close_pr_tolerates_one_that_is_already_closed():
+    runner = RecordingRunner(
+        results=[(0, "", ""), (1, "", "gh: Not Found (HTTP 404)")]
+    )
+    client = GhCLI(runner=runner)
+
+    client.close_pr("acme/clio", "https://example.test/pull/1", "superseded")

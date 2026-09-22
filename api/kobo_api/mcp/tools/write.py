@@ -529,6 +529,28 @@ def _skill_team(entry: dict) -> str:
     return "shared"
 
 
+def _bad_request(exc: Exception) -> str:
+    """The refusal for a payload model this module built by hand, from the
+    field NAMES that failed and nothing else.
+
+    Never `str(exc)`. Pydantic renders the offending input in its own
+    message -- `Input should be a valid string [type=string_type,
+    input_value=...]` -- and a tool argument here can be a secret value or
+    a whole pasted file. `kobo_api.main._validation_error_message` is the
+    same wall the HTTP surface put up for the same reason (a Slack token
+    echoed back out of a 422), so it is shared rather than written twice.
+    """
+    from kobo_api.main import _validation_error_message
+
+    if not hasattr(exc, "errors"):
+        # A `TypeError` from building the model with the wrong argument
+        # shape entirely. Its text is about the CALL, not about a value,
+        # but it is not this module's to guess at either, so it gets the
+        # same generic sentence a field-less validation failure gets.
+        return "that request wasn't quite right. Check the fields and try again"
+    return _validation_error_message(exc)
+
+
 def _agent_route_result(response: JSONResponse) -> dict:
     """Table (A) from this module's own docstring -- the shared status
     translation for every agent-scoped write tool.
@@ -660,6 +682,8 @@ def register(mcp: FastMCP, app: Any) -> None:
     decide_repo_access_endpoint = _endpoint(app, "POST", "/api/repo-access/decide")
     create_persona_endpoint = _endpoint(app, "POST", "/api/personas")
     bulk_decide_learnings_endpoint = _endpoint(app, "POST", "/api/agents/{name}/learnings/bulk")
+    set_secrets_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/secrets")
+    set_env_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/env")
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     @audited("kobo_create_agent")
@@ -751,7 +775,7 @@ def register(mcp: FastMCP, app: Any) -> None:
                     voice=voice,
                 )
             except (TypeError, ValidationError) as exc:
-                raise ToolError(f"that request wasn't quite right: {exc}") from exc
+                raise ToolError(_bad_request(exc)) from exc
 
             response = await _off_loop(create_agent_endpoint,payload=payload, request=req, session=session)
         finally:
@@ -1131,7 +1155,7 @@ def register(mcp: FastMCP, app: Any) -> None:
             try:
                 payload = RepoAccessRequest(repositories=repositories)
             except ValidationError as exc:
-                raise ToolError(f"that request wasn't quite right: {exc}") from exc
+                raise ToolError(_bad_request(exc)) from exc
             response = await _off_loop(
                 request_repo_access_endpoint,
                 name=agent,
@@ -1182,7 +1206,7 @@ def register(mcp: FastMCP, app: Any) -> None:
             try:
                 payload = RepoAccessDecision(ids=ids, decision=decision)
             except ValidationError as exc:
-                raise ToolError(f"that request wasn't quite right: {exc}") from exc
+                raise ToolError(_bad_request(exc)) from exc
             response = await _off_loop(
                 decide_repo_access_endpoint, payload=payload, request=req, session=session
             )
@@ -1350,7 +1374,7 @@ def register(mcp: FastMCP, app: Any) -> None:
                 purpose_tags=purpose_tags or [],
             )
         except (TypeError, ValidationError) as exc:
-            raise ToolError(f"that request wasn't quite right: {exc}") from exc
+            raise ToolError(_bad_request(exc)) from exc
 
         session = app.state.session_factory()
         try:
@@ -1441,7 +1465,7 @@ def register(mcp: FastMCP, app: Any) -> None:
             try:
                 payload = LearningsBulkPayload(ids=ids, action=action)
             except ValidationError as exc:
-                raise ToolError(f"that request wasn't quite right: {exc}") from exc
+                raise ToolError(_bad_request(exc)) from exc
             response = await _off_loop(
                 bulk_decide_learnings_endpoint,
                 name=agent,
@@ -1460,3 +1484,147 @@ def register(mcp: FastMCP, app: Any) -> None:
             session.close()
 
         return {"results": body.get("results", [])}
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @audited("kobo_set_agent_secrets")
+    async def kobo_set_agent_secrets(
+        ctx: Context,
+        agent: str,
+        # `dict[str, Any]`, not `dict[str, str]`, and this is a safety
+        # decision rather than a loose one. The SDK validates a tool's
+        # arguments against its own schema BEFORE this function runs, and
+        # pydantic renders the offending input in that error
+        # (`input_value=...`) -- which for this argument is a credential.
+        # Declared wide, the room's own `AgentEnvWrite` is the validator,
+        # `_bad_request` is the message, and nothing outside this module
+        # ever holds the value. The docstring is what tells a client these
+        # are strings.
+        secret_values: dict[str, Any] | None = None,
+        remove: list[str] | None = None,
+    ) -> dict:
+        """Add, change or remove `agent`'s secrets in one call -- the same
+        write the room's own Secrets and environment panel makes.
+
+        `secret_values` is a name-to-value mapping of STRINGS to store,
+        `remove` a list of names to take away; a name in both is refused. Names are upper snake
+        case (`[A-Z][A-Z0-9_]*`), 64 characters at most, 100 keys at most,
+        and the names the room fills in itself are refused with "the room
+        sets this one" -- the colleague pass, the Slack values, and the
+        two model-access variables.
+
+        A VALUE passed here is stored and never readable again, by you or
+        by anyone else in the room: kobo_list_agent_secrets answers names
+        only, and there is no reveal. Removing the last secret an agent
+        has is refused; destroy the agent to remove them all.
+
+        The first secret an agent ever gets also adds a line to its own
+        files so the running agent can read it. `wiring` says what
+        happened: "committed" for an agent the room composed,
+        "pull_request" (with `pull_request`, a link to merge) for one
+        whose repository belongs to its team, "unchanged" when the line
+        was already there. Changes reach the agent the next time it
+        starts.
+
+        Marked destructive because `remove` takes a credential away from a
+        running agent. You must own `agent` or be a room operator, and
+        `agent` must be READY.
+        """
+        from kobo_api.main import AgentEnvWrite
+
+        # The argument is named `secret_values`, not `set`, because
+        # `kobo_api.mcp.audit.SENSITIVE_KEYS` redacts a kwarg by the words
+        # in its NAME: a mapping called `set` would land in the audit row
+        # whole, values and all, which is the one thing this whole feature
+        # promises never happens.
+        body = await _write_agent_env(
+            ctx, set_secrets_endpoint, agent, secret_values, remove, AgentEnvWrite
+        )
+        return {
+            "secrets": body.get("keys", []),
+            "delivered_as": body.get("secret_name"),
+            "wiring": body.get("wiring"),
+            "pull_request": body.get("pull_request"),
+        }
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @audited("kobo_set_agent_env")
+    async def kobo_set_agent_env(
+        ctx: Context,
+        agent: str,
+        # Wide for the same reason as the secrets tool above, and kept the
+        # same so the two cannot drift: the room's own model is the
+        # validator and the room's own sentence is the refusal.
+        variables: dict[str, Any] | None = None,
+        remove: list[str] | None = None,
+    ) -> dict:
+        """Add, change or remove `agent`'s plain environment variables --
+        the other half of the room's Secrets and environment panel.
+
+        `variables` is a name-to-value mapping of STRINGS and `remove` a
+        list of names to take away, the same shape and the same name rules
+        as kobo_set_agent_secrets. The difference is where these are kept and
+        who can read them: these live in the agent's own files, in the
+        open, so use them for values that are not sensitive and use
+        kobo_set_agent_secrets for anything else.
+
+        `env` comes back as what the agent's files now hold, and `wiring`
+        says how the change got there: "committed", "pull_request" (with a
+        link to merge), or "unchanged". Changes reach the agent the next
+        time it starts.
+
+        Marked destructive because `remove` takes a variable away from a
+        running agent. You must own `agent` or be a room operator, and
+        `agent` must be READY.
+        """
+        from kobo_api.main import AgentEnvWrite
+
+        # Named plainly, unlike the secrets tool's own argument above:
+        # these values are the ones that are NOT sensitive, so an audit row
+        # that records them is a more useful row rather than a leak.
+        body = await _write_agent_env(
+            ctx, set_env_endpoint, agent, variables, remove, AgentEnvWrite
+        )
+        return {
+            "env": body.get("env", {}),
+            "wiring": body.get("wiring"),
+            "pull_request": body.get("pull_request"),
+        }
+
+    async def _write_agent_env(
+        ctx: Context,
+        endpoint: Callable[..., Any],
+        agent: str,
+        values: dict[str, Any] | None,
+        remove: list[str] | None,
+        payload_model: Any,
+    ) -> dict:
+        """The half the two tools above share: build the route's own body
+        model, call the route, and translate its status.
+
+        One deviation from table (A), and it is about meaning rather than
+        number. A 503 from these two routes is not an outage: it is a room
+        with no secrets platform configured, which is a standing fact the
+        caller can act on (use environment variables instead) and which
+        `_DID_NOT_ANSWER`'s "try again" would misdescribe. So that one
+        status surfaces the route's own sentence; every other 5xx still
+        gets the house phrasing, and 403/404 still collapse to "agent not
+        found".
+        """
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            try:
+                payload = payload_model(set=values or {}, remove=list(remove or []))
+            except ValidationError as exc:
+                raise ToolError(_bad_request(exc)) from exc
+            response = await _off_loop(
+                endpoint, name=agent, payload=payload, request=req, session=session
+            )
+        finally:
+            session.close()
+
+        if response.status_code == 503:
+            raise ToolError(
+                str(_parse(response).get("error", "that request could not be completed"))
+            )
+        return _agent_route_result(response)

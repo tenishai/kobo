@@ -1445,9 +1445,7 @@ def _write_service_account(k8s_base: Path, agent, config) -> None:
     )
 
 
-def _set_service_account_and_model_env(
-    data: dict, agent, config, *, merge_env: bool
-) -> None:
+def _set_service_account_and_model_env(data: dict, agent, config) -> None:
     """The half of gojira.yaml both kinds of agent need: which service
     account the pod runs as, and the two model env vars its client reads.
 
@@ -1455,12 +1453,20 @@ def _set_service_account_and_model_env(
     particular -- see the note below on why that must resolve through
     `vertex_location_for` rather than reading `config.vertex_location`.
 
-    `merge_env` is the one thing they differ on, and it is a question of
-    who owns the file. The room writes a composed agent's gojira.yaml
-    wholesale, so assigning over `env` there loses nothing. A connected
-    agent's gojira.yaml is its team's, and whatever is in `env` is what
-    their own code runs on -- so those keys are kept and only the two model
-    keys are set.
+    `env` is MERGED, for both kinds, and that changed with the Secrets and
+    environment panel (design 2026-09-22). It used to be assigned outright
+    for a composed agent, on the reasoning that the room writes that file
+    wholesale so there was nothing to lose. There is now: an owner's own
+    environment variables live in exactly this mapping, and any later
+    reprovision -- a retry, a runtime re-pin, a resumed pipeline -- ran
+    this function again and wiped them. The two model keys still win on
+    their own names, because those are the room's to set and an owner is
+    refused them at the panel (`kobo_api.agent_env.RESERVED_KEYS`).
+
+    A non-mapping `env` is not something the deploy platform could ever
+    have run, so there is nothing there to preserve; it is replaced, and
+    logged rather than raised because the wiring is still correct and the
+    file was already broken before the room read it.
     """
     data["service_account"] = f"agent-{agent.name}"
     model_env = {
@@ -1473,16 +1479,9 @@ def _set_service_account_and_model_env(
         # would still 404 against the org's regional default at runtime.
         "VERTEXAI_LOCATION": vertex_location_for(config, agent.model_id),
     }
-    if not merge_env:
-        data["env"] = model_env
-        return
 
     existing = data.get("env")
     if existing is not None and not isinstance(existing, dict):
-        # A non-mapping `env` is not something the deploy platform could
-        # ever have run, so there is nothing here to preserve. Logged
-        # rather than raised: the wiring is still correct, and the file was
-        # already broken before the room read it.
         log.warning(
             "gojira.yaml for %s has a non-mapping env; replacing it", agent.name
         )
@@ -1508,7 +1507,7 @@ def _update_gojira_yaml(gojira_yaml_path, agent, config) -> None:
     this feature existed.
     """
     data = yaml.safe_load(gojira_yaml_path.read_text()) or {}
-    _set_service_account_and_model_env(data, agent, config, merge_env=False)
+    _set_service_account_and_model_env(data, agent, config)
     data["data_mount"] = {
         "pvc": f"agent-{agent.name}-techne",
         "path": "/techne",
@@ -1838,7 +1837,7 @@ def _update_connected_gojira_yaml(gojira_yaml_path: Path, agent, config) -> None
     plainly.
     """
     data = yaml.safe_load(gojira_yaml_path.read_text()) or {}
-    _set_service_account_and_model_env(data, agent, config, merge_env=True)
+    _set_service_account_and_model_env(data, agent, config)
     for secret_name in agent.secret_names or []:
         _append_secrets_from(data, secret_name)
     gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))

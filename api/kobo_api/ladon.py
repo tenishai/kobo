@@ -45,6 +45,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Protocol
 
 import httpx
@@ -88,21 +89,53 @@ _REQUEST_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 _REFRESH_INTERVAL = "1m"
 
 
+@dataclass(frozen=True)
+class SecretKeys:
+    """What one application path holds, by NAME. Never a value, masked or
+    otherwise -- the lane's read route does not return one and this room
+    does not ask for one (see `LadonClient.list_keys`).
+
+    `exists` is false for a path with nothing at it, which is the ordinary
+    state of an agent whose owner has never added a secret. `updated_at` is
+    the path's own last-write timestamp, one per PATH rather than one per
+    key: KV versions the whole document, so there is no per-key date to
+    report and this room does not invent one.
+    """
+
+    keys: list[str]
+    updated_at: str | None
+    exists: bool
+
+
 class LadonClient(Protocol):
     """What the room needs from the secrets platform, and nothing more.
 
-    Deliberately two calls, not a general-purpose secrets API: the room
-    writes a secret it just produced, and makes sure the agent's namespace
-    carries it. It never reads a secret back, never lists, never deletes --
-    there is no code path in this room that needs a value it did not just
-    mint or just receive from a human.
+    Five calls, not a general-purpose secrets API. The room writes a secret
+    it just produced, makes sure the agent's namespace carries it, asks
+    which keys a path holds BY NAME, and -- when an agent is destroyed --
+    takes the cluster object and then the path itself away. It never reads
+    a secret VALUE back: there is no code path in this room that needs a
+    value it did not just mint or just receive from a human, and the lane's
+    own read route would not answer with one anyway.
     """
 
-    def put_secret(self, acting_email: str, path: str, values: dict[str, str]) -> None:
+    def put_secret(
+        self,
+        acting_email: str,
+        path: str,
+        values: dict[str, str],
+        remove: list[str] | None = None,
+    ) -> None:
         """Store `values` at `path` (`apps/<agent>/<purpose>`) on the human
         `acting_email`'s behalf. Existing keys at that path that are not
-        named here are left alone; the room never removes keys through this
-        lane.
+        named here are left alone.
+
+        `remove` names keys to take away in the same call, which only the
+        Secrets panel ever passes: the room's own two deliveries (the
+        colleague pass, the Slack tokens) add and replace and never remove.
+        A key named on both sides is refused by the platform, which is why
+        `kobo_api.agent_env.write_refusal` catches that first and answers
+        the person instead.
 
         Raises `ClientError` carrying the platform's own error sentence.
         The values are never logged and never reach a raised message.
@@ -120,6 +153,55 @@ class LadonClient(Protocol):
         Idempotent by the platform's own contract: a second call for an
         already-current target reports exactly that and changes nothing.
         Raises `ClientError` the same way `put_secret` does.
+        """
+        ...
+
+    def list_keys(self, acting_email: str, path: str) -> SecretKeys:
+        """Which keys `path` holds, by name, on `acting_email`'s behalf.
+
+        The one read this room makes, and the lane's read route is narrower
+        than the human one beside it: names, a version and a timestamp, and
+        no value even masked. A path with nothing at it is an EMPTY answer
+        (`exists` false), not a failure -- an agent whose owner has never
+        added a secret is the ordinary case.
+
+        Raises `ClientError` for every other refusal, so "I could not look"
+        is never mistaken for "there is nothing there".
+        """
+        ...
+
+    def delete_secret(self, acting_email: str, path: str) -> None:
+        """Remove `path` and every version of it, on `acting_email`'s
+        behalf. The destroy half: an agent that goes away otherwise leaves
+        its stored values behind, still readable and still valid.
+
+        Idempotent by the lane's own contract -- deleting a path that is
+        already gone is a success, so a retried destroy does not fail on
+        work a prior attempt finished. Raises `ClientError` on a refusal.
+        """
+        ...
+
+    def unsync(self, acting_email: str, app: str, k8s_namespace: str, name: str) -> None:
+        """Remove the ExternalSecret `name` in `k8s_namespace`, and with it
+        the Kubernetes Secret it owns.
+
+        Run BEFORE `delete_secret` for the same path: an object left behind
+        over a deleted path is one the cluster keeps reconciling and
+        failing. Idempotent the same way -- an object already gone is a
+        success.
+
+        A Kubernetes namespace that no longer exists is one of those
+        already-gone answers, not an error: the lane reads the object,
+        finds nothing (a namespace that is gone holds no ExternalSecret),
+        and reports `state: "absent"` with a 200. Nothing in the room
+        should depend on that, because the destroy ledger removes secrets
+        BEFORE it deletes the namespace -- but a resumed run, or a
+        namespace an operator removed by hand, must not wedge a teardown,
+        and it does not.
+
+        Raises `ClientError` on a refusal, and also when the lane reports
+        that a DIFFERENT object now stands at the name (`recreated`): what
+        this call removed is gone, and what is there now is not it.
         """
         ...
 
@@ -244,7 +326,13 @@ class HttpxLadonClient:
         self._token_provider = token_provider or MetadataIdentityTokenProvider(audience)
         self._client = http_client or httpx.Client(timeout=_REQUEST_TIMEOUT)
 
-    def put_secret(self, acting_email: str, path: str, values: dict[str, str]) -> None:
+    def put_secret(
+        self,
+        acting_email: str,
+        path: str,
+        values: dict[str, str],
+        remove: list[str] | None = None,
+    ) -> None:
         self._post(
             "/api/service/secrets",
             {
@@ -252,11 +340,11 @@ class HttpxLadonClient:
                 "namespace": self._namespace,
                 "path": path,
                 "values": dict(values),
-                # The room only ever adds keys through this lane. An empty
-                # list is sent explicitly rather than omitted so the merge
-                # the platform performs is stated by the request, not
-                # inferred from what it is missing.
-                "remove_keys": [],
+                # Empty for the room's own two deliveries, which only ever
+                # add keys. Sent explicitly rather than omitted either way,
+                # so the merge the platform performs is stated by the
+                # request rather than inferred from what it is missing.
+                "remove_keys": list(remove or []),
                 "apply": True,
             },
             f"could not store the secret at {path}",
@@ -304,23 +392,115 @@ class HttpxLadonClient:
             # Reading the status alone would mark this delivered.
             raise ClientError(f"{what}: the cluster did not accept {', '.join(blocked)}")
 
-    def _post(self, route: str, body: dict, what: str) -> object | None:
-        """POST `body`, raise `ClientError` on anything but a 2xx, and hand
-        back the decoded 2xx body (None when it is not JSON).
+    def list_keys(self, acting_email: str, path: str) -> SecretKeys:
+        resp = self._send(
+            "GET",
+            "/api/service/secrets",
+            what=f"could not read which keys are stored at {path}",
+            params={
+                "acting_email": acting_email,
+                "namespace": self._namespace,
+                "path": path,
+            },
+            # A path with nothing at it is the ordinary state of an agent
+            # nobody has added a secret to yet, so the lane's 404 is an
+            # empty answer here rather than a failure. Every OTHER refusal
+            # still raises: "I could not look" and "there is nothing there"
+            # are different answers, and a caller acting on the wrong one
+            # would report a live secret as gone.
+            absent_status=404,
+        )
+        if resp is None:
+            return SecretKeys(keys=[], updated_at=None, exists=False)
+        payload = _decoded(resp)
+        keys = payload.get("keys") if isinstance(payload, dict) else None
+        updated_at = payload.get("updated_at") if isinstance(payload, dict) else None
+        return SecretKeys(
+            # Sorted here rather than trusted from the wire, so two reads of
+            # the same path render the same list whatever order arrived.
+            # Only entries that are already strings: by the lane's contract
+            # these are key NAMES, and anything else is not this room's to
+            # repeat (the same discipline `_blocked_targets` holds).
+            keys=sorted(k for k in (keys or []) if isinstance(k, str)),
+            updated_at=updated_at if isinstance(updated_at, str) else None,
+            exists=True,
+        )
 
-        `body` carries secret values, so it is never logged and never part
+    def delete_secret(self, acting_email: str, path: str) -> None:
+        self._send(
+            "DELETE",
+            "/api/service/secrets",
+            what=f"could not remove the stored secrets at {path}",
+            json={
+                "acting_email": acting_email,
+                "namespace": self._namespace,
+                "path": path,
+                "apply": True,
+            },
+        )
+
+    def unsync(self, acting_email: str, app: str, k8s_namespace: str, name: str) -> None:
+        what = f"could not remove the delivered secret {name}"
+        resp = self._send(
+            "DELETE",
+            "/api/service/sync",
+            what=what,
+            json={
+                "acting_email": acting_email,
+                "namespace": self._namespace,
+                "app": app,
+                "k8s_namespace": k8s_namespace,
+                # The body names the object and nothing else: no path, no
+                # store, no refresh interval. A removal should not depend on
+                # values that may have moved since the object was created.
+                "name": name,
+                "apply": True,
+            },
+        )
+        payload = _decoded(resp)
+        if isinstance(payload, dict) and payload.get("recreated") is True:
+            # A 200 over a name that is live again: what this call deleted
+            # is gone, and what stands there now is not it. Reading
+            # `deleted` and stopping would leave an ExternalSecret behind
+            # that nothing in this room knows about.
+            raise ClientError(f"{what}: something else now stands at {name}")
+
+    def _post(self, route: str, body: dict, what: str) -> object | None:
+        """POST `body` and hand back the decoded 2xx body (None when it is
+        not JSON) -- the two write calls above read a report off it. See
+        `_send` for everything else this shares with the other three."""
+        return _decoded(self._send("POST", route, what=what, json=body))
+
+    def _send(
+        self,
+        method: str,
+        route: str,
+        *,
+        what: str,
+        json: dict | None = None,
+        params: dict | None = None,
+        absent_status: int | None = None,
+    ) -> httpx.Response | None:
+        """One call on the lane: raise `ClientError` on anything but a 2xx
+        (and on `absent_status`, hand back None instead), else the response.
+
+        `json` may carry secret values, so it is never logged and never part
         of a raised message -- which is also why a transport failure is
         re-raised unchained (`from None`): a chained cause prints the
-        `httpx.Request` it belongs to in any traceback.
+        `httpx.Request` it belongs to in any traceback. `params` never
+        carries one: the lane has no route that takes a value in a query
+        string, and this room would not send one there if it did.
 
-        A caller may read NAMES off the returned report (see
-        `_blocked_targets`) and nothing else: the lane never returns a
-        secret value, and this room never asks it for one.
+        A caller may read NAMES and verbs off the answer (see
+        `_blocked_targets`, `list_keys`) and nothing else: the lane never
+        returns a secret value, and this room never asks it for one.
         """
         try:
-            resp = self._client.post(
+            resp = self._client.request(
+                method,
                 f"{self._base_url}{route}",
-                json=body,
+                json=json,
+                params=params,
                 headers={"Authorization": f"Bearer {self._token_provider()}"},
             )
         except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
@@ -333,11 +513,26 @@ class HttpxLadonClient:
             raise ClientError(f"{what}: the secrets platform did not answer ({exc})") from None
 
         if resp.status_code // 100 == 2:
-            try:
-                return resp.json()
-            except ValueError:
-                return None
+            return resp
+        if absent_status is not None and resp.status_code == absent_status:
+            return None
         raise ClientError(f"{what}: {_server_sentence(resp)}")
+
+
+def _decoded(resp: httpx.Response | None) -> object | None:
+    """A lane answer's JSON body, or None when there isn't one.
+
+    Separate from `_send` so a response this room never reads costs nothing
+    to decode, and so one place holds the rule that a body which is not
+    JSON is simply absent rather than an error: the lane's contract is the
+    status code plus the fields named in it, and nothing here guesses.
+    """
+    if resp is None:
+        return None
+    try:
+        return resp.json()
+    except ValueError:
+        return None
 
 
 def _blocked_targets(report: object) -> list[str]:

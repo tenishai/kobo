@@ -622,7 +622,7 @@ def test_destroy_launch_failure_returns_503_and_a_later_destroy_still_succeeds(
     client = _make_client(session_factory, config)
     _seed_agent(session_factory, config)
 
-    def _raising_run_destroy(session_factory, agent_id, clients, config):
+    def _raising_run_destroy(session_factory, agent_id, clients, config, **kwargs):
         raise RuntimeError("no more threads")
 
     monkeypatch.setattr(main_module, "run_destroy", _raising_run_destroy)

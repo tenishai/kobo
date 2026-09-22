@@ -18,6 +18,8 @@ from pathlib import Path
 import yaml
 
 from kobo_api.clients import (
+    COMMIT_AUTHOR_EMAIL,
+    BranchComparison,
     CabalError,
     ChatMessage,
     ClientError,
@@ -28,6 +30,7 @@ from kobo_api.clients import (
     StorageNotFound,
     gsa_email,
 )
+from kobo_api.ladon import SecretKeys
 
 # --- Generated-scaffolding fixture for FakeGitHub.clone ------------------------
 #
@@ -481,6 +484,8 @@ class FakeGitHub:
         extra_clone_files: dict[str, str] | None = None,
         repo_access_error: str | None = None,
         repo_files: dict[str, str] | None = None,
+        branch_files: dict[str, dict[str, str]] | None = None,
+        comparisons: dict[str, BranchComparison] | None = None,
         root_entries: list[str] | None = None,
         can_write: bool = True,
         default_branch: str = "main",
@@ -503,10 +508,18 @@ class FakeGitHub:
         self._pushed_content: dict[str, dict[str, bytes]] = {}
         self._pr_url = pr_url
         self.open_pr_calls: list[dict] = []
+        self.deleted_branches: list[tuple[str, str]] = []
+        self.close_pr_calls: list[tuple[str, str, str]] = []
+        self._comparisons = dict(comparisons or {})
         self._open_prs: dict[str, str] = dict(open_prs) if open_prs else {}
         self._existing_branches: set[str] = (
             set(existing_branches) if existing_branches else set()
         )
+        # A pull request open from a branch means that branch is there.
+        # Seeded rather than left to each caller so a test that models an
+        # open request never also has to remember to model its head, and
+        # so `branch_exists`/`compare` answer what the repository would.
+        self._existing_branches.update(self._open_prs)
         self.merge_pr_calls: list[tuple[str, str]] = []
         self._merge_pr_results = (
             list(merge_pr_results) if merge_pr_results else [True]
@@ -559,6 +572,11 @@ class FakeGitHub:
         self._run_index_by_sha: dict[str, int] = {}
         self._run_id_to_sha: dict[int, str] = {}
         self._repo_access_error = repo_access_error
+        self._branch_files = (
+            {branch: dict(files) for branch, files in branch_files.items()}
+            if branch_files
+            else {}
+        )
         self._repo_files = (
             dict(repo_files)
             if repo_files is not None
@@ -611,12 +629,19 @@ class FakeGitHub:
             full_name=full_name,
         )
 
-    def read_file(self, repo: str, path: str) -> str | None:
+    def read_file(self, repo: str, path: str, ref: str | None = None) -> str | None:
         """Whatever `repo_files` holds at `path`, None otherwise -- the same
         "nothing to read" the real client answers for a missing, oversized
         or non-file path. Not keyed by repo: every test here scans one.
+
+        `ref` reads from `branch_files` instead, a `{branch: {path: text}}`
+        map -- what a PROPOSED change contains, as opposed to what is
+        merged. A branch with no entry there answers None for every path,
+        which is the honest stand-in for a branch that does not exist.
         """
-        self.calls.append(f"read_file:{repo}:{path}")
+        self.calls.append(f"read_file:{repo}:{path}" + (f"@{ref}" if ref else ""))
+        if ref is not None:
+            return self._branch_files.get(ref, {}).get(path)
         return self._repo_files.get(path)
 
     def list_root(self, repo: str) -> list[str]:
@@ -855,6 +880,38 @@ class FakeGitHub:
         self.calls.append(f"find_pr:{repo}:{branch}")
         return self._open_prs.get(f"{repo}#{branch}")
 
+    def compare(self, repo: str, base: str, head: str) -> BranchComparison:
+        """Whatever `comparisons` holds for `head`, else a comparison that
+        touches `gojira.yaml` alone under the room's own commit identity --
+        the wired happy path, so a test only configures this when it is
+        modelling a branch somebody ELSE made.
+
+        A branch named in neither `comparisons` nor `existing_branches`
+        answers `found=False`, the real client's "either ref is gone".
+        """
+        self.calls.append(f"compare:{repo}:{base}...{head}")
+        if head in self._comparisons:
+            return self._comparisons[head]
+        if f"{repo}#{head}" not in self._existing_branches:
+            return BranchComparison(found=False, files=(), authors=())
+        return BranchComparison(
+            found=True, files=("gojira.yaml",), authors=(COMMIT_AUTHOR_EMAIL,)
+        )
+
+    def delete_branch(self, repo: str, branch: str) -> bool:
+        """Forget `repo#branch` (and anything `branch_files` held for it),
+        recording the call. True when it was there, False when it was not
+        -- the real client's already-gone answer.
+        """
+        self.calls.append(f"delete_branch:{repo}:{branch}")
+        self.deleted_branches.append((repo, branch))
+        self._branch_files.pop(branch, None)
+        key = f"{repo}#{branch}"
+        if key in self._existing_branches:
+            self._existing_branches.discard(key)
+            return True
+        return False
+
     def branch_exists(self, repo: str, branch: str) -> bool:
         """True for any `repo#branch` named in `existing_branches`. Default
         empty: a repository with no leftover branches is the wired happy
@@ -866,6 +923,16 @@ class FakeGitHub:
         """
         self.calls.append(f"branch_exists:{repo}:{branch}")
         return f"{repo}#{branch}" in self._existing_branches
+
+    def close_pr(self, repo: str, pr_url: str, comment: str) -> None:
+        """Records `(repo, pr_url, comment)` into `close_pr_calls` and
+        forgets the pull request, so a later `find_pr` for the branch it
+        was open on answers None -- what the real repository would say."""
+        self.calls.append(f"close_pr:{repo}:{pr_url}")
+        self.close_pr_calls.append((repo, pr_url, comment))
+        for key, url in list(self._open_prs.items()):
+            if key.startswith(f"{repo}#") and url == pr_url:
+                del self._open_prs[key]
 
     def merge_pr(self, repo: str, pr_url: str) -> bool:
         """Records `(repo, pr_url)` into `merge_pr_calls` and replays
@@ -1056,6 +1123,7 @@ class FakeGojira:
         self._apps: dict[int, dict] = {}
         self._next_id = 1
         self.reprovision_calls: list[int] = []
+        self.reprovision_error: str | None = None
         # One dict per `create_app`, every keyword it was given -- the seam
         # for asserting which workload class an agent was onboarded under,
         # without a test having to spy on the method itself.
@@ -1111,6 +1179,11 @@ class FakeGojira:
 
     def reprovision(self, app_id: int) -> None:
         self.calls.append(f"reprovision:{app_id}")
+        # Set by a test to model a platform that took the push but will
+        # not regenerate: the one failure whose right sentence depends on
+        # whether anything was actually pushed first.
+        if getattr(self, "reprovision_error", None):
+            raise ClientError(self.reprovision_error)
         self.reprovision_calls.append(app_id)
         app = self._apps[app_id]
         app["status"] = "pending"
@@ -1671,10 +1744,10 @@ class FakeCabal:
 
 
 class FakeLadon:
-    """Records every `put_secret`/`ensure_synced` call the secrets
-    platform's machine lane would have received (`.puts`/`.syncs`, each in
-    call order) -- no real platform, no metadata server, no cluster
-    involved (kobo_api.ladon).
+    """Records every call the secrets platform's machine lane would have
+    received (`.puts`/`.syncs`/`.reads`/`.deletes`/`.unsyncs`, each in call
+    order) -- no real platform, no metadata server, no cluster involved
+    (kobo_api.ladon).
 
     `.puts` entries are `(acting_email, path, values)` and `.syncs` entries
     are `(acting_email, app, path, k8s_namespace, name)`. The VALUES are
@@ -1683,23 +1756,75 @@ class FakeLadon:
     client never lets a value back out, which is exactly why the assertion
     has to live in the fake instead.
 
-    `put_error`/`sync_error`, when set, make the matching method raise
-    `ClientError(that message)` instead of recording -- the seam for
-    exercising a caller's failure handling (a delivery must fail its step
-    the way a direct Secret write failure does, never fall back to writing
-    the Secret itself) without a real backend.
+    `.reads` are the paths `list_keys` was asked about, `.removes` the
+    `(acting_email, path, keys)` half of each `put_secret` merge,
+    `.deletes` the paths `delete_secret` removed, and `.unsyncs` the
+    `(acting_email, app, k8s_namespace, name)` objects `unsync` took away.
+
+    This fake also STORES what it is given, rather than only recording it:
+    `put_secret` merges into a per-path dict (adding `values`, dropping
+    `remove`) and `delete_secret` takes the path away, so `list_keys`
+    answers with the names actually written and a route's read-after-write
+    reads like the real lane's would.
+
+    `missing_k8s_namespaces`, when given, names Kubernetes namespaces that
+    no longer exist. `unsync` against one of those is a plain SUCCESS that
+    records nothing, which is what the real lane answers: a namespace that
+    is gone holds no ExternalSecret, so the lane's own read finds nothing
+    and reports `state: "absent"` with a 200. Modelled here so a test can
+    prove a teardown does not wedge on a namespace somebody already
+    removed.
+
+    `put_error`/`sync_error`/`read_error`/`delete_error`/`unsync_error`,
+    when set, make the matching method raise `ClientError(that message)`
+    instead of recording -- the seam for exercising a caller's failure
+    handling (a delivery must fail its step the way a direct Secret write
+    failure does, never fall back to writing the Secret itself) without a
+    real backend.
     """
 
-    def __init__(self, *, put_error: str | None = None, sync_error: str | None = None):
+    def __init__(
+        self,
+        *,
+        put_error: str | None = None,
+        sync_error: str | None = None,
+        read_error: str | None = None,
+        delete_error: str | None = None,
+        unsync_error: str | None = None,
+        missing_k8s_namespaces: set[str] | None = None,
+        updated_at: str | None = "2026-09-22T10:00:00.000000Z",
+    ):
         self._put_error = put_error
         self._sync_error = sync_error
+        self._read_error = read_error
+        self._delete_error = delete_error
+        self._unsync_error = unsync_error
+        self._missing_k8s_namespaces = set(missing_k8s_namespaces or ())
+        self._updated_at = updated_at
         self.puts: list[tuple[str, str, dict[str, str]]] = []
+        self.removes: list[tuple[str, str, list[str]]] = []
         self.syncs: list[tuple[str, str, str, str, str]] = []
+        self.reads: list[tuple[str, str]] = []
+        self.deletes: list[tuple[str, str]] = []
+        self.unsyncs: list[tuple[str, str, str, str]] = []
+        self.absent_unsyncs: list[tuple[str, str, str, str]] = []
+        self.stored: dict[str, dict[str, str]] = {}
 
-    def put_secret(self, acting_email: str, path: str, values: dict[str, str]) -> None:
+    def put_secret(
+        self,
+        acting_email: str,
+        path: str,
+        values: dict[str, str],
+        remove: list[str] | None = None,
+    ) -> None:
         if self._put_error is not None:
             raise ClientError(self._put_error)
         self.puts.append((acting_email, path, dict(values)))
+        self.removes.append((acting_email, path, list(remove or [])))
+        held = self.stored.setdefault(path, {})
+        held.update(values)
+        for key in remove or []:
+            held.pop(key, None)
 
     def ensure_synced(
         self, acting_email: str, app: str, path: str, k8s_namespace: str, name: str
@@ -1707,6 +1832,36 @@ class FakeLadon:
         if self._sync_error is not None:
             raise ClientError(self._sync_error)
         self.syncs.append((acting_email, app, path, k8s_namespace, name))
+
+    def list_keys(self, acting_email: str, path: str) -> SecretKeys:
+        if self._read_error is not None:
+            raise ClientError(self._read_error)
+        self.reads.append((acting_email, path))
+        held = self.stored.get(path)
+        if held is None:
+            return SecretKeys(keys=[], updated_at=None, exists=False)
+        return SecretKeys(keys=sorted(held), updated_at=self._updated_at, exists=True)
+
+    def delete_secret(self, acting_email: str, path: str) -> None:
+        if self._delete_error is not None:
+            raise ClientError(self._delete_error)
+        self.deletes.append((acting_email, path))
+        # Gone, not emptied: the real lane removes the path's metadata and
+        # every version, so a later read says "there is nothing here"
+        # rather than "here is an empty document".
+        self.stored.pop(path, None)
+
+    def unsync(self, acting_email: str, app: str, k8s_namespace: str, name: str) -> None:
+        if k8s_namespace in self._missing_k8s_namespaces:
+            # A namespace that is gone holds no ExternalSecret, so the real
+            # lane's read finds nothing and answers `state: "absent"` with
+            # a 200. Recorded as `absent_unsyncs` rather than `unsyncs`, so
+            # a test can tell "nothing to remove" from "removed".
+            self.absent_unsyncs.append((acting_email, app, k8s_namespace, name))
+            return
+        if self._unsync_error is not None:
+            raise ClientError(self._unsync_error)
+        self.unsyncs.append((acting_email, app, k8s_namespace, name))
 
 
 class FakePeopleSearch:

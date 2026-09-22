@@ -19,9 +19,20 @@ describe("primaryTabs", () => {
 });
 
 describe("advancedTabs", () => {
-  it("is the four grow-it sections in order", () => {
-    expect(advancedTabs()).toEqual(["learnings", "memory", "skills", "tooling"]);
-    expect(ADVANCED_TABS).toEqual(advancedTabs());
+  it("is the four bundle-backed grow-it sections, then Secrets", () => {
+    expect(advancedTabs()).toEqual([
+      "learnings",
+      "memory",
+      "skills",
+      "tooling",
+      "secrets",
+    ]);
+    // ADVANCED_TABS stays the bundle-backed four. It no longer decides
+    // group membership -- the page asks `advancedTabs(kind)` for that,
+    // since the group now depends on what the agent IS -- so this is the
+    // list of tabs that read the bundle the room composed, and nothing
+    // else. Secrets is in the group without being in it.
+    expect(ADVANCED_TABS).toEqual(["learnings", "memory", "skills", "tooling"]);
   });
 });
 
@@ -40,8 +51,22 @@ describe("the tab model by kind (connected-agents design 2026-09-21)", () => {
     expect(primaryTabs(true, "connected")).toEqual(["access"]);
   });
 
-  it("has no advanced tabs at all for a connected agent", () => {
-    expect(advancedTabs("connected")).toEqual([]);
+  it("keeps only Secrets in the advanced group for a connected agent", () => {
+    // Every other advanced tab reads the bundle the room composed. The
+    // environment an agent runs with is not a bundle question, and a
+    // team's own service has one exactly as much as an agent the room
+    // built (secrets and environment design 2026-09-22).
+    expect(advancedTabs("connected")).toEqual(["secrets"]);
+  });
+
+  it("puts Secrets last in the advanced group for a composed agent", () => {
+    expect(advancedTabs("composed")).toEqual([
+      "learnings",
+      "memory",
+      "skills",
+      "tooling",
+      "secrets",
+    ]);
   });
 
   it("treats an unknown kind as composed, rather than hiding everything", () => {
@@ -59,6 +84,7 @@ describe("TAB_LABELS", () => {
       skills: "Skills",
       tooling: "Tooling",
       slack: "Slack",
+      secrets: "Secrets",
       access: "Access",
     });
   });

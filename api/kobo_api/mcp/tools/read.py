@@ -398,6 +398,8 @@ def register(mcp: FastMCP, app: Any) -> None:
 
     search_personas_endpoint = _endpoint(app, "GET", "/api/personas/search")
     list_learnings_endpoint = _endpoint(app, "GET", "/api/agents/{name}/learnings")
+    list_secrets_endpoint = _endpoint(app, "GET", "/api/agents/{name}/secrets")
+    list_env_endpoint = _endpoint(app, "GET", "/api/agents/{name}/env")
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     @audited("kobo_list_personas")
@@ -463,3 +465,66 @@ def register(mcp: FastMCP, app: Any) -> None:
             }
         finally:
             session.close()
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @audited("kobo_list_agent_secrets")
+    async def kobo_list_agent_secrets(ctx: Context, agent: str) -> dict:
+        """List what `agent` runs with: the NAMES of its secrets, and its
+        plain environment variables with their values.
+
+        A secret's value is never returned here or anywhere else in the
+        room, not even masked -- it is written once and read only by the
+        running agent. What you get back is `secrets` (a list of key
+        names), `secrets_updated_at` (when that list last changed, one
+        date for the whole list), `secrets_available` (false in a room
+        with no secrets platform configured, where secrets cannot be kept
+        at all), and `env` (a name-to-value mapping of the variables that
+        are not sensitive).
+
+        You must own `agent` or be a room operator; an agent you cannot
+        see answers "agent not found", the same as kobo_get_agent.
+        """
+        email = get_user_email(ctx)
+        req = authz.room_request(app, email)
+        session = app.state.session_factory()
+        try:
+            secrets = await _off_loop(
+                list_secrets_endpoint, name=agent, request=req, session=session
+            )
+            _refuse_agent_route(secrets)
+            env = await _off_loop(
+                list_env_endpoint, name=agent, request=req, session=session
+            )
+            _refuse_agent_route(env)
+        finally:
+            session.close()
+
+        held = _parse(secrets)
+        return {
+            "secrets": held.get("keys", []),
+            "secrets_updated_at": held.get("updated_at"),
+            "secrets_available": bool(held.get("platform")),
+            "delivered_as": held.get("secret_name"),
+            "env": _parse(env).get("env", {}),
+        }
+
+    def _refuse_agent_route(response) -> None:
+        """Turn one agent-scoped route's non-2xx into the ToolError this
+        module's own table calls for.
+
+        403 and 404 collapse to one sentence on purpose (the
+        anti-enumeration rule `kobo_api.mcp.authz.NotFound` documents): an
+        agent somebody else owns must not be tellable from one that does
+        not exist. Everything else says what the route said, because it is
+        about the caller's own request, and a 5xx says nothing about the
+        cause at all.
+        """
+        if response.status_code // 100 == 2:
+            return
+        if response.status_code in (403, 404):
+            raise ToolError(_AGENT_NOT_FOUND)
+        if response.status_code >= 500:
+            raise ToolError("the room did not answer. Try again.")
+        raise ToolError(
+            str(_parse(response).get("error", "that request could not be completed"))
+        )

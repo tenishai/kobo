@@ -13,18 +13,46 @@ from collections.abc import Callable, Iterator
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from kobo_api.agent_env import (
+    MAX_ENV_VALUE_LENGTH,
+    MAX_KEYS,
+    PULL_REQUEST,
+    SECRETS_UNWIRE_PR_BODY,
+    SECRETS_UNWIRE_PR_TITLE,
+    SECRETS_WIRING_BRANCH,
+    SECRETS_WIRING_PR_BODY,
+    SECRETS_WIRING_PR_TITLE,
+    UNCHANGED,
+    WIRING_PR_ALREADY_OPEN,
+    DeployTriggerFailed,
+    RepoBusy,
+    RepoEdit,
+    apply_env,
+    edit_gojira_yaml,
+    env_secret_name,
+    has_env_secret,
+    merged_names,
+    parse_gojira_yaml,
+    read_default_gojira,
+    read_repo_env,
+    require_our_branch,
+    secret_path,
+    unwire_env_secret,
+    wire_env_secret,
+    write_refusal,
+)
 from kobo_api.archetypes import (
     ARCHETYPE_TEAM_GUIDE,
     TEAM_GUIDE_TAG,
@@ -584,6 +612,29 @@ class SlackChannelsRequest(BaseModel):
     channels: list[str]
 
 
+class AgentEnvWrite(BaseModel):
+    """PUT .../secrets and PUT .../env body: what to add or change, and
+    what to take away, in one call (design 2026-09-22).
+
+    A delta rather than a full replacement, unlike `SlackChannelsRequest`
+    above, and for a reason particular to this pair of lists: the secrets
+    list is never readable, so a caller cannot send back what it did not
+    change. Both routes take the same shape so the panel's two halves and
+    the two MCP tools behave identically.
+
+    Bounded at the model rather than the route because a body this shape
+    is the first thing a request carries: `MAX_KEYS` entries per side is
+    the same cap `kobo_api.agent_env.write_refusal` enforces against what
+    a write LEAVES BEHIND, and the value cap keeps a pasted file from
+    becoming a request nothing downstream expected.
+    """
+
+    set: dict[str, Annotated[str, Field(max_length=MAX_ENV_VALUE_LENGTH)]] = Field(
+        default_factory=dict, max_length=MAX_KEYS
+    )
+    remove: list[str] = Field(default_factory=list, max_length=MAX_KEYS)
+
+
 class CreatePersonaRequest(PersonaFields):
     """POST /api/personas body: every PersonaFields field plus the creating
     team (`TEAM_SLUG_RE` above, same slug shape as a persona/skill tag).
@@ -969,19 +1020,28 @@ def _fail_launch(
     return JSONResponse({"error": error_message}, status_code=503)
 
 
-def _validation_error_message(exc: RequestValidationError) -> str:
-    """A plain-language message for the app-wide `RequestValidationError`
-    handler (`create_app`, below) — the P2c final-review fix for FastAPI's
-    *default* 422 handler, which was still live (no handler had been
-    registered to override it). That default renders `exc.errors()`
-    verbatim, and Pydantic's own "missing field" error carries an `input`
-    key holding the ENTIRE submitted request body — so a `/slack/connect`
-    call missing `channel` but carrying `bot_token`/`app_token` echoed both
-    pasted Slack tokens straight back in the response body. This handler
-    replaces that default globally (every route, not just Slack's) with the
-    house `{"error": ...}` shape, built ONLY from each error's field
-    location (`loc`) — never from `input`, which must never appear here or
-    in anything this function returns.
+def _validation_error_message(exc: RequestValidationError | ValidationError) -> str:
+    """A plain-language message for a validation failure, built ONLY from
+    each error's field location.
+
+    Written for the app-wide `RequestValidationError` handler (`create_app`,
+    below) — the P2c final-review fix for FastAPI's *default* 422 handler,
+    which was still live (no handler had been registered to override it).
+    That default renders `exc.errors()` verbatim, and Pydantic's own
+    "missing field" error carries an `input` key holding the ENTIRE
+    submitted request body — so a `/slack/connect` call missing `channel`
+    but carrying `bot_token`/`app_token` echoed both pasted Slack tokens
+    straight back in the response body. This handler replaces that default
+    globally (every route, not just Slack's) with the house
+    `{"error": ...}` shape, built from `loc` and never from `input`, which
+    must never appear here or in anything this function returns.
+
+    It takes a bare pydantic `ValidationError` too, and that is not a
+    convenience: `str()` on one of those renders the offending INPUT the
+    same way, so every place that builds a model by hand and reports the
+    failure needs this rather than an f-string. The MCP write tools
+    (`kobo_api.mcp.tools.write`) are those places, and a tool argument can
+    be a secret value.
 
     Field names alone (e.g. "channel", "messages.0.role") are just the
     request's own declared shape, not secret, so naming them is safe and
@@ -1105,6 +1165,65 @@ CONNECTED_TEAM = "shared"
 REPO_OWNER_REFUSAL = (
     "confirm that you own this repository or have its owner's agreement"
 )
+
+# What the Secrets and environment routes say (design 2026-09-22). Written
+# out here, together, because the four of them have to sound like one
+# feature and because none of them may ever quote the platform's own text:
+# a failed write's body carried values, and a response that echoed what
+# came back could echo them too.
+#
+# A room with no secrets platform configured. A standing state rather than
+# an outage, so the write says so plainly instead of asking for a retry,
+# and the read answers 200 with `platform: false` so the panel can print
+# one sentence in place of the list.
+NO_SECRETS_PLATFORM = (
+    "this room has no secrets platform configured, so it cannot keep "
+    "secrets for an agent. Environment variables still work."
+)
+# The platform answered something other than a success. Which refusal it
+# was goes to the log, never to the person, for the reason above.
+SECRETS_PLATFORM_UNREACHABLE = "couldn't reach the secrets platform. Try again."
+SECRETS_WRITE_FAILED = "couldn't store that on the secrets platform. Try again."
+# The value is stored and the one-line repository edit that names it is
+# not. A retry of the same save fixes it: the write is a merge, and the
+# wiring is append-if-missing.
+SECRETS_WIRING_FAILED = (
+    "the secret is stored, but the agent's files could not be updated to "
+    "read it. Try saving again."
+)
+# The mirror, for the direction that deletes. Never "couldn't store that":
+# nothing was being stored, and a person told their secret failed to save
+# would go looking for one that is already gone.
+SECRETS_REMOVE_FAILED = (
+    "couldn't remove that from the secrets platform. Try saving again."
+)
+# The removal finished and only the deploy did not fire. Said apart from
+# the above because there is nothing left to remove and nothing to retry
+# except the deploy itself.
+SECRETS_REMOVED_NO_DEPLOY = (
+    "the secret is removed, but the agent could not be asked to redeploy. "
+    "It picks this up the next time it starts."
+)
+# What the room leaves on a pull request of its own that a later change
+# has made wrong to merge.
+WIRING_SUPERSEDED = (
+    "Superseded by a later change in the room: this agent's secrets have "
+    "changed since this was opened, so merging it would undo that. Closing "
+    "it; the room will open a fresh one if it needs to."
+)
+# The platform refused to regenerate. Two sentences, because a save that
+# DID change the agent's files is not the same news as one that changed
+# nothing: telling somebody "couldn't save" about a file that is saved
+# sends them to redo work already done.
+DEPLOY_TRIGGER_FAILED = (
+    "the change is saved, but the agent could not be asked to redeploy. It "
+    "picks this up the next time it starts."
+)
+DEPLOY_TRIGGER_ONLY = (
+    "the agent's files already said this, so nothing changed. Asking it to "
+    "redeploy did not work; try again in a moment."
+)
+AGENT_FILES_UNREACHABLE = "couldn't reach your agent's files. Try again."
 
 # What the room says when an operator asks to convert an agent it cannot
 # convert. Two sentences, because the two reasons are nothing alike: one is
@@ -5021,6 +5140,13 @@ def create_app(
                 agent_id,
                 app.state.clients,
                 cfg,
+                # Who pressed destroy. Only the stored-secrets step reads
+                # it, and it reads it because the secrets platform records
+                # every removal against a person: the operator doing this
+                # is that person, and the agent's creator (who may have
+                # left) is the fallback for a resume with no request
+                # behind it.
+                acting_email=getattr(request.state, "iap_email", None),
             )
         except Exception as exc:
             # Same wedge as create_agent's/retry_agent's launch guards: the
@@ -6564,6 +6690,570 @@ def create_app(
                 )
             body["sha"] = sha
         session.commit()
+        return JSONResponse(body)
+
+    # --- Secrets and environment (design 2026-09-22) --------------------------
+    #
+    # Two lists on one panel, for composed and connected agents alike. The
+    # SECRETS half is held on the secrets platform and delivered into the
+    # agent's namespace as the Kubernetes Secret `<agent>-env`; the
+    # ENVIRONMENT half lives in the agent's own `gojira.yaml`. Both reach
+    # the pod as environment variables, which is why one key rule covers
+    # both (kobo_api.agent_env).
+    #
+    # `_room_edits_this_agent_or_409` is deliberately NOT called on these
+    # four. That guard says the room never pushes to a connected repo's
+    # BRANCHES, and these routes honour it the way the connected pipeline's
+    # own wiring step does, by proposing a pull request instead of pushing
+    # (`kobo_api.agent_env.edit_gojira_yaml`). Refusing outright would take
+    # the panel away from exactly the agents most likely to need it: a
+    # team's own service with its own API keys.
+    #
+    # A VALUE never comes back out of any of these, and never goes into a
+    # log line either: a failure's own sentence can quote the request that
+    # produced it, so what reaches the log is the exception's CLASS and the
+    # agent's name, never `str(exc)`.
+
+    def _secrets_agent_or_error(
+        session: Session, request: Request, name: str
+    ) -> Agent | JSONResponse:
+        """The agent these four routes act on, or the response to return.
+
+        Ready, visible, and the caller's to administer -- the same pair of
+        gates every other write surface in this room holds, in the same
+        order, so a 404 still comes before a 403 for an agent the caller
+        cannot see.
+
+        Owner or operator, and deliberately NOT widened by a per-user
+        grant the way the learnings decide gate is. A grantee may talk to
+        an agent and teach it; handing them its credentials is a different
+        thing, and the narrower gate is the one to start from.
+        """
+        agent = _ready_agent_or_error(
+            session,
+            request,
+            name,
+            not_ready_message="this agent is not ready for environment changes yet",
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+        return _owner_or_operator_or_403(agent, request) or agent
+
+    def _secrets_acting_email(agent: Agent, request: Request) -> str | None:
+        """Who the secrets platform records this call against: the verified
+        caller, or the agent's creator when the room has no identity
+        perimeter in front of it.
+
+        The caller comes first on a READ as well as on a write, and that is
+        not a detail: the platform's audit answers "who asked about this
+        path", and the person who opened the panel is the honest answer to
+        that. `created_by` stands in only where there is no perimeter to
+        name anybody.
+        """
+        return getattr(request.state, "iap_email", None) or agent.created_by
+
+    def _lane_or_error(agent: Agent, request: Request):
+        """The secrets lane plus the person to record against, or a
+        `JSONResponse` saying why there is nothing to do.
+
+        Two standing states, not blips, so both are answered rather than
+        retried: a room with no secrets platform configured at all, and an
+        agent with nobody on record to write on behalf of.
+        """
+        ladon = app.state.clients.ladon
+        if ladon is None:
+            return JSONResponse({"error": NO_SECRETS_PLATFORM}, status_code=503)
+        email = _secrets_acting_email(agent, request)
+        refusal = acting_email_refusal(agent.name, email)
+        if refusal is not None:
+            return JSONResponse({"error": refusal}, status_code=409)
+        return ladon, email
+
+    def _lane_failed(what: str, agent: Agent, exc: Exception, message: str) -> JSONResponse:
+        """Log that a lane call failed, and answer the house sentence.
+
+        The exception's CLASS and the agent's name, never `str(exc)`: the
+        platform's own error text is a sentence the room did not write, and
+        a lane that echoed the request it refused would put a secret value
+        into this room's logs. Which call failed and against which agent is
+        what an operator acts on; the rest is on the platform's own side,
+        where its audit trail already has it.
+        """
+        log.warning(
+            "secrets %s failed for agent %s (%s)", what, agent.name, type(exc).__name__
+        )
+        return JSONResponse({"error": message}, status_code=502)
+
+    @app.get("/api/agents/{name}/secrets")
+    def list_agent_secrets(
+        name: str,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Which secrets this agent holds, BY NAME.
+
+        `platform` is false for a room with no secrets platform
+        configured -- the panel replaces its Secrets list with one sentence
+        rather than offering an add form that could not work. The room
+        answers 200 there rather than 503: "there is no place to keep
+        these" is an answer about the room, and a read that refuses would
+        make the panel look broken instead of unconfigured.
+
+        A read never answers 409 for having nobody to name, unlike a write:
+        the caller IS the acting person here (they passed the gate above,
+        so the room knows exactly who they are), and an agent whose creator
+        has left is still one its owner can open the panel on.
+
+        `updated_at` is one timestamp for the whole list, not one per key:
+        the lane versions a path as a whole, so there is no per-key date to
+        report and this room does not invent one.
+        """
+        agent = _secrets_agent_or_error(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        ladon = app.state.clients.ladon
+        email = _secrets_acting_email(agent, request)
+        if ladon is None or not (email or "").strip():
+            # No platform at all, or a platform and nobody it would accept
+            # as the asker. Neither is a refusal -- a person looking at
+            # their own agent can act on neither -- but they are DIFFERENT
+            # facts, and an empty list would say the same wrong thing for
+            # both. `platform` false means there is nowhere to keep
+            # secrets; `unreadable` means there is, and the room cannot
+            # ask on anybody's behalf right now. The panel has one line
+            # for each.
+            return JSONResponse(
+                {
+                    "keys": [],
+                    "updated_at": None,
+                    "platform": ladon is not None,
+                    "secret_name": None,
+                    "unreadable": ladon is not None,
+                }
+            )
+
+        try:
+            held = ladon.list_keys(email, secret_path(agent.name))
+        except ClientError as exc:
+            return _lane_failed("read", agent, exc, SECRETS_PLATFORM_UNREACHABLE)
+
+        return JSONResponse(
+            {
+                "keys": held.keys,
+                "updated_at": held.updated_at,
+                "platform": True,
+                "secret_name": env_secret_name(agent.name),
+                "unreadable": False,
+            }
+        )
+
+    @app.put("/api/agents/{name}/secrets")
+    def set_agent_secrets(
+        name: str,
+        payload: AgentEnvWrite,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Add, change or remove this agent's secrets, in one call.
+
+        ONE invariant runs through everything below, and the order of the
+        steps exists to keep it: the agent's `gojira.yaml` must never name
+        a Kubernetes Secret that does not exist. The deploy platform turns
+        `secrets_from` into `envFrom`, and a pod whose `envFrom` names a
+        missing Secret does not start at all. So the two directions run in
+        opposite orders:
+
+        - ADDING: store the value, then add the line. A secret stored
+          without its line is one the pod cannot see yet, which the next
+          save fixes.
+        - REMOVING THE LAST ONE: take the line away FIRST, then delete the
+          Secret. For a composed agent that is one commit and then the
+          deletes, with the deploy asked for at the end. For a connected
+          agent the room cannot merge its own pull request, so it deletes
+          NOTHING and answers `pending_unwire`: the stored secret stays
+          until somebody merges, and the next save finishes the job.
+
+        Before either, the wiring branch is reconciled against what this
+        save wants (`_reconcile_wiring`): an unmerged pull request of the
+        room's own proposing the OPPOSITE change is closed and its branch
+        removed, because merging it later would undo what is being done
+        here.
+        """
+        agent = _secrets_agent_or_error(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        lane = _lane_or_error(agent, request)
+        if isinstance(lane, JSONResponse):
+            return lane
+        ladon, email = lane
+
+        clients = app.state.clients
+        try:
+            # Read and parsed FIRST, and through the same visibility gate
+            # the environment read uses: an unreadable repository must be
+            # a refusal, never a quiet "not wired" that would have the
+            # room propose a line already sitting on the default branch.
+            on_default = has_env_secret(
+                read_default_gojira(clients.github, agent.repo_full_name), agent.name
+            )
+        except RepoBusy as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except ClientError as exc:
+            return _lane_failed("file read", agent, exc, AGENT_FILES_UNREACHABLE)
+
+        path = secret_path(agent.name)
+        try:
+            held = ladon.list_keys(email, path)
+        except ClientError as exc:
+            return _lane_failed("read", agent, exc, SECRETS_PLATFORM_UNREACHABLE)
+
+        refusal = write_refusal(payload.set, payload.remove, held.keys)
+        if refusal is not None:
+            return JSONResponse({"error": refusal}, status_code=422)
+
+        remaining = merged_names(held.keys, payload.set, payload.remove)
+        target = bool(remaining)
+
+        # Whatever the room proposed before and nobody has merged. Settled
+        # before any write, because a stale OPPOSITE request is a change
+        # waiting to undo this one and has to be closed rather than merely
+        # ignored.
+        pending = _reconcile_wiring(agent, target=target)
+        if isinstance(pending, JSONResponse):
+            return pending
+
+        if not remaining:
+            return _empty_the_secrets(
+                agent,
+                ladon=ladon,
+                email=email,
+                path=path,
+                exists=held.exists,
+                on_default=on_default,
+                pending=pending,
+            )
+
+        try:
+            if payload.set or payload.remove:
+                ladon.put_secret(email, path, dict(payload.set), remove=list(payload.remove))
+                ladon.ensure_synced(
+                    email, agent.name, path, agent.name, env_secret_name(agent.name)
+                )
+        except ClientError as exc:
+            return _lane_failed("write", agent, exc, SECRETS_WRITE_FAILED)
+
+        wiring = pending
+        if wiring is None and not on_default:
+            wiring = _edit_wiring(agent, wire=True)
+            if isinstance(wiring, JSONResponse):
+                return wiring
+
+        return JSONResponse(
+            {
+                "keys": remaining,
+                "platform": True,
+                "secret_name": env_secret_name(agent.name),
+                "wiring": wiring.how if wiring is not None else UNCHANGED,
+                "emptied": False,
+                "pending_unwire": False,
+                **({"pull_request": wiring.pull_request} if wiring and wiring.pull_request else {}),
+            }
+        )
+
+    def _empty_the_secrets(
+        agent: Agent,
+        *,
+        ladon,
+        email: str,
+        path: str,
+        exists: bool,
+        on_default: bool,
+        pending,
+    ) -> JSONResponse:
+        """Remove an agent's last secret: the line first, then the Secret.
+
+        Three states, and a retry of any of them lands in the right one:
+
+        - the line is still on the default branch, and the room may commit
+          (composed): commit it away, delete, then ask for a deploy;
+        - the line is still there and the room may NOT commit (connected):
+          propose it and delete nothing, so the stored Secret outlives the
+          pull request that has to merge first;
+        - the line is already gone: delete, or (if the path is gone too)
+          answer that it is already done, without writing anything back.
+
+        That last case is what makes a retry safe. A second save of the
+        same removal finds nothing at the path and must NOT call
+        `put_secret` on it: an empty write would create the path again,
+        and the sync behind it would recreate an ExternalSecret over a
+        Secret nothing wants.
+        """
+        clients = app.state.clients
+        wiring = pending
+
+        if on_default:
+            if is_connected(agent):
+                proposed = wiring or _edit_wiring(agent, wire=False)
+                if isinstance(proposed, JSONResponse):
+                    return proposed
+                # Nothing deleted, deliberately: the file still names the
+                # Secret until somebody merges, and taking it away now
+                # would stop the agent.
+                return JSONResponse(
+                    {
+                        "keys": [],
+                        "platform": True,
+                        "secret_name": env_secret_name(agent.name),
+                        "wiring": proposed.how,
+                        "emptied": False,
+                        "pending_unwire": True,
+                        **(
+                            {"pull_request": proposed.pull_request}
+                            if proposed.pull_request
+                            else {}
+                        ),
+                    }
+                )
+            # Composed: the room owns this file, so the line goes now and
+            # the deploy waits until the Secret is gone too.
+            wiring = _edit_wiring(agent, wire=False, reprovision=False)
+            if isinstance(wiring, JSONResponse):
+                return wiring
+
+        if exists:
+            try:
+                ladon.unsync(email, agent.name, agent.name, env_secret_name(agent.name))
+                ladon.delete_secret(email, path)
+            except ClientError as exc:
+                # Never "couldn't store that": nothing was being stored.
+                return _lane_failed("removal", agent, exc, SECRETS_REMOVE_FAILED)
+
+        if agent.gojira_app_id is not None and not is_connected(agent):
+            try:
+                clients.gojira.reprovision(agent.gojira_app_id)
+            except ClientError as exc:
+                return _lane_failed("deploy", agent, exc, SECRETS_REMOVED_NO_DEPLOY)
+
+        return JSONResponse(
+            {
+                "keys": [],
+                "platform": True,
+                "secret_name": None,
+                "wiring": wiring.how if wiring is not None else UNCHANGED,
+                "emptied": True,
+                "pending_unwire": False,
+                **({"pull_request": wiring.pull_request} if wiring and wiring.pull_request else {}),
+            }
+        )
+
+    def _reconcile_wiring(agent: Agent, *, target: bool):
+        """Settle the wiring branch against what this save wants.
+
+        Returns the `RepoEdit` for a pull request that already proposes
+        `target` (so the caller reuses it and proposes nothing new), None
+        when there is nothing open, or a `JSONResponse` to return.
+
+        A request proposing the OPPOSITE is the case this exists for. The
+        room opened it, nobody merged it, and a later save has made it
+        wrong: an unwire request merged after somebody adds a secret back
+        would take the line away from an agent that needs it, and a wire
+        request merged after the last secret is gone would name a Secret
+        that no longer exists. Either way the file ends up lying about the
+        Secret, which is the one thing every order here is arranged to
+        prevent. So it is CLOSED, with a line saying why, and its branch
+        removed so the next proposal has somewhere to go.
+
+        Composed agents never get here with anything open: the room
+        commits to its own repository and opens no request at all.
+        """
+        if not is_connected(agent):
+            return None
+
+        github = app.state.clients.github
+        repo = agent.repo_full_name
+        try:
+            open_pr = github.find_pr(repo, branch=SECRETS_WIRING_BRANCH)
+            if open_pr is None:
+                return None
+            proposes = has_env_secret(
+                parse_gojira_yaml(
+                    github.read_file(repo, "gojira.yaml", ref=SECRETS_WIRING_BRANCH)
+                ),
+                agent.name,
+            )
+            if proposes == target:
+                return RepoEdit(how=PULL_REQUEST, pull_request=open_pr)
+
+            log.info(
+                "closing the room's stale wiring request for %s (it proposes %s)",
+                agent.name,
+                "the line" if proposes else "no line",
+            )
+            github.close_pr(repo, open_pr, WIRING_SUPERSEDED)
+            require_our_branch(github, repo, SECRETS_WIRING_BRANCH)
+            github.delete_branch(repo, SECRETS_WIRING_BRANCH)
+        except RepoBusy as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except ClientError as exc:
+            return _lane_failed("wiring", agent, exc, AGENT_FILES_UNREACHABLE)
+        return None
+
+    def _edit_wiring(agent: Agent, *, wire: bool, reprovision: bool = True):
+        """Add or remove `<agent>-env` in `secrets_from`. The `RepoEdit` on
+        success, or the `JSONResponse` a route should return.
+
+        `carries` is what makes reusing an open pull request safe: the
+        branch's OWN gojira.yaml is read and asked whether it already says
+        this, rather than assuming that any request open on the branch
+        must. The wiring gets its own branch for the same reason -- the
+        one line it proposes is always the same, and an environment
+        request waiting on `kobo/env` is a different change entirely.
+        """
+        clients = app.state.clients
+        try:
+            return edit_gojira_yaml(
+                clients.github,
+                clients.gojira,
+                repo=agent.repo_full_name,
+                connected=is_connected(agent),
+                gojira_app_id=agent.gojira_app_id,
+                edit=(
+                    (lambda data: wire_env_secret(data, agent.name))
+                    if wire
+                    else (lambda data: unwire_env_secret(data, agent.name))
+                ),
+                message=(
+                    SECRETS_WIRING_PR_TITLE if wire else SECRETS_UNWIRE_PR_TITLE
+                ),
+                branch=SECRETS_WIRING_BRANCH,
+                title=SECRETS_WIRING_PR_TITLE if wire else SECRETS_UNWIRE_PR_TITLE,
+                body=SECRETS_WIRING_PR_BODY if wire else SECRETS_UNWIRE_PR_BODY,
+                # A request that already carries this exact change is the
+                # answer rather than a refusal. `_reconcile_wiring` has
+                # already closed anything proposing the opposite, so what
+                # is left open here can only be a match or nothing.
+                carries=lambda data: has_env_secret(data, agent.name) is wire,
+                already_open=WIRING_PR_ALREADY_OPEN,
+                reprovision=reprovision,
+            )
+        except DeployTriggerFailed as exc:
+            return _deploy_trigger_failed(agent, exc)
+        except RepoBusy as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except ClientError as exc:
+            return _lane_failed("wiring", agent, exc, SECRETS_WIRING_FAILED)
+
+    def _deploy_trigger_failed(agent: Agent, exc: DeployTriggerFailed) -> JSONResponse:
+        """The platform would not regenerate. Which sentence depends on
+        whether the agent's files actually changed: telling somebody
+        "couldn't save" about a file that IS saved sends them to redo work
+        that is already done."""
+        log.warning(
+            "deploy trigger failed for agent %s (%s)", agent.name, type(exc).__name__
+        )
+        return JSONResponse(
+            {"error": DEPLOY_TRIGGER_FAILED if exc.pushed else DEPLOY_TRIGGER_ONLY},
+            status_code=502,
+        )
+    @app.get("/api/agents/{name}/env")
+    def list_agent_env(
+        name: str,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """This agent's plain environment variables, keys and values.
+
+        Read straight off the repository's `gojira.yaml` rather than from
+        anything the room caches, because the file is where they live and a
+        team may have edited it themselves. The two model-access variables
+        the room writes are left out: they are not an owner's to change,
+        and showing them in an editable list would say otherwise.
+
+        A file the room cannot PARSE, and a repository the room cannot
+        READ, are two different 409s with two different sentences. The
+        first is the team's to fix; the second means the room lost access,
+        and answering "there is no file" for it would send somebody
+        hunting for one sitting right there.
+        """
+        agent = _secrets_agent_or_error(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        try:
+            env = read_repo_env(app.state.clients.github, agent.repo_full_name)
+        except RepoBusy as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except ClientError as exc:
+            return _lane_failed("file read", agent, exc, AGENT_FILES_UNREACHABLE)
+
+        return JSONResponse({"env": env})
+
+    @app.put("/api/agents/{name}/env")
+    def set_agent_env(
+        name: str,
+        payload: AgentEnvWrite,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Add, change or remove this agent's plain environment variables.
+
+        The same body shape and the same key rules as the secrets route
+        above, and the same two ways the change lands: committed to a
+        composed agent's own repository, proposed as a pull request against
+        a connected agent's. `wiring` says which, and `env` comes back as
+        what the file now holds.
+
+        Values ARE returned here, unlike the route above, and that is the
+        difference between the two lists rather than an oversight: this one
+        is for values that are not sensitive, and a list you cannot read is
+        not one you can edit.
+        """
+        agent = _secrets_agent_or_error(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        clients = app.state.clients
+        try:
+            current = read_repo_env(clients.github, agent.repo_full_name)
+        except RepoBusy as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except ClientError as exc:
+            return _lane_failed("file read", agent, exc, AGENT_FILES_UNREACHABLE)
+
+        refusal = write_refusal(payload.set, payload.remove, sorted(current))
+        if refusal is not None:
+            return JSONResponse({"error": refusal}, status_code=422)
+
+        # Worked out here so the response can say what the file now
+        # carries without a second read: `apply_env` is the same function
+        # the edit below runs, over the same starting point.
+        after: dict = {"env": dict(current)}
+        apply_env(after, payload.set, payload.remove)
+
+        try:
+            result = edit_gojira_yaml(
+                clients.github,
+                clients.gojira,
+                repo=agent.repo_full_name,
+                connected=is_connected(agent),
+                gojira_app_id=agent.gojira_app_id,
+                edit=lambda data: apply_env(data, payload.set, payload.remove),
+                message="kobo: environment variables",
+            )
+        except DeployTriggerFailed as exc:
+            return _deploy_trigger_failed(agent, exc)
+        except RepoBusy as exc:
+            # Something a person can clear, named so they can: a pull
+            # request the room opened before, or a file nothing can parse.
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except ClientError as exc:
+            return _lane_failed("file write", agent, exc, AGENT_FILES_UNREACHABLE)
+
+        body: dict = {"env": after["env"], "wiring": result.how}
+        if result.pull_request is not None:
+            body["pull_request"] = result.pull_request
         return JSONResponse(body)
 
     # --- Runtime (#15): move an existing agent to a different runtime image ----

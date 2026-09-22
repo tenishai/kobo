@@ -94,9 +94,13 @@ import { queryOptions, type QueryClient } from "@tanstack/svelte-query";
 import {
   ApiError,
   type AgentDetail,
+  type AgentEnv,
+  type AgentEnvWriteResult,
   type AgentListResult,
   type AgentMetadata,
   type AgentSkill,
+  type AgentSecrets,
+  type AgentSecretsWrite,
   type AgentSlack,
   type AgentSummary,
   type AlreadyRequested,
@@ -176,6 +180,8 @@ import {
   generateAvatar,
   getAgent,
   importTooling,
+  listAgentEnv,
+  listAgentSecrets,
   listAgents,
   listGrants,
   listIntake,
@@ -191,6 +197,8 @@ import {
   requestGroup,
   retryAgent,
   revokeInvite,
+  saveAgentEnv,
+  saveAgentSecrets,
   saveKnowledgeFile,
   saveLocalSkill,
   saveSlackChannels,
@@ -1047,6 +1055,68 @@ export function saveSlackChannelsMutation(
 }
 
 /**
+ * Which secrets an agent holds, BY NAME (secrets and environment design
+ * 2026-09-22) -- `GET .../secrets`, owner-or-operator only server-side.
+ *
+ * No polling, the same "edits are user-driven" reasoning `knowledgeQuery`
+ * documents: nothing changes this list except a save from this same
+ * panel, and the save's own `onSuccess` invalidates it.
+ *
+ * `enabled` is whether the Secrets tab is the selected one, and it is not
+ * an optimisation. Every tabpanel on the agent page stays MOUNTED when
+ * another tab is picked, so without it, opening any agent page at all
+ * would ask the secrets platform about an agent nobody was looking at and
+ * leave a row in its audit trail saying somebody did. Same shape
+ * `slackManifestQuery` uses for its own deferred read.
+ */
+export function agentSecretsQuery(name: string, enabled = true) {
+  return queryOptions({
+    queryKey: ["agents", name, "secrets"] as const,
+    queryFn: () => listAgentSecrets(name),
+    enabled,
+  });
+}
+
+/**
+ * Adds, changes and removes secrets in one call; on success, invalidates
+ * that agent's secrets query so the new key list is picked up. The values
+ * passed here leave the browser once and nothing reads them back.
+ */
+export function saveAgentSecretsMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: ({ set, remove }: { set: Record<string, string>; remove: string[] }) =>
+      saveAgentSecrets(name, set, remove),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "secrets"] });
+    },
+  };
+}
+
+/** An agent's plain environment variables, keys and values --
+ * `GET .../env`. Same no-polling reasoning as the secrets query above, and
+ * the same `enabled`: this one reads the agent's repository, so an
+ * unselected tab would spend a GitHub call per agent page opened. */
+export function agentEnvQuery(name: string, enabled = true) {
+  return queryOptions({
+    queryKey: ["agents", name, "env"] as const,
+    queryFn: () => listAgentEnv(name),
+    enabled,
+  });
+}
+
+/** Saves environment variables the same way; on success, invalidates that
+ * agent's env query. */
+export function saveAgentEnvMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: ({ set, remove }: { set: Record<string, string>; remove: string[] }) =>
+      saveAgentEnv(name, set, remove),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "env"] });
+    },
+  };
+}
+
+/**
  * An agent's cross-group colleagueship invites (access-control Task C2) --
  * `GET /api/agents/{name}/invites`, owner-or-operator only server-side. No
  * polling: this is the same "edits are user-driven" reasoning `knowledgeQuery`
@@ -1406,6 +1476,10 @@ export function postThreadTurnMutation() {
 // Re-exported so consumers of the query factories don't need a separate
 // import from api.ts just to type their component-level state.
 export type {
+  AgentEnv,
+  AgentEnvWriteResult,
+  AgentSecrets,
+  AgentSecretsWrite,
   AgentDetail,
   AgentListResult,
   AgentMetadata,
