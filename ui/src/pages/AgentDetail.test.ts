@@ -44,6 +44,13 @@ const BASE_ROUTES = {
   },
   "/api/agents/warden/invites": { incoming: [], outgoing: [] },
   "/api/agents/warden/grants": { grants: [] },
+  "/api/agents/warden/secrets": {
+    keys: [],
+    updated_at: null,
+    platform: true,
+    secret_name: "warden-env",
+  },
+  "/api/agents/warden/env": { env: {} },
   "/api/agents/warden": READY_AGENT,
   "/api/personas/search": { results: [] },
   "/api/": {},
@@ -750,16 +757,23 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
     stubFetch({ ...BASE_ROUTES, "/api/agents/warden": CONNECTED_AGENT });
   });
 
-  it("renders no chat, slack or advanced tabs, and no Advanced toggle", async () => {
+  it("renders no chat, slack or bundle-backed tabs, and keeps Advanced for Secrets alone", async () => {
     renderWithClient(AgentDetail);
 
     // The header renders for every kind, so it is the wait point here --
-    // there is no tab to wait for on this page.
+    // there is no tab selected on this page.
     await screen.findByRole("heading", { name: "warden" });
     expect(screen.queryByRole("tab", { name: "Chat" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Slack" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Skills" })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Advanced/ })).toBeNull();
+    // The Advanced toggle stays, because one tab in it survives for a
+    // connected agent: Secrets and environment (design 2026-09-22). The
+    // environment a team's own service runs with is not a bundle
+    // question, so it is not one of the things that goes away here.
+    const advanced = screen.getByRole("button", { name: /Advanced/ });
+    await fireEvent.click(advanced);
+    expect(screen.getByRole("tab", { name: "Secrets" })).not.toBeNull();
+    expect(screen.queryByRole("tab", { name: "Memory" })).toBeNull();
   });
 
   it("shows the connected marker and the repository itself as the link", async () => {

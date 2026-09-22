@@ -36,6 +36,7 @@
   import MemoryPanel from "../components/MemoryPanel.svelte";
   import MetadataDetails from "../components/MetadataDetails.svelte";
   import RequestAccessCard from "../components/RequestAccessCard.svelte";
+  import SecretsPanel from "../components/SecretsPanel.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import SkillsPanel from "../components/SkillsPanel.svelte";
   import SlackPanel from "../components/SlackPanel.svelte";
@@ -56,7 +57,7 @@
   } from "../lib/queries";
   import { formatHash, navigate, route } from "../lib/router.svelte";
   import { isDestroyComplete, isFrozen } from "../lib/status";
-  import { ADVANCED_TABS, advancedTabs, defaultTab, primaryTabs, TAB_LABELS, type TabId } from "../lib/tabs";
+  import { advancedTabs, defaultTab, primaryTabs, TAB_LABELS, type TabId } from "../lib/tabs";
   import { toast } from "../lib/toast.svelte";
 
   // Invariant: App.svelte only mounts this page when `route.page === "agent"`,
@@ -630,8 +631,12 @@
             aria-expanded={advancedOpen}
             onclick={() => {
               advancedOpen = !advancedOpen;
+              // `advanced`, not the ADVANCED_TABS constant: the group's
+              // membership now depends on the kind of agent (a connected
+              // one keeps Secrets and nothing else), and collapsing the
+              // group has to clear whichever of THOSE is selected.
               if (!advancedOpen && activeTab !== null
-                  && (ADVANCED_TABS as readonly string[]).includes(activeTab)) {
+                  && (advanced as readonly string[]).includes(activeTab)) {
                 activeTab = defaultTab(data.status, data.kind);
               }
             }}
@@ -677,6 +682,8 @@
             />
           {:else if tab === "tooling"}
             <ToolingPanel agentName={data.name} frozen={isFrozen(data.status)} />
+          {:else if tab === "secrets"}
+            <SecretsPanel agentName={data.name} frozen={isFrozen(data.status)} />
           {:else if tab === "slack"}
             <SlackPanel
               agentName={data.name}

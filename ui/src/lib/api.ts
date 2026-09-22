@@ -1826,3 +1826,84 @@ export async function decideRepoAccess(
   });
   return parse(res);
 }
+
+// --- Secrets and environment (design 2026-09-22) -----------------------------
+//
+// Two lists on one panel. A SECRET's value is write-only: it goes up in a
+// `set` map and never comes back, so nothing below has a type that could
+// hold one on the way down. An environment variable's value does come
+// back, which is the difference between the two lists rather than an
+// oversight: a list you cannot read is not one you can edit.
+
+/** How a change reached the agent's repository. `committed` for an agent
+ * the room composed, `pull_request` for one whose repository belongs to
+ * its team, `unchanged` when the file already said this. */
+export type EnvWiring = "committed" | "pull_request" | "unchanged";
+
+export type AgentSecrets = {
+  /** Key names, sorted. Never a value, masked or otherwise. */
+  keys: string[];
+  /** When the whole list was last written, not per key: the platform
+   * versions a path as a whole. Null for an agent with no secrets yet. */
+  updated_at: string | null;
+  /** False in a room with no secrets platform configured, where the panel
+   * shows one sentence instead of the list. */
+  platform: boolean;
+  /** The Kubernetes Secret the platform delivers these into, for the line
+   * that says where they end up. Null when `platform` is false. */
+  secret_name: string | null;
+};
+
+export type AgentSecretsWrite = {
+  keys: string[];
+  platform: boolean;
+  secret_name: string | null;
+  wiring: EnvWiring;
+  pull_request?: string;
+};
+
+export type AgentEnv = { env: Record<string, string> };
+
+export type AgentEnvWriteResult = {
+  env: Record<string, string>;
+  wiring: EnvWiring;
+  pull_request?: string;
+};
+
+export async function listAgentSecrets(name: string): Promise<AgentSecrets> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/secrets`);
+  return parse<AgentSecrets>(res);
+}
+
+/** Add, change or remove secrets in one call. The values in `set` leave
+ * the browser once and are never read back by anything. */
+export async function saveAgentSecrets(
+  name: string,
+  set: Record<string, string>,
+  remove: string[],
+): Promise<AgentSecretsWrite> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/secrets`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ set, remove }),
+  });
+  return parse<AgentSecretsWrite>(res);
+}
+
+export async function listAgentEnv(name: string): Promise<AgentEnv> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/env`);
+  return parse<AgentEnv>(res);
+}
+
+export async function saveAgentEnv(
+  name: string,
+  set: Record<string, string>,
+  remove: string[],
+): Promise<AgentEnvWriteResult> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/env`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ set, remove }),
+  });
+  return parse<AgentEnvWriteResult>(res);
+}

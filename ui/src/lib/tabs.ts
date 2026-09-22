@@ -18,6 +18,7 @@ export type TabId =
   | "skills"
   | "tooling"
   | "slack"
+  | "secrets"
   | "access";
 
 export const TAB_LABELS: Record<TabId, string> = {
@@ -27,6 +28,7 @@ export const TAB_LABELS: Record<TabId, string> = {
   skills: "Skills",
   tooling: "Tooling",
   slack: "Slack",
+  secrets: "Secrets",
   access: "Access",
 };
 
@@ -55,11 +57,22 @@ export function primaryTabs(showAccess = false, kind: string = KIND_COMPOSED): T
  * active-tab membership), never reordered. */
 export const ADVANCED_TABS = ["learnings", "memory", "skills", "tooling"] as const;
 
-/** Every Advanced tab, or none at all for a connected agent: all four read
- * the bundle the room composed, and a connected agent has none. The page
- * hides the Advanced toggle itself when this is empty. */
+/** The one Advanced tab a connected agent keeps (secrets and environment
+ * design 2026-09-22). Every other tab in that group reads the bundle the
+ * room composed, and a connected agent has none; this one reads the
+ * agent's own environment, which a team's service has exactly as much of
+ * as an agent the room built. It is the reason `advancedTabs` no longer
+ * answers an empty list for a connected agent. */
+const CONNECTED_ADVANCED_TABS = ["secrets"] as const;
+
+/** Every Advanced tab, or just Secrets for a connected agent: the other
+ * four read the bundle the room composed, and a connected agent has none.
+ * The page hides the Advanced toggle itself when this is empty, which no
+ * longer happens for either kind. */
 export function advancedTabs(kind: string = KIND_COMPOSED): TabId[] {
-  return kind === KIND_CONNECTED ? [] : [...ADVANCED_TABS];
+  return kind === KIND_CONNECTED
+    ? [...CONNECTED_ADVANCED_TABS]
+    : [...ADVANCED_TABS, ...CONNECTED_ADVANCED_TABS];
 }
 
 /**
