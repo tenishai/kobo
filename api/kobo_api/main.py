@@ -182,9 +182,9 @@ from kobo_api.slack_state import (
 )
 from kobo_api.static_ui import mount_ui
 from kobo_api.steps import (
-    HEADLESS_UNAVAILABLE,
     _resolve_persona_body,
     refresh_after_capability_distill,
+    refresh_colleague_rosters,
 )
 from kobo_api.teach import format_note, note_filename
 from kobo_api.tooling import (
@@ -1109,6 +1109,13 @@ REPO_OWNER_REFUSAL = (
 # already what it was asked to become, the other is being worked on right
 # now by a thread that reads its kind as it goes.
 ALREADY_CONNECTED_REFUSAL = "this agent is already connected"
+# Deliberately not `steps.HEADLESS_UNAVAILABLE`: that sentence is about what
+# the room can run, and this refusal holds even in a room that runs headless
+# agents. See the convert route for why the answer would otherwise lie
+# dormant in the column until a much later retry acted on it.
+CONVERT_HEADLESS_REFUSAL = (
+    "an agent the room composed serves web traffic; convert it as one"
+)
 CONVERT_IN_FLIGHT_REFUSAL = (
     "this agent is still being created or destroyed, so it cannot be converted yet"
 )
@@ -4047,15 +4054,44 @@ def create_app(
 
         if payload.run_mode not in RUN_MODES:
             return JSONResponse({"error": RUN_MODE_REFUSAL}, status_code=422)
-        if payload.run_mode == RUN_MODE_HEADLESS and not cfg.connected_headless_class:
-            # The same sentence the scan and the onboard step say, from the
-            # same constant: a room without a class for it cannot run one
-            # whichever door the agent came in through.
-            return JSONResponse({"error": HEADLESS_UNAVAILABLE}, status_code=422)
+        if payload.run_mode == RUN_MODE_HEADLESS:
+            # Not "the room has no class for it" (the connect route's
+            # reason, `HEADLESS_UNAVAILABLE`): this one is refused even in a
+            # room that runs headless agents happily. An agent the room
+            # composed serves HTTP by construction, and this route
+            # redeploys nothing, so a headless answer here would sit in the
+            # column doing nothing until some later retry re-onboarded the
+            # app under a class with no probes -- a wrong answer that bites
+            # weeks after the person who gave it has forgotten giving it.
+            return JSONResponse({"error": CONVERT_HEADLESS_REFUSAL}, status_code=422)
 
-        agent = _visible_agent_or_404(session, request, name)
-        if isinstance(agent, JSONResponse):
-            return agent
+        visible = _visible_agent_or_404(session, request, name)
+        if isinstance(visible, JSONResponse):
+            return visible
+
+        # Re-read the row under a lock before deciding anything about it.
+        # The status checks below are the whole safety of this route, and
+        # they are checked against a row another request (a retry launching
+        # a composed pipeline, a destroy) may be changing right now. The
+        # lock and the write are one transaction, so a status that passes
+        # here cannot have moved by the time the kind lands.
+        #
+        # `populate_existing` because the identity map already holds this
+        # row from the visibility read above, and a plain re-query would
+        # hand back those same stale attributes rather than the locked
+        # read's. On SQLite `with_for_update` compiles to nothing at all --
+        # that is accepted (a local room has one writer), and the lock is
+        # here for the Postgres deployments where it does hold.
+        agent = (
+            session.query(Agent)
+            .filter(Agent.name == visible.name)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if agent is None:
+            # Destroyed between the two reads.
+            return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
 
         if is_connected(agent):
             return JSONResponse(
@@ -4071,6 +4107,7 @@ def create_app(
                 {"error": CONVERT_IN_FLIGHT_REFUSAL}, status_code=409
             )
 
+        group_name = agent.group_name
         agent.kind = KIND_CONNECTED
         agent.run_mode = payload.run_mode
         session.commit()
@@ -4105,15 +4142,24 @@ def create_app(
                     exc_info=True,
                 )
 
-        # The switchboard's policy source is recomputed from scratch (the
-        # same fail-soft seam every other standing change in this room uses)
-        # rather than reasoned about here: the pipeline that builds a
-        # connected agent never syncs pairs, so a converted agent has just
-        # arrived at a standing nothing else in its lifetime will resync.
-        # `allowed_pairs` reads rows, not kinds, so what this actually
-        # writes today is whatever those rows say -- which is the point of
-        # recomputing rather than editing.
+        # Unplug it from its colleagues, both halves. `allowed_pairs` now
+        # leaves connected agents out of the set entirely, so this push is
+        # what actually takes away the dispatch rights in both directions;
+        # `refresh_colleague_rosters` then hands every agent that had a
+        # line naming this one a roster without it, so nobody is left
+        # offering a colleague that cannot be reached. Both are fail-soft
+        # and neither writes to a repository -- the roster refresh is the
+        # relay-only fast lane, and every agent it delivers to is a
+        # composed agent the room owns.
+        #
+        # `group_name` was captured before the write for the same reason
+        # the destroy path captures it: the question is who could see this
+        # agent, which is asked of the standing it is leaving.
         _sync_dispatch_pairs(session)
+        if clients is not None:
+            refresh_colleague_rosters(
+                clients, cfg, session, name=agent.name, group_name=group_name
+            )
 
         return JSONResponse(
             {"name": agent.name, "kind": agent.kind, "run_mode": agent.run_mode}
@@ -4240,6 +4286,20 @@ def create_app(
         agent = _visible_agent_or_404(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
+
+        # Chat is the one surface the connected-agents design left open by
+        # oversight rather than on purpose. The room never made a connected
+        # agent's chat wiring (no colleague pass, no directory entry, and
+        # the relay has no inbound route to it), so every attempt walked all
+        # the way to a 502 plus a warning and a kubectl probe, for as long
+        # as anyone kept asking. It is refused with the same sentence and
+        # the same 409 as every other room-edits-it surface: the caller is
+        # allowed to ask, and it is the agent that has no such thing. This
+        # also covers `kobo_chat`, which delegates to this route rather than
+        # holding a gate of its own.
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
 
         if agent.status != AgentStatus.READY:
             return JSONResponse({"error": "agent is not ready to chat"}, status_code=409)

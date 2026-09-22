@@ -24,6 +24,7 @@ import yaml
 from kobo_api.clients import CabalError, ClientError, Clients
 from kobo_api.composer import BundleSpec, _colleagues_md, _self_md, compose
 from kobo_api.config import Config, ModelChoice
+from kobo_api.kinds import KIND_CONNECTED
 from kobo_api.marketplace import marketplace_repo
 from kobo_api.models import INVITE_ACCEPTED, A2AInvite, Agent, AgentStatus
 from kobo_api.provisioner import PIPELINE, Ctx
@@ -772,6 +773,27 @@ def test_colleague_roster_includes_skills_for_the_capability_fallback_chain(
     ]
 
 
+def test_colleague_roster_leaves_out_a_connected_agent(session_factory, config):
+    """A connected agent is nobody's colleague (connected-agents design
+    2026-09-21): the room holds no inbound route to it, so naming it in a
+    roster promises a hop that would fail. Same rule `allowed_pairs` keeps
+    on the wire, kept here on the page the agent itself reads."""
+    session, agent = _make_agent(session_factory, group_name="acme-acl")
+    connected = Agent(
+        name="ward",
+        persona="connected",
+        model_id=MODEL_ID,
+        skills=[],
+        status=AgentStatus.READY,
+        group_name="acme-acl",
+        kind=KIND_CONNECTED,
+    )
+    session.add(connected)
+    session.commit()
+
+    assert _colleague_roster(session, agent) == []
+
+
 def test_repo_step_threads_colleague_roster_into_composed_bundle(
     session_factory, config, fake_storage
 ):
@@ -922,6 +944,22 @@ def test_agents_who_can_see_pending_invite_grants_nothing(session_factory):
     session.commit()
     _ready_agent(session, "viewer", group_name="orbit-acl")
     _make_invite(session, from_agent="viewer", to_agent="target", status="pending")
+
+    result = _agents_who_can_see(session, name=target.name, group_name=target.group_name)
+
+    assert result == []
+
+
+def test_agents_who_can_see_excludes_connected_viewers(session_factory):
+    """A connected agent has no bundle and no colleagues.md, so there is
+    nothing to refresh on it: delivering a roster to one would be a
+    knowledge task to an agent that never asked for knowledge."""
+    session, target = _make_agent(session_factory, name="target", group_name="acme-acl")
+    target.status = AgentStatus.READY
+    session.commit()
+    connected = _ready_agent(session, "outsider", group_name="acme-acl")
+    connected.kind = KIND_CONNECTED
+    session.commit()
 
     result = _agents_who_can_see(session, name=target.name, group_name=target.group_name)
 

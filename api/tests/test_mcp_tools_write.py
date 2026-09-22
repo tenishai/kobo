@@ -34,6 +34,7 @@ from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import Clients
 from kobo_api.config import Config, GroupChoice, MCPConfig
+from kobo_api.kinds import KIND_COMPOSED, KIND_CONNECTED
 from kobo_api.main import create_app
 from kobo_api.marketplace import marketplace_repo
 from kobo_api.mcp import audit, rate_limit
@@ -241,6 +242,7 @@ def _seed_agent(
     slack_channels=None,
     slack_wired=False,
     skills=None,
+    kind=KIND_COMPOSED,
 ):
     session = session_factory()
     session.add(
@@ -258,6 +260,7 @@ def _seed_agent(
             slack_channels=encode_channels(slack_channels) if slack_channels is not None else None,
             slack_wired=slack_wired,
             skills=skills if skills is not None else [],
+            kind=kind,
         )
     )
     session.commit()
@@ -821,6 +824,32 @@ def test_chat_not_ready_agent_surfaces_the_routes_own_409(session_factory, confi
 
     with pytest.raises(ToolError, match="not ready to chat"):
         _call_tool(mcp, "kobo_chat", _ctx_for(MEMBER_A_EMAIL), agent="ward", message="hi")
+
+
+def test_chat_connected_agent_surfaces_the_routes_own_409(
+    session_factory, config, fake_storage
+):
+    """The room does not chat with a connected agent (connected-agents
+    design 2026-09-21): it never made the chat wiring, so the attempt could
+    only end in a backend failure. This tool has no gate of its own -- it
+    delegates to the chat route, which is where the refusal lives."""
+    fake_agent = FakeAgent(reply="hello yourself")
+    _seed_agent(
+        session_factory,
+        name="ward",
+        created_by=OWNER_A_EMAIL,
+        group_name=GROUP_A,
+        kind=KIND_CONNECTED,
+    )
+    app = _app(
+        session_factory, config, groups_resolver=_resolver(), storage=fake_storage, agent=fake_agent
+    )
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="belongs to its team"):
+        _call_tool(mcp, "kobo_chat", _ctx_for(MEMBER_A_EMAIL), agent="ward", message="hi")
+
+    assert fake_agent.converse_calls == []
 
 
 # --- kobo_request_colleague -----------------------------------------------------

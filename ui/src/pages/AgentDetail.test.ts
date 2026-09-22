@@ -866,7 +866,7 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
     ).not.toBeNull();
   });
 
-  it("says what stops working, and asks how the agent runs before it will convert", async () => {
+  it("says what stops working before it will convert", async () => {
     renderWithClient(AgentDetail);
     await fireEvent.click(
       await screen.findByRole("button", { name: "Convert to connected" }),
@@ -874,18 +874,45 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
 
     expect(
       screen.getByText(
-        "The room stops editing this agent: no chat, learnings, teach, skills, tooling or Slack from here. Its repository, deployment and identity stay as they are. This cannot be undone from the room.",
+        "The room stops editing this agent: no chat, memory, learnings, skills, tooling or Slack from here, and other agents can no longer reach it. Its repository, deployment and cloud identity stay as they are. This cannot be undone from the room.",
       ),
     ).not.toBeNull();
     const confirm = screen.getByRole("button", {
       name: "Convert this agent",
     }) as HTMLButtonElement;
-    expect(confirm.disabled).toBe(true);
-
-    await fireEvent.click(
-      screen.getByLabelText("It serves web traffic (port 8080, answers /healthz)"),
-    );
     expect(confirm.disabled).toBe(false);
+  });
+
+  it("asks no run mode question, since a composed agent already serves web traffic", async () => {
+    renderWithClient(AgentDetail);
+    await fireEvent.click(
+      await screen.findByRole("button", { name: "Convert to connected" }),
+    );
+
+    expect(screen.queryByRole("radio")).toBeNull();
+    expect(
+      screen.queryByText("It has no web address (a chat bot or a worker)"),
+    ).toBeNull();
+  });
+
+  it("drops the selected tab when the convert takes its tab away", async () => {
+    // The poll right after a convert brings back a kind with no Chat tab.
+    // Before this was handled, "chat" stayed selected against a tab bar
+    // that no longer offered it, and the panel area under it was empty.
+    const { client } = renderWithClient(AgentDetail);
+    const chatTab = await screen.findByRole("tab", { name: "Chat" });
+    expect(chatTab.getAttribute("aria-selected")).toBe("true");
+
+    client.setQueryData(["agents", "warden"], {
+      ...OPERATOR_VIEW,
+      kind: "connected",
+    });
+    await screen.findByRole("tab", { name: "Access" });
+
+    expect(screen.queryByRole("tab", { name: "Chat" })).toBeNull();
+    for (const tab of screen.getAllByRole("tab")) {
+      expect(tab.getAttribute("aria-selected")).toBe("false");
+    }
   });
 
   it("hides the action from a caller who is not an operator", async () => {

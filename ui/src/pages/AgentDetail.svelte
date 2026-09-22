@@ -43,13 +43,7 @@
   import StepChecklist from "../components/StepChecklist.svelte";
   import ThreadPanel from "../components/ThreadPanel.svelte";
   import ToolingPanel from "../components/ToolingPanel.svelte";
-  import {
-    ApiError,
-    errorMessage,
-    KIND_CONNECTED,
-    RUN_MODE_HEADLESS,
-    RUN_MODE_HTTP,
-  } from "../lib/api";
+  import { ApiError, errorMessage, KIND_CONNECTED, RUN_MODE_HTTP } from "../lib/api";
   import {
     agentQuery,
     convertToConnectedMutation,
@@ -147,18 +141,17 @@
   // exactly as the Danger zone's own comment says of itself.
   const convert = createMutation(() => (convertToConnectedMutation(queryClient, name)));
   let convertConfirming = $state(false);
-  // Null until the operator picks one: an agent the room composed has no
-  // run mode recorded, so there is nothing to preselect and the room would
-  // only be guessing on their behalf.
-  let convertRunMode = $state<string | null>(null);
   let convertError = $state<string | null>(null);
 
+  // There is no run mode to choose. An agent the room composed serves web
+  // traffic by construction, and the route refuses anything else, so asking
+  // would only offer an answer the room is about to turn down.
   function handleConvert(): void {
-    if (convertRunMode === null || convert.isPending) {
+    if (convert.isPending) {
       return;
     }
     convertError = null;
-    convert.mutate(convertRunMode, {
+    convert.mutate(RUN_MODE_HTTP, {
       onSuccess: () => {
         convertConfirming = false;
         toast.success("Converted", `The room no longer edits ${name}.`);
@@ -193,12 +186,22 @@
   // primary row stays short.
   let advancedOpen = $state(false);
 
+  // Also re-picks when the selected tab stops existing. A convert is the
+  // case that made this necessary: the poll after it brings back a kind
+  // with no Chat, and the page was left with "chat" still selected and an
+  // empty panel area under a tab bar that no longer offers it. Tabs can
+  // only vanish, never appear, without a data change, so this stays the
+  // same one-shot pick for every other poll.
   $effect(() => {
     const data = agent.data;
     if (!data) {
       return;
     }
-    if (activeTab === null) {
+    const visible = [
+      ...primaryTabs(invites.isSuccess, data.kind),
+      ...advancedTabs(data.kind),
+    ];
+    if (activeTab === null || !visible.includes(activeTab)) {
       activeTab = defaultTab(data.status, data.kind);
     }
   });
@@ -715,36 +718,13 @@
           </button>
         {:else}
           <p class="convert-card__copy">
-            The room stops editing this agent: no chat, learnings, teach, skills, tooling or Slack from here. Its repository, deployment and identity stay as they are. This cannot be undone from the room.
+            The room stops editing this agent: no chat, memory, learnings, skills, tooling or Slack from here, and other agents can no longer reach it. Its repository, deployment and cloud identity stay as they are. This cannot be undone from the room.
           </p>
-          <fieldset class="convert-card__fieldset">
-            <legend class="convert-card__legend">How does it run?</legend>
-            <label class="convert-card__choice">
-              <input
-                type="radio"
-                name="convert-run-mode"
-                value={RUN_MODE_HTTP}
-                checked={convertRunMode === RUN_MODE_HTTP}
-                onchange={() => (convertRunMode = RUN_MODE_HTTP)}
-              />
-              It serves web traffic (port 8080, answers /healthz)
-            </label>
-            <label class="convert-card__choice">
-              <input
-                type="radio"
-                name="convert-run-mode"
-                value={RUN_MODE_HEADLESS}
-                checked={convertRunMode === RUN_MODE_HEADLESS}
-                onchange={() => (convertRunMode = RUN_MODE_HEADLESS)}
-              />
-              It has no web address (a chat bot or a worker)
-            </label>
-          </fieldset>
           <div class="convert-card__actions">
             <button
               type="button"
               class="convert-card__confirm"
-              disabled={convertRunMode === null || convert.isPending}
+              disabled={convert.isPending}
               onclick={handleConvert}
             >
               {convert.isPending ? "Converting…" : "Convert this agent"}
@@ -1192,30 +1172,6 @@
   .convert-card__copy {
     margin: 0;
     color: var(--muted);
-    font-size: 0.9rem;
-  }
-
-  .convert-card__fieldset {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-    margin: 0;
-    padding: 0;
-    border: none;
-  }
-
-  .convert-card__legend {
-    padding: 0;
-    color: var(--ink);
-    font-weight: 600;
-    font-size: 0.85rem;
-  }
-
-  .convert-card__choice {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    color: var(--ink);
     font-size: 0.9rem;
   }
 

@@ -730,6 +730,7 @@ def _seed_composed(
     kind=KIND_COMPOSED,
     name=AGENT_NAME,
     secret_names=None,
+    group_name=None,
 ):
     """One agent row as the create route leaves it: the room's own repository,
     a real persona, and whatever status this case is about."""
@@ -743,6 +744,7 @@ def _seed_composed(
             kind=kind,
             repo_full_name=f"{ORG}/agent-{name}",
             status=status,
+            group_name=group_name,
             secret_names=secret_names if secret_names is not None else [],
             run_mode=RUN_MODE_HTTP if kind == KIND_CONNECTED else None,
         )
@@ -931,23 +933,28 @@ def test_convert_refuses_a_run_mode_the_room_does_not_have(client, session_facto
     assert _row(session_factory).kind == KIND_COMPOSED
 
 
-def test_convert_refuses_headless_until_the_room_has_a_class_for_it(
+def test_convert_refuses_headless_whatever_the_room_has_a_class_for(
     client, session_factory
 ):
+    """An agent the room composed serves HTTP by construction, and nothing
+    is redeployed here, so a headless choice would not take effect until
+    some later retry and would then fail a probe nobody was expecting."""
     _seed_composed(session_factory)
 
     response = client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HEADLESS})
 
     assert response.status_code == 422
     assert response.json() == {
-        "error": "agents with no HTTP port are not available in this room yet"
+        "error": "an agent the room composed serves web traffic; convert it as one"
     }
     assert _row(session_factory).kind == KIND_COMPOSED
 
 
-def test_convert_takes_headless_once_the_deploy_platform_names_a_class(
+def test_convert_refuses_headless_even_where_the_room_runs_headless_agents(
     session_factory, clients, tmp_path
 ):
+    """The refusal is about where this agent came from, not about what the
+    room can run: a room with a headless class still converts as HTTP."""
     config = Config(
         workdir=tmp_path / "work",
         skills_bucket="skills-bucket",
@@ -960,8 +967,8 @@ def test_convert_takes_headless_once_the_deploy_platform_names_a_class(
 
     response = client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HEADLESS})
 
-    assert response.status_code == 200, response.text
-    assert _row(session_factory).run_mode == RUN_MODE_HEADLESS
+    assert response.status_code == 422
+    assert _row(session_factory).kind == KIND_COMPOSED
 
 
 def test_convert_404s_on_an_agent_this_room_does_not_have(client):
@@ -1058,21 +1065,29 @@ def test_a_switchboard_that_cannot_be_reached_does_not_fail_the_convert(
     assert _row(session_factory).kind == KIND_CONNECTED
 
 
-def test_convert_says_who_converted_what(client, session_factory, caplog):
+def test_convert_says_who_converted_what(gated, session_factory, caplog):
     """One line per convert, at WARNING for the same reason the connect's own
     line is: INFO does not reach the pod logs here, and this is the one
-    record that an agent's page went quiet on purpose."""
+    record that an agent's page went quiet on purpose. Run through the
+    IAP-gated client so the name in the line is a real verified caller
+    rather than the no-perimeter fallback."""
     _seed_composed(session_factory)
 
     with caplog.at_level(logging.WARNING, logger="kobo_api.main"):
-        client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+        gated.client.post(
+            CONVERT_PATH,
+            json={"run_mode": RUN_MODE_HTTP},
+            headers=gated.headers(OPERATOR_EMAIL.lower()),
+        )
 
     lines = [
         record.getMessage()
         for record in caplog.records
         if "convert" in record.getMessage()
     ]
-    assert any(AGENT_NAME in line for line in lines), lines
+    assert any(
+        AGENT_NAME in line and OPERATOR_EMAIL.lower() in line for line in lines
+    ), lines
 
 
 def test_the_page_reads_as_connected_afterwards(client, session_factory):
@@ -1082,3 +1097,154 @@ def test_the_page_reads_as_connected_afterwards(client, session_factory):
 
     body = client.get(f"/api/agents/{AGENT_NAME}").json()
     assert body["kind"] == KIND_CONNECTED
+
+
+# --- unplugged from its colleagues ------------------------------------------------
+#
+# A connected agent has no colleague wiring: cabal holds no inbound route to
+# it, and the room never wrote it a roster. A converted one has to lose the
+# wiring it used to have, on the wire AND on the page every colleague reads,
+# or it stays a name its group can dispatch to and nothing answers.
+
+GROUP = "payments-eng"
+PEER = "ward"
+
+
+def _seed_peer(session_factory, *, name=PEER, group_name=GROUP):
+    session = session_factory()
+    session.add(
+        Agent(
+            name=name,
+            persona="helpful-generalist",
+            model_id="m",
+            skills=[],
+            repo_full_name=f"{ORG}/agent-{name}",
+            status=AgentStatus.READY,
+            group_name=group_name,
+        )
+    )
+    session.commit()
+    session.close()
+
+
+def test_convert_takes_the_agent_off_the_dispatch_pairs_in_both_directions(
+    switchboard, session_factory
+):
+    _seed_composed(session_factory, group_name=GROUP)
+    _seed_peer(session_factory)
+
+    switchboard.client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+
+    assert switchboard.cabal.put_dispatch_pairs_calls, "no pair set was pushed"
+    pushed = switchboard.cabal.put_dispatch_pairs_calls[-1]
+    assert (f"agent:{AGENT_NAME}", PEER) not in pushed
+    assert (f"agent:{PEER}", AGENT_NAME) not in pushed
+
+
+def test_convert_leaves_the_rest_of_the_group_paired_with_each_other(
+    switchboard, session_factory
+):
+    """One agent leaving is not the group being unplugged."""
+    _seed_composed(session_factory, group_name=GROUP)
+    _seed_peer(session_factory)
+    _seed_peer(session_factory, name="atlas")
+
+    switchboard.client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+
+    pushed = switchboard.cabal.put_dispatch_pairs_calls[-1]
+    assert (f"agent:{PEER}", "atlas") in pushed
+    assert ("agent:atlas", PEER) in pushed
+
+
+def test_convert_redelivers_the_roster_to_every_colleague_who_could_see_it(
+    switchboard, session_factory
+):
+    """Best effort, over the relay, the same fast lane a destroy already
+    uses: the colleagues who kept a line naming this agent get a fresh
+    roster without it. Only composed agents are ever delivered to, and the
+    room owns every one of those."""
+    _seed_composed(session_factory, group_name=GROUP)
+    _seed_peer(session_factory)
+
+    switchboard.client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+
+    delivered = [
+        call["name"]
+        for call in switchboard.cabal.relay_calls
+        if call["task_envelope"]["metadata"].get("filename") == "colleagues.md"
+    ]
+    assert delivered == [PEER]
+
+
+def test_a_roster_delivery_that_misses_does_not_fail_the_convert(
+    session_factory, config, fake_storage, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": "http://agent-{name}.internal",
+        }
+    )
+    clients = Clients(
+        github=FakeGitHub(),
+        gojira=FakeGojira(),
+        cloud=FakeCloud(),
+        agent=FakeAgent(),
+        kubectl=FakeKubectl(),
+        storage=fake_storage,
+        image=FakeImage(),
+        cabal=FakeCabal(relay_error="switchboard is down"),
+    )
+    client = TestClient(create_app(session_factory, config=cfg, clients=clients))
+    _seed_composed(session_factory, group_name=GROUP)
+    _seed_peer(session_factory)
+
+    response = client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+
+    assert response.status_code == 200, response.text
+    assert _row(session_factory).kind == KIND_CONNECTED
+
+
+# --- what the room stops doing afterwards -----------------------------------------
+
+
+def test_the_room_stops_editing_the_bundle_once_converted(client, session_factory):
+    """The whole point of the action, proven through one of the routes it
+    turns off: every bundle-editing route shares `_room_edits_this_agent_
+    or_409`, so one of them standing for all of them is honest here."""
+    _seed_composed(session_factory)
+    client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/teach", json={"text": "remember this"}
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "error": (
+            "this agent's repository belongs to its team, so the room "
+            "does not change it"
+        )
+    }
+
+
+def test_the_room_stops_chatting_once_converted(client, session_factory):
+    """Chat was never gated on the kind before: the room would relay to an
+    agent it has no wiring for and answer 502 every time, for as long as
+    anyone kept asking."""
+    _seed_composed(session_factory)
+    client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/chat",
+        json={"messages": [{"role": "user", "text": "hello"}]},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "error": (
+            "this agent's repository belongs to its team, so the room "
+            "does not change it"
+        )
+    }
