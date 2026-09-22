@@ -119,11 +119,23 @@ class LadonClient(Protocol):
     own read route would not answer with one anyway.
     """
 
-    def put_secret(self, acting_email: str, path: str, values: dict[str, str]) -> None:
+    def put_secret(
+        self,
+        acting_email: str,
+        path: str,
+        values: dict[str, str],
+        remove: list[str] | None = None,
+    ) -> None:
         """Store `values` at `path` (`apps/<agent>/<purpose>`) on the human
         `acting_email`'s behalf. Existing keys at that path that are not
-        named here are left alone; the room never removes keys through this
-        lane.
+        named here are left alone.
+
+        `remove` names keys to take away in the same call, which only the
+        Secrets panel ever passes: the room's own two deliveries (the
+        colleague pass, the Slack tokens) add and replace and never remove.
+        A key named on both sides is refused by the platform, which is why
+        `kobo_api.agent_env.write_refusal` catches that first and answers
+        the person instead.
 
         Raises `ClientError` carrying the platform's own error sentence.
         The values are never logged and never reach a raised message.
@@ -303,7 +315,13 @@ class HttpxLadonClient:
         self._token_provider = token_provider or MetadataIdentityTokenProvider(audience)
         self._client = http_client or httpx.Client(timeout=_REQUEST_TIMEOUT)
 
-    def put_secret(self, acting_email: str, path: str, values: dict[str, str]) -> None:
+    def put_secret(
+        self,
+        acting_email: str,
+        path: str,
+        values: dict[str, str],
+        remove: list[str] | None = None,
+    ) -> None:
         self._post(
             "/api/service/secrets",
             {
@@ -311,11 +329,11 @@ class HttpxLadonClient:
                 "namespace": self._namespace,
                 "path": path,
                 "values": dict(values),
-                # The room only ever adds keys through this lane. An empty
-                # list is sent explicitly rather than omitted so the merge
-                # the platform performs is stated by the request, not
-                # inferred from what it is missing.
-                "remove_keys": [],
+                # Empty for the room's own two deliveries, which only ever
+                # add keys. Sent explicitly rather than omitted either way,
+                # so the merge the platform performs is stated by the
+                # request rather than inferred from what it is missing.
+                "remove_keys": list(remove or []),
                 "apply": True,
             },
             f"could not store the secret at {path}",

@@ -62,6 +62,13 @@ MAX_KEY_LENGTH = 64
 # what it adds -- swapping one key for another at the cap is not growth.
 MAX_KEYS = 100
 
+# One value's ceiling. Generous for a key, a URL or a PEM block, and low
+# enough that a whole pasted file cannot ride in as one variable. Enforced
+# at the request model so an oversized body is refused before it reaches a
+# repository or the lane; the number is here so both surfaces read it from
+# the same place as the rest of the rules.
+MAX_ENV_VALUE_LENGTH = 8192
+
 # What the room says about a key it sets itself. Named once because the
 # refusal below and the panel's own inline copy both use it.
 ROOM_SETS_THIS_ONE = "the room sets this one"
@@ -298,6 +305,18 @@ PULL_REQUEST = "pull_request"
 UNCHANGED = "unchanged"
 
 
+class RepoBusy(ClientError):
+    """Something an OWNER can clear is standing in front of this change:
+    a pull request the room opened before, or the branch it would push.
+
+    A `ClientError` subclass so every existing `except ClientError` still
+    catches it, and its own type so a route can tell "say this sentence to
+    the person" from "the platform was unreachable, say the house line".
+    Nothing here is retryable by the room; all of it is retryable by a
+    person who merges, closes or deletes something.
+    """
+
+
 @dataclass(frozen=True)
 class RepoEdit:
     """What happened to the agent's repository, in the words a route hands
@@ -306,6 +325,32 @@ class RepoEdit:
 
     how: str
     pull_request: str | None = None
+
+
+def read_repo_env(github: GitHubClient, repo: str) -> dict[str, str]:
+    """The environment variables `repo`'s `gojira.yaml` carries, by a plain
+    file read rather than a clone.
+
+    A read every time the panel opens should not cost a clone, and the
+    GitHub read gives exactly what the default branch holds, which is what
+    the panel is showing. `edit_gojira_yaml` still clones, because a write
+    has to push what it produced.
+
+    A file that is missing, empty, unparseable, or not a mapping all read
+    as no variables: none of those is a state the deploy platform could
+    have run, and a read is not the place to say so. `ClientError` from the
+    repository itself still propagates -- "I could not look" is not "there
+    is nothing there".
+    """
+    text = github.read_file(repo, "gojira.yaml")
+    try:
+        data = yaml.safe_load(text or "") or {}
+    except yaml.YAMLError:
+        log.warning("gojira.yaml in %s does not parse; reading no env from it", repo)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return read_env(data)
 
 
 def edit_gojira_yaml(
@@ -385,13 +430,13 @@ def _propose(
     if open_pr is not None:
         if reuse_open_pr:
             return RepoEdit(how=PULL_REQUEST, pull_request=open_pr)
-        raise ClientError(f"{ENV_PR_ALREADY_OPEN}{open_pr}")
+        raise RepoBusy(f"{ENV_PR_ALREADY_OPEN}{open_pr}")
 
     # No pull request, but the branch may still be there: a closed one
     # leaves it behind, and so does a merged one in a repository that does
     # not delete merged branches.
     if github.branch_exists(repo, ENV_BRANCH):
-        raise ClientError(ENV_BRANCH_IN_THE_WAY)
+        raise RepoBusy(ENV_BRANCH_IN_THE_WAY)
 
     url = github.open_pr(
         workdir,

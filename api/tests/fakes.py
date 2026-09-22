@@ -1684,17 +1684,16 @@ class FakeLadon:
     client never lets a value back out, which is exactly why the assertion
     has to live in the fake instead.
 
-    `.reads` are the paths `list_keys` was asked about, `.deletes` the
-    paths `delete_secret` removed, and `.unsyncs` the
+    `.reads` are the paths `list_keys` was asked about, `.removes` the
+    `(acting_email, path, keys)` half of each `put_secret` merge,
+    `.deletes` the paths `delete_secret` removed, and `.unsyncs` the
     `(acting_email, app, k8s_namespace, name)` objects `unsync` took away.
 
     This fake also STORES what it is given, rather than only recording it:
-    `put_secret` merges into a per-path dict and `delete_secret` empties
-    one, so `list_keys` answers with the names actually written and a
-    route's read-after-write reads like the real lane's would. `removed`
-    key names (the `remove_keys` half of a merge) are not modelled -- the
-    room's own writes go through `put_secret`'s values alone and the routes
-    that remove a key do so by writing the surviving set.
+    `put_secret` merges into a per-path dict (adding `values`, dropping
+    `remove`) and `delete_secret` takes the path away, so `list_keys`
+    answers with the names actually written and a route's read-after-write
+    reads like the real lane's would.
 
     `put_error`/`sync_error`/`read_error`/`delete_error`/`unsync_error`,
     when set, make the matching method raise `ClientError(that message)`
@@ -1721,17 +1720,28 @@ class FakeLadon:
         self._unsync_error = unsync_error
         self._updated_at = updated_at
         self.puts: list[tuple[str, str, dict[str, str]]] = []
+        self.removes: list[tuple[str, str, list[str]]] = []
         self.syncs: list[tuple[str, str, str, str, str]] = []
         self.reads: list[tuple[str, str]] = []
         self.deletes: list[tuple[str, str]] = []
         self.unsyncs: list[tuple[str, str, str, str]] = []
         self.stored: dict[str, dict[str, str]] = {}
 
-    def put_secret(self, acting_email: str, path: str, values: dict[str, str]) -> None:
+    def put_secret(
+        self,
+        acting_email: str,
+        path: str,
+        values: dict[str, str],
+        remove: list[str] | None = None,
+    ) -> None:
         if self._put_error is not None:
             raise ClientError(self._put_error)
         self.puts.append((acting_email, path, dict(values)))
-        self.stored.setdefault(path, {}).update(values)
+        self.removes.append((acting_email, path, list(remove or [])))
+        held = self.stored.setdefault(path, {})
+        held.update(values)
+        for key in remove or []:
+            held.pop(key, None)
 
     def ensure_synced(
         self, acting_email: str, app: str, path: str, k8s_namespace: str, name: str
