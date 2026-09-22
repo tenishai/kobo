@@ -279,12 +279,19 @@ def wire_slack(
        When the secrets platform's machine lane is configured (`ladon`,
        `Clients.ladon`), that write goes THROUGH the platform instead:
        stored at `apps/{name}/slack` against `acting_email` (the person
-       wiring Slack right now, else the agent's creator) and synced back
-       into the agent's namespace as the same `{name}-slack` Secret, so
-       step 2's `secrets_from` entry and the pod are unchanged. Never both
-       paths and never a fallback between them: two writers for one Secret
-       name is two sources of truth, so a lane failure fails this call the
-       same way a failed `apply_secret` does.
+       wiring Slack right now, else the agent's creator) and delivered into
+       the agent's namespace as the same `{name}-slack` Secret, so step 2's
+       `secrets_from` entry and the pod's contract are unchanged. What DOES
+       change is the timing: that delivery is eventually consistent, not
+       immediate. The value is stored at once, but the cluster only carries
+       it after the platform next re-reads the path (the refresh interval
+       this room asks for, minutes rather than the platform's hour-long
+       default) -- so on a RE-wire, a pod that restarts inside that window
+       can still be holding the previous tokens, where the direct write
+       above had them in place before this call returned. Never both paths
+       and never a fallback between them: two writers for one Secret name
+       is two sources of truth, so a lane failure fails this call the same
+       way a failed `apply_secret` does.
     2. Clone `repo` fresh; edit `bundle/agent.yaml` (transports gains one
        slack entry per channel in `channels`), `gojira.yaml` (`secrets_from`
        gains `{name}-slack`, append-if-missing), and `Dockerfile` (its `FROM` line

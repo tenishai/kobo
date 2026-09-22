@@ -206,14 +206,27 @@ it always has.
 What changes with it on: the values are stored once on the platform, recorded against the
 person whose action produced them (the creator of the agent, or whoever is wiring Slack), and
 the platform delivers them into the agent's namespace as the same Secret names the deploy
-contract already names — so nothing about a running pod, a repo's `gojira.yaml`, or a deploy
-changes. The room authenticates as its own workload identity; there is no token to configure
-or store, which is also why this is a deployment setting and not something an org config hands
-out, and why a local room leaves it off. There is deliberately no fallback: if the platform
-refuses or is unreachable, the step fails with that platform's own sentence and is retried,
-rather than quietly writing the Secret a second way and leaving two sources of truth. The
-room's own Slack app-config token pair (`slack_tokens_secret` above) is unaffected and stays
-where it is.
+contract already names — so a running pod, a repo's `gojira.yaml`, and a deploy see the same
+contract as before. The room authenticates as its own workload identity; there is no token to
+configure or store, which is also why this is a deployment setting and not something an org
+config hands out, and why a local room leaves it off. There is deliberately no fallback: if the
+platform refuses or is unreachable, the step fails with that platform's own sentence and is
+retried, rather than quietly writing the Secret a second way and leaving two sources of truth.
+The room's own Slack app-config token pair (`slack_tokens_secret` above) is unaffected and
+stays where it is.
+
+What also changes is the timing, which matters on a re-wire. Delivery through the platform is
+eventually consistent: the value is stored immediately, but the agent's namespace only carries
+it once the platform re-reads the path. The room asks for a refresh interval of a minute rather
+than the platform's hour-long default, so a rotation lands within minutes — but it is not in
+place the moment the call returns, the way the direct write was. A pod restarted inside that
+window can still be holding the previous tokens until the next refresh; it needs no second
+action, only the wait. A step reporting success means the value is stored, not that the cluster
+has caught up.
+
+One gap to close before this can be called a finished migration: secrets written through the
+platform are **not** removed when the agent is destroyed — the lane has no delete for this room
+to call, so it needs one, plus a destroy step that calls it.
 
 **Org wiring**: a room serves one org. The org's config repo carries `org.yaml` — catalogs,
 models, groups, admin groups, the runtime pin — cloned at boot and merged over local defaults.

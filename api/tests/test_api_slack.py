@@ -615,6 +615,63 @@ def test_connect_slack_through_the_secrets_platform_falls_back_to_the_creator(
     assert ladon.puts[0][0] == OPERATOR_EMAIL
 
 
+def test_connect_slack_with_nobody_to_record_the_write_against_is_a_409(
+    session_factory, config
+):
+    # Not the retryable 502: retrying changes nothing, since there is no
+    # verified caller and the agent has no creator on record either. The
+    # refusal says so in one sentence naming only the agent.
+    github = _CapturingGitHub()
+    ladon = FakeLadon()
+    kubectl = FakeKubectl()
+    gojira, app_id = _onboarded_gojira()
+    client = _make_client(
+        session_factory, config, github=github, kubectl=kubectl, gojira=gojira, ladon=ladon
+    )
+    _seed_agent(
+        session_factory, config, gojira_app_id=app_id, slack_app_id=APP_ID,
+        slack_channels=[CHANNEL], created_by=None,
+    )
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/slack/connect",
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+    )
+
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert AGENT_NAME in error
+    assert BOT_TOKEN not in error
+    assert APP_TOKEN not in error
+    # Nothing was attempted: no delivery, no direct write, no push.
+    assert ladon.puts == []
+    assert kubectl.secrets_applied == []
+    assert github.pushes == []
+
+
+def test_connect_slack_with_no_acting_email_is_unaffected_when_the_lane_is_off(
+    session_factory, config
+):
+    # The refusal belongs to the secrets platform's lane alone: a room
+    # writing Secrets directly never needed a person's name for it, and
+    # nothing about that changes here.
+    gojira, app_id = _onboarded_gojira()
+    client = _make_client(
+        session_factory, config, github=_CapturingGitHub(), gojira=gojira
+    )
+    _seed_agent(
+        session_factory, config, gojira_app_id=app_id, slack_app_id=APP_ID,
+        slack_channels=[CHANNEL], created_by=None,
+    )
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/slack/connect",
+        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
+    )
+
+    assert response.status_code == 200
+
+
 def test_connect_slack_secrets_platform_failure_is_the_same_502_as_a_failed_write(
     session_factory, config
 ):

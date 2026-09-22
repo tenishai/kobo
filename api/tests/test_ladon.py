@@ -160,9 +160,102 @@ def test_ensure_synced_request_shape_and_auth_header():
         "k8s_namespace": AGENT,
         "name": f"{AGENT}-cabal",
         "target_name": f"{AGENT}-cabal",
+        "refresh_interval": "1m",
         "apply": True,
     }
     assert captured["auth"] == "Bearer an-id-token"
+
+
+def test_ensure_synced_asks_for_a_short_refresh_so_a_rotation_lands_in_minutes():
+    # A re-wire changes the stored value but not the cluster object, so the
+    # delivered Secret only catches up when the platform next re-reads it.
+    # An hour of that is a pod still holding revoked tokens.
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        return _ok(request)
+
+    _client(handler).ensure_synced(
+        EMAIL, AGENT, f"apps/{AGENT}/cabal", AGENT, f"{AGENT}-cabal"
+    )
+
+    assert captured["json"]["refresh_interval"] == "1m"
+
+
+def test_a_blocked_target_in_a_200_report_is_a_failure_not_a_success():
+    # The lane answers 200 with a `blocked` list when it could not apply the
+    # cluster object (a field-manager conflict, say). A success status over
+    # an undelivered secret is the one failure this room must not miss.
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "report": [{"surface": "cluster", "action": "update"}],
+                "blocked": [f"ExternalSecret/{AGENT}/{AGENT}-cabal"],
+            },
+        )
+
+    with pytest.raises(ClientError) as exc_info:
+        _client(handler).ensure_synced(
+            EMAIL, AGENT, f"apps/{AGENT}/cabal", AGENT, f"{AGENT}-cabal"
+        )
+
+    message = str(exc_info.value)
+    assert "did not accept" in message
+    assert f"ExternalSecret/{AGENT}/{AGENT}-cabal" in message
+    assert f"apps/{AGENT}/cabal" in message
+
+
+def test_several_blocked_targets_are_all_named():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"blocked": [f"ExternalSecret/{AGENT}/{AGENT}-cabal", "Secret/clio/other"]},
+        )
+
+    with pytest.raises(ClientError) as exc_info:
+        _client(handler).ensure_synced(
+            EMAIL, AGENT, f"apps/{AGENT}/cabal", AGENT, f"{AGENT}-cabal"
+        )
+
+    assert f"ExternalSecret/{AGENT}/{AGENT}-cabal, Secret/clio/other" in str(exc_info.value)
+
+
+def test_a_blocked_entry_this_room_cannot_read_is_described_not_repeated():
+    # Only strings are quoted: they are target names and verbs by the
+    # lane's contract. Anything else might carry something this room must
+    # not repeat, so it is described instead -- and it still fails.
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"blocked": [{"target": SECRET_VALUE}]})
+
+    with pytest.raises(ClientError) as exc_info:
+        _client(handler).ensure_synced(
+            EMAIL, AGENT, f"apps/{AGENT}/cabal", AGENT, f"{AGENT}-cabal"
+        )
+
+    assert SECRET_VALUE not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("body", [{"blocked": []}, {"applied": True}, [{"action": "create"}]])
+def test_a_report_with_nothing_blocked_is_a_success(body):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=body)
+
+    _client(handler).ensure_synced(
+        EMAIL, AGENT, f"apps/{AGENT}/cabal", AGENT, f"{AGENT}-cabal"
+    )  # must not raise
+
+
+def test_a_blocked_list_on_a_store_response_is_not_read():
+    # `blocked` belongs to the sync report -- a store either wrote or
+    # failed with a status. This room reads nothing else off a 2xx.
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"applied": True, "blocked": ["something"]})
+
+    _client(handler).put_secret(
+        EMAIL, f"apps/{AGENT}/cabal", {"K": SECRET_VALUE}
+    )  # must not raise
 
 
 @pytest.mark.parametrize("status", [200, 201, 202])
@@ -265,6 +358,41 @@ def test_a_platform_that_does_not_answer_raises_without_the_request_body():
     message = str(exc_info.value)
     assert "did not answer" in message
     assert SECRET_VALUE not in message
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "http://[::1",  # httpx.InvalidURL
+        "http://",  # no host at all: a plain ValueError before httpx looks
+        "not a url",
+    ],
+)
+def test_an_address_httpx_cannot_parse_is_a_plain_error_not_a_crash(bad_url):
+    # A misconfigured `ladon_url` must read as a failed delivery with a
+    # plain sentence, not an unhandled exception surfacing as a 500 on
+    # whichever route happened to trigger the write.
+    client = HttpxLadonClient(
+        bad_url, AUDIENCE, NAMESPACE,
+        token_provider=lambda: "t",
+        http_client=httpx.Client(transport=httpx.MockTransport(_ok)),
+    )
+
+    with pytest.raises(ClientError) as exc_info:
+        client.put_secret(EMAIL, f"apps/{AGENT}/cabal", {"K": SECRET_VALUE})
+
+    assert SECRET_VALUE not in str(exc_info.value)
+
+
+def test_an_identity_address_httpx_cannot_parse_is_a_plain_error_too():
+    class _Unparsable:
+        def get(self, *args, **kwargs):
+            raise httpx.InvalidURL("no host included in url")
+
+    provider = MetadataIdentityTokenProvider(AUDIENCE, client=_Unparsable())
+
+    with pytest.raises(ClientError):
+        provider()
 
 
 def test_a_token_that_cannot_be_minted_fails_the_call_before_anything_is_sent():
@@ -477,6 +605,43 @@ def test_deliver_secret_refuses_a_write_with_nobody_to_record_it_against(email):
     assert SECRET_VALUE not in str(exc_info.value)
     assert ladon.puts == []
     assert ladon.syncs == []
+
+
+def test_deliver_secret_logs_one_line_naming_the_agent_and_purpose_only(caplog):
+    ladon = FakeLadon()
+
+    with caplog.at_level("INFO", logger="kobo_api.ladon"):
+        deliver_secret(
+            ladon,
+            acting_email=EMAIL,
+            agent_name=AGENT,
+            purpose="cabal",
+            values={"K": SECRET_VALUE},
+            secret_name=f"{AGENT}-cabal",
+        )
+
+    lines = [record.getMessage() for record in caplog.records]
+    assert len(lines) == 1
+    assert AGENT in lines[0]
+    assert "cabal" in lines[0]
+    assert SECRET_VALUE not in lines[0]
+    assert EMAIL not in lines[0]
+
+
+def test_deliver_secret_says_nothing_when_the_delivery_failed(caplog):
+    ladon = FakeLadon(sync_error="the cluster refused it")
+
+    with caplog.at_level("INFO", logger="kobo_api.ladon"), pytest.raises(ClientError):
+        deliver_secret(
+            ladon,
+            acting_email=EMAIL,
+            agent_name=AGENT,
+            purpose="cabal",
+            values={"K": SECRET_VALUE},
+            secret_name=f"{AGENT}-cabal",
+        )
+
+    assert caplog.records == []
 
 
 def test_deliver_secret_trims_the_acting_email():

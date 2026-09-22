@@ -1548,6 +1548,17 @@ class WireStep:
     may trigger) lands, the Secret it names already exists in the
     namespace. Disabled, every part of this addition is a no-op and the
     step's behavior is byte-identical to before this feature existed.
+
+    One qualification on that ordering when the secrets platform's machine
+    lane is configured (`ctx.clients.ladon`, kobo_api.ladon): delivery
+    through the platform is eventually consistent. The token is stored
+    before the push, same as before, but the agent's namespace only carries
+    the Secret once the platform re-reads the path — within the refresh
+    interval this room asks for (minutes), which can land after the pod the
+    reprovision rolls has already started. A pod that starts without its
+    colleague pass picks it up on its next restart rather than never; the
+    room does not wait for that here, and this step reporting success means
+    the value is stored, not that the cluster has caught up.
     """
 
     name = "wire"

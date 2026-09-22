@@ -66,10 +66,14 @@ def deliver_pass(
     `ladon`, when the secrets platform's machine lane is configured
     (`Clients.ladon`, gated on `Config.ladon_enabled`), REPLACES that direct
     Secret write: the token goes to the platform under `apps/<agent>/cabal`,
-    recorded against the human who created the agent, and the platform syncs
-    it into the agent's namespace as the SAME `{agent.name}-cabal` Secret --
-    so `gojira.yaml`'s `secrets_from` entry, the Deployment's envFrom and
-    the running process see nothing different. Not a fallback pair: when the
+    recorded against the human who created the agent, and the platform
+    delivers it into the agent's namespace as the SAME `{agent.name}-cabal`
+    Secret -- so `gojira.yaml`'s `secrets_from` entry, the Deployment's
+    envFrom and the running process see the same contract. The one
+    difference is timing: that delivery is eventually consistent (the
+    cluster catches up when the platform next re-reads the path, within the
+    refresh interval this room asks for), where the direct write below is
+    in place the moment it returns. Not a fallback pair: when the
     lane is wired and fails, this raises and the step fails, because an
     agent whose Secret is written by both paths has two sources of truth and
     the next sync would quietly undo a human's repair. Unset (the default),

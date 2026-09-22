@@ -81,6 +81,12 @@ _METADATA_TIMEOUT_S = 5.0
 # patience for something hung.
 _REQUEST_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 
+# How often the cluster re-reads a delivered secret. See `ensure_synced` for
+# why the platform's own hour-long default is wrong for this room: every
+# delivery here can be a ROTATION, and a rotation is only really done once
+# the pod can no longer read the value a human just replaced.
+_REFRESH_INTERVAL = "1m"
+
 
 class LadonClient(Protocol):
     """What the room needs from the secrets platform, and nothing more.
@@ -193,7 +199,10 @@ class MetadataIdentityTokenProvider:
                 headers={"Metadata-Flavor": "Google"},
                 timeout=_METADATA_TIMEOUT_S,
             )
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
+            # The same three as the request path below (see `_post`): a
+            # failure to mint is a failed delivery, never an unhandled
+            # exception on a route.
             raise ClientError(
                 f"this room could not reach its own identity service: {exc}"
             ) from None
@@ -256,7 +265,11 @@ class HttpxLadonClient:
     def ensure_synced(
         self, acting_email: str, app: str, path: str, k8s_namespace: str, name: str
     ) -> None:
-        self._post(
+        # One sentence for both ways this call fails (a non-2xx and a 2xx
+        # that reports a blocked target), so the two can never drift into
+        # describing the same failed delivery differently.
+        what = f"could not deliver the secret at {path} to the cluster"
+        report = self._post(
             "/api/service/sync",
             {
                 "acting_email": acting_email,
@@ -270,23 +283,39 @@ class HttpxLadonClient:
                 # deploy contract already names that string.
                 "name": name,
                 "target_name": name,
+                # How often the cluster re-reads the stored value. The
+                # room's deliveries ROTATE: a re-wire stores new tokens
+                # but leaves the cluster object identical, so the
+                # delivered Secret only catches up on the next re-read --
+                # and the platform's own default is an hour, which is an
+                # hour of a restarted pod holding tokens a human has
+                # already revoked. Minutes is the honest window for a
+                # credential someone just replaced by hand.
+                "refresh_interval": _REFRESH_INTERVAL,
                 "apply": True,
             },
-            f"could not deliver the secret at {path} to the cluster",
+            what,
         )
+        blocked = _blocked_targets(report)
+        if blocked:
+            # A 200 over an undelivered secret: the lane reports what it
+            # could not apply (a field-manager conflict on an object
+            # someone else owns) rather than failing the whole request.
+            # Reading the status alone would mark this delivered.
+            raise ClientError(f"{what}: the cluster did not accept {', '.join(blocked)}")
 
-    def _post(self, route: str, body: dict, what: str) -> None:
-        """POST `body` and raise `ClientError` on anything but a 2xx.
+    def _post(self, route: str, body: dict, what: str) -> object | None:
+        """POST `body`, raise `ClientError` on anything but a 2xx, and hand
+        back the decoded 2xx body (None when it is not JSON).
 
         `body` carries secret values, so it is never logged and never part
         of a raised message -- which is also why a transport failure is
         re-raised unchained (`from None`): a chained cause prints the
         `httpx.Request` it belongs to in any traceback.
 
-        Any 2xx reads as success and the response body is never parsed: the
-        report it carries is for a human reading the platform's own audit
-        trail, and parsing it here would only create a way for this room to
-        depend on a field it does not need.
+        A caller may read NAMES off the returned report (see
+        `_blocked_targets`) and nothing else: the lane never returns a
+        secret value, and this room never asks it for one.
         """
         try:
             resp = self._client.post(
@@ -294,12 +323,42 @@ class HttpxLadonClient:
                 json=body,
                 headers={"Authorization": f"Bearer {self._token_provider()}"},
             )
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
+            # InvalidURL is NOT an HTTPError, and an address with no host at
+            # all (`http://`) never reaches httpx's own URL validation --
+            # it surfaces as a plain ValueError from the proxy lookup. A
+            # misconfigured `ladon_url` is a failed delivery either way;
+            # uncaught, it would surface as a 500 on whichever route
+            # happened to trigger the write.
             raise ClientError(f"{what}: the secrets platform did not answer ({exc})") from None
 
         if resp.status_code // 100 == 2:
-            return
+            try:
+                return resp.json()
+            except ValueError:
+                return None
         raise ClientError(f"{what}: {_server_sentence(resp)}")
+
+
+def _blocked_targets(report: object) -> list[str]:
+    """The cluster objects a sync report says it could NOT apply, as plain
+    strings -- empty when there are none (the ordinary case).
+
+    Only entries that are already strings are quoted: by the lane's
+    contract those are target names and verbs, never values. An entry
+    shaped like anything else is described rather than repeated, since this
+    room cannot know what it carries -- but it still counts as blocked, so
+    an unreadable report can never read as a clean delivery.
+    """
+    if not isinstance(report, dict):
+        return []
+    blocked = report.get("blocked")
+    if not isinstance(blocked, list):
+        return []
+    return [
+        entry if isinstance(entry, str) else "an object it did not name"
+        for entry in blocked
+    ]
 
 
 def _server_sentence(resp: httpx.Response) -> str:
@@ -348,18 +407,48 @@ def deliver_secret(
 
     `acting_email` is the human whose action produced these values -- the
     person the platform records the write against. Missing it is a refusal,
-    not a default: a write nobody is accountable for is exactly what this
-    lane exists to prevent, and the room would rather fail a step with a
-    plain sentence than store a secret under no one's name.
+    not a default (`acting_email_refusal` below is the same check a caller
+    can make first, to answer a person rather than fail a step): a write
+    nobody is accountable for is exactly what this lane exists to prevent,
+    and the room would rather refuse than store a secret under no one's
+    name.
+
+    Delivery here is EVENTUALLY consistent, unlike the direct write it
+    replaces: the value is stored immediately, and the agent's namespace
+    catches up when the cluster next re-reads it (`_REFRESH_INTERVAL`). A
+    pod restarted in that window can still be holding the previous value.
     """
-    email = (acting_email or "").strip()
-    if not email:
-        raise ClientError(
-            f"{agent_name} has no person on record to write its secrets for, "
-            "so the secrets platform cannot be asked to store them"
-        )
+    refusal = acting_email_refusal(agent_name, acting_email)
+    if refusal is not None:
+        raise ClientError(refusal)
+    email = acting_email.strip()
     path = f"apps/{agent_name}/{purpose}"
     ladon.put_secret(email, path, values)
     # Only after the value is stored: a sync for a path with nothing at it
     # would deliver an empty Secret over a good one.
     ladon.ensure_synced(email, agent_name, path, agent_name, secret_name)
+    # One line per delivery, and only once it actually happened: which lane
+    # wrote an agent's secret is the first thing an operator asks when a pod
+    # comes up without one. Names only -- never a value, and not the
+    # person's email either (the platform's own audit trail holds that, and
+    # this line would otherwise put it in every pod log that scrapes ours).
+    log.info(
+        "delivered the %s secret for %s through the secrets platform",
+        purpose,
+        agent_name,
+    )
+
+
+def acting_email_refusal(agent_name: str, acting_email: str | None) -> str | None:
+    """The plain refusal sentence when `acting_email` names nobody, else
+    None -- `deliver_secret`'s own precondition, exposed so a route can
+    make the same check BEFORE it starts work and answer the person a
+    refusal rather than a retryable failure (there is nothing to retry: no
+    verified caller and no creator on record is a standing state, not a
+    blip). Names the agent and nobody and nothing else."""
+    if (acting_email or "").strip():
+        return None
+    return (
+        f"{agent_name} has no person on record to write its secrets for, "
+        "so the secrets platform cannot be asked to store them"
+    )
