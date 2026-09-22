@@ -454,8 +454,10 @@ describe("ConnectModal — connecting", () => {
 // --- the repository field's typeahead ---------------------------------------
 //
 // The field searches the repositories the room's GitHub App can already
-// reach (`GET /api/connect/repos`). It never offers a list: nothing is
-// shown on focus or on a click, and rows arrive only once somebody types.
+// reach (`GET /api/connect/repos`). Clicking into it opens a short list of
+// the most recent ones, with a count of how many there are in all;
+// typing filters. The count is the server's `total`, not the number of
+// rows, because the rows are only a way in.
 
 const REPO_MATCHES = {
   repos: [
@@ -463,6 +465,7 @@ const REPO_MATCHES = {
     { full_name: "example-org/chat-archive", private: false },
   ],
   truncated: false,
+  total: 42,
 };
 
 const SEARCH_UNAVAILABLE =
@@ -517,15 +520,85 @@ describe("ConnectModal — finding a repository", () => {
     expect(repoInput().getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("offers nothing while the field is empty", async () => {
+  it("offers the most recent repositories the moment the field is clicked into", async () => {
+    // Nobody would know the room already reaches these otherwise: an
+    // empty box with a shut list says the room has nothing.
     renderWithClient(ConnectModal, { open: true, onclose: () => {} });
 
     await screen.findByText("No groups are configured yet.");
     await fireEvent.focus(repoInput());
-    await fireEvent.click(repoInput());
+
+    const options = await screen.findAllByRole("option");
+    expect(
+      options.map((option) =>
+        (option.textContent ?? "").replace(/\s+/g, " ").trim(),
+      ),
+    ).toEqual([
+      "example-org/team-chatbot Private",
+      "example-org/chat-archive Public",
+    ]);
+    expect(repoInput().getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("says how many repositories there are and how to narrow them", async () => {
+    // The count is the room's own total, not the number of rows showing.
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByText("No groups are configured yet.");
+    await fireEvent.focus(repoInput());
+
+    expect(
+      await screen.findByText(
+        /42 repositories in the organization\. Start typing to filter\./,
+      ),
+    ).not.toBeNull();
+  });
+
+  it("offers nothing until the field is clicked into", async () => {
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByText("No groups are configured yet.");
+    await afterTheDebounce();
 
     expect(screen.queryByRole("listbox")).toBeNull();
     expect(repoInput().getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("has no placeholder in the box", async () => {
+    // The list is what tells somebody what goes here now. A grey
+    // owner/name behind it was one more thing to read past.
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByLabelText("Repository");
+
+    expect(repoInput().getAttribute("placeholder")).toBeNull();
+  });
+
+  it("fills the field with a recent repository that was clicked", async () => {
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByText("No groups are configured yet.");
+    await fireEvent.focus(repoInput());
+    const options = await screen.findAllByRole("option");
+
+    await fireEvent.click(options[0]);
+
+    expect(repoInput().value).toBe("example-org/team-chatbot");
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("closes the recent list on Escape without closing the form", async () => {
+    const onclose = vi.fn();
+    renderWithClient(ConnectModal, { open: true, onclose });
+
+    await screen.findByText("No groups are configured yet.");
+    await fireEvent.focus(repoInput());
+    await screen.findAllByRole("option");
+
+    await fireEvent.keyDown(repoInput(), { key: "Escape" });
+
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(onclose).not.toHaveBeenCalled();
   });
 
   it("fills the field with the highlighted repository when Enter is pressed", async () => {
@@ -588,13 +661,14 @@ describe("ConnectModal — finding a repository", () => {
     expect(screen.getByRole("listbox")).not.toBeNull();
   });
 
-  it("offers nothing on ArrowDown while the field is empty", async () => {
+  it("opens the recent list on ArrowDown while the field is empty", async () => {
+    // The keyboard's way to the list the mouse gets by clicking in.
     renderWithClient(ConnectModal, { open: true, onclose: () => {} });
 
     await screen.findByText("No groups are configured yet.");
     await fireEvent.keyDown(repoInput(), { key: "ArrowDown" });
 
-    expect(screen.queryByRole("listbox")).toBeNull();
+    expect((await screen.findAllByRole("option")).length).toBe(2);
   });
 
   it("shows no rows for a term that has been typed past", async () => {
@@ -710,12 +784,16 @@ describe("ConnectModal — finding a repository", () => {
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
         if (url.includes("/api/connect/repos")) {
-          searches += 1;
+          // Counted per SEARCH, not per request: the empty query the
+          // field asks on its own is not the one this case is about.
+          if (!url.endsWith("q=")) {
+            searches += 1;
+          }
           return new Response(
             JSON.stringify(
-              searches === 1
+              searches <= 1
                 ? REPO_MATCHES
-                : { repos: [REPO_MATCHES.repos[0]], truncated: false },
+                : { ...REPO_MATCHES, repos: [REPO_MATCHES.repos[0]] },
             ),
             { status: 200, headers: { "Content-Type": "application/json" } },
           );
@@ -770,5 +848,69 @@ describe("ConnectModal — finding a repository", () => {
     expect(
       await screen.findByText("More matched. Keep typing to narrow it down."),
     ).not.toBeNull();
+  });
+
+  it("does not say more matched over the recent list, which is short by design", async () => {
+    // Those rows are a count away from the whole story already, and the
+    // footer is the honest version of it.
+    vi.unstubAllGlobals();
+    stubConnectRoutes({
+      "/api/connect/repos": { ...REPO_MATCHES, truncated: true },
+    });
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByText("No groups are configured yet.");
+    await fireEvent.focus(repoInput());
+    await screen.findAllByRole("option");
+
+    expect(
+      screen.queryByText("More matched. Keep typing to narrow it down."),
+    ).toBeNull();
+  });
+
+  it("says it is loading while the first answer is still coming", async () => {
+    // The room's listing can be cold, and a dropdown that shows nothing
+    // while it fills looks like a room that reaches nothing.
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.unstubAllGlobals();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/connect/repos")) {
+          await held;
+          return new Response(JSON.stringify(REPO_MATCHES), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.includes("/api/catalog/groups")) {
+          return new Response(JSON.stringify({ groups: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByText("No groups are configured yet.");
+    await fireEvent.focus(repoInput());
+
+    expect(await screen.findByText("Loading repositories")).not.toBeNull();
+
+    release?.();
+
+    expect((await screen.findAllByRole("option")).length).toBe(2);
+    await waitFor(() =>
+      expect(screen.queryByText("Loading repositories")).toBeNull(),
+    );
   });
 });

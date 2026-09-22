@@ -116,7 +116,7 @@ from kobo_api.metadata import (
     skill_descriptions_for_agent,
     tooling_filenames_for,
 )
-from kobo_api.repo_search import MAX_QUERY_CHARS, RepoIndex
+from kobo_api.repo_search import MAX_QUERY_CHARS, RepoIndex, RepoWarmer
 from kobo_api.runtime import commit_runtime_image, validate_runtime_image
 from kobo_api.models import (
     GROUP_REQUEST_DECLINED,
@@ -2274,20 +2274,54 @@ def get_session(request: Request) -> Iterator[Session]:
         session.close()
 
 
+def _start_repo_warmer(app: FastAPI) -> RepoWarmer | None:
+    """Put the connect form's repository listing in hand before the first
+    person opens the form, and keep it there.
+
+    Filling that cache is many sequential pages of the installation's
+    repositories, and it used to happen on the first search -- so whoever
+    opened the form first waited out all of them before a single row
+    appeared. Nothing about the read is per-caller, so this does it off
+    the request path at boot and again every TTL.
+
+    None when the room has no GitHub client: `app.state.repo_index` is
+    None in exactly that case, and there is nothing to warm. Boot is
+    never blocked and never fails over this -- `RepoWarmer.warm_once`
+    swallows and logs, and the next search fills the listing itself.
+    """
+    index: RepoIndex | None = app.state.repo_index
+    if index is None:
+        return None
+    warmer = RepoWarmer(index)
+    app.state.repo_warmer = warmer
+    warmer.start()
+    return warmer
+
+
 @asynccontextmanager
 async def _room_lifespan(app: FastAPI):
     """mcp_lifespan plus the room's own background work: the learnings
-    nightly loop, and the periodic sweep for provisioning runs whose
-    process is gone (boot-only would never catch a pipeline killed just
-    after the last boot). TestClient instances used without `with` never
-    enter lifespans at all, so unit tests see no background task unless
-    they opt in."""
+    nightly loop, the periodic sweep for provisioning runs whose process is
+    gone (boot-only would never catch a pipeline killed just after the last
+    boot), and the repository typeahead's cache warmer. TestClient
+    instances used without `with` never enter lifespans at all, so unit
+    tests see no background task unless they opt in."""
     async with mcp_lifespan(app):
         nightly = asyncio.create_task(learnings_nightly_loop(app))
         sweeper = asyncio.create_task(interrupted_sweep_loop(app))
+        # A thread rather than a task, because the listing it reads is a
+        # blocking `gh` call: on the loop it would stall every request in
+        # the process for as long as GitHub takes.
+        warmer = _start_repo_warmer(app)
         try:
             yield
         finally:
+            if warmer is not None:
+                # Joined, not just signalled, so a shutdown does not race
+                # a listing still writing itself into the index -- but
+                # with a timeout, and on a daemon thread, so it can never
+                # be the reason this process will not exit.
+                warmer.stop()
             for task in (nightly, sweeper):
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -2557,6 +2591,10 @@ def create_app(
         if clients is not None and clients.github is not None
         else None
     )
+    # Set by `_start_repo_warmer` when the lifespan runs, which is a real
+    # boot and not a TestClient used without `with`. Declared here so the
+    # attribute always exists to be read.
+    app.state.repo_warmer = None
     # `org` defaults to None in the signature (not a shared OrgState(...)
     # instance) so every create_app() call gets its own object here rather
     # than every caller that omits `org` pointing at one mutable instance in
@@ -3949,26 +3987,27 @@ def create_app(
     # already typing belongs to something the room's App can reach.
     #
     # What bounds it instead is the pair below. The prefix rule
-    # (`repo_search._rank`) means a query only ever names repositories
-    # somebody was already typing -- there is no query that returns the
-    # organisation -- and the rate limit means nobody walks the alphabet
-    # through it anyway.
+    # (`repo_search._rank`) means a typed query only ever names
+    # repositories somebody was already typing -- there is no query that
+    # returns the organisation -- and the rate limit means nobody walks the
+    # alphabet through it anyway. The empty query is bounded by being
+    # short: eight rows and a count, which says the room reaches your work
+    # without being a listing of it.
     @app.get("/api/connect/repos")
     def list_connect_repos(
         request: Request, q: str = Query("", max_length=MAX_QUERY_CHARS)
     ) -> JSONResponse:
-        if not q.strip():
-            # Answered before the client is even looked at, and before the
-            # limit is spent: an empty query is not a search, and a room
-            # with no GitHub still has nothing to say about one.
-            return JSONResponse({"repos": [], "truncated": False})
-
-        if not rate_limit.check(
+        searching = bool(q.strip())
+        if searching and not rate_limit.check(
             _scan_caller(request), limit=REPO_SEARCH_LIMIT, bucket=REPO_SEARCH_BUCKET
         ):
             return JSONResponse(
                 {"error": "that is a lot of searching. Wait a minute"}, status_code=429
             )
+        # The empty query is deliberately NOT counted. It is one answer
+        # per focus, read out of a listing the warmer already holds, so it
+        # costs the room nothing and must not eat the ceiling a person
+        # needs for the typing that follows.
 
         clients: Clients | None = app.state.clients
         index: RepoIndex | None = app.state.repo_index
@@ -3976,7 +4015,7 @@ def create_app(
             return JSONResponse({"error": GITHUB_UNREACHABLE}, status_code=503)
 
         try:
-            matches, truncated = index.search(q)
+            matches, truncated, total = index.search(q)
         except ClientError as exc:
             # The client's own text never reaches the caller (same shape as
             # the scan's own backend failures next door).
@@ -3994,6 +4033,10 @@ def create_app(
                     for repo in matches
                 ],
                 "truncated": truncated,
+                # On every answer, not only the empty one: the field's
+                # footer says how many repositories the room reaches, and
+                # it should not have to ask a second time to learn it.
+                "total": total,
             }
         )
 

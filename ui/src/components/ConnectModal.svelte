@@ -56,9 +56,11 @@
   const HEADLESS_UNAVAILABLE = "headless_unavailable";
 
   // The Repository field is a combobox over the repositories the room's
-  // GitHub App can already reach. It never offers a list: nothing is shown
-  // on focus or on a click, and rows arrive only once somebody types. The
-  // quiet spell before a search is short enough to feel immediate and long
+  // GitHub App can already reach. Clicking into it opens a short list of
+  // the ones worked on most recently, with the count of how many there
+  // are underneath: without that, the field is a blank box that gives no
+  // sign the room reaches anything at all. Typing filters it. The quiet
+  // spell before a search is short enough to feel immediate and long
   // enough that a typed name is one request, not twelve.
   const REPO_SEARCH_DEBOUNCE_MS = 200;
   const REPO_LIST_ID = "connect-repo-list";
@@ -136,8 +138,13 @@
   // repository exists, and asking again would only reopen the list over
   // the answer somebody already chose.
   let pickedRepo = $state<string | null>(null);
+  // Whether the cursor is in the field. Only the empty list is gated on
+  // it: that list is an offer nobody asked for, so it belongs to the
+  // moment somebody is actually in the box, while rows for something
+  // typed stay where they were put.
+  let repoFieldFocused = $state(false);
 
-  const repoMatches = createQuery(() => (connectReposQuery(repoSearchTerm)));
+  const repoMatches = createQuery(() => (connectReposQuery(repoSearchTerm, open)));
 
   const commitRepoSearch = debounced((value: string) => {
     repoSearchTerm = value;
@@ -159,37 +166,54 @@
   });
 
   const repoSuggestions = $derived(repoMatches.data?.repos ?? []);
+  /** Whether what came back answers what is in the box right now. Rows
+   * for a term that has been typed past answer a question nobody is
+   * asking any more, so while the debounce runs the list is shut. */
+  const repoAnswerIsCurrent = $derived(repoSearchTerm === repo.trim());
+  /** The field is showing the room's offer rather than a search: nothing
+   * has been typed, so the rows are the most recently pushed. */
+  const repoShowsRecent = $derived(repoAnswerIsCurrent && repo.trim() === "");
+  /** Whoever opens the form first can be waiting on a cold listing, and a
+   * dropdown that is silent about it looks broken. */
+  const repoListLoading = $derived(repoAnswerIsCurrent && repoMatches.isPending);
+  /** The field has to be in play for a failure to be worth saying: a
+   * modal that has only just opened should not lead with an error. */
   const repoSearchFailed = $derived(
-    repoMatches.isError && repo.trim().length >= 1,
+    repoMatches.isError && (repo.trim().length >= 1 || repoFieldFocused),
   );
   const repoListOpen = $derived(
     !repoListDismissed &&
-      repo.trim().length >= 1 &&
-      // Rows for a term that has been typed past answer a question nobody
-      // is asking any more. While the debounce runs, the list is shut.
-      repoSearchTerm === repo.trim() &&
-      repoSuggestions.length > 0,
+      repoAnswerIsCurrent &&
+      (repo.trim().length >= 1 || repoFieldFocused) &&
+      (repoListLoading || repoSuggestions.length > 0),
   );
+  const repoTotal = $derived(repoMatches.data?.total ?? 0);
   const repoMatchesTruncated = $derived(
-    repoListOpen && repoMatches.data?.truncated === true,
+    repoListOpen && !repoShowsRecent && repoMatches.data?.truncated === true,
   );
 
-  /** What a screen reader hears when the rows change. Silent while the
-   * field is empty, while a search is in flight, and when the search
-   * itself failed, since the line under the input says that one. */
+  /** "1 repository" / "7 repositories", which both the live region and
+   * the list's own footer count in. */
+  function repositoryCount(n: number): string {
+    return n === 1 ? "1 repository" : `${n} repositories`;
+  }
+
+  /** What a screen reader hears when the rows change. Silent while a
+   * search is in flight and when the search itself failed, since the line
+   * under the input says that one. With nothing typed it says how many
+   * the room reaches in all, not how many rows are showing: eight rows
+   * out of two hundred is the number worth hearing. */
   const repoAnnouncement = $derived.by(() => {
-    if (repoSearchTerm === "" || repoSearchTerm !== repo.trim()) {
+    if (!repoAnswerIsCurrent || repoMatches.isPending || repoMatches.isError) {
       return "";
     }
-    if (repoMatches.isPending || repoMatches.isError) {
-      return "";
+    if (repoShowsRecent) {
+      return repoFieldFocused ? repositoryCount(repoTotal) : "";
     }
     if (repoSuggestions.length === 0) {
       return "No repositories match";
     }
-    return repoSuggestions.length === 1
-      ? "1 repository"
-      : `${repoSuggestions.length} repositories`;
+    return repositoryCount(repoSuggestions.length);
   });
 
   // The highlight belongs to the rows it was made over. New rows (a
@@ -228,11 +252,13 @@
   function handleRepoKeydown(event: KeyboardEvent): void {
     if (!repoListOpen) {
       // Down is how a list that was dismissed comes back, which is the
-      // only way back to it without retyping. Nothing to reopen over an
-      // empty field: this field never offers a list unasked.
-      if (event.key === "ArrowDown" && repo.trim().length >= 1) {
+      // only way back to it without retyping. Over an empty field it is
+      // also how the keyboard asks for the list the mouse gets by
+      // clicking in.
+      if (event.key === "ArrowDown") {
         event.preventDefault();
         repoListDismissed = false;
+        repoFieldFocused = true;
       }
       return;
     }
@@ -337,6 +363,7 @@
       repoListDismissed = false;
       activeRepo = -1;
       pickedRepo = null;
+      repoFieldFocused = false;
     }
   });
 
@@ -443,7 +470,8 @@
           bind:value={repo}
           oninput={handleRepoTyped}
           onkeydown={handleRepoKeydown}
-          placeholder="owner/name"
+          onfocus={() => (repoFieldFocused = true)}
+          onblur={() => (repoFieldFocused = false)}
           autocomplete="off"
           spellcheck="false"
         />
@@ -454,6 +482,14 @@
             role="listbox"
             aria-label="Repositories"
           >
+            {#if repoListLoading}
+              <!-- Not an option: there is nothing here to pick. The
+                   keyboard skips it and the live region stays quiet
+                   until there is a count to say. -->
+              <li class="connect-form__suggestion-note" role="presentation">
+                Loading repositories
+              </li>
+            {/if}
             <!-- The row is the option. Its mousedown is swallowed so the
                  field keeps focus through the click, and the whole row
                  picks rather than a button inside it, which would put an
@@ -481,6 +517,15 @@
                 </span>
               </li>
             {/each}
+            {#if repoShowsRecent && !repoListLoading}
+              <!-- The rows above are a way in, not the list. This is
+                   what says how much more there is, and that typing is
+                   how to get at it. -->
+              <li class="connect-form__suggestion-note" role="presentation">
+                {repositoryCount(repoTotal)} in the organization. Start typing
+                to filter.
+              </li>
+            {/if}
           </ul>
         {/if}
       </div>
@@ -792,6 +837,20 @@
   .connect-form__suggestion-kind {
     color: var(--muted);
     font-size: 0.75rem;
+  }
+
+  /* The loading hint and the count under the recent rows. Quieter than a
+     row and not clickable, so nobody reads either as something to pick.
+     The count is separated by a rule because it is about the list, not
+     the last row of it. */
+  .connect-form__suggestion-note {
+    padding: var(--space-xs) var(--space-sm);
+    color: var(--muted);
+    font-size: 0.75rem;
+  }
+
+  .connect-form__suggestion + .connect-form__suggestion-note {
+    border-top: 1px solid var(--border);
   }
 
   /* Same visually-hidden line StepChecklist uses for its own live

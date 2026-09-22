@@ -544,17 +544,21 @@ export type ConnectRepoOption = {
   private: boolean;
 };
 
-/** `GET /api/connect/repos`'s answer: at most ten matches, and whether
- * more matched than came back. */
+/** `GET /api/connect/repos`'s answer: the rows to show, whether more
+ * matched than came back, and how many repositories the room reaches in
+ * all. `total` is on every answer and is what the field's footer says out
+ * loud; it counts what could be connected, so nothing archived is in it. */
 export type ConnectRepoMatches = {
   repos: ConnectRepoOption[];
   truncated: boolean;
+  total: number;
 };
 
 /** `GET /api/connect/repos`: the repositories the room's GitHub App
  * installation can reach whose name starts with (or contains) `q`. An
- * empty `q` answers with nothing, which is the rule and not an edge case:
- * the field never offers a list, only what somebody is already typing. */
+ * empty `q` is answered too, with the few pushed to most recently: a
+ * person who has not typed yet still needs to see that the room can
+ * already reach their work. */
 export async function searchConnectRepos(q: string): Promise<ConnectRepoMatches> {
   const res = await fetch(`/api/connect/repos?q=${encodeURIComponent(q)}`);
   return parse<ConnectRepoMatches>(res);

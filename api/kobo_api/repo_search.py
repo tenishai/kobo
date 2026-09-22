@@ -8,19 +8,24 @@ which ones are you starting to type?
 
 Two rules shape everything here.
 
-It never offers a list. An empty query answers with nothing, and the field
-shows nothing on focus or on a click. The installation can see thousands of
-repositories and a dropdown of all of them is not a choice anybody makes;
-it is also a listing of the organisation handed to whoever clicked, and
-this route is open to any signed-in person precisely because it only ever
-names what somebody was already typing.
+It offers a short list, never the organisation. An empty query answers with
+the eight repositories pushed to most recently, plus the count of how many
+there are in all, which is what tells a person the room can already reach
+their work; a full dropdown of thousands is not a choice anybody makes, and
+it would hand a listing of the organisation to whoever clicked. Eight rows
+and a number are a way in, not an index: past them the only way to see more
+is to type, and typing is matched by prefix (`_rank`), so no query walks the
+organisation either.
 
 It reads GitHub once, not once per keystroke. The listing is the same for
 everyone in the room, so one is held for five minutes, and a crowd
 arriving at an expired cache costs one read between them rather than one
 each -- and only the one caller doing that read waits for it; the rest are
 answered from the listing already in hand. Nothing in here is per-caller,
-which is why it can be shared.
+which is why it can be shared. `RepoWarmer` fills it before anyone asks and
+keeps filling it every TTL, so nobody pays for the cold read at all: it is
+many sequential pages, and the person who opened the form first used to
+wait out every one of them.
 
 The ordering is the only judgement this module makes. A repository whose
 NAME starts with what was typed is what a person meant; one that merely
@@ -33,11 +38,15 @@ stops a single letter from walking the organisation.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
+from typing import NamedTuple
 
 from kobo_api.clients import GitHubClient, InstallationRepo
+
+log = logging.getLogger(__name__)
 
 # How long one listing is held. Long enough that a form filled in over a
 # couple of minutes costs one GitHub read, short enough that a repository
@@ -55,10 +64,36 @@ MAX_QUERY_CHARS = 100
 # what was left out is reported instead.
 MAX_MATCHES = 10
 
+# The most rows an empty query gets, which is fewer than a search gets on
+# purpose. These are not matches for anything -- nobody asked for them --
+# so they are a glance that says "the room reaches your work, start here",
+# and a glance is short. The count beside them carries the rest.
+RECENT_MATCHES = 8
+
+# How long the warmer waits before joining its thread on the way out. The
+# thread is a daemon and holds nothing anyone else needs, so this is only
+# the courtesy of letting a listing already in flight finish; past it,
+# shutdown carries on without it.
+WARM_STOP_TIMEOUT_S = 5.0
+
 # Match tiers, best first. Only their ORDER matters.
 _RANK_NAME_PREFIX = 0
 _RANK_FULL_NAME_PREFIX = 1
 _RANK_NAME_SUBSTRING = 2
+
+
+class RepoMatches(NamedTuple):
+    """One answer from `RepoIndex.search`.
+
+    `total` is on every answer, not just the empty one: the field says how
+    many repositories the room reaches, and it must be able to say it
+    without a second question that could straddle a refresh and disagree
+    with the rows it is sitting under.
+    """
+
+    repos: list[InstallationRepo]
+    truncated: bool
+    total: int
 
 
 class RepoIndex:
@@ -89,26 +124,38 @@ class RepoIndex:
         self._repos: list[InstallationRepo] = []
         self._loaded_at: float | None = None
 
-    def search(
-        self, query: str, now: float | None = None
-    ) -> tuple[list[InstallationRepo], bool]:
-        """The repositories matching `query`, best first, and whether more
-        matched than came back.
+    def warm(self, now: float | None = None) -> None:
+        """Fill the listing if it is missing or past its TTL, off anybody's
+        request. Raises the same way `search` does; `RepoWarmer` is what
+        decides that a failure here is a logged line rather than an error
+        somebody sees."""
+        self._listing(self._now() if now is None else now)
 
-        An empty query is not a search: it answers with nothing and reads
-        nothing, so a focused field costs the room a GitHub listing only
-        once somebody actually types.
+    def search(self, query: str, now: float | None = None) -> RepoMatches:
+        """The repositories matching `query`, best first, whether more
+        matched than came back, and how many the room reaches in all.
+
+        An empty query is not a search but it is still an answer: the
+        `RECENT_MATCHES` pushed to most recently, so a person who has not
+        typed yet can see that the room already reaches their work. It
+        costs no GitHub read against a listing already in hand -- only a
+        cold cache, which is the same read the first keystroke would have
+        paid for, and which the warmer normally gets to first.
 
         Raises whatever the client raises when the listing cannot be read.
         An installation with no repositories and a token that may not ask
         are different facts, and the route says so differently.
         """
+        repos = self._listing(self._now() if now is None else now)
+        total = len(repos)
+
         needle = query.strip().lower()
         if not needle:
-            return [], False
+            recent = sorted(repos, key=lambda repo: repo.pushed_at, reverse=True)
+            return RepoMatches(recent[:RECENT_MATCHES], total > RECENT_MATCHES, total)
 
         matched: list[tuple[int, InstallationRepo]] = []
-        for repo in self._listing(self._now() if now is None else now):
+        for repo in repos:
             rank = _rank(repo, needle)
             if rank is not None:
                 matched.append((rank, repo))
@@ -120,8 +167,10 @@ class RepoIndex:
         matched.sort(key=lambda pair: pair[1].pushed_at, reverse=True)
         matched.sort(key=lambda pair: pair[0])
 
-        repos = [repo for _, repo in matched]
-        return repos[:MAX_MATCHES], len(repos) > MAX_MATCHES
+        ranked = [repo for _, repo in matched]
+        return RepoMatches(
+            ranked[:MAX_MATCHES], len(ranked) > MAX_MATCHES, total
+        )
 
     def _listing(self, now: float) -> list[InstallationRepo]:
         """The cached listing, refreshed when it is missing or past the
@@ -184,6 +233,83 @@ class RepoIndex:
             self._repos = repos
             self._loaded_at = now
         return repos
+
+
+class RepoWarmer:
+    """Keeps one `RepoIndex` filled for as long as the process lives.
+
+    The cache used to fill on the first search, which meant the first
+    person to open the connect form waited out every page of the
+    installation's listing before a single row appeared. Nothing about
+    that read is per-caller, so nobody needs to be there for it: this
+    fills the listing at boot and re-fills it every TTL, and by the time
+    anyone types, the answer is already in hand.
+
+    A daemon thread, deliberately. It holds nothing, writes nothing
+    outside the index, and must never be the reason a process will not
+    exit -- the lifespan calls `stop` on the way out, and a listing still
+    in flight past `WARM_STOP_TIMEOUT_S` is simply abandoned.
+
+    `wait` is the seam a test drives this through: the default is the stop
+    event's own wait, which is both the sleep between rounds and the way
+    shutdown interrupts it instantly rather than after five minutes.
+    """
+
+    def __init__(
+        self,
+        index: RepoIndex,
+        ttl_s: float = TTL_S,
+        wait: Callable[[float], bool] | None = None,
+    ):
+        self._index = index
+        self._ttl_s = ttl_s
+        self._stop = threading.Event()
+        # Bound here rather than defaulted in the signature: the event it
+        # waits on does not exist until this line has run.
+        self._wait = wait if wait is not None else self._stop.wait
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        thread = threading.Thread(target=self.run, name="repo-warm", daemon=True)
+        self._thread = thread
+        thread.start()
+
+    def run(self) -> None:
+        """Warm, wait a TTL, warm again, until asked to stop. Warms FIRST:
+        boot is exactly when the listing is coldest."""
+        while True:
+            self.warm_once()
+            if self._wait(self._ttl_s):
+                return
+
+    def warm_once(self) -> None:
+        """One refresh, with no way to fail loudly. Nobody is waiting on
+        this thread, so a GitHub that will not answer is a logged line and
+        another try one TTL later -- and in the meantime the next search
+        fills the listing itself, exactly as it did before there was a
+        warmer at all.
+
+        Broad by design, the same way `create_agent`'s launch guard in
+        main.py is: this is a thread boundary rather than one expected
+        failure mode, and anything that escapes it kills the warmer for
+        the life of the process.
+        """
+        try:
+            self._index.warm()
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "could not warm the repository listing, the next search will try: %s",
+                exc,
+            )
+
+    def stop(self, timeout_s: float = WARM_STOP_TIMEOUT_S) -> None:
+        self._stop.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=timeout_s)
+
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
 
 
 def _rank(repo: InstallationRepo, needle: str) -> int | None:
