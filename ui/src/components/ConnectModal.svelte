@@ -48,11 +48,6 @@
   // is not available in this room at all.
   const HEADLESS_UNAVAILABLE = "headless_unavailable";
 
-  // Mirrors the server's own cap (`kobo_api/main.py`'s MAX_SECRET_NAMES).
-  // The server is the real gate; this only keeps the form from spending a
-  // round trip on a list it already knows is too long.
-  const MAX_SECRET_NAMES = 8;
-
   const queryClient = useQueryClient();
   const groups = createQuery(() => (groupsQuery()));
   const scan = createMutation(() => (scanRepoMutation()));
@@ -62,7 +57,6 @@
   let name = $state("");
   let groupValue = $state("");
   let runMode = $state<string>(RUN_MODE_HTTP);
-  let secretNamesText = $state("");
   let confirmOwner = $state(false);
 
   // The scan's answer, plus the exact field values it answered FOR. Connect
@@ -114,27 +108,12 @@
    * repositories this room may connect is the scan's own answer. */
   const repoLooksRight = $derived(/^[^/\s]+\/[^/\s]+$/.test(repoValue));
 
-  /** Secret names as typed: commas or newlines, either way, in the order
-   * they were written. Kubernetes Secret names the owner will create in the
-   * agent's namespace; the room never holds their contents. */
-  const secretNames = $derived(
-    secretNamesText
-      .split(/[\n,]/)
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0),
-  );
-  const secretNamesError = $derived(
-    secretNames.length > MAX_SECRET_NAMES
-      ? `this room takes at most ${MAX_SECRET_NAMES} secret names`
-      : null,
-  );
-
   /** Every answer the SCAN depends on, as one comparable value: exactly the
-   * fields the scan request carries, and nothing else. The secret names and
-   * the ownership checkbox are deliberately not in here. Neither is part of
-   * the question the scan answers, so editing one cannot make a report
-   * untrue, and staling a clean report over them would spend a scan (which
-   * this room counts) on an answer that would come back identical. */
+   * fields the scan request carries, and nothing else. The ownership
+   * checkbox is deliberately not in here: it is not part of the question
+   * the scan answers, so editing it cannot make a report untrue, and
+   * staling a clean report over it would spend a scan (which this room
+   * counts) on an answer that would come back identical. */
   const fields = $derived(
     JSON.stringify([repoValue, name, groupValue, runMode]),
   );
@@ -154,14 +133,13 @@
   );
 
   const canScan = $derived(
-    repoLooksRight && nameValid && groupChosen && secretNamesError === null && !scan.isPending,
+    repoLooksRight && nameValid && groupChosen && !scan.isPending,
   );
   const canConnect = $derived(
     scanIsClean &&
       confirmOwner &&
       blockers.length === 0 &&
       nameTaken !== name &&
-      secretNamesError === null &&
       !connect.isPending,
   );
 
@@ -176,7 +154,6 @@
       name = "";
       groupValue = "";
       runMode = RUN_MODE_HTTP;
-      secretNamesText = "";
       confirmOwner = false;
       report = null;
       scannedFields = null;
@@ -243,7 +220,7 @@
     connect.mutate(
       {
         ...scanBody(),
-        secret_names: secretNames,
+        secret_names: [],
         confirm_repo_owner: confirmOwner,
       },
       {
@@ -374,7 +351,7 @@
           checked={runMode === RUN_MODE_HTTP}
           onchange={() => (runMode = RUN_MODE_HTTP)}
         />
-        It serves web traffic (port 8080, answers /healthz)
+        It listens on a port (the platform checks its health there)
       </label>
       <label
         class="connect-form__choice"
@@ -392,7 +369,7 @@
           aria-describedby={headlessMessage ? "connect-headless-reason" : undefined}
           onchange={() => (runMode = RUN_MODE_HEADLESS)}
         />
-        It has no web address (a chat bot or a worker)
+        It does not listen on a port (a chat bot or a worker)
       </label>
       {#if headlessMessage}
         <p id="connect-headless-reason" class="connect-form__help">
@@ -400,40 +377,10 @@
         </p>
       {/if}
     </fieldset>
-
-    <div class="connect-form__field">
-      <label class="connect-form__label" for="connect-secrets">
-        Secret names (optional)
-      </label>
-      <textarea
-        id="connect-secrets"
-        class="connect-form__input"
-        rows="2"
-        bind:value={secretNamesText}
-        autocomplete="off"
-        spellcheck="false"
-      ></textarea>
-      <p class="connect-form__help">
-        Names only, separated by commas or new lines, {MAX_SECRET_NAMES} at
-        most. The room passes them on and holds none of them, so the agent
-        will not start until you create them yourself.
-      </p>
-      {#if secretNames.length > 0}
-        <!-- Keyed by position, not by the name itself: a name typed twice
-             is a list of two, and a duplicate key would break the render
-             rather than show what was written. -->
-        <p class="connect-form__chips">
-          {#each secretNames as secret, index (index)}
-            <span class="connect-form__chip">{secret}</span>
-          {/each}
-        </p>
-      {/if}
-      {#if secretNamesError}
-        <p class="connect-form__status connect-form__status--error" role="alert">
-          {secretNamesError}
-        </p>
-      {/if}
-    </div>
+    <p class="connect-form__help">
+      Either way the agent gets an address inside the cluster only. Nothing
+      here makes it reachable from outside.
+    </p>
 
     <label class="connect-form__choice">
       <input type="checkbox" bind:checked={confirmOwner} />
@@ -590,24 +537,6 @@
 
   .connect-form__status--error {
     color: var(--fail);
-  }
-
-  .connect-form__chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2xs);
-    margin: 0;
-  }
-
-  .connect-form__chip {
-    display: inline-flex;
-    padding: 0.1rem var(--space-2xs);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    color: var(--muted);
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    white-space: nowrap;
   }
 
   .connect-form__actions {
