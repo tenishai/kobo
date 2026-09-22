@@ -1061,11 +1061,19 @@ export function saveSlackChannelsMutation(
  * No polling, the same "edits are user-driven" reasoning `knowledgeQuery`
  * documents: nothing changes this list except a save from this same
  * panel, and the save's own `onSuccess` invalidates it.
+ *
+ * `enabled` is whether the Secrets tab is the selected one, and it is not
+ * an optimisation. Every tabpanel on the agent page stays MOUNTED when
+ * another tab is picked, so without it, opening any agent page at all
+ * would ask the secrets platform about an agent nobody was looking at and
+ * leave a row in its audit trail saying somebody did. Same shape
+ * `slackManifestQuery` uses for its own deferred read.
  */
-export function agentSecretsQuery(name: string) {
+export function agentSecretsQuery(name: string, enabled = true) {
   return queryOptions({
     queryKey: ["agents", name, "secrets"] as const,
     queryFn: () => listAgentSecrets(name),
+    enabled,
   });
 }
 
@@ -1085,11 +1093,14 @@ export function saveAgentSecretsMutation(queryClient: QueryClient, name: string)
 }
 
 /** An agent's plain environment variables, keys and values --
- * `GET .../env`. Same no-polling reasoning as the secrets query above. */
-export function agentEnvQuery(name: string) {
+ * `GET .../env`. Same no-polling reasoning as the secrets query above, and
+ * the same `enabled`: this one reads the agent's repository, so an
+ * unselected tab would spend a GitHub call per agent page opened. */
+export function agentEnvQuery(name: string, enabled = true) {
   return queryOptions({
     queryKey: ["agents", name, "env"] as const,
     queryFn: () => listAgentEnv(name),
+    enabled,
   });
 }
 

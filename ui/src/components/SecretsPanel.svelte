@@ -33,7 +33,7 @@
   import ErrorState from "./ErrorState.svelte";
   import Skeleton from "./Skeleton.svelte";
   import { errorMessage, type EnvWiring } from "../lib/api";
-  import { keyRefusal, parseEnvPaste } from "../lib/dotenv";
+  import { keyRefusal, MAX_KEYS, parseEnvPaste } from "../lib/dotenv";
   import {
     agentEnvQuery,
     agentSecretsQuery,
@@ -44,19 +44,28 @@
   let {
     agentName,
     frozen = false,
+    active = true,
   }: {
     agentName: string;
     frozen?: boolean;
+    /** Whether the Secrets tab is the selected one. Both queries below are
+     * gated on it: every tabpanel on the agent page stays MOUNTED when
+     * another tab is picked (they are hidden, not destroyed), so without
+     * this, opening any agent page at all would ask the secrets platform
+     * about an agent nobody was looking at and put a row in its audit
+     * trail saying somebody did. */
+    active?: boolean;
   } = $props();
 
   const queryClient = useQueryClient();
   // Read once, like every other panel here: AgentDetail remounts this
   // component via `{#key route.name}` when the routed agent changes, so
   // this prop is fixed for the component's whole lifetime.
-  // svelte-ignore state_referenced_locally
-  const secrets = createQuery(() => agentSecretsQuery(agentName));
-  // svelte-ignore state_referenced_locally
-  const env = createQuery(() => agentEnvQuery(agentName));
+  // `active` rides into the query factories the way `manifestOpened` does
+  // in SlackPanel: a closure the adapter re-reads, so flipping to this tab
+  // starts the read and nothing before it does.
+  const secrets = createQuery(() => agentSecretsQuery(agentName, active));
+  const env = createQuery(() => agentEnvQuery(agentName, active));
   // svelte-ignore state_referenced_locally
   const saveSecrets = createMutation(() => saveAgentSecretsMutation(queryClient, agentName));
   // svelte-ignore state_referenced_locally
@@ -140,8 +149,20 @@
       // not something the list can show.
       return;
     }
-    if (Object.keys(parsed.values).length === 0) {
+    const pasted = Object.keys(parsed.values);
+    if (pasted.length === 0) {
       pasteProblems = ["There is nothing to add here yet."];
+      return;
+    }
+    // The same cap the server holds, checked before the round trip: a
+    // pasted file is exactly where somebody goes past it, and answering
+    // here says how far over they are rather than just refusing.
+    const held = secrets.data?.keys ?? [];
+    const after = new Set([...held, ...pasted]).size;
+    if (after > MAX_KEYS) {
+      pasteProblems = [
+        `That would leave ${after} secrets, and ${MAX_KEYS} is the most a list can hold.`,
+      ];
       return;
     }
     writeSecrets(parsed.values, [], () => {
@@ -177,7 +198,13 @@
   // file now holds. Never re-seeded from a background refetch: this is
   // text somebody is editing, and a list that rewrote itself underneath
   // them would lose it.
-  let rows = $state<{ key: string; value: string }[]>([]);
+  // Each row carries an `id` that never changes, and the `{#each}` below
+  // is keyed on it. Keying on the index meant deleting a row re-keyed
+  // every row after it: Svelte reused the wrong DOM nodes, so focus and
+  // an in-progress edit landed on the neighbour of the row somebody
+  // actually deleted.
+  let rows = $state<{ id: number; key: string; value: string }[]>([]);
+  let nextRowId = 0;
   let seeded = $state(false);
   let envError = $state<string | null>(null);
 
@@ -194,7 +221,11 @@
    * server should not have sent: an empty list is the honest render, and
    * the save below is what would fix the file. */
   function toRows(env: Record<string, string> | undefined) {
-    return Object.entries(env ?? {}).map(([key, value]) => ({ key, value }));
+    return Object.entries(env ?? {}).map(([key, value]) => ({
+      id: nextRowId++,
+      key,
+      value,
+    }));
   }
 
   const rowRefusals = $derived(
@@ -205,11 +236,11 @@
   );
 
   function handleAddRow(): void {
-    rows = [...rows, { key: "", value: "" }];
+    rows = [...rows, { id: nextRowId++, key: "", value: "" }];
   }
 
-  function handleRemoveRow(index: number): void {
-    rows = rows.filter((_, i) => i !== index);
+  function handleRemoveRow(id: number): void {
+    rows = rows.filter((row) => row.id !== id);
   }
 
   function handleSaveEnv(event: SubmitEvent): void {
@@ -420,7 +451,7 @@
         {#if rows.length === 0}
           <EmptyState message="No environment variables yet." />
         {/if}
-        {#each rows as row, index (index)}
+        {#each rows as row, index (row.id)}
           <div class="env-row">
             <div class="secrets-form__field">
               <label class="secrets-form__label" for={`env-key-${index}`}>
@@ -456,7 +487,7 @@
               class="secrets-list__remove"
               aria-label={`Remove variable ${index + 1}`}
               disabled={frozen}
-              onclick={() => handleRemoveRow(index)}
+              onclick={() => handleRemoveRow(row.id)}
             >
               Remove
             </button>

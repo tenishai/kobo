@@ -61,8 +61,12 @@ function stubRoutes(routes: Routes) {
   return puts;
 }
 
-function render() {
-  return renderWithClient(SecretsPanel, { agentName: AGENT, frozen: false });
+function render(props: Record<string, unknown> = {}) {
+  return renderWithClient(SecretsPanel, {
+    agentName: AGENT,
+    frozen: false,
+    ...props,
+  });
 }
 
 describe("SecretsPanel", () => {
@@ -340,5 +344,103 @@ describe("SecretsPanel", () => {
       (screen.getByRole("button", { name: "Remove API_KEY" }) as HTMLButtonElement)
         .disabled,
     ).toBe(true);
+  });
+
+
+  it("asks nothing at all while another tab is the selected one", async () => {
+    // Every tabpanel on the agent page stays mounted when another tab is
+    // picked. Reading here anyway would ask the secrets platform about an
+    // agent nobody was looking at, and leave a row in its audit trail
+    // saying somebody did.
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render({ active: false });
+    await Promise.resolve();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("starts reading once the tab becomes the selected one", async () => {
+    const puts = stubRoutes({
+      secrets: {
+        keys: ["API_KEY"],
+        updated_at: null,
+        platform: true,
+        secret_name: `${AGENT}-env`,
+      },
+    });
+    const { rerender, client } = render({ active: false });
+
+    // The harness owns the props, so a rerender goes through it.
+    await rerender({
+      component: SecretsPanel,
+      componentProps: { agentName: AGENT, frozen: false, active: true },
+      client,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("API_KEY")).not.toBeNull();
+    });
+    expect(puts).toHaveLength(0);
+  });
+
+  it("refuses a paste that would take the list past its cap, before sending", async () => {
+    const puts = stubRoutes({
+      secrets: {
+        keys: Array.from({ length: 99 }, (_, i) => `K${i}`),
+        updated_at: null,
+        platform: true,
+        secret_name: `${AGENT}-env`,
+      },
+    });
+    render();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("One KEY=value per line")).not.toBeNull();
+    });
+    await fireEvent.input(screen.getByLabelText("One KEY=value per line"), {
+      target: { value: `ONE=${VALUE}\nTWO=${VALUE}\nTHREE=${VALUE}\n` },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Add these" }));
+
+    expect(screen.getByText(/100 is the most a list can hold/)).not.toBeNull();
+    expect(puts).toHaveLength(0);
+  });
+
+  it("keeps the right row when one in the middle is deleted", async () => {
+    // Keyed on a stable id, not the index: keying on the index re-keyed
+    // every row after a deletion, so Svelte reused the wrong DOM nodes and
+    // an in-progress edit landed on the neighbour.
+    stubRoutes({ env: { env: { FIRST: "one", SECOND: "two", THIRD: "three" } } });
+    render();
+
+    await waitFor(() => {
+      expect((screen.getByLabelText("Name 1") as HTMLInputElement).value).toBe("FIRST");
+    });
+    await fireEvent.input(screen.getByLabelText("Value 3"), {
+      target: { value: "edited in place" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Remove variable 2" }));
+
+    expect((screen.getByLabelText("Name 1") as HTMLInputElement).value).toBe("FIRST");
+    expect((screen.getByLabelText("Name 2") as HTMLInputElement).value).toBe("THIRD");
+    expect((screen.getByLabelText("Value 2") as HTMLInputElement).value).toBe(
+      "edited in place",
+    );
+  });
+
+  it("refuses a key the container owns", async () => {
+    stubRoutes({});
+    render();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Name")).not.toBeNull();
+    });
+    await fireEvent.input(screen.getByLabelText("Name"), {
+      target: { value: "LD_PRELOAD" },
+    });
+
+    expect(screen.getByText(/the container sets this one/)).not.toBeNull();
   });
 });

@@ -683,7 +683,17 @@
           {:else if tab === "tooling"}
             <ToolingPanel agentName={data.name} frozen={isFrozen(data.status)} />
           {:else if tab === "secrets"}
-            <SecretsPanel agentName={data.name} frozen={isFrozen(data.status)} />
+            <!-- `active`: every tabpanel here stays mounted when another
+                 tab is picked, and this panel's two reads reach the
+                 secrets platform and the agent's repository. Without it,
+                 opening any agent page would ask about secrets nobody was
+                 looking at, and the platform's audit would say somebody
+                 did. -->
+            <SecretsPanel
+              agentName={data.name}
+              frozen={isFrozen(data.status)}
+              active={activeTab === "secrets"}
+            />
           {:else if tab === "slack"}
             <SlackPanel
               agentName={data.name}

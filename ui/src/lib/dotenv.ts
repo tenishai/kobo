@@ -82,12 +82,26 @@ export type ParsedEnv = {
 /**
  * Parse pasted `KEY=VALUE` lines.
  *
- * Blank lines and `#` comments are skipped. A value may be wrapped in
- * single or double quotes, which are stripped; anything else is taken
- * literally, trailing spaces and all, because a trailing space in a
- * credential is a real thing somebody meant. `export KEY=VALUE` is
- * accepted, since that is what a shell file people already have looks
- * like.
+ * Blank lines and `#` comments are skipped, and so is an inline comment:
+ * a ` #` with whitespace in front of it, outside quotes, ends the value.
+ * That is what a .env file means by it, and a value that silently carried
+ * `# the staging one` into a credential would fail somewhere far from
+ * here.
+ *
+ * A value may be wrapped in single or double quotes, which are stripped
+ * and which protect a `#` inside them. Everything else is taken as typed,
+ * except for the surrounding whitespace every line is trimmed of before
+ * anything else happens: a trailing space is far more often a paste
+ * artifact than a deliberate part of a credential, and a person who needs
+ * one can quote it.
+ *
+ * `export KEY=VALUE` is accepted, with any whitespace after the keyword,
+ * since that is what a shell file people already have looks like.
+ *
+ * A value that opens a quote and never closes it is ONE problem naming
+ * that line, not a cascade of confusing ones about the lines beneath it:
+ * multi-line values are not something this box can carry, and the
+ * sentence says to use the form instead.
  *
  * Every key is put through `keyRefusal`, so a reserved or malformed name
  * is a problem rather than something the save discovers.
@@ -96,33 +110,61 @@ export function parseEnvPaste(text: string): ParsedEnv {
   const values: Record<string, string> = {};
   const problems: string[] = [];
 
-  text.split(/\r?\n/).forEach((raw, index) => {
-    const line = raw.trim();
+  const lines = text.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim();
     if (line.length === 0 || line.startsWith("#")) {
-      return;
+      continue;
     }
-    const withoutExport = line.startsWith("export ") ? line.slice(7).trim() : line;
+    const withoutExport = line.replace(/^export\s+/, "");
     const eq = withoutExport.indexOf("=");
     if (eq <= 0) {
       problems.push(`Line ${index + 1}: write this as KEY=value.`);
-      return;
+      continue;
     }
     const key = withoutExport.slice(0, eq).trim();
     const refusal = keyRefusal(key);
     if (refusal !== null) {
       problems.push(`Line ${index + 1}: ${refusal}`);
-      return;
+      continue;
     }
-    values[key] = unquote(withoutExport.slice(eq + 1).trim());
-  });
+    const value = readValue(withoutExport.slice(eq + 1).trim());
+    if (value === null) {
+      // One problem, and then stop: every line after this one is the rest
+      // of the value somebody pasted, and reporting each of them as "write
+      // this as KEY=value" would bury the sentence that actually helps.
+      problems.push(
+        `Line ${index + 1}: this value opens a quote and never closes it. ` +
+          "A value that spans lines has to be added one at a time in the form above.",
+      );
+      break;
+    }
+    values[key] = value;
+  }
 
   return { values, problems };
 }
 
-function unquote(value: string): string {
-  const quoted =
-    value.length >= 2 &&
-    ((value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'")));
-  return quoted ? value.slice(1, -1) : value;
+/**
+ * One value as typed: quotes stripped, an unquoted inline comment cut.
+ * `null` when a quote opens and never closes, which is the only shape
+ * this cannot answer for.
+ */
+function readValue(raw: string): string | null {
+  const quote = raw[0];
+  if (quote === '"' || quote === "'") {
+    const close = raw.indexOf(quote, 1);
+    if (close === -1) {
+      return null;
+    }
+    // Anything after the closing quote is a comment or stray text; a
+    // quoted value is exactly what is between the quotes either way.
+    return raw.slice(1, close);
+  }
+  // Unquoted: a ` #` with whitespace in front of it starts a comment, the
+  // way a .env file means it. A `#` with no space before it is part of
+  // the value (a URL fragment, a colour), which is also what a shell
+  // would do with it.
+  const comment = raw.search(/\s#/);
+  return (comment === -1 ? raw : raw.slice(0, comment)).trimEnd();
 }

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { keyRefusal, parseEnvPaste, ROOM_SETS_THIS_ONE } from "./dotenv";
+import {
+  CONTAINER_SETS_THIS_ONE,
+  keyRefusal,
+  parseEnvPaste,
+  ROOM_SETS_THIS_ONE,
+} from "./dotenv";
 
 describe("keyRefusal", () => {
   it("accepts a name the server would accept", () => {
@@ -16,6 +21,24 @@ describe("keyRefusal", () => {
 
   it("refuses a name longer than the server's cap", () => {
     expect(keyRefusal("A".repeat(65))).toContain("64");
+  });
+
+  it("refuses every name the container owns, in its own words", () => {
+    for (const key of [
+      "PATH",
+      "HOME",
+      "PYTHONPATH",
+      "PYTHONHOME",
+      "LD_PRELOAD",
+      "LD_LIBRARY_PATH",
+    ]) {
+      expect(keyRefusal(key)).toContain(CONTAINER_SETS_THIS_ONE);
+    }
+  });
+
+  it("leaves a name that merely starts like a container one alone", () => {
+    expect(keyRefusal("PATH_PREFIX")).toBeNull();
+    expect(keyRefusal("HOME_PAGE_URL")).toBeNull();
   });
 
   it("refuses every name the room sets itself, in the room's own words", () => {
@@ -58,14 +81,52 @@ describe("parseEnvPaste", () => {
     expect(parseEnvPaste("export API_KEY=abc").values).toEqual({ API_KEY: "abc" });
   });
 
-  it("strips a matched pair of quotes and nothing else", () => {
-    const parsed = parseEnvPaste(`A="one"\nB='two'\nC="mixed'\nD=bare`);
-    expect(parsed.values).toEqual({
-      A: "one",
-      B: "two",
-      C: `"mixed'`,
-      D: "bare",
+  it("strips a matched pair of quotes", () => {
+    const parsed = parseEnvPaste(`A="one"\nB='two'\nD=bare`);
+    expect(parsed.values).toEqual({ A: "one", B: "two", D: "bare" });
+    expect(parsed.problems).toEqual([]);
+  });
+
+  it("answers one problem for a value that opens a quote and never closes it", () => {
+    // Not a cascade about the lines beneath it: a multi-line value is not
+    // something this box can carry, and the sentence says where to put it.
+    const parsed = parseEnvPaste(`A="the start\nof something long"\nB=fine`);
+    expect(parsed.problems).toHaveLength(1);
+    expect(parsed.problems[0]).toContain("Line 1");
+    expect(parsed.problems[0]).toContain("never closes");
+    expect(parsed.problems[0]).toContain("one at a time");
+    // And it stops there: the lines underneath are the rest of the value.
+    expect(parsed.values).toEqual({});
+  });
+
+  it("cuts an unquoted inline comment", () => {
+    expect(parseEnvPaste("API_KEY=abc # the staging one").values).toEqual({
+      API_KEY: "abc",
     });
+    expect(parseEnvPaste("API_KEY=abc\t# tabbed").values).toEqual({ API_KEY: "abc" });
+  });
+
+  it("keeps a hash that is part of the value", () => {
+    // No whitespace in front of it: a URL fragment or a colour is not a
+    // comment, and a shell would not treat it as one either.
+    expect(parseEnvPaste("URL=https://example.test/page#section").values).toEqual({
+      URL: "https://example.test/page#section",
+    });
+  });
+
+  it("keeps a hash inside quotes", () => {
+    expect(parseEnvPaste('PASS="abc #1"').values).toEqual({ PASS: "abc #1" });
+  });
+
+  it("accepts export with any whitespace after it", () => {
+    expect(parseEnvPaste("export\tAPI_KEY=abc").values).toEqual({ API_KEY: "abc" });
+    expect(parseEnvPaste("export   API_KEY=abc").values).toEqual({ API_KEY: "abc" });
+  });
+
+  it("refuses a name the container owns, with its own sentence", () => {
+    const parsed = parseEnvPaste("LD_PRELOAD=/tmp/evil.so");
+    expect(parsed.problems[0]).toContain(CONTAINER_SETS_THIS_ONE);
+    expect(parsed.values).toEqual({});
   });
 
   it("keeps a value that is itself empty", () => {

@@ -27,9 +27,11 @@ describe("advancedTabs", () => {
       "tooling",
       "secrets",
     ]);
-    // ADVANCED_TABS stays the bundle-backed four: it is what the page uses
-    // to decide whether a selected tab belongs to the collapsible group,
-    // and Secrets joins that group without joining that list's meaning.
+    // ADVANCED_TABS stays the bundle-backed four. It no longer decides
+    // group membership -- the page asks `advancedTabs(kind)` for that,
+    // since the group now depends on what the agent IS -- so this is the
+    // list of tabs that read the bundle the room composed, and nothing
+    // else. Secrets is in the group without being in it.
     expect(ADVANCED_TABS).toEqual(["learnings", "memory", "skills", "tooling"]);
   });
 });

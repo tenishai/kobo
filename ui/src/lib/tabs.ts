@@ -52,9 +52,10 @@ export function primaryTabs(showAccess = false, kind: string = KIND_COMPOSED): T
   return showAccess ? [...base, "access"] : base;
 }
 
-/** The Advanced group: the grow-it sections most visitors never need on
- * day one. Collapsed or expanded by the component (owner-signal +
- * active-tab membership), never reordered. */
+/** The four Advanced tabs that read the BUNDLE the room composed. Not the
+ * Advanced group itself any more -- `advancedTabs` below is that, and the
+ * page asks it rather than this constant, because the group's membership
+ * now depends on the kind of agent. Never reordered. */
 export const ADVANCED_TABS = ["learnings", "memory", "skills", "tooling"] as const;
 
 /** The one Advanced tab a connected agent keeps (secrets and environment
