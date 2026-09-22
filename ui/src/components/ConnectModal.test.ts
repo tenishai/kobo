@@ -9,8 +9,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import ConnectModal from "./ConnectModal.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 
-const HTTP_CHOICE = "It serves web traffic (port 8080, answers /healthz)";
-const HEADLESS_CHOICE = "It has no web address (a chat bot or a worker)";
+const HTTP_CHOICE = "It listens on a port (the platform checks its health there)";
+const HEADLESS_CHOICE = "It does not listen on a port (a chat bot or a worker)";
 const OWNER_CHECKBOX = "I own this repository or have its owner's agreement";
 
 const CLEAN_REPORT = {
@@ -62,15 +62,24 @@ describe("ConnectModal — the form", () => {
     stubConnectRoutes();
   });
 
-  it("asks for a repository, a name, how it runs, secret names, and the owner's word", async () => {
+  it("asks for a repository, a name, how it runs, and the owner's word", async () => {
     renderWithClient(ConnectModal, { open: true, onclose: () => {} });
 
     expect(await screen.findByLabelText("Repository")).not.toBeNull();
     expect(screen.getByLabelText("Name")).not.toBeNull();
     expect(screen.getByRole("radio", { name: HTTP_CHOICE })).not.toBeNull();
     expect(screen.getByRole("radio", { name: HEADLESS_CHOICE })).not.toBeNull();
-    expect(screen.getByLabelText("Secret names (optional)")).not.toBeNull();
     expect(screen.getByRole("checkbox", { name: OWNER_CHECKBOX })).not.toBeNull();
+  });
+
+  it("says the agent only ever gets an in-cluster address, either way it runs", async () => {
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    expect(
+      await screen.findByText(
+        "Either way the agent gets an address inside the cluster only. Nothing here makes it reachable from outside.",
+      ),
+    ).not.toBeNull();
   });
 
   it("keeps Scan and Connect shut on an empty form", async () => {
@@ -98,20 +107,6 @@ describe("ConnectModal — the form", () => {
 
     await fireEvent.change(groupSelect, { target: { value: "platform" } });
     expect(scanButton().disabled).toBe(false);
-  });
-
-  it("says what the room says about too many secret names", async () => {
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await fillTheForm();
-    await fireEvent.input(screen.getByLabelText("Secret names (optional)"), {
-      target: { value: "a, b, c, d, e, f, g, h, i" },
-    });
-
-    expect(
-      screen.getByText("this room takes at most 8 secret names"),
-    ).not.toBeNull();
-    expect(scanButton().disabled).toBe(true);
   });
 
   it("opens Scan once the repository and the name are filled in, and leaves Connect shut", async () => {
@@ -266,25 +261,6 @@ describe("ConnectModal — the scan report", () => {
     );
   });
 
-  it("does not stale a clean report over secret names, which the scan never asked about", async () => {
-    stubConnectRoutes({ "/api/connect/scan": CLEAN_REPORT });
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await fillTheForm();
-    await fireEvent.click(scanButton());
-    await screen.findByText("Nothing is in the way.");
-    await fireEvent.click(screen.getByRole("checkbox", { name: OWNER_CHECKBOX }));
-    expect(connectButton().disabled).toBe(false);
-
-    await fireEvent.input(screen.getByLabelText("Secret names (optional)"), {
-      target: { value: "release-token" },
-    });
-
-    expect(connectButton().disabled).toBe(false);
-    expect(
-      screen.queryByText("Something changed since this scan. Scan again before connecting."),
-    ).toBeNull();
-  });
 });
 
 describe("ConnectModal — connecting", () => {
@@ -292,7 +268,7 @@ describe("ConnectModal — connecting", () => {
     vi.unstubAllGlobals();
   });
 
-  it("posts the repository, the name, the run mode, the secret names and the confirmation", async () => {
+  it("posts the repository, the name, the run mode, empty secret names and the confirmation", async () => {
     stubConnectRoutes({
       "/api/connect/scan": CLEAN_REPORT,
       "/api/agents/connect": { name: "release-bot", status: "pending" },
@@ -301,9 +277,6 @@ describe("ConnectModal — connecting", () => {
     renderWithClient(ConnectModal, { open: true, onclose });
 
     await fillTheForm();
-    await fireEvent.input(screen.getByLabelText("Secret names (optional)"), {
-      target: { value: "release-token, slack-token" },
-    });
     await fireEvent.click(scanButton());
     await screen.findByText("Nothing is in the way.");
     await fireEvent.click(screen.getByRole("checkbox", { name: OWNER_CHECKBOX }));
@@ -329,7 +302,7 @@ describe("ConnectModal — connecting", () => {
     expect(body.repo).toBe("acme/release-bot");
     expect(body.name).toBe("release-bot");
     expect(body.run_mode).toBe("http");
-    expect(body.secret_names).toEqual(["release-token", "slack-token"]);
+    expect(body.secret_names).toEqual([]);
     expect(body.confirm_repo_owner).toBe(true);
     await waitFor(() => {
       expect(onclose).toHaveBeenCalled();

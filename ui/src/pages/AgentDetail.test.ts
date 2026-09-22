@@ -891,7 +891,7 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
 
     expect(screen.queryByRole("radio")).toBeNull();
     expect(
-      screen.queryByText("It has no web address (a chat bot or a worker)"),
+      screen.queryByText("It does not listen on a port (a chat bot or a worker)"),
     ).toBeNull();
   });
 
