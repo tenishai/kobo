@@ -88,6 +88,7 @@ from kobo_api.metadata import (
     skill_descriptions_for_agent,
     tooling_filenames_for,
 )
+from kobo_api.repo_search import MAX_QUERY_CHARS, RepoIndex
 from kobo_api.runtime import commit_runtime_image, validate_runtime_image
 from kobo_api.models import (
     GROUP_REQUEST_DECLINED,
@@ -1143,6 +1144,17 @@ SCAN_BUCKET = "connect-scan"
 # report saying "nothing wrong" would be a lie, and the raw client error
 # is never shown to a caller (`generate_avatar`'s precedent, same shape).
 REPO_UNREADABLE = "the repository could not be read right now, try again shortly"
+
+# What the connect routes answer when the room has no GitHub client at
+# all: not a fact about any repository, and the same sentence wherever it
+# is said.
+GITHUB_UNREACHABLE = "the room can't reach GitHub right now"
+
+# The repository typeahead's own version of REPO_UNREADABLE: it was asking
+# for a listing, not a repository. Said rather than answered with an empty
+# list, because an installation with nothing in it and a listing the room
+# could not read look identical in a dropdown and are not the same thing.
+REPOS_UNREADABLE = "the room could not list its repositories right now, try again shortly"
 
 
 def _scan_caller(request: Request) -> str:
@@ -2408,6 +2420,15 @@ def create_app(
     app.state.config = config
     app.state.clients = clients
     app.state.session_factory = session_factory
+    # The repository typeahead's cache (kobo_api.repo_search): one listing
+    # for the whole room, so it lives on the app rather than being rebuilt
+    # per request. None when the room has no GitHub client, which is the
+    # same "nothing to ask" the route answers 503 for.
+    app.state.repo_index = (
+        RepoIndex(clients.github)
+        if clients is not None and clients.github is not None
+        else None
+    )
     # `org` defaults to None in the signature (not a shared OrgState(...)
     # instance) so every create_app() call gets its own object here rather
     # than every caller that omits `org` pointing at one mutable instance in
@@ -3788,6 +3809,49 @@ def create_app(
 
         return JSONResponse({"name": payload.name, "status": status}, status_code=201)
 
+    # The repository field's typeahead (kobo_api/repo_search.py). Signed-in
+    # only, which is the app-wide IAP middleware every `/api/*` route
+    # already carries, and deliberately NOT group-gated the way the scan
+    # next door is: the scan reads what is INSIDE a private repository, and
+    # this one only says that a name the caller was already typing belongs
+    # to something the room's App can reach. There is nothing here a person
+    # could not learn by typing the same name into the form and pressing
+    # Scan, and no listing at all without a query.
+    @app.get("/api/connect/repos")
+    def list_connect_repos(q: str = Query("", max_length=MAX_QUERY_CHARS)) -> JSONResponse:
+        if not q.strip():
+            # Answered before the client is even looked at: an empty query
+            # is not a search, and a room with no GitHub still has nothing
+            # to say about one.
+            return JSONResponse({"repos": [], "truncated": False})
+
+        clients: Clients | None = app.state.clients
+        index: RepoIndex | None = app.state.repo_index
+        if clients is None or clients.github is None or index is None:
+            return JSONResponse({"error": GITHUB_UNREACHABLE}, status_code=503)
+
+        try:
+            matches, truncated = index.search(q)
+        except ClientError as exc:
+            # The client's own text never reaches the caller (same shape as
+            # the scan's own backend failures next door).
+            log.warning("repository search could not list the installation: %s", exc)
+            return JSONResponse({"error": REPOS_UNREADABLE}, status_code=502)
+
+        return JSONResponse(
+            {
+                "repos": [
+                    {
+                        "full_name": repo.full_name,
+                        "private": repo.private,
+                        "default_branch": repo.default_branch,
+                    }
+                    for repo in matches
+                ],
+                "truncated": truncated,
+            }
+        )
+
     @app.post("/api/connect/scan")
     def scan_connect_repo(
         payload: ScanRepoRequest, request: Request, session: Session = Depends(get_session)  # noqa: B008
@@ -3827,7 +3891,7 @@ def create_app(
         clients: Clients | None = app.state.clients
         if clients is None or clients.github is None:
             return JSONResponse(
-                {"error": "the room can't reach GitHub right now"}, status_code=503
+                {"error": GITHUB_UNREACHABLE}, status_code=503
             )
 
         try:
@@ -3903,7 +3967,7 @@ def create_app(
         clients: Clients | None = app.state.clients
         if clients is None or clients.github is None:
             return JSONResponse(
-                {"error": "the room can't reach GitHub right now"}, status_code=503
+                {"error": GITHUB_UNREACHABLE}, status_code=503
             )
 
         try:

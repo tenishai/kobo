@@ -30,7 +30,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from kobo_api.clients import Clients
+from kobo_api.clients import Clients, InstallationRepo
 from kobo_api.config import Config, GroupChoice
 from kobo_api.connect_scan import (
     ADDS,
@@ -46,9 +46,16 @@ from kobo_api.kinds import (
     RUN_MODE_HEADLESS,
     RUN_MODE_HTTP,
 )
-from kobo_api.main import MAX_SECRET_NAMES, SCAN_LIMIT, create_app
+from kobo_api.main import (
+    GITHUB_UNREACHABLE,
+    MAX_SECRET_NAMES,
+    REPOS_UNREADABLE,
+    SCAN_LIMIT,
+    create_app,
+)
 from kobo_api.mcp import rate_limit
 from kobo_api.models import Agent, AgentStatus, Base
+from kobo_api.repo_search import MAX_MATCHES, TTL_S, RepoIndex
 from tests.fakes import (
     FakeAgent,
     FakeCabal,
@@ -286,6 +293,166 @@ def test_scan_never_writes_anything(client, github, session_factory):
     assert github.pushes == []
     assert github.created_from_dir == []
     assert _row(session_factory) is None
+
+
+# --- GET /api/connect/repos -------------------------------------------------------
+#
+# The repository field's typeahead. Open to any signed-in person and not
+# group-gated: it only ever names repositories the room's App can already
+# reach, and only ones somebody was already typing. The matching and
+# ordering rules themselves are pinned in test_repo_search.py; what these
+# pin is the route -- its shape, its bounds, and its cache.
+
+
+def _typeahead_repo(full_name: str, **overrides) -> InstallationRepo:
+    return InstallationRepo(
+        full_name=full_name,
+        archived=overrides.get("archived", False),
+        private=overrides.get("private", True),
+        default_branch=overrides.get("default_branch", "main"),
+        pushed_at=overrides.get("pushed_at", "2026-01-01T00:00:00Z"),
+    )
+
+
+def test_repos_answers_nothing_for_an_empty_query_without_asking_github(
+    client_for,
+):
+    """The field shows nothing on focus. An empty box is what focus looks
+    like from here, and it is not worth a listing."""
+    github = FakeGitHub(
+        existing_repos={REPO},
+        installation_repos=[_typeahead_repo(f"{ORG}/team-chatbot")],
+    )
+
+    response = client_for(github).get("/api/connect/repos?q=")
+
+    assert response.status_code == 200
+    assert response.json() == {"repos": [], "truncated": False}
+    assert "list_installation_repos" not in github.calls
+
+
+def test_repos_answers_nothing_when_the_query_is_left_off_entirely(client):
+    response = client.get("/api/connect/repos")
+
+    assert response.status_code == 200
+    assert response.json() == {"repos": [], "truncated": False}
+
+
+def test_repos_names_the_matches_best_first(client_for):
+    github = FakeGitHub(
+        existing_repos={REPO},
+        installation_repos=[
+            _typeahead_repo(f"{ORG}/team-chatbot"),
+            _typeahead_repo(f"{ORG}/warden"),
+            _typeahead_repo(
+                f"{ORG}/chatbot-archive",
+                private=False,
+                default_branch="trunk",
+                pushed_at="2019-01-01T00:00:00Z",
+            ),
+        ],
+    )
+
+    response = client_for(github).get("/api/connect/repos?q=chat")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "repos": [
+            {
+                "full_name": f"{ORG}/chatbot-archive",
+                "private": False,
+                "default_branch": "trunk",
+            },
+            {
+                "full_name": f"{ORG}/team-chatbot",
+                "private": True,
+                "default_branch": "main",
+            },
+        ],
+        "truncated": False,
+    }
+
+
+def test_repos_says_when_more_matched_than_it_shows(client_for):
+    github = FakeGitHub(
+        existing_repos={REPO},
+        installation_repos=[
+            _typeahead_repo(f"{ORG}/chat-{i:02d}") for i in range(MAX_MATCHES + 4)
+        ],
+    )
+
+    body = client_for(github).get("/api/connect/repos?q=chat").json()
+
+    assert len(body["repos"]) == MAX_MATCHES
+    assert body["truncated"] is True
+
+
+def test_repos_refuses_a_query_longer_than_the_bound(client):
+    response = client.get("/api/connect/repos", params={"q": "x" * 101})
+
+    assert response.status_code == 422
+
+
+def test_repos_accepts_a_query_right_at_the_bound(client):
+    response = client.get("/api/connect/repos", params={"q": "x" * 100})
+
+    assert response.status_code == 200
+
+
+def test_repos_says_so_when_the_room_has_no_github_at_all(session_factory, config):
+    """Same sentence and same status the scan gives for it: the room cannot
+    answer anything about GitHub, and the field says so rather than reading
+    as an installation with nothing in it."""
+    app_client = TestClient(create_app(session_factory, config=config, clients=None))
+
+    response = app_client.get("/api/connect/repos?q=chat")
+
+    assert response.status_code == 503
+    assert response.json() == {"error": GITHUB_UNREACHABLE}
+
+
+def test_repos_says_so_when_github_will_not_answer(client_for):
+    github = FakeGitHub(
+        existing_repos={REPO},
+        installation_repos_error="gh: Bad credentials (HTTP 401)",
+    )
+
+    response = client_for(github).get("/api/connect/repos?q=chat")
+
+    assert response.status_code == 502
+    assert response.json() == {"error": REPOS_UNREADABLE}
+
+
+def test_repos_is_not_group_gated(grouped_client):
+    """A room that requires a group for every agent still answers this: it
+    names nothing the App could not already read, and a person has to be
+    signed in to ask at all."""
+    response = grouped_client.get("/api/connect/repos?q=team")
+
+    assert response.status_code == 200
+
+
+def test_repos_reads_the_listing_once_inside_the_ttl_and_again_after(client_for):
+    """One GitHub listing serves the whole room for five minutes. The clock
+    is injected rather than slept through."""
+    github = FakeGitHub(
+        existing_repos={REPO},
+        installation_repos=[_typeahead_repo(f"{ORG}/team-chatbot")],
+    )
+    typeahead = client_for(github)
+    clock = {"now": 0.0}
+    typeahead.app.state.repo_index = RepoIndex(github, now=lambda: clock["now"])
+
+    typeahead.get("/api/connect/repos?q=chat")
+    clock["now"] = TTL_S - 1
+    typeahead.get("/api/connect/repos?q=chatb")
+
+    assert github.calls.count("list_installation_repos") == 1
+
+    clock["now"] = TTL_S
+    typeahead.get("/api/connect/repos?q=chatbo")
+
+    assert github.calls.count("list_installation_repos") == 2
 
 
 # --- POST /api/agents/connect -----------------------------------------------------

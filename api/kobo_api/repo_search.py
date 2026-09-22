@@ -42,6 +42,11 @@ from kobo_api.clients import GitHubClient, InstallationRepo
 # anyone restarting anything.
 TTL_S = 5 * 60
 
+# The longest query the route will take. No repository name is anywhere
+# near this, so past it a caller is not searching, and a bound is cheaper
+# than reasoning about what a megabyte of query would do here.
+MAX_QUERY_CHARS = 100
+
 # The most rows the field will ever show. A person scanning a list this
 # long is typing one more character, not reading further, and the count of
 # what was left out is reported instead.

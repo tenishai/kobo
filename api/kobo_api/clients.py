@@ -841,14 +841,11 @@ class GhCLI:
         """
         repos: list[InstallationRepo] = []
         for page in range(1, INSTALLATION_REPOS_MAX_PAGES + 1):
-            out = self._runner.run(
-                [
-                    self._gh, "api",
-                    f"installation/repositories"
-                    f"?per_page={INSTALLATION_REPOS_PER_PAGE}&page={page}",
-                ],
-                env=self._env(),
+            path = (
+                "installation/repositories"
+                f"?per_page={INSTALLATION_REPOS_PER_PAGE}&page={page}"
             )
+            out = self._runner.run([self._gh, "api", path], env=self._env())
             payload = json.loads(out) if out else {}
             entries = payload.get("repositories") or []
             for entry in entries:
