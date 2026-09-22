@@ -644,9 +644,11 @@ def _cabal_enabled_config(config):
 def test_destroy_directory_says_a_connected_agent_was_never_listed(
     session_factory, config, monkeypatch
 ):
-    """A connected agent has no switchboard identity: the pipeline that
-    built it skips the directory step entirely, so there is nothing to
-    retire even with the switchboard fully configured and reachable."""
+    """A connected agent has no switchboard identity to retire: an agent
+    connected from the start never had one (its pipeline has no directory
+    step), and a converted one had its entry retired at the moment it was
+    converted. The note says what is true of both, rather than claiming
+    the converted one was never listed."""
     monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
     cfg = _cabal_enabled_config(config)
     session, agent = _make_ctx_agent(session_factory, kind=KIND_CONNECTED)
@@ -655,7 +657,7 @@ def test_destroy_directory_says_a_connected_agent_was_never_listed(
 
     detail = _destroy_directory(ctx)
 
-    assert detail == "never listed in the directory"
+    assert detail == "no directory entry to retire"
     assert fake_cabal.absorb_calls == []
     session.close()
 

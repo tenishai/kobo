@@ -18,6 +18,7 @@ from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import CabalError, Clients
 from kobo_api.config import SHARED_GROUP, Config
+from kobo_api.kinds import KIND_COMPOSED, KIND_CONNECTED
 from kobo_api.main import _boot_sync_dispatch_pairs
 from kobo_api.models import A2AInvite, Agent, AgentStatus, Base
 from kobo_api.pairs import (
@@ -53,7 +54,9 @@ def config(tmp_path):
     return Config(workdir=tmp_path / "work")
 
 
-def _agent(session, name, *, group_name=None, status=AgentStatus.READY):
+def _agent(
+    session, name, *, group_name=None, status=AgentStatus.READY, kind=KIND_COMPOSED
+):
     agent = Agent(
         name=name,
         persona=PERSONA,
@@ -61,6 +64,7 @@ def _agent(session, name, *, group_name=None, status=AgentStatus.READY):
         status=status,
         repo_full_name=f"acme/agent-{name}",
         group_name=group_name,
+        kind=kind,
     )
     session.add(agent)
     session.commit()
@@ -131,6 +135,51 @@ def test_three_agents_same_group_all_pairs_present(session, config):
         ("agent:b", "c"), ("agent:c", "b"),
     }
     assert pairs == expected
+
+
+# --- Connected agents are nobody's dispatch pair ----------------------------
+#
+# A connected agent has no colleague wiring at all (connected-agents design
+# 2026-09-21): the pipeline that builds one never mints a colleague pass and
+# never writes a roster, and cabal holds no inbound route to it. Leaving it
+# in this set gives it outbound dispatch rights it can never use and puts it
+# on rosters as a colleague nobody can actually reach. True for an agent
+# connected from the start, and true the moment a composed one is converted.
+
+
+def test_a_connected_agent_is_not_paired_with_its_own_group(session, config):
+    _agent(session, "a", group_name="growth")
+    _agent(session, "b", group_name="growth", kind=KIND_CONNECTED)
+
+    pairs = allowed_pairs(session, config)
+
+    assert pairs == set()
+
+
+def test_a_connected_agent_is_dropped_from_both_directions_only(session, config):
+    """The two composed agents beside it keep their own pair: converting one
+    agent must not quietly unplug the rest of its group."""
+    _agent(session, "a", group_name="growth")
+    _agent(session, "b", group_name="growth")
+    _agent(session, "c", group_name="growth", kind=KIND_CONNECTED)
+
+    pairs = allowed_pairs(session, config)
+
+    assert pairs == {("agent:a", "b"), ("agent:b", "a")}
+
+
+def test_an_accepted_invite_naming_a_connected_agent_is_not_a_pair(session, config):
+    """An invite accepted while both were composed does not survive one of
+    them being converted: the row stays (it really was accepted), the
+    dispatch right does not."""
+    _agent(session, "a", group_name="growth")
+    _agent(session, "b", group_name="payments-eng", kind=KIND_CONNECTED)
+    _invite(session, from_agent="a", to_agent="b", status="accepted")
+    _invite(session, from_agent="b", to_agent="a", status="accepted")
+
+    pairs = allowed_pairs(session, config)
+
+    assert pairs == set()
 
 
 # --- implicitly_paired: the one predicate every call site (allowed_pairs'

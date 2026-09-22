@@ -563,6 +563,29 @@ export async function connectAgent(
   return parse<{ name: string; status: string }>(res);
 }
 
+/**
+ * `POST /api/agents/{name}/convert-to-connected`: says out loud that the
+ * room no longer edits an agent it once composed. Operator-only (403
+ * otherwise), and only for a ready or failed agent that is not already
+ * connected (409 otherwise); 422 when the run mode is one the room does not
+ * have. Every refusal arrives as an `ApiError` through `parse`, carrying
+ * the server's own sentence, which is what the page shows.
+ */
+export async function convertToConnected(
+  name: string,
+  runMode: string,
+): Promise<{ name: string; kind: string; run_mode: string }> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/convert-to-connected`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ run_mode: runMode }),
+    },
+  );
+  return parse<{ name: string; kind: string; run_mode: string }>(res);
+}
+
 export async function retryAgent(name: string): Promise<void> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/retry`, {
     method: "POST",

@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from kobo_api.clients import CabalClient, CabalError, cabal_enabled
 from kobo_api.config import SHARED_GROUP, Config
+from kobo_api.kinds import KIND_CONNECTED
 from kobo_api.models import INVITE_ACCEPTED, A2AInvite, Agent, AgentStatus
 
 if TYPE_CHECKING:
@@ -102,12 +103,31 @@ def allowed_pairs(session: Session, config: Config) -> set[tuple[str, str]]:
       naturally here, the same "query current rows only" discipline the
       same-group half above already follows.
 
+    A CONNECTED agent (connected-agents design 2026-09-21) is in neither
+    source, as caller or as target: the room never wired it for colleague
+    talk, so a pair naming it is a right nothing can exercise. An agent
+    converted from composed loses its pairs here the next time this runs,
+    which the convert route makes sure is immediately.
+
     `config` is accepted (not read) for the same reason `_visible_agents`
     takes both `session` and `request` even though not every branch touches
     both -- this is the seam a future policy input (e.g. a config-level
     kill switch) would extend without changing every call site's shape.
     """
-    ready_agents = session.query(Agent).filter(Agent.status == AgentStatus.READY).all()
+    # Connected agents are excluded outright, which covers BOTH loops below
+    # at once (the same-group loop reads this list; the invite loop reads
+    # the names taken from it). The room holds no colleague wiring for a
+    # connected agent -- its pipeline mints no colleague pass and the
+    # switchboard has no inbound route to it -- so a pair naming one is a
+    # dispatch right that can only ever fail, in whichever direction it
+    # points. Spelled as `!= KIND_CONNECTED` rather than `== KIND_COMPOSED`
+    # for `kobo_api.kinds`'s own reason: a later kind gets the composed
+    # behaviour until it asks for its own.
+    ready_agents = (
+        session.query(Agent)
+        .filter(Agent.status == AgentStatus.READY, Agent.kind != KIND_CONNECTED)
+        .all()
+    )
     ready_names = {agent.name for agent in ready_agents}
 
     pairs: set[tuple[str, str]] = set()

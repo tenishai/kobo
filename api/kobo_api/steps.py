@@ -61,7 +61,7 @@ from kobo_api.colleagues import deliver_pass
 from kobo_api.composer import BundleSpec, _colleagues_md, _self_md, compose, validate_agent_yaml
 from kobo_api.config import Config, vertex_location_for
 from kobo_api.directory import sync_directory
-from kobo_api.kinds import RUN_MODE_HEADLESS, is_connected
+from kobo_api.kinds import KIND_CONNECTED, RUN_MODE_HEADLESS, is_connected
 from kobo_api.metadata import (
     commit_card_metadata,
     generate_capability,
@@ -515,9 +515,19 @@ def _colleague_roster(session, agent: Agent) -> list[dict]:
     preserved, never re-sorted (the fallback only ever joins them into one
     line; pick order is as meaningful an order as any).
     """
+    # Connected agents are left out for the same reason `allowed_pairs`
+    # leaves them out of the wire (connected-agents design 2026-09-21):
+    # there is no route to one, so a roster line naming it would offer a
+    # colleague this agent cannot reach. Kept in step with that function
+    # deliberately -- the roster is the page an agent reads to decide who
+    # to call, and the pair set is what the switchboard then allows.
     ready_others = (
         session.query(Agent)
-        .filter(Agent.status == AgentStatus.READY, Agent.name != agent.name)
+        .filter(
+            Agent.status == AgentStatus.READY,
+            Agent.name != agent.name,
+            Agent.kind != KIND_CONNECTED,
+        )
         .all()
     )
     accepted_targets = {
@@ -578,9 +588,17 @@ def _agents_who_can_see(session, *, name: str, group_name: str | None) -> list[A
     would wrongly report that nobody could see the departing agent, when a
     moment earlier several agents could.
     """
+    # Connected viewers are excluded, matching `_colleague_roster`'s own
+    # exclusion above: a connected agent has no bundle and no colleagues.md,
+    # so there is no roster of its own to refresh and a knowledge delivery
+    # to it would be a system task it never asked for.
     candidates = (
         session.query(Agent)
-        .filter(Agent.status == AgentStatus.READY, Agent.name != name)
+        .filter(
+            Agent.status == AgentStatus.READY,
+            Agent.name != name,
+            Agent.kind != KIND_CONNECTED,
+        )
         .all()
     )
     accepted_from = {
