@@ -45,6 +45,7 @@ import yaml
 
 from kobo_api.clients import ClientError, GitHubClient, GojiraClient, KubectlClient
 from kobo_api.composer import update_dockerfile_runtime_image
+from kobo_api.ladon import LadonClient, deliver_secret
 
 # --- render_manifest -----------------------------------------------------------
 
@@ -266,6 +267,8 @@ def wire_slack(
     bot_token: str,
     app_token: str,
     runtime_image: str,
+    ladon: LadonClient | None = None,
+    acting_email: str | None = None,
 ) -> str:
     """Deliver `bot_token`/`app_token` to the agent's namespace and wire its
     repo's Slack transports, mirroring `kobo_api.steps.WireStep` end to end:
@@ -273,6 +276,22 @@ def wire_slack(
     1. `kubectl.apply_secret` upserts `{name}-slack` in namespace `name` with
        `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN` — the only place either token
        value is ever used; neither is written to a repo file or returned.
+       When the secrets platform's machine lane is configured (`ladon`,
+       `Clients.ladon`), that write goes THROUGH the platform instead:
+       stored at `apps/{name}/slack` against `acting_email` (the person
+       wiring Slack right now, else the agent's creator) and delivered into
+       the agent's namespace as the same `{name}-slack` Secret, so step 2's
+       `secrets_from` entry and the pod's contract are unchanged. What DOES
+       change is the timing: that delivery is eventually consistent, not
+       immediate. The value is stored at once, but the cluster only carries
+       it after the platform next re-reads the path (the refresh interval
+       this room asks for, minutes rather than the platform's hour-long
+       default) -- so on a RE-wire, a pod that restarts inside that window
+       can still be holding the previous tokens, where the direct write
+       above had them in place before this call returned. Never both paths
+       and never a fallback between them: two writers for one Secret name
+       is two sources of truth, so a lane failure fails this call the same
+       way a failed `apply_secret` does.
     2. Clone `repo` fresh; edit `bundle/agent.yaml` (transports gains one
        slack entry per channel in `channels`), `gojira.yaml` (`secrets_from`
        gains `{name}-slack`, append-if-missing), and `Dockerfile` (its `FROM` line
@@ -302,11 +321,18 @@ def wire_slack(
     only available to the route that calls this. Disclosed in the task
     report.
     """
-    kubectl.apply_secret(
-        name,
-        f"{name}-slack",
-        {"SLACK_BOT_TOKEN": bot_token, "SLACK_APP_TOKEN": app_token},
-    )
+    tokens = {"SLACK_BOT_TOKEN": bot_token, "SLACK_APP_TOKEN": app_token}
+    if ladon is not None:
+        deliver_secret(
+            ladon,
+            acting_email=acting_email,
+            agent_name=name,
+            purpose="slack",
+            values=tokens,
+            secret_name=f"{name}-slack",
+        )
+    else:
+        kubectl.apply_secret(name, f"{name}-slack", tokens)
 
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)

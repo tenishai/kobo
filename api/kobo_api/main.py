@@ -75,6 +75,7 @@ from kobo_api.knowledge import (
     rollout_in_progress,
     save_knowledge_file,
 )
+from kobo_api.ladon import acting_email_refusal
 from kobo_api.learnings import clean_edited_statement
 from kobo_api.learnings import nightly_loop as learnings_nightly_loop
 from kobo_api.marketplace import BASELINE_TOOL_PREFIX
@@ -6356,6 +6357,22 @@ def create_app(
                 {"error": "that doesn't look like a Slack app-level token"}, status_code=422
             )
 
+        # The person doing the wiring, since this IS a request with a
+        # verified caller behind it; the agent's creator is the fallback
+        # for a room with no identity perimeter in front of it, matching
+        # what the background pipeline can name.
+        acting_email = getattr(request.state, "iap_email", None) or agent.created_by
+        if clients.ladon is not None:
+            # Checked BEFORE any work: the secrets platform records every
+            # write against a person, and having nobody to name is a
+            # standing state rather than a blip -- so it reads as a 409
+            # with the reason, not as the retryable 502 a delivery failure
+            # gets. Only the lane needs this; a room writing Secrets
+            # directly never did.
+            refusal = acting_email_refusal(agent.name, acting_email)
+            if refusal is not None:
+                return JSONResponse({"error": refusal}, status_code=409)
+
         try:
             sha = wire_slack(
                 clients.github,
@@ -6368,6 +6385,11 @@ def create_app(
                 bot_token=payload.bot_token,
                 app_token=payload.app_token,
                 runtime_image=agent.runtime_image or cfg.runtime_image,
+                # None unless the secrets platform's machine lane is
+                # configured, in which case the token delivery rides it
+                # instead of a direct Secret write (kobo_api.ladon).
+                ladon=clients.ladon,
+                acting_email=acting_email,
             )
         except ClientError as exc:
             log.warning("slack connect failed: %s", exc)

@@ -278,6 +278,26 @@ class Config(BaseModel):
     # slack_tokens_path above and deliberately absent from org.py's ORG_KEYS:
     # it names an object in THIS cluster, not anything the org hands out.
     slack_tokens_secret: str = ""
+    # The secrets platform's machine lane (2026-09-22): the service's base
+    # URL, the OIDC audience this room's own workload identity mints an ID
+    # token for (the lane's only accepted credential), and the team
+    # namespace this room's secrets live in over there. All three set means
+    # the room stops writing an agent's per-agent Secrets itself and hands
+    # the values to that platform instead, which stores them once and syncs
+    # them into the agent's namespace under the SAME Secret name the deploy
+    # contract already names -- so nothing about a pod changes. Any one of
+    # the three empty (the default) means the room keeps writing those
+    # Secrets directly, exactly as before: "absent = feature off", the same
+    # convention slack_tokens_secret above and skills_bucket hold. See
+    # `ladon_enabled` below for the one place that check lives, and
+    # kobo_api.ladon for the lane itself.
+    #
+    # Deployment-local, deliberately absent from org.py's ORG_KEYS: these
+    # name a service and a namespace in THIS cluster, not anything the org
+    # hands out.
+    ladon_url: str = ""
+    ladon_audience: str = ""
+    ladon_namespace: str = ""
     # The deploy platform's workload class for a connected agent that has
     # no HTTP port (connected-agents design 2026-09-21): a single-replica
     # workload with no network probes. Empty (the default) means this
@@ -452,6 +472,17 @@ class Config(BaseModel):
         is the switch, same "presence is the switch" posture as
         `cabal_url`/`skills_bucket` above."""
         return bool(self.mcp.oauth_client_id)
+
+    @property
+    def ladon_enabled(self) -> bool:
+        """Whether the secrets platform's machine lane is wired -- ALL
+        three coordinates, never a subset: a URL with no audience could
+        never authenticate, and a URL with no namespace has nowhere to
+        write. A half-configured lane is a config mistake whose only honest
+        reading is "off", so it reads as off here rather than failing every
+        secret delivery at the first agent that needs one. Same "presence is
+        the switch" posture as `mcp_enabled` just above."""
+        return bool(self.ladon_url and self.ladon_audience and self.ladon_namespace)
 
     @field_validator(
         "workdir", "slack_tokens_path", "ui_dist", "github_app_private_key_path",

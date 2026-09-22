@@ -7396,6 +7396,49 @@ def test_clients_real_wires_cabal_when_enabled(monkeypatch):
     assert clients.cabal._token == "op-token"
 
 
+# --- Clients.real() secrets-platform wiring (kobo_api.ladon) -----------------
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {},
+        {"ladon_url": "http://secrets.example"},
+        {"ladon_url": "http://secrets.example", "ladon_audience": "aud"},
+        {"ladon_audience": "aud", "ladon_namespace": "platform"},
+    ],
+)
+def test_clients_real_leaves_ladon_none_until_all_three_settings_are_set(settings):
+    # Same "is this configured" gate shape as cabal above, via
+    # Config.ladon_enabled: a half-configured lane reads as off, and the
+    # room keeps writing per-agent Secrets directly.
+    config = Config(
+        gojira_url="http://gojira.local", gcp_project="example-project", **settings
+    )
+    assert Clients.real(config).ladon is None
+
+
+def test_clients_real_wires_ladon_when_all_three_settings_are_set():
+    from kobo_api.ladon import HttpxLadonClient
+
+    config = Config(
+        gojira_url="http://gojira.local",
+        gcp_project="example-project",
+        ladon_url="http://secrets.example",
+        ladon_audience="http://secrets.example",
+        ladon_namespace="platform",
+    )
+
+    clients = Clients.real(config)
+
+    assert isinstance(clients.ladon, HttpxLadonClient)
+    assert clients.ladon._base_url == "http://secrets.example"
+    assert clients.ladon._namespace == "platform"
+    # Its credential is this workload's own identity, minted for the
+    # configured audience -- nothing configured, nothing stored.
+    assert clients.ladon._token_provider._audience == "http://secrets.example"
+
+
 # --- Clients.real() group resolver wiring (access-control arc, Task B1) ------
 
 

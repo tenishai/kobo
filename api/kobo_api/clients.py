@@ -33,13 +33,22 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, TypedDict, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, TypedDict, runtime_checkable
 from urllib.parse import quote
 
 import httpx
 
 from kobo_api.config import Config, GroupChoice
 from kobo_api.groups import GroupResolver, OktaGroupResolver, OktaPeopleSearch
+
+if TYPE_CHECKING:
+    # kobo_api.ladon imports ClientError from this module, so this import
+    # exists only for the annotation on `Clients.ladon` below -- `from
+    # __future__ import annotations` keeps it from being evaluated at
+    # runtime, and `Clients.real` imports the implementation at call time,
+    # the same deferral `installation_token_provider` uses for
+    # kobo_api.github_app.
+    from kobo_api.ladon import LadonClient
 
 log = logging.getLogger(__name__)
 
@@ -4450,10 +4459,23 @@ class Clients:
     # live search failure -- fail-soft, `{"people": [], "unavailable":
     # true}`, never a 5xx.
     people_search: OktaPeopleSearch | None = None
+    # None whenever the secrets platform's machine lane isn't configured
+    # (`Config.ladon_enabled` false -- the same "absent = feature off"
+    # convention as cabal above). Set, it REPLACES the direct
+    # `kubectl.apply_secret` write at the room's two per-agent secret
+    # deliveries (the colleague pass and the Slack tokens); there is
+    # deliberately no fallback between the two, since an agent whose Secret
+    # has two writers has two sources of truth. See kobo_api.ladon.
+    ladon: LadonClient | None = None
 
     @classmethod
     def real(cls, config: Config) -> Clients:
         """Wire the real, subprocess/network-backed implementations."""
+        # Local import for the same circularity reason as
+        # `installation_token_provider`'s: kobo_api.ladon imports
+        # ClientError from this module.
+        from kobo_api.ladon import HttpxLadonClient
+
         runner = CommandRunner()
         token_provider = installation_token_provider(config)
         # One shared CachedGcloudToken across every client that defaults its
@@ -4516,5 +4538,14 @@ class Clients:
                 config.okta_domain, os.environ.get("OKTA_API_TOKEN", "")
             )
             if os.environ.get("OKTA_API_TOKEN") and config.okta_domain
+            else None,
+            # All three coordinates or nothing (`Config.ladon_enabled`),
+            # same gate shape as cabal above. The client's credential is
+            # this workload's own identity, minted per call from the
+            # metadata server — nothing configured, nothing stored.
+            ladon=HttpxLadonClient(
+                config.ladon_url, config.ladon_audience, config.ladon_namespace
+            )
+            if config.ladon_enabled
             else None,
         )

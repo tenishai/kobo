@@ -1637,6 +1637,45 @@ class FakeCabal:
             yield chunk
 
 
+class FakeLadon:
+    """Records every `put_secret`/`ensure_synced` call the secrets
+    platform's machine lane would have received (`.puts`/`.syncs`, each in
+    call order) -- no real platform, no metadata server, no cluster
+    involved (kobo_api.ladon).
+
+    `.puts` entries are `(acting_email, path, values)` and `.syncs` entries
+    are `(acting_email, app, path, k8s_namespace, name)`. The VALUES are
+    kept here, and only here, so a delivery test can assert an agent's
+    colleague token or Slack tokens actually reached the lane -- the real
+    client never lets a value back out, which is exactly why the assertion
+    has to live in the fake instead.
+
+    `put_error`/`sync_error`, when set, make the matching method raise
+    `ClientError(that message)` instead of recording -- the seam for
+    exercising a caller's failure handling (a delivery must fail its step
+    the way a direct Secret write failure does, never fall back to writing
+    the Secret itself) without a real backend.
+    """
+
+    def __init__(self, *, put_error: str | None = None, sync_error: str | None = None):
+        self._put_error = put_error
+        self._sync_error = sync_error
+        self.puts: list[tuple[str, str, dict[str, str]]] = []
+        self.syncs: list[tuple[str, str, str, str, str]] = []
+
+    def put_secret(self, acting_email: str, path: str, values: dict[str, str]) -> None:
+        if self._put_error is not None:
+            raise ClientError(self._put_error)
+        self.puts.append((acting_email, path, dict(values)))
+
+    def ensure_synced(
+        self, acting_email: str, app: str, path: str, k8s_namespace: str, name: str
+    ) -> None:
+        if self._sync_error is not None:
+            raise ClientError(self._sync_error)
+        self.syncs.append((acting_email, app, path, k8s_namespace, name))
+
+
 class FakePeopleSearch:
     """Records every `search` query (`.search_calls`, in call order) -- no
     real Okta backend involved (access-tab refinement wave, people search).
