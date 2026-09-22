@@ -230,6 +230,42 @@ class RepoAccessInfo:
     full_name: str = ""
 
 
+# One page of `GET /installation/repositories`. GitHub's own maximum, and
+# what the repository typeahead asks for: a listing worth caching is one
+# taken in as few round trips as the API allows.
+INSTALLATION_REPOS_PER_PAGE = 100
+
+# A ceiling on how far the listing will walk, in pages. An installation on
+# 10,000 repositories is not a room this typeahead was written for, and a
+# paging loop with no end is one bad response away from never returning.
+INSTALLATION_REPOS_MAX_PAGES = 100
+
+
+@dataclass(frozen=True)
+class InstallationRepo:
+    """One repository the room's GitHub App installation can see.
+
+    Only the five fields the repository typeahead needs: the name to match
+    and show, `archived` because an archived repository cannot be connected
+    and should not be offered, `private` because a person picking from a
+    list deserves to know which one they are pointing at, `default_branch`
+    because the connect form carries it onward, and `pushed_at` because it
+    is the only honest way to order two repositories that match a query
+    equally well -- the one worked on last week is the one being looked
+    for far more often than the one abandoned in 2019.
+
+    `pushed_at` is GitHub's own ISO-8601 string, kept as text: it is only
+    ever compared with another one of its own kind, and that comparison is
+    the same either way round.
+    """
+
+    full_name: str
+    archived: bool
+    private: bool
+    default_branch: str
+    pushed_at: str
+
+
 @runtime_checkable
 class GitHubClient(Protocol):
     def repo_exists(self, repo: str) -> bool:
@@ -287,6 +323,21 @@ class GitHubClient(Protocol):
         One read answers several of the scan's questions -- a Dockerfile, a
         committed `.env`, a `bundle/` directory, a `gojira.yaml` -- which is
         why it is a listing rather than four existence checks.
+        """
+        ...
+
+    def list_installation_repos(self) -> list[InstallationRepo]:
+        """Every repository the room's GitHub App installation can see.
+
+        The repository typeahead's one read (`GET /api/connect/repos`). It
+        names nothing the App could not already read, which is why it is
+        allowed to be listed at all -- but it is a LISTING, not a lookup,
+        so it is read once and cached rather than asked per keystroke.
+
+        Raises rather than answering an empty list when GitHub will not
+        answer. An installation with no repositories and a token that
+        cannot ask the question are different facts, and a typeahead that
+        silently shows nothing for the second is one nobody can debug.
         """
         ...
 
@@ -777,6 +828,50 @@ class GhCLI:
                 return []
             raise
         return [line for line in out.splitlines() if line]
+
+    def list_installation_repos(self) -> list[InstallationRepo]:
+        """Walks `installation/repositories` a page at a time, stopping at
+        the first page that came back short of the page size.
+
+        `page=` rather than `Link` headers: `gh api` hands back the body,
+        not the response headers, and a short page is the same end of the
+        listing GitHub's own `Link` would have described. Bounded by
+        `INSTALLATION_REPOS_MAX_PAGES` so a server that keeps answering
+        full pages cannot hold this open forever.
+        """
+        repos: list[InstallationRepo] = []
+        for page in range(1, INSTALLATION_REPOS_MAX_PAGES + 1):
+            out = self._runner.run(
+                [
+                    self._gh, "api",
+                    f"installation/repositories"
+                    f"?per_page={INSTALLATION_REPOS_PER_PAGE}&page={page}",
+                ],
+                env=self._env(),
+            )
+            payload = json.loads(out) if out else {}
+            entries = payload.get("repositories") or []
+            for entry in entries:
+                full_name = entry.get("full_name") or ""
+                if not full_name:
+                    continue
+                repos.append(
+                    InstallationRepo(
+                        full_name=full_name,
+                        archived=bool(entry.get("archived", False)),
+                        private=bool(entry.get("private", False)),
+                        default_branch=entry.get("default_branch") or "",
+                        pushed_at=entry.get("pushed_at") or "",
+                    )
+                )
+            if len(entries) < INSTALLATION_REPOS_PER_PAGE:
+                break
+        else:
+            log.warning(
+                "installation repository listing stopped at the %s-page cap",
+                INSTALLATION_REPOS_MAX_PAGES,
+            )
+        return repos
 
     def branch_protected(self, repo: str, branch: str) -> bool:
         try:

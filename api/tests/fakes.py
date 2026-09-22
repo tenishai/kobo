@@ -22,6 +22,7 @@ from kobo_api.clients import (
     ChatMessage,
     ClientError,
     GojiraConflict,
+    InstallationRepo,
     RepoAccessInfo,
     SlackApiError,
     StorageNotFound,
@@ -484,6 +485,8 @@ class FakeGitHub:
         can_write: bool = True,
         default_branch: str = "main",
         protected_branches: set[str] | None = None,
+        installation_repos: list[InstallationRepo] | None = None,
+        installation_repos_error: str | None = None,
     ):
         self.repos: set[str] = set(existing_repos) if existing_repos else set()
         self._rename_error = rename_error
@@ -569,6 +572,10 @@ class FakeGitHub:
         self._protected_branches: set[str] = (
             set(protected_branches) if protected_branches else set()
         )
+        self._installation_repos = (
+            list(installation_repos) if installation_repos is not None else None
+        )
+        self._installation_repos_error = installation_repos_error
         self._rerun_result = rerun_result or {"status": "completed", "conclusion": "success"}
         self._rerun_followup = list(rerun_followup) if rerun_followup else None
         self.rerun_calls: list[tuple[str, int]] = []
@@ -615,6 +622,32 @@ class FakeGitHub:
     def list_root(self, repo: str) -> list[str]:
         self.calls.append(f"list_root:{repo}")
         return list(self._root_entries)
+
+    def list_installation_repos(self) -> list[InstallationRepo]:
+        """Whatever `installation_repos` holds. Unset, it is derived from
+        `existing_repos` -- one knob still answers the common case, and a
+        test that cares about archived, private or pushed_at passes the
+        list itself.
+
+        `installation_repos_error` models GitHub refusing the question
+        (the real client raises there rather than answering an empty
+        installation).
+        """
+        self.calls.append("list_installation_repos")
+        if self._installation_repos_error is not None:
+            raise ClientError(self._installation_repos_error)
+        if self._installation_repos is not None:
+            return list(self._installation_repos)
+        return [
+            InstallationRepo(
+                full_name=repo,
+                archived=False,
+                private=True,
+                default_branch=self._default_branch,
+                pushed_at="",
+            )
+            for repo in sorted(self.repos)
+        ]
 
     def branch_protected(self, repo: str, branch: str) -> bool:
         """True for any branch named in `protected_branches`. Default empty:
