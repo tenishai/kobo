@@ -28,6 +28,7 @@ from kobo_api.clients import (
     StorageNotFound,
     gsa_email,
 )
+from kobo_api.ladon import SecretKeys
 
 # --- Generated-scaffolding fixture for FakeGitHub.clone ------------------------
 #
@@ -1671,10 +1672,10 @@ class FakeCabal:
 
 
 class FakeLadon:
-    """Records every `put_secret`/`ensure_synced` call the secrets
-    platform's machine lane would have received (`.puts`/`.syncs`, each in
-    call order) -- no real platform, no metadata server, no cluster
-    involved (kobo_api.ladon).
+    """Records every call the secrets platform's machine lane would have
+    received (`.puts`/`.syncs`/`.reads`/`.deletes`/`.unsyncs`, each in call
+    order) -- no real platform, no metadata server, no cluster involved
+    (kobo_api.ladon).
 
     `.puts` entries are `(acting_email, path, values)` and `.syncs` entries
     are `(acting_email, app, path, k8s_namespace, name)`. The VALUES are
@@ -1683,23 +1684,54 @@ class FakeLadon:
     client never lets a value back out, which is exactly why the assertion
     has to live in the fake instead.
 
-    `put_error`/`sync_error`, when set, make the matching method raise
-    `ClientError(that message)` instead of recording -- the seam for
-    exercising a caller's failure handling (a delivery must fail its step
-    the way a direct Secret write failure does, never fall back to writing
-    the Secret itself) without a real backend.
+    `.reads` are the paths `list_keys` was asked about, `.deletes` the
+    paths `delete_secret` removed, and `.unsyncs` the
+    `(acting_email, app, k8s_namespace, name)` objects `unsync` took away.
+
+    This fake also STORES what it is given, rather than only recording it:
+    `put_secret` merges into a per-path dict and `delete_secret` empties
+    one, so `list_keys` answers with the names actually written and a
+    route's read-after-write reads like the real lane's would. `removed`
+    key names (the `remove_keys` half of a merge) are not modelled -- the
+    room's own writes go through `put_secret`'s values alone and the routes
+    that remove a key do so by writing the surviving set.
+
+    `put_error`/`sync_error`/`read_error`/`delete_error`/`unsync_error`,
+    when set, make the matching method raise `ClientError(that message)`
+    instead of recording -- the seam for exercising a caller's failure
+    handling (a delivery must fail its step the way a direct Secret write
+    failure does, never fall back to writing the Secret itself) without a
+    real backend.
     """
 
-    def __init__(self, *, put_error: str | None = None, sync_error: str | None = None):
+    def __init__(
+        self,
+        *,
+        put_error: str | None = None,
+        sync_error: str | None = None,
+        read_error: str | None = None,
+        delete_error: str | None = None,
+        unsync_error: str | None = None,
+        updated_at: str | None = "2026-09-22T10:00:00.000000Z",
+    ):
         self._put_error = put_error
         self._sync_error = sync_error
+        self._read_error = read_error
+        self._delete_error = delete_error
+        self._unsync_error = unsync_error
+        self._updated_at = updated_at
         self.puts: list[tuple[str, str, dict[str, str]]] = []
         self.syncs: list[tuple[str, str, str, str, str]] = []
+        self.reads: list[tuple[str, str]] = []
+        self.deletes: list[tuple[str, str]] = []
+        self.unsyncs: list[tuple[str, str, str, str]] = []
+        self.stored: dict[str, dict[str, str]] = {}
 
     def put_secret(self, acting_email: str, path: str, values: dict[str, str]) -> None:
         if self._put_error is not None:
             raise ClientError(self._put_error)
         self.puts.append((acting_email, path, dict(values)))
+        self.stored.setdefault(path, {}).update(values)
 
     def ensure_synced(
         self, acting_email: str, app: str, path: str, k8s_namespace: str, name: str
@@ -1707,6 +1739,29 @@ class FakeLadon:
         if self._sync_error is not None:
             raise ClientError(self._sync_error)
         self.syncs.append((acting_email, app, path, k8s_namespace, name))
+
+    def list_keys(self, acting_email: str, path: str) -> SecretKeys:
+        if self._read_error is not None:
+            raise ClientError(self._read_error)
+        self.reads.append((acting_email, path))
+        held = self.stored.get(path)
+        if held is None:
+            return SecretKeys(keys=[], updated_at=None, exists=False)
+        return SecretKeys(keys=sorted(held), updated_at=self._updated_at, exists=True)
+
+    def delete_secret(self, acting_email: str, path: str) -> None:
+        if self._delete_error is not None:
+            raise ClientError(self._delete_error)
+        self.deletes.append((acting_email, path))
+        # Gone, not emptied: the real lane removes the path's metadata and
+        # every version, so a later read says "there is nothing here"
+        # rather than "here is an empty document".
+        self.stored.pop(path, None)
+
+    def unsync(self, acting_email: str, app: str, k8s_namespace: str, name: str) -> None:
+        if self._unsync_error is not None:
+            raise ClientError(self._unsync_error)
+        self.unsyncs.append((acting_email, app, k8s_namespace, name))
 
 
 class FakePeopleSearch:
