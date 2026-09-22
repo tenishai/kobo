@@ -53,3 +53,20 @@ describe("AgentCard — owner line (Task A3)", () => {
     expect(screen.getByText("Made by owner@example.com")).not.toBeNull();
   });
 });
+
+describe("AgentCard — connected marker (connected-agents design 2026-09-21)", () => {
+  it("renders no marker for a composed agent", () => {
+    render(AgentCard, { agent: BASE_AGENT });
+
+    expect(screen.queryByText("connected")).toBeNull();
+  });
+
+  it("marks a connected agent, beside its name", () => {
+    const { container } = render(AgentCard, {
+      agent: { ...BASE_AGENT, kind: "connected" },
+    });
+
+    expect(screen.getByText("connected")).not.toBeNull();
+    expect(container.querySelector(".agent-card__kind")).not.toBeNull();
+  });
+});

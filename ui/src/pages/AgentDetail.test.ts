@@ -727,3 +727,74 @@ describe("AgentDetail Access tab (access-control Task C2)", () => {
     expect(screen.queryByRole("combobox")).toBeNull();
   });
 });
+
+describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
+  // A connected row as the read route serves one: no persona anybody can
+  // look up, no capability, no skills, no purpose tags, and a repository
+  // that belongs to its team.
+  const CONNECTED_AGENT = {
+    ...READY_AGENT,
+    kind: "connected",
+    persona: "connected",
+    capability: null,
+    skills: [],
+    purpose_tags: [],
+    repo_full_name: "acme/release-bot",
+  };
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.stubGlobal("EventSource", NoopEventSource);
+    location.hash = "#/agents/warden";
+    window.dispatchEvent(new Event("hashchange"));
+    stubFetch({ ...BASE_ROUTES, "/api/agents/warden": CONNECTED_AGENT });
+  });
+
+  it("renders no chat, slack or advanced tabs, and no Advanced toggle", async () => {
+    renderWithClient(AgentDetail);
+
+    // The header renders for every kind, so it is the wait point here --
+    // there is no tab to wait for on this page.
+    await screen.findByRole("heading", { name: "warden" });
+    expect(screen.queryByRole("tab", { name: "Chat" })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "Slack" })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "Skills" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Advanced/ })).toBeNull();
+  });
+
+  it("shows the connected marker and the repository itself as the link", async () => {
+    renderWithClient(AgentDetail);
+
+    const header = (await screen.findByRole("heading", { name: "warden" }))
+      .closest(".agent-detail__header") as HTMLElement;
+    expect(within(header).getByText("connected")).not.toBeNull();
+    const repoLink = within(header).getByRole("link", { name: "acme/release-bot" });
+    expect(repoLink.getAttribute("href")).toBe("https://github.com/acme/release-bot");
+    expect(within(header).queryByText("source")).toBeNull();
+  });
+
+  it("renders nothing the room composed: no persona line and no capability sentence", async () => {
+    renderWithClient(AgentDetail);
+
+    const header = (await screen.findByRole("heading", { name: "warden" }))
+      .closest(".agent-detail__header") as HTMLElement;
+    expect(header.querySelector(".agent-detail__persona")).toBeNull();
+    expect(header.querySelector(".agent-detail__capability")).toBeNull();
+    expect(
+      screen.queryByText("Not written yet. It arrives after first contact."),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: /Edit details/ })).toBeNull();
+  });
+
+  it("still keeps the Access tab when the caller may administer it", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+      "/api/agents/warden": CONNECTED_AGENT,
+    });
+    renderWithClient(AgentDetail);
+
+    expect(await screen.findByRole("tab", { name: "Access" })).not.toBeNull();
+    expect(screen.queryByRole("tab", { name: "Chat" })).toBeNull();
+  });
+});

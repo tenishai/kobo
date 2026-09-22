@@ -1,5 +1,16 @@
 // The agent detail tab model. Pure so the visibility and default-selection
 // rules are unit-tested; the component only maps over what these return.
+//
+// Connected agents (design 2026-09-21) are the first thing here that hides
+// tabs by what an agent IS rather than by what the caller may do: the room
+// did not compose a connected agent, so there is no bundle behind Chat,
+// Learnings, Memory, Skills or Tooling, and it made no chat app for Slack.
+// An absent tab is the honest answer; a disabled one would promise
+// something that is never coming. Access is the exception and stays exactly
+// as it is for a composed agent -- who may administer an agent is a
+// question about the caller, and it has the same answer for both kinds.
+import { KIND_COMPOSED, KIND_CONNECTED } from "./api";
+
 export type TabId =
   | "chat"
   | "learnings"
@@ -29,9 +40,13 @@ export const TAB_LABELS: Record<TabId, string> = {
  * `showAccess` is the caller's own probe of whether
  * `GET /api/agents/{name}/invites` answered 200 for them. Appended last,
  * same as before the split.
+ *
+ * `kind` is the agent's own `kind` off either read route. A connected agent
+ * keeps Access and nothing else: no Chat (the room has no way to talk to
+ * it) and no Slack (the room did not make its chat app).
  */
-export function primaryTabs(showAccess = false): TabId[] {
-  const base: TabId[] = ["chat", "slack"];
+export function primaryTabs(showAccess = false, kind: string = KIND_COMPOSED): TabId[] {
+  const base: TabId[] = kind === KIND_CONNECTED ? [] : ["chat", "slack"];
   return showAccess ? [...base, "access"] : base;
 }
 
@@ -40,8 +55,11 @@ export function primaryTabs(showAccess = false): TabId[] {
  * active-tab membership), never reordered. */
 export const ADVANCED_TABS = ["learnings", "memory", "skills", "tooling"] as const;
 
-export function advancedTabs(): TabId[] {
-  return [...ADVANCED_TABS];
+/** Every Advanced tab, or none at all for a connected agent: all four read
+ * the bundle the room composed, and a connected agent has none. The page
+ * hides the Advanced toggle itself when this is empty. */
+export function advancedTabs(kind: string = KIND_COMPOSED): TabId[] {
+  return kind === KIND_CONNECTED ? [] : [...ADVANCED_TABS];
 }
 
 /**
@@ -49,7 +67,14 @@ export function advancedTabs(): TabId[] {
  * talk to (the whole point of the page at that point), and NO tab at all
  * for every other status -- pre-ready the header carries the checklist and
  * every tab is disabled, so selecting one would light up an empty panel.
+ *
+ * A connected agent never lands on a tab at any status: it has no Chat, and
+ * what its page is for is the status, the checklist and the build log, all
+ * of which render above the tab bar.
  */
-export function defaultTab(status: string): TabId | null {
+export function defaultTab(status: string, kind: string = KIND_COMPOSED): TabId | null {
+  if (kind === KIND_CONNECTED) {
+    return null;
+  }
   return status === "ready" ? "chat" : null;
 }

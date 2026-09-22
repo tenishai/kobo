@@ -18,6 +18,7 @@
   // underneath.
   import StatusBadge from "./StatusBadge.svelte";
   import { createQuery } from "@tanstack/svelte-query";
+  import { KIND_CONNECTED } from "../lib/api";
   import { observabilityQuery } from "../lib/queries";
   import { formatHash } from "../lib/router.svelte";
   import { agentTone } from "../lib/status";
@@ -54,6 +55,13 @@
         />
       {/if}
       <span class="agent-card__name" title={agent.name}>{agent.name}</span>
+      <!-- Connected-agents design 2026-09-21: a small marker so nobody
+           wonders why this one has no persona. Compared against the named
+           kind constant, never truth-tested, so a later kind wears no
+           marker until it asks for one. -->
+      {#if agent.kind === KIND_CONNECTED}
+        <span class="agent-card__kind">connected</span>
+      {/if}
     </span>
     <StatusBadge status={agent.status} />
   </div>
@@ -142,6 +150,19 @@
     color: var(--ink);
     font-weight: 600;
     text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Quieter than the name it sits beside: a fact about the agent, not part
+     of its identity. */
+  .agent-card__kind {
+    display: inline-flex;
+    flex-shrink: 0;
+    padding: 0.1rem var(--space-2xs);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted);
+    font-size: 0.7rem;
     white-space: nowrap;
   }
 
