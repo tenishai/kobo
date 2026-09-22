@@ -3830,26 +3830,27 @@ def create_app(
     # already typing belongs to something the room's App can reach.
     #
     # What bounds it instead is the pair below. The prefix rule
-    # (`repo_search._rank`) means a query only ever names repositories
-    # somebody was already typing -- there is no query that returns the
-    # organisation -- and the rate limit means nobody walks the alphabet
-    # through it anyway.
+    # (`repo_search._rank`) means a typed query only ever names
+    # repositories somebody was already typing -- there is no query that
+    # returns the organisation -- and the rate limit means nobody walks the
+    # alphabet through it anyway. The empty query is bounded by being
+    # short: eight rows and a count, which says the room reaches your work
+    # without being a listing of it.
     @app.get("/api/connect/repos")
     def list_connect_repos(
         request: Request, q: str = Query("", max_length=MAX_QUERY_CHARS)
     ) -> JSONResponse:
-        if not q.strip():
-            # Answered before the client is even looked at, and before the
-            # limit is spent: an empty query is not a search, and a room
-            # with no GitHub still has nothing to say about one.
-            return JSONResponse({"repos": [], "truncated": False})
-
-        if not rate_limit.check(
+        searching = bool(q.strip())
+        if searching and not rate_limit.check(
             _scan_caller(request), limit=REPO_SEARCH_LIMIT, bucket=REPO_SEARCH_BUCKET
         ):
             return JSONResponse(
                 {"error": "that is a lot of searching. Wait a minute"}, status_code=429
             )
+        # The empty query is deliberately NOT counted. It is one answer
+        # per focus, read out of a listing the warmer already holds, so it
+        # costs the room nothing and must not eat the ceiling a person
+        # needs for the typing that follows.
 
         clients: Clients | None = app.state.clients
         index: RepoIndex | None = app.state.repo_index
@@ -3857,7 +3858,7 @@ def create_app(
             return JSONResponse({"error": GITHUB_UNREACHABLE}, status_code=503)
 
         try:
-            matches, truncated = index.search(q)
+            matches, truncated, total = index.search(q)
         except ClientError as exc:
             # The client's own text never reaches the caller (same shape as
             # the scan's own backend failures next door).
@@ -3875,6 +3876,10 @@ def create_app(
                     for repo in matches
                 ],
                 "truncated": truncated,
+                # On every answer, not only the empty one: the field's
+                # footer says how many repositories the room reaches, and
+                # it should not have to ask a second time to learn it.
+                "total": total,
             }
         )
 

@@ -56,7 +56,7 @@ from kobo_api.main import (
 )
 from kobo_api.mcp import rate_limit
 from kobo_api.models import Agent, AgentStatus, Base
-from kobo_api.repo_search import MAX_MATCHES, TTL_S, RepoIndex
+from kobo_api.repo_search import MAX_MATCHES, RECENT_MATCHES, TTL_S, RepoIndex
 from tests.fakes import (
     FakeAgent,
     FakeCabal,
@@ -300,7 +300,8 @@ def test_scan_never_writes_anything(client, github, session_factory):
 #
 # The repository field's typeahead. Open to any signed-in person and not
 # group-gated: it only ever names repositories the room's App can already
-# reach, and only ones somebody was already typing. The matching and
+# reach -- a short glance at the most recent ones for a field nobody has
+# typed into yet, and matches for what somebody is typing. The matching and
 # ordering rules themselves are pinned in test_repo_search.py; what these
 # pin is the route -- its shape, its bounds, and its cache.
 
@@ -315,28 +316,78 @@ def _typeahead_repo(full_name: str, **overrides) -> InstallationRepo:
     )
 
 
-def test_repos_answers_nothing_for_an_empty_query_without_asking_github(
-    client_for,
-):
-    """The field shows nothing on focus. An empty box is what focus looks
-    like from here, and it is not worth a listing."""
+def test_repos_offers_the_most_recent_for_an_empty_query(client_for):
+    """What a person sees the moment they click into the field: a few
+    repositories the room can already reach, and how many there are. A
+    blank box reads as "the room has nothing", which was never true."""
     github = FakeGitHub(
         existing_repos={REPO},
-        installation_repos=[_typeahead_repo(f"{ORG}/team-chatbot")],
+        installation_repos=[
+            _typeahead_repo(f"{ORG}/warden", pushed_at="2019-01-01T00:00:00Z"),
+            _typeahead_repo(f"{ORG}/team-chatbot", pushed_at="2026-09-01T00:00:00Z"),
+        ],
     )
 
     response = client_for(github).get("/api/connect/repos?q=")
 
     assert response.status_code == 200
-    assert response.json() == {"repos": [], "truncated": False}
-    assert "list_installation_repos" not in github.calls
+    assert response.json() == {
+        "repos": [
+            {"full_name": f"{ORG}/team-chatbot", "private": True},
+            {"full_name": f"{ORG}/warden", "private": True},
+        ],
+        "truncated": False,
+        "total": 2,
+    }
 
 
-def test_repos_answers_nothing_when_the_query_is_left_off_entirely(client):
+def test_repos_offers_at_most_eight_for_an_empty_query(client_for):
+    """The rows are a way in, not an index. The total beside them is what
+    says how much more there is."""
+    github = FakeGitHub(
+        existing_repos={REPO},
+        installation_repos=[
+            _typeahead_repo(f"{ORG}/repo-{i:02d}") for i in range(RECENT_MATCHES + 5)
+        ],
+    )
+
+    body = client_for(github).get("/api/connect/repos?q=").json()
+
+    assert len(body["repos"]) == RECENT_MATCHES
+    assert body["truncated"] is True
+    assert body["total"] == RECENT_MATCHES + 5
+
+
+def test_repos_answers_an_empty_query_from_a_warm_listing_without_asking_github(
+    client_for,
+):
+    """Focus is not worth a GitHub read. The warmer has the listing in
+    hand before anyone opens the form, and every focus after that is free
+    -- which is the rule this route has to keep, since an empty query is
+    not rate limited."""
+    github = FakeGitHub(
+        existing_repos={REPO},
+        installation_repos=[_typeahead_repo(f"{ORG}/team-chatbot")],
+    )
+    typeahead = client_for(github)
+    typeahead.app.state.repo_index.warm()
+    assert github.calls.count("list_installation_repos") == 1
+
+    for _ in range(5):
+        assert typeahead.get("/api/connect/repos?q=").status_code == 200
+
+    assert github.calls.count("list_installation_repos") == 1
+
+
+def test_repos_answers_the_same_when_the_query_is_left_off_entirely(client):
     response = client.get("/api/connect/repos")
 
     assert response.status_code == 200
-    assert response.json() == {"repos": [], "truncated": False}
+    assert response.json() == {
+        "repos": [{"full_name": REPO, "private": True}],
+        "truncated": False,
+        "total": 1,
+    }
 
 
 def test_repos_names_the_matches_best_first(client_for):
@@ -363,6 +414,7 @@ def test_repos_names_the_matches_best_first(client_for):
             {"full_name": f"{ORG}/team-chatbot", "private": True},
         ],
         "truncated": False,
+        "total": 3,
     }
 
 
@@ -392,7 +444,7 @@ def test_repos_accepts_a_query_right_at_the_bound(client):
     response = client.get("/api/connect/repos", params={"q": "x" * 100})
 
     assert response.status_code == 200
-    assert response.json() == {"repos": [], "truncated": False}
+    assert response.json() == {"repos": [], "truncated": False, "total": 1}
 
 
 def test_repos_says_so_when_the_room_has_no_github_at_all(session_factory, config):
@@ -402,6 +454,21 @@ def test_repos_says_so_when_the_room_has_no_github_at_all(session_factory, confi
     app_client = TestClient(create_app(session_factory, config=config, clients=None))
 
     response = app_client.get("/api/connect/repos?q=chat")
+
+    assert response.status_code == 503
+    assert response.json() == {"error": GITHUB_UNREACHABLE}
+
+
+def test_repos_says_so_for_an_empty_query_too_when_the_room_has_no_github(
+    session_factory, config
+):
+    """The empty query used to be answered before the client was even
+    looked at. It reads the listing now, so it has to say the same thing
+    the typed query says rather than an empty list that reads as "no
+    repositories"."""
+    app_client = TestClient(create_app(session_factory, config=config, clients=None))
+
+    response = app_client.get("/api/connect/repos?q=")
 
     assert response.status_code == 503
     assert response.json() == {"error": GITHUB_UNREACHABLE}
@@ -429,6 +496,7 @@ def test_repos_is_not_group_gated(grouped_client):
     assert response.json() == {
         "repos": [{"full_name": REPO, "private": True}],
         "truncated": False,
+        "total": 1,
     }
 
 
