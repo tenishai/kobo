@@ -233,10 +233,11 @@ at `apps/<agent>/env` and delivered into the agent's namespace as the Kubernetes
 `<agent>-env`; environment variables live in the agent's own `gojira.yaml`, for values that are
 not sensitive. A secret's value is sent once and is never readable again from the room: the list
 shows key names and nothing else, and there is no reveal. Key names are upper snake case, 64
-characters at most, 100 per list, and the names the room fills in itself are refused. The first
-secret an agent gets adds `<agent>-env` to `secrets_from`, committed for an agent the room
-composed and proposed as a pull request for one whose repository belongs to its team; changes
-reach the agent the next time it starts. The MCP tools `kobo_list_agent_secrets`,
+characters at most, 100 per list, and the names the room fills in itself (or the container
+does) are refused. The first secret an agent gets adds `<agent>-env` to `secrets_from`,
+committed for an agent the room composed and proposed as a pull request for one whose
+repository belongs to its team; removing the last one takes that entry back out the same way.
+Changes reach the agent the next time it starts. The MCP tools `kobo_list_agent_secrets`,
 `kobo_set_agent_secrets` and `kobo_set_agent_env` do the same three things. Destroying an agent
 now removes its stored secrets too, both the cluster objects and the paths, which closes the gap
 this section used to name.

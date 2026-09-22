@@ -24,6 +24,12 @@ values write-only, mounted into the running service without a redeploy.
 A **Secrets and environment** panel on every agent page, composed and connected alike, for
 anyone who can edit the agent (owner, group members with write, operators).
 
+The gate is owner-or-operator exactly as every other write surface has it, and deliberately
+NOT widened by a per-user grant the way the learnings decide gate is. A grantee may talk to an
+agent and teach it, which is what that widening was for; reading which credentials it holds and
+replacing them is a different thing, and the narrower gate is the one to start from because it
+can be widened later and cannot be narrowed without taking something away.
+
 Two lists, as the sibling has them:
 
 | | Secrets | Environment variables |
@@ -71,6 +77,11 @@ since the panel exists for connected agents too):
   the ExternalSecret exists (`sync`), and on the first ever secret appends `<agent>-env` to
   `secrets_from` and commits (composed) or opens the wiring pull request (connected). The
   response says which of those happened. Values never appear in logs, audit rows or errors.
+  Removing the LAST key is allowed and is the mirror of that first write: the path and the
+  ExternalSecret are deleted and the `secrets_from` entry comes back out, because a pod whose
+  `envFrom` names a Secret that no longer exists does not start. The wiring change rides its
+  own branch (`kobo/secrets-wiring`), separate from the environment one (`kobo/env`), so a
+  pending pull request for one is never mistaken for the other.
 - `GET` and `PUT /api/agents/{name}/env` for the plain variables, `PUT` with the same body
   shape; writes `env` in `gojira.yaml` by commit or pull request and triggers a deploy.
 - MCP parity, because every room surface has it: `kobo_list_agent_secrets` (names only),
