@@ -21,11 +21,12 @@ crowd arriving at an expired cache costs one read between them rather than
 one each. Nothing in here is per-caller, which is why it can be shared.
 
 The ordering is the only judgement this module makes. A repository whose
-NAME starts with what was typed is what a person meant; one whose full
-`owner/name` starts with it is the next most likely; one that merely
+NAME starts with what was typed is what a person meant; one that merely
 contains it somewhere is a fallback. Within a tier, the repository pushed
 to most recently wins, because the one worked on last week is looked for
-far more often than the one abandoned years ago.
+far more often than the one abandoned years ago. An OWNER is matched only
+once the query carries a slash -- see `_rank`, where that rule is what
+stops a single letter from walking the organisation.
 """
 
 from __future__ import annotations
@@ -141,18 +142,27 @@ class RepoIndex:
 def _rank(repo: InstallationRepo, needle: str) -> int | None:
     """Which tier `repo` matches `needle` in, or None for no match.
 
-    The substring tier reads the name only. `owner/` is the same on
-    everything an installation can see, so a substring match over the full
-    name would hand back the whole organisation on the first keystroke of
-    its own name.
+    The owner is only ever matched by a query that carries a slash, and
+    that is the rule holding this route to what it promises. Nearly
+    everything one installation can see shares an owner, so a query
+    matched against `owner/name` from its first letter would answer `e`
+    with the whole organisation, ten rows and a "more matched" at a time
+    -- the list-all this field does not offer, reachable one keystroke at
+    a time. Before the slash the query is a name and only the name tiers
+    apply; after it, the query names an owner and only the full name
+    does.
+
+    The substring tier reads the name for the same reason, and only the
+    name: an owner shared by everything is not a distinguishing thing to
+    have typed.
     """
     full_name = repo.full_name.lower()
     _, _, name = full_name.partition("/")
     name = name or full_name
+    if "/" in needle:
+        return _RANK_FULL_NAME_PREFIX if full_name.startswith(needle) else None
     if name.startswith(needle):
         return _RANK_NAME_PREFIX
-    if full_name.startswith(needle):
-        return _RANK_FULL_NAME_PREFIX
     if needle in name:
         return _RANK_NAME_SUBSTRING
     return None

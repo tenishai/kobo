@@ -77,12 +77,62 @@ def test_matches_a_prefix_of_the_name():
     assert truncated is False
 
 
-def test_matches_a_prefix_of_the_full_name():
+def test_matches_a_prefix_of_the_full_name_once_the_query_names_an_owner():
     index = RepoIndex(StubGitHub([_repo("example-org/clio"), _repo("other-org/clio")]))
 
     matches, _ = index.search("example-org/cl", now=0.0)
 
     assert _names(matches) == ["example-org/clio"]
+
+
+def test_an_owner_is_only_matched_once_the_query_carries_a_slash():
+    """The one rule that keeps this from being the list-all the room does
+    not offer. Every repository an installation can see usually shares one
+    owner, so an owner prefix matched without a slash would hand back the
+    whole organisation, ten at a time, from a single letter.
+    """
+    index = RepoIndex(
+        StubGitHub(
+            [
+                # Not one of these names carries an `e`, so nothing below
+                # can match by way of the name and every answer is about
+                # the owner.
+                _repo("example-org/clio"),
+                _repo("example-org/atlas"),
+                _repo("example-org/notify-bot"),
+            ]
+        )
+    )
+
+    assert index.search("e", now=0.0) == ([], False)
+    assert index.search("example", now=0.0) == ([], False)
+    assert index.search("example-org", now=0.0) == ([], False)
+    assert index.search("example-org/", now=0.0)[0] != []
+
+
+def test_a_letter_of_the_owner_still_matches_a_name_that_carries_it():
+    """The owner rule takes nothing away from the name: `e` is not an owner
+    search, and a repository whose own name starts with it still comes
+    back."""
+    index = RepoIndex(
+        StubGitHub([_repo("example-org/engine"), _repo("example-org/atlas")])
+    )
+
+    assert _names(index.search("e", now=0.0)[0]) == ["example-org/engine"]
+
+
+def test_an_owner_query_matching_nothing_matches_nothing():
+    index = RepoIndex(StubGitHub([_repo("example-org/clio")]))
+
+    assert index.search("other-org/cl", now=0.0) == ([], False)
+
+
+def test_a_query_with_a_slash_is_not_matched_against_the_name_alone():
+    """`clio/` is an owner nobody here has. It is not a substring search
+    over names that happen to contain "clio"."""
+    index = RepoIndex(StubGitHub([_repo("example-org/clio")]))
+
+    assert index.search("clio/", now=0.0) == ([], False)
 
 
 def test_matches_a_substring_of_the_name():
@@ -119,18 +169,18 @@ def test_the_owner_alone_is_not_a_substring_match_on_the_name():
     installation one keystroke in."""
     index = RepoIndex(StubGitHub([_repo("example-org/clio")]))
 
-    assert index.search("xample", now=0.0) == ([], False)
+    assert index.search("example", now=0.0) == ([], False)
+    assert index.search("example-org", now=0.0) == ([], False)
 
 
 # --- what order -------------------------------------------------------------
 
 
-def test_name_prefix_comes_before_full_name_prefix_comes_before_substring():
+def test_a_name_prefix_comes_before_a_substring_of_the_name():
     index = RepoIndex(
         StubGitHub(
             [
                 _repo("example-org/team-clio"),   # substring of the name
-                _repo("clio-org/warden"),         # prefix of the full name
                 _repo("example-org/clio"),        # prefix of the name
             ]
         )
@@ -138,11 +188,7 @@ def test_name_prefix_comes_before_full_name_prefix_comes_before_substring():
 
     matches, _ = index.search("clio", now=0.0)
 
-    assert _names(matches) == [
-        "example-org/clio",
-        "clio-org/warden",
-        "example-org/team-clio",
-    ]
+    assert _names(matches) == ["example-org/clio", "example-org/team-clio"]
 
 
 def test_matches_of_the_same_kind_are_ordered_by_most_recently_pushed():
