@@ -29,12 +29,14 @@ from kobo_api.clients import Clients
 from kobo_api.config import Config, GroupChoice
 from kobo_api.connect_scan import (
     ADDS,
+    ADDS_PREAMBLE,
     NO_DOCKERFILE,
     REPO_NOT_IN_ORG,
     REPO_NOT_VISIBLE,
 )
 from kobo_api.kinds import KIND_CONNECTED, RUN_MODE_HEADLESS, RUN_MODE_HTTP
-from kobo_api.main import create_app
+from kobo_api.main import MAX_SECRET_NAMES, SCAN_LIMIT, create_app
+from kobo_api.mcp import rate_limit
 from kobo_api.models import Agent, AgentStatus, Base
 from tests.fakes import (
     FakeAgent,
@@ -62,6 +64,16 @@ def _no_real_sleep(monkeypatch):
     import kobo_api.steps as steps_module
 
     monkeypatch.setattr(steps_module, "_sleep", lambda seconds: None)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_scan_window():
+    """The scan limiter's window is module state shared by every caller in
+    the process, so each case starts with an empty one rather than one
+    carrying the previous case's scans."""
+    rate_limit.reset()
+    yield
+    rate_limit.reset()
 
 
 @pytest.fixture
@@ -127,7 +139,15 @@ def client_for(session_factory, config, fake_storage):
 
 
 def _payload(**overrides) -> dict:
-    payload = {"repo": REPO, "name": AGENT_NAME, "run_mode": RUN_MODE_HTTP}
+    payload = {
+        "repo": REPO,
+        "name": AGENT_NAME,
+        "run_mode": RUN_MODE_HTTP,
+        # The room cannot check who owns a repository, so every connect
+        # carries the caller's word that they may. Tests for its absence
+        # are in their own section below.
+        "confirm_repo_owner": True,
+    }
     payload.update(overrides)
     return payload
 
@@ -160,7 +180,13 @@ def test_scan_reports_nothing_for_a_repository_the_room_can_work_with(client):
     response = client.post("/api/connect/scan", json=_payload())
 
     assert response.status_code == 200
-    assert response.json() == {"blockers": [], "warnings": [], "adds": ADDS}
+    assert response.json() == {
+        "blockers": [],
+        "warnings": [],
+        "adds": ADDS,
+        "adds_preamble": ADDS_PREAMBLE,
+        "repo": REPO,
+    }
 
 
 def test_scan_reports_blockers_with_their_codes_and_their_sentences(client_for):
@@ -199,6 +225,46 @@ def test_scan_refuses_a_run_mode_the_room_does_not_have(client):
     assert response.json()["error"] == (
         "pick how this agent runs: it serves HTTP, or it has no HTTP port"
     )
+
+
+def test_scan_reads_only_as_often_as_a_person_could_mean_to(client):
+    """The scan reads private repositories with the room's own credentials,
+    which makes it an oracle worth spending a moment's thought on. A window
+    of a few scans a minute is far past any form and far below anything
+    that could walk the organisation."""
+    for _ in range(SCAN_LIMIT):
+        assert client.post("/api/connect/scan", json=_payload()).status_code == 200
+
+    response = client.post("/api/connect/scan", json=_payload())
+
+    assert response.status_code == 429
+    assert response.json() == {"error": "that is a lot of scans. Wait a minute"}
+
+
+def test_a_refused_scan_never_reads_the_repository(client, github):
+    for _ in range(SCAN_LIMIT):
+        client.post("/api/connect/scan", json=_payload())
+    github.calls.clear()
+
+    client.post("/api/connect/scan", json=_payload())
+
+    assert github.calls == []
+
+
+def test_scan_answers_502_when_github_cannot_be_read(client_for):
+    """A backend that is down is not a finding about the repository, and a
+    report saying "nothing wrong" would be a lie. Same 502-with-a-plain-
+    sentence shape as every other backend failure here."""
+    client = client_for(
+        FakeGitHub(existing_repos={REPO}, repo_access_error="gh: gateway timeout")
+    )
+
+    response = client.post("/api/connect/scan", json=_payload())
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "error": "the repository could not be read right now, try again shortly"
+    }
 
 
 def test_scan_never_writes_anything(client, github, session_factory):
@@ -267,6 +333,76 @@ def test_connect_says_who_connected_what(client, caplog):
     assert any(REPO in line and AGENT_NAME in line for line in lines), lines
 
 
+def test_connect_records_githubs_own_spelling_of_the_repository(
+    client, session_factory
+):
+    """One repository is one row, whatever case it was typed in."""
+    response = client.post(
+        "/api/agents/connect", json=_payload(repo=f"{ORG.title()}/Team-Chatbot")
+    )
+
+    assert response.status_code == 201, response.text
+    assert _row(session_factory).repo_full_name == REPO
+
+
+# --- who says they may connect it -------------------------------------------------
+#
+# The room cannot check who owns a repository: its App can write to every
+# repository in the organisation it is installed on, and the token it holds
+# cannot see who the caller is on GitHub. So the connect asks, records the
+# answer in the log line, and says as much in the scan report. An operator
+# is exempt, the same standing every other operator gate here grants.
+
+
+def test_connect_refuses_without_the_callers_word_that_they_may(
+    client, session_factory
+):
+    response = client.post(
+        "/api/agents/connect", json=_payload(confirm_repo_owner=False)
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "error": (
+            "confirm that you own this repository or have its owner's agreement"
+        )
+    }
+    assert _row(session_factory) is None
+
+
+def test_connect_refuses_when_the_question_is_not_answered_at_all(
+    client, session_factory
+):
+    payload = _payload()
+    del payload["confirm_repo_owner"]
+
+    response = client.post("/api/agents/connect", json=payload)
+
+    assert response.status_code == 422
+    assert _row(session_factory) is None
+
+
+def test_an_operator_does_not_have_to_answer_for_the_repository(
+    client, session_factory, monkeypatch
+):
+    import kobo_api.main as main_module
+
+    monkeypatch.setattr(main_module, "_is_admin", lambda request: True)
+
+    response = client.post(
+        "/api/agents/connect", json=_payload(confirm_repo_owner=False)
+    )
+
+    assert response.status_code == 201, response.text
+    assert _row(session_factory) is not None
+
+
+def test_the_refusal_costs_no_github_reads(client, github):
+    client.post("/api/agents/connect", json=_payload(confirm_repo_owner=False))
+
+    assert github.calls == []
+
+
 # --- refusals ---------------------------------------------------------------------
 
 
@@ -308,6 +444,22 @@ def test_connect_refuses_more_secret_names_than_a_pod_should_carry(client):
 
     assert response.status_code == 422
     assert response.json()["error"] == "this room takes at most 8 secret names"
+
+
+def test_connect_counts_the_secret_names_it_was_given_before_it_dedupes_them(
+    client, session_factory
+):
+    """A pasted list of a hundred copies of one name is still a pasted list
+    of a hundred names, and the cap is there to bound what arrives, not
+    what survives."""
+    response = client.post(
+        "/api/agents/connect",
+        json=_payload(secret_names=["chat-tokens"] * (MAX_SECRET_NAMES + 1)),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "this room takes at most 8 secret names"
+    assert _row(session_factory) is None
 
 
 def test_connect_keeps_one_of_each_secret_name_in_the_order_they_were_given(
@@ -381,6 +533,42 @@ def test_connect_takes_headless_once_the_deploy_platform_names_a_class(
     assert _row(session_factory).run_mode == RUN_MODE_HEADLESS
 
 
+def test_connect_answers_502_when_github_cannot_be_read(client_for, session_factory):
+    client = client_for(
+        FakeGitHub(existing_repos={REPO}, repo_access_error="gh: gateway timeout")
+    )
+
+    response = client.post("/api/agents/connect", json=_payload())
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "error": "the repository could not be read right now, try again shortly"
+    }
+    assert _row(session_factory) is None
+
+
+def test_connect_refuses_a_repository_this_room_already_holds(
+    client, session_factory
+):
+    """One repository is one agent. The second row would deploy over the
+    first, and destroying either would act on the other's app."""
+    session = session_factory()
+    session.add(
+        Agent(
+            name="atlas", persona="connected", model_id="m", skills=[],
+            repo_full_name=REPO, status=AgentStatus.READY,
+        )
+    )
+    session.commit()
+    session.close()
+
+    response = client.post("/api/agents/connect", json=_payload())
+
+    assert response.status_code == 422
+    assert [b["code"] for b in response.json()["blockers"]] == ["already_deployed"]
+    assert _row(session_factory) is None
+
+
 def test_connect_refuses_a_name_already_in_the_room(client, session_factory):
     session = session_factory()
     session.add(
@@ -427,6 +615,35 @@ def test_connect_refuses_a_group_this_room_has_never_heard_of(grouped_client):
 
     assert response.status_code == 422
     assert response.json() == {"error": "unknown group: 'not-a-group'"}
+
+
+def test_scan_asks_the_same_group_question_as_connect(grouped_client, github):
+    """The scan reads private repositories with the room's own credentials.
+    A caller who could not connect has no business asking it what is in
+    one, so it is gated exactly as the connect is."""
+    response = grouped_client.post("/api/connect/scan", json=_payload())
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "pick a group for this agent"}
+    assert github.calls == []
+
+
+def test_scan_refuses_a_group_this_room_has_never_heard_of(grouped_client):
+    response = grouped_client.post(
+        "/api/connect/scan", json=_payload(group_name="not-a-group")
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "unknown group: 'not-a-group'"}
+
+
+def test_scan_runs_for_a_group_the_room_has_named(grouped_client):
+    response = grouped_client.post(
+        "/api/connect/scan", json=_payload(group_name="payments-eng")
+    )
+
+    assert response.status_code == 200
+    assert response.json()["blockers"] == []
 
 
 def test_connect_takes_a_group_the_room_has_named(grouped_client, session_factory):

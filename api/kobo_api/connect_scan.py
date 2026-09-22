@@ -35,6 +35,7 @@ from kobo_api.clients import GitHubClient, GojiraClient
 from kobo_api.config import Config
 from kobo_api.kinds import RUN_MODE_HEADLESS
 from kobo_api.models import Agent
+from kobo_api.repo_name import is_in_org
 from kobo_api.runtime import registry_root_of
 from kobo_api.steps import HEADLESS_UNAVAILABLE
 
@@ -71,6 +72,18 @@ ADDS = [
     ".github/workflows/ (one CI workflow)",
 ]
 
+# The one thing the room cannot check, said in the report rather than left
+# for somebody to discover. The room's GitHub App can write to every
+# repository in the organisation it is installed on, and the token it holds
+# cannot see who the caller is on GitHub, so ownership is the caller's word
+# plus the connect route's own record of who gave it. The design's "What
+# this does not do" says the same thing at length; this is the sentence the
+# form shows above the list of what will be added.
+ADDS_PREAMBLE = (
+    "The room cannot check who owns this repository, so connect it only if "
+    "it is yours or its owner agrees; whoever connects it is recorded."
+)
+
 # The port the deploy platform's ordinary class probes. Only checked to
 # warn early; the deploy proves it either way.
 HTTP_PORT = "8080"
@@ -101,6 +114,11 @@ class ScanReport:
     blockers: list[Finding] = field(default_factory=list)
     warnings: list[Finding] = field(default_factory=list)
     adds: list[str] = field(default_factory=lambda: list(ADDS))
+    adds_preamble: str = ADDS_PREAMBLE
+    # GitHub's own spelling of the repository, once it has answered for it;
+    # the name as given until then. This is what the connect route records,
+    # so one repository cannot become two rows apart from each other's case.
+    repo: str = ""
 
 
 def scan_repo(
@@ -131,18 +149,19 @@ def scan_repo(
     nothing about this repository (a bad token) still propagates, and the
     route answers it the way it answers any other backend failure.
     """
-    report = ScanReport()
+    repo = repo.strip()
+    report = ScanReport(repo=repo)
 
-    if _is_in_org(repo, config.github_org):
+    if is_in_org(repo, config.github_org):
         _scan_the_repository(
-            github, config, report, repo=repo, name=name, run_mode=run_mode
+            github, session, config, report, repo=repo, name=name, run_mode=run_mode
         )
     else:
         report.blockers.append(
             Finding(
                 REPO_NOT_IN_ORG,
-                f"{repo} is not in {config.github_org}. This room can only "
-                f"connect repositories in {config.github_org}.",
+                f"{repo} is not a repository in {config.github_org}. This "
+                f"room can only connect repositories in {config.github_org}.",
             )
         )
 
@@ -159,19 +178,9 @@ def scan_repo(
     return report
 
 
-def _is_in_org(repo: str, org: str) -> bool:
-    """Exactly `org/<something>`, with nothing else in it.
-
-    `owner/a/b` would pass an owner check and then travel into every path
-    the room builds from this value, so the shape is settled here, the same
-    way `ConnectStep` settles it before the pipeline uses it.
-    """
-    parts = repo.split("/")
-    return len(parts) == 2 and all(parts) and parts[0] == org
-
-
 def _scan_the_repository(
     github: GitHubClient,
+    session: Session,
     config: Config,
     report: ScanReport,
     *,
@@ -182,6 +191,8 @@ def _scan_the_repository(
     """The reads, in the order a person would make them, stopping the moment
     an answer makes the next question meaningless."""
     access = github.repo_access(repo)
+    if access.full_name:
+        report.repo = access.full_name
     if not access.visible:
         report.blockers.append(
             Finding(
@@ -191,6 +202,23 @@ def _scan_the_repository(
             )
         )
         return
+
+    # Asked once the canonical name is known, so the same repository under
+    # two spellings is still one repository. One repository is one agent
+    # inside this room as much as outside it: two rows pointing at one
+    # repository would deploy over each other, and destroying either would
+    # act on the other's app.
+    held_by = (
+        session.query(Agent).filter_by(repo_full_name=report.repo).first()
+    )
+    if held_by is not None:
+        report.blockers.append(
+            Finding(
+                ALREADY_DEPLOYED,
+                f"{report.repo} is already connected in this room as "
+                f"{held_by.name}.",
+            )
+        )
 
     if not access.can_write:
         # Not a reason to stop reading: an owner fixing access wants the
@@ -269,7 +297,7 @@ def _scan_dockerfile(
         return
 
     base = _base_image(text)
-    if base is not None:
+    if base is not None and _judgeable(base):
         if "@sha256:" not in base:
             report.warnings.append(
                 Finding(
@@ -308,9 +336,13 @@ def _scan_gojira_yaml(
         return
     try:
         data = yaml.safe_load(text) or {}
-    except yaml.YAMLError:
+    except (yaml.YAMLError, RecursionError):
         # A file the room cannot read says nothing about which app this
         # repository is, and the room does not refuse a connect on a guess.
+        # RecursionError as well as YAMLError: a document nested past the
+        # parser's own limit is a file in somebody else's repository, and
+        # it must read as unparseable rather than as a 500 in front of
+        # whoever is filling in the form.
         log.info("connect scan could not read the gojira.yaml in %s", repo)
         return
     if not isinstance(data, dict):
@@ -333,20 +365,43 @@ def _base_image(dockerfile_text: str) -> str | None:
 
     Earlier stages never run in the cluster, so the last one is the only
     one worth judging -- and a final `FROM builder` names a stage declared
-    further up rather than an image, so it is followed back until a real
-    image ref is found.
+    further up rather than an image, so the stage it names is followed,
+    not merely the nearest earlier line that happens to hold an image ref.
+    A three-stage file whose last FROM names the FIRST stage builds on the
+    first stage's image, and that is the one this answers with.
+
+    A reference that loops back on itself cannot be resolved and is not
+    worth chasing: the loop is bounded by the number of stages, and the
+    answer is None.
     """
     matches = list(_FROM_RE.finditer(dockerfile_text))
     if not matches:
         return None
-    stages = {
-        match.group("stage").lower() for match in matches if match.group("stage")
+    stage_refs = {
+        match.group("stage").lower(): match.group("ref")
+        for match in matches
+        if match.group("stage")
     }
-    for match in reversed(matches):
-        ref = match.group("ref")
-        if ref.lower() not in stages:
+    ref = matches[-1].group("ref")
+    for _ in range(len(matches)):
+        following = stage_refs.get(ref.lower())
+        if following is None:
             return ref
+        if following.lower() == ref.lower():
+            return None
+        ref = following
     return None
+
+
+def _judgeable(base: str) -> bool:
+    """Whether the room can say anything true about this base image.
+
+    `scratch` is the empty image: there is nothing to pin and no registry
+    to host it. A ref that starts with a build argument is not resolved
+    until build time, and the room does not have its value. Warning about
+    either would be saying something the room does not know.
+    """
+    return base != "scratch" and not base.startswith("$")
 
 
 def _exposes_http_port(dockerfile_text: str) -> bool:

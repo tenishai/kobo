@@ -47,7 +47,7 @@ from kobo_api.clients import (
     probe_slack_token_store,
 )
 from kobo_api.config import SHARED_GROUP, Config
-from kobo_api.connect_scan import NAME_TAKEN, ScanReport, scan_repo
+from kobo_api.connect_scan import NAME_TAKEN, Finding, ScanReport, scan_repo
 from kobo_api.db import init_db, make_engine, make_session_factory
 from kobo_api.metrics import install as install_metrics
 from kobo_api.tracing import install as install_tracing
@@ -78,6 +78,7 @@ from kobo_api.knowledge import (
 from kobo_api.learnings import clean_edited_statement
 from kobo_api.learnings import nightly_loop as learnings_nightly_loop
 from kobo_api.marketplace import BASELINE_TOOL_PREFIX
+from kobo_api.mcp import rate_limit
 from kobo_api.mcp.mount import mcp_lifespan, mount_mcp
 from kobo_api.metadata import (
     clean_capability_text,
@@ -304,24 +305,30 @@ class ScanRepoRequest(BaseModel):
     repo: str
     name: str
     run_mode: str = RUN_MODE_HTTP
+    # The same ACL namespace `CreateAgentRequest` carries, gated by the
+    # same helper on both routes. The scan carries it too, and not as a
+    # formality: it reads private repositories with the room's own
+    # credentials, so a caller who could not connect has no business
+    # asking it what is in one.
+    group_name: str | None = None
 
 
 class ConnectAgentRequest(ScanRepoRequest):
     """POST /api/agents/connect body.
 
-    `group_name` is the same ACL namespace `CreateAgentRequest` carries and
-    is gated by the same helper, never a looser one: a connected agent runs
-    a team's own code with the room's model access, so the question of who
-    owns it matters more here, not less.
-
     `secret_names` are names only. The room never holds a connected agent's
     secrets in this version: it passes the names to the deploy platform so
     the pod mounts them, and the pod does not start until the owner creates
     them, which the scan report says plainly.
+
+    `confirm_repo_owner` is the caller's word that they may connect this
+    repository. The room cannot check it (see the connect route's own
+    docstring), so it asks, and the connect's log line records who
+    answered. An operator is exempt.
     """
 
-    group_name: str | None = None
     secret_names: list[str] = []
+    confirm_repo_owner: bool = False
 
 
 class NameSuggestionsRequest(BaseModel):
@@ -1071,6 +1078,42 @@ CONNECTED_PERSONA = "connected"
 # compose: there are no skills to draw from a team's catalog.
 CONNECTED_TEAM = "shared"
 
+# What the room says when a connect arrives without the caller's word that
+# they may connect this repository. The room cannot check ownership at all
+# (the connect route's docstring says why), so this sentence, the log line
+# and the scan report's preamble are the whole of what stands there.
+REPO_OWNER_REFUSAL = (
+    "confirm that you own this repository or have its owner's agreement"
+)
+
+# How many scans one caller may run in `rate_limit.WINDOW_S`. Far past any
+# form filling itself in and far below anything that could walk the
+# organisation: the scan reads private repositories with the room's own
+# credentials, which makes it worth a ceiling even though it writes
+# nothing. Per replica, like everything else that module counts.
+SCAN_LIMIT = 10
+SCAN_BUCKET = "connect-scan"
+
+# What a scan or a connect answers when GitHub itself cannot be read. A
+# report saying "nothing wrong" would be a lie, and the raw client error
+# is never shown to a caller (`generate_avatar`'s precedent, same shape).
+REPO_UNREADABLE = "the repository could not be read right now, try again shortly"
+
+
+def _scan_caller(request: Request) -> str:
+    """Who this scan counts against.
+
+    The verified IAP email when there is one. A room with no perimeter has
+    no identity to count by, so it counts by the client's address instead:
+    a local room still gets the speed bump, and nobody in a real room is
+    ever counted as somebody else.
+    """
+    email = (getattr(request.state, "iap_email", None) or "").lower()
+    if email:
+        return email
+    client = request.client
+    return f"host:{client.host}" if client is not None else "host:unknown"
+
 
 def _connect_fields_block(payload: ScanRepoRequest) -> JSONResponse | None:
     """None when the name and run mode are shapes the room can work with.
@@ -1097,6 +1140,12 @@ def _clean_secret_names(values: list[str]) -> list[str] | str:
     pasted list repeating a name means one mount either way), in the order
     they were given, so what the owner sees back is what they wrote.
     """
+    # Counted as GIVEN, before anything is dropped: a pasted list of a
+    # hundred copies of one name is still a pasted list of a hundred
+    # names, and this cap bounds what arrives rather than what survives.
+    if len(values) > MAX_SECRET_NAMES:
+        return f"this room takes at most {MAX_SECRET_NAMES} secret names"
+
     cleaned: list[str] = []
     for value in values:
         name = value.strip()
@@ -1113,24 +1162,25 @@ def _clean_secret_names(values: list[str]) -> list[str] | str:
             )
         if name not in cleaned:
             cleaned.append(name)
-    if len(cleaned) > MAX_SECRET_NAMES:
-        return f"this room takes at most {MAX_SECRET_NAMES} secret names"
     return cleaned
+
+
+def _findings_body(findings: list[Finding]) -> list[dict]:
+    return [
+        {"code": finding.code, "message": finding.message} for finding in findings
+    ]
 
 
 def _scan_report_body(report: ScanReport) -> dict:
     """The scan as the form reads it: codes for the UI to key on, sentences
-    for a person to read, and the list of what will be added."""
+    for a person to read, the sentence about what the room cannot check,
+    and the list of what will be added."""
     return {
-        "blockers": [
-            {"code": finding.code, "message": finding.message}
-            for finding in report.blockers
-        ],
-        "warnings": [
-            {"code": finding.code, "message": finding.message}
-            for finding in report.warnings
-        ],
+        "blockers": _findings_body(report.blockers),
+        "warnings": _findings_body(report.warnings),
         "adds": list(report.adds),
+        "adds_preamble": report.adds_preamble,
+        "repo": report.repo,
     }
 
 
@@ -3675,9 +3725,16 @@ def create_app(
         commits to it (connected-agents design 2026-09-21).
 
         Read-only: four GitHub reads and one database question, no clone and
-        no row. It is safe to call as often as the form wants, and the
-        connect route runs the same scan again for itself rather than
-        trusting the answer the browser is holding.
+        no row. The connect route runs the same scan again for itself rather
+        than trusting the answer the browser is holding.
+
+        Gated and counted even so. It reads PRIVATE repositories with the
+        room's own credentials, which makes it an oracle over the
+        organisation for anyone who can call it: the same group gate as the
+        connect, because a caller who could not connect has no business
+        asking what is in one, and a small per-caller ceiling, because a
+        form fills itself in with a handful of scans and nothing legitimate
+        walks the organisation with them.
         """
         cfg: Config = app.state.config
 
@@ -3685,21 +3742,41 @@ def create_app(
         if blocked is not None:
             return blocked
 
+        blocked = _group_choice_block(app, request, cfg, payload.group_name)
+        if blocked is not None:
+            return blocked
+
+        if not rate_limit.check(
+            _scan_caller(request), limit=SCAN_LIMIT, bucket=SCAN_BUCKET
+        ):
+            return JSONResponse(
+                {"error": "that is a lot of scans. Wait a minute"}, status_code=429
+            )
+
         clients: Clients | None = app.state.clients
         if clients is None or clients.github is None:
             return JSONResponse(
                 {"error": "the room can't reach GitHub right now"}, status_code=503
             )
 
-        report = scan_repo(
-            clients.github,
-            clients.gojira,
-            session,
-            cfg,
-            repo=payload.repo.strip(),
-            name=payload.name,
-            run_mode=payload.run_mode,
-        )
+        try:
+            report = scan_repo(
+                clients.github,
+                clients.gojira,
+                session,
+                cfg,
+                repo=payload.repo,
+                name=payload.name,
+                run_mode=payload.run_mode,
+            )
+        except ClientError as exc:
+            # GitHub being unreachable is not a finding about the
+            # repository, and a report saying "nothing wrong" would be a
+            # lie. The client's own text never reaches the caller (same
+            # shape as `generate_avatar`'s backend failures).
+            log.warning("connect scan could not read %s: %s", payload.repo, exc)
+            return JSONResponse({"error": REPO_UNREADABLE}, status_code=502)
+
         return JSONResponse(_scan_report_body(report))
 
     @app.post("/api/agents/connect", status_code=201)
@@ -3720,6 +3797,18 @@ def create_app(
         can be connected to the deploy platform by somebody else. The
         refusal carries every blocker's code AND its sentence, so the form
         can say why without scanning a second time.
+
+        THE ROOM CANNOT CHECK WHO OWNS THE REPOSITORY. Its GitHub App can
+        write to every repository in the organisation it is installed on,
+        and the token it holds cannot see who the caller is on GitHub, so
+        there is no honest check to make here -- a collaborator lookup
+        would be answering a question about the App, not about the caller.
+        What stands in its place is said plainly rather than implied: the
+        group gate above, `confirm_repo_owner` (the caller's word, which
+        the form asks for as a checkbox), the sentence the scan report
+        carries, and the WARNING line below naming who connected what.
+        An operator is exempt from the confirmation, the same standing
+        every other operator gate in this file grants.
         """
         cfg: Config = app.state.config
 
@@ -3735,22 +3824,34 @@ def create_app(
         if blocked is not None:
             return blocked
 
+        if not payload.confirm_repo_owner and not _is_admin(request):
+            # Asked before any read: a caller who has not answered for the
+            # repository should not have the room looking inside it.
+            return JSONResponse({"error": REPO_OWNER_REFUSAL}, status_code=422)
+
         clients: Clients | None = app.state.clients
         if clients is None or clients.github is None:
             return JSONResponse(
                 {"error": "the room can't reach GitHub right now"}, status_code=503
             )
 
-        repo = payload.repo.strip()
-        report = scan_repo(
-            clients.github,
-            clients.gojira,
-            session,
-            cfg,
-            repo=repo,
-            name=payload.name,
-            run_mode=payload.run_mode,
-        )
+        try:
+            report = scan_repo(
+                clients.github,
+                clients.gojira,
+                session,
+                cfg,
+                repo=payload.repo,
+                name=payload.name,
+                run_mode=payload.run_mode,
+            )
+        except ClientError as exc:
+            log.warning("connect could not read %s: %s", payload.repo, exc)
+            return JSONResponse({"error": REPO_UNREADABLE}, status_code=502)
+
+        # GitHub's own spelling, so one repository cannot become two rows
+        # apart from each other's case.
+        repo = report.repo
         # A taken name is the one blocker this route does not answer with,
         # because it already has an answer for it: the 409 below, the same
         # one create gives, in the same words. The scan still reports it --
@@ -3762,10 +3863,7 @@ def create_app(
             return JSONResponse(
                 {
                     "error": "this repository is not ready to connect yet",
-                    "blockers": [
-                        {"code": finding.code, "message": finding.message}
-                        for finding in repo_blockers
-                    ],
+                    "blockers": _findings_body(repo_blockers),
                 },
                 status_code=422,
             )

@@ -56,6 +56,9 @@ directory and says so; it offers nothing yet.
 4. **How does it run?** -- "It serves HTTP on port 8080 and answers `/healthz`" or "It has
    no HTTP port (a chat bot or a worker)".
 
+5. **"I own this repository or have its owner's agreement"** -- a checkbox, required
+   (operators excepted). The room cannot check this; see "What this does not do".
+
 Then **Scan**, which reads the repo through the GitHub API (no clone; this is a new
 capability for the room's GitHub client, which today can only clone) and shows a short
 report, and **Connect**, enabled when there are no blockers.
@@ -151,6 +154,16 @@ without being destroyed and recreated.
 - No adopted kind, no colleagues or chat for connected agents, no gateway token. Each is a
   later, opt-in upgrade when an agent can prove it meets the requirement (an A2A card that
   answers a probe, for colleagues).
+- **No check of who owns the repository.** The room holds one GitHub App installation,
+  which can write to every repository in the organisation, and the token it holds cannot
+  see who the caller is on GitHub. So any member of a group may connect any repository in
+  the organisation the App can write to, on their word: the connect form asks them to
+  confirm they own it or have its owner's agreement, the scan report says the room cannot
+  check this, and every connect is logged at WARNING with the caller's identity, the
+  repository and the agent name. An operator may connect without the confirmation. A
+  protected default branch is the repository owner's own backstop, since the room's wiring
+  pull request then waits for a person. Verifying ownership for real needs the caller's own
+  GitHub identity, which this room does not have.
 - No monorepos: one repo is one agent, as everywhere else in the suite.
 - No network policy beyond what composed agents get today. Arbitrary code with model
   access is the real risk here; the mitigations in this version are ownership, the audit

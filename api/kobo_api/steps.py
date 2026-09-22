@@ -71,6 +71,7 @@ from kobo_api.metadata import (
 from kobo_api.models import INVITE_ACCEPTED, A2AInvite, Agent, AgentStatus
 from kobo_api.pairs import implicitly_paired
 from kobo_api.purpose_tags import decode_tags
+from kobo_api.repo_name import split_repo
 from kobo_api.search import get_entry, read_marketplace_catalog
 from kobo_api.tooling import ToolingError, _validate_content, _validate_filename
 
@@ -912,17 +913,21 @@ class ConnectStep:
         if not repo:
             raise RuntimeError("no repository is recorded for this agent. Connect it again")
 
-        # Exactly one slash, both halves non-empty. `owner/a/b` would pass an
-        # owner check and then travel into every path the room builds from
-        # this value, so the shape is settled once, here.
-        parts = repo.split("/")
-        if len(parts) != 2 or not all(parts):
+        # One owner, one name, and nothing in either that would address
+        # something else once this value reaches a `gh api` path or a URL.
+        # The same rule the connect scan applies before the row exists
+        # (`kobo_api.repo_name`), shared rather than restated: a shape the
+        # scan accepted and this refused would fail a provision halfway
+        # through, for a reason the caller was already told was fine.
+        parts = split_repo(repo)
+        if parts is None:
             raise RuntimeError(
                 f"{repo} does not look like a repository name. Give the owner and "
                 f"the repository name, like {org}/example"
             )
 
-        if parts[0] != org:
+        # Case-insensitive, as GitHub itself is.
+        if parts[0].lower() != org.lower():
             raise RuntimeError(
                 f"{repo} is not in {org}. This room can only connect repositories "
                 f"in {org}."

@@ -550,13 +550,21 @@ def consent_config(tmp_path):
     )
 
 
-def _consent_client(session_factory, consent_config, fake_storage, *, groups_resolver, iap_jwks_fetcher):
+def _consent_client(
+    session_factory,
+    consent_config,
+    fake_storage,
+    *,
+    groups_resolver,
+    iap_jwks_fetcher,
+    github=None,
+):
     return TestClient(
         create_app(
             session_factory,
             config=consent_config,
             clients=Clients(
-                github=FakeGitHub(),
+                github=github if github is not None else FakeGitHub(),
                 gojira=FakeGojira(),
                 cloud=FakeCloud(),
                 agent=FakeAgent(),
@@ -658,6 +666,40 @@ def test_resolver_down_member_create_is_403_with_honest_copy(
         "error": "Group membership could not be confirmed right now. Try again shortly."
     }
     assert "—" not in response.json()["error"]
+
+
+def test_member_connecting_into_a_group_they_are_not_in_is_403_verbatim(
+    session_factory, consent_config, fake_storage
+):
+    """Connect puts a new agent in a group exactly as create does, and runs
+    the same gate to do it (`_group_choice_block`, one helper both routes
+    call). The gate answers before the room reads the repository at all, so
+    a refused connect has not told the caller anything about it either.
+    """
+    private_key, jwk = _generate_jwk()
+    github = FakeGitHub(existing_repos={"example-org/team-chatbot"})
+    client = _consent_client(
+        session_factory, consent_config, fake_storage,
+        groups_resolver=FakeGroupResolver({MEMBER_EMAIL: ["payments-eng"]}),
+        iap_jwks_fetcher=_fetcher(jwk),
+        github=github,
+    )
+
+    response = client.post(
+        "/api/agents/connect",
+        json={
+            "repo": "example-org/team-chatbot",
+            "name": "clio",
+            "run_mode": "http",
+            "group_name": "growth",
+            "confirm_repo_owner": True,
+        },
+        headers=_headers(private_key, email=MEMBER_EMAIL),
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"error": "You are not a member of growth."}
+    assert github.calls == []
 
 
 def test_iap_off_room_keeps_todays_group_claim_behavior_unchanged(groups_client):

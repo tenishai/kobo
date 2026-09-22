@@ -478,6 +478,7 @@ class FakeGitHub:
         agent_card: dict | None = None,
         clone_tree: dict[str, str] | None = None,
         extra_clone_files: dict[str, str] | None = None,
+        repo_access_error: str | None = None,
         repo_files: dict[str, str] | None = None,
         root_entries: list[str] | None = None,
         can_write: bool = True,
@@ -554,6 +555,7 @@ class FakeGitHub:
             ]
         self._run_index_by_sha: dict[str, int] = {}
         self._run_id_to_sha: dict[int, str] = {}
+        self._repo_access_error = repo_access_error
         self._repo_files = (
             dict(repo_files)
             if repo_files is not None
@@ -586,6 +588,11 @@ class FakeGitHub:
         what the room's canonical-name handling is written against.
         """
         self.calls.append(f"repo_access:{repo}")
+        # `repo_access_error` is how a test models GitHub itself being
+        # unreachable, as opposed to answering "no such repository": the
+        # real client raises there rather than reporting a finding.
+        if self._repo_access_error is not None:
+            raise ClientError(self._repo_access_error)
         known = {existing.lower(): existing for existing in self.repos}
         full_name = known.get(repo.lower())
         if full_name is None:
