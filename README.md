@@ -227,9 +227,19 @@ window can still be holding the previous tokens until the next refresh; it needs
 action, only the wait. A step reporting success means the value is stored, not that the cluster
 has caught up.
 
-One gap to close before this can be called a finished migration: secrets written through the
-platform are **not** removed when the agent is destroyed — the lane has no delete for this room
-to call, so it needs one, plus a destroy step that calls it.
+With the platform on, every agent page also carries a **Secrets and environment** section, for
+anyone who may edit that agent, composed and connected alike. Secrets are held on the platform
+at `apps/<agent>/env` and delivered into the agent's namespace as the Kubernetes Secret
+`<agent>-env`; environment variables live in the agent's own `gojira.yaml`, for values that are
+not sensitive. A secret's value is sent once and is never readable again from the room: the list
+shows key names and nothing else, and there is no reveal. Key names are upper snake case, 64
+characters at most, 100 per list, and the names the room fills in itself are refused. The first
+secret an agent gets adds `<agent>-env` to `secrets_from`, committed for an agent the room
+composed and proposed as a pull request for one whose repository belongs to its team; changes
+reach the agent the next time it starts. The MCP tools `kobo_list_agent_secrets`,
+`kobo_set_agent_secrets` and `kobo_set_agent_env` do the same three things. Destroying an agent
+now removes its stored secrets too, both the cluster objects and the paths, which closes the gap
+this section used to name.
 
 **Org wiring**: a room serves one org. The org's config repo carries `org.yaml` — catalogs,
 models, groups, admin groups, the runtime pin — cloned at boot and merged over local defaults.
