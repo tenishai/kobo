@@ -4,6 +4,7 @@
   // stack. Everything that actually fetches lives further down (Dashboard,
   // AgentDetail); this file just wires the plumbing around them.
   import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
+  import ConnectModal from "./components/ConnectModal.svelte";
   import CreateModal from "./components/CreateModal.svelte";
   import Sidebar from "./components/Sidebar.svelte";
   import TeamGuideModal from "./components/TeamGuideModal.svelte";
@@ -83,6 +84,18 @@
   function onCloseGuide(): void {
     guideOpen = false;
   }
+
+  // Connected-agents design 2026-09-21: the third button's own state, same
+  // fully-controlled contract as the two above.
+  let connectOpen = $state(false);
+
+  function onOpenConnect(): void {
+    connectOpen = true;
+  }
+
+  function onCloseConnect(): void {
+    connectOpen = false;
+  }
 </script>
 
 <QueryClientProvider client={queryClient}>
@@ -91,6 +104,7 @@
       active={route.page}
       oncreate={onOpenCreate}
       onopenguide={onOpenGuide}
+      onopenconnect={onOpenConnect}
       onprefetch={prefetchCatalogs}
     />
 
@@ -114,6 +128,7 @@
 
   <CreateModal open={createOpen} onclose={onCloseCreate} />
   <TeamGuideModal open={guideOpen} onclose={onCloseGuide} />
+  <ConnectModal open={connectOpen} onclose={onCloseConnect} />
 </QueryClientProvider>
 
 <Toasts />

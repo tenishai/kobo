@@ -6,6 +6,15 @@
   // true (the caller's own gate check, see AgentDetail.svelte); the route
   // itself is the real enforcement boundary, this is UX only.
   //
+  // A connected agent is destroyed by the same ledger with two differences
+  // (connected-agents design 2026-09-21, `destroy.py`): its repository is
+  // left exactly as it is, since it belongs to its team, and there is no
+  // chat app to remove because the room never made one. Both are in the
+  // copy rather than only in the code: this paragraph is the last thing
+  // anyone reads before typing the name, and telling an owner their
+  // repository will be archived when it will not is the one mistake here
+  // that cannot be taken back afterwards.
+  //
   // Three states, driven entirely by `status` (the agent's own detail,
   // refetched by AgentDetail's polling, same "no local state machine of my
   // own" idiom SlackPanel documents for its own three states):
@@ -28,14 +37,23 @@
   // `.memory-modal__danger` already use elsewhere: restrained, not a
   // red-bordered box.
   import { createMutation, useQueryClient } from "@tanstack/svelte-query";
-  import { errorMessage } from "../lib/api";
+  import { errorMessage, KIND_COMPOSED, KIND_CONNECTED } from "../lib/api";
   import { destroyAgentMutation } from "../lib/queries";
 
   let {
     agentName,
     status,
     error,
-  }: { agentName: string; status: string; error: string | null } = $props();
+    kind = KIND_COMPOSED,
+  }: {
+    agentName: string;
+    status: string;
+    error: string | null;
+    /** The agent's own kind. Defaults to composed, so a caller that has not
+     * been taught about kinds gets today's copy rather than the narrower
+     * one. */
+    kind?: string;
+  } = $props();
 
   const queryClient = useQueryClient();
   // agentName is read once here rather than tracked reactively: AgentDetail
@@ -95,9 +113,15 @@
       {destroy.isPending ? "Destroying…" : "Destroy again"}
     </button>
   {:else}
-    <p class="danger-zone__copy">
-      This destroys the running agent, its platform identity, and its Slack presence. The repo is archived, not deleted. Memories die with the namespace.
-    </p>
+    {#if kind === KIND_CONNECTED}
+      <p class="danger-zone__copy">
+        This destroys the running agent and its platform identity. The repository belongs to your team and is left as it is. Memories die with the namespace.
+      </p>
+    {:else}
+      <p class="danger-zone__copy">
+        This destroys the running agent, its platform identity, and its Slack presence. The repo is archived, not deleted. Memories die with the namespace.
+      </p>
+    {/if}
     <div class="danger-zone__confirm">
       <label class="danger-zone__label" for="danger-zone-confirm-name">
         Type {agentName} to confirm

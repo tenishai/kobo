@@ -1,7 +1,19 @@
 <script lang="ts">
   // A single agent's detail (UI-simplification wave, 2026-09-02: overview
   // tab retired -- its identity content lives in the always-visible header
-  // now). Header: back link, name, status, model, repo link, persona line,
+  // now).
+  //
+  // A connected agent (design 2026-09-21) shows a narrower version of this
+  // same page rather than a page of its own: status, checklist, the
+  // repository, owner and group, the build log, the observability links and
+  // destroy. Everything the room composed -- persona, capability, skills,
+  // and every tab that reads the bundle -- is ABSENT, not disabled, because
+  // there is no bundle behind it and there never will be. What stays is
+  // whatever is true of any workload the room deploys. The tab side of that
+  // decision lives in tabs.ts, pure and unit-tested; this file only hides
+  // the header lines that have no source.
+  //
+  // Header: back link, name, status, model, repo link, persona line,
   // team/purpose chips, capability, owner, avatar actions, and the "Edit
   // details" trigger. Below that: a failed-status retry banner, the step
   // checklist (pre-ready only), and the build log card, all above a tab bar
@@ -31,7 +43,7 @@
   import StepChecklist from "../components/StepChecklist.svelte";
   import ThreadPanel from "../components/ThreadPanel.svelte";
   import ToolingPanel from "../components/ToolingPanel.svelte";
-  import { ApiError, errorMessage } from "../lib/api";
+  import { ApiError, errorMessage, KIND_CONNECTED } from "../lib/api";
   import {
     agentQuery,
     generateAvatarMutation,
@@ -143,7 +155,7 @@
       return;
     }
     if (activeTab === null) {
-      activeTab = defaultTab(data.status);
+      activeTab = defaultTab(data.status, data.kind);
     }
   });
 
@@ -290,6 +302,7 @@
     />
   {:else if agent.data}
     {@const data = agent.data}
+    {@const connected = data.kind === KIND_CONNECTED}
     {@const personaMatch = personaSoul.data?.find((p) => p.id === data.persona) ?? null}
     {@const personaLine = personaMatch
       ? `${personaMatch.name} -- ${personaMatch.description}`
@@ -302,28 +315,43 @@
         <div class="agent-detail__title">
           <h1 class="agent-detail__name">{data.name}</h1>
           <StatusBadge status={data.status} />
+          <!-- The same marker the dashboard card carries, in the same
+               words, so the two pages agree about what this agent is. -->
+          {#if connected}
+            <span class="agent-detail__chip">connected</span>
+          {/if}
         </div>
         <div class="agent-detail__meta">
           <span class="agent-detail__model" title={data.model}>{data.model_label}</span>
           {#if data.repo_full_name}
             <span class="agent-detail__sep" aria-hidden="true">·</span>
+            <!-- A connected agent's page names the repository rather than
+                 saying "source": it is somebody else's repository, and
+                 which one it is is the main fact about this agent. -->
             <a
               class="agent-detail__repo"
               href={`https://github.com/${data.repo_full_name}`}
               target="_blank"
               rel="noreferrer"
             >
-              source
+              {connected ? data.repo_full_name : "source"}
             </a>
           {/if}
         </div>
-        <p class="agent-detail__persona">
-          {personaLine}
-          {#if data.team && data.team !== "shared"}
-            <span class="agent-detail__chip">{data.team}</span>
-          {/if}
-        </p>
-        {#if data.purpose_tags.length > 0}
+        {#if !connected}
+          <p class="agent-detail__persona">
+            {personaLine}
+            {#if data.team && data.team !== "shared"}
+              <span class="agent-detail__chip">{data.team}</span>
+            {/if}
+          </p>
+        {/if}
+        <!-- Purpose chips are drafted from the persona at create time and
+             edited through Edit details, neither of which a connected agent
+             has. A converted agent (Task 6) keeps whatever tags its row
+             already carried, so this guard is what keeps them off a page
+             that offers no way to change them. -->
+        {#if data.purpose_tags.length > 0 && !connected}
           <p class="agent-detail__tags">
             {#each data.purpose_tags as tag (tag)}
               <span class="agent-detail__chip">{tag}</span>
@@ -334,16 +362,21 @@
              with Skills living behind the Advanced group, a visitor browsing
              someone else's agent would otherwise see nothing about what it
              can do. Chips only; managing skills stays in the Skills tab. -->
-        {#if data.skills.length > 0}
+        {#if data.skills.length > 0 && !connected}
           <p class="agent-detail__skills">
             {#each data.skills as skill (skill.name)}
               <span class="agent-detail__chip agent-detail__chip--skill">{skill.name}</span>
             {/each}
           </p>
         {/if}
-        <p class="agent-detail__capability">
-          {data.capability ?? "Not written yet. It arrives after first contact."}
-        </p>
+        <!-- The capability sentence is earned at first contact, and the
+             room never makes first contact with a connected agent, so for
+             one it would be a promise that never arrives. -->
+        {#if !connected}
+          <p class="agent-detail__capability">
+            {data.capability ?? "Not written yet. It arrives after first contact."}
+          </p>
+        {/if}
         {#if dashboardUrl}
           <p class="agent-detail__observability">
             Observability:
@@ -357,8 +390,20 @@
             </a>
           </p>
         {/if}
-        {#if data.created_by}
-          <p class="agent-detail__owner">Made by {data.created_by}</p>
+        <!-- Who owns this agent, in one line: the person who made it and
+             the group it belongs to. The group used to be visible only
+             inside the Access tab, which a connected agent's owner may not
+             have at all, and it is the same ownership fact for both kinds,
+             so it is shown for both rather than only where it was missed. -->
+        {#if data.created_by || data.group_name}
+          <p class="agent-detail__owner">
+            {#if data.created_by}
+              <span>Made by {data.created_by}</span>
+            {/if}
+            {#if data.group_name}
+              <span class="agent-detail__chip">{data.group_name}</span>
+            {/if}
+          </p>
         {/if}
       </div>
     </header>
@@ -417,15 +462,21 @@
       {/if}
     </div>
 
-    <div class="composition__edit-action">
-      <MetadataDetails
-        agentName={data.name}
-        team={data.team}
-        purposeTags={data.purpose_tags}
-        capability={data.capability}
-        frozen={isFrozen(data.status)}
-      />
-    </div>
+    <!-- Edit details writes the three fields above (team, purpose chips,
+         capability), all of which describe a bundle the room composed. A
+         connected agent has none of them on its page, so there is nothing
+         here for it to edit. -->
+    {#if !connected}
+      <div class="composition__edit-action">
+        <MetadataDetails
+          agentName={data.name}
+          team={data.team}
+          purposeTags={data.purpose_tags}
+          capability={data.capability}
+          frozen={isFrozen(data.status)}
+        />
+      </div>
+    {/if}
 
     {#if isFrozen(data.status)}
       <p class="agent-detail__destroy-notice" role="status" aria-live="polite">
@@ -459,9 +510,13 @@
 
     <BuildLogCard agentName={data.name} />
 
-    {@const primary = primaryTabs(invites.isSuccess)}
-    {@const advanced = advancedTabs()}
+    {@const primary = primaryTabs(invites.isSuccess, data.kind)}
+    {@const advanced = advancedTabs(data.kind)}
     {@const tabDisabled = data.status !== "ready" && !isFrozen(data.status)}
+    <!-- A connected agent whose caller cannot administer it has no tabs at
+         all, and an empty tab bar with an Advanced toggle beside it would
+         read as a row that failed to load. -->
+    {#if primary.length > 0 || advanced.length > 0}
     <div class="detail-tabs">
       <div class="detail-tabs__bar">
         <div class="detail-tabs__list" role="tablist" aria-label="Agent sections">
@@ -517,23 +572,29 @@
             {/each}
           {/if}
         </div>
-        <button
-          type="button"
-          class="detail-tabs__advanced-toggle"
-          aria-expanded={advancedOpen}
-          onclick={() => {
-            advancedOpen = !advancedOpen;
-            if (!advancedOpen && activeTab !== null
-                && (ADVANCED_TABS as readonly string[]).includes(activeTab)) {
-              activeTab = defaultTab(data.status);
-            }
-          }}
-        >
-          Advanced {advancedOpen ? "▾" : "▸"}
-          {#if !advancedOpen && data.pending_learnings > 0}
-            <span class="detail-tabs__badge">{data.pending_learnings}</span>
-          {/if}
-        </button>
+        <!-- No toggle when the group behind it is empty (a connected
+             agent): it would open onto nothing. The pending-learnings
+             count rides on this toggle, and a connected agent has no
+             learnings either, so it goes with it. -->
+        {#if advanced.length > 0}
+          <button
+            type="button"
+            class="detail-tabs__advanced-toggle"
+            aria-expanded={advancedOpen}
+            onclick={() => {
+              advancedOpen = !advancedOpen;
+              if (!advancedOpen && activeTab !== null
+                  && (ADVANCED_TABS as readonly string[]).includes(activeTab)) {
+                activeTab = defaultTab(data.status, data.kind);
+              }
+            }}
+          >
+            Advanced {advancedOpen ? "▾" : "▸"}
+            {#if !advancedOpen && data.pending_learnings > 0}
+              <span class="detail-tabs__badge">{data.pending_learnings}</span>
+            {/if}
+          </button>
+        {/if}
       </div>
 
       {#each [...primary, ...advanced] as tab (tab)}
@@ -586,9 +647,15 @@
         </div>
       {/each}
     </div>
+    {/if}
 
     {#if data.destroy_visible}
-      <DangerZone agentName={data.name} status={data.status} error={data.error} />
+      <DangerZone
+        agentName={data.name}
+        status={data.status}
+        error={data.error}
+        kind={data.kind}
+      />
     {/if}
 
   {/if}
@@ -715,6 +782,10 @@
   }
 
   .agent-detail__owner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2xs);
     margin: 0;
     color: var(--muted);
     font-size: 0.8rem;
