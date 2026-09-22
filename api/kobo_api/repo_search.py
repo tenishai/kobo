@@ -16,9 +16,11 @@ this route is open to any signed-in person precisely because it only ever
 names what somebody was already typing.
 
 It reads GitHub once, not once per keystroke. The listing is the same for
-everyone in the room, so one is held for five minutes behind a lock, and a
-crowd arriving at an expired cache costs one read between them rather than
-one each. Nothing in here is per-caller, which is why it can be shared.
+everyone in the room, so one is held for five minutes, and a crowd
+arriving at an expired cache costs one read between them rather than one
+each -- and only the one caller doing that read waits for it; the rest are
+answered from the listing already in hand. Nothing in here is per-caller,
+which is why it can be shared.
 
 The ordering is the only judgement this module makes. A repository whose
 NAME starts with what was typed is what a person meant; one that merely
@@ -77,7 +79,13 @@ class RepoIndex:
         self._github = github
         self._ttl_s = ttl_s
         self._now = now
-        self._lock = threading.Lock()
+        # Two locks, doing two different jobs. `_state_lock` is held for
+        # the length of a few assignments and never across a GitHub call.
+        # `_refresh_lock` is the one refresh at a time, and is TRIED
+        # rather than waited on by anyone who already has a listing to
+        # answer with.
+        self._state_lock = threading.Lock()
+        self._refresh_lock = threading.Lock()
         self._repos: list[InstallationRepo] = []
         self._loaded_at: float | None = None
 
@@ -116,27 +124,66 @@ class RepoIndex:
         return repos[:MAX_MATCHES], len(repos) > MAX_MATCHES
 
     def _listing(self, now: float) -> list[InstallationRepo]:
-        """The cached listing, refreshed first when it is missing or older
-        than the TTL.
+        """The cached listing, refreshed when it is missing or past the
+        TTL -- without making anybody wait who does not have to.
 
-        The refresh happens INSIDE the lock, so a crowd arriving together
-        makes one GitHub read between them and every one of them gets the
-        fresh answer. A refresh that raises leaves the previous load stamp
-        alone, so the next caller tries again rather than inheriting a
-        failure for five minutes.
+        A stale listing is still an answer. This route is synchronous, so
+        a caller waiting on GitHub is a worker thread pinned in a pool of
+        forty; if an expiry made every request in flight wait for one
+        listing, a slow GitHub would stall the whole API rather than just
+        this field. So exactly one caller refreshes (the one that wins
+        `_refresh_lock`, tried and not waited on) and everyone else is
+        answered from the listing already in hand, a few minutes old,
+        which is what a typeahead over repository names can afford to be.
+
+        Only a COLD cache blocks, because there is nothing else to say.
+
+        A refresh that raises leaves the load stamp alone, so the next
+        caller tries again rather than inheriting a failure for five
+        minutes.
         """
-        with self._lock:
-            if self._loaded_at is None or now - self._loaded_at >= self._ttl_s:
-                # Archived repositories are dropped here rather than per
-                # search: they cannot be connected, so they are not part of
-                # the answer to any query.
-                self._repos = [
-                    repo
-                    for repo in self._github.list_installation_repos()
-                    if not repo.archived
-                ]
-                self._loaded_at = now
-            return self._repos
+        repos, loaded_at = self._snapshot()
+        if loaded_at is not None and now - loaded_at < self._ttl_s:
+            return repos
+
+        if loaded_at is None:
+            with self._refresh_lock:
+                # Checked again inside: the caller that was waiting here
+                # while the winner refreshed now has an answer and must
+                # not read GitHub a second time for it.
+                repos, loaded_at = self._snapshot()
+                if loaded_at is not None:
+                    return repos
+                return self._refresh(now)
+
+        if not self._refresh_lock.acquire(blocking=False):
+            return repos
+        try:
+            repos, loaded_at = self._snapshot()
+            if loaded_at is not None and now - loaded_at < self._ttl_s:
+                return repos
+            return self._refresh(now)
+        finally:
+            self._refresh_lock.release()
+
+    def _snapshot(self) -> tuple[list[InstallationRepo], float | None]:
+        with self._state_lock:
+            return self._repos, self._loaded_at
+
+    def _refresh(self, now: float) -> list[InstallationRepo]:
+        """Reads GitHub and installs the result. Called with
+        `_refresh_lock` held, and never with `_state_lock` held: the read
+        is the slow part, and nothing else may wait on it."""
+        # Archived repositories are dropped here rather than per search:
+        # they cannot be connected, so they are not part of the answer to
+        # any query.
+        repos = [
+            repo for repo in self._github.list_installation_repos() if not repo.archived
+        ]
+        with self._state_lock:
+            self._repos = repos
+            self._loaded_at = now
+        return repos
 
 
 def _rank(repo: InstallationRepo, needle: str) -> int | None:

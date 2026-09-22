@@ -286,32 +286,82 @@ def test_an_empty_query_never_reads_github_at_all():
     assert github.calls == 0
 
 
+class SlowGitHub(StubGitHub):
+    """Holds its listing open until `release` is set, so a test can put
+    several callers inside one refresh at once."""
+
+    def __init__(self, repos: list[InstallationRepo]):
+        super().__init__(repos)
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def list_installation_repos(self) -> list[InstallationRepo]:
+        self.started.set()
+        assert self.release.wait(timeout=5), "the listing was never released"
+        return super().list_installation_repos()
+
+
 def test_only_one_refresh_runs_at_a_time():
-    """Twenty people typing into the form the moment the cache expires is
-    one GitHub listing, not twenty."""
-    started = threading.Event()
-    release = threading.Event()
-
-    class SlowGitHub(StubGitHub):
-        def list_installation_repos(self):
-            started.set()
-            release.wait(timeout=5)
-            return super().list_installation_repos()
-
+    """Five people typing into the form against a cold cache is one GitHub
+    listing, not five. Contended for real: every worker is inside `search`
+    before the listing is allowed to return."""
     github = SlowGitHub([_repo("example-org/clio")])
     index = RepoIndex(github)
+    entered = threading.Barrier(6, timeout=5)
+    answers: list[list[str]] = []
 
-    threads = [
-        threading.Thread(target=lambda: index.search("clio", now=0.0)) for _ in range(5)
-    ]
+    def worker() -> None:
+        entered.wait()
+        answers.append(_names(index.search("clio", now=0.0)[0]))
+
+    threads = [threading.Thread(target=worker) for _ in range(5)]
     for thread in threads:
         thread.start()
-    started.wait(timeout=5)
-    release.set()
+    entered.wait()
+    # Every worker is now in `search`; one of them is inside the listing
+    # and the rest are waiting on it.
+    assert github.started.wait(timeout=5)
+    github.release.set()
     for thread in threads:
         thread.join(timeout=5)
 
     assert github.calls == 1
+    assert answers == [["example-org/clio"]] * 5
+
+
+def test_a_stale_cache_is_served_while_one_caller_refreshes_it():
+    """The refresh does NOT hold everyone else up. This route is sync, so a
+    caller waiting on GitHub is a thread pinned in the pool, and an
+    expiry under load would otherwise stall the whole API for as long as
+    GitHub takes to answer. One caller refreshes; everyone else is
+    answered from the listing already in hand, a few minutes old.
+    """
+    github = SlowGitHub([_repo("example-org/clio-old")])
+    github.release.set()  # the first, warming read is not slow
+    index = RepoIndex(github)
+    assert _names(index.search("clio", now=0.0)[0]) == ["example-org/clio-old"]
+
+    github.repos = [_repo("example-org/clio-new")]
+    github.started.clear()
+    github.release.clear()
+    refreshed: list[list[str]] = []
+    refresher = threading.Thread(
+        target=lambda: refreshed.append(_names(index.search("clio", now=TTL_S)[0]))
+    )
+    refresher.start()
+    assert github.started.wait(timeout=5)
+
+    # The refresh is in flight and going nowhere. This caller is answered
+    # anyway, now, with what the room already had.
+    assert _names(index.search("clio", now=TTL_S)[0]) == ["example-org/clio-old"]
+
+    github.release.set()
+    refresher.join(timeout=5)
+    assert refreshed == [["example-org/clio-new"]]
+    assert github.calls == 2
+    # And the next caller gets the refreshed listing, without another read.
+    assert _names(index.search("clio", now=TTL_S)[0]) == ["example-org/clio-new"]
+    assert github.calls == 2
 
 
 def test_a_github_failure_reaches_the_caller():
