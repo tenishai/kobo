@@ -136,6 +136,19 @@ slack_tokens_path: null
 # rewrites it. Both set means the Secret wins, with a warning in the logs.
 # slack_tokens_secret: kobo/kobo-slack-tokens
 
+# The secrets platform this room writes an agent's own secrets through: its
+# base URL, the OIDC audience this room's workload identity mints an ID
+# token for, and the team namespace the room's secrets live in over there.
+# All three set moves the colleague pass and the Slack tokens off direct
+# Kubernetes Secret writes and onto that platform, which delivers them back
+# into the agent's namespace under the same Secret names; anything missing
+# leaves the direct writes in place, unchanged. Local rooms leave all three
+# empty -- the credential is the pod's own identity, which no developer
+# machine has.
+# ladon_url: http://secrets.internal
+# ladon_audience: http://secrets.internal
+# ladon_namespace: platform
+
 # Emails allowed to use the Slack connect routes once IAP is enabled (see
 # iap_audience below) — everyone else gets a 403. Empty (the default) leaves
 # Slack connect open to anyone who can reach this room, matching today's

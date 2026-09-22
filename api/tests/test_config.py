@@ -167,6 +167,72 @@ def test_slack_tokens_secret_is_not_org_settable():
     assert "slack_tokens_path" not in ORG_KEYS
 
 
+# --- ladon_* (the secrets platform's machine lane) -------------------------
+
+
+def test_ladon_settings_default_empty_and_the_lane_is_off():
+    config = Config()
+
+    assert config.ladon_url == ""
+    assert config.ladon_audience == ""
+    assert config.ladon_namespace == ""
+    assert config.ladon_enabled is False
+
+
+def test_ladon_settings_load_from_yaml(tmp_path):
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        "ladon_url: http://secrets.example\n"
+        "ladon_audience: http://secrets.example\n"
+        "ladon_namespace: platform\n"
+    )
+
+    config = Config.load(yaml_path)
+
+    assert config.ladon_url == "http://secrets.example"
+    assert config.ladon_audience == "http://secrets.example"
+    assert config.ladon_namespace == "platform"
+    assert config.ladon_enabled is True
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"ladon_url": "http://secrets.example"},
+        {"ladon_url": "http://secrets.example", "ladon_audience": "aud"},
+        {"ladon_url": "http://secrets.example", "ladon_namespace": "platform"},
+        {"ladon_audience": "aud", "ladon_namespace": "platform"},
+    ],
+)
+def test_ladon_is_off_until_all_three_settings_are_present(settings):
+    # A half-configured lane reads as off, never as half-on: a URL with no
+    # audience could never authenticate, and one with no namespace has
+    # nowhere to write.
+    assert Config(**settings).ladon_enabled is False
+
+
+def test_config_example_yaml_documents_the_ladon_keys():
+    # Commented out rather than set, like slack_tokens_secret: the operator
+    # template names every deployment-local key, and an empty lane is off.
+    example_path = Path(__file__).resolve().parent.parent / "config.example.yaml"
+    text = example_path.read_text()
+
+    for key in ("ladon_url", "ladon_audience", "ladon_namespace"):
+        assert f"# {key}:" in text
+        assert f"\n{key}:" not in text
+
+
+def test_ladon_settings_are_not_org_settable():
+    # Deployment-local, exactly like slack_tokens_secret above: they name a
+    # service and a namespace in THIS cluster, not anything the org hands
+    # out.
+    from kobo_api.org import ORG_KEYS
+
+    assert "ladon_url" not in ORG_KEYS
+    assert "ladon_audience" not in ORG_KEYS
+    assert "ladon_namespace" not in ORG_KEYS
+
+
 # --- avatar_model / avatar_location (P2d: ImageClient) --------------------
 
 
