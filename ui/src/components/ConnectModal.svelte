@@ -131,6 +131,11 @@
   // Enter over a fully typed `owner/name` cannot swap it for whichever
   // row happened to be first.
   let activeRepo = $state(-1);
+  // The name this field last filled in for itself. The search that would
+  // otherwise follow it is not worth making: the room just said this
+  // repository exists, and asking again would only reopen the list over
+  // the answer somebody already chose.
+  let pickedRepo = $state<string | null>(null);
 
   const repoMatches = createQuery(() => (connectReposQuery(repoSearchTerm)));
 
@@ -139,34 +144,96 @@
   }, REPO_SEARCH_DEBOUNCE_MS);
 
   $effect(() => {
-    const value = repo;
-    commitRepoSearch(value.trim());
+    const value = repo.trim();
+    if (!open || value === pickedRepo) {
+      // A closing form and a just-picked name are both "nothing to ask".
+      // Cancelled rather than left pending: the answer would arrive for a
+      // form nobody is looking at, or for a choice already made.
+      commitRepoSearch.cancel();
+      return;
+    }
+    commitRepoSearch(value);
     return () => {
       commitRepoSearch.cancel();
     };
   });
 
   const repoSuggestions = $derived(repoMatches.data?.repos ?? []);
+  const repoSearchFailed = $derived(
+    repoMatches.isError && repo.trim().length >= 1,
+  );
   const repoListOpen = $derived(
-    !repoListDismissed && repo.trim().length >= 1 && repoSuggestions.length > 0,
+    !repoListDismissed &&
+      repo.trim().length >= 1 &&
+      // Rows for a term that has been typed past answer a question nobody
+      // is asking any more. While the debounce runs, the list is shut.
+      repoSearchTerm === repo.trim() &&
+      repoSuggestions.length > 0,
   );
   const repoMatchesTruncated = $derived(
     repoListOpen && repoMatches.data?.truncated === true,
   );
 
+  /** What a screen reader hears when the rows change. Silent while the
+   * field is empty, while a search is in flight, and when the search
+   * itself failed, since the line under the input says that one. */
+  const repoAnnouncement = $derived.by(() => {
+    if (repoSearchTerm === "" || repoSearchTerm !== repo.trim()) {
+      return "";
+    }
+    if (repoMatches.isPending || repoMatches.isError) {
+      return "";
+    }
+    if (repoSuggestions.length === 0) {
+      return "No repositories match";
+    }
+    return repoSuggestions.length === 1
+      ? "1 repository"
+      : `${repoSuggestions.length} repositories`;
+  });
+
+  // The highlight belongs to the rows it was made over. New rows (a
+  // narrower query, a refetch that came back shorter) mean it points at
+  // something that may not be there, so it goes with them -- which also
+  // keeps `aria-activedescendant` from naming a row that no longer exists.
+  $effect(() => {
+    repoSuggestions;
+    activeRepo = -1;
+  });
+
+  // Keeps the highlighted row in view in a list taller than its box.
+  // `?.()` because jsdom has no scrollIntoView and a test is not a reason
+  // to skip the behaviour.
+  $effect(() => {
+    if (activeRepo < 0) {
+      return;
+    }
+    const row = document.getElementById(`${REPO_LIST_ID}-${activeRepo}`);
+    row?.scrollIntoView?.({ block: "nearest" });
+  });
+
   function handleRepoTyped(): void {
     repoListDismissed = false;
+    pickedRepo = null;
     activeRepo = -1;
   }
 
   function pickRepo(option: ConnectRepoOption): void {
     repo = option.full_name;
+    pickedRepo = option.full_name;
     repoListDismissed = true;
     activeRepo = -1;
   }
 
   function handleRepoKeydown(event: KeyboardEvent): void {
     if (!repoListOpen) {
+      // Down is how a list that was dismissed comes back, which is the
+      // only way back to it without retyping. Nothing to reopen over an
+      // empty field: this field never offers a list unasked.
+      if (event.key === "ArrowDown" && repo.trim().length >= 1) {
+        event.preventDefault();
+        repoListDismissed = false;
+      }
       return;
     }
     if (event.key === "Escape") {
@@ -194,8 +261,12 @@
       // the form out from under an open dropdown. With no row highlighted
       // it just closes the list and leaves what was typed alone.
       event.preventDefault();
-      if (activeRepo >= 0) {
-        pickRepo(repoSuggestions[activeRepo]);
+      // Bounds-checked as well as reset above: the rows can change
+      // between the highlight and the Enter, and a pick of a row that is
+      // not there any more must leave what was typed alone.
+      const highlighted = activeRepo >= 0 ? repoSuggestions[activeRepo] : undefined;
+      if (highlighted !== undefined) {
+        pickRepo(highlighted);
       } else {
         repoListDismissed = true;
       }
@@ -265,6 +336,7 @@
       repoSearchTerm = "";
       repoListDismissed = false;
       activeRepo = -1;
+      pickedRepo = null;
     }
   });
 
@@ -412,8 +484,21 @@
           </ul>
         {/if}
       </div>
+      <!-- Said out loud, once per change, for anyone who cannot see the
+           rows appear under the field. -->
+      <p class="connect-form__sr-only" role="status" aria-live="polite">
+        {repoAnnouncement}
+      </p>
       {#if repoMatchesTruncated}
         <p class="connect-form__help">More matched. Keep typing to narrow it down.</p>
+      {/if}
+      {#if repoSearchFailed}
+        <!-- Not an error the form stops for: the field still takes a
+             typed owner/name, and the scan is still what answers for it. -->
+        <p class="connect-form__status">
+          Repository search is unavailable right now. You can still type
+          owner/name.
+        </p>
       {/if}
       <p class="connect-form__help">
         Start typing to search the repositories the room's GitHub App can
@@ -707,6 +792,18 @@
   .connect-form__suggestion-kind {
     color: var(--muted);
     font-size: 0.75rem;
+  }
+
+  /* Same visually-hidden line StepChecklist uses for its own live
+     region: announced, never drawn. */
+  .connect-form__sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
   }
 
   .connect-form__choice {

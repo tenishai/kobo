@@ -536,11 +536,12 @@ export type ConnectAgentBody = ScanRepoBody & {
 /** One row in the Repository field's typeahead: a repository the room's
  * GitHub App can already reach. `private` is shown as a one-word marker so
  * a person knows which of two similarly named repositories they are
- * pointing at. */
+ * pointing at. The name and that marker are the whole row, and the whole
+ * response: the connect route reads GitHub's own answer for everything
+ * else rather than a browser's copy of it. */
 export type ConnectRepoOption = {
   full_name: string;
   private: boolean;
-  default_branch: string;
 };
 
 /** `GET /api/connect/repos`'s answer: at most ten matches, and whether

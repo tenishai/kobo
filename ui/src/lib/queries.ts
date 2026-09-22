@@ -541,15 +541,6 @@ export function createAgentMutation(queryClient: QueryClient) {
 }
 
 /**
- * Reads a repository the room has been asked to connect (connected-agents
- * design 2026-09-21). A mutation rather than a query even though it changes
- * nothing: it runs when a person presses Scan, never on mount, and its
- * answer is about the repository at that moment -- a cached report is a
- * claim about a repository some minutes ago, which is exactly why the
- * connect route runs its own scan again rather than trusting this one.
- * Nothing to invalidate, so no QueryClient.
- */
-/**
  * The Repository field's typeahead. A query, not a mutation: the same
  * search from two people is the same answer, and the room's own listing
  * behind it is cached for five minutes anyway.
@@ -567,6 +558,15 @@ export function connectReposQuery(q: string) {
   });
 }
 
+/**
+ * Reads a repository the room has been asked to connect (connected-agents
+ * design 2026-09-21). A mutation rather than a query even though it changes
+ * nothing: it runs when a person presses Scan, never on mount, and its
+ * answer is about the repository at that moment -- a cached report is a
+ * claim about a repository some minutes ago, which is exactly why the
+ * connect route runs its own scan again rather than trusting this one.
+ * Nothing to invalidate, so no QueryClient.
+ */
 export function scanRepoMutation() {
   return {
     mutationFn: scanRepo,

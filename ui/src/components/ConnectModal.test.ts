@@ -459,19 +459,31 @@ describe("ConnectModal — connecting", () => {
 
 const REPO_MATCHES = {
   repos: [
-    {
-      full_name: "example-org/team-chatbot",
-      private: true,
-      default_branch: "main",
-    },
-    {
-      full_name: "example-org/chat-archive",
-      private: false,
-      default_branch: "trunk",
-    },
+    { full_name: "example-org/team-chatbot", private: true },
+    { full_name: "example-org/chat-archive", private: false },
   ],
   truncated: false,
 };
+
+const SEARCH_UNAVAILABLE =
+  "Repository search is unavailable right now. You can still type owner/name.";
+
+/** How many times the repository search has actually been called. The
+ * debounce and the picking rules are both about NOT calling it. */
+function repoSearchCalls(): number {
+  const stub = globalThis.fetch as unknown as {
+    mock: { calls: [RequestInfo | URL][] };
+  };
+  return stub.mock.calls.filter(([input]) =>
+    String(input).includes("/api/connect/repos"),
+  ).length;
+}
+
+/** Waits out the field's debounce (200ms) and a little more, for the
+ * cases that assert nothing was requested. */
+function afterTheDebounce(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 350));
+}
 
 function repoInput(): HTMLInputElement {
   return screen.getByLabelText("Repository") as HTMLInputElement;
@@ -543,6 +555,102 @@ describe("ConnectModal — finding a repository", () => {
     expect(repoInput().value).toBe("chat");
   });
 
+  it("closes the list on Escape without closing the form", async () => {
+    // The first Escape is about the list. The second is about the form.
+    const onclose = vi.fn();
+    renderWithClient(ConnectModal, { open: true, onclose });
+
+    await screen.findByText("No groups are configured yet.");
+    await typeRepo("chat");
+    await screen.findAllByRole("option");
+
+    await fireEvent.keyDown(repoInput(), { key: "Escape" });
+
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(onclose).not.toHaveBeenCalled();
+
+    await fireEvent.keyDown(repoInput(), { key: "Escape" });
+
+    expect(onclose).toHaveBeenCalled();
+  });
+
+  it("reopens the list on ArrowDown once something has been typed", async () => {
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByText("No groups are configured yet.");
+    await typeRepo("chat");
+    await screen.findAllByRole("option");
+    await fireEvent.keyDown(repoInput(), { key: "Escape" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+
+    await fireEvent.keyDown(repoInput(), { key: "ArrowDown" });
+
+    expect(screen.getByRole("listbox")).not.toBeNull();
+  });
+
+  it("offers nothing on ArrowDown while the field is empty", async () => {
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByText("No groups are configured yet.");
+    await fireEvent.keyDown(repoInput(), { key: "ArrowDown" });
+
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("shows no rows for a term that has been typed past", async () => {
+    // A keystroke inside the debounce means the rows on screen answer a
+    // question nobody is asking any more.
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByText("No groups are configured yet.");
+    await typeRepo("cha");
+    await screen.findAllByRole("option");
+
+    await typeRepo("chat");
+
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect((await screen.findAllByRole("option")).length).toBe(2);
+  });
+
+  it("says when the count of matches changes, for anyone listening", async () => {
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByText("No groups are configured yet.");
+    await typeRepo("chat");
+
+    expect(await screen.findByText("2 repositories")).not.toBeNull();
+  });
+
+  it("does not search for the repository it just filled in", async () => {
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByText("No groups are configured yet.");
+    await typeRepo("chat");
+    const options = await screen.findAllByRole("option");
+    const searched = repoSearchCalls();
+
+    await fireEvent.click(options[0]);
+    await afterTheDebounce();
+
+    expect(repoInput().value).toBe("example-org/team-chatbot");
+    expect(repoSearchCalls()).toBe(searched);
+  });
+
+  it("does not search for what was typed as the form was closing", async () => {
+    const view = renderWithClient(ConnectModal, {
+      open: true,
+      onclose: () => {},
+    });
+
+    await screen.findByText("No groups are configured yet.");
+    const searched = repoSearchCalls();
+    await typeRepo("chat");
+    await view.rerender({ componentProps: { open: false, onclose: () => {} } });
+    await afterTheDebounce();
+
+    expect(repoSearchCalls()).toBe(searched);
+  });
+
   it("fills the field with the repository that was clicked", async () => {
     renderWithClient(ConnectModal, { open: true, onclose: () => {} });
 
@@ -554,6 +662,99 @@ describe("ConnectModal — finding a repository", () => {
 
     expect(repoInput().value).toBe("example-org/chat-archive");
     expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("says so when the repository search cannot be reached", async () => {
+    // Fail-soft on the surface: the field still takes a typed owner/name,
+    // and the scan is still the thing that answers for it.
+    vi.unstubAllGlobals();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/connect/repos")) {
+          return new Response(
+            JSON.stringify({ error: "the room could not list its repositories" }),
+            { status: 502, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.includes("/api/catalog/groups")) {
+          return new Response(JSON.stringify({ groups: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await screen.findByText("No groups are configured yet.");
+    await typeRepo("chat");
+
+    expect(await screen.findByText(SEARCH_UNAVAILABLE)).not.toBeNull();
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(repoInput().value).toBe("chat");
+  });
+
+  it("does not pick a row that is no longer there", async () => {
+    // The rows can change under a highlighted one: a refetch lands, and
+    // the list is shorter than it was a moment ago.
+    let searches = 0;
+    vi.unstubAllGlobals();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/connect/repos")) {
+          searches += 1;
+          return new Response(
+            JSON.stringify(
+              searches === 1
+                ? REPO_MATCHES
+                : { repos: [REPO_MATCHES.repos[0]], truncated: false },
+            ),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.includes("/api/catalog/groups")) {
+          return new Response(JSON.stringify({ groups: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    const { client } = renderWithClient(ConnectModal, {
+      open: true,
+      onclose: () => {},
+    });
+
+    await screen.findByText("No groups are configured yet.");
+    await typeRepo("chat");
+    await screen.findAllByRole("option");
+    await fireEvent.keyDown(repoInput(), { key: "ArrowDown" });
+    await fireEvent.keyDown(repoInput(), { key: "ArrowDown" });
+    expect(repoInput().getAttribute("aria-activedescendant")).toBe(
+      "connect-repo-list-1",
+    );
+
+    await client.invalidateQueries({ queryKey: ["connect", "repos"] });
+    await waitFor(() => expect(screen.getAllByRole("option").length).toBe(1));
+
+    // The highlight went with the row it was on, so Enter has nothing to
+    // pick and what was typed is left alone.
+    expect(repoInput().getAttribute("aria-activedescendant")).toBeNull();
+    await fireEvent.keyDown(repoInput(), { key: "Enter" });
+
+    expect(repoInput().value).toBe("chat");
   });
 
   it("says when more repositories matched than it can show", async () => {
