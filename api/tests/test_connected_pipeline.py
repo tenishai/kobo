@@ -249,13 +249,25 @@ def test_connect_step_refuses_an_agent_with_no_repository_recorded(session_facto
 
 
 @pytest.mark.parametrize(
-    "repo", ["example-org/team/chatbot", "example-org", "example-org/"]
+    "repo",
+    [
+        "example-org/team/chatbot",
+        "example-org",
+        "example-org/",
+        # Characters that address something other than the repository once
+        # this value reaches a `gh api` path or a URL.
+        "example-org/foo?x=1",
+        "example-org/foo#",
+        "example-org/..",
+        "example-org/ x",
+    ],
 )
 def test_connect_step_refuses_anything_that_is_not_one_owner_and_one_name(
     session_factory, config, repo
 ):
     """`owner/a/b` passes an owner check and then travels into every path
-    the room builds from it. One slash, both halves non-empty, or nothing."""
+    the room builds from it. One slash, both halves a real name, or
+    nothing -- the same rule the scan applies before the row exists."""
     session, agent = _make_agent(session_factory, config, repo_full_name=repo)
     github = FakeGitHub(existing_repos={repo})
     ctx = _make_ctx(session, agent, config, _clients(github=github))
@@ -267,6 +279,20 @@ def test_connect_step_refuses_anything_that_is_not_one_owner_and_one_name(
     assert "does not look like a repository name" in message
     assert "—" not in message
     assert github.calls == []
+
+
+def test_connect_step_reads_the_organisation_the_way_github_does(
+    session_factory, config
+):
+    """GitHub resolves an owner case-insensitively. Failing a provision
+    over the capitalisation of an organisation the scan already accepted
+    would be the room disagreeing with itself."""
+    repo = f"{config.github_org.title()}/{REPO_NAME}"
+    session, agent = _make_agent(session_factory, config, repo_full_name=repo)
+    github = FakeGitHub(existing_repos={repo})
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    assert ConnectStep().run(ctx) == f"connected {repo}"
 
 
 def test_connect_step_refuses_a_repo_it_cannot_see(session_factory, config):

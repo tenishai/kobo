@@ -35,9 +35,9 @@ _calls: dict[str, collections.deque[float]] = collections.defaultdict(
 )
 
 
-def check(email: str) -> bool:
+def check(email: str, *, limit: int = LIMIT, bucket: str = "mcp") -> bool:
     """True if `email` may make another call right now, and records this
-    call toward its window; False if it is already at `LIMIT` calls within
+    call toward its window; False if it is already at `limit` calls within
     the last `WINDOW_S` seconds, in which case nothing is recorded -- a
     refused call never happened, so it must not count toward anything.
 
@@ -45,27 +45,36 @@ def check(email: str) -> bool:
     older than the window first, so an email that stops calling for a
     while has its history age out on its own with no separate cleanup
     pass needed anywhere.
+
+    `bucket` and `limit` are how a second surface shares this speed bump
+    without sharing its budget (connected-agents design 2026-09-21: the
+    connect scan reads private repositories with the room's own
+    credentials, and wants a much smaller ceiling of its own). Different
+    buckets never count against each other, so a caller spending their
+    scans cannot cost themselves a single MCP call, and the per-replica
+    posture stated above is exactly the same for both.
     """
     now = time.monotonic()
-    timestamps = _calls[email]
+    timestamps = _calls[f"{bucket}:{email}"]
     cutoff = now - WINDOW_S
     while timestamps and timestamps[0] < cutoff:
         timestamps.popleft()
 
-    if len(timestamps) >= LIMIT:
+    if len(timestamps) >= limit:
         return False
 
     timestamps.append(now)
     return True
 
 
-def reset(email: str | None = None) -> None:
-    """Clear one email's call history, or every email's if `email` is
-    omitted. Nothing in production code calls this today -- it exists so
-    tests can start each case with a clean window rather than one that
-    might still carry a previous case's timestamps.
+def reset(email: str | None = None, *, bucket: str = "mcp") -> None:
+    """Clear one email's call history in one bucket, or every history in
+    every bucket if `email` is omitted. Nothing in production code calls
+    this today -- it exists so tests can start each case with a clean
+    window rather than one that might still carry a previous case's
+    timestamps.
     """
     if email is None:
         _calls.clear()
     else:
-        _calls.pop(email, None)
+        _calls.pop(f"{bucket}:{email}", None)

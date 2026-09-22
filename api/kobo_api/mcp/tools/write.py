@@ -685,8 +685,10 @@ def register(mcp: FastMCP, app: Any) -> None:
         for you. `skills`, when given, is a list of `{"id", "team"}` picks
         from the room's skills catalog; `tags` is a short list of purpose
         tags. Every new agent ships the baseline tooling pack (leakguard
-        and probe guard) unless skip_baseline is true. Every agent is built
-        on the room's one runtime; there is no choice to make here.
+        and probe guard) unless skip_baseline is true. This tool builds on
+        the room's one runtime; there is no choice to make here. A team
+        that already has an agent in its own repository connects it in the
+        room instead, and this tool does not do that.
         archetype="team_guide" deploys a team's
         informational guide; forces persona/tools/tags. `voice` (optional)
         is a style overlay for archetype personas -- ignored unless

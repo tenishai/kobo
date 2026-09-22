@@ -186,10 +186,109 @@ class CommandRunner:
 # --- GitHub -------------------------------------------------------------------
 
 
+# The largest file the contents reader will decode. The connect scan reads
+# a Dockerfile and a gojira.yaml -- both a few hundred bytes in every real
+# repository -- and this transport has no other callers. A cap keeps a
+# repository with something enormous at one of those paths from being
+# base64-decoded into this process at all; the scan reads the answer as
+# "no such file", which is the honest one for a path it cannot reason
+# about.
+MAX_READ_FILE_BYTES = 256 * 1024
+
+
+@dataclass(frozen=True)
+class RepoAccessInfo:
+    """What the room can do with a repository it does not own.
+
+    `visible` False means the App cannot see the repository: it does not
+    exist, or it exists and nobody granted the room access to it. Those two
+    are genuinely indistinguishable from here (GitHub answers both with a
+    404, deliberately, so a token cannot enumerate private repositories),
+    and the connect scan says so in one sentence rather than guessing.
+    `default_branch` and `full_name` are empty in that case, since there is
+    nothing to name.
+
+    `full_name` is GitHub's OWN spelling of `owner/name`. GitHub resolves
+    both halves case-insensitively and answers with the one real spelling,
+    so this is what the room records: otherwise two people connecting the
+    same repository with different capitalisation would leave the room
+    holding two names for one thing.
+    """
+
+    visible: bool
+    can_write: bool
+    default_branch: str
+    full_name: str = ""
+
+
 @runtime_checkable
 class GitHubClient(Protocol):
     def repo_exists(self, repo: str) -> bool:
         """Whether `repo` (owner/name) exists."""
+        ...
+
+    def repo_access(self, repo: str) -> RepoAccessInfo:
+        """What the room may do with `repo`, read from `repos/{repo}`.
+
+        The connect scan's first question (connected-agents design
+        2026-09-21), and the reason `repo_exists` is not enough for it:
+        that one collapses every failure to False and can never say
+        "visible but read-only". A 404 or a 403 here is `visible=False`
+        rather than an exception -- "there is nothing here" and "you may
+        not look at this" are the same answer for a room that can act on
+        neither, and a person typing a repository name into a form gets a
+        report, not a stack trace. Anything else still raises, because a
+        bad token says nothing about this repository.
+
+        `can_write` reads `.permissions.push`, and is False when the
+        response carries no `permissions` object at all. A response that
+        does not say the room may write is not a response that says it
+        may: the scan's own message names what write access is for, so an
+        owner reading it knows what to grant, whereas assuming write here
+        would surface instead as a failed pull request halfway through a
+        pipeline.
+        """
+        ...
+
+    def read_file(self, repo: str, path: str) -> str | None:
+        """The text of one file in `repo`'s default branch, or None.
+
+        None for every "there is nothing here to read": no such file, a
+        path the room may not read, anything that is not a plain file (a
+        directory, a symlink, a submodule -- each answers with content of
+        its own that is not the file anyone asked for), a file over
+        `MAX_READ_FILE_BYTES`, or one GitHub declines to inline. The
+        connect scan treats an absent Dockerfile as its own finding, so a
+        None that arrived for a different reason still lands somewhere a
+        person can act on.
+
+        The room's first file read that does not clone. Everything else
+        here reads a working tree; the scan runs before an agent row
+        exists, against a repository the room may turn out not to be
+        allowed to touch, so cloning to read two small files would be both
+        slower and more than it was given permission to do.
+        """
+        ...
+
+    def list_root(self, repo: str) -> list[str]:
+        """The names in `repo`'s root directory, files and directories
+        alike, or an empty list when there is nothing there (an empty
+        repository answers the contents endpoint with a 404).
+
+        One read answers several of the scan's questions -- a Dockerfile, a
+        committed `.env`, a `bundle/` directory, a `gojira.yaml` -- which is
+        why it is a listing rather than four existence checks.
+        """
+        ...
+
+    def branch_protected(self, repo: str, branch: str) -> bool:
+        """Whether `branch` is protected in `repo`.
+
+        Not a permission check: it is how the scan warns, early, that the
+        room's own wiring pull request will wait for a person rather than
+        being merged by the room. A branch that is not there is not
+        protected.
+        """
         ...
 
     def create_repo_from_dir(self, repo: str, src: Path) -> None:
@@ -397,6 +496,22 @@ def _gh_returned_404(exc: ClientError) -> bool:
     return "(HTTP 404)" in exc.stderr
 
 
+def _gh_returned_403(exc: ClientError) -> bool:
+    """Whether a `ClientError` from a `gh api` call reflects a 403.
+
+    Same stable-marker matching as `_gh_returned_404` above, and read by
+    the same callers for one reason: GitHub answers "you may not look at
+    this" with a 403 about as readily as it answers "there is nothing
+    here" with a 404, and a reader that classified only one of them would
+    turn the other into a 500 in front of somebody filling in a form.
+
+    Deliberately NOT used by the write paths (`rename_repo`,
+    `archive_repo`): a 403 there is `destroy._is_already_archived`'s to
+    read, and it means something quite different.
+    """
+    return "(HTTP 403)" in exc.stderr
+
+
 # The merge methods `merge_pr` will ask for, in order. A repository may
 # allow only one of the three, and refuses the others by name -- the
 # operator ruling is that the room merges by default, so it asks the ways
@@ -587,6 +702,91 @@ class GhCLI:
                 return False
             raise
         return True
+
+    def repo_access(self, repo: str) -> RepoAccessInfo:
+        try:
+            out = self._runner.run([self._gh, "api", f"repos/{repo}"], env=self._env())
+        except ClientError as exc:
+            if _gh_returned_404(exc) or _gh_returned_403(exc):
+                return RepoAccessInfo(visible=False, can_write=False, default_branch="")
+            raise
+        data = json.loads(out) if out else {}
+        # `or {}` as well as the default: GitHub can answer with a null
+        # `permissions` as easily as with no key at all, and both mean the
+        # same thing here (see the Protocol's docstring for why that reads
+        # as no write).
+        permissions = data.get("permissions") or {}
+        return RepoAccessInfo(
+            visible=True,
+            can_write=bool(permissions.get("push", False)),
+            default_branch=data.get("default_branch") or "",
+            full_name=data.get("full_name") or "",
+        )
+
+    def read_file(self, repo: str, path: str) -> str | None:
+        try:
+            out = self._runner.run(
+                [self._gh, "api", f"repos/{repo}/contents/{path}"], env=self._env()
+            )
+        except ClientError as exc:
+            if _gh_returned_404(exc) or _gh_returned_403(exc):
+                return None
+            raise
+        payload = json.loads(out) if out else None
+        # A directory comes back as a JSON array. The caller asked for a
+        # file, so this is "nothing to read", not an error.
+        if not isinstance(payload, dict):
+            return None
+        # A symlink and a submodule each answer with content of their own
+        # (a target path, a commit sha) that is not the file anyone asked
+        # for, so only a plain file reads as one.
+        if payload.get("type") != "file":
+            return None
+        if payload.get("size", 0) > MAX_READ_FILE_BYTES:
+            return None
+        # GitHub answers a large file with an empty body and encoding
+        # "none" rather than refusing, so the encoding is checked before
+        # the content is trusted to be base64 at all.
+        if payload.get("encoding") != "base64":
+            return None
+        raw = base64.b64decode(payload.get("content") or "")
+        if len(raw) > MAX_READ_FILE_BYTES:
+            return None
+        # Never raises on a file that is not text: the caller is matching
+        # lines in a Dockerfile, and one undecodable byte is not a reason
+        # to fail a scan.
+        return raw.decode("utf-8", errors="replace")
+
+    def list_root(self, repo: str) -> list[str]:
+        try:
+            out = self._runner.run(
+                [self._gh, "api", f"repos/{repo}/contents/", "--jq", ".[].name"],
+                env=self._env(),
+            )
+        except ClientError as exc:
+            if _gh_returned_404(exc) or _gh_returned_403(exc):
+                return []
+            raise
+        return [line for line in out.splitlines() if line]
+
+    def branch_protected(self, repo: str, branch: str) -> bool:
+        try:
+            out = self._runner.run(
+                [
+                    self._gh, "api",
+                    # A branch name is ONE path segment and may hold
+                    # slashes of its own (`release/main`), which unencoded
+                    # would ask GitHub about a different branch entirely.
+                    f"repos/{repo}/branches/{quote(branch, safe='')}",
+                    "--jq", ".protected",
+                ],
+                env=self._env(),
+            )
+        except ClientError as exc:
+            if _gh_returned_404(exc) or _gh_returned_403(exc):
+                return False
+            raise
+        return out.strip() == "true"
 
     def merge_pr(self, repo: str, pr_url: str) -> bool:
         for method in MERGE_METHODS:
