@@ -622,10 +622,10 @@
     </table>
 
     <div class="secrets__footer">
-      <p class="secrets__status">
-        {#if saveError}
-          <span class="secrets__fail">{saveError}</span>
-        {:else if landingText}
+      {#if saveError}
+        <p class="secrets__status secrets__fail" role="alert">{saveError}</p>
+      {:else if landingText}
+        <p class="secrets__status">
           <span role="status">{landingText}</span>
           {#if landing?.pullRequest}
             <a
@@ -637,8 +637,8 @@
               Open the pull request
             </a>
           {/if}
-        {/if}
-      </p>
+        </p>
+      {/if}
       <div class="secrets__actions">
         {#if hasPending}
           <button
