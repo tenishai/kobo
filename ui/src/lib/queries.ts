@@ -545,16 +545,18 @@ export function createAgentMutation(queryClient: QueryClient) {
  * search from two people is the same answer, and the room's own listing
  * behind it is cached for five minutes anyway.
  *
- * Disabled below one character, which is the field's rule rather than an
- * optimisation: nothing is offered on focus or on a click, so an empty
- * box asks the room nothing.
+ * The empty query is a real one now: it answers with the repositories
+ * pushed to most recently, which is what the field shows the moment
+ * somebody clicks into it. `enabled` is the form's own open/shut state
+ * rather than a rule about the text, so a modal nobody has opened still
+ * asks the room nothing.
  */
-export function connectReposQuery(q: string) {
+export function connectReposQuery(q: string, enabled = true) {
   const trimmed = q.trim();
   return queryOptions({
     queryKey: ["connect", "repos", trimmed] as const,
     queryFn: () => searchConnectRepos(trimmed),
-    enabled: trimmed.length >= 1,
+    enabled,
   });
 }
 
