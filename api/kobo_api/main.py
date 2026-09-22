@@ -1167,7 +1167,7 @@ REPOS_UNREADABLE = "the room could not list its repositories right now, try agai
 
 
 def _scan_caller(request: Request) -> str:
-    """Who this scan counts against.
+    """Who this scan (or repository search) counts against.
 
     The verified IAP email when there is one. A room with no perimeter has
     no identity to count by, so it counts by the client's address instead:
