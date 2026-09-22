@@ -1852,6 +1852,10 @@ export type AgentSecrets = {
   /** The Kubernetes Secret the platform delivers these into, for the line
    * that says where they end up. Null when `platform` is false. */
   secret_name: string | null;
+  /** True when there IS a platform and the room could not ask it on
+   * anybody's behalf. An empty list would say the same wrong thing for a
+   * different reason, so the panel has its own line for this. */
+  unreadable: boolean;
 };
 
 export type AgentSecretsWrite = {
@@ -1859,6 +1863,14 @@ export type AgentSecretsWrite = {
   platform: boolean;
   secret_name: string | null;
   wiring: EnvWiring;
+  /** True when that save removed the last secret and the stored Secret is
+   * actually gone. */
+  emptied: boolean;
+  /** True when that save removed the last secret and the stored Secret is
+   * NOT gone: the agent's files still name it, and the room cannot merge
+   * its own pull request. Saving again after that request merges is what
+   * finishes the removal. */
+  pending_unwire: boolean;
   pull_request?: string;
 };
 

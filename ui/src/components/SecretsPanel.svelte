@@ -83,11 +83,26 @@
   // Shared by both halves, because both report the same three outcomes and
   // a person reading this panel cares about the answer, not about which
   // form produced it. Cleared when either form starts a new save.
-  let landing = $state<{ wiring: EnvWiring; pullRequest?: string } | null>(null);
+  let landing = $state<{
+    wiring: EnvWiring;
+    pullRequest?: string;
+    pendingUnwire?: boolean;
+    emptied?: boolean;
+  } | null>(null);
 
   const landingText = $derived.by(() => {
     if (landing === null) {
       return null;
+    }
+    if (landing.pendingUnwire) {
+      // The one outcome where the save is NOT the whole story: the
+      // agent's files still name the secret, so it has to stay until
+      // somebody merges. Saying "removed" here would be a lie somebody
+      // only finds out about when they look at the platform.
+      return "The secret stays until that pull request merges. Save again after it merges to finish removing it.";
+    }
+    if (landing.emptied) {
+      return "Removed. That was this agent's last secret, so the line naming it is gone too.";
     }
     if (landing.wiring === "pull_request") {
       return "Saved. The agent's files belong to its team, so the change is waiting in a pull request.";
@@ -181,7 +196,12 @@
       { set, remove },
       {
         onSuccess: (result) => {
-          landing = { wiring: result.wiring, pullRequest: result.pull_request };
+          landing = {
+            wiring: result.wiring,
+            pullRequest: result.pull_request,
+            pendingUnwire: result.pending_unwire,
+            emptied: result.emptied,
+          };
           done?.();
         },
         onError: (err: unknown) => {
@@ -324,6 +344,11 @@
       <p class="secrets-group__unavailable">
         This room has no secrets platform configured, so it cannot keep secrets for
         an agent. Environment variables still work.
+      </p>
+    {:else if secrets.data.unreadable}
+      <p class="secrets-group__unavailable">
+        The room has nobody to read this agent's secrets as, so it cannot show
+        them. An operator can open them in the secrets platform.
       </p>
     {:else}
       <p class="secrets-group__help">

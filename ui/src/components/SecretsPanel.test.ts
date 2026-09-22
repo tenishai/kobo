@@ -17,7 +17,7 @@ const AGENT = "clio";
 const VALUE = "not-a-real-key-value";
 
 type Routes = {
-  secrets?: unknown;
+  secrets?: Record<string, unknown>;
   env?: unknown;
   onSecretsPut?: (body: { set: Record<string, string>; remove: string[] }) => unknown;
   onEnvPut?: (body: { set: Record<string, string>; remove: string[] }) => unknown;
@@ -46,14 +46,14 @@ function stubRoutes(routes: Routes) {
         return json(handler ? handler(body) : { wiring: "committed", keys: [], env: {} });
       }
       if (url.includes("/secrets")) {
-        return json(
-          routes.secrets ?? {
-            keys: [],
-            updated_at: null,
-            platform: true,
-            secret_name: `${AGENT}-env`,
-          },
-        );
+        return json({
+          keys: [],
+          updated_at: null,
+          platform: true,
+          secret_name: `${AGENT}-env`,
+          unreadable: false,
+          ...(routes.secrets ?? {}),
+        });
       }
       return json(routes.env ?? { env: {} });
     }),
@@ -101,7 +101,7 @@ describe("SecretsPanel", () => {
 
   it("says so plainly when the room has no secrets platform, and keeps the environment list", async () => {
     stubRoutes({
-      secrets: { keys: [], updated_at: null, platform: false, secret_name: null },
+      secrets: { platform: false, secret_name: null },
       env: { env: { API_BASE: "https://example.test" } },
     });
     render();
@@ -442,5 +442,80 @@ describe("SecretsPanel", () => {
     });
 
     expect(screen.getByText(/the container sets this one/)).not.toBeNull();
+  });
+
+  it("says so when the room has nobody to read the secrets as", async () => {
+    // An empty list and "the room cannot ask" look the same to a person
+    // and mean opposite things.
+    stubRoutes({ secrets: { unreadable: true } });
+    render();
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/nobody to read this agent's secrets as/),
+      ).not.toBeNull();
+    });
+    expect(screen.queryByLabelText("Name")).toBeNull();
+    // The other half is unaffected.
+    expect(screen.getByRole("button", { name: "Save variables" })).not.toBeNull();
+  });
+
+  it("says the secret stays until the pull request merges", async () => {
+    // The one outcome where the save is not the whole story: the agent's
+    // files still name the secret, so it has to stay until somebody
+    // merges. "Removed" here would be a lie.
+    stubRoutes({
+      secrets: { keys: ["API_KEY"] },
+      onSecretsPut: () => ({
+        keys: [],
+        platform: true,
+        secret_name: `${AGENT}-env`,
+        wiring: "pull_request",
+        pull_request: "https://example.test/pull/9",
+        emptied: false,
+        pending_unwire: true,
+      }),
+    });
+    render();
+
+    await waitFor(() => {
+      expect(screen.getByText("API_KEY")).not.toBeNull();
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Remove API_KEY" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "The secret stays until that pull request merges. Save again after it merges to finish removing it.",
+        ),
+      ).not.toBeNull();
+    });
+    expect(
+      screen.getByRole("link", { name: "Open the pull request" }).getAttribute("href"),
+    ).toBe("https://example.test/pull/9");
+  });
+
+  it("says the last secret is gone when it really is", async () => {
+    stubRoutes({
+      secrets: { keys: ["API_KEY"] },
+      onSecretsPut: () => ({
+        keys: [],
+        platform: true,
+        secret_name: null,
+        wiring: "committed",
+        emptied: true,
+        pending_unwire: false,
+      }),
+    });
+    render();
+
+    await waitFor(() => {
+      expect(screen.getByText("API_KEY")).not.toBeNull();
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Remove API_KEY" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/That was this agent's last secret/)).not.toBeNull();
+    });
   });
 });

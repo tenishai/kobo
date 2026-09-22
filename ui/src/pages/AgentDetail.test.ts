@@ -49,6 +49,7 @@ const BASE_ROUTES = {
     updated_at: null,
     platform: true,
     secret_name: "warden-env",
+    unreadable: false,
   },
   "/api/agents/warden/env": { env: {} },
   "/api/agents/warden": READY_AGENT,
