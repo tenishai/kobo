@@ -74,6 +74,34 @@ describe("Sidebar", () => {
     expect(oncreate).toHaveBeenCalled();
   });
 
+  it("fires onopenconnect and onprefetch from the connect button", async () => {
+    const onopenconnect = vi.fn();
+    const onprefetch = vi.fn();
+    renderWithClient(Sidebar, {
+      active: "dashboard",
+      oncreate: () => {},
+      onopenconnect,
+      onprefetch,
+    });
+    const button = screen.getByRole("button", { name: "Connect your own agent" });
+    await fireEvent.mouseEnter(button);
+    expect(onprefetch).toHaveBeenCalled();
+    await fireEvent.click(button);
+    expect(onopenconnect).toHaveBeenCalled();
+  });
+
+  it("keeps the connect button a secondary sibling, never a second primary", () => {
+    const { container } = renderWithClient(Sidebar, {
+      active: "dashboard",
+      oncreate: () => {},
+      onprefetch: () => {},
+    });
+    // Same secondary class the quick-start action wears; the one filled
+    // accent button in the rail stays Create agent.
+    expect(container.querySelectorAll(".sidebar__guide").length).toBe(2);
+    expect(container.querySelectorAll(".sidebar__create").length).toBe(1);
+  });
+
   it("gives both nav links an unconditional aria-label so the icon rail keeps its accessible name", () => {
     renderWithClient(Sidebar, { active: "dashboard", oncreate: () => {}, onprefetch: () => {} });
     const agents = screen.getByRole("link", { name: "Agents" });

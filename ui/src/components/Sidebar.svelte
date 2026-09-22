@@ -6,10 +6,11 @@
   import { formatHash } from "../lib/router.svelte";
   import { agentsQuery, whoamiQuery } from "../lib/queries";
 
-  let { active, oncreate, onopenguide, onprefetch }: {
+  let { active, oncreate, onopenguide, onopenconnect, onprefetch }: {
     active: "dashboard" | "agent" | "getting-started" | "personas";
     oncreate: () => void;
     onopenguide: () => void;
+    onopenconnect: () => void;
     onprefetch: () => void;
   } = $props();
 
@@ -121,6 +122,23 @@
   >
     <span class="sidebar__guide-label">Quick-start team agent</span>
     <span class="sidebar__guide-glyph" aria-hidden="true">◎</span>
+  </button>
+
+  <!-- Connected-agents design 2026-09-21: a third sibling in the same
+       secondary style, for a repository a team already owns. Shares the
+       warm-prefetch handlers for the same reason the guide button does
+       (groups is one of the catalogs its modal reads). -->
+  <button
+    type="button"
+    class="sidebar__guide"
+    onmouseenter={onprefetch}
+    onfocus={onprefetch}
+    onclick={onopenconnect}
+    aria-label="Connect your own agent"
+    title="Connect your own agent"
+  >
+    <span class="sidebar__guide-label">Connect your own agent</span>
+    <span class="sidebar__guide-glyph" aria-hidden="true">◈</span>
   </button>
 
   {#if whoami.data?.email}

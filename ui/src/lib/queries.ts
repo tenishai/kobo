@@ -105,6 +105,7 @@ import {
   type ChatMessage,
   type ColleagueFeed,
   type ColleagueFeedEntry,
+  type ConnectAgentBody,
   type Grant,
   type GroupOption,
   type GroupRequest,
@@ -122,6 +123,9 @@ import {
   type PersonaForm,
   type RequestableAgent,
   type RequestableResult,
+  type ScanFinding,
+  type ScanReport,
+  type ScanRepoBody,
   type TeamOptions,
   type TeamPair,
   type Thread,
@@ -137,6 +141,7 @@ import {
   archivePersona,
   archivedPersonas,
   chatWithAgent,
+  connectAgent,
   connectSlack,
   createAgent,
   createInvite,
@@ -188,6 +193,7 @@ import {
   saveKnowledgeFile,
   saveLocalSkill,
   saveSlackChannels,
+  scanRepo,
   searchPeople,
   searchPersonas,
   searchSkills,
@@ -526,6 +532,32 @@ export function createPersonaMutation(queryClient: QueryClient) {
 export function createAgentMutation(queryClient: QueryClient) {
   return {
     mutationFn: createAgent,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+  };
+}
+
+/**
+ * Reads a repository the room has been asked to connect (connected-agents
+ * design 2026-09-21). A mutation rather than a query even though it changes
+ * nothing: it runs when a person presses Scan, never on mount, and its
+ * answer is about the repository at that moment -- a cached report is a
+ * claim about a repository some minutes ago, which is exactly why the
+ * connect route runs its own scan again rather than trusting this one.
+ * Nothing to invalidate, so no QueryClient.
+ */
+export function scanRepoMutation() {
+  return {
+    mutationFn: scanRepo,
+  };
+}
+
+/** Connects a team's own repository as an agent; on success, invalidates
+ * the agent list so the new row appears, same as `createAgentMutation`. */
+export function connectAgentMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: (body: ConnectAgentBody) => connectAgent(body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents"] });
     },
@@ -1346,6 +1378,7 @@ export type {
   ChatMessage,
   ColleagueFeed,
   ColleagueFeedEntry,
+  ConnectAgentBody,
   Grant,
   GroupOption,
   GroupRequest,
@@ -1363,6 +1396,9 @@ export type {
   PersonaForm,
   RequestableAgent,
   RequestableResult,
+  ScanFinding,
+  ScanRepoBody,
+  ScanReport,
   TeamOptions,
   TeamPair,
   Thread,

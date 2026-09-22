@@ -43,6 +43,21 @@ export type AgentSummary = {
   kind: string;
 };
 
+/** The two kinds of agent (`kobo_api/kinds.py`, connected-agents design
+ * 2026-09-21), mirrored here verbatim: the server is authoritative for what
+ * these strings mean, the UI only has to agree with it. Compared against
+ * these constants, never truth-tested, so a later kind reads as `composed`
+ * until it asks for its own treatment. */
+export const KIND_COMPOSED = "composed";
+export const KIND_CONNECTED = "connected";
+
+/** How a connected agent runs, same mirroring as the kinds above.
+ * `RUN_MODE_HEADLESS` is only accepted when the room has a class for it;
+ * the scan says so (finding code `headless_unavailable`) rather than the
+ * client guessing. */
+export const RUN_MODE_HTTP = "http";
+export const RUN_MODE_HEADLESS = "headless";
+
 export type StepView = {
   name: string;
   label: string;
@@ -469,6 +484,78 @@ export async function createAgent(body: {
   voice?: string;
 }): Promise<{ name: string; status: string }> {
   const res = await fetch("/api/agents", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parse<{ name: string; status: string }>(res);
+}
+
+/** One thing the scan found, as `kobo_api/connect_scan.py` serves it: a
+ * `code` for this client to key on (the only one it does key on today is
+ * `headless_unavailable`, which disables the second run-mode option) and a
+ * `message` a person reads. The message is the server's own words, shown
+ * verbatim -- the same sentence arrives in a scan report and in the connect
+ * route's own refusal, so it is never reworded here. */
+export type ScanFinding = { code: string; message: string };
+
+/** `POST /api/connect/scan`'s response. `blockers` empty means Connect may
+ * go ahead; `warnings` are true things about the repository its owner may
+ * still choose. `adds` is everything the room will ever write into the
+ * repository, and `adds_preamble` the sentence about the one thing the room
+ * cannot check (who owns it). `repo` is GitHub's own spelling once it has
+ * answered, so a repository named in one case cannot become two rows. */
+export type ScanReport = {
+  blockers: ScanFinding[];
+  warnings: ScanFinding[];
+  adds: string[];
+  adds_preamble: string;
+  repo: string;
+};
+
+/** The three fields the scan reads: the repository, the name it checks
+ * against the room, and how the agent runs. `group_name` rides along
+ * because the scan reads private repositories with the room's own
+ * credentials and is gated by the same group check the connect is. */
+export type ScanRepoBody = {
+  repo: string;
+  name: string;
+  run_mode: string;
+  group_name?: string | null;
+};
+
+/** The connect body: the scan's fields plus the names of Kubernetes
+ * Secrets the owner will create in the agent's namespace (names only, at
+ * most 8 -- the room holds no connected agent's secrets), plus the
+ * caller's word that they may connect this repository. */
+export type ConnectAgentBody = ScanRepoBody & {
+  secret_names: string[];
+  confirm_repo_owner: boolean;
+};
+
+export async function scanRepo(body: ScanRepoBody): Promise<ScanReport> {
+  const res = await fetch("/api/connect/scan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parse<ScanReport>(res);
+}
+
+/**
+ * `POST /api/agents/connect`: takes on a repository a team already owns.
+ * 201 `{name, status}` on success. The refusals a caller has to tell apart
+ * all arrive as an `ApiError` through `parse`: 422 carries `blockers`
+ * (a `ScanFinding[]`, on `ApiError.body`) when the server's own re-scan
+ * found something the browser's report did not, 409 means the name was
+ * taken between the scan and now, 429 means too many scans, 502 means
+ * GitHub could not be read. Every one of them carries the server's `error`
+ * sentence, which is what the form shows.
+ */
+export async function connectAgent(
+  body: ConnectAgentBody,
+): Promise<{ name: string; status: string }> {
+  const res = await fetch("/api/agents/connect", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
