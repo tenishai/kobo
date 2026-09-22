@@ -9,8 +9,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import ConnectModal from "./ConnectModal.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 
-const HTTP_CHOICE = "It serves HTTP on port 8080 and answers /healthz";
-const HEADLESS_CHOICE = "It has no HTTP port (a chat bot or a worker)";
+const HTTP_CHOICE = "It serves web traffic (port 8080, answers /healthz)";
+const HEADLESS_CHOICE = "It has no web address (a chat bot or a worker)";
 const OWNER_CHECKBOX = "I own this repository or have its owner's agreement";
 
 const CLEAN_REPORT = {
@@ -34,9 +34,13 @@ function stubConnectRoutes(extra: Record<string, unknown> = {}): void {
 }
 
 /** Fills in a repository and a name, which is everything Scan needs when no
- * groups are configured. */
+ * groups are configured. Waits for the group list to have actually arrived
+ * first (the form will not scan before it has, so that a room that requires
+ * a group cannot be scanned without one) -- with no groups configured, the
+ * "none are configured" line is that list arriving. */
 async function fillTheForm(): Promise<void> {
-  await fireEvent.input(await screen.findByLabelText("Repository"), {
+  await screen.findByText("No groups are configured yet.");
+  await fireEvent.input(screen.getByLabelText("Repository"), {
     target: { value: "acme/release-bot" },
   });
   await fireEvent.input(screen.getByLabelText("Name"), {
@@ -75,6 +79,39 @@ describe("ConnectModal — the form", () => {
     await screen.findByLabelText("Repository");
     expect(scanButton().disabled).toBe(true);
     expect(connectButton().disabled).toBe(true);
+  });
+
+  it("keeps Scan shut until a group is picked in a room that has them", async () => {
+    stubConnectRoutes({
+      "/api/catalog/groups": { groups: [{ name: "platform", kind: "engineering" }] },
+    });
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    const groupSelect = (await screen.findByLabelText("Group")) as HTMLSelectElement;
+    await fireEvent.input(screen.getByLabelText("Repository"), {
+      target: { value: "acme/release-bot" },
+    });
+    await fireEvent.input(screen.getByLabelText("Name"), {
+      target: { value: "release-bot" },
+    });
+    expect(scanButton().disabled).toBe(true);
+
+    await fireEvent.change(groupSelect, { target: { value: "platform" } });
+    expect(scanButton().disabled).toBe(false);
+  });
+
+  it("says what the room says about too many secret names", async () => {
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await fillTheForm();
+    await fireEvent.input(screen.getByLabelText("Secret names (optional)"), {
+      target: { value: "a, b, c, d, e, f, g, h, i" },
+    });
+
+    expect(
+      screen.getByText("this room takes at most 8 secret names"),
+    ).not.toBeNull();
+    expect(scanButton().disabled).toBe(true);
   });
 
   it("opens Scan once the repository and the name are filled in, and leaves Connect shut", async () => {
@@ -212,9 +249,41 @@ describe("ConnectModal — the scan report", () => {
         "agents with no HTTP port are not available in this room yet",
       ).length,
     ).toBeGreaterThan(0);
+
+    const headless = screen.getByRole("radio", {
+      name: HEADLESS_CHOICE,
+    }) as HTMLInputElement;
+    const http = screen.getByRole("radio", { name: HTTP_CHOICE }) as HTMLInputElement;
+    expect(http.disabled).toBe(false);
+    // The answer moves off the option that was just switched off, so the
+    // form is still one a person can finish.
+    expect(http.checked).toBe(true);
+    expect(headless.checked).toBe(false);
+    // And the reason is tied to the control, not only printed under it.
+    expect(headless.getAttribute("aria-describedby")).toBe("connect-headless-reason");
+    expect(document.getElementById("connect-headless-reason")?.textContent).toContain(
+      "agents with no HTTP port are not available in this room yet",
+    );
+  });
+
+  it("does not stale a clean report over secret names, which the scan never asked about", async () => {
+    stubConnectRoutes({ "/api/connect/scan": CLEAN_REPORT });
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await fillTheForm();
+    await fireEvent.click(scanButton());
+    await screen.findByText("Nothing is in the way.");
+    await fireEvent.click(screen.getByRole("checkbox", { name: OWNER_CHECKBOX }));
+    expect(connectButton().disabled).toBe(false);
+
+    await fireEvent.input(screen.getByLabelText("Secret names (optional)"), {
+      target: { value: "release-token" },
+    });
+
+    expect(connectButton().disabled).toBe(false);
     expect(
-      (screen.getByRole("radio", { name: HTTP_CHOICE }) as HTMLInputElement).disabled,
-    ).toBe(false);
+      screen.queryByText("Something changed since this scan. Scan again before connecting."),
+    ).toBeNull();
   });
 });
 
@@ -316,6 +385,15 @@ describe("ConnectModal — connecting", () => {
       ),
     ).not.toBeNull();
     expect(connectButton().disabled).toBe(true);
+
+    // The refusal answered for the repository that was sent, so it stops
+    // being shown once a different one is named.
+    await fireEvent.input(screen.getByLabelText("Repository"), {
+      target: { value: "acme/other-bot" },
+    });
+    expect(
+      screen.queryByText("acme/release-bot is already connected in this room as bot."),
+    ).toBeNull();
   });
 
   it("puts a taken name on the name field", async () => {
@@ -356,6 +434,9 @@ describe("ConnectModal — connecting", () => {
     expect(
       await screen.findByText("That name is already taken in this room."),
     ).not.toBeNull();
+    // Connect stays shut on the name that was refused: pressing it again
+    // would only earn the same answer.
+    expect(connectButton().disabled).toBe(true);
   });
 
   it("shows the room's own sentence when GitHub could not be read", async () => {

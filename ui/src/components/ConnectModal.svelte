@@ -96,7 +96,14 @@
   const nonEngineeringGroupOptions = $derived(
     (groups.data ?? []).filter((g) => g.kind === "non-engineering"),
   );
-  const groupChosen = $derived(!groupOptionsAvailable || groupValue !== "");
+  // Whether the group question has been answered, which a room with no
+  // groups configured answers by having none. Gated on the list having
+  // actually arrived: while it is still loading there are no options to
+  // show, and without this the form would read that as "no groups in this
+  // room" and let a scan go without the group a gated room requires.
+  const groupChosen = $derived(
+    groups.isSuccess && (!groupOptionsAvailable || groupValue !== ""),
+  );
 
   const nameError = $derived(name.length > 0 ? validateName(name) : null);
   const nameValid = $derived(name.length > 0 && nameError === null);
@@ -118,16 +125,18 @@
   );
   const secretNamesError = $derived(
     secretNames.length > MAX_SECRET_NAMES
-      ? `Name at most ${MAX_SECRET_NAMES} secrets.`
+      ? `this room takes at most ${MAX_SECRET_NAMES} secret names`
       : null,
   );
 
-  /** Every answer the report depends on, as one comparable value. The
-   * ownership checkbox is deliberately not in here: it is the caller's word
-   * about themselves, not a question about the repository, and ticking it
-   * cannot make a scan stale. */
+  /** Every answer the SCAN depends on, as one comparable value: exactly the
+   * fields the scan request carries, and nothing else. The secret names and
+   * the ownership checkbox are deliberately not in here. Neither is part of
+   * the question the scan answers, so editing one cannot make a report
+   * untrue, and staling a clean report over them would spend a scan (which
+   * this room counts) on an answer that would come back identical. */
   const fields = $derived(
-    JSON.stringify([repoValue, name, groupValue, runMode, secretNames]),
+    JSON.stringify([repoValue, name, groupValue, runMode]),
   );
   const scanIsStale = $derived(report !== null && scannedFields !== fields);
   const scanIsClean = $derived(
@@ -135,9 +144,13 @@
   );
 
   /** The blockers to show: the server's own, when a Connect was refused,
-   * otherwise the scan's. */
+   * otherwise the scan's. A refusal is about the answers that were sent, so
+   * it stops being shown the moment those answers change, same as the
+   * report it arrived over. */
   const blockers = $derived(
-    connectBlockers.length > 0 ? connectBlockers : (report?.blockers ?? []),
+    connectBlockers.length > 0 && !scanIsStale
+      ? connectBlockers
+      : (report?.blockers ?? []),
   );
 
   const canScan = $derived(
@@ -146,7 +159,8 @@
   const canConnect = $derived(
     scanIsClean &&
       confirmOwner &&
-      connectBlockers.length === 0 &&
+      blockers.length === 0 &&
+      nameTaken !== name &&
       secretNamesError === null &&
       !connect.isPending,
   );
@@ -202,6 +216,11 @@
         );
         if (headless) {
           headlessMessage = headless.message;
+          // The option that was just disabled cannot be left checked: a
+          // disabled control holding the answer is a form nobody can
+          // finish. Moving back to the one mode this room has marks the
+          // report stale, which is right, since it answered for the other.
+          runMode = RUN_MODE_HTTP;
         }
       },
       onError: (error: unknown) => {
@@ -355,24 +374,30 @@
           checked={runMode === RUN_MODE_HTTP}
           onchange={() => (runMode = RUN_MODE_HTTP)}
         />
-        It serves HTTP on port 8080 and answers /healthz
+        It serves web traffic (port 8080, answers /healthz)
       </label>
       <label
         class="connect-form__choice"
         class:connect-form__choice--disabled={headlessMessage !== null}
       >
+        <!-- The reason this option is off is tied to the control itself,
+             not just printed under it: a screen reader meeting a disabled
+             radio should hear why without hunting for the line below. -->
         <input
           type="radio"
           name="connect-run-mode"
           value={RUN_MODE_HEADLESS}
           checked={runMode === RUN_MODE_HEADLESS}
           disabled={headlessMessage !== null}
+          aria-describedby={headlessMessage ? "connect-headless-reason" : undefined}
           onchange={() => (runMode = RUN_MODE_HEADLESS)}
         />
-        It has no HTTP port (a chat bot or a worker)
+        It has no web address (a chat bot or a worker)
       </label>
       {#if headlessMessage}
-        <p class="connect-form__help">{headlessMessage}</p>
+        <p id="connect-headless-reason" class="connect-form__help">
+          {headlessMessage}
+        </p>
       {/if}
     </fieldset>
 

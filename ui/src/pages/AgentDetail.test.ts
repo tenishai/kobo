@@ -786,6 +786,50 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
     expect(screen.queryByRole("button", { name: /Edit details/ })).toBeNull();
   });
 
+  it("keeps purpose chips off the page, since nothing here can edit them", async () => {
+    // A converted row (Task 6) still carries whatever tags it had.
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": { ...CONNECTED_AGENT, purpose_tags: ["ops", "oncall"] },
+    });
+    renderWithClient(AgentDetail);
+
+    await screen.findByRole("heading", { name: "warden" });
+    expect(screen.queryByText("ops")).toBeNull();
+    expect(screen.queryByText("oncall")).toBeNull();
+  });
+
+  it("shows the group beside the owner, the one ownership fact it still has", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": {
+        ...CONNECTED_AGENT,
+        created_by: "owner@example.com",
+        group_name: "platform",
+      },
+    });
+    renderWithClient(AgentDetail);
+
+    const header = (await screen.findByRole("heading", { name: "warden" }))
+      .closest(".agent-detail__header") as HTMLElement;
+    expect(within(header).getByText("Made by owner@example.com")).not.toBeNull();
+    expect(within(header).getByText("platform")).not.toBeNull();
+  });
+
+  it("hands the Danger zone the kind, so it does not promise to archive the team's repository", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": { ...CONNECTED_AGENT, destroy_visible: true },
+    });
+    renderWithClient(AgentDetail);
+
+    expect(
+      await screen.findByText(
+        "This destroys the running agent and its platform identity. The repository belongs to your team and is left as it is. Memories die with the namespace.",
+      ),
+    ).not.toBeNull();
+  });
+
   it("still keeps the Access tab when the caller may administer it", async () => {
     stubFetch({
       ...BASE_ROUTES,

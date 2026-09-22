@@ -346,7 +346,12 @@
             {/if}
           </p>
         {/if}
-        {#if data.purpose_tags.length > 0}
+        <!-- Purpose chips are drafted from the persona at create time and
+             edited through Edit details, neither of which a connected agent
+             has. A converted agent (Task 6) keeps whatever tags its row
+             already carried, so this guard is what keeps them off a page
+             that offers no way to change them. -->
+        {#if data.purpose_tags.length > 0 && !connected}
           <p class="agent-detail__tags">
             {#each data.purpose_tags as tag (tag)}
               <span class="agent-detail__chip">{tag}</span>
@@ -385,8 +390,20 @@
             </a>
           </p>
         {/if}
-        {#if data.created_by}
-          <p class="agent-detail__owner">Made by {data.created_by}</p>
+        <!-- Who owns this agent, in one line: the person who made it and
+             the group it belongs to. The group used to be visible only
+             inside the Access tab, which a connected agent's owner may not
+             have at all, and it is the same ownership fact for both kinds,
+             so it is shown for both rather than only where it was missed. -->
+        {#if data.created_by || data.group_name}
+          <p class="agent-detail__owner">
+            {#if data.created_by}
+              <span>Made by {data.created_by}</span>
+            {/if}
+            {#if data.group_name}
+              <span class="agent-detail__chip">{data.group_name}</span>
+            {/if}
+          </p>
         {/if}
       </div>
     </header>
@@ -633,7 +650,12 @@
     {/if}
 
     {#if data.destroy_visible}
-      <DangerZone agentName={data.name} status={data.status} error={data.error} />
+      <DangerZone
+        agentName={data.name}
+        status={data.status}
+        error={data.error}
+        kind={data.kind}
+      />
     {/if}
 
   {/if}
@@ -760,6 +782,10 @@
   }
 
   .agent-detail__owner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2xs);
     margin: 0;
     color: var(--muted);
     font-size: 0.8rem;
