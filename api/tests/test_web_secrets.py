@@ -48,7 +48,15 @@ from kobo_api.clients import Clients
 from kobo_api.config import Config
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.kinds import KIND_COMPOSED, KIND_CONNECTED
-from kobo_api.main import NO_SECRETS_PLATFORM, create_app
+from kobo_api.main import (
+    NO_SECRETS_PLATFORM,
+    NOT_DEPLOYED_YET,
+    RESTART_FAILED,
+    RESTART_LIMIT,
+    TOO_MANY_RESTARTS,
+    create_app,
+)
+from kobo_api.mcp import rate_limit
 from kobo_api.models import Agent, AgentStatus, Base
 from tests.fakes import (
     FakeAgent,
@@ -1731,3 +1739,125 @@ def test_a_room_with_no_secrets_platform_makes_no_claim_about_the_cluster(
     assert body["sync"] == {"state": "unwired", "message": SYNC_NOT_DELIVERED}
     assert body["managed"] == []
     assert body["wired"] is None
+
+
+# --- Restarting the agent ------------------------------------------------------
+#
+# The other half of the same job: a secret reaches a running agent at its
+# next boot, and this is the button that makes the next boot now.
+
+
+@pytest.fixture(autouse=True)
+def _clear_restart_window():
+    rate_limit.reset()
+    yield
+    rate_limit.reset()
+
+
+def test_a_restart_rolls_the_agents_own_deployment(
+    session_factory, config, fake_storage, _key
+):
+    kubectl = FakeKubectl()
+    client, _ = _client(session_factory, config, fake_storage, _key, kubectl=kubectl)
+
+    resp = client.post(f"/api/agents/{AGENT}/restart", headers=_as(_key))
+
+    assert resp.status_code == 200
+    assert resp.json() == {"restarted": True, "deployment": AGENT}
+    # Namespace and Deployment are both the agent's name, the same pair
+    # the tooling fast lane already passes.
+    assert kubectl.restarts == [(AGENT, AGENT)]
+
+
+def test_a_connected_agent_restarts_the_same_way(
+    session_factory, config, fake_storage, _key
+):
+    # Nothing here touches a repository, so the rule that keeps the room
+    # off a team's branches has nothing to say about it.
+    kubectl = FakeKubectl()
+    client, _ = _client(
+        session_factory,
+        config,
+        fake_storage,
+        _key,
+        kind=KIND_CONNECTED,
+        kubectl=kubectl,
+    )
+
+    assert client.post(f"/api/agents/{AGENT}/restart", headers=_as(_key)).status_code == 200
+    assert kubectl.restarts == [(AGENT, AGENT)]
+
+
+def test_an_operator_may_restart_somebody_elses_agent(
+    session_factory, config, fake_storage, _key
+):
+    operator = "ops@example.com"
+    operator_config = config.model_copy(update={"operators": [operator]})
+    kubectl = FakeKubectl()
+    client, _ = _client(
+        session_factory, operator_config, fake_storage, _key, kubectl=kubectl
+    )
+
+    resp = client.post(f"/api/agents/{AGENT}/restart", headers=_as(_key, operator))
+
+    assert resp.status_code == 200
+    assert kubectl.restarts == [(AGENT, AGENT)]
+
+
+def test_a_stranger_cannot_restart_an_agent(session_factory, config, fake_storage, _key):
+    kubectl = FakeKubectl()
+    client, _ = _client(session_factory, config, fake_storage, _key, kubectl=kubectl)
+
+    resp = client.post(f"/api/agents/{AGENT}/restart", headers=_as(_key, STRANGER))
+
+    assert resp.status_code in (403, 404)
+    assert kubectl.restarts == []
+
+
+def test_an_agent_that_is_not_running_yet_is_refused_in_plain_words(
+    session_factory, config, fake_storage, _key
+):
+    kubectl = FakeKubectl()
+    client, _ = _client(
+        session_factory,
+        config,
+        fake_storage,
+        _key,
+        status=AgentStatus.PROVISIONING,
+        kubectl=kubectl,
+    )
+
+    resp = client.post(f"/api/agents/{AGENT}/restart", headers=_as(_key))
+
+    assert resp.status_code == 409
+    assert resp.json()["error"] == NOT_DEPLOYED_YET
+    assert kubectl.restarts == []
+
+
+def test_a_cluster_that_refuses_says_the_house_sentence_and_nothing_of_its_own(
+    session_factory, config, fake_storage, _key
+):
+    kubectl = FakeKubectl(restart_error=f'deployments.apps "{AGENT}" not found')
+    client, _ = _client(session_factory, config, fake_storage, _key, kubectl=kubectl)
+
+    resp = client.post(f"/api/agents/{AGENT}/restart", headers=_as(_key))
+
+    assert resp.status_code == 502
+    assert resp.json()["error"] == RESTART_FAILED
+    assert "deployments.apps" not in resp.text
+
+
+def test_a_caller_cannot_hold_the_restart_button_down(
+    session_factory, config, fake_storage, _key
+):
+    kubectl = FakeKubectl()
+    client, _ = _client(session_factory, config, fake_storage, _key, kubectl=kubectl)
+
+    for _ in range(RESTART_LIMIT):
+        assert client.post(f"/api/agents/{AGENT}/restart", headers=_as(_key)).status_code == 200
+
+    refused = client.post(f"/api/agents/{AGENT}/restart", headers=_as(_key))
+
+    assert refused.status_code == 429
+    assert refused.json()["error"] == TOO_MANY_RESTARTS
+    assert len(kubectl.restarts) == RESTART_LIMIT

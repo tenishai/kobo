@@ -1273,6 +1273,21 @@ SCAN_BUCKET = "connect-scan"
 REPO_SEARCH_LIMIT = 60
 REPO_SEARCH_BUCKET = "connect-repos"
 
+# How many restarts one caller may ask for in `rate_limit.WINDOW_S`. A
+# restart is the one button here that costs the agent something -- its
+# pods go down and come back -- and nobody legitimately presses it twice
+# in the same breath, let alone ten times. Its own bucket, so a person who
+# has been restarting an agent can still search and scan.
+RESTART_LIMIT = 10
+RESTART_BUCKET = "agent-restart"
+
+# What the room says about a restart. The 409 is about the agent rather
+# than the caller: there is no Deployment to roll until the pipeline has
+# finished making one.
+NOT_DEPLOYED_YET = "this agent is not running yet, so there is nothing to restart"
+RESTART_FAILED = "couldn't ask the cluster to restart this agent. Try again."
+TOO_MANY_RESTARTS = "that is a lot of restarting. Wait a minute"
+
 # What a scan or a connect answers when GitHub itself cannot be read. A
 # report saying "nothing wrong" would be a lie, and the raw client error
 # is never shown to a caller (`generate_avatar`'s precedent, same shape).
@@ -7407,6 +7422,62 @@ def create_app(
         if result.pull_request is not None:
             body["pull_request"] = result.pull_request
         return JSONResponse(body)
+
+    @app.post("/api/agents/{name}/restart")
+    def restart_agent(
+        name: str,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Roll this agent's pods now (design 2026-09-23).
+
+        A secret reaches a running agent at its next boot and not before,
+        which used to leave an owner with a stored credential, a panel
+        saying it was saved, and no way to make either matter. This is the
+        nudge, and it is the SAME primitive the tooling fast lane already
+        fires for the same reason (`_request_tool_restart`): a rollout
+        restart of the agent's own Deployment in its own namespace, both
+        named after the agent.
+
+        Composed and connected alike. Nothing here touches a repository,
+        so the one rule that separates those two kinds -- the room never
+        pushes to a team's branches -- has nothing to say about it.
+
+        Counted per caller. It is the one control on this panel that costs
+        the agent something: its pods go down and come back, and a person
+        holding a button down should not be able to keep an agent
+        restarting.
+        """
+        agent = _ready_agent_or_error(
+            session, request, name, not_ready_message=NOT_DEPLOYED_YET
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+
+        caller = getattr(request.state, "iap_email", None) or agent.created_by or ""
+        if not rate_limit.check(caller, limit=RESTART_LIMIT, bucket=RESTART_BUCKET):
+            return JSONResponse({"error": TOO_MANY_RESTARTS}, status_code=429)
+
+        try:
+            app.state.clients.kubectl.restart_deploy(agent.name, agent.name)
+        except ClientError as exc:
+            # The exception's CLASS, never its text: kubectl's own failure
+            # message is built from the command's output, and this panel's
+            # whole discipline is that nothing from the cluster side is
+            # repeated into a log or a response.
+            log.warning(
+                "restart failed for agent %s (%s)", agent.name, type(exc).__name__
+            )
+            return JSONResponse({"error": RESTART_FAILED}, status_code=502)
+
+        # The room's record of who rolled somebody's agent. The MCP surface
+        # writes a row of its own for the same call (`kobo_api.mcp.audit`);
+        # this is the line for the panel's half.
+        log.info("restart requested for agent %s by %s", agent.name, caller or "nobody")
+        return JSONResponse({"restarted": True, "deployment": agent.name})
 
     # --- Runtime (#15): move an existing agent to a different runtime image ----
 
