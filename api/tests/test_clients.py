@@ -1741,6 +1741,74 @@ def test_restart_deploy_propagates_client_error():
         client.restart_deploy("clio", "clio")
 
 
+# --- KubectlCLI.external_secret_status (the Secrets panel's lock) --------------
+
+
+def test_external_secret_status_argv_and_status():
+    runner = RecordingRunner(
+        results=[
+            (
+                0,
+                json.dumps(
+                    {
+                        "kind": "ExternalSecret",
+                        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+                    }
+                ),
+                "",
+            )
+        ]
+    )
+    client = KubectlCLI(runner=runner)
+
+    assert client.external_secret_status("clio", "clio-env") == {
+        "conditions": [{"type": "Ready", "status": "True"}]
+    }
+    assert runner.calls == [
+        [
+            "kubectl", "-n", "clio", "get", "externalsecret", "clio-env",
+            "--ignore-not-found", "-o", "json",
+        ]
+    ]
+
+
+def test_external_secret_status_is_none_when_there_is_no_such_object():
+    # `--ignore-not-found` prints nothing and succeeds, which is what
+    # lets "nothing is delivering this" be an answer rather than a
+    # failure the room would have to tell apart from an unreachable
+    # cluster.
+    runner = RecordingRunner(results=[(0, "", "")])
+    client = KubectlCLI(runner=runner)
+
+    assert client.external_secret_status("clio", "clio-env") is None
+
+
+def test_external_secret_status_is_empty_when_the_object_has_no_status_yet():
+    runner = RecordingRunner(results=[(0, json.dumps({"kind": "ExternalSecret"}), "")])
+    client = KubectlCLI(runner=runner)
+
+    assert client.external_secret_status("clio", "clio-env") == {}
+
+
+def test_external_secret_status_raises_when_the_cluster_cannot_be_asked():
+    runner = RecordingRunner(results=[(1, "", "Unable to connect to the server")])
+    client = KubectlCLI(runner=runner)
+
+    with pytest.raises(ClientError):
+        client.external_secret_status("clio", "clio-env")
+
+
+def test_external_secret_status_says_what_it_could_not_read_and_not_what_was_in_it():
+    runner = RecordingRunner(results=[(0, "not-a-real-key-value", "")])
+    client = KubectlCLI(runner=runner)
+
+    with pytest.raises(ClientError) as exc_info:
+        client.external_secret_status("clio", "clio-env")
+
+    assert "clio/clio-env" in str(exc_info.value)
+    assert "not-a-real-key-value" not in str(exc_info.value)
+
+
 # --- KubectlCLI.secret_literals (two-replica safety: the Slack token store) ----
 #
 # Obviously-fake token literals only. `kubectl get secret -o json` puts the

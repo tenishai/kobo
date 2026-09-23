@@ -2055,6 +2055,27 @@ class KubectlClient(Protocol):
         """
         ...
 
+    def external_secret_status(self, namespace: str, name: str) -> dict | None:
+        """The ExternalSecret `name`'s own `.status` as a decoded dict, or
+        None when there is no such object in `namespace`.
+
+        The read behind the Secrets panel's lock (design 2026-09-23): a key
+        name in a list is not a credential in a pod, and this object's Ready
+        condition is the only honest evidence that it got there.
+
+        This is deliberately NOT a read of the Kubernetes Secret the object
+        owns. `secret_literals` above exists for one caller that has to hold
+        the room's own Slack tokens; nothing about showing an owner whether
+        their secret arrived needs a value, so nothing here asks for one. An
+        ExternalSecret's own body names paths and keys and holds no value at
+        all.
+
+        Absent is an ANSWER, not a failure: an agent whose owner has never
+        added a secret has no such object, which is the ordinary case. Every
+        other failure raises `ClientError`.
+        """
+        ...
+
 
 def image_tag(image: str) -> str | None:
     """The tag of a container image reference, or None when it has none.
@@ -2132,6 +2153,38 @@ class KubectlCLI:
         self._runner.run(
             [self._kubectl, "-n", namespace, "rollout", "restart", f"deploy/{deploy}"]
         )
+
+    def external_secret_status(self, namespace: str, name: str) -> dict | None:
+        # `--ignore-not-found` is what makes "there is no such object" an
+        # empty success rather than an exit code this would have to tell
+        # apart from a cluster it could not reach at all. Those two are
+        # different answers to an owner -- nothing is delivering this vs.
+        # the room could not look -- and reading one as the other is the
+        # whole bug this flag avoids.
+        out = self._runner.run(
+            [
+                self._kubectl, "-n", namespace, "get", "externalsecret", name,
+                "--ignore-not-found", "-o", "json",
+            ]
+        )
+        if not out.strip():
+            return None
+        try:
+            data = json.loads(out)
+        except ValueError:
+            # Not chained and not quoted, the same discipline every other
+            # read of somebody else's object here holds: the room says
+            # which object it could not read and nothing about what was
+            # in it.
+            raise ClientError(
+                f"kubectl get externalsecret {namespace}/{name} "
+                "answered something this room could not read"
+            ) from None
+        status = data.get("status") if isinstance(data, dict) else None
+        # An object that exists and has no status yet is one the platform
+        # has not got to: an empty mapping reads as `syncing`, which is
+        # exactly what it is.
+        return status if isinstance(status, dict) else {}
 
     def secret_literals(self, namespace: str, name: str) -> dict[str, str]:
         try:
