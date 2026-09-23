@@ -741,6 +741,35 @@ describe("SecretsPanel", () => {
     });
   });
 
+  it("says a secret the agent's own files do not name is not on it yet", async () => {
+    // A pod only sees a Secret its files list, so a green delivery over
+    // a file with no line is still "not on the agent".
+    stubRoutes({
+      secrets: {
+        keys: ["API_KEY"],
+        sync: { state: "live", message: null },
+        wired: false,
+      },
+    });
+    render();
+
+    await waitFor(() => {
+      expect(screen.getByText("Secret \u00b7 not on the agent yet")).not.toBeNull();
+    });
+    expect(screen.queryByText("Secret \u00b7 live on the agent")).toBeNull();
+  });
+
+  it("makes no claim about a file the room could not read", async () => {
+    stubRoutes({
+      secrets: { keys: ["API_KEY"], sync: { state: "live", message: null }, wired: null },
+    });
+    render();
+
+    await waitFor(() => {
+      expect(screen.getByText("Secret \u00b7 live on the agent")).not.toBeNull();
+    });
+  });
+
   it("keeps asking for a while after a save, then stops", async () => {
     // A delivery finishes after this browser's request has returned, so
     // there is nothing to invalidate on: the only way to know it landed

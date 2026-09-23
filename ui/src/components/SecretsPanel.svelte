@@ -353,6 +353,27 @@
 
   const managed = $derived(secrets.data?.managed ?? []);
 
+  /** What the room says when the platform has delivered the Secret and
+   * the agent's own files still do not name it. A pod only sees a Secret
+   * its `secrets_from` lists, so this is genuinely "not on the agent"
+   * however green the delivery object is. */
+  const NOT_NAMED_YET =
+    "The agent's own files do not name this secret yet. Save again to add that line.";
+
+  /** The state of the owner's own list: the delivery, unless the file
+   * that has to name it does not. `wired` is null when the room could
+   * not read the repository, and a null must not become a claim. */
+  const ownSync = $derived.by<SecretSync | null | undefined>(() => {
+    const data = secrets.data;
+    if (!data) {
+      return undefined;
+    }
+    if (data.wired === false && data.keys.length > 0) {
+      return { state: "unwired", message: NOT_NAMED_YET };
+    }
+    return data.sync;
+  });
+
   type Lock = { label: string; tone: string; title: string | null };
 
   /** One delivery state as the words and the colour the Value cell shows.
@@ -388,7 +409,7 @@
         seen.push(sync.message);
       }
     };
-    add(secrets.data?.sync);
+    add(ownSync);
     for (const row of managed) {
       add(row.sync);
     }
@@ -420,7 +441,7 @@
   // Stop early the moment the answer settles: two minutes is the ceiling,
   // not the plan.
   $effect(() => {
-    const state = secrets.data?.sync?.state;
+    const state = ownSync?.state;
     if (pollEvery !== false && (state === "live" || state === "error")) {
       untrack(stopChasing);
     }
@@ -798,7 +819,7 @@
             </td>
             <td class="secrets__cell">
               {#if row.kind === "secret" && !row.fresh}
-                {@render lock(secrets.data?.sync)}
+                {@render lock(ownSync)}
               {:else}
                 <input
                   class="secrets__input"
