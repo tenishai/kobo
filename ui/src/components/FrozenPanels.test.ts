@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { screen } from "@testing-library/svelte";
+import { fireEvent, screen } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AccessPanel from "./AccessPanel.svelte";
 import ChatPanel from "./ChatPanel.svelte";
@@ -10,7 +10,12 @@ import SlackPanel from "./SlackPanel.svelte";
 import ToolingPanel from "./ToolingPanel.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 
-const CASES: Array<[string, unknown, Record<string, unknown>]> = [
+/** A step that puts a panel's hidden controls on screen before the sweep
+ * below counts them. A panel that keeps a whole section behind a
+ * disclosure would otherwise pass this suite by rendering nothing. */
+type Reveal = () => Promise<void>;
+
+const CASES: Array<[string, unknown, Record<string, unknown>, Reveal?]> = [
   ["ChatPanel", ChatPanel, { agentName: "warden", frozen: true }],
   ["MemoryPanel", MemoryPanel, { agentName: "warden", frozen: true }],
   ["SkillsPanel", SkillsPanel, { agentName: "warden", frozen: true }],
@@ -22,6 +27,19 @@ const CASES: Array<[string, unknown, Record<string, unknown>]> = [
       agentName: "warden",
       frozen: true,
       slack: { app_id: null, channels: [], state: "idle" },
+    },
+    async () => {
+      // The Slack setup (manifest, steps, three fields) sits behind a
+      // disclosure now. It is open by default for an agent that is not
+      // connected, which this asserts rather than assumes: a frozen
+      // disclosure cannot be clicked open, so if it ever started shut
+      // here the sweep below would quietly stop covering those fields.
+      const toggle = screen.getByRole("button", { name: "Set up the Slack app" });
+      if (toggle.getAttribute("aria-expanded") !== "true") {
+        await fireEvent.click(toggle);
+      }
+      expect(screen.getByLabelText("App ID")).not.toBeNull();
+      expect(screen.getByRole("button", { name: "Show the manifest" })).not.toBeNull();
     },
   ],
   [
@@ -68,10 +86,13 @@ describe("frozen panels disable every control", () => {
     });
   });
 
-  for (const [label, component, props] of CASES) {
+  for (const [label, component, props, reveal] of CASES) {
     it(`${label} disables all interactive controls when frozen`, async () => {
       const { container } = renderWithClient(component, props);
       await new Promise((resolve) => setTimeout(resolve, 0));
+      if (reveal) {
+        await reveal();
+      }
       const controls = container.querySelectorAll("button, input, textarea, select");
       expect(controls.length).toBeGreaterThan(0);
       for (const control of controls) {
