@@ -372,13 +372,13 @@
      terminal always looks like a natural extension of the room, never an
      unrelated black box dropped onto a light page. */
   .colleague-terminal {
-    --term-bg: #1b1917;
-    --term-panel: #242220;
-    --term-border: #38342f;
-    --term-ink: #f2ede7;
-    --term-muted: #9c9188;
-    --term-outgoing: #e08a3e;
-    --term-incoming: #6fbf96;
+    --term-bg: #0b1220;
+    --term-panel: #111a2e;
+    --term-border: #243147;
+    --term-ink: #e5e7eb;
+    --term-muted: #a3adbd;
+    --term-outgoing: #60a5fa;
+    --term-incoming: #4ade80;
 
     display: flex;
     flex-direction: column;

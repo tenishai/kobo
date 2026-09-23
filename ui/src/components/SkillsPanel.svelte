@@ -908,7 +908,7 @@
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    box-shadow: 0 8px 24px rgba(40, 30, 20, 0.12);
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
     padding: var(--space-2xs);
   }
 

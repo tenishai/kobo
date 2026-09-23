@@ -296,7 +296,7 @@
   .chat-bubble--user {
     align-self: flex-end;
     border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+    background: var(--accent-soft);
   }
 
   .chat-bubble--agent {

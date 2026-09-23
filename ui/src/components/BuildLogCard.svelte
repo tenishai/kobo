@@ -64,7 +64,7 @@
 
   .build-log__toggle {
     background: none;
-    border: 1px solid var(--border, #d0c8bc);
+    border: 1px solid var(--border);
     border-radius: 6px;
     padding: 0.35rem 0.75rem;
     cursor: pointer;
@@ -92,7 +92,7 @@
     overflow: auto;
     font-size: 0.75rem;
     line-height: 1.4;
-    background: var(--surface-sunken, #f4efe8);
+    background: var(--bg);
     border-radius: 6px;
     padding: 0.75rem;
     white-space: pre-wrap;
