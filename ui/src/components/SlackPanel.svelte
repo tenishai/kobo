@@ -1,33 +1,45 @@
 <script lang="ts">
-  // Slack, per agent (compacted 2026-09-23) -- the channels the agent
-  // joins, and the one-time ceremony that creates the Slack app.
+  // Slack, per agent (first-run wave, 2026-09-23) -- the one-time ceremony
+  // that creates the Slack app, and the channels the agent answers in.
   //
-  // ONE table, one disclosure, one Save. The first cut showed the whole
-  // ceremony at every state: nine numbered steps, a manifest, three paste
-  // fields and a second filled button, all still on screen for an agent
-  // that had been talking in Slack for a month. The setup is a thing you
-  // do once, so it lives behind a disclosure that is open while the agent
-  // is not connected and shut once it is. The state itself is a chip beside
-  // the heading rather than a sentence under it.
+  // TWO LAYOUTS, not one panel with a drawer. Yesterday's cut put the
+  // channels table first and hid the whole ceremony behind a "Set up the
+  // Slack app" disclosure. Operators read that as optional: the manifest
+  // was a block of text nobody thought to click, and the setup did not look
+  // like the thing you must do before Slack works at all. So:
   //
-  // Both lanes read the same `slack` prop (`AgentDetail.slack`, refetched
-  // by the caller's agentQuery -- see AgentDetail.svelte): `channels` and
-  // `state` say what is saved and how wired-up it is. Neither lane holds a
-  // "which phase am I in" flag of its own beyond the disclosure's initial
-  // position, so a save/connect success (which invalidates the agent detail
-  // query) advances the card for free once the refetch lands.
+  //   Not connected -> the panel IS the setup. A numbered stepper, nothing
+  //   else on screen: make the app from the manifest, paste the three
+  //   values back, say where it answers. One primary button leads: "Copy
+  //   the manifest" while the paste fields are empty, "Connect" the moment
+  //   anything has been pasted.
   //
-  // WHAT SAVE SENDS. The two calls behind this panel are unchanged: PUT
-  // .../slack/channels with the cleaned channel list, and POST
-  // .../slack/connect with the app id and both tokens. Save sends whichever
-  // of the two has something to send, and sends the channels FIRST when it
-  // sends both -- connect refuses an agent with no channel, and a person
-  // who filled in everything at once should not have to press Save twice to
-  // get past a precondition they already satisfied.
+  //   Connected (and waiting, and while connect is in flight) -> the
+  //   channels table is the whole panel, with one Save. The ceremony lives
+  //   behind a quiet "Reconnect the Slack app" disclosure at the bottom,
+  //   shut, for the day a token has to be replaced.
   //
-  // Edits are PENDING until Save, the same discipline as SecretsPanel:
-  // adding a row, typing in one and removing one all change a draft, and
-  // Discard throws the draft away and puts the saved list back.
+  // Both lanes read the same `slack` prop (`AgentDetail.slack`, refetched by
+  // the caller's agentQuery -- see AgentDetail.svelte): `channels` and
+  // `state` say what is saved and how wired-up it is. Which layout shows is
+  // derived from `slack.state`, not from a phase flag of this component's
+  // own, so a connect success (which invalidates the agent detail query)
+  // moves the panel from the stepper to the table for free once the refetch
+  // lands.
+  //
+  // WHAT THE BUTTON SENDS. The two calls behind this panel are unchanged:
+  // PUT .../slack/channels with the cleaned channel list, and POST
+  // .../slack/connect with the app id and both tokens. Connect and Save are
+  // the same handler under two labels: each sends whichever of the two has
+  // something to send, and sends the channels FIRST when it sends both --
+  // connect refuses an agent with no channel, and a person who filled in
+  // everything at once should not have to press the button twice to get
+  // past a precondition they already satisfied.
+  //
+  // Edits are PENDING until that press, the same discipline as
+  // SecretsPanel: adding a row, typing in one and removing one all change a
+  // draft, and Cancel/Discard throws the draft away and puts the saved list
+  // back.
   //
   // The one thing that *is* local state independent of `slack` is the
   // delivery chip's sha store (shared by both calls), and it's deliberately
@@ -36,9 +48,7 @@
   // why this is a plain `writable`/`derived` pair rather than `$state` --
   // same @tanstack/svelte-query version quirk applies here (deliveryQuery
   // needs a *new* query per sha, and only a real Svelte store makes
-  // createQuery re-derive its options after the first one). The manifest
-  // query below (`slackManifestQuery`) needs the exact same treatment for
-  // its own `opened` flag.
+  // createQuery re-derive its options after the first one).
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { errorMessage, type AgentSlack } from "../lib/api";
   import {
@@ -68,7 +78,14 @@
   // svelte-ignore state_referenced_locally
   const saveChannels = createMutation(() => (saveSlackChannelsMutation(queryClient, agentName)));
 
-  // --- The header -----------------------------------------------------------
+  // --- Which layout ---------------------------------------------------------
+
+  /** The first run: no app yet, so the panel is the ceremony and nothing
+   * else. The moment connect is in flight the panel moves on to the
+   * connected layout, which is where the "Connecting" chip and the progress
+   * line belong; a connect that fails comes straight back here with every
+   * pasted value still in its field. */
+  const firstRun = $derived(slack.state === "idle" && !connect.isPending);
 
   // The state as a word, not a sentence. "Connecting" is client-side only:
   // `slack.state` itself has no such value.
@@ -83,13 +100,18 @@
     slack.state === "connected" && !connect.isPending ? "ok" : "muted",
   );
 
-  // The /invite line lives here rather than in the numbered steps below: it
-  // is about the channels in the table, not about creating the app, and the
-  // runtime's Slack transport never joins a channel by itself.
-  const lead = $derived(
-    `List the channels this agent should join, and type /invite @${agentName} in each ` +
-      `one. Set up the Slack app once to connect it.`,
-  );
+  /** The one line under the heading while the app is on its way to the
+   * agent. Null once it has arrived, when the plain connected lead shows
+   * instead. */
+  const stateNote = $derived.by((): string | null => {
+    if (connect.isPending) {
+      return "Sending the app details to the agent.";
+    }
+    if (slack.state === "waiting") {
+      return "The app details are with the agent. It answers as soon as it picks them up.";
+    }
+    return null;
+  });
 
   // --- The channels draft ---------------------------------------------------
 
@@ -99,6 +121,22 @@
   // this comes back 422 with its own "Eight channels at most for now."
   // copy, rendered verbatim through `saveError` below.
   const MAX_CHANNELS = 8;
+
+  // The channel list is an ALLOWLIST, not a subscription: the runtime
+  // ignores messages from channels that are not on it, and its Slack read
+  // tool is restricted to them. The Slack invite gives membership, this
+  // list gives permission, and both are needed — which is why the sentence
+  // below asks for both.
+  //
+  // WHEN THE RUNTIME CHANGES: a proposal is out to make an empty list mean
+  // "every channel the app is invited to". The day that lands, this
+  // sentence stops being true for the empty case and becomes something like
+  // "leave it empty and the agent answers wherever it is invited"; the
+  // channel rows stay, as the way to narrow that down.
+  const channelsNote = $derived(
+    `Add each channel's ID, then invite @${agentName} to it in Slack. ` +
+      `The agent answers only in channels listed here.`,
+  );
 
   /** One row of the table. `id` never changes and the `{#each}` below is
    * keyed on it: keying on the index meant removing a row re-keyed every
@@ -148,9 +186,10 @@
 
   // Per-field show/hide (mis-paste fix): both tokens start masked
   // (`type="password"`), and each has its own independent toggle so a
-  // pasted value can be checked before Save is pressed. Purely client-side
-  // and pre-submit — it changes nothing about the never-stored-by-the-room
-  // guarantee below, since the value never leaves this input either way.
+  // pasted value can be checked before the button is pressed. Purely
+  // client-side and pre-submit — it changes nothing about the
+  // never-stored-by-the-room guarantee below, since the value never leaves
+  // this input either way.
   let showBotToken = $state(false);
   let showAppToken = $state(false);
 
@@ -160,12 +199,22 @@
     appId.trim().length > 0 && botToken.trim().length > 0 && appToken.trim().length > 0,
   );
 
-  // The setup is a once-per-agent ceremony, so it starts open for an agent
-  // that has not finished it and shut for one that has. A local flag from
-  // there on: somebody who opens it on a connected agent (to read the
-  // manifest again, say) keeps it open.
-  // svelte-ignore state_referenced_locally
-  let setupOpen = $state(slack.state !== "connected");
+  /** Anything at all pasted into step 2. This is what hands the primary
+   * over from "Copy the manifest" to "Connect": somebody who has started
+   * pasting is past the manifest, and one panel gets one filled button. */
+  const setupTouched = $derived(
+    appId.trim().length > 0 || botToken.trim().length > 0 || appToken.trim().length > 0,
+  );
+
+  const copyIsPrimary = $derived(firstRun && !setupTouched);
+
+  /** Re-tokening, long after the first run. Shut by default: a connected
+   * agent's panel is about its channels. */
+  let reconnectOpen = $state(false);
+
+  /** Where the two ceremony steps are on screen: the whole first-run panel,
+   * or the reconnect disclosure. */
+  const setupVisible = $derived(firstRun || reconnectOpen);
 
   // --- Saving ---------------------------------------------------------------
 
@@ -173,19 +222,43 @@
   const hasPending = $derived(channelsPending || setupPending);
   const canSave = $derived(!frozen && !saving && hasPending);
 
+  /** Connect takes the three values AND a channel: the server refuses an
+   * agent with none (409 below), so the button says so by staying off
+   * rather than by failing. */
+  const canConnect = $derived(
+    !frozen && !saving && setupPending && cleaned.length > 0,
+  );
+
+  // One press, one word for it: a first-run Connect that saves the channels
+  // on its way to the connect call still reads "Connecting…", because that
+  // is what the human asked for.
+  const primaryLabel = $derived.by((): string => {
+    if (firstRun) {
+      return saving ? "Connecting…" : "Connect";
+    }
+    if (connect.isPending) {
+      return "Connecting…";
+    }
+    if (saveChannels.isPending) {
+      return "Saving…";
+    }
+    return "Save";
+  });
+
   // The server's own copy for the missing-channels precondition (POST
   // .../slack/connect, 409 — see `kobo_api.main.connect_slack`), matched
   // verbatim so the swap below only fires for that exact case and never
   // masks a different server error under the wrong warning.
   const MISSING_CHANNELS_ERROR = "Add at least one channel first.";
 
-  /** Sends whatever changed, through the same two calls as ever. The three
-   * setup fields are only cleared on success, once they're actually spent —
-   * any server error (including the missing-channels 409) leaves them
-   * exactly as pasted, since tokens are never persisted server-side and
-   * re-pasting them is a real cost to the human. */
+  /** Sends whatever changed, through the same two calls as ever — the
+   * handler behind Connect on the first run and behind Save after it. The
+   * three setup fields are only cleared on success, once they're actually
+   * spent — any server error (including the missing-channels 409) leaves
+   * them exactly as pasted, since tokens are never persisted server-side
+   * and re-pasting them is a real cost to the human. */
   async function handleSave(): Promise<void> {
-    if (!canSave) {
+    if (firstRun ? !canConnect : !canSave) {
       return;
     }
     saveError = null;
@@ -217,12 +290,13 @@
         appId = "";
         botToken = "";
         appToken = "";
+        reconnectOpen = false;
         beginDelivery(result.sha);
       } catch (err: unknown) {
         const message = errorMessage(err, "Couldn't finish setting up Slack. Try again.");
         saveError =
           message === MISSING_CHANNELS_ERROR
-            ? "Add at least one channel, then press Save again. Your values are kept."
+            ? "Add at least one channel, then press Connect again. Your values are kept."
             : message;
       }
     }
@@ -261,19 +335,19 @@
     }
   }
 
-  // --- Manifest reveal ------------------------------------------------------
+  // --- The manifest ---------------------------------------------------------
   //
-  // "Show the manifest" is a one-way reveal (the spec's own word), not a
-  // toggle: clicking it flips `manifestOpened` true for good, which both
-  // shows the block below AND (via the query's own `opened` flag) is the
-  // only thing that ever enables `slackManifestQuery` — the fetch never
-  // fires on mount, only once a human actually asks to see it.
-  let manifestOpened = $state(false);
-  const manifest = createQuery(() => (slackManifestQuery(agentName, manifestOpened)));
+  // Fetched as soon as step 1 is on screen, not on a click: the copy button
+  // is the primary control of the first run, and a primary that has to be
+  // armed by a second, quieter button first is the exact confusion this
+  // wave is undoing. Still not fetched on mount of the *panel* — an agent
+  // that is already connected asks for nothing until somebody opens the
+  // reconnect disclosure, which is most visits.
+  const manifest = createQuery(() => (slackManifestQuery(agentName, setupVisible)));
 
-  function handleShowManifest(): void {
-    manifestOpened = true;
-  }
+  /** The `<pre>`, for somebody who wants to read what they are pasting.
+   * Shut by default: the copy button is the path, this is the reassurance. */
+  let manifestShown = $state(false);
 
   // The exact pretty-printed string rendered in the `<pre>` below, kept as a
   // single source: the copy button hands this same value to the clipboard,
@@ -282,6 +356,8 @@
   const manifestText = $derived(
     manifest.data ? JSON.stringify(manifest.data, null, 2) : undefined,
   );
+
+  const COPIED_CLEAR_MS = 2000;
 
   let copyState = $state<"idle" | "copied" | "failed">("idle");
 
@@ -303,6 +379,19 @@
       copyState = "failed";
     }
   }
+
+  // "Copied" is an answer, not a state to live in: it says the press landed
+  // and then gets out of the way, so the button reads as pressable again
+  // for the second copy.
+  $effect(() => {
+    if (copyState !== "copied") {
+      return;
+    }
+    const timer = setTimeout(() => {
+      copyState = "idle";
+    }, COPIED_CLEAR_MS);
+    return () => clearTimeout(timer);
+  });
 
   // --- Delivery chip (copied pattern from MemoryPanel; see its doc comment
   // and the module comment above for the full rationale) -------------------
@@ -370,157 +459,77 @@
   });
 </script>
 
-<section class="slack-panel" aria-labelledby="slack-panel-heading">
-  <div class="slack-panel__header">
-    <div class="slack-panel__title">
-      <h2 id="slack-panel-heading" class="slack-panel__heading">Slack</h2>
-      <span class="slack-panel__chip slack-panel__chip--{chipTone}">{chipText}</span>
-    </div>
-    <p class="slack-panel__lead">{lead}</p>
-  </div>
-
-  <div class="slack-panel__toolbar">
-    <button
-      type="button"
-      class="slack-panel__button"
-      disabled={frozen || rows.length >= MAX_CHANNELS}
-      onclick={addRow}
-    >
-      + Channel
-    </button>
-    <button
-      type="button"
-      class="slack-panel__button slack-panel__button--quiet"
-      aria-expanded={setupOpen}
-      aria-controls="slack-panel-setup"
-      disabled={frozen}
-      onclick={() => (setupOpen = !setupOpen)}
-    >
-      Set up the Slack app
-    </button>
-  </div>
-
-  <table class="slack-panel__table">
-    <thead>
-      <tr>
-        <th scope="col">Channel ID</th>
-        <th scope="col" class="slack-panel__col-remove">
-          <span class="slack-panel__sr">Remove</span>
-        </th>
-      </tr>
-    </thead>
-    <tbody>
-      {#if rows.length === 0}
-        <tr>
-          <td class="slack-panel__empty" colspan="2">No channels yet.</td>
-        </tr>
+{#snippet manifestStep()}
+  <li class="slack-panel__step">
+    <h3 class="slack-panel__step-title">Create the Slack app from this manifest</h3>
+    <div class="slack-panel__step-body">
+      <p class="panel__note">
+        At
+        <a
+          class="slack-panel__link"
+          href="https://api.slack.com/apps"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          api.slack.com/apps
+          <span class="panel__sr"> (opens Slack)</span>
+        </a>
+        press Create New App, choose From a manifest, pick your workspace, paste this on the
+        JSON tab.
+      </p>
+      <div class="slack-panel__step-actions">
+        <button
+          type="button"
+          class="btn"
+          class:btn--primary={copyIsPrimary}
+          class:btn--quiet={!copyIsPrimary}
+          disabled={frozen || manifestText === undefined}
+          onclick={handleCopyManifest}
+        >
+          {copyState === "copied" ? "Copied" : "Copy the manifest"}
+        </button>
+        <button
+          type="button"
+          class="btn btn--quiet"
+          aria-expanded={manifestShown}
+          aria-controls="slack-panel-manifest"
+          onclick={() => (manifestShown = !manifestShown)}
+        >
+          {manifestShown ? "Hide the manifest" : "Show the manifest"}
+        </button>
+      </div>
+      {#if copyState === "failed"}
+        <p class="panel__note panel__note--fail" role="alert">
+          Copy failed. Select the text instead.
+        </p>
       {/if}
-      {#each rows as row, index (row.id)}
-        <tr class="slack-panel__row">
-          <td class="slack-panel__cell">
-            <input
-              class="slack-panel__input"
-              type="text"
-              autocomplete="off"
-              spellcheck="false"
-              aria-label={`Channel ${index + 1}`}
-              bind:value={row.value}
-              disabled={frozen}
-              use:focusOnMount={row.id === focusId}
-            />
-          </td>
-          <td class="slack-panel__cell slack-panel__cell--remove">
-            <button
-              type="button"
-              class="slack-panel__remove"
-              aria-label={row.value.trim().length > 0
-                ? `Remove ${row.value.trim()}`
-                : `Remove row ${index + 1}`}
-              disabled={frozen}
-              onclick={() => removeRow(row.id)}
-            >
-              <span aria-hidden="true">✕</span>
-            </button>
-          </td>
-        </tr>
-      {/each}
-    </tbody>
-  </table>
-
-  {#if setupOpen}
-    <div class="slack-panel__setup" id="slack-panel-setup">
-      <div class="slack-panel__manifest">
-        <div class="slack-panel__manifest-actions">
-          <button
-            type="button"
-            class="slack-panel__button slack-panel__button--quiet"
-            disabled={frozen}
-            onclick={handleShowManifest}
-          >
-            Show the manifest
-          </button>
-          <button
-            type="button"
-            class="slack-panel__button slack-panel__button--quiet"
-            disabled={frozen || manifestText === undefined}
-            onclick={handleCopyManifest}
-          >
-            {copyState === "copied" ? "Copied." : "Copy the manifest"}
-          </button>
-        </div>
-        {#if copyState === "failed"}
-          <p class="slack-panel__error" role="alert">Copy failed. Select the text instead.</p>
-        {/if}
-        {#if manifestOpened}
+      {#if manifestShown}
+        <div id="slack-panel-manifest" class="slack-panel__manifest">
           {#if manifest.isPending}
-            <p class="slack-panel__note">Loading the manifest…</p>
+            <p class="panel__note">Loading the manifest…</p>
           {:else if manifest.isError}
-            <p class="slack-panel__error" role="alert">
+            <p class="panel__note panel__note--fail" role="alert">
               {errorMessage(manifest.error, "Couldn't load the manifest.")}
             </p>
           {:else if manifestText !== undefined}
             <pre class="slack-panel__manifest-block">{manifestText}</pre>
           {/if}
-        {/if}
-      </div>
+        </div>
+      {/if}
+    </div>
+  </li>
+{/snippet}
 
-      <ol class="slack-panel__steps">
-        <li class="slack-panel__step">
-          <p class="slack-panel__step-text">
-            At
-            <a
-              class="slack-panel__step-link"
-              href="https://api.slack.com/apps"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              api.slack.com/apps
-              <span class="slack-panel__sr"> (opens Slack)</span>
-            </a>, press "Create New App".
-          </p>
-        </li>
-        <li class="slack-panel__step">
-          <p class="slack-panel__step-text">Choose "From a manifest", then select your workspace.</p>
-        </li>
-        <li class="slack-panel__step">
-          <p class="slack-panel__step-text">Paste the manifest above on the JSON tab, then create the app.</p>
-        </li>
-        <li class="slack-panel__step">
-          <p class="slack-panel__step-text">
-            On "Basic Information", copy the App ID, then generate an app-level token with the connections:write scope.
-          </p>
-        </li>
-        <li class="slack-panel__step">
-          <p class="slack-panel__step-text">Install the app to your workspace, then copy the bot token.</p>
-        </li>
-      </ol>
-
+{#snippet valuesStep()}
+  <li class="slack-panel__step">
+    <h3 class="slack-panel__step-title">Paste the three values back</h3>
+    <div class="slack-panel__step-body">
       <div class="slack-panel__fields">
-        <div class="slack-panel__field">
-          <label class="slack-panel__label" for="slack-panel-app-id">App ID</label>
+        <div class="field slack-panel__field">
+          <label class="field__label" for="slack-panel-app-id">App ID</label>
           <input
             id="slack-panel-app-id"
-            class="slack-panel__input slack-panel__input--boxed"
+            class="field__input slack-panel__mono"
             type="text"
             autocomplete="off"
             spellcheck="false"
@@ -528,13 +537,14 @@
             bind:value={appId}
             disabled={frozen}
           />
+          <p class="field__help">Basic Information shows the App ID.</p>
         </div>
-        <div class="slack-panel__field">
-          <label class="slack-panel__label" for="slack-panel-bot-token">Bot token</label>
-          <div class="slack-panel__token-row">
+        <div class="field slack-panel__field">
+          <label class="field__label" for="slack-panel-bot-token">Bot token</label>
+          <div class="field__row">
             <input
               id="slack-panel-bot-token"
-              class="slack-panel__input slack-panel__input--boxed"
+              class="field__input slack-panel__mono"
               type={showBotToken ? "text" : "password"}
               autocomplete="off"
               spellcheck="false"
@@ -544,7 +554,7 @@
             />
             <button
               type="button"
-              class="slack-panel__button slack-panel__button--quiet"
+              class="btn btn--quiet"
               disabled={frozen}
               aria-label={showBotToken ? "Hide bot token" : "Show bot token"}
               onclick={() => (showBotToken = !showBotToken)}
@@ -552,13 +562,14 @@
               {showBotToken ? "Hide" : "Show"}
             </button>
           </div>
+          <p class="field__help">Install App gives the bot token.</p>
         </div>
-        <div class="slack-panel__field">
-          <label class="slack-panel__label" for="slack-panel-app-token">App-level token</label>
-          <div class="slack-panel__token-row">
+        <div class="field slack-panel__field">
+          <label class="field__label" for="slack-panel-app-token">App-level token</label>
+          <div class="field__row">
             <input
               id="slack-panel-app-token"
-              class="slack-panel__input slack-panel__input--boxed"
+              class="field__input slack-panel__mono"
               type={showAppToken ? "text" : "password"}
               autocomplete="off"
               spellcheck="false"
@@ -568,7 +579,7 @@
             />
             <button
               type="button"
-              class="slack-panel__button slack-panel__button--quiet"
+              class="btn btn--quiet"
               disabled={frozen}
               aria-label={showAppToken ? "Hide app-level token" : "Show app-level token"}
               onclick={() => (showAppToken = !showAppToken)}
@@ -576,21 +587,132 @@
               {showAppToken ? "Hide" : "Show"}
             </button>
           </div>
+          <p class="field__help">
+            Generate one on Basic Information with the connections:write scope.
+          </p>
         </div>
       </div>
-
-      <p class="slack-panel__note">
-        For safety, the room never keeps these values. They go to the agent when you press Save.
+      <p class="panel__note">
+        For safety, the room never keeps these values. They go straight to the agent.
       </p>
+    </div>
+  </li>
+{/snippet}
+
+{#snippet channels()}
+  <div class="slack-panel__channels">
+    <p class="panel__note">{channelsNote}</p>
+    <div class="panel__toolbar">
+      <button
+        type="button"
+        class="btn"
+        disabled={frozen || rows.length >= MAX_CHANNELS}
+        onclick={addRow}
+      >
+        + Channel
+      </button>
+    </div>
+    <table class="panel__table slack-panel__table">
+      <thead>
+        <tr>
+          <th scope="col">Channel ID</th>
+          <th scope="col" class="slack-panel__col-remove">
+            <span class="panel__sr">Remove</span>
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {#if rows.length === 0}
+          <tr>
+            <td class="panel__empty" colspan="2">No channels yet.</td>
+          </tr>
+        {/if}
+        {#each rows as row, index (row.id)}
+          <tr>
+            <td>
+              <input
+                class="slack-panel__cell-input"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                aria-label={`Channel ${index + 1}`}
+                bind:value={row.value}
+                disabled={frozen}
+                use:focusOnMount={row.id === focusId}
+              />
+            </td>
+            <td class="panel__cell--right">
+              <button
+                type="button"
+                class="slack-panel__remove"
+                aria-label={row.value.trim().length > 0
+                  ? `Remove ${row.value.trim()}`
+                  : `Remove row ${index + 1}`}
+                disabled={frozen}
+                onclick={() => removeRow(row.id)}
+              >
+                <span aria-hidden="true">✕</span>
+              </button>
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  </div>
+{/snippet}
+
+<section class="panel" aria-labelledby="slack-panel-heading">
+  <div class="panel__header">
+    <div class="slack-panel__title">
+      <h2 id="slack-panel-heading" class="panel__heading">Slack</h2>
+      <span class="slack-panel__chip slack-panel__chip--{chipTone}">{chipText}</span>
+    </div>
+    {#if !firstRun}
+      <p class="panel__lead">
+        {stateNote ?? "The Slack app is connected to this agent."}
+      </p>
+    {/if}
+  </div>
+
+  {#if firstRun}
+    <ol class="slack-panel__steps">
+      {@render manifestStep()}
+      {@render valuesStep()}
+      <li class="slack-panel__step">
+        <h3 class="slack-panel__step-title">Where it answers</h3>
+        <div class="slack-panel__step-body">
+          {@render channels()}
+        </div>
+      </li>
+    </ol>
+  {:else}
+    {@render channels()}
+
+    <div class="slack-panel__reconnect">
+      <button
+        type="button"
+        class="btn btn--quiet"
+        aria-expanded={reconnectOpen}
+        aria-controls="slack-panel-reconnect"
+        onclick={() => (reconnectOpen = !reconnectOpen)}
+      >
+        Reconnect the Slack app
+      </button>
+      {#if reconnectOpen}
+        <ol class="slack-panel__steps" id="slack-panel-reconnect">
+          {@render manifestStep()}
+          {@render valuesStep()}
+        </ol>
+      {/if}
     </div>
   {/if}
 
-  <div class="slack-panel__footer">
+  <div class="panel__footer">
     {#if saveError}
-      <p class="slack-panel__status slack-panel__status--fail" role="alert">{saveError}</p>
+      <p class="panel__status panel__status--fail" role="alert">{saveError}</p>
     {:else if deliverySha !== null}
       <p
-        class="slack-panel__status slack-panel__status--{deliveryView.tone}"
+        class="panel__status slack-panel__status--{deliveryView.tone}"
         role="status"
         aria-live="polite"
       >
@@ -600,60 +722,55 @@
         <span>{deliveryView.text}</span>
       </p>
     {/if}
-    <div class="slack-panel__actions">
-      {#if hasPending}
+    <div class="panel__actions">
+      {#if firstRun}
         <button
           type="button"
-          class="slack-panel__button slack-panel__button--quiet"
-          disabled={frozen || saving}
+          class="btn btn--quiet"
+          disabled={frozen || saving || !hasPending}
           onclick={discard}
         >
-          Discard
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="btn"
+          class:btn--primary={!copyIsPrimary}
+          disabled={!canConnect}
+          onclick={handleSave}
+        >
+          {primaryLabel}
+        </button>
+      {:else}
+        {#if hasPending}
+          <button
+            type="button"
+            class="btn btn--quiet"
+            disabled={frozen || saving}
+            onclick={discard}
+          >
+            Discard
+          </button>
+        {/if}
+        <button
+          type="button"
+          class="btn btn--primary"
+          disabled={!canSave}
+          onclick={handleSave}
+        >
+          {primaryLabel}
         </button>
       {/if}
-      <button
-        type="button"
-        class="slack-panel__button slack-panel__button--primary"
-        disabled={!canSave}
-        onclick={handleSave}
-      >
-        {saving ? "Saving…" : "Save"}
-      </button>
     </div>
   </div>
 </section>
 
 <style>
-  .slack-panel {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    padding: var(--space-lg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--panel);
-  }
-
-  .slack-panel__header {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-
   .slack-panel__title {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-xs);
-  }
-
-  .slack-panel__heading {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
   }
 
   .slack-panel__chip {
@@ -671,114 +788,127 @@
     color: var(--ok);
   }
 
-  .slack-panel__lead,
-  .slack-panel__note {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.85rem;
-  }
-
-  .slack-panel__note {
-    font-size: 0.8rem;
-  }
-
-  .slack-panel__error {
-    margin: 0;
-    color: var(--fail);
-    font-size: 0.85rem;
-  }
-
-  .slack-panel__toolbar {
+  /* The stepper. Numbered down the left, one step per row, so the order is
+     the layout rather than something the copy has to claim. */
+  .slack-panel__steps {
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-xs);
+    flex-direction: column;
+    gap: var(--space-md);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    counter-reset: ceremony-step;
   }
 
-  .slack-panel__button {
-    padding: var(--space-2xs) var(--space-sm);
+  .slack-panel__step {
+    display: grid;
+    grid-template-columns: 1.5rem 1fr;
+    align-items: baseline;
+    column-gap: var(--space-xs);
+    row-gap: var(--space-xs);
+    counter-increment: ceremony-step;
+  }
+
+  .slack-panel__step::before {
+    content: counter(ceremony-step);
+    display: grid;
+    width: 1.25rem;
+    height: 1.25rem;
     border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--ink);
-    font: inherit;
-    font-size: 0.85rem;
-    font-weight: 600;
-    line-height: 1.4;
-    cursor: pointer;
-  }
-
-  .slack-panel__button:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .slack-panel__button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .slack-panel__button--quiet {
-    border-color: transparent;
-    color: var(--muted);
-  }
-
-  .slack-panel__button--primary {
-    border-color: var(--accent);
-    background: var(--accent);
-    color: var(--accent-ink);
-  }
-
-  .slack-panel__button--primary:hover:not(:disabled) {
-    color: var(--accent-ink);
-    filter: brightness(1.05);
-  }
-
-  .slack-panel__table {
-    width: 100%;
-    border-collapse: collapse;
-    table-layout: fixed;
-  }
-
-  .slack-panel__table th {
-    padding: 0 var(--space-xs) var(--space-2xs);
-    border-bottom: 1px solid var(--border);
+    border-radius: 50%;
+    background: var(--panel);
     color: var(--muted);
     font-size: 0.7rem;
     font-weight: 600;
-    letter-spacing: 0.06em;
-    text-align: left;
-    text-transform: uppercase;
+    place-items: center;
+  }
+
+  .slack-panel__step-title {
+    margin: 0;
+    color: var(--ink);
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+
+  .slack-panel__step-body {
+    display: flex;
+    flex-direction: column;
+    grid-column: 2;
+    gap: var(--space-xs);
+    min-width: 0;
+  }
+
+  .slack-panel__step-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .slack-panel__link {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  .slack-panel__link:hover {
+    text-decoration: underline;
+  }
+
+  .slack-panel__manifest {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .slack-panel__manifest-block {
+    max-width: 100%;
+    max-height: 16rem;
+    margin: 0;
+    padding: var(--space-sm);
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    white-space: pre;
+    user-select: all;
+  }
+
+  .slack-panel__fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+  }
+
+  .slack-panel__field {
+    flex: 1 1 12rem;
+    min-width: 0;
+  }
+
+  .slack-panel__mono {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+  }
+
+  .slack-panel__channels {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+
+  .slack-panel__table {
+    table-layout: fixed;
   }
 
   .slack-panel__col-remove {
     width: 2.25rem;
   }
 
-  .slack-panel__row {
-    height: 36px;
-  }
-
-  .slack-panel__cell {
-    padding: 2px var(--space-xs);
-    border-bottom: 1px solid var(--border);
-    vertical-align: middle;
-  }
-
-  .slack-panel__cell--remove {
-    text-align: right;
-  }
-
-  .slack-panel__empty {
-    padding: var(--space-md);
-    border-bottom: 1px solid var(--border);
-    color: var(--muted);
-    font-size: 0.85rem;
-    text-align: center;
-  }
-
-  .slack-panel__input {
+  /* A field that lives in a table cell: no frame of its own until it is
+     reached for, so a list of eight reads as a list and not as a form. */
+  .slack-panel__cell-input {
     width: 100%;
     padding: var(--space-2xs) var(--space-xs);
     border: 1px solid transparent;
@@ -789,20 +919,15 @@
     font-size: 0.8rem;
   }
 
-  .slack-panel__input:hover:not(:disabled) {
+  .slack-panel__cell-input:hover:not(:disabled) {
     border-color: var(--border);
   }
 
-  .slack-panel__input:focus-visible {
+  .slack-panel__cell-input:focus-visible {
     border-color: transparent;
     background: var(--bg);
     outline: 2px solid var(--accent);
     outline-offset: -1px;
-  }
-
-  .slack-panel__input--boxed {
-    border-color: var(--border);
-    background: var(--bg);
   }
 
   .slack-panel__remove {
@@ -825,140 +950,17 @@
     cursor: not-allowed;
   }
 
-  .slack-panel__setup {
+  .slack-panel__reconnect {
     display: flex;
     flex-direction: column;
+    align-items: flex-start;
     gap: var(--space-sm);
     padding-top: var(--space-sm);
     border-top: 1px solid var(--border);
   }
 
-  .slack-panel__manifest {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--space-xs);
-  }
-
-  .slack-panel__manifest-actions {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-xs);
-  }
-
-  .slack-panel__manifest-block {
-    max-width: 100%;
-    max-height: 16rem;
-    padding: var(--space-sm);
-    overflow: auto;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg);
-    color: var(--ink);
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    white-space: pre;
-    user-select: all;
-  }
-
-  .slack-panel__steps {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    counter-reset: ceremony-step;
-  }
-
-  .slack-panel__step {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-xs);
-    counter-increment: ceremony-step;
-  }
-
-  .slack-panel__step::before {
-    content: counter(ceremony-step);
-    display: grid;
-    flex-shrink: 0;
-    width: 1.25rem;
-    height: 1.25rem;
-    border: 1px solid var(--border);
-    border-radius: 50%;
-    background: var(--panel);
-    color: var(--muted);
-    font-size: 0.7rem;
-    font-weight: 600;
-    place-items: center;
-  }
-
-  .slack-panel__step-text {
-    margin: 0;
-    color: var(--ink);
-    font-size: 0.85rem;
-  }
-
-  .slack-panel__step-link {
-    display: inline-flex;
-    color: var(--accent);
-    text-decoration: none;
-  }
-
-  .slack-panel__step-link:hover {
-    text-decoration: underline;
-  }
-
-  .slack-panel__fields {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-sm);
-  }
-
-  .slack-panel__field {
-    display: flex;
-    flex: 1 1 12rem;
-    flex-direction: column;
-    gap: var(--space-2xs);
-    min-width: 0;
-  }
-
-  .slack-panel__label {
-    color: var(--muted);
-    font-size: 0.7rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .slack-panel__token-row {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2xs);
-  }
-
-  .slack-panel__token-row .slack-panel__input {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .slack-panel__footer {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-xs);
-  }
-
-  .slack-panel__status {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-xs);
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
+  .slack-panel__reconnect .slack-panel__steps {
+    width: 100%;
   }
 
   .slack-panel__status--ok {
@@ -969,27 +971,10 @@
     color: var(--fail);
   }
 
-  .slack-panel__actions {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    margin-left: auto;
-  }
-
   .slack-panel__delivery-dot {
     width: 0.5rem;
     height: 0.5rem;
     border-radius: 50%;
     background: var(--pulse);
-  }
-
-  .slack-panel__sr {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
   }
 </style>

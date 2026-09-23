@@ -29,17 +29,13 @@ const CASES: Array<[string, unknown, Record<string, unknown>, Reveal?]> = [
       slack: { app_id: null, channels: [], state: "idle" },
     },
     async () => {
-      // The Slack setup (manifest, steps, three fields) sits behind a
-      // disclosure now. It is open by default for an agent that is not
-      // connected, which this asserts rather than assumes: a frozen
-      // disclosure cannot be clicked open, so if it ever started shut
-      // here the sweep below would quietly stop covering those fields.
-      const toggle = screen.getByRole("button", { name: "Set up the Slack app" });
-      if (toggle.getAttribute("aria-expanded") !== "true") {
-        await fireEvent.click(toggle);
-      }
+      // An agent that is not connected gets the setup as the whole panel:
+      // the stepper, the three paste fields and the manifest controls are
+      // on screen with nothing to open first. Asserted rather than assumed,
+      // so that if the first run ever moves back behind a disclosure the
+      // sweep below does not quietly stop covering those fields.
       expect(screen.getByLabelText("App ID")).not.toBeNull();
-      expect(screen.getByRole("button", { name: "Show the manifest" })).not.toBeNull();
+      expect(screen.getByRole("button", { name: "Copy the manifest" })).not.toBeNull();
     },
   ],
   [
@@ -82,6 +78,11 @@ describe("frozen panels disable every control", () => {
       },
       "/api/agents/warden/invites": { incoming: [], outgoing: [] },
       "/api/agents/warden/grants": { grants: [] },
+      // SlackPanel's first run asks for the manifest as soon as it mounts
+      // (step 1 is on screen from the start now), so it gets a real answer
+      // here: against the bare `{}` catch-all the query resolves to
+      // undefined and parks itself in an error state.
+      "/api/agents/warden/slack/manifest": { manifest: { display_information: {} } },
       "/api/": {},
     });
   });
