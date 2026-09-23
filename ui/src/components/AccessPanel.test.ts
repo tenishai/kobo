@@ -8,9 +8,135 @@ const EMPTY_INVITES = { incoming: [], outgoing: [], team_pairs: [] };
 const EMPTY_GRANTS = { grants: [] };
 const EMPTY_REQUESTABLE = { requestable: [], already: [] };
 
+/** Open the "Grant access" disclosure. It is shut on arrival now, so every
+ * test that touches the add-a-person form opens it first. */
+async function openGrant(): Promise<void> {
+  await fireEvent.click(await screen.findByRole("button", { name: "Grant access" }));
+}
+
+/** Open the "Request another team's agent" disclosure. */
+async function openPicker(): Promise<void> {
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Request another team's agent" }),
+  );
+}
+
 describe("AccessPanel", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  // --- The panel shape -------------------------------------------------
+
+  it("keeps both toolbar forms shut until they are asked for", async () => {
+    stubFetch({
+      "/api/agents/warden/invites": EMPTY_INVITES,
+      "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
+    });
+    renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
+
+    const grant = await screen.findByRole("button", { name: "Grant access" });
+    const picker = screen.getByRole("button", {
+      name: "Request another team's agent",
+    });
+    expect(grant.getAttribute("aria-expanded")).toBe("false");
+    expect(picker.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByLabelText("Add someone by email")).toBeNull();
+    expect(screen.queryByText("No other agents to request access from yet.")).toBeNull();
+  });
+
+  it("opens each toolbar form on click", async () => {
+    stubFetch({
+      "/api/agents/warden/invites": EMPTY_INVITES,
+      "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
+    });
+    renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
+
+    await openGrant();
+    expect(
+      screen.getByRole("button", { name: "Grant access" }).getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(screen.getByLabelText("Add someone by email")).not.toBeNull();
+
+    await openPicker();
+    expect(
+      screen
+        .getByRole("button", { name: "Request another team's agent" })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(
+      await screen.findByText("No other agents to request access from yet."),
+    ).not.toBeNull();
+  });
+
+  it("says nothing is there in one table row, never a block of its own", async () => {
+    stubFetch({
+      "/api/agents/warden/invites": EMPTY_INVITES,
+      "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
+    });
+    const { container } = renderWithClient(AccessPanel, {
+      agentName: "warden",
+      groupName: "growth",
+    });
+
+    await screen.findByText("Nobody has been individually granted access yet.");
+    const empties = container.querySelectorAll("td.panel__empty");
+    // One for People, one for Agents, and each is a single cell spanning
+    // the whole row.
+    expect(empties).toHaveLength(2);
+    for (const cell of empties) {
+      expect(cell.parentElement?.children).toHaveLength(1);
+      expect(cell.getAttribute("colspan")).toBe("3");
+    }
+  });
+
+  it("offers at most one filled button, even with every form open", async () => {
+    stubFetch({
+      "/api/agents/warden/invites": {
+        incoming: [
+          {
+            id: 4,
+            from_agent: "iris",
+            to_agent: { name: "warden", group_name: "growth" },
+            status: "pending",
+            requested_by: null,
+            decided_by: null,
+            created_at: "2026-08-20T00:00:00Z",
+            decided_at: null,
+          },
+        ],
+        outgoing: [],
+        team_pairs: [],
+      },
+      "/api/agents/warden/grants": {
+        grants: [{ email: "guest@example.com", added_by: "owner@example.com" }],
+      },
+      "/api/agents/warden/requestable": {
+        requestable: [
+          {
+            name: "payroll-bot",
+            group: "payments-eng",
+            team: "payments",
+            capability: "Handles refund inquiries.",
+            purpose_tags: [],
+          },
+        ],
+        already: [],
+      },
+    });
+    const { container } = renderWithClient(AccessPanel, {
+      agentName: "warden",
+      groupName: "growth",
+    });
+
+    await openGrant();
+    await openPicker();
+    await screen.findByText("payroll-bot");
+
+    expect(container.querySelectorAll(".btn--primary").length).toBeLessThanOrEqual(1);
   });
 
   // --- People section --------------------------------------------------
@@ -76,7 +202,7 @@ describe("AccessPanel", () => {
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: null });
 
-    await screen.findByLabelText("Add someone by email");
+    await openGrant();
     await fireEvent.input(screen.getByLabelText("Add someone by email"), {
       target: { value: "new-person@example.com" },
     });
@@ -107,9 +233,8 @@ describe("AccessPanel", () => {
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: null });
 
-    const input = (await screen.findByLabelText(
-      "Add someone by email",
-    )) as HTMLInputElement;
+    await openGrant();
+    const input = screen.getByLabelText("Add someone by email") as HTMLInputElement;
     await fireEvent.input(input, { target: { value: "al" } });
 
     const suggestion = await screen.findByText(
@@ -141,8 +266,10 @@ describe("AccessPanel", () => {
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: null });
 
-    const input = await screen.findByLabelText("Add someone by email");
-    await fireEvent.input(input, { target: { value: "a" } });
+    await openGrant();
+    await fireEvent.input(screen.getByLabelText("Add someone by email"), {
+      target: { value: "a" },
+    });
 
     // Give the 250ms debounce a chance to have fired if it were going to.
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -161,8 +288,10 @@ describe("AccessPanel", () => {
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: null });
 
-    const input = await screen.findByLabelText("Add someone by email");
-    await fireEvent.input(input, { target: { value: "someone@example.com" } });
+    await openGrant();
+    await fireEvent.input(screen.getByLabelText("Add someone by email"), {
+      target: { value: "someone@example.com" },
+    });
 
     expect(
       await screen.findByText(/directory search is unavailable/i, {}, { timeout: 2000 }),
@@ -182,9 +311,9 @@ describe("AccessPanel", () => {
     expect(body).toEqual({ email: "someone@example.com" });
   });
 
-  // --- Agents section: headings (access-tab refinement wave renames) ----
+  // --- Agents section --------------------------------------------------
 
-  it("renames the incoming and outgoing section headings", async () => {
+  it("names the two toolbar forms and keeps the old section headings gone", async () => {
     stubFetch({
       "/api/agents/warden/invites": EMPTY_INVITES,
       "/api/agents/warden/grants": EMPTY_GRANTS,
@@ -192,10 +321,13 @@ describe("AccessPanel", () => {
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
 
-    expect(await screen.findByText("Agent requests to your agent")).not.toBeNull();
-    expect(screen.getByText("Request access to another team's agent")).not.toBeNull();
+    expect(await screen.findByRole("button", { name: "Grant access" })).not.toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Request another team's agent" }),
+    ).not.toBeNull();
     expect(screen.queryByText("Incoming requests")).toBeNull();
     expect(screen.queryByText("Outgoing requests")).toBeNull();
+    expect(screen.queryByText("Agent requests to your agent")).toBeNull();
   });
 
   it("shows an incoming pending invite with Accept and Decline, wired to the right endpoints", async () => {
@@ -306,6 +438,7 @@ describe("AccessPanel", () => {
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
 
+    await openPicker();
     expect(await screen.findByText("payroll-bot")).not.toBeNull();
     expect(screen.getByText("payments-eng")).not.toBeNull();
     expect(screen.getByText("Handles refund inquiries.")).not.toBeNull();
@@ -342,6 +475,7 @@ describe("AccessPanel", () => {
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
 
+    await openPicker();
     expect(await screen.findByText("iris")).not.toBeNull();
     expect(screen.getByText("pending")).not.toBeNull();
     expect(screen.getByText("clio")).not.toBeNull();
@@ -350,9 +484,9 @@ describe("AccessPanel", () => {
     expect(screen.queryByRole("button", { name: /request access to clio/i })).toBeNull();
   });
 
-  // --- Agents section: Active pairs (team_pairs + accepted invites) -----
+  // --- Agents table: pairs (team_pairs + accepted invites) --------------
 
-  it("Active pairs lists team_pairs first as non-revocable 'auto' rows, formatted '<name> - same team (<group>)', ahead of accepted pairs", async () => {
+  it("lists team_pairs first as non-revocable 'auto' rows carrying their group, ahead of accepted pairs", async () => {
     stubFetch({
       "/api/agents/warden/grants": EMPTY_GRANTS,
       "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
@@ -382,9 +516,8 @@ describe("AccessPanel", () => {
       groupName: "growth",
     });
 
-    await screen.findByText("network - same team (growth)");
-    expect(screen.getByText("relay - same team (growth)")).not.toBeNull();
-    expect(screen.getByText("gemini-one - same team (growth)")).not.toBeNull();
+    await screen.findByText("network");
+    expect(screen.getAllByText("Same team (growth)")).toHaveLength(3);
     expect(screen.getAllByText("auto")).toHaveLength(3);
     // Non-revocable: the only Revoke button anywhere belongs to the trailing
     // accepted pair, never one of the three auto rows.
@@ -392,11 +525,11 @@ describe("AccessPanel", () => {
 
     const rowNames = Array.from(
       container.querySelectorAll(".access-panel__row-name"),
-    ).map((el) => el.textContent);
+    ).map((el) => el.textContent?.trim());
     expect(rowNames).toEqual([
-      "network - same team (growth)",
-      "relay - same team (growth)",
-      "gemini-one - same team (growth)",
+      "network",
+      "relay",
+      "gemini-one",
       "warden and payroll-bot",
     ]);
   });
@@ -443,7 +576,7 @@ describe("AccessPanel", () => {
     // already minted for it -- the room owes the caller that same honesty
     // right where they'd click Revoke. It must read as being about
     // REVOKING specifically -- an earlier wording sat as a standing
-    // caption above the whole Active Pairs list and got misread as
+    // caption above the whole pairs list and got misread as
     // "connection pending" for a brand-new (already-live) pair.
     stubFetch({
       "/api/agents/warden/grants": EMPTY_GRANTS,
@@ -470,7 +603,7 @@ describe("AccessPanel", () => {
     const revokeButton = await screen.findByRole("button", { name: /revoke/i });
     const hint = await screen.findByText("Revoking takes effect within a few minutes.");
     expect(hint).not.toBeNull();
-    // Scoped to the Revoke row itself, not floating above the whole section.
+    // Scoped to the Revoke row itself, not floating above the whole table.
     expect(revokeButton.closest(".access-panel__row")?.contains(hint)).toBe(true);
   });
 
@@ -482,7 +615,7 @@ describe("AccessPanel", () => {
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
 
-    await screen.findByText(/no cross-group pairs/i);
+    await screen.findByText(/no requests or pairs yet/i);
     expect(
       screen.queryByText("Revoking takes effect within a few minutes."),
     ).toBeNull();
@@ -491,10 +624,10 @@ describe("AccessPanel", () => {
     ).toBeNull();
   });
 
-  it("shows a live-pairs caption for the whole section whenever any pair is listed, even auto pairs alone", async () => {
-    // Accepts are live as soon as the pair appears -- this is the pairs
-    // section's own caption now, distinct from (and never confusable with)
-    // the revoke-specific hint above.
+  it("shows a live-pairs caption whenever any pair is listed, even auto pairs alone", async () => {
+    // Accepts are live as soon as the pair appears -- this is the table's
+    // own caption now, distinct from (and never confusable with) the
+    // revoke-specific hint above.
     stubFetch({
       "/api/agents/warden/grants": EMPTY_GRANTS,
       "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
@@ -522,8 +655,14 @@ describe("AccessPanel", () => {
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
 
-    expect(await screen.findByText(/no pending requests/i)).not.toBeNull();
-    expect(await screen.findByText(/no other agents to request access from/i)).not.toBeNull();
-    expect(screen.getByText(/no cross-group pairs/i)).not.toBeNull();
+    expect(
+      await screen.findByText("Nobody has been individually granted access yet."),
+    ).not.toBeNull();
+    expect(screen.getByText(/no requests or pairs yet/i)).not.toBeNull();
+
+    await openPicker();
+    expect(
+      await screen.findByText(/no other agents to request access from/i),
+    ).not.toBeNull();
   });
 });

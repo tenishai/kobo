@@ -32,7 +32,6 @@
   // a skill add/edit/remove) is delivered and checked the same way.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { derived, writable } from "svelte/store";
-  import EmptyState from "./EmptyState.svelte";
   import ErrorState from "./ErrorState.svelte";
   import Modal from "./Modal.svelte";
   import Skeleton from "./Skeleton.svelte";
@@ -150,6 +149,9 @@
   // rather than `$derived`; same @tanstack/svelte-query version constraint.)
 
   let catalogOpen = $state(false);
+  // The suggestions disclosure, separate from the catalog one so neither
+  // hides the other. Both shut on arrival.
+  let suggestionsOpen = $state(false);
   let catalogQ = $state("");
   // "" means "All teams" — a <select>'s DOM value is always a string;
   // converted to `null` only where the search params are committed, below.
@@ -452,104 +454,83 @@
   }
 </script>
 
-<section class="skills-panel" aria-labelledby="skills-panel-heading">
-  <div class="skills-panel__header">
-    <div>
-      <h2 id="skills-panel-heading" class="skills-panel__heading">Skills</h2>
-      <p class="skills-panel__subtitle">What your agent can do, on top of what it knows.</p>
-    </div>
-    <div class="skills-panel__header-actions">
-      <button type="button" class="skills-panel__secondary" disabled={frozen} onclick={toggleCatalog}>
-        {catalogOpen ? "Hide catalog" : "Add from catalog"}
-      </button>
-      <button type="button" class="skills-panel__add" disabled={frozen} onclick={openAdd}>
+<section class="panel" aria-labelledby="skills-panel-heading">
+  <div class="panel__header">
+    <h2 id="skills-panel-heading" class="panel__heading">Skills</h2>
+    <p class="panel__lead">What your agent can do, on top of what it knows.</p>
+  </div>
+
+  <!-- The two disclosures stay usable while frozen: they reveal lists, they
+       change nothing. Every Add inside them is dead. -->
+  <div class="panel__toolbar">
+    <div class="panel__tools">
+      <button type="button" class="btn" disabled={frozen} onclick={openAdd}>
         New guardrail skill
+      </button>
+      <button
+        type="button"
+        class="btn"
+        aria-expanded={catalogOpen}
+        onclick={toggleCatalog}
+      >
+        Browse the catalog
+      </button>
+      <button
+        type="button"
+        class="btn"
+        aria-expanded={suggestionsOpen}
+        onclick={() => (suggestionsOpen = !suggestionsOpen)}
+      >
+        Suggestions
       </button>
     </div>
   </div>
 
-  {#if skills.isPending}
-    <Skeleton rows={3} />
-  {:else if skills.isError}
-    <ErrorState
-      message={errorMessage(skills.error, "Couldn't load this agent's skills.")}
-      onretry={() => skills.refetch()}
-    />
-  {:else if skills.data.length === 0}
-    <EmptyState message="Nothing here yet. Add a skill from the catalog or write a guardrail." />
-  {:else}
-    <ul class="skills-panel__list">
-      {#each skills.data as skill (skill.name)}
-        <li class="skill-row">
-          <span class="skill-row__body">
-            <span class="skill-row__name">{skill.name}</span>
-            <span class="skill-row__provenance">{provenanceLine(skill)}</span>
-          </span>
-          <span class="skill-row__actions">
-            {#if skill.editable}
+  {#if suggestionsOpen}
+    <div class="panel__drawer skills-panel__catalog">
+      {#if recommended.data && recommended.data.length > 0}
+        <p class="panel__note">Recommended for this agent</p>
+        <ul class="skills-panel__catalog-list">
+          {#each recommended.data as entry (entry.team + "/" + entry.name)}
+            {@const already = alreadyCarried(entry.name)}
+            {@const pending = pendingCatalogAdd === entry.name}
+            <li class="catalog-row">
+              <span class="catalog-row__body">
+                <span class="catalog-row__head">
+                  <span class="catalog-row__name">{entry.name}</span>
+                  <span class="skills-panel__badge">{entry.team}</span>
+                </span>
+                <span class="catalog-row__description">{entry.description}</span>
+              </span>
               <button
                 type="button"
-                class="skill-row__edit"
-                disabled={frozen}
-                onclick={() => openEdit(skill)}
+                class="catalog-row__add"
+                disabled={frozen || already || pending}
+                onclick={() => handleAddFromCatalog(entry)}
               >
-                Edit
+                {#if pending}
+                  Adding…
+                {:else if already}
+                  Added
+                {:else}
+                  Add
+                {/if}
               </button>
-            {/if}
-            <button
-              type="button"
-              class="skill-row__remove"
-              disabled={frozen}
-              aria-label={`Remove ${skill.name}`}
-              onclick={() => openDelete(skill)}
-            >
-              Remove
-            </button>
-          </span>
-        </li>
-      {/each}
-    </ul>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="panel__note">
+          Nothing to suggest yet. Write what this agent is for, and suggestions follow.
+        </p>
+      {/if}
+    </div>
   {/if}
 
   {#if catalogOpen}
-    <div class="skills-panel__catalog">
-      {#if recommended.data && recommended.data.length > 0}
-        <div class="skills-panel__recommended">
-          <h4 class="skills-panel__subheading">Recommended for this agent</h4>
-          <ul class="skills-panel__catalog-list">
-            {#each recommended.data as entry (entry.team + "/" + entry.name)}
-              {@const already = alreadyCarried(entry.name)}
-              {@const pending = pendingCatalogAdd === entry.name}
-              <li class="catalog-row">
-                <span class="catalog-row__body">
-                  <span class="catalog-row__head">
-                    <span class="catalog-row__name">{entry.name}</span>
-                    <span class="skills-panel__badge">{entry.team}</span>
-                  </span>
-                  <span class="catalog-row__description">{entry.description}</span>
-                </span>
-                <button
-                  type="button"
-                  class="catalog-row__add"
-                  disabled={frozen || already || pending}
-                  onclick={() => handleAddFromCatalog(entry)}
-                >
-                  {#if pending}
-                    Adding…
-                  {:else if already}
-                    Added
-                  {:else}
-                    Add
-                  {/if}
-                </button>
-              </li>
-            {/each}
-          </ul>
-        </div>
-      {/if}
-
+    <div class="panel__drawer skills-panel__catalog">
       {#if catalogError}
-        <p class="skills-panel__catalog-error" role="alert">{catalogError}</p>
+        <p class="panel__note panel__note--fail" role="alert">{catalogError}</p>
       {/if}
 
       <div
@@ -636,6 +617,66 @@
         {/if}
       </div>
     </div>
+  {/if}
+
+  {#if skills.isPending}
+    <Skeleton rows={3} />
+  {:else if skills.isError}
+    <ErrorState
+      message={errorMessage(skills.error, "Couldn't load this agent's skills.")}
+      onretry={() => skills.refetch()}
+    />
+  {:else}
+    <table class="panel__table">
+      <thead>
+        <tr>
+          <th scope="col" class="skills-panel__col-name">Skill</th>
+          <th scope="col">Where it came from</th>
+          <th scope="col" class="skills-panel__col-action">
+            <span class="panel__sr">Actions</span>
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {#if skills.data.length === 0}
+          <tr>
+            <td class="panel__empty" colspan="3">
+              Nothing here yet. Add a skill from the catalog or write a guardrail.
+            </td>
+          </tr>
+        {/if}
+        {#each skills.data as skill (skill.name)}
+          <tr class="skill-row">
+            <td><code class="panel__name">{skill.name}</code></td>
+            <td><span class="skill-row__provenance">{provenanceLine(skill)}</span></td>
+            <td class="panel__cell--right">
+              <span class="skill-row__actions">
+                {#if skill.editable}
+                  <button
+                    type="button"
+                    class="btn btn--quiet"
+                    disabled={frozen}
+                    aria-label={`Edit ${skill.name}`}
+                    onclick={() => openEdit(skill)}
+                  >
+                    Edit
+                  </button>
+                {/if}
+                <button
+                  type="button"
+                  class="btn btn--quiet btn--danger"
+                  disabled={frozen}
+                  aria-label={`Remove ${skill.name}`}
+                  onclick={() => openDelete(skill)}
+                >
+                  Remove
+                </button>
+              </span>
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
   {/if}
 
   {#if deliverySha !== null}
@@ -782,16 +823,6 @@
 </Modal>
 
 <style>
-  .skills-panel {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-md);
-    padding: var(--space-lg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--panel);
-  }
-
   .skills-panel__sr-only {
     position: absolute;
     width: 1px;
@@ -801,126 +832,31 @@
     white-space: nowrap;
   }
 
-  .skills-panel__header {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--space-md);
-  }
-
-  .skills-panel__heading {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .skills-panel__subtitle {
-    margin: var(--space-2xs) 0 0;
-    color: var(--muted);
-    font-size: 0.85rem;
-  }
-
-  .skills-panel__header-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-xs);
-  }
-
-  .skills-panel__secondary,
-  .skills-panel__add {
-    padding: var(--space-2xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font-weight: 600;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .skills-panel__secondary:hover,
-  .skills-panel__add:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .skills-panel__list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .skill-row {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    padding: var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg);
-  }
-
-  .skill-row__body {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    gap: 0.15rem;
-    min-width: 0;
-  }
-
-  .skill-row__name {
-    color: var(--ink);
-    font-family: var(--font-mono);
-    font-size: 0.9rem;
-    font-weight: 600;
-  }
-
   .skill-row__provenance {
     color: var(--muted);
     font-size: 0.8rem;
   }
 
+  /* A drawer, not a box: it lives inside the panel and needs no frame of
+     its own. */
+  .skills-panel__catalog {
+    gap: var(--space-sm);
+    width: 100%;
+  }
+
+  .skills-panel__col-name {
+    width: 16rem;
+  }
+
+  .skills-panel__col-action {
+    width: 12rem;
+  }
+
   .skill-row__actions {
     display: flex;
+    align-items: center;
+    justify-content: flex-end;
     gap: var(--space-xs);
-  }
-
-  .skill-row__edit,
-  .skill-row__remove {
-    padding: var(--space-2xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--muted);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .skill-row__edit:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .skill-row__remove:hover {
-    border-color: var(--fail);
-    color: var(--fail);
-  }
-
-  .skills-panel__catalog {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    padding: var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg);
   }
 
   .skills-panel__catalog-row {
@@ -950,27 +886,6 @@
     margin: 0;
     color: var(--muted);
     font-size: 0.85rem;
-  }
-
-  .skills-panel__catalog-error {
-    margin: 0;
-    color: var(--fail);
-    font-size: 0.85rem;
-  }
-
-  .skills-panel__recommended {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-  }
-
-  .skills-panel__subheading {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
   }
 
   /* Combobox shape ported from CreateModal's old skill-search station

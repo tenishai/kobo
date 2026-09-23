@@ -7,10 +7,9 @@
   // of `.md`/`.txt`) and a repo Import (owner/repo + folder path; the server
   // validates every matching file independently and reports per-file
   // results — one bad file never sinks the rest). Remove is a plain
-  // files-not-memories delete: a browser confirm(), no bespoke copy or Modal
-  // round trip (contrast MemoryPanel's intake Remove, which gates behind a
-  // Modal because its copy has to explain that already-ingested memories
-  // survive the file's removal — tooling carries no such caveat to make).
+  // files-not-memories delete, and it asks in the room's own Modal with
+  // the same one line it always used; it used to ask through the
+  // browser's confirm(), which looked like it came from somewhere else.
   //
   // Enforcement banner graduation (Task 4: card probe + banner graduation):
   // the standing notice below is no longer a single fixed string — it's
@@ -48,8 +47,8 @@
   // guessed client-side, just read straight off the row.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { derived, writable } from "svelte/store";
-  import EmptyState from "./EmptyState.svelte";
   import ErrorState from "./ErrorState.svelte";
+  import Modal from "./Modal.svelte";
   import Skeleton from "./Skeleton.svelte";
   import { errorMessage, type ToolingFile } from "../lib/api";
   import {
@@ -259,20 +258,37 @@
     );
   }
 
-  // --- Remove: files, not memories — a plain confirm, no bespoke copy -----
+  // --- Remove: confirmed in the room's own dialog ------------------------
+  //
+  // This used to be a bare `window.confirm()`. The wording is the same;
+  // the box it appears in is now the same Modal every other panel asks
+  // through, so a removal here does not suddenly look like it came from
+  // the browser rather than the room.
 
   let removeError = $state<string | null>(null);
+  let removeTarget = $state<ToolingFile | null>(null);
 
-  function handleRemove(file: ToolingFile): void {
-    if (deleteMutation.isPending) {
-      return;
-    }
-    if (!window.confirm(`Remove ${file.name}? This can't be undone.`)) {
+  // The "+ Tool" disclosure. Shut on arrival.
+  let uploadOpen = $state(false);
+
+  function openRemove(file: ToolingFile): void {
+    removeError = null;
+    removeTarget = file;
+  }
+
+  function closeRemove(): void {
+    removeTarget = null;
+  }
+
+  function handleRemove(): void {
+    const file = removeTarget;
+    if (file === null || deleteMutation.isPending) {
       return;
     }
     removeError = null;
     deleteMutation.mutate(file.name, {
       onSuccess: (result) => {
+        removeTarget = null;
         beginDelivery(result.sha);
       },
       onError: (err: unknown) => {
@@ -295,26 +311,37 @@
   }
 </script>
 
-<section class="tooling-panel" aria-labelledby="tooling-panel-heading">
-  <div class="tooling-panel__header">
-    <h2 id="tooling-panel-heading" class="tooling-panel__heading">Tooling</h2>
-    <p class="tooling-panel__subtitle">The rules this agent will be held to.</p>
+<section class="panel" aria-labelledby="tooling-panel-heading">
+  <div class="panel__header">
+    <h2 id="tooling-panel-heading" class="panel__heading">Tooling</h2>
+    <p class="panel__lead">
+      Every agent ships with colleague tools: it can list and consult the room,
+      and share a fact with quorum review. Its repo tools stay dormant until an
+      operator approves a repository on the Access tab. Tools added here are
+      extras on top of that baseline.
+    </p>
   </div>
 
   <div class="tooling-panel__notice tooling-panel__notice--{bannerView.tone}" role="status">
     {bannerView.text}
   </div>
 
-  <p class="tooling-panel__explainer">
-    Every agent ships with colleague tools: it can list and consult the room,
-    and share a fact with quorum review. Its repo tools stay dormant until an
-    operator approves a repository on the Access tab. Tools added here are
-    extras on top of that baseline.
-  </p>
+  <!-- Usable while frozen: it reveals a form, it changes nothing. -->
+  <div class="panel__toolbar">
+    <div class="panel__tools">
+      <button
+        type="button"
+        class="btn"
+        aria-expanded={uploadOpen}
+        onclick={() => (uploadOpen = !uploadOpen)}
+      >
+        + Tool
+      </button>
+    </div>
+  </div>
 
-  <form class="tooling-form" onsubmit={handleUpload}>
-    <h3 class="tooling-form__heading">Upload</h3>
-
+  {#if uploadOpen}
+  <form class="panel__drawer tooling-form" onsubmit={handleUpload}>
     <div class="tooling-form__field">
       <label class="tooling-form__label" for="tooling-file">Choose file</label>
       <div class="tooling-form__file-row">
@@ -385,10 +412,11 @@
       <p class="tooling-form__status tooling-form__status--error" role="alert">{uploadError}</p>
     {/if}
 
-    <button type="submit" class="tooling-form__submit" disabled={frozen || !canUpload}>
+    <button type="submit" class="btn btn--primary" disabled={frozen || !canUpload}>
       {uploadMutation.isPending ? "Uploading…" : "Upload"}
     </button>
   </form>
+  {/if}
 
   {#if tooling.isPending}
     <Skeleton rows={3} />
@@ -397,45 +425,66 @@
       message={errorMessage(tooling.error, "Couldn't load this agent's tooling files.")}
       onretry={() => tooling.refetch()}
     />
-  {:else if tooling.data.files.length === 0}
-    <EmptyState message="Nothing here yet. Upload a file to govern this agent." />
   {:else}
-    {#if removeError}
-      <p class="tooling-panel__remove-error" role="alert">{removeError}</p>
+    {#if removeError && removeTarget === null}
+      <p class="panel__note panel__note--fail" role="alert">{removeError}</p>
     {/if}
-    <ul class="tooling-panel__list">
-      {#each tooling.data.files as file (file.name)}
-        <li class="tooling-row">
-          <span class="tooling-row__body">
-            <span class="tooling-row__name">{file.name}</span>
-            <span class="tooling-row__meta">{humanSize(file.content_bytes)}</span>
-          </span>
-          <span
-            class="tooling-row__delivered tooling-row__delivered--{file.delivered
-              ? 'yes'
-              : 'no'}"
-          >
-            {file.delivered ? "Delivered" : "Not yet delivered"}
-          </span>
-          <span
-            class="tooling-row__badge tooling-row__badge--{file.status === 'enforced'
-              ? 'enforced'
-              : 'stored'}"
-          >
-            {file.status === "enforced" ? "enforced" : "stored"}
-          </span>
-          <button
-            type="button"
-            class="tooling-row__remove"
-            disabled={frozen || deleteMutation.isPending}
-            aria-label={`Remove ${file.name}`}
-            onclick={() => handleRemove(file)}
-          >
-            Remove
-          </button>
-        </li>
-      {/each}
-    </ul>
+    <table class="panel__table">
+      <thead>
+        <tr>
+          <th scope="col">Tool</th>
+          <th scope="col" class="tooling-panel__col-size">Size</th>
+          <th scope="col" class="tooling-panel__col-state">State</th>
+          <th scope="col" class="tooling-panel__col-action">
+            <span class="panel__sr">Remove</span>
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {#if tooling.data.files.length === 0}
+          <tr>
+            <td class="panel__empty" colspan="4">
+              Nothing here yet. Upload a file to govern this agent.
+            </td>
+          </tr>
+        {/if}
+        {#each tooling.data.files as file (file.name)}
+          <tr class="tooling-row">
+            <td><code class="panel__name">{file.name}</code></td>
+            <td><span class="panel__meta">{humanSize(file.content_bytes)}</span></td>
+            <td>
+              <span class="tooling-row__states">
+                <span
+                  class="tooling-row__delivered tooling-row__delivered--{file.delivered
+                    ? 'yes'
+                    : 'no'}"
+                >
+                  {file.delivered ? "Delivered" : "Not yet delivered"}
+                </span>
+                <span
+                  class="tooling-row__badge tooling-row__badge--{file.status === 'enforced'
+                    ? 'enforced'
+                    : 'stored'}"
+                >
+                  {file.status === "enforced" ? "enforced" : "stored"}
+                </span>
+              </span>
+            </td>
+            <td class="panel__cell--right">
+              <button
+                type="button"
+                class="btn btn--quiet btn--danger"
+                disabled={frozen || deleteMutation.isPending}
+                aria-label={`Remove ${file.name}`}
+                onclick={() => openRemove(file)}
+              >
+                Remove
+              </button>
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
   {/if}
 
   {#if deliverySha !== null}
@@ -452,44 +501,33 @@
   {/if}
 </section>
 
+<Modal
+  open={removeTarget !== null}
+  title={removeTarget ? `Remove ${removeTarget.name}` : undefined}
+  onclose={closeRemove}
+>
+  {#if removeTarget}
+    <p class="tooling-modal__confirm-text">
+      Remove {removeTarget.name}? This can't be undone.
+    </p>
+    {#if removeError}
+      <p class="panel__note panel__note--fail" role="alert">{removeError}</p>
+    {/if}
+    <div class="tooling-modal__actions">
+      <button type="button" class="btn btn--quiet" onclick={closeRemove}>Cancel</button>
+      <button
+        type="button"
+        class="btn btn--danger"
+        disabled={deleteMutation.isPending}
+        onclick={handleRemove}
+      >
+        {deleteMutation.isPending ? "Removing…" : "Remove"}
+      </button>
+    </div>
+  {/if}
+</Modal>
+
 <style>
-  .tooling-panel {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-md);
-    padding: var(--space-lg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--panel);
-  }
-
-  .tooling-panel__header {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-
-  .tooling-panel__heading {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .tooling-panel__subtitle {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.85rem;
-  }
-
-  .tooling-panel__explainer {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.85rem;
-  }
-
   .tooling-panel__notice {
     padding: var(--space-sm) var(--space-md);
     border: 1px solid var(--warn);
@@ -513,21 +551,42 @@
     background: color-mix(in srgb, var(--fail) 10%, transparent);
   }
 
+  /* The drawer "+ Tool" opens. No frame of its own: it lives inside the
+     panel, and one box is enough. */
   .tooling-form {
-    display: flex;
-    flex-direction: column;
     gap: var(--space-md);
-    padding: var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg);
+    width: 100%;
   }
 
-  .tooling-form__heading {
-    margin: 0;
+  .tooling-panel__col-size {
+    width: 6rem;
+  }
+
+  .tooling-panel__col-state {
+    width: 16rem;
+  }
+
+  .tooling-panel__col-action {
+    width: 8rem;
+  }
+
+  .tooling-row__states {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2xs);
+  }
+
+  .tooling-modal__confirm-text {
+    margin: 0 0 var(--space-md);
     color: var(--ink);
-    font-size: 0.9rem;
-    font-weight: 600;
+  }
+
+  .tooling-modal__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-xs);
+    margin-top: var(--space-md);
   }
 
   .tooling-form__field {
@@ -601,25 +660,6 @@
     color: var(--accent);
   }
 
-  .tooling-form__submit {
-    align-self: flex-start;
-    padding: var(--space-xs) var(--space-md);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .tooling-form__submit:hover:not(:disabled) {
-    filter: brightness(1.05);
-  }
-
-  .tooling-form__submit:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
 
 
 
@@ -629,54 +669,6 @@
 
 
 
-
-
-  .tooling-panel__remove-error {
-    margin: 0;
-    color: var(--fail);
-    font-size: 0.85rem;
-  }
-
-  .tooling-panel__list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .tooling-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-xs);
-    padding: var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg);
-  }
-
-  .tooling-row__body {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    gap: 0.15rem;
-    min-width: 0;
-  }
-
-  .tooling-row__name {
-    overflow-wrap: anywhere;
-    color: var(--ink);
-    font-family: var(--font-mono);
-    font-size: 0.9rem;
-    font-weight: 600;
-  }
-
-  .tooling-row__meta {
-    color: var(--muted);
-    font-size: 0.8rem;
-  }
 
   .tooling-row__delivered {
     display: inline-flex;
@@ -719,27 +711,6 @@
     border-color: var(--accent);
     color: var(--accent);
     background: color-mix(in srgb, var(--accent) 12%, transparent);
-  }
-
-  .tooling-row__remove {
-    flex-shrink: 0;
-    padding: var(--space-2xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--muted);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .tooling-row__remove:hover:not(:disabled) {
-    border-color: var(--fail);
-    color: var(--fail);
-  }
-
-  .tooling-row__remove:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
 
   .tooling-panel__delivery {

@@ -4,6 +4,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import MemoryPanel from "./MemoryPanel.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 
+/** Open the "Teach from a file" disclosure. The upload form and the list
+ * of uploaded files live behind it now, shut on arrival. */
+async function openTeach(): Promise<void> {
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Teach from a file" }),
+  );
+}
+
 // Fixture files for the memory-shelf condensation tests below. `list_intake`
 // (kobo_api.intake) returns files sorted by name ascending -- for the
 // date-prefixed taught-note convention (`chat-<8-digit date>-<slug>.md`,
@@ -55,6 +63,65 @@ describe("MemoryPanel", () => {
     ).not.toBeNull();
   });
 
+  describe("the panel shape", () => {
+    it("keeps the upload form shut until it is asked for", async () => {
+      renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
+
+      const toggle = await screen.findByRole("button", {
+        name: "Teach from a file",
+      });
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      expect(screen.queryByLabelText("Choose file")).toBeNull();
+      expect(screen.queryByLabelText("Content")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Upload" })).toBeNull();
+    });
+
+    it("opens the upload form on click", async () => {
+      renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
+
+      await openTeach();
+      expect(
+        screen
+          .getByRole("button", { name: "Teach from a file" })
+          .getAttribute("aria-expanded"),
+      ).toBe("true");
+      expect(screen.getByLabelText("Choose file")).not.toBeNull();
+      expect(screen.getByRole("button", { name: "Upload" })).not.toBeNull();
+    });
+
+    it("says nothing is there in one table row", async () => {
+      const { container } = renderWithClient(MemoryPanel, {
+        agentName: "warden",
+        frozen: false,
+      });
+
+      await screen.findByText("Nothing here yet. Add the first thing your agent should know.");
+      const empties = container.querySelectorAll("td.panel__empty");
+      expect(empties).toHaveLength(1);
+      expect(empties[0].parentElement?.children).toHaveLength(1);
+      expect(empties[0].getAttribute("colspan")).toBe("3");
+    });
+
+    it("offers at most one filled button, even with the upload form open", async () => {
+      stubFetch({
+        "/api/agents/warden/knowledge": {
+          files: [{ name: "foo.md", content: "bar" }],
+        },
+        "/api/agents/warden/intake": { files: [OTHER_OLD] },
+        "/api/": {},
+      });
+      const { container } = renderWithClient(MemoryPanel, {
+        agentName: "warden",
+        frozen: false,
+      });
+
+      await openTeach();
+      await screen.findByTitle(OTHER_OLD.name);
+
+      expect(container.querySelectorAll(".btn--primary").length).toBeLessThanOrEqual(1);
+    });
+  });
+
   describe("memory-shelf condensation", () => {
     it("renders each intake file as a single-line row with the full filename in the title attribute", async () => {
       stubFetch({
@@ -64,6 +131,7 @@ describe("MemoryPanel", () => {
       });
 
       const { container } = renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
+      await openTeach();
 
       const nameEl = await screen.findByTitle(OTHER_OLD.name);
       // The row is one `<li>` carrying the name, size, status chip, and
@@ -85,6 +153,7 @@ describe("MemoryPanel", () => {
       });
 
       renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
+      await openTeach();
 
       // Non-chat uploads always show, ungrouped.
       expect(await screen.findByTitle(OTHER_OLD.name)).not.toBeNull();
@@ -107,6 +176,7 @@ describe("MemoryPanel", () => {
       });
 
       renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
+      await openTeach();
 
       const toggle = await screen.findByRole("button", { name: /Taught notes \(3\)/ });
       await fireEvent.click(toggle);
@@ -125,6 +195,7 @@ describe("MemoryPanel", () => {
       });
 
       const { container } = renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
+      await openTeach();
 
       const toggle = await screen.findByRole("button", { name: /Taught notes \(3\)/ });
       await fireEvent.click(toggle);
@@ -150,6 +221,7 @@ describe("MemoryPanel", () => {
       });
 
       renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
+      await openTeach();
 
       const otherRemove = await screen.findByRole("button", {
         name: `Remove ${OTHER_OLD.name}`,
@@ -210,6 +282,7 @@ describe("MemoryPanel", () => {
       );
 
       renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
+      await openTeach();
 
       await fireEvent.input(await screen.findByLabelText("File name"), {
         target: { value: "instant-note.md" },
@@ -245,7 +318,7 @@ describe("MemoryPanel", () => {
 
       renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
 
-      await fireEvent.click(await screen.findByRole("button", { name: "Add memory" }));
+      await fireEvent.click(await screen.findByRole("button", { name: "+ Memory" }));
       await fireEvent.input(screen.getByLabelText("Name"), {
         target: { value: "instant-note" },
       });
@@ -296,13 +369,15 @@ describe("MemoryPanel", () => {
   describe("intake filenames are .md only (fast lane rule)", () => {
     it("the file picker only advertises .md", async () => {
       renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
-      const fileInput = await screen.findByLabelText("Choose file");
+      await openTeach();
+      const fileInput = screen.getByLabelText("Choose file");
       expect(fileInput.getAttribute("accept")).toBe(".md");
     });
 
     it("flags a .txt filename with the .md-only rule and never mentions .txt", async () => {
       renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
-      const filenameInput = await screen.findByLabelText("File name");
+      await openTeach();
+      const filenameInput = screen.getByLabelText("File name");
       await fireEvent.input(filenameInput, { target: { value: "notes.txt" } });
 
       expect(

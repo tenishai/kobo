@@ -121,3 +121,233 @@ kbd {
     animation: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   The panel idiom.
+
+   One shape for every tab of an agent's detail page: a single bordered
+   card, a small-caps heading, a toolbar whose extra forms are disclosures
+   that stay shut until asked for, a table of the rows themselves with a
+   one-row empty state, and at most one filled button per panel.
+
+   Lifted out of the secrets panel, which got there first and still carries
+   its own private copies of these rules. The numbers below match it on
+   purpose: moving a panel to these classes must not move a pixel.
+
+   Global, not scoped to a component, so every panel reads from one place.
+   --------------------------------------------------------------------------- */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-lg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.panel__header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.panel__heading {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* A grouping inside a panel that has more than one table. Smaller and
+   tighter than the panel's own heading, so the panel still reads as one
+   thing. */
+.panel__subheading {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.panel__lead,
+.panel__note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.panel__note--fail {
+  color: var(--fail);
+}
+
+.panel__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+/* A run of buttons that belong together at one end of a toolbar. */
+.panel__tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+/* What a toolbar disclosure opens: a form, indented from the table below
+   it so it reads as belonging to the button that opened it. */
+.panel__drawer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2xs);
+}
+
+.panel__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.panel__table th {
+  padding: 0 var(--space-xs) var(--space-2xs);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.panel__table tbody tr {
+  height: 36px;
+}
+
+.panel__table td {
+  padding: 2px var(--space-xs);
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.panel__cell--right {
+  text-align: right;
+}
+
+/* The empty state: one cell spanning the row, never a separate block. */
+.panel__empty {
+  padding: var(--space-md);
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.panel__name {
+  display: block;
+  overflow: hidden;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel__meta {
+  color: var(--muted);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.panel__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.panel__status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.panel__status--fail {
+  color: var(--fail);
+}
+
+.panel__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-left: auto;
+}
+
+.panel__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.btn {
+  padding: var(--space-2xs) var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn--quiet {
+  border-color: transparent;
+  color: var(--muted);
+}
+
+/* The one button per panel that finishes the job. Exactly one. */
+.btn--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.btn--primary:hover:not(:disabled) {
+  color: var(--accent-ink);
+  filter: brightness(1.05);
+}
+
+.btn--danger {
+  color: var(--fail);
+}
+
+.btn--danger:hover:not(:disabled) {
+  border-color: var(--fail);
+  color: var(--fail);
+}

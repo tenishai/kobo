@@ -73,7 +73,6 @@
   // the identical response contract on `POST .../teach`.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { derived, writable } from "svelte/store";
-  import EmptyState from "./EmptyState.svelte";
   import ErrorState from "./ErrorState.svelte";
   import Modal from "./Modal.svelte";
   import Skeleton from "./Skeleton.svelte";
@@ -221,6 +220,11 @@
     // fallback convention).
     return { tone: "pending", text: "Delivering changes…" };
   });
+
+  // The "Teach from a file" disclosure. Shut on arrival: uploading a file
+  // is the occasional errand, not the reason anyone opens this tab, and a
+  // three-field form standing open reads as work waiting to be done.
+  let teachOpen = $state(false);
 
   // --- Modal: edit / add / delete (knowledge files) -----------------------
 
@@ -624,63 +628,40 @@
   }
 </script>
 
-<section class="memory-panel" aria-labelledby="memory-panel-heading">
-  <div class="memory-panel__header">
-    <div>
-      <h2 id="memory-panel-heading" class="memory-panel__heading">Memory</h2>
-      <p class="memory-panel__subtitle">What your agent knows from the start.</p>
-    </div>
-    <button type="button" class="memory-panel__add" disabled={frozen} onclick={openAdd}>Add memory</button>
+<section class="panel" aria-labelledby="memory-panel-heading">
+  <div class="panel__header">
+    <h2 id="memory-panel-heading" class="panel__heading">Memory</h2>
+    <p class="panel__lead">
+      Your agent remembers what you teach it, through Teach this in chat or file uploads here. It
+      also keeps what colleague agents tell it, with provenance and cross-checking. It does not yet
+      learn on its own from ordinary conversation.
+    </p>
   </div>
 
-  <p class="memory-panel__explainer">
-    Your agent remembers what you teach it, through Teach this in chat or file uploads here. It
-    also keeps what colleague agents tell it, with provenance and cross-checking. It does not yet
-    learn on its own from ordinary conversation.
-  </p>
+  <!-- The disclosure stays usable while frozen: it reveals a form, it
+       changes nothing. Everything inside it is dead. -->
+  <div class="panel__toolbar">
+    <div class="panel__tools">
+      <button type="button" class="btn" disabled={frozen} onclick={openAdd}>+ Memory</button>
+      <button
+        type="button"
+        class="btn"
+        aria-expanded={teachOpen}
+        onclick={() => (teachOpen = !teachOpen)}
+      >
+        Teach from a file
+      </button>
+    </div>
+  </div>
 
-  {#if knowledge.isPending}
-    <Skeleton rows={3} />
-  {:else if knowledge.isError}
-    <ErrorState
-      message={errorMessage(knowledge.error, "Couldn't load what this agent knows.")}
-      onretry={() => knowledge.refetch()}
-    />
-  {:else if knowledge.data.length === 0}
-    <EmptyState message="Nothing here yet. Add the first thing your agent should know." />
-  {:else}
-    <ul class="memory-panel__list">
-      {#each knowledge.data as file (file.name)}
-        <li class="memory-row">
-          <button type="button" class="memory-row__open" disabled={frozen} onclick={() => openEdit(file)}>
-            <span class="memory-panel__sr-only">Edit </span>
-            <span class="memory-row__name">{displayName(file.name)}</span>
-            <span class="memory-row__preview">{firstLine(file.content)}</span>
-          </button>
-          <button
-            type="button"
-            class="memory-row__remove"
-            disabled={frozen}
-            aria-label={`Remove ${displayName(file.name)}`}
-            onclick={() => openDelete(file)}
-          >
-            Remove
-          </button>
-        </li>
-      {/each}
-    </ul>
-  {/if}
-
-  <section class="intake-panel" aria-labelledby="intake-panel-heading">
-    <div class="intake-panel__header">
-      <h3 id="intake-panel-heading" class="intake-panel__heading">Teach from a file</h3>
-      <p class="intake-panel__subtitle">
+  {#if teachOpen}
+    <div class="panel__drawer intake-panel">
+      <p class="panel__note">
         Drop in notes or docs for your agent to learn once. The file can go away afterward, the
         learning stays.
       </p>
-    </div>
 
-    <form class="intake-form" onsubmit={handleUpload}>
+      <form class="intake-form" onsubmit={handleUpload}>
       <div class="intake-form__field">
         <label class="intake-form__label" for="intake-file">Choose file</label>
         <div class="intake-form__file-row">
@@ -757,7 +738,7 @@
         <p class="intake-form__status intake-form__status--error" role="alert">{uploadError}</p>
       {/if}
 
-      <button type="submit" class="intake-form__submit" disabled={frozen || !canUpload}>
+      <button type="submit" class="btn btn--primary" disabled={frozen || !canUpload}>
         {uploadMutation.isPending ? "Uploading…" : "Upload"}
       </button>
     </form>
@@ -797,7 +778,7 @@
         onretry={() => intake.refetch()}
       />
     {:else if intake.data.length === 0}
-      <EmptyState message="Nothing here yet. Upload a file for your agent to learn from." />
+      <p class="panel__note">Nothing here yet. Upload a file for your agent to learn from.</p>
     {:else}
       {#if otherIntakeFiles.length > 0}
         <ul class="intake-panel__list">
@@ -835,7 +816,65 @@
     {#if removeNote}
       <p class="intake-panel__note" role="status">{removeNote}</p>
     {/if}
-  </section>
+    </div>
+  {/if}
+
+  {#if knowledge.isPending}
+    <Skeleton rows={3} />
+  {:else if knowledge.isError}
+    <ErrorState
+      message={errorMessage(knowledge.error, "Couldn't load what this agent knows.")}
+      onretry={() => knowledge.refetch()}
+    />
+  {:else}
+    <table class="panel__table">
+      <thead>
+        <tr>
+          <th scope="col" class="memory-panel__col-name">Memory</th>
+          <th scope="col">What it says</th>
+          <th scope="col" class="memory-panel__col-action">
+            <span class="panel__sr">Remove</span>
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {#if knowledge.data.length === 0}
+          <tr>
+            <td class="panel__empty" colspan="3">
+              Nothing here yet. Add the first thing your agent should know.
+            </td>
+          </tr>
+        {/if}
+        {#each knowledge.data as file (file.name)}
+          <tr class="memory-row">
+            <td>
+              <button
+                type="button"
+                class="memory-row__open"
+                disabled={frozen}
+                onclick={() => openEdit(file)}
+              >
+                <span class="memory-panel__sr-only">Edit </span>
+                <span class="memory-row__name">{displayName(file.name)}</span>
+              </button>
+            </td>
+            <td><span class="memory-row__preview">{firstLine(file.content)}</span></td>
+            <td class="panel__cell--right">
+              <button
+                type="button"
+                class="btn btn--quiet btn--danger"
+                disabled={frozen}
+                aria-label={`Remove ${displayName(file.name)}`}
+                onclick={() => openDelete(file)}
+              >
+                Remove
+              </button>
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  {/if}
 
   {#if deliverySha !== null}
     <div
@@ -997,16 +1036,6 @@
 </Modal>
 
 <style>
-  .memory-panel {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-md);
-    padding: var(--space-lg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--panel);
-  }
-
   .memory-panel__sr-only {
     position: absolute;
     width: 1px;
@@ -1016,84 +1045,34 @@
     white-space: nowrap;
   }
 
-  .memory-panel__header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--space-md);
+  .memory-panel__col-name {
+    width: 14rem;
   }
 
-  .memory-panel__heading {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+  .memory-panel__col-action {
+    width: 8rem;
   }
 
-  .memory-panel__subtitle {
-    margin: var(--space-2xs) 0 0;
-    color: var(--muted);
-    font-size: 0.85rem;
-  }
-
-  .memory-panel__add {
-    padding: var(--space-2xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font-weight: 600;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .memory-panel__add:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .memory-panel__explainer {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.85rem;
-  }
-
-  .memory-panel__list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .memory-row {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-  }
-
+  /* The name cell is the way in to editing: a plain word that underlines
+     on hover, not a button-looking button in every row. */
   .memory-row__open {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.15rem;
-    min-width: 0;
-    padding: var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg);
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    padding: 0;
+    border: none;
+    background: none;
     color: inherit;
     font: inherit;
     text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     cursor: pointer;
   }
 
-  .memory-row__open:hover {
-    border-color: var(--accent);
+  .memory-row__open:hover:not(:disabled) .memory-row__name {
+    color: var(--accent);
+    text-decoration: underline;
   }
 
   .memory-row__open:focus-visible {
@@ -1101,35 +1080,24 @@
     outline-offset: 1px;
   }
 
+  .memory-row__open:disabled {
+    cursor: not-allowed;
+  }
+
   .memory-row__name {
     color: var(--ink);
     font-family: var(--font-mono);
-    font-size: 0.9rem;
-    font-weight: 600;
+    font-size: 0.8rem;
   }
 
   .memory-row__preview {
+    display: block;
     overflow: hidden;
     max-width: 100%;
     color: var(--muted);
     font-size: 0.8rem;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .memory-row__remove {
-    padding: var(--space-2xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--muted);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .memory-row__remove:hover {
-    border-color: var(--fail);
-    color: var(--fail);
   }
 
   .memory-panel__delivery {
@@ -1340,35 +1308,13 @@
     cursor: not-allowed;
   }
 
+  /* The drawer the "Teach from a file" button opens: the upload form and
+     the files already uploaded, stacked. No border of its own -- it lives
+     inside the panel, and a box inside a box was the old shape's worst
+     habit. */
   .intake-panel {
-    display: flex;
-    flex-direction: column;
     gap: var(--space-md);
-    padding: var(--space-lg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--panel);
-  }
-
-  .intake-panel__header {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-
-  .intake-panel__heading {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .intake-panel__subtitle {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.85rem;
+    width: 100%;
   }
 
   .intake-form {
@@ -1450,26 +1396,6 @@
   .intake-form__file-input:hover {
     border-color: var(--accent);
     color: var(--accent);
-  }
-
-  .intake-form__submit {
-    align-self: flex-start;
-    padding: var(--space-xs) var(--space-md);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .intake-form__submit:hover:not(:disabled) {
-    filter: brightness(1.05);
-  }
-
-  .intake-form__submit:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
 
   .intake-panel__list {

@@ -50,10 +50,64 @@ const LEARNINGS = {
   ],
 };
 
+/** Open the "Teach something" disclosure. The teach box lives behind it
+ * now, shut on arrival. */
+async function openTeach(): Promise<void> {
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Teach something" }),
+  );
+}
+
 describe("LearningsPanel", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
     stubFetch({ "/learnings": LEARNINGS });
+  });
+
+  it("keeps the teach box shut until it is asked for, and opens it on click", async () => {
+    renderWithClient(LearningsPanel, {
+      agentName: "wren",
+      canDecide: true,
+      frozen: false,
+    });
+
+    const toggle = await screen.findByRole("button", { name: "Teach something" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByPlaceholderText("Teach wren something...")).toBeNull();
+
+    await fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByPlaceholderText("Teach wren something...")).not.toBeNull();
+  });
+
+  it("says nothing is there in one table row", async () => {
+    stubFetch({ "/learnings": { learnings: [] } });
+    const { container } = renderWithClient(LearningsPanel, {
+      agentName: "wren",
+      canDecide: true,
+      frozen: false,
+    });
+
+    await screen.findByText(
+      "Nothing new. When someone tells wren something worth keeping, it shows up here.",
+    );
+    const empties = container.querySelectorAll("td.panel__empty");
+    expect(empties).toHaveLength(1);
+    expect(empties[0].parentElement?.children).toHaveLength(1);
+    expect(empties[0].getAttribute("colspan")).toBe("3");
+  });
+
+  it("offers at most one filled button, with the teach box open", async () => {
+    const { container } = renderWithClient(LearningsPanel, {
+      agentName: "wren",
+      canDecide: true,
+      frozen: false,
+    });
+
+    await screen.findByText("the canary gate is manual");
+    await openTeach();
+
+    expect(container.querySelectorAll(".btn--primary").length).toBeLessThanOrEqual(1);
   });
 
   it("renders one list with the sentence and byline, no kind text, and a correct summary count", async () => {
@@ -328,6 +382,7 @@ describe("LearningsPanel", () => {
     });
 
     await screen.findByText("the canary gate is manual");
+    await openTeach();
     const input = screen.getByPlaceholderText("Teach wren something...") as HTMLInputElement;
     await fireEvent.input(input, { target: { value: "the release train leaves at noon" } });
     await fireEvent.click(screen.getByRole("button", { name: "Add" }));
@@ -377,6 +432,7 @@ describe("LearningsPanel", () => {
     });
 
     await screen.findByText("the canary gate is manual");
+    await openTeach();
     const [skipButton] = screen.getAllByRole("button", { name: "Skip" });
     await fireEvent.click(skipButton);
 

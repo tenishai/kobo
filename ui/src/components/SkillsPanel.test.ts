@@ -17,9 +17,122 @@ const COST_REPORT_ENTRY = {
   tags: [],
 };
 
+/** Open the "Suggestions" disclosure. */
+async function openSuggestions(): Promise<void> {
+  await fireEvent.click(await screen.findByRole("button", { name: "Suggestions" }));
+}
+
+/** Open the "Browse the catalog" disclosure. */
+async function openCatalog(): Promise<void> {
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Browse the catalog" }),
+  );
+}
+
 describe("SkillsPanel", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("keeps both disclosures shut until they are asked for", async () => {
+    stubFetch({
+      "/api/agents/warden/skills": EMPTY_SKILLS,
+      "/api/catalog/teams": EMPTY_TEAMS,
+      "/api/skills/search": EMPTY_SEARCH,
+      "/api/": {},
+    });
+    renderWithClient(SkillsPanel, { agentName: "warden", frozen: false });
+
+    const catalog = await screen.findByRole("button", { name: "Browse the catalog" });
+    const suggestions = screen.getByRole("button", { name: "Suggestions" });
+    expect(catalog.getAttribute("aria-expanded")).toBe("false");
+    expect(suggestions.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByLabelText("Search skills catalog")).toBeNull();
+  });
+
+  it("opens each disclosure on click", async () => {
+    stubFetch({
+      "/api/agents/warden/skills": EMPTY_SKILLS,
+      "/api/catalog/teams": EMPTY_TEAMS,
+      "/api/skills/search": EMPTY_SEARCH,
+      "/api/": {},
+    });
+    renderWithClient(SkillsPanel, { agentName: "warden", frozen: false });
+
+    await openCatalog();
+    expect(
+      screen
+        .getByRole("button", { name: "Browse the catalog" })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(screen.getByLabelText("Search skills catalog")).not.toBeNull();
+    expect(screen.getByLabelText("Filter by team")).not.toBeNull();
+
+    await openSuggestions();
+    expect(
+      screen.getByRole("button", { name: "Suggestions" }).getAttribute("aria-expanded"),
+    ).toBe("true");
+  });
+
+  it("says nothing is there in one table row", async () => {
+    stubFetch({
+      "/api/agents/warden/skills": EMPTY_SKILLS,
+      "/api/catalog/teams": EMPTY_TEAMS,
+      "/api/skills/search": EMPTY_SEARCH,
+      "/api/": {},
+    });
+    const { container } = renderWithClient(SkillsPanel, {
+      agentName: "warden",
+      frozen: false,
+    });
+
+    await screen.findByText(
+      "Nothing here yet. Add a skill from the catalog or write a guardrail.",
+    );
+    const empties = container.querySelectorAll("td.panel__empty");
+    expect(empties).toHaveLength(1);
+    expect(empties[0].parentElement?.children).toHaveLength(1);
+    expect(empties[0].getAttribute("colspan")).toBe("3");
+  });
+
+  it("offers at most one filled button, with every disclosure open", async () => {
+    stubFetch({
+      "/api/agents/warden/skills": {
+        skills: [{ name: "cost-report", editable: true, team: "sre", source: "catalog", sha: null }],
+      },
+      "/api/catalog/teams": EMPTY_TEAMS,
+      "/api/skills/recommended": { results: [COST_REPORT_ENTRY] },
+      "/api/skills/search": EMPTY_SEARCH,
+      "/api/": {},
+    });
+    const { container } = renderWithClient(SkillsPanel, {
+      agentName: "warden",
+      frozen: false,
+      recommendWho: "watches billing",
+      recommendWhat: "cost billing",
+    });
+
+    await openCatalog();
+    await openSuggestions();
+    await screen.findByText("Recommended for this agent");
+
+    expect(container.querySelectorAll(".btn--primary").length).toBeLessThanOrEqual(1);
+  });
+
+  it("lists the agent's own skills first, with Edit and Remove per row", async () => {
+    stubFetch({
+      "/api/agents/warden/skills": {
+        skills: [{ name: "cost-report", editable: true, team: "sre", source: "catalog", sha: null }],
+      },
+      "/api/catalog/teams": EMPTY_TEAMS,
+      "/api/skills/search": EMPTY_SEARCH,
+      "/api/": {},
+    });
+    renderWithClient(SkillsPanel, { agentName: "warden", frozen: false });
+
+    expect(await screen.findByText("cost-report")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Edit cost-report" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Remove cost-report" })).not.toBeNull();
   });
 
   it("shows recommended skills for the agent and adds one on click", async () => {
@@ -39,7 +152,7 @@ describe("SkillsPanel", () => {
       recommendWhat: "cost billing",
     });
 
-    await fireEvent.click(await screen.findByRole("button", { name: "Add from catalog" }));
+    await openSuggestions();
 
     expect(await screen.findByText("Recommended for this agent")).not.toBeNull();
     const row = screen.getByText("cost-report").closest("li");
@@ -98,7 +211,7 @@ describe("SkillsPanel", () => {
 
     renderWithClient(SkillsPanel, { agentName: "warden", frozen: false });
 
-    await fireEvent.click(await screen.findByRole("button", { name: "Add from catalog" }));
+    await openCatalog();
 
     const input = await screen.findByLabelText("Search skills catalog");
     // The dropdown opens on `focusin` (a bubbling event the combobox's
@@ -149,7 +262,7 @@ describe("SkillsPanel", () => {
       recommendWhat: "",
     });
 
-    await fireEvent.click(await screen.findByRole("button", { name: "Add from catalog" }));
+    await openSuggestions();
     // Let any in-flight microtasks settle before asserting an absence.
     await new Promise((resolve) => setTimeout(resolve, 0));
 

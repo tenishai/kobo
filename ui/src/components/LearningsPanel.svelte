@@ -47,6 +47,8 @@
   ));
 
   let showHistory = $state(false);
+  // The teach box, shut on arrival.
+  let teachOpen = $state(false);
   let errorText = $state("");
   let openId = $state<number | null>(null);      // row whose quote is showing
   let editingId = $state<number | null>(null);   // row being reworded
@@ -153,118 +155,164 @@
   }
 </script>
 
-<section class="learnings-panel" aria-labelledby="learnings-panel-heading">
-  <h2 id="learnings-panel-heading" class="learnings-panel__heading">Learnings</h2>
+<section class="panel" aria-labelledby="learnings-panel-heading">
+  <div class="panel__header">
+    <h2 id="learnings-panel-heading" class="panel__heading">Learnings</h2>
+  </div>
 
   {#if canDecide}
-    <form class="learnings-teach" onsubmit={submitTeach}>
-      <input
-        class="learnings-teach__input"
-        type="text"
-        bind:value={teachText}
-        placeholder={`Teach ${agentName} something...`}
-        aria-label={`Teach ${agentName} something`}
-        maxlength="400"
-        disabled={frozen || teach.isPending}
-      />
-      <button class="learnings-panel__button" type="submit" disabled={frozen || teach.isPending || !teachText.trim()}>
-        Add
-      </button>
-    </form>
-    {#if teachNote}<p class="learnings-panel__note" role="status">{teachNote}</p>{/if}
+    <!-- The teach box used to stand open above everything. It is a
+         disclosure now: the panel is here to show what the agent picked
+         up, and typing something new is the occasional errand. -->
+    <div class="panel__toolbar">
+      <div class="panel__tools">
+        <button
+          type="button"
+          class="btn"
+          aria-expanded={teachOpen}
+          onclick={() => (teachOpen = !teachOpen)}
+        >
+          Teach something
+        </button>
+      </div>
+    </div>
+
+    {#if teachOpen}
+      <form class="panel__drawer learnings-teach" onsubmit={submitTeach}>
+        <div class="learnings-teach__row">
+          <input
+            class="learnings-teach__input"
+            type="text"
+            bind:value={teachText}
+            placeholder={`Teach ${agentName} something...`}
+            aria-label={`Teach ${agentName} something`}
+            maxlength="400"
+            disabled={frozen || teach.isPending}
+          />
+          <button
+            class="btn btn--primary"
+            type="submit"
+            disabled={frozen || teach.isPending || !teachText.trim()}
+          >
+            Add
+          </button>
+        </div>
+        {#if teachNote}<p class="panel__note" role="status">{teachNote}</p>{/if}
+      </form>
+    {/if}
   {/if}
 
   {#if errorText}
-    <p class="learnings-panel__error" role="alert">{errorText}</p>
+    <p class="panel__note panel__note--fail" role="alert">{errorText}</p>
   {/if}
 
   {#if learnings.isPending}
-    <p class="learnings-panel__empty">Loading...</p>
+    <p class="panel__note">Loading...</p>
   {:else if learnings.isError}
     <ErrorState
       message={errorMessage(learnings.error, "Couldn't load this agent's learnings.")}
       onretry={() => learnings.refetch()}
     />
-  {:else if pending.length === 0}
-    <p class="learnings-panel__empty">
-      Nothing new. When someone tells {agentName} something worth keeping, it shows up here.
-    </p>
   {:else}
-    <div class="learnings-panel__summary">
-      <p class="learnings-panel__count">
-        {agentName} picked up {pending.length} {pending.length === 1 ? "thing" : "things"}
-      </p>
-      {#if canDecide}
-        <div class="learnings-panel__bulk">
-          {#if confirming}
-            <span class="learnings-panel__confirm" role="status">
-              {bulkConfirmText(confirming)}
-            </span>
-            <button class="learnings-panel__button learnings-panel__button--quiet" type="button"
-              disabled={frozen || deciding} onclick={() => (confirming = null)}>Cancel</button>
-            <button class="learnings-panel__button learnings-panel__button--primary" type="button"
-              disabled={frozen || deciding}
-              onclick={() => { const action = confirming; confirming = null; if (action) decideAll(action); }}
-            >{confirming === "approve" ? "Yes, remember" : "Yes, skip"}</button>
-          {:else}
-            <button class="learnings-panel__button learnings-panel__button--quiet" type="button"
-              disabled={frozen || deciding} onclick={() => (confirming = "deny")}>Skip all</button>
-            <button class="learnings-panel__button learnings-panel__button--primary" type="button"
-              disabled={frozen || deciding} onclick={() => (confirming = "approve")}>Remember all</button>
+    <table class="panel__table">
+      <thead>
+        <tr>
+          <th scope="col">What it picked up</th>
+          <th scope="col" class="learnings-panel__col-byline">Who said it</th>
+          <th scope="col" class="learnings-panel__col-action">
+            <span class="panel__sr">Decide</span>
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {#if pending.length === 0}
+          <tr>
+            <td class="panel__empty" colspan="3">
+              Nothing new. When someone tells {agentName} something worth keeping, it shows up here.
+            </td>
+          </tr>
+        {/if}
+        {#each pending as l (l.id)}
+          <tr class="learning-row">
+            <td>
+              {#if editingId === l.id}
+                <input
+                  class="learning-row__edit"
+                  type="text"
+                  bind:value={draft}
+                  maxlength="200"
+                  aria-label="Fix the wording"
+                  onkeydown={(e) => { if (e.key === "Escape") editingId = null; }}
+                />
+              {:else}
+                <button
+                  class="learning-row__statement"
+                  class:learning-row__statement--open={openId === l.id}
+                  type="button"
+                  aria-expanded={openId === l.id}
+                  onclick={() => (openId = openId === l.id ? null : l.id)}
+                >{l.content}</button>
+              {/if}
+            </td>
+            <td><span class="learning-row__byline">{byline(l)}</span></td>
+            <td class="panel__cell--right">
+              {#if canDecide}
+                <span class="learning-row__actions">
+                  {#if editingId === l.id}
+                    <button class="btn btn--quiet" type="button"
+                      onclick={() => (editingId = null)}>Cancel</button>
+                  {:else}
+                    <button class="btn btn--quiet" type="button"
+                      disabled={frozen || deciding} aria-label="Fix the wording" title="Fix the wording"
+                      onclick={() => startEdit(l)}>✎</button>
+                    <button class="btn btn--quiet" type="button"
+                      disabled={frozen || deciding} onclick={() => skip(l.id)}>Skip</button>
+                  {/if}
+                  <button class="btn learnings-panel__emphasis" type="button"
+                    disabled={frozen || deciding || (editingId === l.id && !draft.trim())}
+                    onclick={() => remember(l)}>Remember</button>
+                </span>
+              {/if}
+            </td>
+          </tr>
+          {#if openId === l.id && l.evidence}
+            <tr>
+              <td class="learning-row__quote-cell" colspan="3">
+                <blockquote class="learning-row__quote">{l.evidence}</blockquote>
+              </td>
+            </tr>
           {/if}
-        </div>
-      {/if}
-    </div>
+        {/each}
+      </tbody>
+    </table>
 
-    <ul class="learnings-list">
-      {#each pending as l (l.id)}
-        <li class="learning-row">
-          {#if editingId === l.id}
-            <input
-              class="learning-row__edit"
-              type="text"
-              bind:value={draft}
-              maxlength="200"
-              aria-label="Fix the wording"
-              onkeydown={(e) => { if (e.key === "Escape") editingId = null; }}
-            />
-          {:else}
-            <button
-              class="learning-row__statement"
-              class:learning-row__statement--open={openId === l.id}
-              type="button"
-              aria-expanded={openId === l.id}
-              onclick={() => (openId = openId === l.id ? null : l.id)}
-            >{l.content}</button>
-          {/if}
-
-          <div class="learning-row__foot">
-            <span class="learning-row__byline">{byline(l)}</span>
-            {#if canDecide}
-              <span class="learning-row__actions">
-                {#if editingId === l.id}
-                  <button class="learnings-panel__button learnings-panel__button--quiet" type="button"
-                    onclick={() => (editingId = null)}>Cancel</button>
-                {:else}
-                  <button class="learnings-panel__button learnings-panel__button--quiet" type="button"
-                    disabled={frozen || deciding} aria-label="Fix the wording" title="Fix the wording"
-                    onclick={() => startEdit(l)}>✎</button>
-                  <button class="learnings-panel__button learnings-panel__button--quiet" type="button"
-                    disabled={frozen || deciding} onclick={() => skip(l.id)}>Skip</button>
-                {/if}
-                <button class="learnings-panel__button learnings-panel__button--primary" type="button"
-                  disabled={frozen || deciding || (editingId === l.id && !draft.trim())}
-                  onclick={() => remember(l)}>Remember</button>
+    {#if pending.length > 0}
+      <div class="panel__footer">
+        <p class="panel__status">
+          {agentName} picked up {pending.length} {pending.length === 1 ? "thing" : "things"}
+        </p>
+        {#if canDecide}
+          <div class="panel__actions">
+            {#if confirming}
+              <span class="panel__status" role="status">
+                {bulkConfirmText(confirming)}
               </span>
+              <button class="btn btn--quiet" type="button"
+                disabled={frozen || deciding} onclick={() => (confirming = null)}>Cancel</button>
+              <button class="btn learnings-panel__emphasis" type="button"
+                disabled={frozen || deciding}
+                onclick={() => { const action = confirming; confirming = null; if (action) decideAll(action); }}
+              >{confirming === "approve" ? "Yes, remember" : "Yes, skip"}</button>
+            {:else}
+              <button class="btn btn--quiet" type="button"
+                disabled={frozen || deciding} onclick={() => (confirming = "deny")}>Skip all</button>
+              <button class="btn learnings-panel__emphasis" type="button"
+                disabled={frozen || deciding} onclick={() => (confirming = "approve")}>Remember all</button>
             {/if}
           </div>
-
-          {#if openId === l.id && l.evidence}
-            <blockquote class="learning-row__quote">{l.evidence}</blockquote>
-          {/if}
-        </li>
-      {/each}
-    </ul>
+        {/if}
+      </div>
+    {/if}
   {/if}
 
   {#if history.length > 0}
@@ -289,63 +337,34 @@
 </section>
 
 <style>
-  .learnings-panel {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-md);
-    padding: var(--space-lg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--panel);
-  }
-
-  .learnings-panel__heading {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .learnings-panel__error {
-    margin: 0;
-    color: var(--fail);
-    font-size: 0.85rem;
-  }
-
-  .learnings-panel__empty {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.85rem;
-  }
-
-  .learnings-panel__button {
-    padding: var(--space-2xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font-weight: 600;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .learnings-panel__button:hover:not(:disabled) {
+  .learnings-panel__emphasis {
     border-color: var(--accent);
     color: var(--accent);
   }
 
-  .learnings-panel__button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
+  .learnings-panel__col-byline {
+    width: 14rem;
   }
 
-  .learnings-teach { display: flex; gap: var(--space-xs); }
+  .learnings-panel__col-action {
+    width: 16rem;
+  }
+
+  .learnings-teach {
+    width: 100%;
+  }
+
+  .learnings-teach__row {
+    display: flex;
+    gap: var(--space-xs);
+    width: 100%;
+  }
+
   .learnings-teach__input,
   .learning-row__edit {
     flex: 1;
     min-width: 0;
+    width: 100%;
     padding: var(--space-2xs) var(--space-sm);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
@@ -353,38 +372,28 @@
     color: var(--ink);
     font: inherit;
   }
+
   .learnings-teach__input:focus,
   .learning-row__edit:focus { outline: none; border-color: var(--accent); }
-  .learnings-panel__note { margin: 0; color: var(--muted); font-size: 0.85rem; }
-  .learnings-panel__summary {
-    display: flex; flex-wrap: wrap; align-items: center;
-    justify-content: space-between; gap: var(--space-sm);
-  }
-  .learnings-panel__count { margin: 0; color: var(--ink); font-size: 0.95rem; font-weight: 600; }
-  .learnings-panel__bulk { display: flex; align-items: center; gap: var(--space-xs); }
-  .learnings-panel__confirm { color: var(--muted); font-size: 0.85rem; }
-  .learnings-panel__button--primary { border-color: var(--accent); color: var(--accent); }
-  .learnings-panel__button--quiet { border-color: transparent; background: transparent; color: var(--muted); }
+
   .learnings-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
-  .learning-row {
+  .learning-row--decided {
     display: flex; flex-direction: column; gap: var(--space-2xs);
     padding: var(--space-sm) 0; border-top: 1px solid var(--border);
+    opacity: 0.75;
   }
-  .learning-row:first-child { border-top: 0; }
-  .learning-row--decided { opacity: 0.75; }
+  .learning-row--decided:first-child { border-top: 0; }
   .learning-row__statement {
     display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical;
-    overflow: hidden; margin: 0; padding: 0; border: 0; background: none;
-    color: var(--ink); font: inherit; line-height: 1.4; text-align: left; cursor: pointer;
+    overflow: hidden; width: 100%; margin: 0; padding: 0; border: 0; background: none;
+    color: var(--ink); font: inherit; font-size: 0.85rem; line-height: 1.4;
+    text-align: left; cursor: pointer;
   }
   .learning-row__statement--open { display: block; overflow: visible; white-space: pre-wrap; }
   .learning-row__statement-text { margin: 0; color: var(--ink); line-height: 1.4; }
-  .learning-row__foot {
-    display: flex; flex-wrap: wrap; align-items: center;
-    justify-content: space-between; gap: var(--space-xs);
-  }
   .learning-row__byline { color: var(--muted); font-size: 0.8rem; }
-  .learning-row__actions { display: flex; gap: var(--space-2xs); margin-left: auto; }
+  .learning-row__actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2xs); }
+  .learning-row__quote-cell { padding-bottom: var(--space-xs); }
   .learning-row__quote {
     margin: 0; padding-left: var(--space-sm); border-left: 2px solid var(--border);
     color: var(--muted); font-size: 0.85rem;

@@ -6,6 +6,12 @@
   // broker pins this agent's tokens to. The decide buttons render for
   // everyone and let the SERVER's operator gate answer: the room's
   // enforcement lives in the route, never in what the UI hides.
+  //
+  // Shaped like every other panel now (shared .panel/.btn classes in
+  // app.css): one card, a heading, one table, and the request form behind
+  // a toolbar button instead of standing open under the list. It sits
+  // beside the access panel rather than inside it because AgentDetail
+  // mounts the two as siblings.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import {
     decideRepoAccess,
@@ -13,6 +19,8 @@
     listRepoAccess,
     requestRepoAccess,
   } from "../lib/api";
+  import ErrorState from "./ErrorState.svelte";
+  import Skeleton from "./Skeleton.svelte";
 
   let { agentName, frozen = false }: { agentName: string; frozen?: boolean } = $props();
 
@@ -29,6 +37,9 @@
 
   let draft = $state("");
   let feedback = $state<string | null>(null);
+  // Shut on arrival: asking for a repository is an occasional errand, not
+  // the reason this panel is on screen.
+  let requestOpen = $state(false);
 
   const parsed = $derived(
     draft
@@ -63,147 +74,183 @@
   }));
 </script>
 
-<section class="repo-access">
-  <h3 class="repo-access__title">GitHub repositories</h3>
-  <p class="repo-access__hint">
-    Approved repositories are the only places this agent's github.open_pr
-    tool can open pull requests. Requests are decided by a room operator.
-  </p>
+<section class="panel" aria-labelledby="repo-access-heading">
+  <div class="panel__header">
+    <h2 id="repo-access-heading" class="panel__heading">Repositories</h2>
+    <p class="panel__lead">
+      Approved repositories are the only places this agent's github.open_pr
+      tool can open pull requests. Requests are decided by a room operator.
+    </p>
+  </div>
 
-  {#if rows.isPending}
-    <p class="repo-access__note">Loading…</p>
-  {:else if rows.isError}
-    <p class="repo-access__note">{errorMessage(rows.error, "Repo access could not be loaded.")}</p>
-  {:else if rows.data}
-    {#if rows.data.length === 0}
-      <p class="repo-access__note">No repositories requested yet.</p>
-    {:else}
-      <ul class="repo-access__list">
-        {#each rows.data as row (row.id)}
-          <li class="repo-access__row">
-            <code>{row.repository}</code>
-            <span class="repo-access__status repo-access__status--{row.status}">{row.status}</span>
-            {#if row.status === "requested"}
-              <button
-                type="button"
-                disabled={decide.isPending}
-                onclick={() => decide.mutate({ id: row.id, decision: "approved" })}
-              >Approve</button>
-            {/if}
-            {#if row.status !== "revoked"}
-              <button
-                type="button"
-                disabled={decide.isPending}
-                onclick={() => decide.mutate({ id: row.id, decision: "revoked" })}
-              >Revoke</button>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    {/if}
+  <!-- Usable while frozen: it opens a form, it changes nothing. The
+       textarea and the submit inside it are the ones that go dead. -->
+  <div class="panel__toolbar">
+    <div class="panel__tools">
+      <button
+        type="button"
+        class="btn"
+        aria-expanded={requestOpen}
+        onclick={() => (requestOpen = !requestOpen)}
+      >
+        Request repositories
+      </button>
+    </div>
+  </div>
+
+  {#if requestOpen}
+    <div class="panel__drawer repo-access__drawer">
+      <label class="repo-access__label" for="repo-access-draft">
+        One owner/name per line
+      </label>
+      <textarea
+        id="repo-access-draft"
+        class="repo-access__draft"
+        rows="3"
+        placeholder="your-org/example-repo"
+        bind:value={draft}
+        disabled={frozen}
+      ></textarea>
+      {#if invalid.length > 0}
+        <p class="panel__note panel__note--fail">
+          Not owner/name shaped: {invalid.join(", ")}
+        </p>
+      {/if}
+      <button
+        type="button"
+        class="btn btn--primary"
+        disabled={frozen || parsed.length === 0 || invalid.length > 0 || request.isPending}
+        onclick={() => request.mutate()}
+      >
+        {request.isPending ? "Requesting…" : "Request access"}
+      </button>
+    </div>
   {/if}
 
-  {#if !frozen}
-    <label class="repo-access__label" for="repo-access-draft">
-      Request repositories (one owner/name per line)
-    </label>
-    <textarea
-      id="repo-access-draft"
-      class="repo-access__draft"
-      rows="3"
-      placeholder="your-org/example-repo"
-      bind:value={draft}
-    ></textarea>
-    {#if invalid.length > 0}
-      <p class="repo-access__note">Not owner/name shaped: {invalid.join(", ")}</p>
-    {/if}
-    <button
-      type="button"
-      class="repo-access__submit"
-      disabled={parsed.length === 0 || invalid.length > 0 || request.isPending}
-      onclick={() => request.mutate()}
-    >
-      {request.isPending ? "Requesting…" : "Request access"}
-    </button>
+  {#if rows.isPending}
+    <Skeleton rows={2} />
+  {:else if rows.isError}
+    <ErrorState
+      message={errorMessage(rows.error, "Repo access could not be loaded.")}
+      onretry={() => rows.refetch()}
+    />
+  {:else}
+    <table class="panel__table">
+      <thead>
+        <tr>
+          <th scope="col">Repository</th>
+          <th scope="col" class="repo-access__col-state">State</th>
+          <th scope="col" class="repo-access__col-action">
+            <span class="panel__sr">Decide</span>
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {#if (rows.data ?? []).length === 0}
+          <tr>
+            <td class="panel__empty" colspan="3">No repositories requested yet.</td>
+          </tr>
+        {/if}
+        {#each rows.data ?? [] as row (row.id)}
+          <tr class="repo-access__row">
+            <td><code class="panel__name">{row.repository}</code></td>
+            <td>
+              <span class="repo-access__state repo-access__state--{row.status}">
+                {row.status}
+              </span>
+            </td>
+            <td class="panel__cell--right">
+              <div class="repo-access__actions">
+                {#if row.status === "requested"}
+                  <button
+                    type="button"
+                    class="btn"
+                    disabled={frozen || decide.isPending}
+                    aria-label={`Approve ${row.repository}`}
+                    onclick={() => decide.mutate({ id: row.id, decision: "approved" })}
+                  >
+                    Approve
+                  </button>
+                {/if}
+                {#if row.status !== "revoked"}
+                  <button
+                    type="button"
+                    class="btn btn--quiet btn--danger"
+                    disabled={frozen || decide.isPending}
+                    aria-label={`Revoke ${row.repository}`}
+                    onclick={() => decide.mutate({ id: row.id, decision: "revoked" })}
+                  >
+                    Revoke
+                  </button>
+                {/if}
+              </div>
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
   {/if}
 
   {#if feedback}
-    <p class="repo-access__note" role="status">{feedback}</p>
+    <p class="panel__note" role="status">{feedback}</p>
   {/if}
 </section>
 
 <style>
-  .repo-access {
-    margin-top: 1.5rem;
+  .repo-access__drawer {
+    width: 100%;
   }
 
-  .repo-access__title {
-    font-size: 1rem;
-    margin: 0 0 0.25rem;
-  }
-
-  .repo-access__hint,
-  .repo-access__note {
+  .repo-access__label {
+    color: var(--ink);
+    font-weight: 600;
     font-size: 0.85rem;
-    opacity: 0.75;
-    margin: 0.25rem 0;
-  }
-
-  .repo-access__list {
-    list-style: none;
-    padding: 0;
-    margin: 0.5rem 0;
-  }
-
-  .repo-access__row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.25rem 0;
-    font-size: 0.9rem;
-  }
-
-  .repo-access__row button {
-    font: inherit;
-    font-size: 0.75rem;
-    background: none;
-    border: 1px solid var(--border, #d0c8bc);
-    border-radius: 5px;
-    padding: 0.15rem 0.5rem;
-    cursor: pointer;
-  }
-
-  .repo-access__status {
-    font-size: 0.75rem;
-    border-radius: 999px;
-    padding: 0.1rem 0.5rem;
-    background: var(--surface-sunken, #f4efe8);
-  }
-
-  .repo-access__status--approved {
-    background: #dcefdc;
-  }
-
-  .repo-access__status--revoked {
-    opacity: 0.6;
   }
 
   .repo-access__draft {
     display: block;
     width: 100%;
-    font: inherit;
-    font-size: 0.85rem;
-    margin-top: 0.25rem;
+    padding: var(--space-2xs) var(--space-xs);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    resize: vertical;
   }
 
-  .repo-access__submit {
-    margin-top: 0.5rem;
-    font: inherit;
-    font-size: 0.85rem;
-    border: 1px solid var(--border, #d0c8bc);
-    border-radius: 6px;
-    padding: 0.35rem 0.75rem;
-    cursor: pointer;
-    background: none;
+  .repo-access__state {
+    padding: 0.1rem var(--space-xs);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted);
+    font-size: 0.7rem;
+    text-transform: capitalize;
+    white-space: nowrap;
+  }
+
+  .repo-access__state--approved {
+    border-color: var(--ok);
+    color: var(--ok);
+  }
+
+  .repo-access__state--revoked {
+    opacity: 0.6;
+  }
+
+  .repo-access__actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-xs);
+  }
+
+  .repo-access__col-state {
+    width: 8rem;
+  }
+
+  .repo-access__col-action {
+    width: 12rem;
   }
 </style>

@@ -86,14 +86,39 @@ describe("frozen panels disable every control", () => {
     });
   });
 
+  /** Click every shut disclosure so the sweep below sees the forms they
+   * hide. Without this the check is vacuous for a panel whose only
+   * writable controls live behind a toolbar button: nothing is rendered,
+   * so nothing can be found enabled. Run twice, in case opening one
+   * reveals another. */
+  async function openEveryDisclosure(container: HTMLElement): Promise<void> {
+    for (let pass = 0; pass < 2; pass += 1) {
+      const shut = container.querySelectorAll('[aria-expanded="false"]');
+      for (const toggle of shut) {
+        await fireEvent.click(toggle);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
   for (const [label, component, props, reveal] of CASES) {
     it(`${label} disables all interactive controls when frozen`, async () => {
       const { container } = renderWithClient(component, props);
       await new Promise((resolve) => setTimeout(resolve, 0));
+      // A panel whose disclosure is itself frozen shut (Slack) proves it is
+      // open by hand; every other disclosure is clicked open below.
       if (reveal) {
         await reveal();
       }
-      const controls = container.querySelectorAll("button, input, textarea, select");
+      await openEveryDisclosure(container);
+
+      const controls = Array.from(
+        container.querySelectorAll("button, input, textarea, select"),
+        // A disclosure toggle only shows and hides a form; it changes
+        // nothing about the agent, and a frozen panel still has to let
+        // somebody read what is in there. The freeze bites on the
+        // controls inside, which this sweep is exactly what checks.
+      ).filter((control) => !control.hasAttribute("aria-expanded"));
       expect(controls.length).toBeGreaterThan(0);
       for (const control of controls) {
         expect((control as HTMLButtonElement).disabled, `${label}: ${control.outerHTML.slice(0, 80)}`).toBe(true);
