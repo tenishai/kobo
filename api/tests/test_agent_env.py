@@ -19,6 +19,8 @@ from kobo_api.agent_env import (
     ENV_BRANCH,
     ENV_PR_ALREADY_OPEN,
     ENV_PR_BODY,
+    LIVE,
+    MANAGED_PURPOSES,
     MAX_KEYS,
     PULL_REQUEST,
     ROOM_SETS_THIS_ONE,
@@ -26,9 +28,15 @@ from kobo_api.agent_env import (
     SECRETS_WIRING_BRANCH,
     SECRETS_WIRING_PR_BODY,
     SECRETS_WIRING_PR_TITLE,
+    SYNC_ERROR,
+    SYNC_FAILED,
+    SYNC_NOT_DELIVERED,
+    SYNC_UNKNOWN,
+    SYNCING,
     UNCHANGED,
     UNREADABLE_GOJIRA_YAML,
     UNREADABLE_REPOSITORY,
+    UNWIRED,
     WIRING_PR_ALREADY_OPEN,
     DeployTriggerFailed,
     RepoBusy,
@@ -38,10 +46,14 @@ from kobo_api.agent_env import (
     env_secret_name,
     has_env_secret,
     key_refusal,
+    managed_secret_name,
+    managed_secret_path,
     merged_names,
     read_env,
     read_repo_env,
     secret_path,
+    sync_state,
+    sync_unknown,
     unwire_env_secret,
     wire_env_secret,
     write_refusal,
@@ -916,3 +928,72 @@ def test_the_reprovision_can_be_held_back_for_a_caller_with_more_to_do():
 
     assert github.pushes
     assert gojira.reprovision_calls == []
+
+
+# --- The lock: is a stored secret actually on the agent? ----------------------
+
+
+def _ready(status: str, reason: str | None = None, message: str | None = None) -> dict:
+    condition: dict = {"type": "Ready", "status": status}
+    if reason is not None:
+        condition["reason"] = reason
+    if message is not None:
+        condition["message"] = message
+    return {"conditions": [{"type": "Deleted", "status": "False"}, condition]}
+
+
+def test_a_ready_external_secret_reads_as_live():
+    assert sync_state(_ready("True")) == {"state": LIVE, "message": None}
+
+
+def test_an_external_secret_with_no_ready_condition_yet_reads_as_syncing():
+    assert sync_state({}) == {"state": SYNCING, "message": None}
+    assert sync_state({"conditions": []}) == {"state": SYNCING, "message": None}
+
+
+def test_a_missing_external_secret_reads_as_unwired():
+    assert sync_state(None) == {"state": UNWIRED, "message": SYNC_NOT_DELIVERED}
+
+
+def test_a_failing_external_secret_reads_as_an_error_naming_the_reason_word():
+    answer = sync_state(_ready("False", reason="SecretSyncedError"))
+
+    assert answer["state"] == SYNC_ERROR
+    assert answer["message"] == f"{SYNC_FAILED} It reported SecretSyncedError."
+
+
+def test_the_platforms_own_message_never_reaches_the_answer():
+    # The one field of somebody else's object that could carry what was
+    # stored. The reason word comes along; the sentence around it does not.
+    answer = sync_state(
+        _ready(
+            "False",
+            reason="SecretSyncedError",
+            message="could not store not-a-real-key-value at apps/clio/env",
+        )
+    )
+
+    assert "not-a-real-key-value" not in str(answer)
+    assert "apps/clio/env" not in str(answer)
+
+
+def test_a_reason_that_is_not_one_plain_word_is_not_repeated_either():
+    answer = sync_state(_ready("False", reason="secret value: not-a-real-key-value"))
+
+    assert answer == {"state": SYNC_ERROR, "message": SYNC_FAILED}
+
+
+def test_a_ready_condition_that_says_neither_true_nor_false_reads_as_syncing():
+    assert sync_state(_ready("Unknown")) == {"state": SYNCING, "message": None}
+
+
+def test_a_cluster_the_room_could_not_ask_reads_as_syncing_and_says_so():
+    # NOT "not on the agent": a failed look is not evidence that the
+    # secret is missing, and the tag for that state would claim it is.
+    assert sync_unknown() == {"state": SYNCING, "message": SYNC_UNKNOWN}
+
+
+def test_the_rooms_own_two_secrets_are_named_the_way_the_agents_own_is():
+    assert managed_secret_path("clio", "cabal") == "apps/clio/cabal"
+    assert managed_secret_name("clio", "slack") == "clio-slack"
+    assert MANAGED_PURPOSES == ("cabal", "slack")
