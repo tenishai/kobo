@@ -38,6 +38,9 @@ from kobo_api.agent_env import (
     MAX_KEYS,
     ROOM_SETS_THIS_ONE,
     SECRETS_WIRING_BRANCH,
+    SYNC_FAILED,
+    SYNC_NOT_DELIVERED,
+    SYNC_UNKNOWN,
     UNREADABLE_GOJIRA_YAML,
     UNREADABLE_REPOSITORY,
 )
@@ -139,6 +142,7 @@ def _client(
     kind: str = KIND_COMPOSED,
     ladon: FakeLadon | None = None,
     github: FakeGitHub | None = None,
+    kubectl: FakeKubectl | None = None,
     created_by: str | None = OWNER,
     status: AgentStatus = AgentStatus.READY,
 ) -> tuple[TestClient, Clients]:
@@ -152,7 +156,7 @@ def _client(
         gojira=gojira,
         cloud=FakeCloud(),
         agent=FakeAgent(reply="sure"),
-        kubectl=FakeKubectl(),
+        kubectl=kubectl or FakeKubectl(),
         storage=fake_storage,
         slack=FakeSlack(),
         cabal=FakeCabal(),
@@ -253,6 +257,9 @@ def test_a_room_with_no_secrets_platform_says_so_rather_than_failing(
         # Not "unreadable": there is nothing to read, which is a
         # different sentence from "the room cannot ask right now".
         "unreadable": False,
+        "sync": {"state": "unwired", "message": SYNC_NOT_DELIVERED},
+        "wired": None,
+        "managed": [],
     }
 
 
@@ -1058,7 +1065,13 @@ def test_a_read_names_the_caller_not_the_creator(
 
     client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key, operator))
 
-    assert ladon.reads == [(operator, f"apps/{AGENT}/env")]
+    # The agent's own path first, then the two the room sets itself --
+    # every one of them on the caller's behalf, never the creator's.
+    assert ladon.reads == [
+        (operator, f"apps/{AGENT}/env"),
+        (operator, f"apps/{AGENT}/cabal"),
+        (operator, f"apps/{AGENT}/slack"),
+    ]
 
 
 def test_a_read_of_an_agent_with_no_creator_still_answers(
@@ -1458,3 +1471,263 @@ def test_a_real_save_whose_deploy_fails_says_the_change_is_saved(
     assert resp.status_code == 502
     assert "is saved" in resp.json()["error"]
     assert github.pushes
+
+
+# --- The lock: is what the list names actually ON the agent? ------------------
+#
+# The operator's own words for why this exists: somebody who adds a secret
+# should know at a glance that it is really set. A key name in a list is
+# not a credential in a pod, so the read says which of the two it has.
+
+
+def _ready(status: str, reason: str | None = None, message: str | None = None) -> dict:
+    condition: dict = {"type": "Ready", "status": status}
+    if reason is not None:
+        condition["reason"] = reason
+    if message is not None:
+        condition["message"] = message
+    return {"conditions": [condition]}
+
+
+def _with_secret(ladon: FakeLadon | None = None) -> FakeLadon:
+    ladon = ladon or FakeLadon()
+    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    return ladon
+
+
+def test_a_delivered_secret_reads_as_live(session_factory, config, fake_storage, _key):
+    kubectl = FakeKubectl(external_secrets={(AGENT, f"{AGENT}-env"): _ready("True")})
+    client, _ = _client(
+        session_factory, config, fake_storage, _key, ladon=_with_secret(), kubectl=kubectl
+    )
+
+    body = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()
+
+    assert body["keys"] == ["API_KEY"]
+    assert body["sync"] == {"state": "live", "message": None}
+
+
+def test_a_secret_the_cluster_has_not_settled_yet_reads_as_syncing(
+    session_factory, config, fake_storage, _key
+):
+    kubectl = FakeKubectl(external_secrets={(AGENT, f"{AGENT}-env"): {}})
+    client, _ = _client(
+        session_factory, config, fake_storage, _key, ladon=_with_secret(), kubectl=kubectl
+    )
+
+    body = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()
+
+    assert body["sync"] == {"state": "syncing", "message": None}
+
+
+def test_a_stored_secret_with_nothing_delivering_it_reads_as_unwired(
+    session_factory, config, fake_storage, _key
+):
+    # Nothing seeded: the namespace holds no such object at all.
+    client, _ = _client(session_factory, config, fake_storage, _key, ladon=_with_secret())
+
+    body = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()
+
+    assert body["sync"] == {"state": "unwired", "message": SYNC_NOT_DELIVERED}
+
+
+def test_a_failing_delivery_reads_as_an_error_and_never_quotes_the_platform(
+    session_factory, config, fake_storage, _key
+):
+    kubectl = FakeKubectl(
+        external_secrets={
+            (AGENT, f"{AGENT}-env"): _ready(
+                "False",
+                reason="SecretSyncedError",
+                message=f"could not store {VALUE} at apps/{AGENT}/env",
+            )
+        }
+    )
+    client, _ = _client(
+        session_factory, config, fake_storage, _key, ladon=_with_secret(), kubectl=kubectl
+    )
+
+    resp = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key))
+
+    assert resp.json()["sync"] == {
+        "state": "error",
+        "message": f"{SYNC_FAILED} It reported SecretSyncedError.",
+    }
+    assert VALUE not in resp.text
+
+
+def test_a_cluster_the_room_could_not_ask_does_not_take_the_list_away(
+    session_factory, config, fake_storage, _key
+):
+    kubectl = FakeKubectl(external_secret_error="Unable to connect to the server")
+    client, _ = _client(
+        session_factory, config, fake_storage, _key, ladon=_with_secret(), kubectl=kubectl
+    )
+
+    resp = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key))
+
+    assert resp.status_code == 200
+    assert resp.json()["keys"] == ["API_KEY"]
+    assert resp.json()["sync"] == {"state": "syncing", "message": SYNC_UNKNOWN}
+
+
+def test_the_read_never_asks_for_the_kubernetes_secret_itself(
+    session_factory, config, fake_storage, _key
+):
+    # The one thing this feature must not do to answer "is it set".
+    kubectl = FakeKubectl(external_secrets={(AGENT, f"{AGENT}-env"): _ready("True")})
+    client, _ = _client(
+        session_factory, config, fake_storage, _key, ladon=_with_secret(), kubectl=kubectl
+    )
+
+    client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key))
+
+    assert kubectl.external_secret_reads == [(AGENT, f"{AGENT}-env")]
+    assert kubectl.secrets == {}
+
+
+def test_the_read_says_whether_the_agents_own_files_name_the_secret(
+    session_factory, config, fake_storage, _key
+):
+    wired = _github(
+        repo_files={
+            "gojira.yaml": BASE_GOJIRA_YAML + f"secrets_from:\n- {AGENT}-env\n"
+        }
+    )
+    client, _ = _client(
+        session_factory, config, fake_storage, _key, ladon=_with_secret(), github=wired
+    )
+
+    assert client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()["wired"] is True
+
+
+def test_a_file_with_no_line_reads_as_not_wired(
+    session_factory, config, fake_storage, _key
+):
+    client, _ = _client(session_factory, config, fake_storage, _key, ladon=_with_secret())
+
+    assert client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()["wired"] is False
+
+
+def test_a_repository_the_room_cannot_read_makes_no_claim_about_the_file(
+    session_factory, config, fake_storage, _key
+):
+    # Null, not false: "the room cannot look" is not "the line is not
+    # there", and the panel must not turn one into the other.
+    client, _ = _client(
+        session_factory,
+        config,
+        fake_storage,
+        _key,
+        ladon=_with_secret(),
+        github=FakeGitHub(existing_repos=set(), repo_files={}),
+    )
+
+    resp = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key))
+
+    assert resp.status_code == 200
+    assert resp.json()["wired"] is None
+
+
+# --- The rows the ROOM set ----------------------------------------------------
+
+
+def test_the_rooms_own_secrets_come_back_as_locked_rows(
+    session_factory, config, fake_storage, _key
+):
+    ladon = _with_secret()
+    ladon.stored[f"apps/{AGENT}/cabal"] = {"CABAL_COLLEAGUE_TOKEN": VALUE}
+    ladon.stored[f"apps/{AGENT}/slack"] = {"SLACK_BOT_TOKEN": VALUE, "SLACK_APP_TOKEN": VALUE}
+    kubectl = FakeKubectl(
+        external_secrets={
+            (AGENT, f"{AGENT}-cabal"): _ready("True"),
+            (AGENT, f"{AGENT}-slack"): {},
+        }
+    )
+    client, _ = _client(
+        session_factory, config, fake_storage, _key, ladon=ladon, kubectl=kubectl
+    )
+
+    resp = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key))
+
+    assert resp.json()["managed"] == [
+        {
+            "name": "CABAL_COLLEAGUE_TOKEN",
+            "purpose": "cabal",
+            "secret_name": f"{AGENT}-cabal",
+            "sync": {"state": "live", "message": None},
+        },
+        {
+            "name": "SLACK_APP_TOKEN",
+            "purpose": "slack",
+            "secret_name": f"{AGENT}-slack",
+            "sync": {"state": "syncing", "message": None},
+        },
+        {
+            "name": "SLACK_BOT_TOKEN",
+            "purpose": "slack",
+            "secret_name": f"{AGENT}-slack",
+            "sync": {"state": "syncing", "message": None},
+        },
+    ]
+    assert VALUE not in resp.text
+
+
+def test_a_purpose_the_room_never_set_is_simply_not_a_row(
+    session_factory, config, fake_storage, _key
+):
+    ladon = _with_secret()
+    ladon.stored[f"apps/{AGENT}/cabal"] = {"CABAL_COLLEAGUE_TOKEN": VALUE}
+    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+
+    managed = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()["managed"]
+
+    assert [row["purpose"] for row in managed] == ["cabal"]
+
+
+def test_an_agent_the_room_has_set_nothing_on_has_no_locked_rows(
+    session_factory, config, fake_storage, _key
+):
+    client, _ = _client(session_factory, config, fake_storage, _key, ladon=_with_secret())
+
+    assert client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()["managed"] == []
+
+
+def test_a_room_managed_name_still_cannot_be_written_or_removed(
+    session_factory, config, fake_storage, _key
+):
+    # Showing these rows changes nothing about who may set them: the same
+    # refusal the key rules have always given, on both sides of a write.
+    ladon = _with_secret()
+    ladon.stored[f"apps/{AGENT}/slack"] = {"SLACK_BOT_TOKEN": VALUE}
+    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+
+    written = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"set": {"SLACK_BOT_TOKEN": VALUE}, "remove": []},
+        headers=_as(_key),
+    )
+    removed = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"set": {}, "remove": ["CABAL_COLLEAGUE_TOKEN"]},
+        headers=_as(_key),
+    )
+
+    assert written.status_code == 422
+    assert ROOM_SETS_THIS_ONE in written.json()["error"]
+    assert removed.status_code == 422
+    assert ROOM_SETS_THIS_ONE in removed.json()["error"]
+    # And the stored value is untouched: nothing reached the platform.
+    assert ladon.puts == []
+
+
+def test_a_room_with_no_secrets_platform_makes_no_claim_about_the_cluster(
+    session_factory, config, fake_storage, _key
+):
+    client, _ = _client(session_factory, config, fake_storage, _key, ladon=None)
+
+    body = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()
+
+    assert body["sync"] == {"state": "unwired", "message": SYNC_NOT_DELIVERED}
+    assert body["managed"] == []
+    assert body["wired"] is None
