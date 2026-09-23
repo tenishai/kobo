@@ -119,6 +119,15 @@ export type AgentDetail = AgentSummary & {
    * by the decide gate (destroy_visible precedent): the panel hides its
    * verdict buttons off this; the route stays the real enforcement. */
   can_decide_learnings: boolean;
+  /** The image this agent runs on (harness wave, 2026-09-23). Already
+   * resolved server-side: an agent that never moved off the org default
+   * carries no image of its own, and the read route answers with the
+   * room's rather than nothing. Absent on an older server. */
+  runtime_image?: string;
+  /** The image the room builds on today. The Harness tab's state line is
+   * the comparison of the two: equal is "Current", different is "Behind".
+   * Absent on an older server. */
+  room_runtime_image?: string;
 };
 
 /** One catalog search result — a skill or a persona, both served by the
@@ -1528,6 +1537,36 @@ export async function regenerateAgentMetadata(
     { method: "POST" },
   );
   return parse<AgentMetadata & { sha: string }>(res);
+}
+
+/** What `PATCH /api/agents/{name}/runtime` answers with: the image the
+ * agent runs on now, the one it left, and the commit that re-pinned its
+ * Dockerfile. The push IS the deploy -- the agent's own CI rebuilds and
+ * rotates the pod on it -- so there is no second call after this one. */
+export type AgentRuntimeChange = {
+  runtime_image: string;
+  previous_runtime_image: string | null;
+  sha: string;
+};
+
+/**
+ * Moves one agent onto a different runtime image (`PATCH
+ * /api/agents/{name}/runtime`). The room only ever offers its OWN current
+ * image here, from the Harness tab's Model and runtime section, so a
+ * caller never types a ref; the server validates the registry root anyway
+ * and answers 422 for anything outside it, 409 for an agent that is not
+ * ready, 403 for a caller who may not change it.
+ */
+export async function patchAgentRuntime(
+  name: string,
+  runtimeImage: string,
+): Promise<AgentRuntimeChange> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/runtime`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ runtime_image: runtimeImage }),
+  });
+  return parse<AgentRuntimeChange>(res);
 }
 
 /**

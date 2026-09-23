@@ -10,7 +10,7 @@
 
 export type Route =
   | { page: "dashboard" }
-  | { page: "agent"; name: string }
+  | { page: "agent"; name: string; tab?: string; section?: string }
   | { page: "getting-started" }
   | { page: "personas" };
 
@@ -30,6 +30,12 @@ const DASHBOARD: Route = { page: "dashboard" };
  * the `hashchange` listener for the rest of the session. So a decode
  * failure falls back to the raw, still-encoded segment instead of
  * propagating.
+ *
+ * Segments three and four are the agent page's tab and, when that tab is
+ * Harness, the section inside it (harness wave, 2026-09-23):
+ * `#/agents/clio/harness/skills`. Both are handed back verbatim -- the
+ * router has no opinion about what names a real tab, since that answer
+ * depends on the agent, and `tabs.ts` owns it.
  */
 export function parseHash(hash: string): Route {
   const path = hash.startsWith("#") ? hash.slice(1) : hash;
@@ -49,7 +55,17 @@ export function parseHash(hash: string): Route {
     } catch {
       name = raw;
     }
-    return name.length > 0 ? { page: "agent", name } : DASHBOARD;
+    if (name.length === 0) {
+      return DASHBOARD;
+    }
+    const route: Route = { page: "agent", name };
+    if (segments[2]) {
+      route.tab = segments[2];
+      if (segments[3]) {
+        route.section = segments[3];
+      }
+    }
+    return route;
   }
   return DASHBOARD;
 }
@@ -57,7 +73,14 @@ export function parseHash(hash: string): Route {
 /** The inverse of parseHash: the hash to set for a given Route. */
 export function formatHash(route: Route): string {
   if (route.page === "agent") {
-    return `#/agents/${encodeURIComponent(route.name)}`;
+    const base = `#/agents/${encodeURIComponent(route.name)}`;
+    // A section with no tab in front of it would land in the tab's own
+    // segment on the way back, so it is dropped rather than written.
+    if (!route.tab) {
+      return base;
+    }
+    const tail = route.section ? `/${route.section}` : "";
+    return `${base}/${route.tab}${tail}`;
   }
   if (route.page === "getting-started") {
     return "#/getting-started";
@@ -76,10 +99,20 @@ function currentHash(): string {
 type RouteState = {
   page: "dashboard" | "agent" | "getting-started" | "personas";
   name: string | null;
+  /** The agent page's tab, and the Harness tab's section, as written in the
+   * hash -- `null` when the hash names neither. Unvalidated on purpose; the
+   * page checks them against the tabs that agent actually has. */
+  tab: string | null;
+  section: string | null;
 };
 
 function toState(parsed: Route): RouteState {
-  return { page: parsed.page, name: parsed.page === "agent" ? parsed.name : null };
+  return {
+    page: parsed.page,
+    name: parsed.page === "agent" ? parsed.name : null,
+    tab: parsed.page === "agent" ? parsed.tab ?? null : null,
+    section: parsed.page === "agent" ? parsed.section ?? null : null,
+  };
 }
 
 /**
@@ -93,6 +126,8 @@ function sync(): void {
   const next = toState(parseHash(currentHash()));
   route.page = next.page;
   route.name = next.name;
+  route.tab = next.tab;
+  route.section = next.section;
 }
 
 /** Navigate to `to` by updating `location.hash` (which drives `route` via `hashchange`). */

@@ -1,0 +1,237 @@
+// @vitest-environment jsdom
+import { fireEvent, screen, within } from "@testing-library/svelte";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import HarnessPanel from "./HarnessPanel.svelte";
+import { renderWithClient, stubFetch } from "../test-utils/render";
+
+const ROOM_RUNTIME = "us-east4-docker.pkg.dev/room/apps/agent-runtime:v10";
+const OLD_RUNTIME = "us-east4-docker.pkg.dev/room/apps/agent-runtime:v9";
+
+/** Every route the panels mounted inside Harness reach on their own. */
+const BASE_ROUTES = {
+  "/api/agents/warden/knowledge": { files: [] },
+  "/api/agents/warden/intake": { files: [] },
+  "/api/agents/warden/skills": { skills: [] },
+  "/api/agents/warden/learnings": { learnings: [] },
+  "/api/agents/warden/tooling": {
+    files: [],
+    enforcement: { attested: false, locked: false, locked_file: null },
+  },
+  "/api/": {},
+};
+
+const BASE_PROPS = {
+  agentName: "warden",
+  kind: "composed",
+  frozen: false,
+  model: "claude-x",
+  modelLabel: "Claude X",
+  runtimeImage: ROOM_RUNTIME,
+  roomRuntimeImage: ROOM_RUNTIME,
+  canUpdateRuntime: false,
+  pendingLearnings: 0,
+  canDecideLearnings: false,
+  capability: null,
+  purposeTags: [],
+};
+
+function nav(): HTMLElement {
+  return screen.getByRole("navigation", { name: "Harness sections" });
+}
+
+/** The section list's own items, by their visible label. */
+function item(label: string): HTMLElement {
+  return within(nav()).getByRole("button", { name: new RegExp(`^${label}`) });
+}
+
+function body(section: string): HTMLElement {
+  return document.getElementById(`harness-${section}`) as HTMLElement;
+}
+
+describe("HarnessPanel sections", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    stubFetch(BASE_ROUTES);
+  });
+
+  it("opens on Model and runtime, the one section every agent has", async () => {
+    renderWithClient(HarnessPanel, { ...BASE_PROPS });
+
+    expect(item("Model and runtime").getAttribute("aria-current")).toBe("true");
+    expect(body("runtime").hasAttribute("hidden")).toBe(false);
+    expect(body("skills").hasAttribute("hidden")).toBe(true);
+  });
+
+  it("lists all six sections in order for an agent the room composed", async () => {
+    renderWithClient(HarnessPanel, { ...BASE_PROPS });
+
+    const labels = within(await screen.findByRole("navigation", { name: "Harness sections" }))
+      .getAllByRole("button")
+      .map((b) => b.textContent?.trim());
+    expect(labels).toEqual([
+      "Model and runtime",
+      "Persona",
+      "Skills",
+      "Tooling",
+      "Memory",
+      "Learnings",
+    ]);
+  });
+
+  it("switches sections without unmounting the one it left", async () => {
+    renderWithClient(HarnessPanel, { ...BASE_PROPS });
+
+    await fireEvent.click(item("Skills"));
+
+    expect(item("Skills").getAttribute("aria-current")).toBe("true");
+    expect(item("Model and runtime").getAttribute("aria-current")).toBe("false");
+    expect(body("skills").hasAttribute("hidden")).toBe(false);
+    // Still in the DOM, merely hidden: the same rule the page's own tabs
+    // follow, so a half-typed form in one section survives a look at
+    // another.
+    expect(body("runtime")).not.toBeNull();
+    expect(body("runtime").hasAttribute("hidden")).toBe(true);
+  });
+
+  it("opens on the section it was given, so a bookmarked hash lands where it says", async () => {
+    renderWithClient(HarnessPanel, { ...BASE_PROPS, section: "tooling" });
+
+    expect(item("Tooling").getAttribute("aria-current")).toBe("true");
+    expect(body("tooling").hasAttribute("hidden")).toBe(false);
+  });
+
+  it("puts the pending-learnings count on the Learnings item", async () => {
+    renderWithClient(HarnessPanel, { ...BASE_PROPS, pendingLearnings: 3 });
+
+    expect(item("Learnings").textContent).toContain("3");
+    // Nowhere else in the list: the count belongs to the one section that
+    // can act on it.
+    expect(item("Memory").textContent).not.toContain("3");
+  });
+});
+
+describe("HarnessPanel model and runtime", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    stubFetch(BASE_ROUTES);
+  });
+
+  it("names the model and the image, and says Current when they agree", async () => {
+    renderWithClient(HarnessPanel, { ...BASE_PROPS });
+
+    const runtime = body("runtime");
+    expect(within(runtime).getByText("Claude X")).not.toBeNull();
+    expect(within(runtime).getByText(ROOM_RUNTIME)).not.toBeNull();
+    expect(within(runtime).getByText("Current")).not.toBeNull();
+    expect(within(runtime).queryByText(/Behind/)).toBeNull();
+    expect(
+      within(runtime).queryByRole("button", { name: "Update to current" }),
+    ).toBeNull();
+  });
+
+  it("says what the room builds on now when the agent is behind", async () => {
+    renderWithClient(HarnessPanel, {
+      ...BASE_PROPS,
+      runtimeImage: OLD_RUNTIME,
+      canUpdateRuntime: true,
+    });
+
+    const runtime = body("runtime");
+    expect(within(runtime).getByText(OLD_RUNTIME)).not.toBeNull();
+    // The version, not the whole ref: the ref is already on the line above.
+    expect(
+      within(runtime).getByText("Behind: the room now builds on v10"),
+    ).not.toBeNull();
+  });
+
+  it("offers the update only to an operator", async () => {
+    renderWithClient(HarnessPanel, {
+      ...BASE_PROPS,
+      runtimeImage: OLD_RUNTIME,
+      canUpdateRuntime: false,
+    });
+
+    const runtime = body("runtime");
+    expect(within(runtime).getByText(/Behind/)).not.toBeNull();
+    expect(
+      within(runtime).queryByRole("button", { name: "Update to current" }),
+    ).toBeNull();
+  });
+
+  it("sends the room's own image, and nothing the caller typed", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden/runtime": {
+        runtime_image: ROOM_RUNTIME,
+        previous_runtime_image: OLD_RUNTIME,
+        sha: "abc123",
+      },
+    });
+    renderWithClient(HarnessPanel, {
+      ...BASE_PROPS,
+      runtimeImage: OLD_RUNTIME,
+      canUpdateRuntime: true,
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Update to current" }));
+
+    await vi.waitFor(() => {
+      const call = vi
+        .mocked(fetch)
+        .mock.calls.find(([url]) => String(url).includes("/api/agents/warden/runtime"));
+      expect(call).toBeDefined();
+      const init = (call as [RequestInfo | URL, RequestInit])[1];
+      expect(init.method).toBe("PATCH");
+      expect(JSON.parse(String(init.body))).toEqual({ runtime_image: ROOM_RUNTIME });
+    });
+  });
+
+  it("says so plainly when the room is too old to report a runtime", async () => {
+    renderWithClient(HarnessPanel, {
+      ...BASE_PROPS,
+      runtimeImage: undefined,
+      roomRuntimeImage: undefined,
+    });
+
+    const runtime = body("runtime");
+    expect(within(runtime).getByText("Not reported.")).not.toBeNull();
+    expect(within(runtime).queryByText("Current")).toBeNull();
+  });
+});
+
+describe("HarnessPanel for a connected agent", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    stubFetch(BASE_ROUTES);
+  });
+
+  it("shows Model and runtime alone, and says why the rest is missing", async () => {
+    renderWithClient(HarnessPanel, {
+      ...BASE_PROPS,
+      kind: "connected",
+      runtimeImage: ROOM_RUNTIME,
+    });
+
+    const labels = within(nav())
+      .getAllByRole("button")
+      .map((b) => b.textContent?.trim());
+    expect(labels).toEqual(["Model and runtime"]);
+    expect(
+      screen.getByText(
+        "This agent brings its own harness. The room shows what it runs on and nothing more.",
+      ),
+    ).not.toBeNull();
+  });
+
+  it("mounts none of the bundle-backed panels, so none of them asks for a bundle", async () => {
+    renderWithClient(HarnessPanel, { ...BASE_PROPS, kind: "connected" });
+
+    expect(body("skills")).toBeNull();
+    expect(body("memory")).toBeNull();
+    expect(body("learnings")).toBeNull();
+    expect(
+      vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/skills")),
+    ).toBe(false);
+  });
+});

@@ -191,6 +191,7 @@ import {
   listSkills,
   listTooling,
   patchAgentMetadata,
+  patchAgentRuntime,
   postThreadTurn,
   regenerateAgentMetadata,
   removeGrant,
@@ -645,6 +646,26 @@ export function convertToConnectedMutation(
     mutationFn: (runMode: string) => convertToConnected(name, runMode),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+  };
+}
+
+/**
+ * Moves one agent onto a runtime image (harness wave, 2026-09-23) -- in the
+ * room's UI, always the room's own current one, from the Harness tab's
+ * "Update to current".
+ *
+ * Invalidates `["agents", name]` so the state line under it stops saying
+ * Behind: the runtime the detail route reports is the row this call moved.
+ * Narrow rather than the broad `["agents"]` the three mutations above use,
+ * because no dashboard card shows a runtime and the list route does not
+ * serve one.
+ */
+export function updateAgentRuntimeMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (runtimeImage: string) => patchAgentRuntime(name, runtimeImage),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name] });
     },
   };
 }

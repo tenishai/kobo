@@ -75,6 +75,13 @@ Kobo is opinionated by design:
   a fitting colleague when a question is outside its field, and names any
   colleague whose answer informed its own. A thread belongs to the person
   who started it.
+- **The agent page**: five tabs in one row. Chat is where you meet it, Slack is its wiring,
+  Access is who may use it, and Settings is the back office: secrets and environment, the
+  build log, and the two changes there is no way back from. Harness is what runs the agent:
+  the model and the runtime it builds on (with one line saying whether that is still the
+  room's current one, and an operator's button to move it), its persona, its skills, its
+  tooling, its memory, and what it has learned. A connected agent's Harness shows what it runs
+  on and nothing else: the room composed none of the rest.
 - **Personas**: the soul an agent is built from. Archive one from the Personas page when it
   has outlived its use, and restore it later; nothing is destroyed. Good persona names pass
   the glance test: a stranger reading the card knows what picking it gets them.
@@ -227,8 +234,8 @@ window can still be holding the previous tokens until the next refresh; it needs
 action, only the wait. A step reporting success means the value is stored, not that the cluster
 has caught up.
 
-With the platform on, every agent page also carries a **Secrets and environment** section, for
-anyone who may edit that agent, composed and connected alike. Secrets are held on the platform
+With the platform on, every agent page also carries a **Secrets and environment** section, at
+the top of its Settings tab, for anyone who may edit that agent, composed and connected alike. Secrets are held on the platform
 at `apps/<agent>/env` and delivered into the agent's namespace as the Kubernetes Secret
 `<agent>-env`; environment variables live in the agent's own `gojira.yaml`, for values that are
 not sensitive. A secret's value is sent once and is never readable again from the room: the list

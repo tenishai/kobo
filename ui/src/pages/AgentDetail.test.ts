@@ -79,10 +79,13 @@ async function openHeaderMenu(): Promise<void> {
   await fireEvent.click(screen.getByRole("button", { name: "More actions" }));
 }
 
-/** The tab row's own More menu, matched tightly so it is never confused
- * with the header's "More actions" overflow above it. */
-function moreTabsButton(): HTMLElement {
-  return screen.getByRole("button", { name: /^More ▾/ });
+/** One item in the Harness tab's own section list. Matched inside its nav
+ * so a section never collides with the panel heading of the same name. */
+function harnessItem(label: string): HTMLElement {
+  return within(screen.getByRole("navigation", { name: "Harness sections" })).getByRole(
+    "button",
+    { name: new RegExp(`^${label}`) },
+  );
 }
 
 describe("AgentDetail tabs", () => {
@@ -119,33 +122,43 @@ describe("AgentDetail tabs", () => {
     expect(screen.queryByText("Clone the repo")).toBeNull();
   });
 
-  it("switches tabs between the row and the More menu without unmounting panels", async () => {
+  it("switches tabs without unmounting the panel it left", async () => {
     stubFetch({ ...BASE_ROUTES, "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: true } });
     renderWithClient(AgentDetail);
     const chatTab = await screen.findByRole("tab", { name: "Chat" });
     expect(chatTab.getAttribute("aria-selected")).toBe("true");
-    expect(screen.queryByRole("tab", { name: "Slack" })).not.toBeNull();
-    // The menu starts closed for everyone (2026-09-02 ruling), so open it
-    // first -- the menu mechanic itself has dedicated tests below.
-    await fireEvent.click(moreTabsButton());
 
     // Ready is the one status where every tab trigger is reachable — none
     // of them dead-end into a 409, so none should be disabled.
-    for (const label of ["Chat", "Slack", "Settings", "Learnings", "Memory", "Skills", "Tooling"]) {
+    for (const label of ["Chat", "Slack", "Access", "Harness", "Settings"]) {
       expect((screen.getByRole("tab", { name: label }) as HTMLButtonElement).disabled).toBe(
         false,
       );
     }
 
-    await fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
-    // Re-read the trigger: picking it out of the menu closes the menu, and
-    // the selected tab is drawn again in the row (see the pinning test
-    // below), so the node that was clicked is not the node that survives.
-    expect(screen.getByRole("tab", { name: "Memory" }).getAttribute("aria-selected")).toBe(
+    await fireEvent.click(screen.getByRole("tab", { name: "Harness" }));
+    expect(screen.getByRole("tab", { name: "Harness" }).getAttribute("aria-selected")).toBe(
       "true",
     );
     expect(document.getElementById("panel-chat")?.hasAttribute("hidden")).toBe(true);
     expect(document.getElementById("panel-chat")).not.toBeNull();
+  });
+
+  it("puts the five grow-it sections inside Harness, not in the row", async () => {
+    stubFetch({ ...BASE_ROUTES, "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: true } });
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Chat" });
+
+    // They are not tabs any more, and there is no menu left to open.
+    for (const label of ["Learnings", "Memory", "Skills", "Tooling", "Secrets"]) {
+      expect(screen.queryByRole("tab", { name: label })).toBeNull();
+    }
+    expect(screen.queryByRole("button", { name: /^More ▾/ })).toBeNull();
+
+    await fireEvent.click(screen.getByRole("tab", { name: "Harness" }));
+    await fireEvent.click(harnessItem("Memory"));
+    expect(harnessItem("Memory").getAttribute("aria-current")).toBe("true");
+    expect(document.getElementById("harness-memory")?.hasAttribute("hidden")).toBe(false);
   });
 
   it("selects no tab while provisioning and shows the checklist above the tabs", async () => {
@@ -173,23 +186,20 @@ describe("AgentDetail tabs", () => {
     renderWithClient(AgentDetail);
     const chatTab = await screen.findByRole("tab", { name: "Chat" });
     expect(chatTab.getAttribute("aria-selected")).toBe("false");
-    await fireEvent.click(moreTabsButton());
 
-    const memoryTab = screen.getByRole("tab", { name: "Memory" }) as HTMLButtonElement;
-    const skillsTab = screen.getByRole("tab", { name: "Skills" }) as HTMLButtonElement;
-    const toolingTab = screen.getByRole("tab", { name: "Tooling" }) as HTMLButtonElement;
+    const harnessTab = screen.getByRole("tab", { name: "Harness" }) as HTMLButtonElement;
+    const settingsTab = screen.getByRole("tab", { name: "Settings" }) as HTMLButtonElement;
     const slackTab = screen.getByRole("tab", { name: "Slack" }) as HTMLButtonElement;
     expect((chatTab as HTMLButtonElement).disabled).toBe(true);
-    expect(memoryTab.disabled).toBe(true);
-    expect(skillsTab.disabled).toBe(true);
-    expect(toolingTab.disabled).toBe(true);
+    expect(harnessTab.disabled).toBe(true);
+    expect(settingsTab.disabled).toBe(true);
     expect(slackTab.disabled).toBe(true);
 
     // A disabled trigger can't be selected at all — no default tab was
     // chosen either (defaultTab returns null for a non-ready status), so
     // clicking just leaves every trigger unselected.
-    await fireEvent.click(memoryTab);
-    expect(memoryTab.getAttribute("aria-selected")).toBe("false");
+    await fireEvent.click(harnessTab);
+    expect(harnessTab.getAttribute("aria-selected")).toBe("false");
   });
 
   it("does not auto-select a tab while destroying, but tabs stay clickable (frozen makes read-only content reachable)", async () => {
@@ -356,63 +366,20 @@ describe("AgentDetail tabs", () => {
     expect(within(header).getByText("+2")).not.toBeNull();
   });
 
-  it("keeps the More group closed by default and opens it on the button", async () => {
-    // READY_AGENT already has can_decide_learnings: false.
-    renderWithClient(AgentDetail);
-    await screen.findByRole("tab", { name: "Chat" });
-    expect(screen.queryByRole("tab", { name: "Memory" })).toBeNull();
-    await fireEvent.click(moreTabsButton());
-    expect(screen.getByRole("tab", { name: "Memory" })).not.toBeNull();
-  });
-
-  it("starts closed for deciders too (2026-09-02 ruling)", async () => {
-    stubFetch({
-      ...BASE_ROUTES,
-      "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: true },
-    });
-    renderWithClient(AgentDetail);
-    await screen.findByRole("tab", { name: "Chat" });
-    expect(screen.queryByRole("tab", { name: "Learnings" })).toBeNull();
-    await fireEvent.click(moreTabsButton());
-    expect(screen.getByRole("tab", { name: "Learnings" })).not.toBeNull();
-  });
-
-  it("shows the pending badge on the More button", async () => {
+  it("shows the pending badge on the Harness tab, where Learnings lives now", async () => {
     stubFetch({
       ...BASE_ROUTES,
       "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: false, pending_learnings: 3 },
     });
     renderWithClient(AgentDetail);
-    await screen.findByRole("tab", { name: "Chat" });
-    const toggle = moreTabsButton();
-    expect(toggle.textContent).toContain("3");
+    const harnessTab = await screen.findByRole("tab", { name: /^Harness/ });
+    expect(harnessTab.textContent).toContain("3");
+    // And on the section itself, so the count survives opening the tab.
+    await fireEvent.click(harnessTab);
+    expect(harnessItem("Learnings").textContent).toContain("3");
   });
 
-  it("picking a tab out of the menu closes the menu and pins that tab into the row", async () => {
-    stubFetch({
-      ...BASE_ROUTES,
-      "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: true },
-    });
-    renderWithClient(AgentDetail);
-    await screen.findByRole("tab", { name: "Chat" });
-    await fireEvent.click(moreTabsButton());
-    await fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
-
-    // The menu closed over its own choice, so Memory is in the row now:
-    // still exactly one trigger, still the selected one, and its panel is
-    // the visible one. Nothing is selected-but-invisible.
-    const memoryTab = screen.getByRole("tab", { name: "Memory" });
-    expect(memoryTab.getAttribute("aria-selected")).toBe("true");
-    expect(memoryTab.closest(".detail-tabs__list")).not.toBeNull();
-    expect(screen.queryByRole("tab", { name: "Skills" })).toBeNull();
-    expect(document.getElementById("panel-memory")?.hasAttribute("hidden")).toBe(false);
-    const selectedTabs = screen
-      .getAllByRole("tab")
-      .filter((t) => t.getAttribute("aria-selected") === "true");
-    expect(selectedTabs).toEqual([memoryTab]);
-  });
-
-  it("keeps the tab row to one line: four tabs and the More button, never nine pills", async () => {
+  it("keeps the tab row to one line of five tabs, with no menu after them", async () => {
     stubFetch({
       ...BASE_ROUTES,
       "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: true },
@@ -425,8 +392,58 @@ describe("AgentDetail tabs", () => {
       "Chat",
       "Slack",
       "Access",
+      "Harness",
       "Settings",
     ]);
+  });
+
+  it("remembers the tab and the harness section in the hash", async () => {
+    renderWithClient(AgentDetail);
+    await fireEvent.click(await screen.findByRole("tab", { name: "Harness" }));
+    await fireEvent.click(harnessItem("Skills"));
+
+    await vi.waitFor(() => {
+      expect(location.hash).toBe("#/agents/warden/harness/skills");
+    });
+  });
+
+  it("opens on the tab and section the hash names", async () => {
+    location.hash = "#/agents/warden/harness/tooling";
+    window.dispatchEvent(new Event("hashchange"));
+    renderWithClient(AgentDetail);
+
+    const harnessTab = await screen.findByRole("tab", { name: "Harness" });
+    expect(harnessTab.getAttribute("aria-selected")).toBe("true");
+    expect(harnessItem("Tooling").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Chat" }).getAttribute("aria-selected")).toBe(
+      "false",
+    );
+  });
+
+  it("ignores a hash naming a tab this room does not have", async () => {
+    // A stale bookmark from before the harness wave. Secrets is a section
+    // of Settings now, not a tab, so the page falls back to its default
+    // rather than selecting nothing.
+    location.hash = "#/agents/warden/secrets";
+    window.dispatchEvent(new Event("hashchange"));
+    renderWithClient(AgentDetail);
+
+    const chatTab = await screen.findByRole("tab", { name: "Chat" });
+    expect(chatTab.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("puts Secrets and environment in Settings, above the build log", async () => {
+    renderWithClient(AgentDetail);
+    await fireEvent.click(await screen.findByRole("tab", { name: "Settings" }));
+
+    const settings = document.getElementById("panel-settings") as HTMLElement;
+    expect(settings.hasAttribute("hidden")).toBe(false);
+    const text = settings.textContent ?? "";
+    expect(text).toContain("Secrets and environment");
+    expect(text).toContain("Build log");
+    expect(text.indexOf("Secrets and environment")).toBeLessThan(text.indexOf("Build log"));
+    // And nowhere else: it used to be its own tab behind the More menu.
+    expect(screen.queryByRole("tab", { name: "Secrets" })).toBeNull();
   });
 
   it("preserves the selected tab across a destroy transition", async () => {
@@ -482,9 +499,6 @@ describe("AgentDetail tabs", () => {
     });
     renderWithClient(AgentDetail);
     expect(await screen.findByText("This agent is being destroyed.")).not.toBeNull();
-    // The Advanced group starts collapsed for everyone (2026-09-02 ruling);
-    // this test reaches the Memory tab, so open the group first.
-    await fireEvent.click(moreTabsButton());
     // Let MemoryPanel's own knowledge/intake queries (mounted alongside the
     // notice, since every panel stays mounted per the tab invariant) settle
     // past their initial Skeleton — otherwise those transient loading
@@ -502,9 +516,12 @@ describe("AgentDetail tabs", () => {
       .getAllByRole("status")
       .filter((el) => !el.classList.contains("step-checklist__sr-only"));
     expect(destroyAnnouncers).toHaveLength(1);
-    expect(screen.getByRole("tab", { name: "Memory" })).not.toBeNull();
     const chatTab = screen.getByRole("tab", { name: "Chat" });
     expect(chatTab.getAttribute("aria-selected")).toBe("false");
+    // Destruction leaves read-only content reachable, Harness included.
+    await fireEvent.click(screen.getByRole("tab", { name: "Harness" }));
+    expect(harnessItem("Memory")).not.toBeNull();
+    await fireEvent.click(chatTab);
     await openHeaderMenu();
     const avatarButton = screen.getByRole("button", { name: /give warden a face/i });
     expect((avatarButton as HTMLButtonElement).disabled).toBe(true);
@@ -514,7 +531,7 @@ describe("AgentDetail tabs", () => {
     // content reachable even though it's not "ready"; only per-panel
     // CONTROLS (like the avatar button above) freeze, never the tabs
     // themselves.
-    for (const label of ["Chat", "Memory", "Skills", "Tooling"]) {
+    for (const label of ["Chat", "Slack", "Harness", "Settings"]) {
       expect((screen.getByRole("tab", { name: label }) as HTMLButtonElement).disabled).toBe(
         false,
       );
@@ -875,7 +892,7 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
     stubFetch({ ...BASE_ROUTES, "/api/agents/warden": CONNECTED_AGENT });
   });
 
-  it("renders no chat, slack or bundle-backed tabs, and keeps More for Secrets and Settings", async () => {
+  it("renders no chat or slack, and keeps Harness and Settings", async () => {
     renderWithClient(AgentDetail);
 
     // The header renders for every kind, so it is the wait point here --
@@ -883,16 +900,31 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
     await screen.findByRole("heading", { name: "warden" });
     expect(screen.queryByRole("tab", { name: "Chat" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Slack" })).toBeNull();
-    expect(screen.queryByRole("tab", { name: "Skills" })).toBeNull();
-    // The More menu stays, because two tabs in it survive for a connected
-    // agent: Secrets and environment (design 2026-09-22), whose
-    // environment a team's own service has exactly as much of, and
-    // Settings, which is the build log and the destroy.
-    const more = moreTabsButton();
-    await fireEvent.click(more);
-    expect(screen.getByRole("tab", { name: "Secrets" })).not.toBeNull();
-    expect(screen.getByRole("tab", { name: "Settings" })).not.toBeNull();
-    expect(screen.queryByRole("tab", { name: "Memory" })).toBeNull();
+    // Harness survives because a connected agent still runs on something,
+    // and Settings because a build log, the secrets a team's own service
+    // has exactly as much of, and a destroy belong to any workload the room
+    // deploys.
+    const row = document.querySelector(".detail-tabs__list") as HTMLElement;
+    expect(within(row).getAllByRole("tab").map((t) => t.textContent?.trim())).toEqual([
+      "Access",
+      "Harness",
+      "Settings",
+    ]);
+  });
+
+  it("reduces its Harness to what it runs on, and says why", async () => {
+    renderWithClient(AgentDetail);
+
+    await fireEvent.click(await screen.findByRole("tab", { name: "Harness" }));
+    const nav = screen.getByRole("navigation", { name: "Harness sections" });
+    expect(within(nav).getAllByRole("button").map((b) => b.textContent?.trim())).toEqual([
+      "Model and runtime",
+    ]);
+    expect(
+      screen.getByText(
+        "This agent brings its own harness. The room shows what it runs on and nothing more.",
+      ),
+    ).not.toBeNull();
   });
 
   it("shows the connected marker and the repository itself as the link", async () => {
@@ -958,11 +990,8 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
     });
     renderWithClient(AgentDetail);
 
-    // Settings is in the More menu for a connected agent: its primary row
-    // has no Chat or Slack to sit beside.
     await screen.findByRole("heading", { name: "warden" });
-    await fireEvent.click(moreTabsButton());
-    await fireEvent.click(screen.getByRole("tab", { name: "Settings" }));
+    await fireEvent.click(await screen.findByRole("tab", { name: "Settings" }));
     await fireEvent.click(screen.getByRole("button", { name: "Destroy..." }));
 
     expect(

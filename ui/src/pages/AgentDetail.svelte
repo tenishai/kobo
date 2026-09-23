@@ -13,6 +13,15 @@
   // decision lives in tabs.ts, pure and unit-tested; this file only hides
   // the header lines that have no source.
   //
+  // Tabs (harness wave, 2026-09-23): five on one row, no menu at the end of
+  // it. Chat, Slack, Access and Settings are what they were; Harness is the
+  // new one, and it holds the five sections that used to be tabs hidden
+  // behind More -- persona, skills, tooling, memory, learnings -- plus the
+  // model and the runtime image the agent actually runs on. Secrets is a
+  // section of Settings now, above the build log. Which tab is showing, and
+  // which Harness section, both live in the hash:
+  // `#/agents/<name>/harness/skills`.
+  //
   // Header (page-shell wave, 2026-09-23): two lines, not eight. Line one is
   // the avatar, the name, the status, the connected marker, and on the far
   // right one overflow menu holding every action the header used to spell
@@ -35,19 +44,16 @@
   import ColleagueConversations from "../components/ColleagueConversations.svelte";
   import ErrorState from "../components/ErrorState.svelte";
   import FirstReply from "../components/FirstReply.svelte";
-  import LearningsPanel from "../components/LearningsPanel.svelte";
-  import MemoryPanel from "../components/MemoryPanel.svelte";
+  import HarnessPanel from "../components/HarnessPanel.svelte";
   import MetadataDetails from "../components/MetadataDetails.svelte";
   import RequestAccessCard from "../components/RequestAccessCard.svelte";
   import SecretsPanel from "../components/SecretsPanel.svelte";
   import Skeleton from "../components/Skeleton.svelte";
-  import SkillsPanel from "../components/SkillsPanel.svelte";
   import SettingsPanel from "../components/SettingsPanel.svelte";
   import SlackPanel from "../components/SlackPanel.svelte";
   import StatusBadge from "../components/StatusBadge.svelte";
   import StepChecklist from "../components/StepChecklist.svelte";
   import ThreadPanel from "../components/ThreadPanel.svelte";
-  import ToolingPanel from "../components/ToolingPanel.svelte";
   import { ApiError, errorMessage, KIND_CONNECTED } from "../lib/api";
   import {
     agentQuery,
@@ -60,7 +66,17 @@
   } from "../lib/queries";
   import { formatHash, navigate, route } from "../lib/router.svelte";
   import { isDestroyComplete, isFrozen } from "../lib/status";
-  import { advancedTabs, defaultTab, primaryTabs, TAB_LABELS, type TabId } from "../lib/tabs";
+  import {
+    DEFAULT_HARNESS_SECTION,
+    defaultTab,
+    harnessSections,
+    isHarnessSection,
+    isTabId,
+    primaryTabs,
+    TAB_LABELS,
+    type HarnessSectionId,
+    type TabId,
+  } from "../lib/tabs";
   import { toast } from "../lib/toast.svelte";
 
   // Invariant: App.svelte only mounts this page when `route.page === "agent"`,
@@ -190,61 +206,64 @@
   // as later polls bring fresher statuses.
   let activeTab = $state<TabId | null>(null);
 
-  // Whether the More menu (tabs.ts: learnings/memory/skills/tooling/
-  // secrets) is showing. A MENU, not an inline expansion, since the
-  // page-shell wave: the old toggle pushed five more pills into the same
-  // row and wrapped it onto a second line, which is what the tab bar was
-  // meant to stop doing. Closed by default for EVERYONE (operator ruling,
-  // 2026-09-02): the pending-learnings badge on the toggle carries the
-  // signal, and the row stays one row.
-  //
-  // A tab picked out of the menu is pinned into the row beside the primary
-  // ones for as long as it is selected -- see `activeAdvanced` below.
-  // Otherwise the menu would close over the one tab that is showing and
-  // leave a row where nothing is selected.
-  let moreOpen = $state(false);
-  let moreEl = $state<HTMLElement | undefined>();
+  /** Which section of the Harness tab is showing (tabs.ts). Bound into
+   * HarnessPanel, which moves it on a click; kept up here because the hash
+   * carries it and the hash belongs to the page. */
+  let harnessSection = $state<HarnessSectionId>(DEFAULT_HARNESS_SECTION);
 
-  $effect(() => {
-    if (!moreOpen) {
-      return;
-    }
-    const onPointerDown = (event: MouseEvent) => {
-      if (moreEl && !moreEl.contains(event.target as Node)) {
-        moreOpen = false;
-      }
-    };
-    const onKeydown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        moreOpen = false;
-      }
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeydown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeydown);
-    };
-  });
+  // Whether a tab can be picked at all: the same condition the checklist
+  // has always had -- not ready, and not on its way out. Named here as well
+  // as in the markup because the hash is only honoured when tabs are live;
+  // a bookmarked `#/agents/x/harness` on an agent that is still building
+  // would otherwise light up a panel whose every query 409s.
+  const tabDisabled = $derived(
+    agent.data ? agent.data.status !== "ready" && !isFrozen(agent.data.status) : true,
+  );
 
-  // Also re-picks when the selected tab stops existing. A convert is the
-  // case that made this necessary: the poll after it brings back a kind
-  // with no Chat, and the page was left with "chat" still selected and an
-  // empty panel area under a tab bar that no longer offers it. Tabs can
-  // only vanish, never appear, without a data change, so this stays the
-  // same one-shot pick for every other poll.
+  // The hash decides, when it names a tab this agent actually has; otherwise
+  // the smart default does, exactly as before. Also re-picks when the
+  // selected tab stops existing: a convert is the case that made that
+  // necessary -- the poll after it brings back a kind with no Chat, and the
+  // page was left with "chat" still selected and an empty panel area under a
+  // tab bar that no longer offers it.
   $effect(() => {
     const data = agent.data;
     if (!data) {
       return;
     }
-    const visible = [
-      ...primaryTabs(invites.isSuccess, data.kind),
-      ...advancedTabs(data.kind),
-    ];
+    const visible = primaryTabs(invites.isSuccess, data.kind);
+    const fromHash =
+      !tabDisabled && isTabId(route.tab) && visible.includes(route.tab) ? route.tab : null;
+    if (fromHash !== null) {
+      activeTab = fromHash;
+      if (
+        fromHash === "harness" &&
+        isHarnessSection(route.section) &&
+        harnessSections(data.kind).includes(route.section)
+      ) {
+        harnessSection = route.section;
+      }
+      return;
+    }
     if (activeTab === null || !visible.includes(activeTab)) {
       activeTab = defaultTab(data.status, data.kind);
     }
+  });
+
+  // ...and the hash follows whatever is showing, so the tab and the section
+  // are as linkable as the agent itself. Writing a hash the router then
+  // parses back into the same tab is a no-op for the effect above, so the
+  // two settle rather than chase each other.
+  $effect(() => {
+    if (activeTab === null) {
+      return;
+    }
+    navigate({
+      page: "agent",
+      name,
+      tab: activeTab,
+      section: activeTab === "harness" ? harnessSection : undefined,
+    });
   });
 
   function handleRetry(): void {
@@ -478,12 +497,18 @@
 
                 {#if !connected}
                   <hr class="agent-detail__menu-rule" />
+                  <!-- The editor lives in the Harness tab's Persona section
+                       now, so this brings the page there before opening it:
+                       a modal inside a hidden panel is a modal nobody can
+                       see. -->
                   <button
                     type="button"
                     class="agent-detail__menu-item"
                     disabled={isFrozen(data.status)}
                     onclick={() => {
                       menuOpen = false;
+                      activeTab = "harness";
+                      harnessSection = "persona";
                       metadata?.openEditor();
                     }}
                   >
@@ -575,22 +600,39 @@
       <p class="agent-detail__note">{avatarNote}</p>
     {/if}
 
-    <!-- Edit details writes the fields the header shows (team, purpose
-         chips, capability), all of which describe a bundle the room
-         composed. A connected agent has none of them, so there is nothing
-         here for it to edit. Its own trigger is off: the menu item above
-         is the trigger now, and two would be one too many. -->
-    {#if !connected}
-      <MetadataDetails
-        bind:this={metadata}
-        agentName={data.name}
-        team={data.team}
-        purposeTags={data.purpose_tags}
-        capability={data.capability}
-        frozen={isFrozen(data.status)}
-        showTrigger={false}
-      />
-    {/if}
+    <!-- The Harness tab's Persona section: the soul the agent was built
+         from, the facts Edit details writes, and the editor itself. Edit
+         details writes the fields the header shows (team, purpose chips,
+         capability), all of which describe a bundle the room composed, so a
+         connected agent never reaches this -- `harnessSections` leaves the
+         Persona section out for one entirely.
+         MetadataDetails keeps its own trigger off: the header menu item is
+         the trigger, and two would be one too many. -->
+    {#snippet personaSection()}
+      <section class="panel">
+        <h2 class="panel__heading">Persona</h2>
+        <dl class="agent-detail__facts">
+          <dt>Soul</dt>
+          <dd>{personaLine}</dd>
+          <dt>Team</dt>
+          <dd>{data.team}</dd>
+          <dt>Purpose</dt>
+          <dd>{data.purpose_tags.length > 0 ? data.purpose_tags.join(", ") : "Not set."}</dd>
+          <dt>Capability</dt>
+          <dd>{data.capability ?? "Not written yet. It arrives after first contact."}</dd>
+        </dl>
+        <p class="panel__lead">Edit details, in the menu beside the name, writes these.</p>
+        <MetadataDetails
+          bind:this={metadata}
+          agentName={data.name}
+          team={data.team}
+          purposeTags={data.purpose_tags}
+          capability={data.capability}
+          frozen={isFrozen(data.status)}
+          showTrigger={false}
+        />
+      </section>
+    {/snippet}
 
     {#if isFrozen(data.status)}
       <p class="agent-detail__destroy-notice" role="status" aria-live="polite">
@@ -618,8 +660,8 @@
       </div>
     {/if}
 
-    {@const tabDisabled = data.status !== "ready" && !isFrozen(data.status)}
-    <!-- `tabDisabled` is the same condition the checklist has always had:
+    <!-- `tabDisabled` (worked out in the script above, where the hash rules
+         also read it) is the same condition the checklist has always had:
          not ready, and not on its way out. -->
     {#if tabDisabled}
       <StepChecklist steps={data.steps} />
@@ -630,28 +672,18 @@
     {/if}
 
     {@const primary = primaryTabs(invites.isSuccess, data.kind)}
-    {@const advanced = advancedTabs(data.kind)}
-    <!-- A connected agent whose caller cannot administer it has no tabs at
-         all, and an empty tab bar with an Advanced toggle beside it would
-         read as a row that failed to load. -->
-    {#if primary.length > 0 || advanced.length > 0}
-    {@const activeAdvanced =
-      activeTab !== null && (advanced as readonly string[]).includes(activeTab)
-        ? activeTab
-        : null}
     <div class="detail-tabs">
       <div class="detail-tabs__bar">
         <div class="detail-tabs__list" role="tablist" aria-label="Agent sections">
-          <!-- Every panel mounts regardless of status or the More menu (see
-               the tabpanel loop below), but its query still 409s
-               server-side until the agent is `ready` — so the trigger
-               itself is disabled rather than left clickable into a dead end,
-               for every status that is neither ready nor frozen (pending/
-               provisioning/failed). Frozen statuses (destroying/
-               destroy_failed) are the one exception: destruction makes
-               read-only content reachable again, so only mutation CONTROLS
-               freeze there (each panel's own `frozen` prop below) — the tabs
-               themselves stay fully clickable. -->
+          <!-- Every panel mounts regardless of status (see the tabpanel loop
+               below), but its query still 409s server-side until the agent
+               is `ready` — so the trigger itself is disabled rather than
+               left clickable into a dead end, for every status that is
+               neither ready nor frozen (pending/provisioning/failed). Frozen
+               statuses (destroying/destroy_failed) are the one exception:
+               destruction makes read-only content reachable again, so only
+               mutation CONTROLS freeze there (each panel's own `frozen` prop
+               below) — the tabs themselves stay fully clickable. -->
           {#each primary as tab (tab)}
             <button
               type="button"
@@ -668,74 +700,17 @@
               }}
             >
               {TAB_LABELS[tab]}
-            </button>
-          {/each}
-          <!-- The one tab picked out of the menu, pinned into the row for
-               as long as it is the selected one. Without it the menu would
-               close over the tab it just opened and the row would show
-               nothing selected. -->
-          {#if activeAdvanced !== null}
-            <button
-              type="button"
-              role="tab"
-              id={`tab-${activeAdvanced}`}
-              class="detail-tabs__tab"
-              aria-selected="true"
-              aria-controls={`panel-${activeAdvanced}`}
-              disabled={tabDisabled}
-            >
-              {TAB_LABELS[activeAdvanced]}
-            </button>
-          {/if}
-        </div>
-        <!-- No menu when the group behind it is empty: it would open onto
-             nothing. The pending-learnings count rides on this button now,
-             wherever Learnings itself happens to be. -->
-        {#if advanced.length > 0}
-          <div class="detail-tabs__more" bind:this={moreEl}>
-            <button
-              type="button"
-              class="detail-tabs__more-toggle"
-              aria-haspopup="menu"
-              aria-expanded={moreOpen}
-              onclick={() => (moreOpen = !moreOpen)}
-            >
-              More ▾
-              {#if data.pending_learnings > 0}
+              <!-- The pending-learnings count rides on Harness, which is
+                   where Learnings lives now. -->
+              {#if tab === "harness" && data.pending_learnings > 0}
                 <span class="detail-tabs__badge">{data.pending_learnings}</span>
               {/if}
             </button>
-            {#if moreOpen}
-              <div class="detail-tabs__menu">
-                {#each advanced.filter((tab) => tab !== activeAdvanced) as tab (tab)}
-                  <button
-                    type="button"
-                    role="tab"
-                    id={`tab-${tab}`}
-                    class="detail-tabs__menu-item"
-                    aria-selected={activeTab === tab}
-                    aria-controls={`panel-${tab}`}
-                    disabled={tabDisabled}
-                    onclick={() => {
-                      if (!tabDisabled) {
-                        activeTab = tab;
-                        moreOpen = false;
-                      }
-                    }}
-                  >
-                    {TAB_LABELS[tab]}
-                    {#if tab === "learnings" && data.pending_learnings > 0}
-                      <span class="detail-tabs__badge">{data.pending_learnings}</span>
-                    {/if}
-                  </button>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        {/if}
+          {/each}
+        </div>
       </div>
 
-      {#each [...primary, ...advanced] as tab (tab)}
+      {#each primary as tab (tab)}
         <div
           id={`panel-${tab}`}
           class="detail-tabs__panel"
@@ -751,40 +726,41 @@
             <ChatPanel agentName={data.name} frozen={isFrozen(data.status)} />
             <ThreadPanel agentName={data.name} frozen={isFrozen(data.status)} />
             <ColleagueConversations agentName={data.name} />
-          {:else if tab === "memory"}
-            <MemoryPanel agentName={data.name} frozen={isFrozen(data.status)} />
-          {:else if tab === "learnings"}
-            <LearningsPanel
+          {:else if tab === "harness"}
+            <!-- What runs the agent. The five panels that used to be tabs
+                 behind the More menu are sections in here, unchanged, plus
+                 the model and the image it runs on. -->
+            <HarnessPanel
               agentName={data.name}
-              canDecide={data.can_decide_learnings}
+              kind={data.kind}
               frozen={isFrozen(data.status)}
+              model={data.model}
+              modelLabel={data.model_label}
+              runtimeImage={data.runtime_image}
+              roomRuntimeImage={data.room_runtime_image}
+              canUpdateRuntime={data.destroy_visible}
+              pendingLearnings={data.pending_learnings}
+              canDecideLearnings={data.can_decide_learnings}
+              capability={data.capability}
+              purposeTags={data.purpose_tags}
+              bind:section={harnessSection}
+              persona={connected ? undefined : personaSection}
             />
-          {:else if tab === "skills"}
-            <SkillsPanel
-              agentName={data.name}
-              frozen={isFrozen(data.status)}
-              recommendWho={data.capability ?? ""}
-              recommendWhat={data.purpose_tags.join(" ")}
-            />
-          {:else if tab === "tooling"}
-            <ToolingPanel agentName={data.name} frozen={isFrozen(data.status)} />
-          {:else if tab === "secrets"}
-            <!-- `active`: every tabpanel here stays mounted when another
-                 tab is picked, and this panel's two reads reach the
-                 secrets platform and the agent's repository. Without it,
-                 opening any agent page would ask about secrets nobody was
-                 looking at, and the platform's audit would say somebody
-                 did. -->
+          {:else if tab === "settings"}
+            <!-- The page's back office: secrets and environment, the build
+                 log every agent has, and the two changes there is no way
+                 back from.
+                 `active`: every tabpanel here stays mounted when another tab
+                 is picked, and SecretsPanel's two reads reach the secrets
+                 platform and the agent's repository. Without it, opening any
+                 agent page would ask about secrets nobody was looking at,
+                 and the platform's audit would say somebody did. -->
             <SecretsPanel
               agentName={data.name}
               frozen={isFrozen(data.status)}
-              active={activeTab === "secrets"}
+              active={activeTab === "settings"}
               deployed={data.status === "ready"}
             />
-          {:else if tab === "settings"}
-            <!-- The page's back office: the build log every agent has, and
-                 the two changes there is no way back from. Both of those
-                 used to render under every tab on the page. -->
             <SettingsPanel
               agentName={data.name}
               status={data.status}
@@ -812,7 +788,6 @@
         </div>
       {/each}
     </div>
-    {/if}
 
   {/if}
 </div>
@@ -932,6 +907,27 @@
     margin: 0;
     color: var(--ink);
     font-size: 0.9rem;
+  }
+
+  /* The Persona section's read-only pairs, same two-column shape the
+     Harness tab's Model and runtime section uses. */
+  .agent-detail__facts {
+    display: grid;
+    grid-template-columns: 7rem minmax(0, 1fr);
+    gap: var(--space-2xs) var(--space-sm);
+    margin: 0;
+  }
+
+  .agent-detail__facts dt {
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .agent-detail__facts dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+    color: var(--ink);
+    font-size: 0.85rem;
   }
 
   /* The one button in the header, and it is quiet on purpose: the header
@@ -1084,12 +1080,9 @@
     gap: var(--space-lg);
   }
 
-  /* ONE row, and it neither wraps nor scrolls. The five grow-it sections
-     are behind a menu now rather than expanding into this row, so there is
-     nothing left here to wrap: four tabs and a button. (The 2026-09-02 fix
-     that made this row wrap was for the opposite problem -- overflow-x
-     hid the toggle at common widths, since macOS draws no scrollbar. With
-     no expansion to overflow, neither is needed.) */
+  /* ONE row, and it neither wraps nor scrolls: five tabs and nothing else
+     since the harness wave, with the grow-it sections inside one of them
+     rather than behind a menu at the end of it. */
   .detail-tabs__bar {
     display: flex;
     flex-wrap: nowrap;
@@ -1130,75 +1123,6 @@
 
   .detail-tabs__tab:disabled {
     opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  /* A quieter sibling of `.detail-tabs__tab` -- no underline-on-select
-     styling of its own (it isn't a `role="tab"`, just the menu's switch),
-     and it is pinned to the end of the row whatever is in front of it. */
-  .detail-tabs__more {
-    position: relative;
-    margin-left: auto;
-  }
-
-  .detail-tabs__more-toggle {
-    flex-shrink: 0;
-    padding: 0.2rem var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: none;
-    color: var(--ink);
-    font: inherit;
-    font-size: 0.85rem;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .detail-tabs__more-toggle:hover,
-  .detail-tabs__more-toggle[aria-expanded="true"] {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .detail-tabs__menu {
-    position: absolute;
-    top: calc(100% + var(--space-2xs));
-    right: 0;
-    z-index: 20;
-    display: flex;
-    min-width: 10rem;
-    flex-direction: column;
-    padding: var(--space-2xs);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
-  }
-
-  .detail-tabs__menu-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-sm);
-    padding: var(--space-2xs) var(--space-sm);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: none;
-    color: var(--ink);
-    font: inherit;
-    font-size: 0.85rem;
-    text-align: left;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .detail-tabs__menu-item:hover:not(:disabled) {
-    background: var(--bg);
-    color: var(--accent);
-  }
-
-  .detail-tabs__menu-item:disabled {
-    opacity: 0.5;
     cursor: not-allowed;
   }
 

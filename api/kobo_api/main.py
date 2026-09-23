@@ -4545,6 +4545,24 @@ def create_app(
                 # may offer at all is a property of the kind, so the page
                 # reads it from the same fetch that draws the header.
                 "kind": agent.kind,
+                # What this agent runs on, and what the room builds on today
+                # (harness wave, 2026-09-23). Both, because the page's whole
+                # sentence is the comparison: an agent is current or it is
+                # behind, and only the server knows either half.
+                #
+                # The fallback is the server's job for the same reason
+                # `_runtime_image_for_repo` does it: the column is NULL for
+                # every agent that never moved off the org default, which is
+                # nearly all of them, and a page reading the column raw
+                # would print nothing where the honest answer is the
+                # default. A row that names a runtime the room has since
+                # retired passes through verbatim -- that is precisely the
+                # agent whose page needs to say so.
+                #
+                # Detail only: the list route serves one row per dashboard
+                # card and no card says what an agent runs on.
+                "runtime_image": agent.runtime_image or cfg.runtime_image,
+                "room_runtime_image": cfg.runtime_image,
                 "pending_learnings": session.query(AgentLearning)
                 .filter_by(agent_name=agent.name, status=LEARNING_PENDING)
                 .count(),

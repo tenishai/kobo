@@ -18,9 +18,9 @@
   // user actually lives them, ending with the grow-it sections as the
   // "later" step they actually are.
   //
-  // Page-shell wave (2026-09-23): the row is Chat/Slack/Access/Settings and
-  // the grow-it sections are behind a More menu at the end of it, so the
-  // copy below says More rather than Advanced.
+  // Harness wave (2026-09-23): the row is Chat/Slack/Access/Harness/
+  // Settings, with no menu at the end of it, and the grow-it sections are
+  // inside Harness, so the copy below says Harness rather than More.
   import { formatHash } from "../lib/router.svelte";
 </script>
 
@@ -72,15 +72,18 @@
   </section>
 
   <section>
-    <h2>5. Grow it (More)</h2>
+    <h2>5. Grow it (Harness)</h2>
     <p>
-      Once the basics are working, the More menu at the end of the agent's tab
-      row has the rest. Learnings shows what your agent proposes from its own
-      conversations each night, and nothing is kept until you approve it.
-      Memory holds the notes you teach it and any files you upload for it to
-      learn from. Skills lets you add abilities from the catalog, including
-      ones recommended for this agent. Tooling shows the lanes every agent
-      starts with and any extras you add on top.
+      Once the basics are working, the Harness tab has the rest: everything
+      that runs your agent, picked from the list down its left side. Model and
+      runtime says what it thinks with and what it runs on, and tells you when
+      the room has moved on without it. Persona is the soul it was built from.
+      Skills lets you add abilities from the catalog, including ones
+      recommended for this agent. Tooling shows the lanes every agent starts
+      with and any extras you add on top. Memory holds the notes you teach it
+      and any files you upload for it to learn from. Learnings shows what your
+      agent proposes from its own conversations each night, and nothing is
+      kept until you approve it.
     </p>
   </section>
 </article>

@@ -1,100 +1,135 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  ADVANCED_TABS,
+  DEFAULT_HARNESS_SECTION,
+  HARNESS_SECTION_LABELS,
   TAB_LABELS,
-  advancedTabs,
   defaultTab,
+  harnessSections,
+  isHarnessSection,
+  isTabId,
   primaryTabs,
 } from "./tabs";
 
 describe("primaryTabs", () => {
-  it("is chat, slack and settings with no argument", () => {
-    expect(primaryTabs()).toEqual(["chat", "slack", "settings"]);
+  it("is chat, slack, harness and settings with no argument", () => {
+    expect(primaryTabs()).toEqual(["chat", "slack", "harness", "settings"]);
   });
 
-  it("appends access before settings when the invites probe succeeded", () => {
-    // Settings stays last in the row: it is the page's back office, not one
-    // of the things an agent is for.
-    expect(primaryTabs(true)).toEqual(["chat", "slack", "access", "settings"]);
-  });
-});
-
-describe("advancedTabs", () => {
-  it("is the four bundle-backed grow-it sections, then Secrets", () => {
-    expect(advancedTabs()).toEqual([
-      "learnings",
-      "memory",
-      "skills",
-      "tooling",
-      "secrets",
-    ]);
-    // ADVANCED_TABS stays the bundle-backed four. It no longer decides
-    // group membership -- the page asks `advancedTabs(kind)` for that,
-    // since the group now depends on what the agent IS -- so this is the
-    // list of tabs that read the bundle the room composed, and nothing
-    // else. Secrets is in the group without being in it.
-    expect(ADVANCED_TABS).toEqual(["learnings", "memory", "skills", "tooling"]);
+  it("appends access before harness when the invites probe succeeded", () => {
+    // Five tabs on one row, in the order somebody reads them: talk to it,
+    // put it in Slack, say who may use it, look at what runs it, then the
+    // back office. Settings stays last: it is not one of the things an
+    // agent is for.
+    expect(primaryTabs(true)).toEqual(["chat", "slack", "access", "harness", "settings"]);
   });
 });
 
 describe("the tab model by kind (connected-agents design 2026-09-21)", () => {
   it("keeps every tab for a composed agent, named or defaulted", () => {
     expect(primaryTabs(false, "composed")).toEqual(primaryTabs());
-    expect(primaryTabs(true, "composed")).toEqual(["chat", "slack", "access", "settings"]);
-    expect(advancedTabs("composed")).toEqual(advancedTabs());
-  });
-
-  it("drops chat, slack and settings from a connected agent's primary row", () => {
-    // Settings goes with them, but only out of the ROW: it moves into the
-    // More menu below, because a connected agent's row would otherwise be
-    // one back-office tab and nothing else.
-    expect(primaryTabs(false, "connected")).toEqual([]);
-  });
-
-  it("keeps access for a connected agent, exactly as for a composed one", () => {
-    expect(primaryTabs(true, "connected")).toEqual(["access"]);
-  });
-
-  it("keeps Secrets and Settings in the More group for a connected agent", () => {
-    // Every other tab in the group reads the bundle the room composed. The
-    // environment an agent runs with is not a bundle question, and a
-    // team's own service has one exactly as much as an agent the room
-    // built (secrets and environment design 2026-09-22). Settings is the
-    // same kind of fact: a build log and a destroy belong to any workload
-    // the room deploys.
-    expect(advancedTabs("connected")).toEqual(["secrets", "settings"]);
-  });
-
-  it("puts Secrets last in the advanced group for a composed agent", () => {
-    expect(advancedTabs("composed")).toEqual([
-      "learnings",
-      "memory",
-      "skills",
-      "tooling",
-      "secrets",
+    expect(primaryTabs(true, "composed")).toEqual([
+      "chat",
+      "slack",
+      "access",
+      "harness",
+      "settings",
     ]);
   });
 
+  it("drops chat and slack from a connected agent's row, and keeps harness and settings", () => {
+    // Harness survives because a connected agent still runs on something,
+    // and Settings because a build log and a destroy belong to any workload
+    // the room deploys. Chat and Slack do not: the room has no way to talk
+    // to it and never made its chat app.
+    expect(primaryTabs(false, "connected")).toEqual(["harness", "settings"]);
+  });
+
+  it("keeps access for a connected agent, exactly as for a composed one", () => {
+    expect(primaryTabs(true, "connected")).toEqual(["access", "harness", "settings"]);
+  });
+
   it("treats an unknown kind as composed, rather than hiding everything", () => {
-    expect(primaryTabs(true, "adopted")).toEqual(["chat", "slack", "access", "settings"]);
-    expect(advancedTabs("adopted")).toEqual(advancedTabs());
+    expect(primaryTabs(true, "adopted")).toEqual([
+      "chat",
+      "slack",
+      "access",
+      "harness",
+      "settings",
+    ]);
   });
 });
 
 describe("TAB_LABELS", () => {
-  it("labels every tab and has no overview entry", () => {
+  it("labels all five tabs and nothing else", () => {
     expect(TAB_LABELS).toEqual({
       chat: "Chat",
-      learnings: "Learnings",
-      memory: "Memory",
-      skills: "Skills",
-      tooling: "Tooling",
       slack: "Slack",
-      secrets: "Secrets",
       access: "Access",
+      harness: "Harness",
       settings: "Settings",
     });
+  });
+});
+
+describe("harnessSections", () => {
+  it("is model and runtime first, then everything the room composed", () => {
+    expect(harnessSections()).toEqual([
+      "runtime",
+      "persona",
+      "skills",
+      "tooling",
+      "memory",
+      "learnings",
+    ]);
+  });
+
+  it("is model and runtime alone for a connected agent: there is no bundle behind the rest", () => {
+    expect(harnessSections("connected")).toEqual(["runtime"]);
+  });
+
+  it("treats an unknown kind as composed", () => {
+    expect(harnessSections("adopted")).toEqual(harnessSections());
+  });
+
+  it("starts on model and runtime, which every agent has", () => {
+    expect(DEFAULT_HARNESS_SECTION).toBe("runtime");
+    expect(harnessSections()[0]).toBe(DEFAULT_HARNESS_SECTION);
+    expect(harnessSections("connected")[0]).toBe(DEFAULT_HARNESS_SECTION);
+  });
+
+  it("labels every section in plain words", () => {
+    expect(HARNESS_SECTION_LABELS).toEqual({
+      runtime: "Model and runtime",
+      persona: "Persona",
+      skills: "Skills",
+      tooling: "Tooling",
+      memory: "Memory",
+      learnings: "Learnings",
+    });
+  });
+});
+
+describe("isTabId / isHarnessSection", () => {
+  // Both guard the hash, which is whatever somebody typed or a stale
+  // bookmark kept: an unknown segment has to read as "no opinion" rather
+  // than select a tab or a section that does not exist.
+  it("accepts the five tabs and refuses anything else", () => {
+    for (const tab of ["chat", "slack", "access", "harness", "settings"]) {
+      expect(isTabId(tab)).toBe(true);
+    }
+    for (const junk of ["secrets", "learnings", "overview", "", null]) {
+      expect(isTabId(junk)).toBe(false);
+    }
+  });
+
+  it("accepts the six sections and refuses anything else", () => {
+    for (const section of ["runtime", "persona", "skills", "tooling", "memory", "learnings"]) {
+      expect(isHarnessSection(section)).toBe(true);
+    }
+    for (const junk of ["chat", "secrets", "", null]) {
+      expect(isHarnessSection(junk)).toBe(false);
+    }
   });
 });
 

@@ -11,8 +11,7 @@ import GettingStarted from "./GettingStarted.svelte";
 // teammates, grow it), replacing the old make-an-agent/talk-to-it/
 // give-it-colleagues/put-it-in-slack/who-can-do-what ordering that
 // described a room predating the checklist-on-the-agent-page, the
-// Chat/Slack/Access/Settings row with a More menu at the end of it, and the
-// skills-free create flow.
+// Chat/Slack/Access/Harness/Settings row, and the skills-free create flow.
 
 describe("GettingStarted", () => {
   it("renders the five journey headings, in order", () => {
@@ -23,7 +22,7 @@ describe("GettingStarted", () => {
       "2. Say hello",
       "3. Put it in Slack",
       "4. Bring in teammates",
-      "5. Grow it (More)",
+      "5. Grow it (Harness)",
     ]);
   });
 
@@ -60,14 +59,22 @@ describe("GettingStarted", () => {
     expect(screen.getByText(/colleague requests connect your agent to agents in other groups/)).not.toBeNull();
   });
 
-  it("covers all four grow-it tabs, and names the menu they are behind", () => {
+  it("covers every grow-it section, and names the tab they are in", () => {
     render(GettingStarted);
-    expect(screen.getByText(/More menu at the end of the agent's tab row/)).not.toBeNull();
+    expect(screen.getByText(/the Harness tab has the rest/)).not.toBeNull();
+    expect(screen.getByText(/Model and runtime says what it thinks with/)).not.toBeNull();
+    expect(screen.getByText(/Persona is the soul it was built from/)).not.toBeNull();
     expect(screen.getByText(/nothing is kept until you approve it/)).not.toBeNull();
     expect(screen.getByText(/Memory holds the notes you teach it/)).not.toBeNull();
     expect(screen.getByText(/Skills lets you add abilities from the catalog/)).not.toBeNull();
     expect(screen.getByText(/recommended for this agent/)).not.toBeNull();
     expect(screen.getByText(/Tooling shows the lanes every agent starts with/)).not.toBeNull();
+  });
+
+  it("no longer sends anyone to a More menu that is gone", () => {
+    const { container } = render(GettingStarted);
+    expect(container.textContent).not.toMatch(/More menu/);
+    expect(container.textContent).not.toMatch(/Advanced/);
   });
 
   it("never falls back to retired infra vocabulary (repo, image, pod, CI, pipeline, deploy)", () => {

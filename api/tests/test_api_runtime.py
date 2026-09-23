@@ -320,3 +320,68 @@ def test_patch_runtime_to_the_current_value_still_repins_the_file(session_factor
     assert response.json()["previous_runtime_image"] == OTHER_RUNTIME
     assert f"FROM {OTHER_RUNTIME}\n" in github.captured_dockerfile
     assert _stored_runtime(session_factory) == OTHER_RUNTIME
+
+
+# --- The two runtime facts on GET /api/agents/{name} (harness wave) --------
+#
+# The Harness tab's Model and runtime section says what an agent runs on and
+# whether that is still what the room builds on. Both halves of that sentence
+# have to come from the server: the agent's own image lives in a column that
+# is usually NULL (every agent is built on the org default and only a PATCH
+# fills it in), and the room's current default lives in config, which no
+# read route exposed before this.
+
+
+def test_get_agent_reports_its_own_runtime_image_and_the_room_s(session_factory, config):
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config, runtime_image=OTHER_RUNTIME)
+
+    body = client.get(f"/api/agents/{AGENT_NAME}").json()
+
+    assert body["runtime_image"] == OTHER_RUNTIME
+    assert body["room_runtime_image"] == config.runtime_image
+    # The whole point of carrying both: this agent is behind.
+    assert body["runtime_image"] != body["room_runtime_image"]
+
+
+def test_get_agent_falls_back_to_the_room_s_runtime_when_the_row_names_none(
+    session_factory, config
+):
+    # The normal case, and the reason the fallback is the server's job: an
+    # agent built on the org default carries NULL, and a page that read the
+    # column raw would print nothing for almost every agent in the room.
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config, runtime_image=None)
+
+    body = client.get(f"/api/agents/{AGENT_NAME}").json()
+
+    assert body["runtime_image"] == config.runtime_image
+    assert body["room_runtime_image"] == config.runtime_image
+
+
+def test_get_agent_reports_a_retired_runtime_verbatim_rather_than_hiding_it(
+    session_factory, config
+):
+    # An agent created back when the room offered a second runtime. Nothing
+    # accepts that image any more, which is exactly why its page has to say
+    # so instead of quietly showing the default.
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config, runtime_image=RETIRED_RUNTIME)
+
+    body = client.get(f"/api/agents/{AGENT_NAME}").json()
+
+    assert body["runtime_image"] == RETIRED_RUNTIME
+    assert body["room_runtime_image"] == config.runtime_image
+
+
+def test_the_agent_list_keeps_its_shape(session_factory, config):
+    # One card per agent on the dashboard, and none of them says what it
+    # runs on -- the two fields above are a detail-page fact, so the list
+    # does not grow a column for them.
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config, runtime_image=OTHER_RUNTIME)
+
+    row = client.get("/api/agents").json()["agents"][0]
+
+    assert "runtime_image" not in row
+    assert "room_runtime_image" not in row
