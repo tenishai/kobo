@@ -59,6 +59,17 @@
   // has their persona body in hand either way — only the two extra fields
   // stay empty for them to type.
   //
+  // Modal idiom wave (2026-09-23): the fields read from the shared `.field`
+  // classes and both steps end in one action row -- "Start with a blank
+  // form" (step 1) and "Start over" (step 2) are the quiet button on its
+  // left, Cancel and the step's own finishing button on its right. The row
+  // is sticky inside the create dialog's scrolling body rather than handed
+  // to the shell's footer: this form is swapped in for the persona list,
+  // inside that body, and while it is up the dialog's own footer is not --
+  // so the one filled button in the dialog is this form's (Continue at step
+  // 1, since a persona somebody already wrote is the primary path; Create
+  // persona at step 2).
+  //
   // This component owns only its own form fields plus the mutations that
   // post them — it does NOT own the "which persona is selected" or "am I
   // showing the list or the builder" state, both of which stay in
@@ -457,24 +468,25 @@
   }
 </script>
 
+
 {#if step === "draft"}
-  <form class="persona-builder" onsubmit={handleDraftSubmit}>
-    <div class="persona-builder__own-persona">
-      <p class="persona-builder__own-persona-lead">Their persona</p>
-      <div class="persona-builder__field">
-        <label class="persona-builder__label" for="persona-builder-persona-body">
+  <form class="modal__form" onsubmit={handleDraftSubmit}>
+    <div class="modal__section">
+      <p class="field__label">Their persona</p>
+      <div class="field">
+        <label class="field__label" for="persona-builder-persona-body">
           Paste their persona
         </label>
         <textarea
           id="persona-builder-persona-body"
-          class="persona-builder__textarea"
+          class="field__input"
           bind:value={whatTheyDo}
           rows="6"
           placeholder="Paste the full document here."
         ></textarea>
       </div>
       <div class="persona-builder__upload">
-        <label class="persona-builder__upload-label" for="persona-builder-own-persona-file">
+        <label class="field__help" for="persona-builder-own-persona-file">
           Upload persona file
         </label>
         <input
@@ -486,38 +498,21 @@
         />
         <div id="persona-builder-own-persona-file-status">
           {#if personaFileError}
-            <p class="persona-builder__status persona-builder__status--error" role="alert">
+            <p class="field__status field__status--error" role="alert">
               {personaFileError}
             </p>
           {/if}
         </div>
       </div>
-      <div class="persona-builder__actions">
-        <button
-          type="button"
-          class="persona-builder__submit"
-          disabled={whatTheyDo.trim().length === 0}
-          onclick={handleContinueClick}
-        >
-          Continue
-        </button>
-      </div>
-      <button
-        type="button"
-        class="persona-builder__start-over"
-        onclick={startFromOwnText}
-      >
-        Start with a blank form
-      </button>
     </div>
 
-    <div class="persona-builder__field">
-      <label class="persona-builder__label" for="persona-builder-rules">
+    <div class="field">
+      <label class="field__label" for="persona-builder-rules">
         Rules (optional)
       </label>
       <textarea
         id="persona-builder-rules"
-        class="persona-builder__textarea"
+        class="field__input"
         bind:value={rulesInput}
         rows="3"
         placeholder="One per line: things they always or never do."
@@ -525,7 +520,7 @@
         aria-invalid={rulesError !== null}
       ></textarea>
       <div class="persona-builder__upload">
-        <label class="persona-builder__upload-label" for="persona-builder-rules-file">
+        <label class="field__help" for="persona-builder-rules-file">
           Upload rules file
         </label>
         <input
@@ -537,42 +532,42 @@
         />
         <div id="persona-builder-rules-file-status">
           {#if rulesFileError}
-            <p class="persona-builder__status persona-builder__status--error" role="alert">
+            <p class="field__status field__status--error" role="alert">
               {rulesFileError}
             </p>
           {/if}
         </div>
       </div>
-      <p class="persona-builder__help">Up to {RULES_MAX}, one per line.</p>
+      <p class="field__help">Up to {RULES_MAX}, one per line.</p>
       <div id="persona-builder-rules-status">
         {#if rulesError}
-          <p class="persona-builder__status persona-builder__status--error" role="alert">
+          <p class="field__status field__status--error" role="alert">
             {rulesError}
           </p>
         {/if}
       </div>
     </div>
 
-    <div class="persona-builder__secondary">
-      <p class="persona-builder__secondary-lead">
+    <div class="modal__section">
+      <p class="field__help">
         No persona yet? Describe the job and Kobo drafts one.
       </p>
-      <div class="persona-builder__field">
-        <label class="persona-builder__label" for="persona-builder-job">
+      <div class="field">
+        <label class="field__label" for="persona-builder-job">
           What should this agent do for you?
         </label>
         <textarea
           id="persona-builder-job"
-          class="persona-builder__textarea"
+          class="field__input"
           bind:value={job}
           rows="3"
           aria-describedby="persona-builder-job-status"
           aria-invalid={jobError !== null}
         ></textarea>
-        <p class="persona-builder__help">A sentence or two, plain.</p>
+        <p class="field__help">A sentence or two, plain.</p>
         <div id="persona-builder-job-status">
           {#if jobError}
-            <p class="persona-builder__status persona-builder__status--error" role="alert">
+            <p class="field__status field__status--error" role="alert">
               {jobError}
             </p>
           {/if}
@@ -580,51 +575,61 @@
       </div>
     </div>
 
-    <div class="persona-builder__actions">
-      <button type="button" class="persona-builder__cancel" onclick={oncancel}>
-        Cancel
+    <!-- The builder's own footer. It is swapped in for the persona list
+         INSIDE the create dialog's scrolling body, which is why it is
+         sticky here rather than handed to the shell: while it is up, the
+         dialog's own footer is not, so this is the one action row and
+         Continue is the one filled button. -->
+    <div class="modal__footer modal__footer--inline">
+      <button type="button" class="btn btn--quiet" onclick={startFromOwnText}>
+        Start with a blank form
       </button>
-      <button type="submit" class="persona-builder__submit" disabled={!canDraft}>
-        {draftMutation.isPending ? "Drafting…" : "Draft persona"}
-      </button>
+      <div class="modal__actions">
+        <button type="button" class="btn btn--quiet" onclick={oncancel}>Cancel</button>
+        <button type="submit" class="btn" disabled={!canDraft}>
+          {draftMutation.isPending ? "Drafting…" : "Draft persona"}
+        </button>
+        <button
+          type="button"
+          class="btn btn--primary"
+          disabled={whatTheyDo.trim().length === 0}
+          onclick={handleContinueClick}
+        >
+          Continue
+        </button>
+      </div>
     </div>
   </form>
 {:else}
-  <form class="persona-builder" onsubmit={handleCreateSubmit}>
-    <p class="persona-builder__intro">
+  <form class="modal__form" onsubmit={handleCreateSubmit}>
+    <p class="field__help">
       {draftSucceeded
         ? "Here's their draft. Edit anything."
         : "Fill in anything that's missing, then create."}
     </p>
 
     {#if draftError}
-      <p class="persona-builder__status persona-builder__status--error" role="alert">
-        {draftError}
-      </p>
+      <p class="field__status field__status--error" role="alert">{draftError}</p>
     {/if}
 
     {#if distillMutation.isPending}
-      <p class="persona-builder__status persona-builder__status--quiet">
-        Reading their persona…
-      </p>
+      <p class="field__status">Reading their persona…</p>
     {:else if distillMutation.isError}
-      <p class="persona-builder__status persona-builder__status--quiet">
-        Could not read the persona. Fill these in yourself.
-      </p>
+      <p class="field__status">Could not read the persona. Fill these in yourself.</p>
     {/if}
 
-    <div class="persona-builder__field">
-      <label class="persona-builder__label" for="persona-builder-name">Name</label>
+    <div class="field">
+      <label class="field__label" for="persona-builder-name">Name</label>
       <input
         id="persona-builder-name"
-        class="persona-builder__input"
+        class="field__input"
         type="text"
         maxlength="60"
         bind:value={name}
         autocomplete="off"
         aria-describedby="persona-builder-name-hint"
       />
-      <p class="persona-builder__help">
+      <p class="field__help">
         A name is a name: one or two words, the shape of a craftsman's
         nickname, like "sentinel" or "ledger-keeper". Never a hyphenated
         list of traits; the description line below is where the traits
@@ -632,42 +637,42 @@
       </p>
       <div id="persona-builder-name-hint">
         {#if nameHint}
-          <p class="persona-builder__help">{nameHint}</p>
+          <p class="field__help">{nameHint}</p>
         {/if}
       </div>
     </div>
 
-    <div class="persona-builder__field">
-      <label class="persona-builder__label" for="persona-builder-who-they-are">
+    <div class="field">
+      <label class="field__label" for="persona-builder-who-they-are">
         Who they are
       </label>
       <input
         id="persona-builder-who-they-are"
-        class="persona-builder__input"
+        class="field__input"
         type="text"
         maxlength="200"
         bind:value={whoTheyAre}
         placeholder="an unflappable network detective who's seen every outage twice"
         autocomplete="off"
       />
-      <p class="persona-builder__help">
+      <p class="field__help">
         One vivid line: who is this agent?{#if whoTheyAre.length > 170}
           {" "}({200 - whoTheyAre.length} characters left){/if}
       </p>
     </div>
 
-    <div class="persona-builder__field">
-      <label class="persona-builder__label" for="persona-builder-what-they-do">
+    <div class="field">
+      <label class="field__label" for="persona-builder-what-they-do">
         What they do
       </label>
       <textarea
         id="persona-builder-what-they-do"
-        class="persona-builder__textarea"
+        class="field__input"
         bind:value={whatTheyDo}
         rows="3"
       ></textarea>
       <div class="persona-builder__upload">
-        <label class="persona-builder__upload-label" for="persona-builder-what-they-do-file">
+        <label class="field__help" for="persona-builder-what-they-do-file">
           Upload body file
         </label>
         <input
@@ -679,22 +684,22 @@
         />
         <div id="persona-builder-what-they-do-file-status">
           {#if whatTheyDoFileError}
-            <p class="persona-builder__status persona-builder__status--error" role="alert">
+            <p class="field__status field__status--error" role="alert">
               {whatTheyDoFileError}
             </p>
           {/if}
         </div>
       </div>
-      <p class="persona-builder__help">2-4 sentences, plain prose.</p>
+      <p class="field__help">2-4 sentences, plain prose.</p>
     </div>
 
-    <div class="persona-builder__field">
-      <label class="persona-builder__label" for="persona-builder-rules-preview">
+    <div class="field">
+      <label class="field__label" for="persona-builder-rules-preview">
         Rules (optional)
       </label>
       <textarea
         id="persona-builder-rules-preview"
-        class="persona-builder__textarea"
+        class="field__input"
         bind:value={rulesInput}
         rows="3"
         placeholder="One per line: things they always or never do."
@@ -702,7 +707,7 @@
         aria-invalid={rulesError !== null}
       ></textarea>
       <div class="persona-builder__upload">
-        <label class="persona-builder__upload-label" for="persona-builder-rules-preview-file">
+        <label class="field__help" for="persona-builder-rules-preview-file">
           Upload rules file
         </label>
         <input
@@ -714,16 +719,16 @@
         />
         <div id="persona-builder-rules-preview-file-status">
           {#if rulesFileError}
-            <p class="persona-builder__status persona-builder__status--error" role="alert">
+            <p class="field__status field__status--error" role="alert">
               {rulesFileError}
             </p>
           {/if}
         </div>
       </div>
-      <p class="persona-builder__help">Up to {RULES_MAX}, one per line.</p>
+      <p class="field__help">Up to {RULES_MAX}, one per line.</p>
       <div id="persona-builder-rules-preview-status">
         {#if rulesError}
-          <p class="persona-builder__status persona-builder__status--error" role="alert">
+          <p class="field__status field__status--error" role="alert">
             {rulesError}
           </p>
         {/if}
@@ -731,181 +736,29 @@
     </div>
 
     {#if submitError}
-      <p class="persona-builder__status persona-builder__status--error" role="alert">
-        {submitError}
-      </p>
+      <p class="field__status field__status--error" role="alert">{submitError}</p>
     {/if}
 
-    <button type="button" class="persona-builder__start-over" onclick={startOver}>
-      start over
-    </button>
-
-    <div class="persona-builder__actions">
-      <button type="button" class="persona-builder__cancel" onclick={oncancel}>
-        Cancel
+    <div class="modal__footer modal__footer--inline">
+      <button type="button" class="btn btn--quiet" onclick={startOver}>
+        Start over
       </button>
-      <button type="submit" class="persona-builder__submit" disabled={!canCreate}>
-        {mutation.isPending ? "Creating…" : "Create persona"}
-      </button>
+      <div class="modal__actions">
+        <button type="button" class="btn btn--quiet" onclick={oncancel}>Cancel</button>
+        <button type="submit" class="btn btn--primary" disabled={!canCreate}>
+          {mutation.isPending ? "Creating…" : "Create persona"}
+        </button>
+      </div>
     </div>
   </form>
 {/if}
 
 <style>
-  .persona-builder {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-md);
-  }
-
-  .persona-builder__intro {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.9rem;
-  }
-
-  .persona-builder__field {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-
-  .persona-builder__label {
-    color: var(--ink);
-    font-weight: 600;
-    font-size: 0.9rem;
-  }
-
-  .persona-builder__input,
-  .persona-builder__textarea {
-    padding: var(--space-xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font: inherit;
-  }
-
-  .persona-builder__textarea {
-    resize: vertical;
-  }
-
+  /* A file input and the quiet label that names it, on one line. */
   .persona-builder__upload {
     display: flex;
     align-items: center;
     gap: var(--space-xs);
-  }
-
-  .persona-builder__upload-label {
-    color: var(--muted);
     font-size: 0.8rem;
-  }
-
-  .persona-builder__own-persona {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    padding-bottom: var(--space-sm);
-    border-bottom: 1px solid var(--border);
-  }
-
-  .persona-builder__own-persona-lead {
-    margin: 0;
-    color: var(--ink);
-    font-weight: 600;
-    font-size: 0.9rem;
-  }
-
-  .persona-builder__secondary {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-md);
-    padding-top: var(--space-sm);
-    border-top: 1px solid var(--border);
-  }
-
-  .persona-builder__secondary-lead {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.85rem;
-  }
-
-  .persona-builder__input:focus-visible,
-  .persona-builder__textarea:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-  }
-
-  .persona-builder__help {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-  }
-
-  .persona-builder__status {
-    margin: 0;
-    font-size: 0.8rem;
-  }
-
-  .persona-builder__status--error {
-    color: var(--fail);
-  }
-
-  .persona-builder__status--quiet {
-    color: var(--muted);
-  }
-
-  .persona-builder__start-over {
-    align-self: flex-start;
-    padding: 0;
-    border: none;
-    background: none;
-    color: var(--muted);
-    font-size: 0.8rem;
-    text-decoration: underline;
-    cursor: pointer;
-  }
-
-  .persona-builder__start-over:hover {
-    color: var(--accent);
-  }
-
-  .persona-builder__actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-sm);
-  }
-
-  .persona-builder__cancel {
-    padding: var(--space-xs) var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    cursor: pointer;
-  }
-
-  .persona-builder__cancel:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .persona-builder__submit {
-    padding: var(--space-xs) var(--space-md);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .persona-builder__submit:hover:not(:disabled) {
-    filter: brightness(1.05);
-  }
-
-  .persona-builder__submit:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
 </style>

@@ -914,3 +914,58 @@ describe("ConnectModal — finding a repository", () => {
     );
   });
 });
+
+describe("ConnectModal — the dialog idiom (modal wave)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the owner's word and the three actions in a pinned footer", async () => {
+    stubConnectRoutes({ "/api/connect/scan": CLEAN_REPORT });
+    const { container } = renderWithClient(ConnectModal, {
+      open: true,
+      onclose: () => {},
+    });
+
+    await fillTheForm();
+
+    const footer = container.querySelector(".modal__footer");
+    expect(footer).not.toBeNull();
+    expect(container.querySelector(".modal__body")?.contains(footer as Node)).toBe(
+      false,
+    );
+    expect(
+      footer?.contains(screen.getByRole("checkbox", { name: OWNER_CHECKBOX })),
+    ).toBe(true);
+    expect(footer?.contains(scanButton())).toBe(true);
+    expect(footer?.contains(connectButton())).toBe(true);
+  });
+
+  it("fills only the step that is actually next: Scan, then Connect", async () => {
+    stubConnectRoutes({ "/api/connect/scan": CLEAN_REPORT });
+    const { container } = renderWithClient(ConnectModal, {
+      open: true,
+      onclose: () => {},
+    });
+
+    await fillTheForm();
+
+    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
+    expect(scanButton().className).toContain("btn--primary");
+    expect(connectButton().className).not.toContain("btn--primary");
+
+    await fireEvent.click(scanButton());
+    await screen.findByText("Nothing is in the way.");
+
+    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
+    expect(connectButton().className).toContain("btn--primary");
+    expect(scanButton().className).not.toContain("btn--primary");
+
+    // Editing a field makes the report stale, so Scan is next again.
+    await fireEvent.input(screen.getByLabelText("Name"), {
+      target: { value: "release-bot-2" },
+    });
+    expect(scanButton().className).toContain("btn--primary");
+    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
+  });
+});

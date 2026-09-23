@@ -107,7 +107,7 @@
         <div class="settings__action">
           <button
             type="button"
-            class="settings__button"
+            class="btn"
             onclick={() => {
               convertError = null;
               convertConfirming = true;
@@ -127,40 +127,43 @@
   </div>
 </section>
 
+{#snippet convertFooter()}
+  <div class="modal__actions">
+    <button
+      type="button"
+      class="btn btn--quiet"
+      disabled={convert.isPending}
+      onclick={() => {
+        convertConfirming = false;
+        convertError = null;
+      }}
+    >
+      Cancel
+    </button>
+    <button
+      type="button"
+      class="btn btn--primary"
+      disabled={convert.isPending}
+      onclick={handleConvert}
+    >
+      {convert.isPending ? "Converting…" : "Convert this agent"}
+    </button>
+  </div>
+{/snippet}
+
 <Modal
   open={convertConfirming}
   title="Convert to connected"
+  size="narrow"
   onclose={() => (convertConfirming = false)}
+  footer={convertFooter}
 >
-  <div class="settings__confirm">
-    <p class="settings__copy">
-      The room stops editing this agent: no chat, memory, learnings, skills, tooling or Slack from here, and other agents can no longer reach it. Its repository, deployment and cloud identity stay as they are. This cannot be undone from the room.
-    </p>
-    {#if convertError}
-      <p class="settings__error" role="alert">{convertError}</p>
-    {/if}
-    <div class="settings__actions">
-      <button
-        type="button"
-        class="settings__cancel"
-        disabled={convert.isPending}
-        onclick={() => {
-          convertConfirming = false;
-          convertError = null;
-        }}
-      >
-        Cancel
-      </button>
-      <button
-        type="button"
-        class="settings__confirm-button"
-        disabled={convert.isPending}
-        onclick={handleConvert}
-      >
-        {convert.isPending ? "Converting…" : "Convert this agent"}
-      </button>
-    </div>
-  </div>
+  <p class="settings__copy">
+    The room stops editing this agent: no chat, memory, learnings, skills, tooling or Slack from here, and other agents can no longer reach it. Its repository, deployment and cloud identity stay as they are. This cannot be undone from the room.
+  </p>
+  {#if convertError}
+    <p class="field__status field__status--error" role="alert">{convertError}</p>
+  {/if}
 </Modal>
 
 <style>
@@ -244,82 +247,10 @@
     margin-left: auto;
   }
 
-  .settings__button {
-    padding: var(--space-2xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--ink);
-    font: inherit;
-    font-size: 0.85rem;
-    font-weight: 600;
-    line-height: 1.4;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .settings__button:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .settings__confirm {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-md);
-  }
-
   .settings__copy {
     margin: 0;
     color: var(--muted);
     font-size: 0.9rem;
   }
 
-  .settings__error {
-    margin: 0;
-    color: var(--fail);
-    font-size: 0.85rem;
-  }
-
-  .settings__actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-sm);
-  }
-
-  .settings__cancel {
-    padding: var(--space-xs) var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .settings__cancel:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .settings__confirm-button {
-    padding: var(--space-xs) var(--space-md);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: var(--accent);
-    color: var(--accent-ink);
-    font: inherit;
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .settings__confirm-button:hover:not(:disabled) {
-    filter: brightness(1.05);
-  }
-
-  .settings__confirm-button:disabled,
-  .settings__cancel:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
 </style>

@@ -365,7 +365,7 @@ describe("CreateModal — group picker (access-control Task B2)", () => {
 
     await findCreateStationReady();
     await fireEvent.click(
-      screen.getByRole("button", { name: "Build your own persona" }),
+      screen.getByRole("button", { name: "Start from scratch" }),
     );
 
     const jobField = screen.getByLabelText("What should this agent do for you?");
@@ -672,6 +672,103 @@ describe("CreateModal — the group menu has a commons, a directory, and a door 
 
     const submit = screen.getByRole("button", { name: "Create agent" }) as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
+  });
+});
+
+describe("CreateModal — the dialog idiom (modal wave)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const HELPER = {
+    id: "helper",
+    name: "Helper",
+    description:
+      "Helps with things, and keeps helping long past the width of any one row in this list.",
+    team: "growth",
+    tags: [],
+    builtin: false,
+  };
+
+  it("has one filled button, in a footer under the body", async () => {
+    stubCreateModalCatalogs({ "/api/personas/search": { results: [HELPER] } });
+    const { container } = renderWithClient(CreateModal, {
+      open: true,
+      onclose: () => {},
+    });
+
+    await findCreateStationReady();
+
+    const footer = container.querySelector(".modal__footer");
+    expect(footer).not.toBeNull();
+    expect(container.querySelector(".modal__body")?.contains(footer as Node)).toBe(
+      false,
+    );
+    expect(footer?.querySelector(".btn--primary")?.textContent?.trim()).toBe(
+      "Create agent",
+    );
+    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
+  });
+
+  it("steps are a line of numbers at the top, not serif headings", async () => {
+    stubCreateModalCatalogs({ "/api/personas/search": { results: [HELPER] } });
+    const { container } = renderWithClient(CreateModal, {
+      open: true,
+      onclose: () => {},
+    });
+
+    await findCreateStationReady();
+
+    const steps = Array.from(container.querySelectorAll(".modal__step")).map((s) =>
+      s.textContent?.replace(/\s+/g, " ").trim(),
+    );
+    expect(steps).toEqual(["1 Persona", "2 Name", "3 Create"]);
+    // Persona is where everyone starts, so it is the one in ink.
+    expect(
+      container.querySelector(".modal__step--current")?.textContent?.includes("Persona"),
+    ).toBe(true);
+    expect(container.querySelectorAll(".modal__step--current")).toHaveLength(1);
+  });
+
+  it("offers personas as rows: a name, a tag, and one line that is cut off", async () => {
+    stubCreateModalCatalogs({ "/api/personas/search": { results: [HELPER] } });
+    const { container } = renderWithClient(CreateModal, {
+      open: true,
+      onclose: () => {},
+    });
+
+    await screen.findByRole("radio", { name: /Helper/i });
+
+    const row = container.querySelector(".list__row--selected, .list .list__row:not(.list__row--action)");
+    expect(row?.querySelector(".list__name")?.textContent).toBe("Helper");
+    expect(row?.querySelector(".list__tag")?.textContent?.trim()).toBe("growth");
+    const desc = row?.querySelector(".list__desc");
+    expect(desc?.textContent).toBe(HELPER.description);
+    // Truncation hides the rest, so the whole of it is on the row itself.
+    expect(desc?.getAttribute("title")).toBe(HELPER.description);
+    expect(container.querySelector(".persona-card")).toBeNull();
+  });
+
+  it("start from scratch is a quiet row at the top of the list, and still opens the builder", async () => {
+    stubCreateModalCatalogs({
+      "/api/personas/search": { results: [HELPER] },
+      "/api/agents/name-suggestions": { suggestions: [] },
+    });
+    const { container } = renderWithClient(CreateModal, {
+      open: true,
+      onclose: () => {},
+    });
+
+    await findCreateStationReady();
+
+    const scratch = screen.getByRole("button", { name: "Start from scratch" });
+    expect(scratch.className).toContain("list__row--action");
+    expect(scratch).toBe(container.querySelector(".list")?.firstElementChild);
+
+    await fireEvent.click(scratch);
+    expect(
+      await screen.findByLabelText("What should this agent do for you?"),
+    ).not.toBeNull();
   });
 });
 

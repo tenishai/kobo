@@ -3,8 +3,16 @@
   // station, a sibling of Create agent and Quick-start team agent, for a
   // repository a team already owns and the room only deploys. Same
   // controlled-visibility contract as every other modal in this room
-  // (`open` + `onclose`, owned by the caller) and the same field styling as
-  // TeamGuideModal, the other one-station form.
+  // (`open` + `onclose`, owned by the caller) and, since the modal idiom
+  // wave (2026-09-23), the room's shared field and button classes rather
+  // than a private copy of them.
+  //
+  // The owner's word and the three actions live in the shell's pinned
+  // footer: [Cancel] [Scan] [Connect], with the fill on whichever step is
+  // actually next -- Scan until a scan of the current answers has come back
+  // clean, Connect after that. Editing a field stales the report and hands
+  // the fill back to Scan, which is the same rule `canConnect` already
+  // enforced, now said in the buttons themselves.
   //
   // Two buttons, in the order the work happens. SCAN reads the repository
   // and reports what the room can honestly say about it: blockers first
@@ -410,8 +418,10 @@
     });
   }
 
-  function handleSubmit(event: SubmitEvent): void {
-    event.preventDefault();
+  /** Called by the form's own submit (Enter in a field) and by the footer's
+   * Connect button, which sits outside the form element the modal shell
+   * puts in its body. */
+  function handleSubmit(): void {
     if (!canConnect) {
       return;
     }
@@ -451,14 +461,53 @@
   }
 </script>
 
-<Modal {open} title="Connect your own agent" {onclose}>
-  <form class="connect-form" onsubmit={handleSubmit}>
-    <div class="connect-form__field">
-      <label class="connect-form__label" for="connect-repo">Repository</label>
+
+<!-- Two buttons in the order the work happens, and the one that is
+     actually next is the filled one: Scan until a scan of the current
+     answers has come back clean, Connect after that. Editing a field
+     stales the report and hands the fill back to Scan. -->
+{#snippet connectFooter()}
+  <label class="field__choice">
+    <input type="checkbox" bind:checked={confirmOwner} />
+    I own this repository or have its owner's agreement
+  </label>
+  <div class="modal__actions">
+    <button type="button" class="btn btn--quiet" onclick={onclose}>Cancel</button>
+    <button
+      type="button"
+      class="btn"
+      class:btn--primary={!scanIsClean}
+      disabled={!canScan}
+      onclick={handleScan}
+    >
+      {scan.isPending ? "Reading…" : "Scan"}
+    </button>
+    <button
+      type="button"
+      class="btn"
+      class:btn--primary={scanIsClean}
+      disabled={!canConnect}
+      onclick={handleSubmit}
+    >
+      {connect.isPending ? "Connecting…" : "Connect"}
+    </button>
+  </div>
+{/snippet}
+
+<Modal {open} title="Connect your own agent" {onclose} footer={connectFooter}>
+  <form
+    class="modal__form"
+    onsubmit={(event) => {
+      event.preventDefault();
+      handleSubmit();
+    }}
+  >
+    <div class="field">
+      <label class="field__label" for="connect-repo">Repository</label>
       <div class="connect-form__combobox">
         <input
           id="connect-repo"
-          class="connect-form__input"
+          class="field__input"
           type="text"
           role="combobox"
           aria-expanded={repoListOpen}
@@ -531,32 +580,32 @@
       </div>
       <!-- Said out loud, once per change, for anyone who cannot see the
            rows appear under the field. -->
-      <p class="connect-form__sr-only" role="status" aria-live="polite">
+      <p class="field__sr" role="status" aria-live="polite">
         {repoAnnouncement}
       </p>
       {#if repoMatchesTruncated}
-        <p class="connect-form__help">More matched. Keep typing to narrow it down.</p>
+        <p class="field__help">More matched. Keep typing to narrow it down.</p>
       {/if}
       {#if repoSearchFailed}
         <!-- Not an error the form stops for: the field still takes a
              typed owner/name, and the scan is still what answers for it. -->
-        <p class="connect-form__status">
+        <p class="field__status">
           Repository search is unavailable right now. You can still type
           owner/name.
         </p>
       {/if}
-      <p class="connect-form__help">
+      <p class="field__help">
         Start typing to search the repositories the room's GitHub App can
         reach. The room proposes its setup by pull request and never pushes to
         your branches.
       </p>
     </div>
 
-    <div class="connect-form__field">
-      <label class="connect-form__label" for="connect-name">Name</label>
+    <div class="field">
+      <label class="field__label" for="connect-name">Name</label>
       <input
         id="connect-name"
-        class="connect-form__input"
+        class="field__input"
         type="text"
         bind:value={name}
         placeholder="e.g. release-bot"
@@ -564,22 +613,20 @@
         spellcheck="false"
         aria-invalid={nameError !== null}
       />
-      <p class="connect-form__help">
+      <p class="field__help">
         Lowercase letters, numbers, and hyphens. 2-24 characters.
       </p>
       {#if nameError}
-        <p class="connect-form__status connect-form__status--error" role="alert">
-          {nameError}
-        </p>
+        <p class="field__status field__status--error" role="alert">{nameError}</p>
       {:else if nameTaken !== null && nameTaken === name}
-        <p class="connect-form__status connect-form__status--error" role="alert">
+        <p class="field__status field__status--error" role="alert">
           That name is already taken in this room.
         </p>
       {/if}
     </div>
 
-    <div class="connect-form__field">
-      <label class="connect-form__label" for="connect-group">Group</label>
+    <div class="field">
+      <label class="field__label" for="connect-group">Group</label>
       {#if groups.isPending}
         <Skeleton rows={1} />
       {:else if groups.isError}
@@ -588,11 +635,11 @@
           onretry={() => groups.refetch()}
         />
       {:else if !groupOptionsAvailable}
-        <p class="connect-form__help">No groups are configured yet.</p>
+        <p class="field__help">No groups are configured yet.</p>
       {:else}
         <select
           id="connect-group"
-          class="connect-form__input"
+          class="field__input"
           required
           value={groupValue}
           onchange={(event) =>
@@ -621,13 +668,13 @@
             </optgroup>
           {/if}
         </select>
-        <p class="connect-form__help">Who owns this agent.</p>
+        <p class="field__help">Who owns this agent.</p>
       {/if}
     </div>
 
-    <fieldset class="connect-form__fieldset">
-      <legend class="connect-form__label">How does it run?</legend>
-      <label class="connect-form__choice">
+    <fieldset class="field field--group">
+      <legend class="field__label">How does it run?</legend>
+      <label class="field__choice">
         <input
           type="radio"
           name="connect-run-mode"
@@ -638,8 +685,8 @@
         It listens on a port (the platform checks its health there)
       </label>
       <label
-        class="connect-form__choice"
-        class:connect-form__choice--disabled={headlessMessage !== null}
+        class="field__choice"
+        class:field__choice--disabled={headlessMessage !== null}
       >
         <!-- The reason this option is off is tied to the control itself,
              not just printed under it: a screen reader meeting a disabled
@@ -656,48 +703,20 @@
         It does not listen on a port (a chat bot or a worker)
       </label>
       {#if headlessMessage}
-        <p id="connect-headless-reason" class="connect-form__help">
-          {headlessMessage}
-        </p>
+        <p id="connect-headless-reason" class="field__help">{headlessMessage}</p>
       {/if}
+      <p class="field__help">
+        Either way the agent gets an address inside the cluster only. Nothing
+        here makes it reachable from outside.
+      </p>
     </fieldset>
-    <p class="connect-form__help">
-      Either way the agent gets an address inside the cluster only. Nothing
-      here makes it reachable from outside.
-    </p>
-
-    <label class="connect-form__choice">
-      <input type="checkbox" bind:checked={confirmOwner} />
-      I own this repository or have its owner's agreement
-    </label>
-
-    <div class="connect-form__actions">
-      <button type="button" class="connect-form__cancel" onclick={onclose}>
-        Cancel
-      </button>
-      <button
-        type="button"
-        class="connect-form__scan"
-        disabled={!canScan}
-        onclick={handleScan}
-      >
-        {scan.isPending ? "Reading…" : "Scan"}
-      </button>
-      <button type="submit" class="connect-form__submit" disabled={!canConnect}>
-        {connect.isPending ? "Connecting…" : "Connect"}
-      </button>
-    </div>
 
     {#if scanError}
-      <p class="connect-form__status connect-form__status--error" role="alert">
-        {scanError}
-      </p>
+      <p class="field__status field__status--error" role="alert">{scanError}</p>
     {/if}
 
     {#if submitError}
-      <p class="connect-form__status connect-form__status--error" role="alert">
-        {submitError}
-      </p>
+      <p class="field__status field__status--error" role="alert">{submitError}</p>
     {/if}
 
     {#if report}
@@ -706,14 +725,14 @@
            them apart at a glance. -->
       <div class="connect-report">
         {#if scanIsStale}
-          <p class="connect-form__status">
+          <p class="field__status">
             Something changed since this scan. Scan again before connecting.
           </p>
         {/if}
 
         {#if blockers.length > 0}
           <div class="connect-report__group">
-            <p class="connect-report__heading">Fix these first</p>
+            <p class="field__label">Fix these first</p>
             <ul class="connect-report__list">
               {#each blockers as finding (finding.code + finding.message)}
                 <li class="connect-report__blocker">{finding.message}</li>
@@ -721,12 +740,12 @@
             </ul>
           </div>
         {:else if !scanIsStale}
-          <p class="connect-report__heading">Nothing is in the way.</p>
+          <p class="field__label">Nothing is in the way.</p>
         {/if}
 
         {#if report.warnings.length > 0}
           <div class="connect-report__group">
-            <p class="connect-report__heading">Worth knowing</p>
+            <p class="field__label">Worth knowing</p>
             <ul class="connect-report__list">
               {#each report.warnings as finding (finding.code + finding.message)}
                 <li class="connect-report__warning">{finding.message}</li>
@@ -736,8 +755,8 @@
         {/if}
 
         <div class="connect-report__group">
-          <p class="connect-form__help">{report.adds_preamble}</p>
-          <p class="connect-report__heading">What the room will add, by pull request</p>
+          <p class="field__help">{report.adds_preamble}</p>
+          <p class="field__label">What the room will add, by pull request</p>
           <ul class="connect-report__list">
             {#each report.adds as entry (entry)}
               <li class="connect-report__add">{entry}</li>
@@ -750,51 +769,6 @@
 </Modal>
 
 <style>
-  /* Same visual language as TeamGuideModal's own station -- a sibling, not
-     a new design system. */
-  .connect-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-lg);
-    background-color: var(--bg);
-  }
-
-  .connect-form__field {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-
-  .connect-form__fieldset {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-    margin: 0;
-    padding: 0;
-    border: none;
-  }
-
-  .connect-form__label {
-    padding: 0;
-    color: var(--ink);
-    font-weight: 600;
-    font-size: 0.9rem;
-  }
-
-  .connect-form__input {
-    padding: var(--space-xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font: inherit;
-  }
-
-  .connect-form__input:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-  }
-
   /* The list sits directly under the input and over whatever follows it,
      so the fields below do not jump as rows arrive. */
   .connect-form__combobox {
@@ -853,117 +827,19 @@
     border-top: 1px solid var(--border);
   }
 
-  /* Same visually-hidden line StepChecklist uses for its own live
-     region: announced, never drawn. */
-  .connect-form__sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: 0;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-  }
-
-  .connect-form__choice {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--space-xs);
-    color: var(--ink);
-    font-size: 0.9rem;
-  }
-
-  .connect-form__choice--disabled {
-    color: var(--muted);
-  }
-
-  .connect-form__help {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-  }
-
-  .connect-form__status {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-  }
-
-  .connect-form__status--error {
-    color: var(--fail);
-  }
-
-  .connect-form__actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-sm);
-  }
-
-  .connect-form__cancel,
-  .connect-form__scan {
-    padding: var(--space-xs) var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    cursor: pointer;
-  }
-
-  .connect-form__scan {
-    font-weight: 600;
-  }
-
-  .connect-form__cancel:hover,
-  .connect-form__scan:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .connect-form__scan:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .connect-form__submit {
-    padding: var(--space-xs) var(--space-md);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .connect-form__submit:hover:not(:disabled) {
-    filter: brightness(1.05);
-  }
-
-  .connect-form__submit:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
   .connect-report {
     display: flex;
     flex-direction: column;
-    gap: var(--space-md);
+    gap: var(--space-sm);
     padding: var(--space-sm);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    background: var(--panel);
   }
 
   .connect-report__group {
     display: flex;
     flex-direction: column;
     gap: var(--space-2xs);
-  }
-
-  .connect-report__heading {
-    margin: 0;
-    color: var(--ink);
-    font-weight: 600;
-    font-size: 0.85rem;
   }
 
   .connect-report__list {

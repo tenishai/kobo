@@ -351,3 +351,421 @@ kbd {
   border-color: var(--fail);
   color: var(--fail);
 }
+
+/* ---------------------------------------------------------------------------
+   The dialog idiom.
+
+   The panel idiom above, for the pop-ups: one width scale, one header row,
+   a body that scrolls on its own, and a footer pinned under it so the
+   button that finishes the job is never below the fold. Every dialog in
+   this room reads from here rather than carrying its own copy of a field,
+   a row, or a button.
+
+   Three widths and nothing in between: narrow for a confirm, the default
+   for a form, wide for a picker.
+   --------------------------------------------------------------------------- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-lg);
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 100;
+}
+
+.modal {
+  display: flex;
+  width: 100%;
+  max-width: 36rem;
+  max-height: 90vh;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+
+.modal--narrow {
+  max-width: 28rem;
+}
+
+.modal--wide {
+  max-width: 44rem;
+}
+
+.modal__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-lg);
+  border-bottom: 1px solid var(--border);
+}
+
+/* The page's own h2: a dialog names itself the same way a panel does. */
+.modal__title {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.modal__close {
+  margin-left: auto;
+  padding: 0 var(--space-2xs);
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.modal__close:hover {
+  color: var(--ink);
+}
+
+.modal__body {
+  display: flex;
+  max-height: 70vh;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  overflow-y: auto;
+}
+
+/* A form filling the body lays itself out the same way the body does. */
+.modal__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+/* One run of fields under one step of a dialog. */
+.modal__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.modal__hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.modal__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-lg);
+  border-top: 1px solid var(--border);
+}
+
+/* The footer a nested form draws for itself, inside the scrolling body
+   rather than under it (PersonaBuilder, swapped in for the persona list).
+   Sticky rather than pinned, which is as close to the real thing as a
+   child of the scroller can get, and the negative margins undo the body's
+   own padding so it sits flush against the bottom edge. */
+.modal__footer--inline {
+  position: sticky;
+  bottom: calc(-1 * var(--space-md));
+  margin: 0 calc(-1 * var(--space-lg)) calc(-1 * var(--space-md));
+  background: var(--panel);
+}
+
+/* Actions right-aligned, always: [quiet Cancel] [primary Action]. Anything
+   in the footer before this run -- a Back button, a checkbox, a status --
+   stays on the left. */
+.modal__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-left: auto;
+}
+
+/* The stepper: a line of numbers at the top of a dialog that has steps.
+   The current one is in ink, the rest are muted, and none of them is a
+   heading -- the dialog already has one. */
+.modal__steps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-md);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.modal__step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.modal__step--current {
+  color: var(--ink);
+}
+
+.modal__step-number {
+  font-family: var(--font-mono);
+}
+
+/* --- Fields ---------------------------------------------------------------
+   A label, a control, and whatever the room has to say about it. The same
+   shape whether the control is an input, a select, or a textarea. */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+/* A field whose control is a group of radios or checkboxes. */
+.field--group {
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.field__label {
+  padding: 0;
+  color: var(--ink);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.field__input {
+  padding: var(--space-2xs) var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+textarea.field__input {
+  resize: vertical;
+}
+
+.field__input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* An input with a button beside it. */
+.field__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.field__row .field__input {
+  flex: 1;
+  min-width: 0;
+}
+
+.field__help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.field__status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.field__status--ok {
+  color: var(--ok);
+}
+
+.field__help--error,
+.field__status--error {
+  color: var(--fail);
+}
+
+/* One radio or checkbox and the sentence it answers. */
+.field__choice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-xs);
+  color: var(--ink);
+  font-size: 0.85rem;
+}
+
+.field__choice--disabled {
+  color: var(--muted);
+}
+
+.field__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* --- Lists ----------------------------------------------------------------
+   What a dialog offers to pick from: rows, not cards. A row is a name, a
+   tag, and one line about it that is cut off rather than allowed to set
+   the height of everything below it. */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.list__row {
+  display: flex;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-2xs) var(--space-sm);
+  border-bottom: 1px solid var(--border);
+  color: var(--ink);
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.list__row:last-child {
+  border-bottom: none;
+}
+
+.list__row:hover {
+  background: var(--bg);
+}
+
+.list__row--selected {
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+}
+
+/* A row that does something instead of selecting something. Quiet: it is
+   an alternative to the list, not the point of it. */
+.list__row--action {
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.list__row--action:hover {
+  color: var(--accent);
+}
+
+.list__name {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.list__tag {
+  flex-shrink: 0;
+  padding: 0.1rem var(--space-2xs);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.list__tag--accent {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* The one line of description: truncated, with the whole of it on the
+   row's title attribute for anyone who wants the rest. */
+.list__desc {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.list__empty {
+  padding: var(--space-sm);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* --- Chips ----------------------------------------------------------------
+   Short labels a person adds and removes, in the create dialog and in Edit
+   details. One copy, not two. */
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2xs);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: 0.1rem var(--space-xs);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--ink);
+  font-size: 0.8rem;
+}
+
+/* A chip that adds itself on click. */
+.chip--action {
+  background: none;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.chip--action:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.chip--action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chip__remove {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chip__remove:hover:not(:disabled) {
+  color: var(--fail);
+}
+
+.chip__remove:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

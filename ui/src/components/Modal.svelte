@@ -9,18 +9,35 @@
   //   - Tab/Shift+Tab cycle within the dialog's focusable elements instead
   //     of escaping to the page behind it
   //   - background scroll is locked while open
+  //
+  // One shape for every dialog in this room (modal idiom wave): a header row
+  // (title in the page's h2 style, close button on the right), a body that
+  // scrolls on its own, and a footer pinned under it whose actions are
+  // right-aligned, so the button that finishes the job is on screen without
+  // scrolling for it. Three widths and nothing in between -- `narrow` for a
+  // confirm, the default for a form, `wide` for a picker. The classes live in
+  // app.css, next to the panel idiom, so a dialog and a panel read from one
+  // place rather than each carrying its own copy.
   import { tick, type Snippet } from "svelte";
 
   let {
     open,
     title,
+    size = "default",
     onclose,
     children,
+    footer,
   }: {
     open: boolean;
     title?: string;
+    /** 28rem for a confirm, 36rem for a form, 44rem for a picker. */
+    size?: "narrow" | "default" | "wide";
     onclose: () => void;
     children: Snippet;
+    /** The pinned action row. Left out entirely by a dialog whose actions
+     * belong to a form nested inside the body (see PersonaBuilder, which
+     * draws its own sticky footer while it is swapped in). */
+    footer?: Snippet;
   } = $props();
 
   let dialogEl: HTMLDivElement | undefined = $state();
@@ -108,7 +125,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="modal-backdrop" onmousedown={handleBackdropMousedown}>
     <div
-      class="modal"
+      class="modal modal--{size}"
       role="dialog"
       aria-modal="true"
       aria-labelledby={title ? "modal-title" : undefined}
@@ -116,69 +133,27 @@
       bind:this={dialogEl}
       onkeydown={handleKeydown}
     >
-      <button
-        type="button"
-        class="modal__close"
-        aria-label="Close"
-        onclick={onclose}
-      >
-        &times;
-      </button>
-      {#if title}
-        <h2 id="modal-title" class="modal__title">{title}</h2>
-      {/if}
-      <div class="modal__content">
+      <div class="modal__header">
+        {#if title}
+          <h2 id="modal-title" class="modal__title">{title}</h2>
+        {/if}
+        <button
+          type="button"
+          class="modal__close"
+          aria-label="Close"
+          onclick={onclose}
+        >
+          &times;
+        </button>
+      </div>
+      <div class="modal__body">
         {@render children()}
       </div>
+      {#if footer}
+        <div class="modal__footer">
+          {@render footer()}
+        </div>
+      {/if}
     </div>
   </div>
 {/if}
-
-<style>
-  .modal-backdrop {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: var(--space-lg);
-    background: rgba(0, 0, 0, 0.4);
-    z-index: 100;
-  }
-
-  .modal {
-    position: relative;
-    width: 100%;
-    max-width: 32rem;
-    max-height: 85vh;
-    overflow-y: auto;
-    padding: var(--space-lg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--panel);
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
-  }
-
-  .modal__close {
-    position: absolute;
-    top: var(--space-sm);
-    right: var(--space-sm);
-    padding: var(--space-2xs) var(--space-xs);
-    border: none;
-    background: none;
-    color: var(--muted);
-    font-size: 1.25rem;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .modal__close:hover {
-    color: var(--ink);
-  }
-
-  .modal__title {
-    margin: 0 0 var(--space-md);
-    padding-right: var(--space-xl);
-    color: var(--ink);
-  }
-</style>

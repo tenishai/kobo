@@ -567,8 +567,8 @@ describe("PersonaBuilder - naming law microcopy (hardening wave)", () => {
 
     const nameField = screen.getByLabelText("Name");
     const helperText = nameField
-      .closest(".persona-builder__field")
-      ?.querySelector(".persona-builder__help")
+      .closest(".field")
+      ?.querySelector(".field__help")
       ?.textContent
       // Collapse the source's own line-wrapping whitespace (this string is
       // too long to keep on one physical line in the .svelte file) down to
@@ -681,5 +681,36 @@ describe("PersonaBuilder - naming station warm-up (perf fix: prefetch on Create 
     });
 
     expect(prefetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("PersonaBuilder - the dialog idiom (modal wave)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("has one filled button per step, in a footer of its own", async () => {
+    stubFetch({ "/api/personas/draft": DRAFT_RESPONSE, "/api/": {} });
+    const { container } = renderWithClient(PersonaBuilder, {
+      oncancel: () => {},
+      oncreated: () => {},
+    });
+
+    // Step 1: the primary is Continue, the path for somebody who already
+    // has a persona written; drafting one from a job is the plain button.
+    const footer = container.querySelector(".modal__footer");
+    expect(footer).not.toBeNull();
+    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
+    expect(footer?.querySelector(".btn--primary")?.textContent?.trim()).toBe(
+      "Continue",
+    );
+    expect(footer?.textContent).toContain("Cancel");
+
+    await reachStep2();
+
+    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
+    expect(
+      container.querySelector(".modal__footer .btn--primary")?.textContent?.trim(),
+    ).toBe("Create persona");
   });
 });

@@ -130,3 +130,32 @@ describe("DangerZone copy by kind (connected-agents design 2026-09-21)", () => {
     ).toHaveProperty("disabled", true);
   });
 });
+
+describe("DangerZone — the destroy confirm (modal wave)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    stubFetch({ "/api/": {} });
+  });
+
+  it("is a narrow dialog whose action is danger, not the room's filled button", async () => {
+    const { container } = renderWithClient(DangerZone, {
+      agentName: "warden",
+      status: "ready",
+      error: null,
+    });
+    await openConfirm();
+
+    expect(container.querySelector(".modal--narrow")).not.toBeNull();
+    const footer = container.querySelector(".modal__footer");
+    expect(footer).not.toBeNull();
+    // Typing the name stays in the body; the two buttons are in the footer.
+    expect(container.querySelector(".modal__body")?.contains(screen.getByRole("textbox"))).toBe(
+      true,
+    );
+    const destroy = screen.getByRole("button", { name: /destroy this agent/i });
+    expect(footer?.contains(destroy)).toBe(true);
+    expect(destroy.className).toContain("btn--danger");
+    // Nothing in a destroy confirm is an invitation.
+    expect(container.querySelectorAll(".btn--primary")).toHaveLength(0);
+  });
+});

@@ -24,23 +24,25 @@
   // (`MetadataDetails`, untouched by this ruling) — this modal just no
   // longer asks the question up front.
   //
-  // "Unlocking" here is a visual/motivational cue only (reduced opacity +
-  // a hollow station marker — see the `.station--locked` styling below),
-  // never a hard functional lock: nothing is `disabled`/`inert` because a
-  // later station is still muted. Persona leads the bench now (the one
-  // station that's never itself muted — it has to stay usable from the
-  // very first beat, the same role Team used to play before it was
-  // removed). `canSubmit` below is the one thing that's actually gated —
-  // unchanged from before this addendum, just fed by fields that now
-  // render in a different order and without a team check.
+  // Modal idiom wave (2026-09-23): the three stations are three sections of
+  // one scrolling body now, under a single compact stepper line -- the
+  // woodstamp circles, the display-serif headings and the dimmed
+  // "locked" sections are gone, and so are the tall persona cards (a dense
+  // radio list instead; "Start from scratch" is the quiet first row of it,
+  // not a filled bar above it). Create and Cancel live in the shell's
+  // pinned footer, so the finishing button is on screen from the first
+  // beat. Progress is still a cue and nothing more: nothing is
+  // `disabled`/`inert` because a later step has not been reached, and
+  // `canSubmit` below is the one thing that's actually gated -- unchanged,
+  // just fed by fields that render in one column now.
   //
   // Name availability is the one field with a network round trip attached:
   // every keystroke gets instant client-side validation (validate.ts) and
   // only once that passes does a debounced (350ms) `checkAvailability` call
   // go out, so a name that's obviously wrong never costs a request. A name
-  // can now arrive two ways — picking one of the naming station's three
-  // suggested cards, or "name it yourself" — but either way it lands in
-  // the same `name` state and runs through the same check.
+  // can now arrive two ways — picking one of the three suggested rows, or
+  // "name it yourself" — but either way it lands in the same `name` state
+  // and runs through the same check.
   //
   // Persona is a catalog *search* now (Task 10), not a whole catalog
   // fetched once: `personasSearchQuery` re-runs as the user types, debounced
@@ -651,6 +653,13 @@
   const personaCommitted = $derived(selectedPersona !== "");
   const namingCommitted = $derived(name.length > 0);
 
+  /** Which of the three the stepper line puts in ink (modal idiom wave).
+   * The same reading of progress the woodstamp markers used to draw, minus
+   * the serif headings and the dimmed sections -- and just as much a cue
+   * and nothing more: `canSubmit` below is still the one real gate. */
+  const currentStep = $derived(!personaCommitted ? 1 : !namingCommitted ? 2 : 3);
+  const STEPS = ["Persona", "Name", "Create"];
+
   // Fresh form every time the modal opens.
   $effect(() => {
     if (open) {
@@ -694,8 +703,11 @@
       !mutation.isPending,
   );
 
-  function handleSubmit(event: SubmitEvent): void {
-    event.preventDefault();
+  /** Called by the form's own submit (Enter in a field) and by the footer's
+   * Create button, which sits outside the form element the modal shell puts
+   * in its body -- so it asks for the submit directly rather than relying on
+   * a form association across that seam. */
+  function handleSubmit(): void {
     if (!canSubmit) {
       return;
     }
@@ -733,6 +745,7 @@
   }
 </script>
 
+
 {#snippet nameStatus()}
   <div
     id="create-name-status"
@@ -747,76 +760,118 @@
       : undefined}
   >
     {#if nameError}
-      <p class="create-form__status create-form__status--error">{nameError}</p>
+      <p class="field__status field__status--error">{nameError}</p>
     {:else if availability.status === "checking"}
-      <p class="create-form__status">Checking…</p>
+      <p class="field__status">Checking…</p>
     {:else if availability.status === "available"}
-      <p class="create-form__status create-form__status--ok">✓ Available</p>
+      <p class="field__status field__status--ok">✓ Available</p>
     {:else if availability.status === "unavailable"}
-      <p class="create-form__status create-form__status--error">
+      <p class="field__status field__status--error">
         {availability.reason}
       </p>
     {/if}
   </div>
 {/snippet}
 
-<Modal {open} title="Create agent" {onclose}>
-  <form class="create-form" onsubmit={handleSubmit}>
-    <!-- Station 1: Persona — always active, never muted; it's the start of
-         the bench now (Persona v3 / teamless-create addendum removed the
-         Team station that used to lead it). -->
-    <div class="station">
-      <div class="station__head">
-        <span class="station-marker station-marker--filled" aria-hidden="true">1</span>
-        <h3 class="station__heading">Persona</h3>
-      </div>
+<!-- The one filled button in this dialog, and the only one: the persona
+     builder draws its own footer while it is swapped in (below), so the two
+     are never on screen at once. -->
+{#snippet createFooter()}
+  <div class="modal__actions">
+    <button type="button" class="btn btn--quiet" onclick={onclose}>Cancel</button>
+    <button
+      type="button"
+      class="btn btn--primary"
+      disabled={!canSubmit}
+      onclick={handleSubmit}
+    >
+      {mutation.isPending ? "Creating…" : "Create agent"}
+    </button>
+  </div>
+{/snippet}
 
-      <fieldset class="create-form__field create-form__fieldset">
-        <legend class="sr-only">Persona</legend>
-        {#if personasUnwired}
-          <EmptyState message={UNWIRED_MESSAGE} />
-        {:else if builderOpen}
-          <PersonaBuilder
-            oncancel={() => (builderOpen = false)}
-            oncreated={handlePersonaCreated}
+<Modal
+  {open}
+  title="Create agent"
+  size="wide"
+  {onclose}
+  footer={builderOpen ? undefined : createFooter}
+>
+  <form
+    class="modal__form"
+    onsubmit={(event) => {
+      event.preventDefault();
+      handleSubmit();
+    }}
+  >
+    <!-- Three steps on one line. The markers used to be woodstamp circles
+         with display-serif headings under them, which cost a third of the
+         dialog's height before anybody had picked anything. -->
+    <ol class="modal__steps" aria-label="Steps">
+      {#each STEPS as label, index (label)}
+        <li
+          class="modal__step"
+          class:modal__step--current={currentStep === index + 1}
+          aria-current={currentStep === index + 1 ? "step" : undefined}
+        >
+          <span class="modal__step-number">{index + 1}</span>
+          {label}
+        </li>
+      {/each}
+    </ol>
+
+    <!-- Step 1: Persona -->
+    <div class="modal__section">
+      {#if personasUnwired}
+        <EmptyState message={UNWIRED_MESSAGE} />
+      {:else if builderOpen}
+        <PersonaBuilder
+          oncancel={() => (builderOpen = false)}
+          oncreated={handlePersonaCreated}
+        />
+      {:else}
+        <fieldset class="field field--group">
+          <legend class="field__sr">Persona</legend>
+          <label class="field__label" for="persona-search">Search personas</label>
+          <input
+            id="persona-search"
+            class="field__input"
+            type="text"
+            bind:value={personaQ}
+            placeholder="Search personas"
+            autocomplete="off"
           />
-        {:else}
-          <button
-            type="button"
-            class="persona-build-cta"
-            onclick={() => (builderOpen = true)}
-          >
-            Build your own persona
-          </button>
 
-          <div class="create-form__field">
-            <label class="create-form__label" for="persona-search">Search personas</label>
-            <input
-              id="persona-search"
-              class="create-form__input"
-              type="text"
-              bind:value={personaQ}
-              placeholder="Search personas"
-              autocomplete="off"
-            />
-          </div>
-
-          {#if personas.isPending}
-            <Skeleton rows={2} />
-          {:else if personas.isError}
-            <ErrorState
-              message={errorMessage(personas.error, "Couldn't load personas.")}
-              onretry={() => personas.refetch()}
-            />
-          {:else}
-            <div class="persona-list">
-              {#if personas.data.length === 0 && personaQ.length > 0}
-                <p class="create-form__help">Nothing matches your search.</p>
-              {/if}
+          <div class="list">
+            <!-- Writing one yourself is an alternative to the list, so it
+                 sits at the top of it as a quiet row rather than a filled
+                 bar above it. Outside the loading/error branches below: it
+                 is the one row that never depends on the search coming
+                 back, and a room whose catalog is slow or broken still has
+                 this way through. -->
+            <button
+              type="button"
+              class="list__row list__row--action"
+              onclick={() => (builderOpen = true)}
+            >
+              Start from scratch
+            </button>
+            {#if personas.isPending}
+              <div class="list__empty">
+                <Skeleton rows={2} />
+              </div>
+            {:else if personas.isError}
+              <div class="list__empty">
+                <ErrorState
+                  message={errorMessage(personas.error, "Couldn't load personas.")}
+                  onretry={() => personas.refetch()}
+                />
+              </div>
+            {:else}
               {#each personas.data as persona (persona.id)}
                 <label
-                  class="persona-card"
-                  class:persona-card--selected={persona.id === selectedPersona}
+                  class="list__row"
+                  class:list__row--selected={persona.id === selectedPersona}
                 >
                   <input
                     type="radio"
@@ -828,922 +883,318 @@
                       selectPersona(persona);
                     }}
                   />
-                  <span class="persona-card__body">
-                    <span class="persona-card__head">
-                      <span class="persona-card__name">{persona.name}</span>
-                      <span
-                        class="catalog-badge"
-                        class:catalog-badge--builtin={persona.builtin}
-                      >
-                        {persona.builtin ? "Built-in" : persona.team}
-                      </span>
-                    </span>
-                    <span class="persona-card__description">{persona.description}</span>
+                  <span class="list__name">{persona.name}</span>
+                  <span class="list__tag" class:list__tag--accent={persona.builtin}>
+                    {persona.builtin ? "Built-in" : persona.team}
+                  </span>
+                  <span class="list__desc" title={persona.description}>
+                    {persona.description}
                   </span>
                 </label>
               {/each}
-            </div>
-          {/if}
-        {/if}
-      </fieldset>
-    </div>
-
-    <!-- Station 2: The Naming — muted until a persona is picked; there's
-         nothing to suggest against before that. -->
-    <div class="station" class:station--locked={!personaCommitted}>
-      <div class="station__head">
-        <span
-          class="station-marker"
-          class:station-marker--filled={personaCommitted}
-          aria-hidden="true"
-        >
-          2
-        </span>
-        <h3 class="station__heading">The Naming</h3>
-      </div>
-
-      {#if !personaCommitted}
-        <p class="station__hint">Pick a persona first.</p>
-      {:else if showManualName}
-        {#if nameSuggestions.isError}
-          <p class="create-form__help">
-            Couldn't come up with name ideas right now. Name it yourself below.
-          </p>
-        {/if}
-        <div class="create-form__field">
-          <label class="create-form__label" for="create-name">Name</label>
-          <input
-            id="create-name"
-            class="create-form__input"
-            type="text"
-            bind:value={name}
-            bind:this={createNameInput}
-            placeholder="e.g. weekly-digest"
-            autocomplete="off"
-            spellcheck="false"
-            aria-describedby="create-name-status"
-            aria-invalid={nameError !== null ||
-              availability.status === "unavailable"}
-          />
-          <p class="create-form__help">
-            Lowercase letters, numbers, and hyphens. 2-24 characters.
-          </p>
-          {@render nameStatus()}
-          {#if nameMode === "manual" && nameSuggestions.data !== undefined && !nameSuggestions.isError}
-            <button
-              type="button"
-              class="naming-actions__back"
-              onclick={() => (nameMode = "cards")}
-            >
-              back to the suggestions
-            </button>
-          {/if}
-        </div>
-      {:else if nameSuggestions.isPending}
-        <div class="name-cards" aria-hidden="true">
-          {#each { length: 3 } as _, i (i)}
-            <div class="name-card name-card--skeleton">
-              <span class="name-card__skeleton-bar name-card__skeleton-bar--name"
-              ></span>
-              <span class="name-card__skeleton-bar name-card__skeleton-bar--reason"
-              ></span>
-            </div>
-          {/each}
-        </div>
-        <p class="sr-only" role="status">Loading name suggestions…</p>
-      {:else}
-        <div class="name-cards" role="radiogroup" aria-label="Suggested names">
-          {#each nameSuggestions.data as card (card.name)}
-            <label
-              class="name-card"
-              class:name-card--selected={card.name === selectedCardName}
-              class:name-card--dimmed={selectedCardName !== null &&
-                card.name !== selectedCardName}
-            >
-              <input
-                type="radio"
-                name="suggested-name"
-                value={card.name}
-                checked={card.name === selectedCardName}
-                onchange={() => selectCard(card)}
-              />
-              <span class="name-card__body">
-                <span class="name-card__name">{card.name}</span>
-                <span class="name-card__reason">{card.reason}</span>
-              </span>
-            </label>
-          {/each}
-        </div>
-
-        {#if selectedCardName !== null}
-          {@render nameStatus()}
-        {/if}
-
-        <div class="naming-actions">
-          <button
-            type="button"
-            class="naming-actions__reroll"
-            onclick={handleOfferMore}
-            disabled={nameSuggestions.isFetching}
-          >
-            {nameSuggestions.isFetching ? "Asking again…" : "Offer more"}
-          </button>
-          <button
-            type="button"
-            class="naming-actions__manual"
-            onclick={() => (nameMode = "manual")}
-          >
-            name it yourself
-          </button>
-        </div>
-        {#if rerollNote}
-          <p class="create-form__help">Same names as before. The workshop stands by them.</p>
-        {/if}
+              {#if personas.data.length === 0 && personaQ.length > 0}
+                <p class="list__empty">Nothing matches your search.</p>
+              {/if}
+            {/if}
+          </div>
+        </fieldset>
       {/if}
     </div>
 
-    <!-- Station 3: Create -- muted until a name's landed; Create itself
-         stays gated by `canSubmit`, unchanged. -->
-    <div class="station" class:station--locked={!namingCommitted}>
-      <div class="station__head">
-        <span
-          class="station-marker"
-          class:station-marker--filled={namingCommitted}
-          aria-hidden="true"
-        >
-          3
-        </span>
-        <h3 class="station__heading">Create</h3>
-      </div>
-
-      {#if groupOptionsAvailable}
-        <div class="create-form__field">
-          <label class="create-form__label" for="create-group">Group</label>
-          <select
-            id="create-group"
-            class="create-form__input"
-            required
-            value={groupValue}
-            onchange={(event) =>
-              handleGroupSelect((event.currentTarget as HTMLSelectElement).value)}
-          >
-            <option value="" disabled>Choose a group</option>
-            <option value={GROUP_NOT_LISTED}>My group is not listed...</option>
-            {#if sharedGroupOptions.length > 0}
-              <optgroup label="Shared">
-                {#each sharedGroupOptions as group (group.name)}
-                  <option value={group.name}>{group.name} (everyone in the company)</option>
-                {/each}
-              </optgroup>
-            {/if}
-            {#if nonEngineeringGroupOptions.length > 0}
-              <optgroup label="Non-engineering groups">
-                {#each nonEngineeringGroupOptions as group (group.name)}
-                  <option value={group.name}>{group.name}</option>
-                {/each}
-              </optgroup>
-            {/if}
-            {#if engineeringGroupOptions.length > 0}
-              <optgroup label="Engineering groups">
-                {#each engineeringGroupOptions as group (group.name)}
-                  <option value={group.name}>{group.name}</option>
-                {/each}
-              </optgroup>
-            {/if}
-          </select>
-          <p class="create-form__help">Who can see and use this agent.</p>
-          {#if selectedGroupKind === "shared"}
-            <p class="create-form__help">
-              Shared agents are visible to everyone in the company.
+    {#if !builderOpen}
+      <!-- Step 2: the name -->
+      <div class="modal__section">
+        {#if !personaCommitted}
+          <p class="modal__hint">Pick a persona first.</p>
+        {:else if showManualName}
+          {#if nameSuggestions.isError}
+            <p class="field__help">
+              Couldn't come up with name ideas right now. Name it yourself below.
             </p>
           {/if}
-
-          {#if groupRequestConfirmed}
-            <p class="create-form__status create-form__status--ok" role="status">
-              Requested. A room admin will add it. Pick shared to create this
-              agent now, or wait for your group.
+          <div class="field">
+            <label class="field__label" for="create-name">Name</label>
+            <input
+              id="create-name"
+              class="field__input"
+              type="text"
+              bind:value={name}
+              bind:this={createNameInput}
+              placeholder="e.g. weekly-digest"
+              autocomplete="off"
+              spellcheck="false"
+              aria-describedby="create-name-status"
+              aria-invalid={nameError !== null ||
+                availability.status === "unavailable"}
+            />
+            <p class="field__help">
+              Lowercase letters, numbers, and hyphens. 2-24 characters.
             </p>
-          {:else if groupValue === GROUP_NOT_LISTED}
-            <div class="group-request">
-              <label class="create-form__label" for="group-request-name">
-                Your group's name
-              </label>
-              <input
-                id="group-request-name"
-                class="create-form__input"
-                type="text"
-                bind:value={groupRequestName}
-                autocomplete="off"
-              />
-              <label class="create-form__label" for="group-request-note">
-                Note (optional)
-              </label>
-              <input
-                id="group-request-note"
-                class="create-form__input"
-                type="text"
-                bind:value={groupRequestNote}
-                autocomplete="off"
-              />
-              {#if groupRequestError}
-                <p class="create-form__status create-form__status--error" role="alert">
-                  {groupRequestError}
-                </p>
-              {/if}
+            {@render nameStatus()}
+            {#if nameMode === "manual" && nameSuggestions.data !== undefined && !nameSuggestions.isError}
               <button
                 type="button"
-                class="group-request__submit"
-                disabled={groupRequestName.trim().length === 0 || requestGroup.isPending}
-                onclick={handleGroupRequestSubmit}
+                class="btn btn--quiet"
+                onclick={() => (nameMode = "cards")}
               >
-                {requestGroup.isPending ? "Requesting…" : "Request it"}
+                Back to the suggestions
               </button>
-            </div>
-          {/if}
-        </div>
-      {/if}
-
-      <div class="create-form__field">
-        <label class="create-form__label" for="create-purpose-tag-input">Purpose tags</label>
-        <p class="create-form__help">
-          Short labels that help people and agents discover what this agent is for.
-        </p>
-        <div class="chip-row">
-          {#each PURPOSE_TAG_EXAMPLES as example (example)}
-            <button
-              type="button"
-              class="chip chip--example"
-              disabled={purposeTags.includes(example) ||
-                purposeTags.length >= PURPOSE_TAGS_CAP}
-              onclick={() => addExampleTag(example)}
-            >
-              {example}
-            </button>
-          {/each}
-        </div>
-        {#if purposeTags.length > 0}
-          <div class="chip-row">
-            {#each purposeTags as tag (tag)}
-              <span class="chip">
-                {tag}
-                <button
-                  type="button"
-                  class="chip__remove"
-                  aria-label={`Remove ${tag}`}
-                  onclick={() => removePurposeTag(tag)}
-                >
-                  &times;
-                </button>
-              </span>
+            {/if}
+          </div>
+        {:else if nameSuggestions.isPending}
+          <Skeleton rows={3} />
+          <p class="field__sr" role="status">Loading name suggestions…</p>
+        {:else}
+          <div class="list" role="radiogroup" aria-label="Suggested names">
+            {#each nameSuggestions.data as card (card.name)}
+              <label
+                class="list__row"
+                class:list__row--selected={card.name === selectedCardName}
+              >
+                <input
+                  type="radio"
+                  name="suggested-name"
+                  value={card.name}
+                  checked={card.name === selectedCardName}
+                  onchange={() => selectCard(card)}
+                />
+                <span class="list__name">{card.name}</span>
+                <span class="list__desc" title={card.reason}>{card.reason}</span>
+              </label>
             {/each}
           </div>
+
+          {#if selectedCardName !== null}
+            {@render nameStatus()}
+          {/if}
+
+          <div class="field__row">
+            <button
+              type="button"
+              class="btn"
+              onclick={handleOfferMore}
+              disabled={nameSuggestions.isFetching}
+            >
+              {nameSuggestions.isFetching ? "Asking again…" : "Offer more"}
+            </button>
+            <button
+              type="button"
+              class="btn btn--quiet"
+              onclick={() => (nameMode = "manual")}
+            >
+              name it yourself
+            </button>
+          </div>
+          {#if rerollNote}
+            <p class="field__help">Same names as before. The workshop stands by them.</p>
+          {/if}
         {/if}
-        <div class="catalog-search__row">
-          <input
-            id="create-purpose-tag-input"
-            class="create-form__input"
-            type="text"
-            bind:value={purposeTagInput}
-            placeholder="Add a tag"
-            autocomplete="off"
-            onkeydown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                addPurposeTag();
-              }
-            }}
-          />
-          <button
-            type="button"
-            class="skills-show-more"
-            disabled={purposeTagInput.trim().length === 0 ||
-              purposeTags.length >= PURPOSE_TAGS_CAP}
-            onclick={addPurposeTag}
-          >
-            Add
-          </button>
-        </div>
-        <p class="create-form__help">Up to 8 tags.</p>
       </div>
 
-      <div class="create-form__field">
-        <label class="create-form__label" for="create-model">Model</label>
-        {#if models.isPending}
-          <Skeleton rows={1} />
-        {:else if models.isError}
-          <ErrorState
-            message={errorMessage(models.error, "Couldn't load models.")}
-            onretry={() => models.refetch()}
-          />
-        {:else}
-          <select
-            id="create-model"
-            class="create-form__input"
-            value={selectedModel}
-            onchange={(event) =>
-              (modelOverride = (event.currentTarget as HTMLSelectElement).value)}
-          >
-            {#each models.data.models ?? [] as model (model.id)}
-              <option value={model.id}>{model.label}</option>
+      <!-- Step 3: the rest of what the room needs -->
+      <div class="modal__section">
+        {#if groupOptionsAvailable}
+          <div class="field">
+            <label class="field__label" for="create-group">Group</label>
+            <select
+              id="create-group"
+              class="field__input"
+              required
+              value={groupValue}
+              onchange={(event) =>
+                handleGroupSelect((event.currentTarget as HTMLSelectElement).value)}
+            >
+              <option value="" disabled>Choose a group</option>
+              <option value={GROUP_NOT_LISTED}>My group is not listed...</option>
+              {#if sharedGroupOptions.length > 0}
+                <optgroup label="Shared">
+                  {#each sharedGroupOptions as group (group.name)}
+                    <option value={group.name}>{group.name} (everyone in the company)</option>
+                  {/each}
+                </optgroup>
+              {/if}
+              {#if nonEngineeringGroupOptions.length > 0}
+                <optgroup label="Non-engineering groups">
+                  {#each nonEngineeringGroupOptions as group (group.name)}
+                    <option value={group.name}>{group.name}</option>
+                  {/each}
+                </optgroup>
+              {/if}
+              {#if engineeringGroupOptions.length > 0}
+                <optgroup label="Engineering groups">
+                  {#each engineeringGroupOptions as group (group.name)}
+                    <option value={group.name}>{group.name}</option>
+                  {/each}
+                </optgroup>
+              {/if}
+            </select>
+            <p class="field__help">Who can see and use this agent.</p>
+            {#if selectedGroupKind === "shared"}
+              <p class="field__help">
+                Shared agents are visible to everyone in the company.
+              </p>
+            {/if}
+
+            {#if groupRequestConfirmed}
+              <p class="field__status field__status--ok" role="status">
+                Requested. A room admin will add it. Pick shared to create this
+                agent now, or wait for your group.
+              </p>
+            {:else if groupValue === GROUP_NOT_LISTED}
+              <div class="create-form__request">
+                <label class="field__label" for="group-request-name">
+                  Your group's name
+                </label>
+                <input
+                  id="group-request-name"
+                  class="field__input"
+                  type="text"
+                  bind:value={groupRequestName}
+                  autocomplete="off"
+                />
+                <label class="field__label" for="group-request-note">
+                  Note (optional)
+                </label>
+                <input
+                  id="group-request-note"
+                  class="field__input"
+                  type="text"
+                  bind:value={groupRequestNote}
+                  autocomplete="off"
+                />
+                {#if groupRequestError}
+                  <p class="field__status field__status--error" role="alert">
+                    {groupRequestError}
+                  </p>
+                {/if}
+                <button
+                  type="button"
+                  class="btn"
+                  disabled={groupRequestName.trim().length === 0 || requestGroup.isPending}
+                  onclick={handleGroupRequestSubmit}
+                >
+                  {requestGroup.isPending ? "Requesting…" : "Request it"}
+                </button>
+              </div>
+            {/if}
+          </div>
+        {/if}
+
+        <div class="field">
+          <label class="field__label" for="create-purpose-tag-input">Purpose tags</label>
+          <p class="field__help">
+            Short labels that help people and agents discover what this agent is for.
+          </p>
+          <div class="chip-row">
+            {#each PURPOSE_TAG_EXAMPLES as example (example)}
+              <button
+                type="button"
+                class="chip chip--action"
+                disabled={purposeTags.includes(example) ||
+                  purposeTags.length >= PURPOSE_TAGS_CAP}
+                onclick={() => addExampleTag(example)}
+              >
+                {example}
+              </button>
             {/each}
-          </select>
+          </div>
+          {#if purposeTags.length > 0}
+            <div class="chip-row">
+              {#each purposeTags as tag (tag)}
+                <span class="chip">
+                  {tag}
+                  <button
+                    type="button"
+                    class="chip__remove"
+                    aria-label={`Remove ${tag}`}
+                    onclick={() => removePurposeTag(tag)}
+                  >
+                    &times;
+                  </button>
+                </span>
+              {/each}
+            </div>
+          {/if}
+          <div class="field__row">
+            <input
+              id="create-purpose-tag-input"
+              class="field__input"
+              type="text"
+              bind:value={purposeTagInput}
+              placeholder="Add a tag"
+              autocomplete="off"
+              onkeydown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  addPurposeTag();
+                }
+              }}
+            />
+            <button
+              type="button"
+              class="btn"
+              disabled={purposeTagInput.trim().length === 0 ||
+                purposeTags.length >= PURPOSE_TAGS_CAP}
+              onclick={addPurposeTag}
+            >
+              Add
+            </button>
+          </div>
+          <p class="field__help">Up to 8 tags.</p>
+        </div>
+
+        <div class="field">
+          <label class="field__label" for="create-model">Model</label>
+          {#if models.isPending}
+            <Skeleton rows={1} />
+          {:else if models.isError}
+            <ErrorState
+              message={errorMessage(models.error, "Couldn't load models.")}
+              onretry={() => models.refetch()}
+            />
+          {:else}
+            <select
+              id="create-model"
+              class="field__input"
+              value={selectedModel}
+              onchange={(event) =>
+                (modelOverride = (event.currentTarget as HTMLSelectElement).value)}
+            >
+              {#each models.data.models ?? [] as model (model.id)}
+                <option value={model.id}>{model.label}</option>
+              {/each}
+            </select>
+          {/if}
+        </div>
+
+        {#if submitError}
+          <p class="field__status field__status--error" role="alert">
+            {submitError}
+          </p>
         {/if}
       </div>
-
-      {#if submitError}
-        <p class="create-form__status create-form__status--error" role="alert">
-          {submitError}
-        </p>
-      {/if}
-
-      <div class="create-form__actions">
-        <button type="button" class="create-form__cancel" onclick={onclose}>
-          Cancel
-        </button>
-        <button type="submit" class="create-form__submit" disabled={!canSubmit}>
-          {mutation.isPending ? "Creating…" : "Create agent"}
-        </button>
-      </div>
-    </div>
+    {/if}
   </form>
 </Modal>
 
 <style>
-  .create-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-lg);
-    /* Paper depth, not a flat card (addendum, "Visual direction"): a
-       barely-there warm gradient plus a tiny tiled noise texture, both
-       layered as plain background-images so they always paint behind
-       every child — no pseudo-element/z-index bookkeeping needed. No
-       padding of its own, so the tint fills exactly the space Modal.svelte
-       already gives this slot (flush with its existing --space-lg inset)
-       rather than reading as a second, nested card inside the dialog. */
-    background-color: var(--bg);
-    background-repeat: no-repeat, no-repeat, repeat;
-    background-image:
-      radial-gradient(
-        140% 100% at 8% 0%,
-        color-mix(in srgb, var(--accent) 6%, transparent) 0%,
-        transparent 55%
-      ),
-      radial-gradient(
-        120% 120% at 100% 100%,
-        color-mix(in srgb, var(--accent) 4%, transparent) 0%,
-        transparent 60%
-      ),
-      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
-  }
-
-  .create-form__field {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-
-  .create-form__fieldset {
-    margin: 0;
-    padding: 0;
-    border: none;
-  }
-
-  .create-form__label {
-    padding: 0;
-    color: var(--ink);
-    font-weight: 600;
-    font-size: 0.9rem;
-  }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-  }
-
-  .create-form__input {
-    padding: var(--space-xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font: inherit;
-  }
-
-  .create-form__input:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-  }
-
-  .create-form__help {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-  }
-
-  .create-form__status {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-  }
-
   /* Fixed floor so the idle state (no message rendered at all) reserves the
      same space a one-line status/error message would take — otherwise the
      field sits flush against the help text (a stray gap sliver) and then
      jumps down the moment a message appears. */
-  #create-name-status {
+  :global(#create-name-status) {
     min-height: 1.25rem;
   }
 
-  .create-form__status--ok {
-    color: var(--ok);
-  }
-
-  .create-form__status--error {
-    color: var(--fail);
-  }
-
-  /* --- Stations: numbered woodstamp markers + display-serif headings ---- */
-
-  .station {
+  /* The "my group isn't listed" mini-form: the one thing in this dialog
+     that is a form inside a field, so it says so with a rule around it. */
+  .create-form__request {
     display: flex;
     flex-direction: column;
-    gap: var(--space-sm);
-    transition: opacity 200ms ease-out;
-  }
-
-  .station--locked {
-    opacity: 0.5;
-  }
-
-  .station__head {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-  }
-
-  .station-marker {
-    display: inline-flex;
-    flex-shrink: 0;
-    align-items: center;
-    justify-content: center;
-    width: 1.6rem;
-    height: 1.6rem;
-    border: 1.5px solid var(--border);
-    border-radius: 50%;
-    color: var(--muted);
-    font-family: var(--font-mono);
-    font-size: 0.8rem;
-    font-weight: 600;
-  }
-
-  .station-marker--filled {
-    border-color: var(--accent);
-    background: var(--accent);
-    color: var(--accent-ink);
-  }
-
-  /* The one place the display serif appears (addendum, "Visual
-     direction") — every other heading/label in this room keeps
-     --font-sans/--font-mono. */
-  .station__heading {
-    margin: 0;
-    color: var(--ink);
-    font-family: var(--font-display);
-    font-weight: 600;
-    font-size: 1.15rem;
-  }
-
-  .station__hint {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.85rem;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .station {
-      transition: none;
-    }
-  }
-
-  .group-request {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-    padding: var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-  }
-
-  .group-request__submit {
-    align-self: flex-start;
-    padding: var(--space-2xs) var(--space-sm);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .group-request__submit:hover:not(:disabled) {
-    filter: brightness(1.05);
-  }
-
-  .group-request__submit:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .catalog-search__row {
-    display: flex;
-    gap: var(--space-xs);
-  }
-
-  .catalog-search__row .create-form__input:first-child {
-    flex: 1;
-  }
-
-  .chip-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2xs);
-  }
-
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    padding: 0.2rem var(--space-xs);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    color: var(--ink);
-    font-size: 0.8rem;
-  }
-
-  .chip__remove {
-    padding: 0;
-    border: none;
-    background: none;
-    color: var(--muted);
-    font-size: 0.9rem;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .chip__remove:hover {
-    color: var(--fail);
-  }
-
-  .chip--example {
-    background: none;
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .chip--example:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .chip--example:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .catalog-badge {
-    display: inline-flex;
-    padding: 0.1rem var(--space-2xs);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    color: var(--muted);
-    font-size: 0.7rem;
-    white-space: nowrap;
-  }
-
-  .catalog-badge--builtin {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .persona-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-  }
-
-  .persona-card {
-    display: flex;
     align-items: flex-start;
-    gap: var(--space-xs);
-    padding: var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-  }
-
-  /* Persona builder v2 (addendum): "Build your own persona" is a primary-
-     styled action above the search results, not a text afterthought below
-     them — same accent treatment as create-form__submit, but full-width
-     since it now stands alone above the list rather than sitting inline
-     next to a cancel button. */
-  .persona-build-cta {
-    width: 100%;
-    padding: var(--space-sm) var(--space-md);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .persona-build-cta:hover {
-    filter: brightness(1.05);
-  }
-
-  .persona-card:hover {
-    border-color: var(--accent);
-  }
-
-  .persona-card--selected {
-    border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 8%, var(--panel));
-  }
-
-  .persona-card input {
-    margin-top: 0.2rem;
-  }
-
-  .persona-card__body {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-
-  .persona-card__head {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-  }
-
-  .persona-card__name {
-    color: var(--ink);
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
-    font-weight: 600;
-  }
-
-  .persona-card__description {
-    color: var(--muted);
-    font-size: 0.8rem;
-  }
-
-  .skills-show-more {
-    align-self: flex-start;
-    padding: var(--space-2xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font-size: 0.8rem;
-    cursor: pointer;
-  }
-
-  .skills-show-more:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  /* --- The Naming: three cards, staggered entrance, quiet press-select -- */
-
-  .name-cards {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-  }
-
-  .name-card {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--space-xs);
-    padding: var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    animation: name-card-rise 260ms ease-out both;
-  }
-
-  /* 60ms per-card stagger (addendum) — three cards settling onto the bench
-     one after another. Purely nth-child so no per-card inline style/JS is
-     needed for it. */
-  .name-card:nth-child(1) {
-    animation-delay: 0ms;
-  }
-  .name-card:nth-child(2) {
-    animation-delay: 60ms;
-  }
-  .name-card:nth-child(3) {
-    animation-delay: 120ms;
-  }
-
-  .name-card:hover {
-    border-color: var(--accent);
-  }
-
-  .name-card--selected {
-    border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 8%, var(--panel));
-    animation: name-card-press 160ms ease-out;
-  }
-
-  .name-card--dimmed {
-    opacity: 0.55;
-  }
-
-  .name-card input {
-    margin-top: 0.2rem;
-  }
-
-  .name-card__body {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-
-  .name-card__name {
-    color: var(--ink);
-    font-family: var(--font-mono);
-    font-size: 0.95rem;
-    font-weight: 600;
-  }
-
-  .name-card__reason {
-    color: var(--muted);
-    font-size: 0.8rem;
-  }
-
-  .name-card--skeleton {
-    flex-direction: column;
     gap: var(--space-2xs);
-    cursor: default;
-  }
-
-  .name-card__skeleton-bar {
-    display: block;
-    height: 0.85rem;
-    border-radius: var(--radius-sm);
-    background: linear-gradient(
-      90deg,
-      var(--border) 25%,
-      var(--panel) 50%,
-      var(--border) 75%
-    );
-    background-size: 200% 100%;
-    animation: name-card-shimmer 1.6s ease-in-out infinite;
-  }
-
-  .name-card__skeleton-bar--name {
-    width: 40%;
-  }
-
-  .name-card__skeleton-bar--reason {
-    width: 70%;
-    height: 0.7rem;
-  }
-
-  @keyframes name-card-rise {
-    from {
-      opacity: 0;
-      transform: translateY(8px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  @keyframes name-card-press {
-    from {
-      transform: scale(0.98);
-    }
-    to {
-      transform: scale(1);
-    }
-  }
-
-  @keyframes name-card-shimmer {
-    0% {
-      background-position: 200% 0;
-    }
-    100% {
-      background-position: -200% 0;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .name-card,
-    .name-card--selected,
-    .name-card__skeleton-bar {
-      animation: none;
-    }
-  }
-
-  .naming-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-  }
-
-  .naming-actions__reroll {
-    padding: var(--space-2xs) var(--space-sm);
+    padding: var(--space-sm);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font-size: 0.85rem;
-    cursor: pointer;
-  }
-
-  .naming-actions__reroll:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .naming-actions__reroll:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .naming-actions__manual {
-    padding: 0;
-    border: none;
-    background: none;
-    color: var(--muted);
-    font-size: 0.85rem;
-    text-decoration: underline;
-    cursor: pointer;
-  }
-
-  .naming-actions__manual:hover {
-    color: var(--accent);
-  }
-
-  .naming-actions__back {
-    padding: 0;
-    border: none;
-    background: none;
-    color: var(--muted);
-    font-size: 0.8rem;
-    text-decoration: underline;
-    cursor: pointer;
-  }
-
-  .naming-actions__back:hover {
-    color: var(--accent);
-  }
-
-  .create-form__actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-sm);
-  }
-
-  .create-form__cancel {
-    padding: var(--space-xs) var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    cursor: pointer;
-  }
-
-  .create-form__cancel:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .create-form__submit {
-    padding: var(--space-xs) var(--space-md);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .create-form__submit:hover:not(:disabled) {
-    filter: brightness(1.05);
-  }
-
-  .create-form__submit:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
 </style>

@@ -38,7 +38,11 @@
   // anything. The copy inside the confirm is unchanged, word for word.
   // Restrained, not a red-bordered box: the one danger-specific touch is
   // `var(--fail)` on the two destroy buttons, the same token
-  // `.failed-banner` and `.memory-modal__danger` already use.
+  // `.failed-banner` and `.memory-modal__danger` already use. Modal idiom
+  // wave (2026-09-23): both of them are the shared `.btn--danger` now, in
+  // the confirm's pinned footer, and there is no filled button anywhere in
+  // this dialog -- a red slab under a paragraph about memories dying reads
+  // as an invitation.
   import { createMutation, useQueryClient } from "@tanstack/svelte-query";
   import Modal from "./Modal.svelte";
   import { errorMessage, KIND_COMPOSED, KIND_CONNECTED } from "../lib/api";
@@ -118,14 +122,14 @@
       {:else if status === "destroy_failed"}
         <button
           type="button"
-          class="danger-zone__button"
+          class="btn btn--danger"
           disabled={destroy.isPending}
           onclick={handleDestroyAgain}
         >
           {destroy.isPending ? "Destroying…" : "Destroy again"}
         </button>
       {:else}
-        <button type="button" class="danger-zone__button" onclick={openConfirm}>
+        <button type="button" class="btn btn--danger" onclick={openConfirm}>
           Destroy...
         </button>
       {/if}
@@ -143,52 +147,62 @@
   {/if}
 </div>
 
-<Modal open={confirming} title="Destroy this agent" onclose={() => (confirming = false)}>
-  <div class="danger-zone__confirm">
-    <!-- Verbatim from the approved spec, and kind-specific: this paragraph
-         is the last thing anyone reads before typing the name, and telling
-         an owner their repository will be archived when it will not is the
-         one mistake here that cannot be taken back afterwards. -->
-    {#if kind === KIND_CONNECTED}
-      <p class="danger-zone__copy">
-        This destroys the running agent and its platform identity. The repository belongs to your team and is left as it is. Memories die with the namespace.
-      </p>
-    {:else}
-      <p class="danger-zone__copy">
-        This destroys the running agent, its platform identity, and its Slack presence. The repo is archived, not deleted. Memories die with the namespace.
-      </p>
-    {/if}
-    <div class="danger-zone__field">
-      <label class="danger-zone__label" for="danger-zone-confirm-name">
-        Type {agentName} to confirm
-      </label>
-      <input
-        id="danger-zone-confirm-name"
-        class="danger-zone__input"
-        type="text"
-        autocomplete="off"
-        spellcheck="false"
-        bind:value={typedName}
-      />
-    </div>
-    <div class="danger-zone__actions">
-      <button
-        type="button"
-        class="danger-zone__cancel"
-        disabled={destroy.isPending}
-        onclick={() => (confirming = false)}
-      >
-        Cancel
-      </button>
-      <button
-        type="button"
-        class="danger-zone__destroy"
-        disabled={!armed || destroy.isPending}
-        onclick={handleDestroy}
-      >
-        {destroy.isPending ? "Destroying…" : "Destroy this agent"}
-      </button>
-    </div>
+{#snippet destroyFooter()}
+  <div class="modal__actions">
+    <button
+      type="button"
+      class="btn btn--quiet"
+      disabled={destroy.isPending}
+      onclick={() => (confirming = false)}
+    >
+      Cancel
+    </button>
+    <!-- Danger, never the room's filled button: nothing in here is an
+         invitation, and the same reasoning already applies to the quiet
+         "Destroy..." on the row behind it. -->
+    <button
+      type="button"
+      class="btn btn--danger"
+      disabled={!armed || destroy.isPending}
+      onclick={handleDestroy}
+    >
+      {destroy.isPending ? "Destroying…" : "Destroy this agent"}
+    </button>
+  </div>
+{/snippet}
+
+<Modal
+  open={confirming}
+  title="Destroy this agent"
+  size="narrow"
+  onclose={() => (confirming = false)}
+  footer={destroyFooter}
+>
+  <!-- Verbatim from the approved spec, and kind-specific: this paragraph
+       is the last thing anyone reads before typing the name, and telling
+       an owner their repository will be archived when it will not is the
+       one mistake here that cannot be taken back afterwards. -->
+  {#if kind === KIND_CONNECTED}
+    <p class="danger-zone__copy">
+      This destroys the running agent and its platform identity. The repository belongs to your team and is left as it is. Memories die with the namespace.
+    </p>
+  {:else}
+    <p class="danger-zone__copy">
+      This destroys the running agent, its platform identity, and its Slack presence. The repo is archived, not deleted. Memories die with the namespace.
+    </p>
+  {/if}
+  <div class="field">
+    <label class="field__label" for="danger-zone-confirm-name">
+      Type {agentName} to confirm
+    </label>
+    <input
+      id="danger-zone-confirm-name"
+      class="field__input"
+      type="text"
+      autocomplete="off"
+      spellcheck="false"
+      bind:value={typedName}
+    />
   </div>
 </Modal>
 
@@ -229,109 +243,10 @@
     margin-left: auto;
   }
 
-  /* Quiet on the row, fail-toned only in its lettering: a filled red
-     button on a settings list reads as an invitation. */
-  .danger-zone__button {
-    padding: var(--space-2xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--fail);
-    font: inherit;
-    font-size: 0.85rem;
-    font-weight: 600;
-    line-height: 1.4;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .danger-zone__button:hover:not(:disabled) {
-    border-color: var(--fail);
-  }
-
-  .danger-zone__button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .danger-zone__confirm {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-md);
-  }
-
   .danger-zone__copy {
     margin: 0;
     color: var(--muted);
     font-size: 0.9rem;
-  }
-
-  .danger-zone__field {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-
-  .danger-zone__label {
-    color: var(--ink);
-    font-weight: 600;
-    font-size: 0.85rem;
-  }
-
-  .danger-zone__input {
-    padding: var(--space-xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font: inherit;
-  }
-
-  .danger-zone__input:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-  }
-
-  .danger-zone__actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-sm);
-  }
-
-  .danger-zone__cancel {
-    padding: var(--space-xs) var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .danger-zone__cancel:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .danger-zone__destroy {
-    padding: var(--space-xs) var(--space-md);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: var(--fail);
-    color: var(--accent-ink);
-    font: inherit;
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .danger-zone__destroy:hover:not(:disabled) {
-    filter: brightness(1.05);
-  }
-
-  .danger-zone__destroy:disabled,
-  .danger-zone__cancel:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
 
   .danger-zone__notice {

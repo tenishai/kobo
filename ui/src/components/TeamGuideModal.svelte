@@ -116,8 +116,10 @@
     }
   });
 
-  function handleSubmit(event: SubmitEvent): void {
-    event.preventDefault();
+  /** Called by the form's own submit (Enter in a field) and by the footer's
+   * Quick-start button, which sits outside the form element the modal shell
+   * puts in its body. */
+  function handleSubmit(): void {
     if (!canSubmit) {
       return;
     }
@@ -156,10 +158,31 @@
   }
 </script>
 
-<Modal {open} title="Quick-start team agent" {onclose}>
-  <form class="guide-form" onsubmit={handleSubmit}>
-    <div class="guide-form__field">
-      <label class="guide-form__label" for="guide-group">Group</label>
+
+{#snippet guideFooter()}
+  <div class="modal__actions">
+    <button type="button" class="btn btn--quiet" onclick={onclose}>Cancel</button>
+    <button
+      type="button"
+      class="btn btn--primary"
+      disabled={!canSubmit}
+      onclick={handleSubmit}
+    >
+      {mutation.isPending ? "Starting…" : "Quick-start agent"}
+    </button>
+  </div>
+{/snippet}
+
+<Modal {open} title="Quick-start team agent" {onclose} footer={guideFooter}>
+  <form
+    class="modal__form"
+    onsubmit={(event) => {
+      event.preventDefault();
+      handleSubmit();
+    }}
+  >
+    <div class="field">
+      <label class="field__label" for="guide-group">Group</label>
       {#if groups.isPending}
         <Skeleton rows={1} />
       {:else if groups.isError}
@@ -168,11 +191,11 @@
           onretry={() => groups.refetch()}
         />
       {:else if !groupOptionsAvailable}
-        <p class="guide-form__help">No groups are configured yet.</p>
+        <p class="field__help">No groups are configured yet.</p>
       {:else}
         <select
           id="guide-group"
-          class="guide-form__input"
+          class="field__input"
           required
           value={groupValue}
           onchange={(event) =>
@@ -201,26 +224,26 @@
             </optgroup>
           {/if}
         </select>
-        <p class="guide-form__help">Which team this guide speaks for.</p>
+        <p class="field__help">Which team this guide speaks for.</p>
       {/if}
     </div>
 
     {#if existingGuide}
       <div class="guide-existing">
-        <p class="guide-form__status">{groupValue} already has a team guide.</p>
+        <p class="field__status">{groupValue} already has a team guide.</p>
         <a
-          class="guide-existing__link"
+          class="btn guide-existing__link"
           href={formatHash({ page: "agent", name: existingGuide.name })}
         >
           Open {existingGuide.name}
         </a>
       </div>
     {:else if groupChosen}
-      <div class="guide-form__field">
-        <label class="guide-form__label" for="guide-name">Name</label>
+      <div class="field">
+        <label class="field__label" for="guide-name">Name</label>
         <input
           id="guide-name"
-          class="guide-form__input"
+          class="field__input"
           type="text"
           bind:value={name}
           placeholder="e.g. sre-guide"
@@ -228,34 +251,32 @@
           spellcheck="false"
           aria-invalid={nameError !== null}
         />
-        <p class="guide-form__help">
+        <p class="field__help">
           Lowercase letters, numbers, and hyphens. 2-24 characters.
         </p>
         {#if nameError}
-          <p class="guide-form__status guide-form__status--error" role="alert">
-            {nameError}
-          </p>
+          <p class="field__status field__status--error" role="alert">{nameError}</p>
         {/if}
       </div>
 
-      <div class="guide-form__field">
-        <label class="guide-form__label" for="guide-voice">Voice (optional)</label>
+      <div class="field">
+        <label class="field__label" for="guide-voice">Voice (optional)</label>
         <input
           id="guide-voice"
-          class="guide-form__input"
+          class="field__input"
           type="text"
           bind:value={voice}
           maxlength="120"
           autocomplete="off"
         />
-        <p class="guide-form__help">
+        <p class="field__help">
           name a famous person, artist, or regional character your guide
           should sound like (optional)
         </p>
       </div>
 
       {#if submitError}
-        <p class="guide-form__status guide-form__status--error" role="alert">
+        <p class="field__status field__status--error" role="alert">
           {submitError}
           {#if existingFromError}
             <a href={formatHash({ page: "agent", name: existingFromError })}>
@@ -264,155 +285,26 @@
           {/if}
         </p>
       {/if}
-
-      <div class="guide-form__actions">
-        <button type="button" class="guide-form__cancel" onclick={onclose}>
-          Cancel
-        </button>
-        <button type="submit" class="guide-form__submit" disabled={!canSubmit}>
-          {mutation.isPending ? "Starting…" : "Quick-start agent"}
-        </button>
-      </div>
     {:else}
-      <p class="guide-form__hint">Pick a group first.</p>
+      <p class="modal__hint">Pick a group first.</p>
     {/if}
   </form>
 </Modal>
 
 <style>
-  /* Same visual language as CreateModal's own Create station -- a sibling,
-     not a new design system -- just without that station's woodstamp
-     numbering (there's only one station here). */
-  .guide-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-lg);
-    background-color: var(--bg);
-    background-repeat: no-repeat, no-repeat, repeat;
-    background-image:
-      radial-gradient(
-        140% 100% at 8% 0%,
-        color-mix(in srgb, var(--accent) 6%, transparent) 0%,
-        transparent 55%
-      ),
-      radial-gradient(
-        120% 120% at 100% 100%,
-        color-mix(in srgb, var(--accent) 4%, transparent) 0%,
-        transparent 60%
-      ),
-      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
-  }
-
-  .guide-form__field {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-
-  .guide-form__label {
-    padding: 0;
-    color: var(--ink);
-    font-weight: 600;
-    font-size: 0.9rem;
-  }
-
-  .guide-form__input {
-    padding: var(--space-xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font: inherit;
-  }
-
-  .guide-form__input:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-  }
-
-  .guide-form__help {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-  }
-
-  .guide-form__hint {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.85rem;
-  }
-
-  .guide-form__status {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-  }
-
-  .guide-form__status--error {
-    color: var(--fail);
-  }
-
-  .guide-form__actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-sm);
-  }
-
-  .guide-form__cancel {
-    padding: var(--space-xs) var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    cursor: pointer;
-  }
-
-  .guide-form__cancel:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .guide-form__submit {
-    padding: var(--space-xs) var(--space-md);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .guide-form__submit:hover:not(:disabled) {
-    filter: brightness(1.05);
-  }
-
-  .guide-form__submit:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
   .guide-existing {
     display: flex;
     flex-direction: column;
+    align-items: flex-start;
     gap: var(--space-xs);
     padding: var(--space-sm);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    background: var(--panel);
   }
 
+  /* A link wearing the shared button shape, which brings its own
+     underline along. */
   .guide-existing__link {
-    align-self: flex-start;
-    padding: var(--space-2xs) var(--space-sm);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-weight: 600;
     text-decoration: none;
-  }
-
-  .guide-existing__link:hover {
-    filter: brightness(1.05);
   }
 </style>

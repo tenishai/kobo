@@ -26,7 +26,11 @@
   //
   // The delivery chip is the exact same writable/derived-sha pattern
   // MemoryPanel/SlackPanel use, shared by both Save and Regenerate — each
-  // just calls `beginDelivery(result.sha)` when it resolves.
+  // just calls `beginDelivery(result.sha)` when it resolves. Modal idiom
+  // wave (2026-09-23): it rides in the shell's pinned footer, on the left
+  // of Cancel and Save, so the answer to "did that land?" is beside the
+  // button that asked. Regenerate stays with the field it rewrites, and
+  // stays quiet -- Save is the one filled button here.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { derived, writable } from "svelte/store";
   import Modal from "./Modal.svelte";
@@ -284,10 +288,11 @@
   }
 </script>
 
+
 {#if showTrigger}
   <button
     type="button"
-    class="metadata-details__trigger"
+    class="btn metadata-details__trigger"
     disabled={frozen}
     onclick={openEditor}
   >
@@ -295,19 +300,52 @@
   </button>
 {/if}
 
-<Modal {open} title="Edit details" onclose={closeEditor}>
+{#snippet detailsFooter()}
+  {#if deliverySha !== null}
+    <div
+      class="metadata-form__delivery metadata-form__delivery--{deliveryView.tone}"
+      role="status"
+      aria-live="polite"
+    >
+      {#if deliveryView.tone === "pending"}
+        <span class="metadata-form__delivery-dot pulse" aria-hidden="true"></span>
+      {/if}
+      <span>{deliveryView.text}</span>
+    </div>
+  {/if}
+  <div class="modal__actions">
+    <button
+      type="button"
+      class="btn btn--quiet"
+      disabled={frozen}
+      onclick={closeEditor}
+    >
+      Cancel
+    </button>
+    <button
+      type="button"
+      class="btn btn--primary"
+      disabled={!canSave}
+      onclick={handleSave}
+    >
+      {patchMutation.isPending ? "Saving…" : "Save"}
+    </button>
+  </div>
+{/snippet}
+
+<Modal {open} title="Edit details" onclose={closeEditor} footer={detailsFooter}>
   <form
-    class="metadata-form"
+    class="modal__form"
     onsubmit={(event) => {
       event.preventDefault();
       handleSave();
     }}
   >
-    <div class="metadata-form__field">
-      <label class="metadata-form__label" for="metadata-team">Team</label>
+    <div class="field">
+      <label class="field__label" for="metadata-team">Team</label>
       <select
         id="metadata-team"
-        class="metadata-form__input"
+        class="field__input"
         value={teamMode === "other" ? OTHER : teamValue}
         disabled={frozen}
         onchange={(event) =>
@@ -319,10 +357,10 @@
         <option value={OTHER}>Other...</option>
       </select>
       {#if teamMode === "other"}
-        <label class="metadata-form__sr-only" for="metadata-team-other">Team name</label>
+        <label class="field__sr" for="metadata-team-other">Team name</label>
         <input
           id="metadata-team-other"
-          class="metadata-form__input"
+          class="field__input"
           type="text"
           bind:value={teamOther}
           placeholder="team-name"
@@ -330,12 +368,12 @@
           spellcheck="false"
           disabled={frozen}
         />
-        <p class="metadata-form__help">lowercase-with-dashes</p>
+        <p class="field__help">lowercase-with-dashes</p>
       {/if}
     </div>
 
-    <div class="metadata-form__field">
-      <label class="metadata-form__label" for="metadata-tag-input">Purpose tags</label>
+    <div class="field">
+      <label class="field__label" for="metadata-tag-input">Purpose tags</label>
       {#if tagsDraft.length > 0}
         <div class="chip-row">
           {#each tagsDraft as tag (tag)}
@@ -354,10 +392,10 @@
           {/each}
         </div>
       {/if}
-      <div class="metadata-form__row">
+      <div class="field__row">
         <input
           id="metadata-tag-input"
-          class="metadata-form__input"
+          class="field__input"
           type="text"
           bind:value={tagInput}
           placeholder="Add a tag"
@@ -372,35 +410,32 @@
         />
         <button
           type="button"
-          class="metadata-form__add-tag"
+          class="btn"
           disabled={frozen || tagInput.trim().length === 0 || tagsDraft.length >= TAGS_CAP}
           onclick={addTag}
         >
           Add
         </button>
       </div>
-      <p class="metadata-form__help">Up to 8 tags.</p>
+      <p class="field__help">Up to 8 tags.</p>
     </div>
 
-    <div class="metadata-form__field">
-      <label class="metadata-form__label" for="metadata-capability">Capability</label>
+    <div class="field">
+      <label class="field__label" for="metadata-capability">Capability</label>
       <textarea
         id="metadata-capability"
-        class="metadata-form__textarea"
+        class="field__input"
         bind:value={capabilityDraft}
         rows="3"
         disabled={frozen}
       ></textarea>
       <div class="metadata-form__capability-row">
-        <p
-          class="metadata-form__help"
-          class:metadata-form__help--error={capabilityOverCap}
-        >
+        <p class="field__help" class:field__help--error={capabilityOverCap}>
           {capabilityCount}/{CAPABILITY_MAX}
         </p>
         <button
           type="button"
-          class="metadata-form__regenerate"
+          class="btn"
           disabled={frozen || regenerateMutation.isPending}
           onclick={handleRegenerate}
         >
@@ -408,190 +443,21 @@
         </button>
       </div>
       {#if regenerateError}
-        <p class="metadata-form__status metadata-form__status--error" role="alert">
+        <p class="field__status field__status--error" role="alert">
           {regenerateError}
         </p>
       {/if}
     </div>
 
     {#if saveError}
-      <p class="metadata-form__status metadata-form__status--error" role="alert">
-        {saveError}
-      </p>
+      <p class="field__status field__status--error" role="alert">{saveError}</p>
     {/if}
-
-    <div class="metadata-form__actions">
-      <button
-        type="button"
-        class="metadata-form__cancel"
-        disabled={frozen}
-        onclick={closeEditor}
-      >
-        Cancel
-      </button>
-      <button type="submit" class="metadata-form__save" disabled={!canSave}>
-        {patchMutation.isPending ? "Saving…" : "Save"}
-      </button>
-    </div>
   </form>
-
-  {#if deliverySha !== null}
-    <div
-      class="metadata-form__delivery metadata-form__delivery--{deliveryView.tone}"
-      role="status"
-      aria-live="polite"
-    >
-      {#if deliveryView.tone === "pending"}
-        <span class="metadata-form__delivery-dot pulse" aria-hidden="true"></span>
-      {/if}
-      <span>{deliveryView.text}</span>
-    </div>
-  {/if}
 </Modal>
 
 <style>
   .metadata-details__trigger {
     align-self: flex-start;
-    padding: var(--space-2xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .metadata-details__trigger:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .metadata-details__trigger:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .metadata-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-lg);
-  }
-
-  .metadata-form__field {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-
-  .metadata-form__label {
-    color: var(--ink);
-    font-weight: 600;
-    font-size: 0.9rem;
-  }
-
-  .metadata-form__sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-  }
-
-  .metadata-form__input,
-  .metadata-form__textarea {
-    padding: var(--space-xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font: inherit;
-  }
-
-  .metadata-form__textarea {
-    resize: vertical;
-  }
-
-  .metadata-form__input:focus-visible,
-  .metadata-form__textarea:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-  }
-
-  .metadata-form__row {
-    display: flex;
-    gap: var(--space-xs);
-  }
-
-  .metadata-form__row .metadata-form__input {
-    flex: 1;
-  }
-
-  .metadata-form__add-tag {
-    padding: var(--space-xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font-weight: 600;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .metadata-form__add-tag:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .metadata-form__add-tag:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .chip-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2xs);
-  }
-
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    padding: 0.2rem var(--space-xs);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    color: var(--ink);
-    font-size: 0.8rem;
-  }
-
-  .chip__remove {
-    padding: 0;
-    border: none;
-    background: none;
-    color: var(--muted);
-    font-size: 0.9rem;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .chip__remove:hover:not(:disabled) {
-    color: var(--fail);
-  }
-
-  .chip__remove:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .metadata-form__help {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-  }
-
-  .metadata-form__help--error {
-    color: var(--fail);
   }
 
   .metadata-form__capability-row {
@@ -601,87 +467,11 @@
     gap: var(--space-sm);
   }
 
-  .metadata-form__regenerate {
-    flex-shrink: 0;
-    padding: var(--space-2xs) var(--space-sm);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font-weight: 600;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .metadata-form__regenerate:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .metadata-form__regenerate:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .metadata-form__status {
-    margin: 0;
-    font-size: 0.85rem;
-  }
-
-  .metadata-form__status--error {
-    color: var(--fail);
-  }
-
-  .metadata-form__actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-sm);
-  }
-
-  .metadata-form__cancel {
-    padding: var(--space-xs) var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    cursor: pointer;
-  }
-
-  .metadata-form__cancel:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .metadata-form__cancel:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .metadata-form__save {
-    padding: var(--space-xs) var(--space-md);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .metadata-form__save:hover:not(:disabled) {
-    filter: brightness(1.05);
-  }
-
-  .metadata-form__save:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
+  /* The delivery chip, in the footer beside the buttons that cause it. */
   .metadata-form__delivery {
     display: inline-flex;
-    align-self: flex-start;
     align-items: center;
     gap: var(--space-xs);
-    margin-top: var(--space-md);
     padding: var(--space-2xs) var(--space-sm);
     border: 1px solid var(--border);
     border-radius: 999px;

@@ -133,3 +133,31 @@ describe("SettingsPanel rows", () => {
     ).not.toBeNull();
   });
 });
+
+describe("SettingsPanel — the convert confirm (modal wave)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    stubFetch({ "/api/": {} });
+  });
+
+  it("is a narrow dialog: one paragraph, and the action in a pinned footer", async () => {
+    const { container } = renderWithClient(SettingsPanel, {
+      agentName: "warden",
+      status: "ready",
+      canConvert: true,
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Convert..." }));
+
+    expect(container.querySelector(".modal--narrow")).not.toBeNull();
+    const footer = container.querySelector(".modal__footer");
+    expect(footer).not.toBeNull();
+    expect(container.querySelector(".modal__body")?.contains(footer as Node)).toBe(
+      false,
+    );
+    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
+    expect(footer?.querySelector(".btn--primary")?.textContent?.trim()).toBe(
+      "Convert this agent",
+    );
+  });
+});
