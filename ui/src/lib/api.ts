@@ -1844,6 +1844,32 @@ export async function decideRepoAccess(
  * its team, `unchanged` when the file already said this. */
 export type EnvWiring = "committed" | "pull_request" | "unchanged";
 
+/** Whether what a name promises is actually on the agent, read off the
+ * platform's own delivery object. `live` is the only one that means the
+ * running agent can see it; `unwired` means nothing is delivering it at
+ * all, and `syncing` covers both "not settled yet" and "the room could
+ * not ask the cluster just now" (the message says which). */
+export type SecretSyncState = "live" | "syncing" | "error" | "unwired";
+
+export type SecretSync = {
+  state: SecretSyncState;
+  /** One plain sentence the ROOM wrote. The platform's own condition
+   * message is deliberately not here: it is a sentence about a request
+   * the room made, and a provider that echoed what it was asked to store
+   * would put a value on somebody's screen. */
+  message: string | null;
+};
+
+/** One secret the ROOM set on this agent rather than its owner: the
+ * colleague pass, the Slack values. Shown as a locked row so a list that
+ * refuses these names does not also hide them. */
+export type ManagedSecret = {
+  name: string;
+  purpose: string;
+  secret_name: string;
+  sync: SecretSync;
+};
+
 export type AgentSecrets = {
   /** Key names, sorted. Never a value, masked or otherwise. */
   keys: string[];
@@ -1860,6 +1886,16 @@ export type AgentSecrets = {
    * anybody's behalf. An empty list would say the same wrong thing for a
    * different reason, so the panel has its own line for this. */
   unreadable: boolean;
+  /** Whether the stored list is actually on the agent. One state for the
+   * whole list: the platform delivers the whole path as ONE Kubernetes
+   * Secret, so there is no per-key answer to give. */
+  sync: SecretSync;
+  /** Whether the agent's own files name that Secret, on its default
+   * branch. Null when the room could not read the repository -- which is
+   * not the same as the line being absent, and must not be shown as it. */
+  wired: boolean | null;
+  /** The secrets the room set itself, if any. */
+  managed: ManagedSecret[];
 };
 
 export type AgentSecretsWrite = {
@@ -1922,4 +1958,16 @@ export async function saveAgentEnv(
     body: JSON.stringify({ set, remove }),
   });
   return parse<AgentEnvWriteResult>(res);
+}
+
+export type AgentRestart = { restarted: boolean; deployment: string };
+
+/** Roll the agent's pods now. A saved secret reaches a running agent at
+ * its next boot and not before, so this is what makes a save take
+ * effect. */
+export async function restartAgent(name: string): Promise<AgentRestart> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/restart`, {
+    method: "POST",
+  });
+  return parse<AgentRestart>(res);
 }

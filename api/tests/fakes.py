@@ -1429,6 +1429,15 @@ class FakeKubectl:
     `restart_error`, when set, raises `ClientError(restart_error)` instead,
     the seam for exercising the tooling route's own "restart request
     failed, log it, don't surface it" handling.
+
+    `external_secrets` (the Secrets panel's lock, design 2026-09-23) is a
+    `{(namespace, name): status}` map for `external_secret_status` -- each
+    value the object's own `.status` mapping. A pair with no entry answers
+    None, which is what a namespace holding no such object answers.
+    `external_secret_error`, when set, raises instead: the seam for the
+    "the room could not ask the cluster" reading. Reads are recorded in
+    `external_secret_reads` (kept off `.calls` for the same reason as
+    every other map above).
     """
 
     def __init__(
@@ -1444,6 +1453,8 @@ class FakeKubectl:
         deployment_status: dict[tuple[str, str], dict] | None = None,
         deployment_status_error: str | None = None,
         restart_error: str | None = None,
+        external_secrets: dict[tuple[str, str], dict] | None = None,
+        external_secret_error: str | None = None,
     ):
         self._rollout_result = rollout_result
         self._env_names = dict(env_names) if env_names else {}
@@ -1465,6 +1476,15 @@ class FakeKubectl:
         # deliberately NOT `.calls`, which pre-existing tests assert on
         # exactly for rollout_ok alone (see the class docstring above).
         self.restarts: list[tuple[str, str]] = []
+        # The Secrets panel's lock: `{(namespace, name): status}` for
+        # `external_secret_status`. A pair with no entry reads as None --
+        # no such object -- which is the ordinary state of an agent
+        # nobody has added a secret to yet.
+        self.external_secrets = {
+            key: dict(value) for key, value in (external_secrets or {}).items()
+        }
+        self._external_secret_error = external_secret_error
+        self.external_secret_reads: list[tuple[str, str]] = []
 
     def rollout_ok(self, namespace: str, deploy: str, timeout_s: int = 180) -> bool:
         self.calls.append((namespace, deploy))
@@ -1522,6 +1542,12 @@ class FakeKubectl:
         if self._restart_error is not None:
             raise ClientError(self._restart_error)
         self.restarts.append((namespace, deploy))
+
+    def external_secret_status(self, namespace: str, name: str) -> dict | None:
+        if self._external_secret_error is not None:
+            raise ClientError(self._external_secret_error)
+        self.external_secret_reads.append((namespace, name))
+        return self.external_secrets.get((namespace, name))
 
 
 class FakeSlack:

@@ -237,8 +237,12 @@ characters at most, 100 per list, and the names the room fills in itself (or the
 does) are refused. The first secret an agent gets adds `<agent>-env` to `secrets_from`,
 committed for an agent the room composed and proposed as a pull request for one whose
 repository belongs to its team; removing the last one takes that entry back out the same way.
-Changes reach the agent the next time it starts. The MCP tools `kobo_list_agent_secrets`,
-`kobo_set_agent_secrets` and `kobo_set_agent_env` do the same three things. Destroying an agent
+Every stored row shows whether the platform has actually delivered it (live, syncing, or not on
+the agent yet), read off the delivery object and never off the Secret itself, and the two
+secrets the room sets for an agent are listed beside them as locked rows. A change reaches the
+agent at its next boot, so the panel has a **Restart agent** button that rolls its pods now. The
+MCP tools `kobo_list_agent_secrets`, `kobo_set_agent_secrets`, `kobo_set_agent_env` and
+`kobo_restart_agent` do the same four things. Destroying an agent
 now removes its stored secrets too, both the cluster objects and the paths, which closes the gap
 this section used to name.
 

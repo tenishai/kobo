@@ -26,6 +26,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from kobo_api.agent_env import (
+    MANAGED_PURPOSES,
     MAX_ENV_VALUE_LENGTH,
     MAX_KEYS,
     PULL_REQUEST,
@@ -43,12 +44,16 @@ from kobo_api.agent_env import (
     edit_gojira_yaml,
     env_secret_name,
     has_env_secret,
+    managed_secret_name,
+    managed_secret_path,
     merged_names,
     parse_gojira_yaml,
     read_default_gojira,
     read_repo_env,
     require_our_branch,
     secret_path,
+    sync_state,
+    sync_unknown,
     unwire_env_secret,
     wire_env_secret,
     write_refusal,
@@ -1267,6 +1272,21 @@ SCAN_BUCKET = "connect-scan"
 # looking for.
 REPO_SEARCH_LIMIT = 60
 REPO_SEARCH_BUCKET = "connect-repos"
+
+# How many restarts one caller may ask for in `rate_limit.WINDOW_S`. A
+# restart is the one button here that costs the agent something -- its
+# pods go down and come back -- and nobody legitimately presses it twice
+# in the same breath, let alone ten times. Its own bucket, so a person who
+# has been restarting an agent can still search and scan.
+RESTART_LIMIT = 10
+RESTART_BUCKET = "agent-restart"
+
+# What the room says about a restart. The 409 is about the agent rather
+# than the caller: there is no Deployment to roll until the pipeline has
+# finished making one.
+NOT_DEPLOYED_YET = "this agent is not running yet, so there is nothing to restart"
+RESTART_FAILED = "couldn't ask the cluster to restart this agent. Try again."
+TOO_MANY_RESTARTS = "that is a lot of restarting. Wait a minute"
 
 # What a scan or a connect answers when GitHub itself cannot be read. A
 # report saying "nothing wrong" would be a lie, and the raw client error
@@ -6827,6 +6847,97 @@ def create_app(
         )
         return JSONResponse({"error": message}, status_code=502)
 
+    def _sync_for(agent: Agent, secret_name: str) -> dict[str, str | None]:
+        """Whether `secret_name` is actually on the agent, read off the
+        platform's own ExternalSecret in the agent's namespace.
+
+        Namespace and Deployment are both the agent's name, the same pair
+        every other cluster call in this room passes.
+
+        A read the room could not make is `syncing` with its own sentence
+        rather than a failure: the whole panel must not go red because one
+        cluster call timed out, and an agent's secrets are still worth
+        listing by name when nobody can say whether they landed.
+        """
+        kubectl = getattr(app.state.clients, "kubectl", None)
+        if kubectl is None:
+            return sync_unknown()
+        try:
+            status = kubectl.external_secret_status(agent.name, secret_name)
+        except ClientError as exc:
+            # The exception's CLASS and the agent's name, the same rule
+            # every other call on this panel holds.
+            log.warning(
+                "secrets sync read failed for agent %s (%s)",
+                agent.name,
+                type(exc).__name__,
+            )
+            return sync_unknown()
+        return sync_state(status)
+
+    def _managed_secret_rows(agent: Agent, ladon, email: str) -> list[dict]:
+        """The secrets the ROOM set on this agent, as locked rows.
+
+        The colleague pass and the Slack values, only where they exist.
+        They are shown for the same reason the key rules refuse their
+        names: a list that refuses a name it does not show reads as
+        broken, and an owner who cannot see that their agent already has
+        a Slack token has no way to know the room put one there.
+
+        A purpose the platform would not answer about is LEFT OUT rather
+        than failing the whole read. These two rows are context beside the
+        owner's own list; losing the list because the room could not ask
+        about the colleague pass would be the wrong trade.
+        """
+        rows: list[dict] = []
+        for purpose in MANAGED_PURPOSES:
+            try:
+                held = ladon.list_keys(email, managed_secret_path(agent.name, purpose))
+            except ClientError as exc:
+                log.warning(
+                    "secrets %s read failed for agent %s (%s)",
+                    purpose,
+                    agent.name,
+                    type(exc).__name__,
+                )
+                continue
+            if not held.keys:
+                continue
+            secret_name = managed_secret_name(agent.name, purpose)
+            sync = _sync_for(agent, secret_name)
+            rows.extend(
+                {
+                    "name": key,
+                    "purpose": purpose,
+                    "secret_name": secret_name,
+                    "sync": dict(sync),
+                }
+                for key in held.keys
+            )
+        return rows
+
+    def _wired_on_default(agent: Agent) -> bool | None:
+        """Whether the agent's own files name its secrets Secret, on the
+        default branch. None when the room could not look.
+
+        None rather than False, deliberately: false would say the line is
+        not there, and "the room cannot read this repository right now" is
+        a different fact that the panel must not turn into a claim about
+        somebody's file.
+        """
+        try:
+            return has_env_secret(
+                read_default_gojira(app.state.clients.github, agent.repo_full_name),
+                agent.name,
+            )
+        except ClientError as exc:
+            log.warning(
+                "secrets wiring read failed for agent %s (%s)",
+                agent.name,
+                type(exc).__name__,
+            )
+            return None
+
     @app.get("/api/agents/{name}/secrets")
     def list_agent_secrets(
         name: str,
@@ -6873,6 +6984,12 @@ def create_app(
                     "platform": ladon is not None,
                     "secret_name": None,
                     "unreadable": ladon is not None,
+                    # Nothing to ask the cluster about, and nothing to
+                    # show: an empty list of locked rows, and no claim
+                    # about a file nobody read.
+                    "sync": sync_state(None),
+                    "wired": None,
+                    "managed": [],
                 }
             )
 
@@ -6888,6 +7005,13 @@ def create_app(
                 "platform": True,
                 "secret_name": env_secret_name(agent.name),
                 "unreadable": False,
+                # The lock. One state for the whole list, because the
+                # platform delivers the whole path as ONE Kubernetes
+                # Secret: there is no per-key sync to report and this
+                # room does not invent one.
+                "sync": _sync_for(agent, env_secret_name(agent.name)),
+                "wired": _wired_on_default(agent),
+                "managed": _managed_secret_rows(agent, ladon, email),
             }
         )
 
@@ -7298,6 +7422,62 @@ def create_app(
         if result.pull_request is not None:
             body["pull_request"] = result.pull_request
         return JSONResponse(body)
+
+    @app.post("/api/agents/{name}/restart")
+    def restart_agent(
+        name: str,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Roll this agent's pods now (design 2026-09-23).
+
+        A secret reaches a running agent at its next boot and not before,
+        which used to leave an owner with a stored credential, a panel
+        saying it was saved, and no way to make either matter. This is the
+        nudge, and it is the SAME primitive the tooling fast lane already
+        fires for the same reason (`_request_tool_restart`): a rollout
+        restart of the agent's own Deployment in its own namespace, both
+        named after the agent.
+
+        Composed and connected alike. Nothing here touches a repository,
+        so the one rule that separates those two kinds -- the room never
+        pushes to a team's branches -- has nothing to say about it.
+
+        Counted per caller. It is the one control on this panel that costs
+        the agent something: its pods go down and come back, and a person
+        holding a button down should not be able to keep an agent
+        restarting.
+        """
+        agent = _ready_agent_or_error(
+            session, request, name, not_ready_message=NOT_DEPLOYED_YET
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+
+        caller = getattr(request.state, "iap_email", None) or agent.created_by or ""
+        if not rate_limit.check(caller, limit=RESTART_LIMIT, bucket=RESTART_BUCKET):
+            return JSONResponse({"error": TOO_MANY_RESTARTS}, status_code=429)
+
+        try:
+            app.state.clients.kubectl.restart_deploy(agent.name, agent.name)
+        except ClientError as exc:
+            # The exception's CLASS, never its text: kubectl's own failure
+            # message is built from the command's output, and this panel's
+            # whole discipline is that nothing from the cluster side is
+            # repeated into a log or a response.
+            log.warning(
+                "restart failed for agent %s (%s)", agent.name, type(exc).__name__
+            )
+            return JSONResponse({"error": RESTART_FAILED}, status_code=502)
+
+        # The room's record of who rolled somebody's agent. The MCP surface
+        # writes a row of its own for the same call (`kobo_api.mcp.audit`);
+        # this is the line for the panel's half.
+        log.info("restart requested for agent %s by %s", agent.name, caller or "nobody")
+        return JSONResponse({"restarted": True, "deployment": agent.name})
 
     # --- Runtime (#15): move an existing agent to a different runtime image ----
 

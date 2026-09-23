@@ -684,6 +684,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     bulk_decide_learnings_endpoint = _endpoint(app, "POST", "/api/agents/{name}/learnings/bulk")
     set_secrets_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/secrets")
     set_env_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/env")
+    restart_endpoint = _endpoint(app, "POST", "/api/agents/{name}/restart")
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     @audited("kobo_create_agent")
@@ -1589,6 +1590,38 @@ def register(mcp: FastMCP, app: Any) -> None:
             "wiring": body.get("wiring"),
             "pull_request": body.get("pull_request"),
         }
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @audited("kobo_restart_agent")
+    async def kobo_restart_agent(ctx: Context, agent: str) -> dict:
+        """Restart `agent` now -- the same rolling restart the room's own
+        Secrets panel button asks for.
+
+        A secret or an environment variable reaches a RUNNING agent at its
+        next boot and not before, so this is what makes a change you just
+        saved take effect. Nothing is rebuilt and nothing in the agent's
+        repository is touched: its pods go down and come back on the image
+        they were already running.
+
+        Marked destructive because it interrupts a running agent. Anything
+        it was working on when the pods go is gone, so do not fire this
+        while it is mid-task.
+
+        You must own `agent` or be a room operator, and `agent` must be
+        running already -- an agent whose pipeline has not finished has no
+        Deployment to roll, and says so.
+        """
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            response = await _off_loop(
+                restart_endpoint, name=agent, request=req, session=session
+            )
+        finally:
+            session.close()
+
+        body = _agent_route_result(response)
+        return {"agent": agent, "restarted": body.get("restarted", False)}
 
     async def _write_agent_env(
         ctx: Context,

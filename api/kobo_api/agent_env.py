@@ -149,6 +149,113 @@ def env_secret_name(agent_name: str) -> str:
     return f"{agent_name}-env"
 
 
+# The two secrets the ROOM fills in for an agent, by the purpose each is
+# stored under (`apps/<agent>/cabal`, `apps/<agent>/slack`). Listed here
+# so the panel can show them as locked rows rather than leaving an owner
+# to wonder where their agent's colleague pass went: `RESERVED_KEYS`
+# already refuses these names, and a list that refuses a name it does not
+# show is a list that looks broken.
+MANAGED_PURPOSES = ("cabal", "slack")
+
+
+def managed_secret_path(agent_name: str, purpose: str) -> str:
+    """Where the room's own secret for `purpose` is held. The two siblings
+    of `secret_path`, named the same way for the same reason."""
+    return f"apps/{agent_name}/{purpose}"
+
+
+def managed_secret_name(agent_name: str, purpose: str) -> str:
+    """The Kubernetes Secret the platform delivers `managed_secret_path`
+    into: `<agent>-cabal`, `<agent>-slack`."""
+    return f"{agent_name}-{purpose}"
+
+
+# --- Is a stored secret actually ON the agent? --------------------------------
+#
+# A name in a list is not a credential in a pod. Between the two sits the
+# platform's own ExternalSecret, and the only honest way to say "this is
+# set" is to read that object's Ready condition -- never the Kubernetes
+# Secret it owns, which holds the values themselves and which nothing in
+# this room reads.
+
+LIVE = "live"
+SYNCING = "syncing"
+SYNC_ERROR = "error"
+UNWIRED = "unwired"
+
+# What the room says about each state, in its own words. The platform's
+# own condition MESSAGE is never one of these: it is a sentence somebody
+# else wrote about a request the room made, and a provider that echoed
+# what it was asked to store would put a value in this room's UI. Only the
+# condition's REASON survives, and only when it is one plain word.
+SYNC_NOT_DELIVERED = "The room has not delivered this one to the agent yet."
+SYNC_FAILED = "The secrets platform could not deliver this one to the agent."
+SYNC_UNKNOWN = "The room could not check with the cluster just now."
+
+# A Kubernetes condition reason is a single CamelCase word by convention.
+# Anything else is not repeated at all: this is the one field of somebody
+# else's object that reaches a person's screen, so it has to prove it is a
+# word before it gets there.
+_REASON_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,63}$")
+
+
+def _ready_condition(status: dict) -> dict | None:
+    """The `Ready` entry of an ExternalSecret's status conditions, or None
+    when it has not got one yet."""
+    conditions = status.get("conditions")
+    if not isinstance(conditions, list):
+        return None
+    for condition in conditions:
+        if isinstance(condition, dict) and condition.get("type") == "Ready":
+            return condition
+    return None
+
+
+def sync_state(status: dict | None) -> dict[str, str | None]:
+    """What one ExternalSecret's status says, as the panel's lock.
+
+    `status` is the object's own `.status` mapping, or None when there is
+    no such object in the namespace at all. Four answers, and the shape is
+    the same for the agent's own secrets and for the two the room sets:
+
+    - `live`: the Ready condition is True. The value is in the pod's
+      Secret, which is the only claim this panel is allowed to make.
+    - `error`: Ready is False. The reason word comes along when it is a
+      word; the platform's own message never does.
+    - `syncing`: the object exists and has not said Ready either way yet,
+      which is the ordinary state for the first seconds after a save.
+    - `unwired`: there is no object, so nothing is delivering this.
+    """
+    if status is None:
+        return {"state": UNWIRED, "message": SYNC_NOT_DELIVERED}
+
+    condition = _ready_condition(status)
+    if condition is None:
+        return {"state": SYNCING, "message": None}
+
+    ready = str(condition.get("status", "")).lower()
+    if ready == "true":
+        return {"state": LIVE, "message": None}
+    if ready != "false":
+        return {"state": SYNCING, "message": None}
+
+    reason = condition.get("reason")
+    if isinstance(reason, str) and _REASON_RE.match(reason):
+        return {"state": SYNC_ERROR, "message": f"{SYNC_FAILED} It reported {reason}."}
+    return {"state": SYNC_ERROR, "message": SYNC_FAILED}
+
+
+def sync_unknown() -> dict[str, str | None]:
+    """What the panel shows when the room could not ask the cluster at all.
+
+    Deliberately `syncing` rather than `error`: the panel's error tag says
+    the secret is not on the agent, and a failed LOOK is not evidence of
+    that. "We have not got a settled answer" is the honest reading of a
+    read that did not happen, and the message says which it was.
+    """
+    return {"state": SYNCING, "message": SYNC_UNKNOWN}
+
+
 def key_refusal(key: str) -> str | None:
     """The plain sentence refusing `key`, or None when it is allowed.
 

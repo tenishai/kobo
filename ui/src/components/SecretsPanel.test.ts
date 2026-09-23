@@ -23,6 +23,7 @@ type Routes = {
   env?: unknown;
   onSecretsPut?: (body: { set: Record<string, string>; remove: string[] }) => unknown;
   onEnvPut?: (body: { set: Record<string, string>; remove: string[] }) => unknown;
+  onRestart?: () => unknown;
 };
 
 /** A fetch stub that answers the panel's two reads and records its writes.
@@ -31,6 +32,7 @@ type Routes = {
  * answers by URL alone. */
 function stubRoutes(routes: Routes) {
   const puts: { url: string; body: { set: Record<string, string>; remove: string[] } }[] = [];
+  const restarts: string[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -41,6 +43,12 @@ function stubRoutes(routes: Routes) {
           headers: { "Content-Type": "application/json" },
         });
 
+      if (init?.method === "POST" && url.includes("/restart")) {
+        restarts.push(url);
+        return routes.onRestart
+          ? json(routes.onRestart())
+          : json({ restarted: true, deployment: AGENT });
+      }
       if (init?.method === "PUT") {
         const body = JSON.parse(String(init.body));
         puts.push({ url, body });
@@ -54,13 +62,16 @@ function stubRoutes(routes: Routes) {
           platform: true,
           secret_name: `${AGENT}-env`,
           unreadable: false,
+          sync: { state: "live", message: null },
+          wired: true,
+          managed: [],
           ...(routes.secrets ?? {}),
         });
       }
       return json(routes.env ?? { env: {} });
     }),
   );
-  return puts;
+  return Object.assign(puts, { restarts });
 }
 
 function render(props: Record<string, unknown> = {}) {
@@ -204,7 +215,7 @@ describe("SecretsPanel", () => {
     expect(puts[0].body).toEqual({ set: { API_KEY: VALUE }, remove: [] });
     await waitFor(() => {
       expect(
-        screen.getByText(/The agent picks this up the next time it starts/),
+        screen.getByText("Saved. Restart the agent to pick up the change."),
       ).not.toBeNull();
     });
     // The pending row is gone, and with it the only field that ever held
@@ -624,6 +635,344 @@ describe("SecretsPanel", () => {
     expect((screen.getByLabelText("Value 2") as HTMLInputElement).value).toBe(
       "edited in place",
     );
+  });
+
+  // --- The lock ------------------------------------------------------------
+  //
+  // The operator's own reason for it: somebody who adds a secret should
+  // know at a glance that it is really set.
+
+  it("says a delivered secret is live on the agent", async () => {
+    stubRoutes({
+      secrets: {
+        keys: ["API_KEY"],
+        sync: { state: "live", message: null },
+      },
+    });
+    render();
+
+    await waitFor(() => {
+      expect(screen.getByText("Secret \u00b7 live on the agent")).not.toBeNull();
+    });
+  });
+
+  it("says a secret still on its way is syncing", async () => {
+    stubRoutes({
+      secrets: { keys: ["API_KEY"], sync: { state: "syncing", message: null } },
+    });
+    render();
+
+    await waitFor(() => {
+      expect(screen.getByText("Secret \u00b7 syncing")).not.toBeNull();
+    });
+  });
+
+  it("says a secret nothing is delivering is not on the agent yet", async () => {
+    stubRoutes({
+      secrets: {
+        keys: ["API_KEY"],
+        sync: { state: "unwired", message: "The room has not delivered this one to the agent yet." },
+      },
+    });
+    render();
+
+    await waitFor(() => {
+      expect(screen.getByText("Secret \u00b7 not on the agent yet")).not.toBeNull();
+    });
+    // The sentence rides along as the tooltip, so the tag can stay short.
+    expect(
+      screen.getByText("Secret \u00b7 not on the agent yet").getAttribute("title"),
+    ).toBe("The room has not delivered this one to the agent yet.");
+  });
+
+  it("puts a failing delivery under the table as well as on the row", async () => {
+    const message = "The secrets platform could not deliver this one to the agent. It reported SecretSyncedError.";
+    stubRoutes({
+      secrets: { keys: ["API_KEY"], sync: { state: "error", message } },
+    });
+    render();
+
+    await waitFor(() => {
+      expect(screen.getByText("Secret \u00b7 not on the agent yet")).not.toBeNull();
+    });
+    expect(screen.getByText(message)).not.toBeNull();
+  });
+
+  it("shows a row somebody is still typing as a field, not a lock", async () => {
+    stubRoutes({});
+    render();
+    await loaded();
+
+    await fireEvent.click(addSecret());
+    await fireEvent.input(screen.getByLabelText("Name 1"), { target: { value: "API_KEY" } });
+
+    expect(screen.getByLabelText("Value 1")).not.toBeNull();
+    expect(screen.queryByText(/Secret \u00b7/)).toBeNull();
+  });
+
+  it("shows syncing right after a save, before the next read settles", async () => {
+    // The platform has not made its delivery object yet, and "not on the
+    // agent" one second after a write is alarming and wrong.
+    let reads = 0;
+    stubRoutes({
+      get secrets() {
+        reads += 1;
+        return reads === 1
+          ? { keys: [], sync: { state: "unwired", message: null } }
+          : { keys: ["API_KEY"], sync: { state: "unwired", message: null } };
+      },
+      onSecretsPut: () => ({
+        keys: ["API_KEY"],
+        platform: true,
+        secret_name: `${AGENT}-env`,
+        wiring: "committed",
+      }),
+    });
+    render();
+    await loaded();
+
+    await fireEvent.click(addSecret());
+    await fireEvent.input(screen.getByLabelText("Name 1"), { target: { value: "API_KEY" } });
+    await fireEvent.input(screen.getByLabelText("Value 1"), { target: { value: VALUE } });
+    await fireEvent.click(save());
+
+    await waitFor(() => {
+      expect(screen.getByText("Secret \u00b7 syncing")).not.toBeNull();
+    });
+  });
+
+  it("says a secret the agent's own files do not name is not on it yet", async () => {
+    // A pod only sees a Secret its files list, so a green delivery over
+    // a file with no line is still "not on the agent".
+    stubRoutes({
+      secrets: {
+        keys: ["API_KEY"],
+        sync: { state: "live", message: null },
+        wired: false,
+      },
+    });
+    render();
+
+    await waitFor(() => {
+      expect(screen.getByText("Secret \u00b7 not on the agent yet")).not.toBeNull();
+    });
+    expect(screen.queryByText("Secret \u00b7 live on the agent")).toBeNull();
+  });
+
+  it("makes no claim about a file the room could not read", async () => {
+    stubRoutes({
+      secrets: { keys: ["API_KEY"], sync: { state: "live", message: null }, wired: null },
+    });
+    render();
+
+    await waitFor(() => {
+      expect(screen.getByText("Secret \u00b7 live on the agent")).not.toBeNull();
+    });
+  });
+
+  it("keeps asking for a while after a save, then stops", async () => {
+    // A delivery finishes after this browser's request has returned, so
+    // there is nothing to invalidate on: the only way to know it landed
+    // is to look again.
+    vi.useFakeTimers();
+    try {
+      let reads = 0;
+      stubRoutes({
+        get secrets() {
+          reads += 1;
+          return { keys: ["API_KEY"], sync: { state: "unwired", message: null } };
+        },
+        onSecretsPut: () => ({
+          keys: ["API_KEY"],
+          platform: true,
+          secret_name: `${AGENT}-env`,
+          wiring: "committed",
+        }),
+      });
+      render();
+      await vi.advanceTimersByTimeAsync(0);
+
+      await fireEvent.click(addSecret());
+      await fireEvent.input(screen.getByLabelText("Name 1"), { target: { value: "API_KEY" } });
+      await fireEvent.input(screen.getByLabelText("Value 1"), { target: { value: VALUE } });
+      await fireEvent.click(save());
+      await vi.advanceTimersByTimeAsync(0);
+
+      const afterSave = reads;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(reads).toBeGreaterThan(afterSave);
+
+      // Past the window, the panel goes quiet again rather than polling
+      // a tab somebody left open all afternoon.
+      await vi.advanceTimersByTimeAsync(120_000);
+      const afterWindow = reads;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(reads).toBe(afterWindow);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // --- The rows the room set -----------------------------------------------
+
+  it("shows the room's own secrets as locked rows nobody can remove", async () => {
+    stubRoutes({
+      secrets: {
+        keys: ["API_KEY"],
+        managed: [
+          {
+            name: "CABAL_COLLEAGUE_TOKEN",
+            purpose: "cabal",
+            secret_name: `${AGENT}-cabal`,
+            sync: { state: "live", message: null },
+          },
+        ],
+      },
+    });
+    render();
+
+    await waitFor(() => {
+      expect(screen.getByText("CABAL_COLLEAGUE_TOKEN")).not.toBeNull();
+    });
+    expect(screen.getByText("Set by the room")).not.toBeNull();
+    // One remove button, for the owner's own row, and none for this one.
+    expect(screen.getByRole("button", { name: "Remove API_KEY" })).not.toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Remove CABAL_COLLEAGUE_TOKEN" }),
+    ).toBeNull();
+  });
+
+  it("gives the room's own secret no field to edit and no value to read", async () => {
+    stubRoutes({
+      secrets: {
+        keys: [],
+        managed: [
+          {
+            name: "SLACK_BOT_TOKEN",
+            purpose: "slack",
+            secret_name: `${AGENT}-slack`,
+            sync: { state: "syncing", message: null },
+          },
+        ],
+      },
+      env: { env: {} },
+    });
+    const { container } = render();
+
+    await waitFor(() => {
+      expect(screen.getByText("SLACK_BOT_TOKEN")).not.toBeNull();
+    });
+    // The only fields on the page belong to rows somebody added; this row
+    // has none at all.
+    expect(container.querySelectorAll("input")).toHaveLength(0);
+    expect(screen.getByText("Secret \u00b7 syncing")).not.toBeNull();
+  });
+
+  // --- Restarting the agent -------------------------------------------------
+
+  it("restarts the agent and says it did", async () => {
+    const puts = stubRoutes({ secrets: { keys: ["API_KEY"] } });
+    render();
+    await loaded();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Restart agent" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Restarted" })).not.toBeNull();
+    });
+    expect(puts.restarts).toHaveLength(1);
+    expect(puts.restarts[0]).toContain(`/api/agents/${AGENT}/restart`);
+  });
+
+  it("asks for a restart after a save, and stops once one happens", async () => {
+    stubRoutes({
+      onSecretsPut: () => ({
+        keys: ["API_KEY"],
+        platform: true,
+        secret_name: `${AGENT}-env`,
+        wiring: "committed",
+      }),
+    });
+    render();
+    await loaded();
+
+    await fireEvent.click(addSecret());
+    await fireEvent.input(screen.getByLabelText("Name 1"), { target: { value: "API_KEY" } });
+    await fireEvent.input(screen.getByLabelText("Value 1"), { target: { value: VALUE } });
+    await fireEvent.click(save());
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Saved. Restart the agent to pick up the change."),
+      ).not.toBeNull();
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Restart agent" }));
+
+    await waitFor(() => {
+      expect(
+        screen.queryByText("Saved. Restart the agent to pick up the change."),
+      ).toBeNull();
+    });
+  });
+
+  it("offers no restart for an agent that is not running yet", async () => {
+    stubRoutes({ secrets: { keys: ["API_KEY"] } });
+    render({ deployed: false });
+    await loaded();
+
+    expect(screen.queryByRole("button", { name: "Restart agent" })).toBeNull();
+  });
+
+  it("says so in plain words when the restart is refused", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (init?.method === "POST") {
+          return new Response(JSON.stringify({ error: "that is a lot of restarting. Wait a minute" }), {
+            status: 429,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const payload = url.includes("/secrets")
+          ? {
+              keys: ["API_KEY"],
+              updated_at: null,
+              platform: true,
+              secret_name: `${AGENT}-env`,
+              unreadable: false,
+              sync: { state: "live", message: null },
+              wired: true,
+              managed: [],
+            }
+          : { env: {} };
+        return new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    render();
+    await loaded();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Restart agent" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/that is a lot of restarting/)).not.toBeNull();
+    });
+  });
+
+  it("disables the restart button while the agent is frozen", async () => {
+    stubRoutes({ secrets: { keys: ["API_KEY"] } });
+    renderWithClient(SecretsPanel, { agentName: AGENT, frozen: true });
+
+    await waitFor(() => {
+      expect(screen.getByText("API_KEY")).not.toBeNull();
+    });
+    expect(
+      (screen.getByRole("button", { name: "Restart agent" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 
   it("asks nothing at all while another tab is the selected one", async () => {

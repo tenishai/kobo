@@ -195,6 +195,7 @@ import {
   regenerateAgentMetadata,
   removeGrant,
   requestGroup,
+  restartAgent,
   retryAgent,
   revokeInvite,
   saveAgentEnv,
@@ -1060,9 +1061,15 @@ export function saveSlackChannelsMutation(
  * Which secrets an agent holds, BY NAME (secrets and environment design
  * 2026-09-22) -- `GET .../secrets`, owner-or-operator only server-side.
  *
- * No polling, the same "edits are user-driven" reasoning `knowledgeQuery`
- * documents: nothing changes this list except a save from this same
- * panel, and the save's own `onSuccess` invalidates it.
+ * No polling by default, the same "edits are user-driven" reasoning
+ * `knowledgeQuery` documents: nothing changes this list except a save
+ * from this same panel, and the save's own `onSuccess` invalidates it.
+ *
+ * `refetchInterval` is the ONE exception, and it is not about the list:
+ * a saved secret takes a little while to reach the agent, and the panel
+ * polls for a short window after a save so the lock catches up on its
+ * own rather than waiting for somebody to reopen the tab. The panel owns
+ * that window and closes it; this factory only carries the number.
  *
  * `enabled` is whether the Secrets tab is the selected one, and it is not
  * an optimisation. Every tabpanel on the agent page stays MOUNTED when
@@ -1071,12 +1078,32 @@ export function saveSlackChannelsMutation(
  * leave a row in its audit trail saying somebody did. Same shape
  * `slackManifestQuery` uses for its own deferred read.
  */
-export function agentSecretsQuery(name: string, enabled = true) {
+export function agentSecretsQuery(
+  name: string,
+  enabled = true,
+  refetchInterval: number | false = false,
+) {
   return queryOptions({
     queryKey: ["agents", name, "secrets"] as const,
     queryFn: () => listAgentSecrets(name),
     enabled,
+    refetchInterval,
   });
+}
+
+/**
+ * Rolls the agent's pods -- `POST .../restart`, owner-or-operator only
+ * server-side. Invalidates that agent's secrets query on success: the
+ * ExternalSecret's own state is what the lock reads, and a restart is
+ * exactly the moment somebody wants a fresh look at it.
+ */
+export function restartAgentMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: () => restartAgent(name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "secrets"] });
+    },
+  };
 }
 
 /**
