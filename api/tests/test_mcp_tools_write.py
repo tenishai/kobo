@@ -214,13 +214,14 @@ def _app(
     cabal=None,
     name=None,
     ladon=None,
+    kubectl=None,
 ):
     clients = Clients(
         github=github if github is not None else FakeGitHub(),
         gojira=gojira if gojira is not None else FakeGojira(),
         cloud=FakeCloud(),
         agent=agent if agent is not None else FakeAgent(),
-        kubectl=FakeKubectl(),
+        kubectl=kubectl if kubectl is not None else FakeKubectl(),
         groups=groups_resolver,
         storage=storage,
         slack=slack,
@@ -374,7 +375,7 @@ def test_build_mcp_server_registers_exactly_the_named_tools(
     their own file's tools with `<=`, deliberately, so neither file also
     has to track the other's count -- which means nothing anywhere pins
     the FULL registered set. This is that missing test: `build_mcp_server`
-    must register EXACTLY these twenty-five tools, no more, no fewer,
+    must register EXACTLY these twenty-nine tools, no more, no fewer,
     matching the design's own "Tool surface" table
     (docs/superpowers/specs/2026-08-22-mcp-server-design.md) plus the MCP
     marketplace wave's Task 2 pair (`kobo_list_skills`/`kobo_list_tools`),
@@ -385,7 +386,8 @@ def test_build_mcp_server_registers_exactly_the_named_tools(
     `kobo_decide_learning`, `kobo_decide_learnings_bulk` -- plus the
     secrets and environment trio (design 2026-09-22) --
     `kobo_list_agent_secrets`, `kobo_set_agent_secrets`,
-    `kobo_set_agent_env` -- one-for-one. A stray extra registration (a
+    `kobo_set_agent_env` -- and the restart button's own tool (design
+    2026-09-23), `kobo_restart_agent` -- one-for-one. A stray extra registration (a
     copy-paste twin, a leftover experiment) or a dropped one would fail
     this even though both narrower `<=` checks above would stay green.
     """
@@ -423,6 +425,7 @@ def test_build_mcp_server_registers_exactly_the_named_tools(
         "kobo_list_agent_secrets",
         "kobo_set_agent_secrets",
         "kobo_set_agent_env",
+        "kobo_restart_agent",
     }
 
 
@@ -3242,13 +3245,16 @@ SECRET_VALUE = "not-a-real-key-value"
 SECRETS_GOJIRA_YAML = "name: clio\nservice_account: agent-clio\n"
 
 
-def _secrets_app(session_factory, config, fake_storage, *, ladon=None, github=None):
+def _secrets_app(
+    session_factory, config, fake_storage, *, ladon=None, github=None, kubectl=None
+):
     return _app(
         session_factory,
         config,
         groups_resolver=_resolver(),
         storage=fake_storage,
         ladon=ladon,
+        kubectl=kubectl,
         github=github
         or FakeGitHub(
             existing_repos={SECRETS_REPO},
@@ -3582,3 +3588,69 @@ def test_the_same_wall_stands_on_the_environment_tool(
 
     assert "input_value" not in str(exc.value)
     assert "not" not in str(exc.value)
+
+
+# --- kobo_restart_agent -------------------------------------------------------
+
+
+def test_restart_agent_rolls_the_deployment_and_says_so(
+    session_factory, config, fake_storage
+):
+    kubectl = FakeKubectl()
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(
+        _secrets_app(session_factory, config, fake_storage, kubectl=kubectl)
+    )
+
+    result = _call_tool(
+        mcp, "kobo_restart_agent", _ctx_for(MEMBER_A_EMAIL), agent=SECRETS_AGENT
+    )
+
+    assert result == {"agent": SECRETS_AGENT, "restarted": True}
+    assert kubectl.restarts == [(SECRETS_AGENT, SECRETS_AGENT)]
+
+
+def test_restart_agent_hides_an_agent_the_caller_does_not_own(
+    session_factory, config, fake_storage
+):
+    kubectl = FakeKubectl()
+    _seed_secrets_agent(session_factory, created_by="someone-else@example.com")
+    mcp = build_mcp_server(
+        _secrets_app(session_factory, config, fake_storage, kubectl=kubectl)
+    )
+
+    with pytest.raises(ToolError, match="agent not found"):
+        _call_tool(
+            mcp, "kobo_restart_agent", _ctx_for(MEMBER_A_EMAIL), agent=SECRETS_AGENT
+        )
+    assert kubectl.restarts == []
+
+
+def test_restart_agent_writes_an_audit_row(session_factory, config, fake_storage):
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage))
+
+    _call_tool(mcp, "kobo_restart_agent", _ctx_for(MEMBER_A_EMAIL), agent=SECRETS_AGENT)
+
+    row = _last_audit_row(session_factory)
+    assert row.tool == "kobo_restart_agent"
+    assert row.email == MEMBER_A_EMAIL
+    assert row.status == "ok"
+
+
+def test_restart_agent_says_what_the_room_said_when_the_cluster_refuses(
+    session_factory, config, fake_storage
+):
+    kubectl = FakeKubectl(restart_error="Unable to connect to the server")
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(
+        _secrets_app(session_factory, config, fake_storage, kubectl=kubectl)
+    )
+
+    with pytest.raises(ToolError) as exc_info:
+        _call_tool(
+            mcp, "kobo_restart_agent", _ctx_for(MEMBER_A_EMAIL), agent=SECRETS_AGENT
+        )
+
+    # The house phrasing for a 5xx, never the cluster's own words.
+    assert "Unable to connect" not in str(exc_info.value)
