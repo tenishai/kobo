@@ -8,7 +8,11 @@
 # never created.
 #
 # Registry/build configuration lives in repo/org variables (KOBO_IMAGE,
-# GCP_WIF_PROVIDER, GCP_BUILD_SA) — never in this file. Rolling the built
+# GCP_WIF_PROVIDER, GCP_BUILD_SA) — never in this file. Where jobs run is
+# a variable too: CI_RUNS_ON for the three gates and CI_BUILD_RUNS_ON for the
+# image build, each a JSON string or list of runner labels (for example
+# '["self-hosted","linux","x64","kobo-ci"]'); unset means GitHub-hosted.
+# The build stays on GitHub-hosted runners unless the self-hosted one has Docker. Rolling the built
 # image stays an operator action; the build job prints the command.
 
 name: ci
@@ -24,7 +28,11 @@ concurrency:
 
 jobs:
   api-tests:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    # Self-hosted runners must never run code from a fork: only this repository's own
+    # pull requests and pushes. Harmless on GitHub-hosted runners.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -39,7 +47,11 @@ jobs:
         run: PYTHONPATH=. .venv/bin/python -m pytest -q
 
   ui:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    # Self-hosted runners must never run code from a fork: only this repository's own
+    # pull requests and pushes. Harmless on GitHub-hosted runners.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -62,7 +74,11 @@ jobs:
         run: npm test
 
   migrations:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    # Self-hosted runners must never run code from a fork: only this repository's own
+    # pull requests and pushes. Harmless on GitHub-hosted runners.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16
@@ -99,7 +115,7 @@ jobs:
     # Pushes the image; rolling it stays an operator action.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.KOBO_IMAGE != ''
     needs: [api-tests, ui, migrations]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_BUILD_RUNS_ON || '"ubuntu-latest"') }}
     permissions:
       contents: read
       id-token: write
