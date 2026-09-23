@@ -6,6 +6,8 @@
   import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
   import ConnectModal from "./components/ConnectModal.svelte";
   import CreateModal from "./components/CreateModal.svelte";
+  import NewAgentModal from "./components/NewAgentModal.svelte";
+  import type { NewAgentChoice } from "./components/NewAgentModal.svelte";
   import Sidebar from "./components/Sidebar.svelte";
   import TeamGuideModal from "./components/TeamGuideModal.svelte";
   import Toasts from "./components/Toasts.svelte";
@@ -60,10 +62,27 @@
     void queryClient.prefetchQuery(skillsSearchQuery("", null));
   }
 
-  // `createOpen` is fully controlled here: the Sidebar's Create button sets
-  // it true, CreateModal's own onclose (Escape, backdrop click, Cancel, or a
-  // successful submit) sets it back to false.
+  // Every dialog below is fully controlled from here: a flag goes true when
+  // something opens it, and the dialog's own onclose (Escape, backdrop
+  // click, Cancel, or a successful submit) puts it back to false.
+  //
+  // New-agent entry wave (2026-09-23): the rail's three buttons became one,
+  // so the flags are now set by the chooser rather than by three separate
+  // rail handlers. `onOpenCreate` is kept as its own named function because
+  // it is the seam anything else that wants the build station directly
+  // (rather than by way of the chooser) goes through.
+  let chooserOpen = $state(false);
   let createOpen = $state(false);
+  let guideOpen = $state(false);
+  let connectOpen = $state(false);
+
+  function onOpenChooser(): void {
+    chooserOpen = true;
+  }
+
+  function onCloseChooser(): void {
+    chooserOpen = false;
+  }
 
   function onOpenCreate(): void {
     createOpen = true;
@@ -73,28 +92,27 @@
     createOpen = false;
   }
 
-  // Team-guide spec 2026-09-14: same fully-controlled contract as
-  // `createOpen` above, just for the Sidebar's second, secondary button.
-  let guideOpen = $state(false);
-
-  function onOpenGuide(): void {
-    guideOpen = true;
-  }
-
   function onCloseGuide(): void {
     guideOpen = false;
   }
 
-  // Connected-agents design 2026-09-21: the third button's own state, same
-  // fully-controlled contract as the two above.
-  let connectOpen = $state(false);
-
-  function onOpenConnect(): void {
-    connectOpen = true;
-  }
-
   function onCloseConnect(): void {
     connectOpen = false;
+  }
+
+  // Choosing is the whole of the chooser's job: it closes, and the station
+  // it names opens in its place. Closing that station lands on the
+  // dashboard rather than back here -- a chooser that reappears behind
+  // every cancel is a trap, not a step back.
+  function onChoose(choice: NewAgentChoice): void {
+    chooserOpen = false;
+    if (choice === "build") {
+      onOpenCreate();
+    } else if (choice === "guide") {
+      guideOpen = true;
+    } else {
+      connectOpen = true;
+    }
   }
 </script>
 
@@ -102,9 +120,7 @@
   <div class="shell">
     <Sidebar
       active={route.page}
-      oncreate={onOpenCreate}
-      onopenguide={onOpenGuide}
-      onopenconnect={onOpenConnect}
+      onnewagent={onOpenChooser}
       onprefetch={prefetchCatalogs}
     />
 
@@ -126,6 +142,7 @@
     </main>
   </div>
 
+  <NewAgentModal open={chooserOpen} onclose={onCloseChooser} onchoose={onChoose} />
   <CreateModal open={createOpen} onclose={onCloseCreate} />
   <TeamGuideModal open={guideOpen} onclose={onCloseGuide} />
   <ConnectModal open={connectOpen} onclose={onCloseConnect} />

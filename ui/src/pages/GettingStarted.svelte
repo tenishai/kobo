@@ -18,6 +18,10 @@
   // user actually lives them, ending with the grow-it sections as the
   // "later" step they actually are.
   //
+  // New-agent entry wave (2026-09-23): the rail's three buttons became one,
+  // so step 1 names that one button and the question it opens, rather than
+  // a button whose label no longer exists.
+  //
   // Harness wave (2026-09-23): the row is Chat/Slack/Access/Harness/
   // Settings, with no menu at the end of it, and the grow-it sections are
   // inside Harness, so the copy below says Harness rather than More.
@@ -31,11 +35,14 @@
     <h2>1. Create your agent</h2>
     <p>
       On the <a href={formatHash({ page: "dashboard" })}>dashboard</a>, press
-      Create agent. Pick a persona from the catalog, or describe the job
-      yourself and build one from scratch. Accept one of the suggested names,
-      or write your own, and choose the group that will see it. A checklist
-      appears at the top of the agent's page while it builds, and it
-      disappears on its own once every step turns green.
+      New agent. The room asks how you want to start, and there are three
+      ways: build an agent, a team guide in one step, or connect code your
+      team already owns. Building one is the usual way in. Pick a persona
+      from the catalog, or describe the job yourself and build one from
+      scratch. Accept one of the suggested names, or write your own, and
+      choose the group that will see it. A checklist appears at the top of
+      the agent's page while it builds, and it disappears on its own once
+      every step turns green.
     </p>
   </section>
 

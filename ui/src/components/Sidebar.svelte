@@ -1,16 +1,20 @@
 <script lang="ts">
   // The room's left rail: logo (the Kobo identity -- hammer mark + wordmark,
-  // "the room gets its hammer" ruling), nav, and the Create button with its
-  // warm-prefetch handlers. Collapses to an icon rail on narrow viewports.
+  // "the room gets its hammer" ruling), nav, and the New agent button with
+  // its warm-prefetch handlers. Collapses to an icon rail on narrow
+  // viewports.
+  //
+  // New-agent entry wave (2026-09-23): the rail used to stack three buttons
+  // here, one per station, and they read as three competing primaries. Now
+  // there is one, and the question of which station a person wants is asked
+  // once, inside the chooser it opens.
   import { createQuery } from "@tanstack/svelte-query";
   import { formatHash } from "../lib/router.svelte";
   import { agentsQuery, whoamiQuery } from "../lib/queries";
 
-  let { active, oncreate, onopenguide, onopenconnect, onprefetch }: {
+  let { active, onnewagent, onprefetch }: {
     active: "dashboard" | "agent" | "getting-started" | "personas";
-    oncreate: () => void;
-    onopenguide: () => void;
-    onopenconnect: () => void;
+    onnewagent: () => void;
     onprefetch: () => void;
   } = $props();
 
@@ -99,46 +103,12 @@
     class="sidebar__create"
     onmouseenter={onprefetch}
     onfocus={onprefetch}
-    onclick={oncreate}
-    aria-label="Create agent"
-    title="Create agent"
+    onclick={onnewagent}
+    aria-label="New agent"
+    title="New agent"
   >
-    <span class="sidebar__create-label">Create agent</span>
+    <span class="sidebar__create-label">New agent</span>
     <span class="sidebar__create-glyph" aria-hidden="true">+</span>
-  </button>
-
-  <!-- Team-guide spec 2026-09-14: a secondary action under Create agent,
-       never competing with it for primary-accent styling. Shares the same
-       warm-prefetch handlers (groups is one of the catalogs this button's
-       own modal reads). -->
-  <button
-    type="button"
-    class="sidebar__guide"
-    onmouseenter={onprefetch}
-    onfocus={onprefetch}
-    onclick={onopenguide}
-    aria-label="Quick-start team agent"
-    title="Quick-start team agent"
-  >
-    <span class="sidebar__guide-label">Quick-start team agent</span>
-    <span class="sidebar__guide-glyph" aria-hidden="true">◎</span>
-  </button>
-
-  <!-- Connected-agents design 2026-09-21: a third sibling in the same
-       secondary style, for a repository a team already owns. Shares the
-       warm-prefetch handlers for the same reason the guide button does
-       (groups is one of the catalogs its modal reads). -->
-  <button
-    type="button"
-    class="sidebar__guide"
-    onmouseenter={onprefetch}
-    onfocus={onprefetch}
-    onclick={onopenconnect}
-    aria-label="Connect your own agent"
-    title="Connect your own agent"
-  >
-    <span class="sidebar__guide-label">Connect your own agent</span>
-    <span class="sidebar__guide-glyph" aria-hidden="true">◈</span>
   </button>
 
   {#if whoami.data?.email}
@@ -276,33 +246,6 @@
     display: none;
   }
 
-  /* Secondary style (team-guide spec 2026-09-14): an outline, not the
-     filled accent Create agent uses -- a sibling action, not a competing
-     primary one. */
-  .sidebar__guide {
-    padding: var(--space-xs) var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .sidebar__guide:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .sidebar__guide:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-
-  .sidebar__guide-glyph {
-    display: none;
-  }
-
   .sidebar__whoami {
     margin: auto 0 0 0;
     padding-top: var(--space-sm);
@@ -329,14 +272,6 @@
     }
 
     .sidebar__create-glyph {
-      display: inline;
-    }
-
-    .sidebar__guide-label {
-      display: none;
-    }
-
-    .sidebar__guide-glyph {
       display: inline;
     }
 

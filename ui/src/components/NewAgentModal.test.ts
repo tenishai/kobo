@@ -1,0 +1,139 @@
+// @vitest-environment jsdom
+// One entry point (new-agent entry wave): the rail used to stack three
+// buttons that each opened a different dialog, and operators read them as
+// three competing primaries. This chooser is the one door: a single
+// question and three rows, each of which hands the choice back to the
+// caller and gets out of the way.
+import { fireEvent, screen } from "@testing-library/svelte";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import NewAgentModal from "./NewAgentModal.svelte";
+import { renderWithClient, stubFetch } from "../test-utils/render";
+
+const ROWS: { title: string; desc: string; choice: string }[] = [
+  {
+    title: "Build an agent",
+    desc: "Pick a persona and the room builds and deploys it on its runtime.",
+    choice: "build",
+  },
+  {
+    title: "Team guide in one step",
+    desc: "A guide for your team that answers questions from its documents. One form.",
+    choice: "guide",
+  },
+  {
+    title: "Connect a repository you already have",
+    desc: "Your code, your runtime. The room deploys and watches it.",
+    choice: "connect",
+  },
+];
+
+describe("NewAgentModal", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    stubFetch({ "/api/": {} });
+  });
+
+  it("renders nothing while closed", () => {
+    renderWithClient(NewAgentModal, {
+      open: false,
+      onclose: () => {},
+      onchoose: () => {},
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("is titled 'New agent' and asks one question", () => {
+    renderWithClient(NewAgentModal, {
+      open: true,
+      onclose: () => {},
+      onchoose: () => {},
+    });
+    expect(screen.getByRole("dialog")).not.toBeNull();
+    expect(screen.getByText("New agent")).not.toBeNull();
+    expect(screen.getByText("How do you want to start?")).not.toBeNull();
+  });
+
+  it("offers exactly three ways to start, in order, each with its one line", () => {
+    const { container } = renderWithClient(NewAgentModal, {
+      open: true,
+      onclose: () => {},
+      onchoose: () => {},
+    });
+
+    const rows = [...container.querySelectorAll(".list__row")];
+    expect(rows.length).toBe(3);
+    rows.forEach((row, index) => {
+      expect(row.tagName.toLowerCase()).toBe("button");
+      expect(row.textContent).toContain(ROWS[index].title);
+      expect(row.textContent).toContain(ROWS[index].desc);
+    });
+  });
+
+  it("gives every row a bold title, one muted line, and a chevron", () => {
+    const { container } = renderWithClient(NewAgentModal, {
+      open: true,
+      onclose: () => {},
+      onchoose: () => {},
+    });
+
+    for (const row of container.querySelectorAll(".list__row")) {
+      expect(row.querySelector(".chooser__title")).not.toBeNull();
+      expect(row.querySelector(".chooser__desc")).not.toBeNull();
+      const chevron = row.querySelector(".chooser__chevron");
+      expect(chevron).not.toBeNull();
+      expect(chevron!.getAttribute("aria-hidden")).toBe("true");
+    }
+  });
+
+  it("hands back the choice a row stands for", async () => {
+    for (const row of ROWS) {
+      const onchoose = vi.fn();
+      const { unmount } = renderWithClient(NewAgentModal, {
+        open: true,
+        onclose: () => {},
+        onchoose,
+      });
+      await fireEvent.click(screen.getByRole("button", { name: new RegExp(row.title) }));
+      expect(onchoose).toHaveBeenCalledWith(row.choice);
+      unmount();
+    }
+  });
+
+  it("has Cancel as its only footer action, since picking a row is the action", () => {
+    const { container } = renderWithClient(NewAgentModal, {
+      open: true,
+      onclose: () => {},
+      onchoose: () => {},
+    });
+    const footer = container.querySelector(".modal__footer");
+    expect(footer).not.toBeNull();
+    const actions = [...footer!.querySelectorAll("button")];
+    expect(actions.length).toBe(1);
+    expect(actions[0].textContent?.trim()).toBe("Cancel");
+    expect(actions[0].classList.contains("btn--primary")).toBe(false);
+  });
+
+  it("closes on Cancel without choosing anything", async () => {
+    const onclose = vi.fn();
+    const onchoose = vi.fn();
+    renderWithClient(NewAgentModal, { open: true, onclose, onchoose });
+    await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onclose).toHaveBeenCalled();
+    expect(onchoose).not.toHaveBeenCalled();
+  });
+
+  it("keeps every row reachable from the keyboard", () => {
+    const { container } = renderWithClient(NewAgentModal, {
+      open: true,
+      onclose: () => {},
+      onchoose: () => {},
+    });
+    // Real buttons, not clickable divs: no row carries a tabindex that
+    // would take it out of the tab order, and none is disabled.
+    for (const row of container.querySelectorAll<HTMLButtonElement>(".list__row")) {
+      expect(row.getAttribute("tabindex")).toBeNull();
+      expect(row.disabled).toBe(false);
+      expect(row.getAttribute("type")).toBe("button");
+    }
+  });
+});

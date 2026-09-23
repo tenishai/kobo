@@ -54,7 +54,7 @@ describe("Sidebar", () => {
   });
 
   it("renders nav links and marks the active page", () => {
-    renderWithClient(Sidebar, { active: "getting-started", oncreate: () => {}, onprefetch: () => {} });
+    renderWithClient(Sidebar, { active: "getting-started", onnewagent: () => {}, onprefetch: () => {} });
     const agents = screen.getByRole("link", { name: "Agents" });
     const getting = screen.getByRole("link", { name: "Getting started" });
     expect(agents.getAttribute("href")).toBe("#/");
@@ -63,47 +63,34 @@ describe("Sidebar", () => {
     expect(agents.getAttribute("aria-current")).toBeNull();
   });
 
-  it("fires oncreate and onprefetch from the create button", async () => {
-    const oncreate = vi.fn();
+  it("fires onnewagent and onprefetch from the new-agent button", async () => {
+    const onnewagent = vi.fn();
     const onprefetch = vi.fn();
-    renderWithClient(Sidebar, { active: "dashboard", oncreate, onprefetch });
-    const button = screen.getByRole("button", { name: "Create agent" });
+    renderWithClient(Sidebar, { active: "dashboard", onnewagent, onprefetch });
+    const button = screen.getByRole("button", { name: "New agent" });
     await fireEvent.mouseEnter(button);
     expect(onprefetch).toHaveBeenCalled();
     await fireEvent.click(button);
-    expect(oncreate).toHaveBeenCalled();
+    expect(onnewagent).toHaveBeenCalled();
   });
 
-  it("fires onopenconnect and onprefetch from the connect button", async () => {
-    const onopenconnect = vi.fn();
-    const onprefetch = vi.fn();
-    renderWithClient(Sidebar, {
-      active: "dashboard",
-      oncreate: () => {},
-      onopenconnect,
-      onprefetch,
-    });
-    const button = screen.getByRole("button", { name: "Connect your own agent" });
-    await fireEvent.mouseEnter(button);
-    expect(onprefetch).toHaveBeenCalled();
-    await fireEvent.click(button);
-    expect(onopenconnect).toHaveBeenCalled();
-  });
-
-  it("keeps the connect button a secondary sibling, never a second primary", () => {
+  it("carries exactly one button that starts a new agent", () => {
     const { container } = renderWithClient(Sidebar, {
       active: "dashboard",
-      oncreate: () => {},
+      onnewagent: () => {},
       onprefetch: () => {},
     });
-    // Same secondary class the quick-start action wears; the one filled
-    // accent button in the rail stays Create agent.
-    expect(container.querySelectorAll(".sidebar__guide").length).toBe(2);
+    // One door, not three: the old quick-start and connect siblings are
+    // gone from the rail, and what they opened lives behind the chooser.
+    expect(container.querySelectorAll("button").length).toBe(1);
     expect(container.querySelectorAll(".sidebar__create").length).toBe(1);
+    expect(container.querySelectorAll(".sidebar__guide").length).toBe(0);
+    expect(screen.queryByRole("button", { name: "Quick-start team agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect your own agent" })).toBeNull();
   });
 
   it("gives both nav links an unconditional aria-label so the icon rail keeps its accessible name", () => {
-    renderWithClient(Sidebar, { active: "dashboard", oncreate: () => {}, onprefetch: () => {} });
+    renderWithClient(Sidebar, { active: "dashboard", onnewagent: () => {}, onprefetch: () => {} });
     const agents = screen.getByRole("link", { name: "Agents" });
     const getting = screen.getByRole("link", { name: "Getting started" });
     expect(agents.getAttribute("aria-label")).toBe("Agents");
@@ -113,7 +100,7 @@ describe("Sidebar", () => {
   });
 
   it("renders a Personas nav link pointing at #/personas, marked current only on the personas page", () => {
-    renderWithClient(Sidebar, { active: "personas", oncreate: () => {}, onprefetch: () => {} });
+    renderWithClient(Sidebar, { active: "personas", onnewagent: () => {}, onprefetch: () => {} });
     const personas = screen.getByRole("link", { name: "Personas" });
     expect(personas.getAttribute("href")).toBe("#/personas");
     expect(personas.getAttribute("aria-current")).toBe("page");
@@ -124,11 +111,11 @@ describe("Sidebar", () => {
     expect(agents.getAttribute("aria-current")).toBeNull();
   });
 
-  it("keeps the create button's accessible name 'Create agent' via an unconditional aria-label", () => {
-    renderWithClient(Sidebar, { active: "dashboard", oncreate: () => {}, onprefetch: () => {} });
-    const button = screen.getByRole("button", { name: "Create agent" });
-    expect(button.getAttribute("aria-label")).toBe("Create agent");
-    expect(button.getAttribute("title")).toBe("Create agent");
+  it("keeps the new-agent button's accessible name 'New agent' via an unconditional aria-label", () => {
+    renderWithClient(Sidebar, { active: "dashboard", onnewagent: () => {}, onprefetch: () => {} });
+    const button = screen.getByRole("button", { name: "New agent" });
+    expect(button.getAttribute("aria-label")).toBe("New agent");
+    expect(button.getAttribute("title")).toBe("New agent");
   });
 
   it("shows the signed-in email in the footer when whoami returns one", async () => {
@@ -136,7 +123,7 @@ describe("Sidebar", () => {
       "/api/whoami": { email: "kgreiner@example.com", operator: true, groups: [] },
       "/api/": {},
     });
-    renderWithClient(Sidebar, { active: "dashboard", oncreate: () => {}, onprefetch: () => {} });
+    renderWithClient(Sidebar, { active: "dashboard", onnewagent: () => {}, onprefetch: () => {} });
 
     expect(await screen.findByText("kgreiner@example.com")).not.toBeNull();
   });
@@ -148,7 +135,7 @@ describe("Sidebar", () => {
     });
     const { container } = renderWithClient(Sidebar, {
       active: "dashboard",
-      oncreate: () => {},
+      onnewagent: () => {},
       onprefetch: () => {},
     });
 
@@ -166,7 +153,7 @@ describe("Sidebar — the Kobo identity (wordmark + hammer mark ruling)", () => 
   });
 
   it("shows the wordmark as 'Kobo' -- the room's display name, capital K", () => {
-    renderWithClient(Sidebar, { active: "dashboard", oncreate: () => {}, onprefetch: () => {} });
+    renderWithClient(Sidebar, { active: "dashboard", onnewagent: () => {}, onprefetch: () => {} });
     expect(screen.getByText("Kobo")).not.toBeNull();
     expect(screen.queryByText("kobo")).toBeNull();
   });
@@ -174,7 +161,7 @@ describe("Sidebar — the Kobo identity (wordmark + hammer mark ruling)", () => 
   it("renders the operator's hammer.png mark to the left of the wordmark", () => {
     const { container } = renderWithClient(Sidebar, {
       active: "dashboard",
-      oncreate: () => {},
+      onnewagent: () => {},
       onprefetch: () => {},
     });
     const logo = container.querySelector(".sidebar__logo");
@@ -205,7 +192,7 @@ describe("Sidebar — the Kobo identity (wordmark + hammer mark ruling)", () => 
     });
     const { container } = renderWithClient(Sidebar, {
       active: "dashboard",
-      oncreate: () => {},
+      onnewagent: () => {},
       onprefetch: () => {},
     });
 
@@ -230,7 +217,7 @@ describe("Sidebar — the Kobo identity (wordmark + hammer mark ruling)", () => 
     });
     const { container } = renderWithClient(Sidebar, {
       active: "dashboard",
-      oncreate: () => {},
+      onnewagent: () => {},
       onprefetch: () => {},
     });
 
@@ -245,7 +232,7 @@ describe("Sidebar — the Kobo identity (wordmark + hammer mark ruling)", () => 
   it("does not pulse the hammer mark before the agents list has loaded", () => {
     const { container } = renderWithClient(Sidebar, {
       active: "dashboard",
-      oncreate: () => {},
+      onnewagent: () => {},
       onprefetch: () => {},
     });
     const hammer = container.querySelector(".sidebar__hammer");
@@ -292,7 +279,7 @@ describe("Sidebar — the Kobo identity (wordmark + hammer mark ruling)", () => 
   it("is a decorative image -- alt text is empty since aria-hidden already removes it from the a11y tree", () => {
     const { container } = renderWithClient(Sidebar, {
       active: "dashboard",
-      oncreate: () => {},
+      onnewagent: () => {},
       onprefetch: () => {},
     });
     const hammer = container.querySelector(".sidebar__hammer");

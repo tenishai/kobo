@@ -30,8 +30,18 @@ describe("GettingStarted", () => {
     render(GettingStarted);
     const dashboardLink = screen.getByRole("link", { name: "dashboard" });
     expect(dashboardLink.getAttribute("href")).toBe("#/");
-    expect(screen.getByText(/Create agent/)).not.toBeNull();
+    expect(screen.getByText(/New agent/)).not.toBeNull();
     expect(screen.getByText(/choose the group/)).not.toBeNull();
+  });
+
+  it("names the one button and the chooser behind it, not the three buttons that are gone", () => {
+    const { container } = render(GettingStarted);
+    expect(screen.getByText(/press New agent/)).not.toBeNull();
+    expect(screen.getByText(/asks how you want to start/)).not.toBeNull();
+    const text = container.textContent ?? "";
+    expect(text).not.toMatch(/press Create agent/);
+    expect(text).not.toMatch(/Quick-start/);
+    expect(text).not.toMatch(/Connect your own agent/);
   });
 
   it("says the build checklist lives on the agent's page and clears once it's ready", () => {
