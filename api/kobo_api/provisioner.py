@@ -302,6 +302,7 @@ def _run_pipeline_body(
             )
 
             failed_step_name: str | None = None
+            failed_error: str | None = None
             for step in steps:
                 step_row = _get_or_create_step(session, agent_id, step.name)
 
@@ -356,17 +357,25 @@ def _run_pipeline_body(
                     step_row.status = StepStatus.FAILED
                     step_row.error = str(exc)
                     step_row.finished_at = datetime.now(UTC)
-                    agent.error = str(exc)
-                    agent.status = AgentStatus.FAILED
                     session.commit()
+                    # The agent's own status flips to FAILED only after the
+                    # loop has marked every remaining step aborted (below).
+                    # Flipping it here let a reader see "failed" while later
+                    # steps still read "pending", which a checklist renders as
+                    # a contradiction and a poller can catch on a slow machine.
                     failed_step_name = step.name
+                    failed_error = str(exc)
                     continue
 
                 step_row.status = StepStatus.DONE
                 step_row.finished_at = datetime.now(UTC)
                 session.commit()
 
-            if failed_step_name is None:
+            if failed_step_name is not None:
+                agent.error = failed_error
+                agent.status = AgentStatus.FAILED
+                session.commit()
+            else:
                 agent.status = AgentStatus.READY
                 agent.error = None
                 session.commit()
