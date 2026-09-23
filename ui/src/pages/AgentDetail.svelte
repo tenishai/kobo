@@ -13,12 +13,16 @@
   // decision lives in tabs.ts, pure and unit-tested; this file only hides
   // the header lines that have no source.
   //
-  // Header: back link, name, status, model, repo link, persona line,
-  // team/purpose chips, capability, owner, avatar actions, and the "Edit
-  // details" trigger. Below that: a failed-status retry banner, the step
-  // checklist (pre-ready only), and the build log card, all above a tab bar
-  // split into always-visible primary tabs plus a collapsible Advanced
-  // group. The Danger zone renders below the tabs once destroy is visible.
+  // Header (page-shell wave, 2026-09-23): two lines, not eight. Line one is
+  // the avatar, the name, the status, the connected marker, and on the far
+  // right one overflow menu holding every action the header used to spell
+  // out in filled buttons. Line two is a single muted run -- model, repo,
+  // group, who made it, persona, observability -- with the capability
+  // sentence as the one ink line under it and at most three chips below
+  // that. The rest of an agent's identity lives in Edit details, which is
+  // where it is edited. Below the header: a failed-status retry banner and
+  // the step checklist (pre-ready only), above the tab bar. The Danger zone
+  // and Convert both moved into the Settings tab.
   // All polling is `agentQuery`'s own adaptive cadence (status.ts): this
   // component only renders whatever state that query is in, same
   // loading/error/populated split Dashboard already uses.
@@ -29,7 +33,6 @@
   import RepoAccessCard from "../components/RepoAccessCard.svelte";
   import ChatPanel from "../components/ChatPanel.svelte";
   import ColleagueConversations from "../components/ColleagueConversations.svelte";
-  import DangerZone from "../components/DangerZone.svelte";
   import ErrorState from "../components/ErrorState.svelte";
   import FirstReply from "../components/FirstReply.svelte";
   import LearningsPanel from "../components/LearningsPanel.svelte";
@@ -39,15 +42,15 @@
   import SecretsPanel from "../components/SecretsPanel.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import SkillsPanel from "../components/SkillsPanel.svelte";
+  import SettingsPanel from "../components/SettingsPanel.svelte";
   import SlackPanel from "../components/SlackPanel.svelte";
   import StatusBadge from "../components/StatusBadge.svelte";
   import StepChecklist from "../components/StepChecklist.svelte";
   import ThreadPanel from "../components/ThreadPanel.svelte";
   import ToolingPanel from "../components/ToolingPanel.svelte";
-  import { ApiError, errorMessage, KIND_CONNECTED, RUN_MODE_HTTP } from "../lib/api";
+  import { ApiError, errorMessage, KIND_CONNECTED } from "../lib/api";
   import {
     agentQuery,
-    convertToConnectedMutation,
     generateAvatarMutation,
     invitesQuery,
     observabilityQuery,
@@ -127,41 +130,48 @@
     enabled: personaSearchTerm !== null,
   })));
 
-  // "Convert to connected" (connected-agents design 2026-09-21): the one
-  // operator action for an agent the room composed whose repository has
-  // stopped running the room's runtime. Lives here rather than inside
-  // DangerZone because it is not a destruction: nothing is torn down, and
-  // folding it into the destroy card would put a one-way change behind a
-  // heading people already read as "do not touch".
+  // The header's one overflow menu (page-shell wave, 2026-09-23). Every
+  // action that used to sit in the header as its own control -- three
+  // portrait buttons, one of them the page's only filled accent button, and
+  // a standalone Edit details row -- is an item in here now, so the header
+  // is two lines of fact and one button that does not compete with them.
   //
-  // Whether to offer it at all is read off `destroy_visible`, the operator
-  // flag the detail already carries: the server's convert gate is the same
-  // operator gate that flag is computed from (`_convert_operator_block`
-  // beside `_operator_block`, main.py, with a test pinning the two
-  // together). The route stays the real enforcement boundary either way,
-  // exactly as the Danger zone's own comment says of itself.
-  const convert = createMutation(() => (convertToConnectedMutation(queryClient, name)));
-  let convertConfirming = $state(false);
-  let convertError = $state<string | null>(null);
+  // The menu deliberately does NOT close when a portrait action is picked:
+  // "Painting…" and "Uploading…" are the labels of the items themselves,
+  // and closing the menu the moment somebody presses one would take the
+  // only progress they have away from them. It closes on its own button, on
+  // Escape, on a click outside it, and on Edit details (which opens a modal
+  // of its own over the page).
+  let menuOpen = $state(false);
+  let menuEl = $state<HTMLElement | undefined>();
 
-  // There is no run mode to choose. An agent the room composed serves web
-  // traffic by construction, and the route refuses anything else, so asking
-  // would only offer an answer the room is about to turn down.
-  function handleConvert(): void {
-    if (convert.isPending) {
+  // Edit details is a menu ITEM, so the modal behind it cannot live inside
+  // the menu: closing the menu would unmount the modal with it. The
+  // component is mounted beside the header with its own trigger turned off,
+  // and the menu item calls into it (`openEditor`, an instance export).
+  let metadata = $state<ReturnType<typeof MetadataDetails> | undefined>();
+
+  $effect(() => {
+    if (!menuOpen) {
       return;
     }
-    convertError = null;
-    convert.mutate(RUN_MODE_HTTP, {
-      onSuccess: () => {
-        convertConfirming = false;
-        toast.success("Converted", `The room no longer edits ${name}.`);
-      },
-      onError: (error: unknown) => {
-        convertError = errorMessage(error, "Couldn't convert this agent. Try again.");
-      },
-    });
-  }
+    const onPointerDown = (event: MouseEvent) => {
+      if (menuEl && !menuEl.contains(event.target as Node)) {
+        menuOpen = false;
+      }
+    };
+    const onKeydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        menuOpen = false;
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeydown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeydown);
+    };
+  });
 
   const retry = createMutation(() => (retryAgentMutation(queryClient, name)));
   const generateAvatar = createMutation(() => (generateAvatarMutation(queryClient, name)));
@@ -180,12 +190,42 @@
   // as later polls bring fresher statuses.
   let activeTab = $state<TabId | null>(null);
 
-  // Whether the Advanced tab group (tabs.ts: learnings/memory/skills/
-  // tooling) is expanded. Collapsed by default for EVERYONE (operator
-  // ruling, 2026-09-02 — an earlier cut seeded it open for deciders): the
-  // pending-learnings badge on the toggle carries the signal, and the
-  // primary row stays short.
-  let advancedOpen = $state(false);
+  // Whether the More menu (tabs.ts: learnings/memory/skills/tooling/
+  // secrets) is showing. A MENU, not an inline expansion, since the
+  // page-shell wave: the old toggle pushed five more pills into the same
+  // row and wrapped it onto a second line, which is what the tab bar was
+  // meant to stop doing. Closed by default for EVERYONE (operator ruling,
+  // 2026-09-02): the pending-learnings badge on the toggle carries the
+  // signal, and the row stays one row.
+  //
+  // A tab picked out of the menu is pinned into the row beside the primary
+  // ones for as long as it is selected -- see `activeAdvanced` below.
+  // Otherwise the menu would close over the one tab that is showing and
+  // leave a row where nothing is selected.
+  let moreOpen = $state(false);
+  let moreEl = $state<HTMLElement | undefined>();
+
+  $effect(() => {
+    if (!moreOpen) {
+      return;
+    }
+    const onPointerDown = (event: MouseEvent) => {
+      if (moreEl && !moreEl.contains(event.target as Node)) {
+        moreOpen = false;
+      }
+    };
+    const onKeydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        moreOpen = false;
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeydown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeydown);
+    };
+  });
 
   // Also re-picks when the selected tab stops existing. A convert is the
   // case that made this necessary: the poll after it brings back a kind
@@ -355,6 +395,19 @@
     {@const personaLine = personaMatch
       ? `${personaMatch.name} -- ${personaMatch.description}`
       : data.persona}
+    {@const personaName = personaMatch ? personaMatch.name : data.persona}
+    <!-- Purpose and skills read as one run of chips, because to a visitor
+         they are one fact: what this agent is for. Three of them, then a
+         count -- the full set is in Edit details, which is where it is
+         changed. -->
+    {@const chips = connected
+      ? []
+      : [
+          ...data.purpose_tags.map((tag) => ({ text: tag, skill: false })),
+          ...data.skills.map((skill) => ({ text: skill.name, skill: true })),
+        ]}
+    {@const shownChips = chips.slice(0, 3)}
+    {@const hiddenChips = chips.length - shownChips.length}
     <header class="agent-detail__header">
       {#if data.has_avatar || avatarVersion !== null}
         <img class="agent-detail__avatar" src={avatarSrc} alt="{data.name}'s picture" />
@@ -368,11 +421,85 @@
           {#if connected}
             <span class="agent-detail__chip">connected</span>
           {/if}
+          <div class="agent-detail__menu" bind:this={menuEl}>
+            <button
+              type="button"
+              class="agent-detail__menu-button"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-label="More actions"
+              onclick={() => (menuOpen = !menuOpen)}
+            >
+              <span aria-hidden="true">⋯</span>
+            </button>
+            {#if menuOpen}
+              <div class="agent-detail__menu-list">
+                <button
+                  type="button"
+                  class="agent-detail__menu-item"
+                  disabled={isFrozen(data.status) || generateAvatar.isPending}
+                  onclick={handleGenerateAvatar}
+                >
+                  {#if generateAvatar.isPending}
+                    <span class="composition__avatar-dot pulse" aria-hidden="true"></span>
+                    Painting…
+                  {:else if data.has_avatar || avatarVersion !== null}
+                    New face
+                  {:else}
+                    Give {data.name} a face
+                  {/if}
+                </button>
+
+                <label
+                  class="agent-detail__menu-item"
+                  class:agent-detail__menu-item--disabled={isFrozen(data.status) ||
+                    uploadAvatar.isPending}
+                >
+                  {uploadAvatar.isPending ? "Uploading…" : "Upload a portrait"}
+                  <input
+                    class="composition__avatar-upload-input"
+                    type="file"
+                    accept=".png,image/png"
+                    disabled={isFrozen(data.status) || uploadAvatar.isPending}
+                    onchange={handleAvatarFileSelect}
+                  />
+                </label>
+
+                {#if data.has_avatar || avatarVersion !== null}
+                  <a
+                    class="agent-detail__menu-item"
+                    href={avatarSrc}
+                    download={`${data.name}-portrait.png`}
+                    onclick={() => (menuOpen = false)}
+                  >
+                    Download the portrait
+                  </a>
+                {/if}
+
+                {#if !connected}
+                  <hr class="agent-detail__menu-rule" />
+                  <button
+                    type="button"
+                    class="agent-detail__menu-item"
+                    disabled={isFrozen(data.status)}
+                    onclick={() => {
+                      menuOpen = false;
+                      metadata?.openEditor();
+                    }}
+                  >
+                    Edit details
+                  </button>
+                {/if}
+              </div>
+            {/if}
+          </div>
         </div>
+        <!-- One run of facts, one separator, in the order somebody reads
+             them: what it runs on, where its code is, who it belongs to,
+             who made it, who it is, and where to watch it. -->
         <div class="agent-detail__meta">
           <span class="agent-detail__model" title={data.model}>{data.model_label}</span>
           {#if data.repo_full_name}
-            <span class="agent-detail__sep" aria-hidden="true">·</span>
             <!-- A connected agent's page names the repository rather than
                  saying "source": it is somebody else's repository, and
                  which one it is is the main fact about this agent. -->
@@ -385,38 +512,31 @@
               {connected ? data.repo_full_name : "source"}
             </a>
           {/if}
+          {#if data.group_name}
+            <span>{data.group_name}</span>
+          {/if}
+          {#if data.created_by}
+            <span>Made by {data.created_by}</span>
+          {/if}
+          {#if !connected}
+            <!-- Soul-line (persona-naming law): the persona's NAME, with
+                 who-they-are on the hover. The whole line was its own grey
+                 row until this wave; in a one-line run it would crowd out
+                 every other fact beside it. -->
+            <span class="agent-detail__persona" title={personaLine}>{personaName}</span>
+          {/if}
+          {#if dashboardUrl}
+            <a
+              class="agent-detail__repo"
+              href={dashboardUrl}
+              target="_blank"
+              rel="noreferrer"
+              title={`${name}-agent-health`}
+            >
+              Observability
+            </a>
+          {/if}
         </div>
-        {#if !connected}
-          <p class="agent-detail__persona">
-            {personaLine}
-            {#if data.team && data.team !== "shared"}
-              <span class="agent-detail__chip">{data.team}</span>
-            {/if}
-          </p>
-        {/if}
-        <!-- Purpose chips are drafted from the persona at create time and
-             edited through Edit details, neither of which a connected agent
-             has. A converted agent (Task 6) keeps whatever tags its row
-             already carried, so this guard is what keeps them off a page
-             that offers no way to change them. -->
-        {#if data.purpose_tags.length > 0 && !connected}
-          <p class="agent-detail__tags">
-            {#each data.purpose_tags as tag (tag)}
-              <span class="agent-detail__chip">{tag}</span>
-            {/each}
-          </p>
-        {/if}
-        <!-- Skill chips returned to the header (operator ruling, 2026-09-02):
-             with Skills living behind the Advanced group, a visitor browsing
-             someone else's agent would otherwise see nothing about what it
-             can do. Chips only; managing skills stays in the Skills tab. -->
-        {#if data.skills.length > 0 && !connected}
-          <p class="agent-detail__skills">
-            {#each data.skills as skill (skill.name)}
-              <span class="agent-detail__chip agent-detail__chip--skill">{skill.name}</span>
-            {/each}
-          </p>
-        {/if}
         <!-- The capability sentence is earned at first contact, and the
              room never makes first contact with a connected agent, so for
              one it would be a promise that never arrives. -->
@@ -425,105 +545,51 @@
             {data.capability ?? "Not written yet. It arrives after first contact."}
           </p>
         {/if}
-        {#if dashboardUrl}
-          <p class="agent-detail__observability">
-            Observability:
-            <a
-              class="agent-detail__repo"
-              href={dashboardUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              {name}-agent-health
-            </a>
-          </p>
-        {/if}
-        <!-- Who owns this agent, in one line: the person who made it and
-             the group it belongs to. The group used to be visible only
-             inside the Access tab, which a connected agent's owner may not
-             have at all, and it is the same ownership fact for both kinds,
-             so it is shown for both rather than only where it was missed. -->
-        {#if data.created_by || data.group_name}
-          <p class="agent-detail__owner">
-            {#if data.created_by}
-              <span>Made by {data.created_by}</span>
+        {#if !connected && (chips.length > 0 || (data.team && data.team !== "shared"))}
+          <p class="agent-detail__tags">
+            {#if data.team && data.team !== "shared"}
+              <span class="agent-detail__chip">{data.team}</span>
             {/if}
-            {#if data.group_name}
-              <span class="agent-detail__chip">{data.group_name}</span>
+            {#each shownChips as chip (chip.text)}
+              <span
+                class="agent-detail__chip"
+                class:agent-detail__chip--skill={chip.skill}
+              >
+                {chip.text}
+              </span>
+            {/each}
+            {#if hiddenChips > 0}
+              <span class="agent-detail__chip">+{hiddenChips}</span>
             {/if}
           </p>
         {/if}
       </div>
     </header>
 
-    <!-- Portrait actions live BELOW the header row, not beside the avatar:
-         inside the header's flex row their three-button run refused to
-         shrink and squeezed the identity column to a sliver (2026-09-02
-         layout fix, from the first live look at the rolled page). -->
-    <div class="agent-detail__portrait-actions">
-      <div class="composition__avatar-buttons">
-        <button
-          type="button"
-          class="composition__avatar-button"
-          disabled={isFrozen(data.status) || generateAvatar.isPending}
-          onclick={handleGenerateAvatar}
-        >
-          {#if generateAvatar.isPending}
-            <span class="composition__avatar-dot pulse" aria-hidden="true"></span>
-            Painting…
-          {:else if data.has_avatar || avatarVersion !== null}
-            New face
-          {:else}
-            Give {data.name} a face
-          {/if}
-        </button>
+    <!-- Whatever the last portrait action said, on one line under the
+         header. A toast would slide away while somebody was still reading
+         it, and this is the only place the answer lives. -->
+    {#if avatarError}
+      <p class="agent-detail__note agent-detail__note--fail" role="alert">{avatarError}</p>
+    {:else if avatarNote}
+      <p class="agent-detail__note">{avatarNote}</p>
+    {/if}
 
-        <label
-          class="composition__avatar-upload"
-          class:composition__avatar-upload--disabled={isFrozen(data.status) ||
-            uploadAvatar.isPending}
-        >
-          {uploadAvatar.isPending ? "Uploading…" : "Upload a portrait"}
-          <input
-            class="composition__avatar-upload-input"
-            type="file"
-            accept=".png,image/png"
-            disabled={isFrozen(data.status) || uploadAvatar.isPending}
-            onchange={handleAvatarFileSelect}
-          />
-        </label>
-
-        {#if data.has_avatar || avatarVersion !== null}
-          <a
-            class="composition__avatar-download"
-            href={avatarSrc}
-            download={`${data.name}-portrait.png`}
-          >
-            Download the portrait
-          </a>
-        {/if}
-      </div>
-      {#if avatarError}
-        <p class="composition__avatar-error" role="alert">{avatarError}</p>
-      {:else if avatarNote}
-        <p class="composition__avatar-note">{avatarNote}</p>
-      {/if}
-    </div>
-
-    <!-- Edit details writes the three fields above (team, purpose chips,
-         capability), all of which describe a bundle the room composed. A
-         connected agent has none of them on its page, so there is nothing
-         here for it to edit. -->
+    <!-- Edit details writes the fields the header shows (team, purpose
+         chips, capability), all of which describe a bundle the room
+         composed. A connected agent has none of them, so there is nothing
+         here for it to edit. Its own trigger is off: the menu item above
+         is the trigger now, and two would be one too many. -->
     {#if !connected}
-      <div class="composition__edit-action">
-        <MetadataDetails
-          agentName={data.name}
-          team={data.team}
-          purposeTags={data.purpose_tags}
-          capability={data.capability}
-          frozen={isFrozen(data.status)}
-        />
-      </div>
+      <MetadataDetails
+        bind:this={metadata}
+        agentName={data.name}
+        team={data.team}
+        purposeTags={data.purpose_tags}
+        capability={data.capability}
+        frozen={isFrozen(data.status)}
+        showTrigger={false}
+      />
     {/if}
 
     {#if isFrozen(data.status)}
@@ -552,25 +618,33 @@
       </div>
     {/if}
 
-    {#if data.status !== "ready" && !isFrozen(data.status)}
+    {@const tabDisabled = data.status !== "ready" && !isFrozen(data.status)}
+    <!-- `tabDisabled` is the same condition the checklist has always had:
+         not ready, and not on its way out. -->
+    {#if tabDisabled}
       <StepChecklist steps={data.steps} />
+      <!-- While the tabs are still dead the build log stays beside the
+           checklist, because that is exactly when somebody needs it and
+           the Settings tab it otherwise lives in cannot be opened. -->
+      <BuildLogCard agentName={data.name} />
     {/if}
-
-    <BuildLogCard agentName={data.name} />
 
     {@const primary = primaryTabs(invites.isSuccess, data.kind)}
     {@const advanced = advancedTabs(data.kind)}
-    {@const tabDisabled = data.status !== "ready" && !isFrozen(data.status)}
     <!-- A connected agent whose caller cannot administer it has no tabs at
          all, and an empty tab bar with an Advanced toggle beside it would
          read as a row that failed to load. -->
     {#if primary.length > 0 || advanced.length > 0}
+    {@const activeAdvanced =
+      activeTab !== null && (advanced as readonly string[]).includes(activeTab)
+        ? activeTab
+        : null}
     <div class="detail-tabs">
       <div class="detail-tabs__bar">
         <div class="detail-tabs__list" role="tablist" aria-label="Agent sections">
-          <!-- Every panel mounts regardless of status or the Advanced group's
-               collapse (see the tabpanel loop below), but its query still
-               409s server-side until the agent is `ready` — so the trigger
+          <!-- Every panel mounts regardless of status or the More menu (see
+               the tabpanel loop below), but its query still 409s
+               server-side until the agent is `ready` — so the trigger
                itself is disabled rather than left clickable into a dead end,
                for every status that is neither ready nor frozen (pending/
                provisioning/failed). Frozen statuses (destroying/
@@ -596,56 +670,68 @@
               {TAB_LABELS[tab]}
             </button>
           {/each}
-          {#if advancedOpen}
-            {#each advanced as tab (tab)}
-              <button
-                type="button"
-                role="tab"
-                id={`tab-${tab}`}
-                class="detail-tabs__tab"
-                aria-selected={activeTab === tab}
-                aria-controls={`panel-${tab}`}
-                disabled={tabDisabled}
-                onclick={() => {
-                  if (!tabDisabled) {
-                    activeTab = tab;
-                  }
-                }}
-              >
-                {TAB_LABELS[tab]}
-                {#if tab === "learnings" && data.pending_learnings > 0}
-                  <span class="detail-tabs__badge">{data.pending_learnings}</span>
-                {/if}
-              </button>
-            {/each}
+          <!-- The one tab picked out of the menu, pinned into the row for
+               as long as it is the selected one. Without it the menu would
+               close over the tab it just opened and the row would show
+               nothing selected. -->
+          {#if activeAdvanced !== null}
+            <button
+              type="button"
+              role="tab"
+              id={`tab-${activeAdvanced}`}
+              class="detail-tabs__tab"
+              aria-selected="true"
+              aria-controls={`panel-${activeAdvanced}`}
+              disabled={tabDisabled}
+            >
+              {TAB_LABELS[activeAdvanced]}
+            </button>
           {/if}
         </div>
-        <!-- No toggle when the group behind it is empty (a connected
-             agent): it would open onto nothing. The pending-learnings
-             count rides on this toggle, and a connected agent has no
-             learnings either, so it goes with it. -->
+        <!-- No menu when the group behind it is empty: it would open onto
+             nothing. The pending-learnings count rides on this button now,
+             wherever Learnings itself happens to be. -->
         {#if advanced.length > 0}
-          <button
-            type="button"
-            class="detail-tabs__advanced-toggle"
-            aria-expanded={advancedOpen}
-            onclick={() => {
-              advancedOpen = !advancedOpen;
-              // `advanced`, not the ADVANCED_TABS constant: the group's
-              // membership now depends on the kind of agent (a connected
-              // one keeps Secrets and nothing else), and collapsing the
-              // group has to clear whichever of THOSE is selected.
-              if (!advancedOpen && activeTab !== null
-                  && (advanced as readonly string[]).includes(activeTab)) {
-                activeTab = defaultTab(data.status, data.kind);
-              }
-            }}
-          >
-            Advanced {advancedOpen ? "▾" : "▸"}
-            {#if !advancedOpen && data.pending_learnings > 0}
-              <span class="detail-tabs__badge">{data.pending_learnings}</span>
+          <div class="detail-tabs__more" bind:this={moreEl}>
+            <button
+              type="button"
+              class="detail-tabs__more-toggle"
+              aria-haspopup="menu"
+              aria-expanded={moreOpen}
+              onclick={() => (moreOpen = !moreOpen)}
+            >
+              More ▾
+              {#if data.pending_learnings > 0}
+                <span class="detail-tabs__badge">{data.pending_learnings}</span>
+              {/if}
+            </button>
+            {#if moreOpen}
+              <div class="detail-tabs__menu">
+                {#each advanced.filter((tab) => tab !== activeAdvanced) as tab (tab)}
+                  <button
+                    type="button"
+                    role="tab"
+                    id={`tab-${tab}`}
+                    class="detail-tabs__menu-item"
+                    aria-selected={activeTab === tab}
+                    aria-controls={`panel-${tab}`}
+                    disabled={tabDisabled}
+                    onclick={() => {
+                      if (!tabDisabled) {
+                        activeTab = tab;
+                        moreOpen = false;
+                      }
+                    }}
+                  >
+                    {TAB_LABELS[tab]}
+                    {#if tab === "learnings" && data.pending_learnings > 0}
+                      <span class="detail-tabs__badge">{data.pending_learnings}</span>
+                    {/if}
+                  </button>
+                {/each}
+              </div>
             {/if}
-          </button>
+          </div>
         {/if}
       </div>
 
@@ -695,6 +781,20 @@
               active={activeTab === "secrets"}
               deployed={data.status === "ready"}
             />
+          {:else if tab === "settings"}
+            <!-- The page's back office: the build log every agent has, and
+                 the two changes there is no way back from. Both of those
+                 used to render under every tab on the page. -->
+            <SettingsPanel
+              agentName={data.name}
+              status={data.status}
+              error={data.error}
+              kind={data.kind}
+              canConvert={!connected &&
+                data.destroy_visible &&
+                (data.status === "ready" || data.status === "failed")}
+              canDestroy={data.destroy_visible}
+            />
           {:else if tab === "slack"}
             <SlackPanel
               agentName={data.name}
@@ -714,67 +814,6 @@
     </div>
     {/if}
 
-    <!-- Operator-only, and only for an agent the room composed that has
-         settled: a pending or provisioning agent is still being built, and
-         a destroying one is on its way out. -->
-    {#if !connected && data.destroy_visible && (data.status === "ready" || data.status === "failed")}
-      <section class="convert-card" aria-labelledby="convert-heading">
-        <h2 id="convert-heading" class="convert-card__heading">Convert to connected</h2>
-        <p class="convert-card__lead">
-          For an agent whose repository no longer runs the room's runtime.
-        </p>
-        {#if !convertConfirming}
-          <button
-            type="button"
-            class="convert-card__open"
-            onclick={() => {
-              convertError = null;
-              convertConfirming = true;
-            }}
-          >
-            Convert to connected
-          </button>
-        {:else}
-          <p class="convert-card__copy">
-            The room stops editing this agent: no chat, memory, learnings, skills, tooling or Slack from here, and other agents can no longer reach it. Its repository, deployment and cloud identity stay as they are. This cannot be undone from the room.
-          </p>
-          <div class="convert-card__actions">
-            <button
-              type="button"
-              class="convert-card__confirm"
-              disabled={convert.isPending}
-              onclick={handleConvert}
-            >
-              {convert.isPending ? "Converting…" : "Convert this agent"}
-            </button>
-            <button
-              type="button"
-              class="convert-card__cancel"
-              disabled={convert.isPending}
-              onclick={() => {
-                convertConfirming = false;
-                convertError = null;
-              }}
-            >
-              Cancel
-            </button>
-          </div>
-        {/if}
-        {#if convertError}
-          <p class="convert-card__error" role="alert">{convertError}</p>
-        {/if}
-      </section>
-    {/if}
-
-    {#if data.destroy_visible}
-      <DangerZone
-        agentName={data.name}
-        status={data.status}
-        error={data.error}
-        kind={data.kind}
-      />
-    {/if}
-
   {/if}
 </div>
 
@@ -783,7 +822,10 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-lg);
-    max-width: 40rem;
+    /* Wider since the page-shell wave: one tab row that does not wrap
+       needs the room, and the panels under it were always cramped at
+       40rem. */
+    max-width: 56rem;
   }
 
   .agent-detail__back {
@@ -801,13 +843,6 @@
     display: flex;
     align-items: flex-start;
     gap: var(--space-md);
-  }
-
-  .agent-detail__portrait-actions {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-    margin-top: var(--space-sm);
   }
 
   .agent-detail__avatar {
@@ -840,38 +875,39 @@
     font-size: 1.4rem;
   }
 
+  /* One run of facts at one weight. The separator is drawn by CSS rather
+     than written into the markup, so a fact that is absent takes its
+     separator with it and nothing has to know which one is first. */
   .agent-detail__meta {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2xs);
     color: var(--muted);
-    font-size: 0.875rem;
+    font-size: 0.8rem;
+  }
+
+  .agent-detail__meta > * + *::before {
+    content: "·";
+    margin-right: var(--space-2xs);
+    color: var(--border);
   }
 
   .agent-detail__model {
     font-family: var(--font-mono);
-    font-size: 0.8rem;
   }
 
   .agent-detail__repo {
     color: var(--accent);
   }
 
-  /* Soul-line (persona-naming law): the Persona line reads as a secondary
-     grey line (name + who-they-are), not the ink-toned page title -- the
-     agent's own name (the page's `<h1>`) stays the one real title. */
+  /* Soul-line (persona-naming law): the persona is one grey fact among the
+     others -- never a co-equal title beside the agent's own name. */
   .agent-detail__persona {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-2xs);
-    margin: 0;
     color: var(--muted);
-    font-size: 0.9rem;
   }
 
-  .agent-detail__tags,
-  .agent-detail__skills {
+  .agent-detail__tags {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-2xs);
@@ -898,72 +934,88 @@
     font-size: 0.9rem;
   }
 
-  .agent-detail__owner {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-2xs);
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
+  /* The one button in the header, and it is quiet on purpose: the header
+     is for reading, and every action it used to spell out is behind this. */
+  .agent-detail__menu {
+    position: relative;
+    margin-left: auto;
   }
 
-  .agent-detail__observability {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-  }
-
-  .composition__edit-action {
-    display: flex;
-  }
-
-  .composition__avatar-buttons {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-xs);
-  }
-
-  .composition__avatar-button {
-    padding: var(--space-xs) var(--space-md);
-    border: none;
+  .agent-detail__menu-button {
+    padding: 0 var(--space-xs);
+    border: 1px solid transparent;
     border-radius: var(--radius-sm);
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-weight: 600;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 1.1rem;
+    line-height: 1.4;
     cursor: pointer;
   }
 
-  .composition__avatar-button:hover:not(:disabled) {
-    filter: brightness(1.05);
+  .agent-detail__menu-button:hover,
+  .agent-detail__menu-button[aria-expanded="true"] {
+    border-color: var(--border);
+    color: var(--ink);
   }
 
-  .composition__avatar-button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .composition__avatar-upload {
-    display: inline-flex;
-    align-items: center;
-    padding: var(--space-xs) var(--space-md);
+  .agent-detail__menu-list {
+    position: absolute;
+    top: calc(100% + var(--space-2xs));
+    right: 0;
+    z-index: 20;
+    display: flex;
+    min-width: 12rem;
+    flex-direction: column;
+    padding: var(--space-2xs);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--panel);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  }
+
+  .agent-detail__menu-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding: var(--space-2xs) var(--space-sm);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
     color: var(--ink);
-    font-weight: 600;
+    font: inherit;
+    font-size: 0.85rem;
+    text-align: left;
+    text-decoration: none;
+    white-space: nowrap;
     cursor: pointer;
   }
 
-  .composition__avatar-upload:hover {
-    border-color: var(--accent);
+  .agent-detail__menu-item:hover:not(:disabled) {
+    background: var(--bg);
     color: var(--accent);
   }
 
-  .composition__avatar-upload--disabled {
-    opacity: 0.6;
+  .agent-detail__menu-item:disabled,
+  .agent-detail__menu-item--disabled {
+    opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .agent-detail__menu-rule {
+    margin: var(--space-2xs) 0;
+    border: none;
+    border-top: 1px solid var(--border);
+  }
+
+  .agent-detail__note {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .agent-detail__note--fail {
+    color: var(--fail);
   }
 
   .composition__avatar-upload-input {
@@ -979,24 +1031,6 @@
     white-space: nowrap;
   }
 
-  .composition__avatar-download {
-    display: inline-flex;
-    align-items: center;
-    padding: var(--space-xs) var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font-weight: 600;
-    text-decoration: none;
-    cursor: pointer;
-  }
-
-  .composition__avatar-download:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
   .composition__avatar-dot {
     display: inline-block;
     width: 0.5rem;
@@ -1004,18 +1038,6 @@
     margin-right: var(--space-2xs);
     border-radius: 50%;
     background: var(--pulse);
-  }
-
-  .composition__avatar-note {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-  }
-
-  .composition__avatar-error {
-    margin: 0;
-    color: var(--fail);
-    font-size: 0.85rem;
   }
 
   .failed-banner {
@@ -1062,12 +1084,15 @@
     gap: var(--space-lg);
   }
 
-  /* The row WRAPS rather than scrolls: overflow-x:auto hid the Advanced
-     toggle entirely at common window widths (macOS shows no scrollbar),
-     which read as the control not existing (live finding, 2026-09-02). */
+  /* ONE row, and it neither wraps nor scrolls. The five grow-it sections
+     are behind a menu now rather than expanding into this row, so there is
+     nothing left here to wrap: four tabs and a button. (The 2026-09-02 fix
+     that made this row wrap was for the opposite problem -- overflow-x
+     hid the toggle at common widths, since macOS draws no scrollbar. With
+     no expansion to overflow, neither is needed.) */
   .detail-tabs__bar {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
     gap: var(--space-md);
     border-bottom: 1px solid var(--border);
@@ -1075,8 +1100,10 @@
 
   .detail-tabs__list {
     display: flex;
-    flex-wrap: wrap;
+    min-width: 0;
+    flex-wrap: nowrap;
     gap: var(--space-md);
+    overflow: hidden;
   }
 
   .detail-tabs__tab {
@@ -1107,13 +1134,15 @@
   }
 
   /* A quieter sibling of `.detail-tabs__tab` -- no underline-on-select
-     styling of its own (it isn't a `role="tab"`, just the group's show/hide
-     switch), and a divider margin sets it apart from the primary run of
-     tabs to its left. */
-  .detail-tabs__advanced-toggle {
+     styling of its own (it isn't a `role="tab"`, just the menu's switch),
+     and it is pinned to the end of the row whatever is in front of it. */
+  .detail-tabs__more {
+    position: relative;
+    margin-left: auto;
+  }
+
+  .detail-tabs__more-toggle {
     flex-shrink: 0;
-    align-self: center;
-    margin-left: var(--space-sm);
     padding: 0.2rem var(--space-md);
     border: 1px solid var(--border);
     border-radius: 999px;
@@ -1121,11 +1150,56 @@
     color: var(--ink);
     font: inherit;
     font-size: 0.85rem;
+    white-space: nowrap;
     cursor: pointer;
   }
 
-  .detail-tabs__advanced-toggle:hover {
+  .detail-tabs__more-toggle:hover,
+  .detail-tabs__more-toggle[aria-expanded="true"] {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .detail-tabs__menu {
+    position: absolute;
+    top: calc(100% + var(--space-2xs));
+    right: 0;
+    z-index: 20;
+    display: flex;
+    min-width: 10rem;
+    flex-direction: column;
+    padding: var(--space-2xs);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  }
+
+  .detail-tabs__menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    padding: var(--space-2xs) var(--space-sm);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
     color: var(--ink);
+    font: inherit;
+    font-size: 0.85rem;
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .detail-tabs__menu-item:hover:not(:disabled) {
+    background: var(--bg);
+    color: var(--accent);
+  }
+
+  .detail-tabs__menu-item:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .detail-tabs__badge {
@@ -1164,77 +1238,4 @@
     font-size: 0.9rem;
   }
 
-  /* The same card idiom as the Danger zone below it, without the `--fail`
-     heading: this changes what the room will do next, it destroys
-     nothing. */
-  .convert-card {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-md);
-    padding: var(--space-lg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--panel);
-  }
-
-  .convert-card__heading {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .convert-card__lead,
-  .convert-card__copy {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.9rem;
-  }
-
-  .convert-card__actions {
-    display: flex;
-    gap: var(--space-sm);
-  }
-
-  .convert-card__open,
-  .convert-card__confirm {
-    align-self: flex-start;
-    padding: var(--space-xs) var(--space-md);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: var(--accent);
-    color: var(--accent-ink);
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .convert-card__open:hover:not(:disabled),
-  .convert-card__confirm:hover:not(:disabled) {
-    filter: brightness(1.05);
-  }
-
-  .convert-card__open:disabled,
-  .convert-card__confirm:disabled,
-  .convert-card__cancel:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .convert-card__cancel {
-    padding: var(--space-xs) var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--ink);
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .convert-card__error {
-    margin: 0;
-    color: var(--fail);
-    font-size: 0.85rem;
-  }
 </style>

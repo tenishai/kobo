@@ -11,7 +11,8 @@ import GettingStarted from "./GettingStarted.svelte";
 // teammates, grow it), replacing the old make-an-agent/talk-to-it/
 // give-it-colleagues/put-it-in-slack/who-can-do-what ordering that
 // described a room predating the checklist-on-the-agent-page, the
-// Chat/Slack/Access + Advanced tab split, and the skills-free create flow.
+// Chat/Slack/Access/Settings row with a More menu at the end of it, and the
+// skills-free create flow.
 
 describe("GettingStarted", () => {
   it("renders the five journey headings, in order", () => {
@@ -22,7 +23,7 @@ describe("GettingStarted", () => {
       "2. Say hello",
       "3. Put it in Slack",
       "4. Bring in teammates",
-      "5. Grow it (Advanced)",
+      "5. Grow it (More)",
     ]);
   });
 
@@ -59,8 +60,9 @@ describe("GettingStarted", () => {
     expect(screen.getByText(/colleague requests connect your agent to agents in other groups/)).not.toBeNull();
   });
 
-  it("covers all four Advanced tabs: Learnings, Memory, Skills, Tooling", () => {
+  it("covers all four grow-it tabs, and names the menu they are behind", () => {
     render(GettingStarted);
+    expect(screen.getByText(/More menu at the end of the agent's tab row/)).not.toBeNull();
     expect(screen.getByText(/nothing is kept until you approve it/)).not.toBeNull();
     expect(screen.getByText(/Memory holds the notes you teach it/)).not.toBeNull();
     expect(screen.getByText(/Skills lets you add abilities from the catalog/)).not.toBeNull();

@@ -11,13 +11,16 @@
   // Rewritten for the UI-simplification wave: the old five sections (make
   // an agent, talk to it, give it colleagues, put it in Slack, who can do
   // what) described a room that no longer exists -- the build checklist has
-  // moved to the top of the agent's page, the tab row is now Chat/Slack/
-  // Access plus a collapsible Advanced group, the create flow no longer
-  // asks about skills, and Slack's channel/DM answering rule and the
-  // nightly learnings approval gate are both new enough that the old copy
-  // never mentioned them. This version walks the five steps in the order a
-  // new user actually lives them, ending with the Advanced group as the
-  // "grow it later" step it actually is.
+  // moved to the top of the agent's page, the create flow no longer asks
+  // about skills, and Slack's channel/DM answering rule and the nightly
+  // learnings approval gate are both new enough that the old copy never
+  // mentioned them. This version walks the five steps in the order a new
+  // user actually lives them, ending with the grow-it sections as the
+  // "later" step they actually are.
+  //
+  // Page-shell wave (2026-09-23): the row is Chat/Slack/Access/Settings and
+  // the grow-it sections are behind a More menu at the end of it, so the
+  // copy below says More rather than Advanced.
   import { formatHash } from "../lib/router.svelte";
 </script>
 
@@ -69,10 +72,10 @@
   </section>
 
   <section>
-    <h2>5. Grow it (Advanced)</h2>
+    <h2>5. Grow it (More)</h2>
     <p>
-      Once the basics are working, the Advanced group on the agent's page has
-      more to tune. Learnings shows what your agent proposes from its own
+      Once the basics are working, the More menu at the end of the agent's tab
+      row has the rest. Learnings shows what your agent proposes from its own
       conversations each night, and nothing is kept until you approve it.
       Memory holds the notes you teach it and any files you upload for it to
       learn from. Skills lets you add abilities from the catalog, including

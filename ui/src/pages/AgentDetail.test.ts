@@ -71,6 +71,20 @@ class NoopEventSource {
   close(): void {}
 }
 
+/** Opens the header's one overflow menu (page-shell wave, 2026-09-23).
+ * Every portrait action and Edit details is an item inside it now, so a
+ * test that reaches for one of those opens the menu first -- the items are
+ * not in the DOM at all until then. */
+async function openHeaderMenu(): Promise<void> {
+  await fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+}
+
+/** The tab row's own More menu, matched tightly so it is never confused
+ * with the header's "More actions" overflow above it. */
+function moreTabsButton(): HTMLElement {
+  return screen.getByRole("button", { name: /^More ▾/ });
+}
+
 describe("AgentDetail tabs", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
@@ -105,27 +119,31 @@ describe("AgentDetail tabs", () => {
     expect(screen.queryByText("Clone the repo")).toBeNull();
   });
 
-  it("switches tabs among primary and expanded advanced without unmounting panels", async () => {
+  it("switches tabs between the row and the More menu without unmounting panels", async () => {
     stubFetch({ ...BASE_ROUTES, "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: true } });
     renderWithClient(AgentDetail);
     const chatTab = await screen.findByRole("tab", { name: "Chat" });
     expect(chatTab.getAttribute("aria-selected")).toBe("true");
     expect(screen.queryByRole("tab", { name: "Slack" })).not.toBeNull();
-    // The group starts collapsed for everyone (2026-09-02 ruling), so open
-    // it first -- the toggle mechanic itself has dedicated tests below.
-    await fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    // The menu starts closed for everyone (2026-09-02 ruling), so open it
+    // first -- the menu mechanic itself has dedicated tests below.
+    await fireEvent.click(moreTabsButton());
 
     // Ready is the one status where every tab trigger is reachable — none
     // of them dead-end into a 409, so none should be disabled.
-    for (const label of ["Chat", "Slack", "Learnings", "Memory", "Skills", "Tooling"]) {
+    for (const label of ["Chat", "Slack", "Settings", "Learnings", "Memory", "Skills", "Tooling"]) {
       expect((screen.getByRole("tab", { name: label }) as HTMLButtonElement).disabled).toBe(
         false,
       );
     }
 
-    const memoryTab = screen.getByRole("tab", { name: "Memory" });
-    await fireEvent.click(memoryTab);
-    expect(memoryTab.getAttribute("aria-selected")).toBe("true");
+    await fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
+    // Re-read the trigger: picking it out of the menu closes the menu, and
+    // the selected tab is drawn again in the row (see the pinning test
+    // below), so the node that was clicked is not the node that survives.
+    expect(screen.getByRole("tab", { name: "Memory" }).getAttribute("aria-selected")).toBe(
+      "true",
+    );
     expect(document.getElementById("panel-chat")?.hasAttribute("hidden")).toBe(true);
     expect(document.getElementById("panel-chat")).not.toBeNull();
   });
@@ -155,7 +173,7 @@ describe("AgentDetail tabs", () => {
     renderWithClient(AgentDetail);
     const chatTab = await screen.findByRole("tab", { name: "Chat" });
     expect(chatTab.getAttribute("aria-selected")).toBe("false");
-    await fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    await fireEvent.click(moreTabsButton());
 
     const memoryTab = screen.getByRole("tab", { name: "Memory" }) as HTMLButtonElement;
     const skillsTab = screen.getByRole("tab", { name: "Skills" }) as HTMLButtonElement;
@@ -268,20 +286,86 @@ describe("AgentDetail tabs", () => {
       "/api/agents/warden": { ...READY_AGENT, status: "destroying", destroy_visible: true },
     });
     renderWithClient(AgentDetail);
-    const editButton = await screen.findByRole("button", { name: "Edit details" });
+    await screen.findByRole("heading", { name: "warden" });
+    await openHeaderMenu();
+    const editButton = screen.getByRole("button", { name: "Edit details" });
     expect((editButton as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("collapses the Advanced group by default and expands it on toggle", async () => {
+  it("keeps every header action behind one menu, and no filled button beside the name", async () => {
+    stubFetch({ ...BASE_ROUTES, "/api/agents/warden": { ...READY_AGENT, has_avatar: true } });
+    renderWithClient(AgentDetail);
+    await screen.findByRole("heading", { name: "warden" });
+
+    // Closed: the header is two lines of fact and one button.
+    expect(screen.queryByRole("button", { name: "New face" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Download the portrait" })).toBeNull();
+    const trigger = screen.getByRole("button", { name: "More actions" });
+    expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+    await openHeaderMenu();
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("button", { name: "New face" })).not.toBeNull();
+    expect(screen.getByLabelText("Upload a portrait")).not.toBeNull();
+    expect(screen.getByRole("link", { name: "Download the portrait" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Edit details" })).not.toBeNull();
+  });
+
+  it("names the group, the maker and the persona in the one meta run", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": {
+        ...READY_AGENT,
+        created_by: "owner@example.com",
+        group_name: "platform",
+      },
+    });
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Chat" });
+
+    const meta = document.querySelector(".agent-detail__meta") as HTMLElement;
+    expect(within(meta).getByText("M")).not.toBeNull();
+    expect(within(meta).getByText("platform")).not.toBeNull();
+    expect(within(meta).getByText("Made by owner@example.com")).not.toBeNull();
+    expect(within(meta).getByText("keeper")).not.toBeNull();
+  });
+
+  it("shows three chips and a count, never the whole set", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": {
+        ...READY_AGENT,
+        purpose_tags: ["billing", "support", "refunds"],
+        skills: [
+          { name: "cost-report", team: "sre", sha: "a" },
+          { name: "pager", team: "sre", sha: "b" },
+        ],
+      },
+    });
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Chat" });
+
+    const header = document.querySelector(".agent-detail__header") as HTMLElement;
+    expect(within(header).getByText("billing")).not.toBeNull();
+    expect(within(header).getByText("support")).not.toBeNull();
+    expect(within(header).getByText("refunds")).not.toBeNull();
+    // The two that did not fit are a count, and the full set is in Edit
+    // details -- which is where they are changed.
+    expect(within(header).queryByText("cost-report")).toBeNull();
+    expect(within(header).getByText("+2")).not.toBeNull();
+  });
+
+  it("keeps the More group closed by default and opens it on the button", async () => {
     // READY_AGENT already has can_decide_learnings: false.
     renderWithClient(AgentDetail);
     await screen.findByRole("tab", { name: "Chat" });
     expect(screen.queryByRole("tab", { name: "Memory" })).toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    await fireEvent.click(moreTabsButton());
     expect(screen.getByRole("tab", { name: "Memory" })).not.toBeNull();
   });
 
-  it("starts collapsed for deciders too (2026-09-02 ruling)", async () => {
+  it("starts closed for deciders too (2026-09-02 ruling)", async () => {
     stubFetch({
       ...BASE_ROUTES,
       "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: true },
@@ -289,47 +373,60 @@ describe("AgentDetail tabs", () => {
     renderWithClient(AgentDetail);
     await screen.findByRole("tab", { name: "Chat" });
     expect(screen.queryByRole("tab", { name: "Learnings" })).toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    await fireEvent.click(moreTabsButton());
     expect(screen.getByRole("tab", { name: "Learnings" })).not.toBeNull();
   });
 
-  it("shows the pending badge on the Advanced toggle while collapsed", async () => {
+  it("shows the pending badge on the More button", async () => {
     stubFetch({
       ...BASE_ROUTES,
       "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: false, pending_learnings: 3 },
     });
     renderWithClient(AgentDetail);
     await screen.findByRole("tab", { name: "Chat" });
-    const toggle = screen.getByRole("button", { name: /advanced/i });
+    const toggle = moreTabsButton();
     expect(toggle.textContent).toContain("3");
   });
 
-  it("collapsing Advanced while an advanced tab is selected returns to a coherent state", async () => {
+  it("picking a tab out of the menu closes the menu and pins that tab into the row", async () => {
     stubFetch({
       ...BASE_ROUTES,
       "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: true },
     });
     renderWithClient(AgentDetail);
     await screen.findByRole("tab", { name: "Chat" });
-    // The group starts collapsed for everyone: open it, then select Memory.
-    await fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    await fireEvent.click(moreTabsButton());
+    await fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
+
+    // The menu closed over its own choice, so Memory is in the row now:
+    // still exactly one trigger, still the selected one, and its panel is
+    // the visible one. Nothing is selected-but-invisible.
     const memoryTab = screen.getByRole("tab", { name: "Memory" });
-    await fireEvent.click(memoryTab);
     expect(memoryTab.getAttribute("aria-selected")).toBe("true");
-
-    await fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
-
-    // Memory's own trigger is gone now that the group collapsed, and its
-    // panel is hidden -- nothing is left selected-but-invisible, and Chat
-    // (the coherent fallback) is the one tab left selected.
-    expect(screen.queryByRole("tab", { name: "Memory" })).toBeNull();
-    expect(document.getElementById("panel-memory")?.hasAttribute("hidden")).toBe(true);
-    const chatTab = screen.getByRole("tab", { name: "Chat" });
-    expect(chatTab.getAttribute("aria-selected")).toBe("true");
+    expect(memoryTab.closest(".detail-tabs__list")).not.toBeNull();
+    expect(screen.queryByRole("tab", { name: "Skills" })).toBeNull();
+    expect(document.getElementById("panel-memory")?.hasAttribute("hidden")).toBe(false);
     const selectedTabs = screen
       .getAllByRole("tab")
       .filter((t) => t.getAttribute("aria-selected") === "true");
-    expect(selectedTabs).toEqual([chatTab]);
+    expect(selectedTabs).toEqual([memoryTab]);
+  });
+
+  it("keeps the tab row to one line: four tabs and the More button, never nine pills", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: true },
+    });
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Chat" });
+
+    const row = document.querySelector(".detail-tabs__list") as HTMLElement;
+    expect(within(row).getAllByRole("tab").map((t) => t.textContent?.trim())).toEqual([
+      "Chat",
+      "Slack",
+      "Access",
+      "Settings",
+    ]);
   });
 
   it("preserves the selected tab across a destroy transition", async () => {
@@ -387,7 +484,7 @@ describe("AgentDetail tabs", () => {
     expect(await screen.findByText("This agent is being destroyed.")).not.toBeNull();
     // The Advanced group starts collapsed for everyone (2026-09-02 ruling);
     // this test reaches the Memory tab, so open the group first.
-    await fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    await fireEvent.click(moreTabsButton());
     // Let MemoryPanel's own knowledge/intake queries (mounted alongside the
     // notice, since every panel stays mounted per the tab invariant) settle
     // past their initial Skeleton — otherwise those transient loading
@@ -408,6 +505,7 @@ describe("AgentDetail tabs", () => {
     expect(screen.getByRole("tab", { name: "Memory" })).not.toBeNull();
     const chatTab = screen.getByRole("tab", { name: "Chat" });
     expect(chatTab.getAttribute("aria-selected")).toBe("false");
+    await openHeaderMenu();
     const avatarButton = screen.getByRole("button", { name: /give warden a face/i });
     expect((avatarButton as HTMLButtonElement).disabled).toBe(true);
 
@@ -423,14 +521,25 @@ describe("AgentDetail tabs", () => {
     }
   });
 
-  it("renders the danger zone below the tabs while destroying", async () => {
+  it("keeps the destroy out of every other tab, and puts it in Settings", async () => {
     stubFetch({
       ...BASE_ROUTES,
       "/api/agents/warden": { ...READY_AGENT, status: "destroying", destroy_visible: true },
     });
     renderWithClient(AgentDetail);
     await screen.findByRole("tab", { name: "Chat" });
-    expect(screen.getByText("Danger zone")).not.toBeNull();
+
+    // It used to be a sibling of the tab strip, so it rendered under
+    // whichever tab somebody had open -- including Chat, which is where
+    // most visits start.
+    const chatPanel = document.getElementById("panel-chat") as HTMLElement;
+    expect(chatPanel.textContent).not.toContain("Destroy this agent");
+
+    await fireEvent.click(screen.getByRole("tab", { name: "Settings" }));
+    const settingsPanel = document.getElementById("panel-settings") as HTMLElement;
+    expect(settingsPanel.hasAttribute("hidden")).toBe(false);
+    expect(within(settingsPanel).getByText("Destroy this agent")).not.toBeNull();
+    expect(within(settingsPanel).getByText("Destroying this agent…")).not.toBeNull();
   });
 
   it('shows a "Download the portrait" link, with the per-agent filename, when has_avatar is true', async () => {
@@ -439,10 +548,11 @@ describe("AgentDetail tabs", () => {
       "/api/agents/warden": { ...READY_AGENT, has_avatar: true },
     });
     renderWithClient(AgentDetail);
-    // The avatar action block lives in the always-visible header now, not
-    // behind any tab — waiting for Chat just confirms the page finished
-    // mounting.
+    // The portrait actions are items in the header's overflow menu now —
+    // waiting for Chat confirms the page finished mounting, then the menu
+    // opens.
     await screen.findByRole("tab", { name: "Chat" });
+    await openHeaderMenu();
 
     const link = (await screen.findByRole("link", {
       name: "Download the portrait",
@@ -454,6 +564,7 @@ describe("AgentDetail tabs", () => {
   it('hides "Download the portrait" when has_avatar is false (nothing to download yet)', async () => {
     renderWithClient(AgentDetail);
     await screen.findByRole("tab", { name: "Chat" });
+    await openHeaderMenu();
 
     expect(screen.queryByRole("link", { name: "Download the portrait" })).toBeNull();
   });
@@ -461,6 +572,7 @@ describe("AgentDetail tabs", () => {
   it('a file over the 2 MiB cap shows the plain client-side copy and never PUTs', async () => {
     renderWithClient(AgentDetail);
     await screen.findByRole("tab", { name: "Chat" });
+    await openHeaderMenu();
 
     const oversized = new Uint8Array(2 * 1024 * 1024 + 1);
     const file = new File([oversized], "too-big.png", { type: "image/png" });
@@ -522,6 +634,7 @@ describe("AgentDetail tabs", () => {
 
     renderWithClient(AgentDetail);
     await screen.findByRole("tab", { name: "Chat" });
+    await openHeaderMenu();
 
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
     const file = new File([pngBytes], "face.png", { type: "image/png" });
@@ -562,7 +675,7 @@ describe("AgentDetail persona soul-line (persona-naming law, hardening wave)", (
     window.dispatchEvent(new Event("hashchange"));
   });
 
-  it("renders `{name} -- {who_they_are}` once the persona catalog search answers with a matching id", async () => {
+  it("renders the persona's NAME once the catalog search answers with a matching id, with who-they-are on the hover", async () => {
     stubFetch({
       ...BASE_ROUTES,
       "/api/personas/search": {
@@ -582,9 +695,13 @@ describe("AgentDetail persona soul-line (persona-naming law, hardening wave)", (
     await screen.findByRole("tab", { name: "Chat" });
 
     const header = document.querySelector(".agent-detail__header") as HTMLElement;
-    expect(
-      await within(header).findByText("Keeper -- a calm, steady presence who never panics"),
-    ).not.toBeNull();
+    // The name, never the bare id -- that is the naming law. The
+    // who-they-are half no longer takes a grey line of its own (page-shell
+    // wave): it rides along as the hover on the same element.
+    const persona = await within(header).findByText("Keeper");
+    expect(persona.getAttribute("title")).toBe(
+      "Keeper -- a calm, steady presence who never panics",
+    );
   });
 
   it("falls back to the bare persona id when the search has no entry matching it (an archived or deleted-from-catalog persona) -- picking the right entry by id, not just the first result", async () => {
@@ -758,7 +875,7 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
     stubFetch({ ...BASE_ROUTES, "/api/agents/warden": CONNECTED_AGENT });
   });
 
-  it("renders no chat, slack or bundle-backed tabs, and keeps Advanced for Secrets alone", async () => {
+  it("renders no chat, slack or bundle-backed tabs, and keeps More for Secrets and Settings", async () => {
     renderWithClient(AgentDetail);
 
     // The header renders for every kind, so it is the wait point here --
@@ -767,13 +884,14 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
     expect(screen.queryByRole("tab", { name: "Chat" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Slack" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Skills" })).toBeNull();
-    // The Advanced toggle stays, because one tab in it survives for a
-    // connected agent: Secrets and environment (design 2026-09-22). The
-    // environment a team's own service runs with is not a bundle
-    // question, so it is not one of the things that goes away here.
-    const advanced = screen.getByRole("button", { name: /Advanced/ });
-    await fireEvent.click(advanced);
+    // The More menu stays, because two tabs in it survive for a connected
+    // agent: Secrets and environment (design 2026-09-22), whose
+    // environment a team's own service has exactly as much of, and
+    // Settings, which is the build log and the destroy.
+    const more = moreTabsButton();
+    await fireEvent.click(more);
     expect(screen.getByRole("tab", { name: "Secrets" })).not.toBeNull();
+    expect(screen.getByRole("tab", { name: "Settings" })).not.toBeNull();
     expect(screen.queryByRole("tab", { name: "Memory" })).toBeNull();
   });
 
@@ -798,6 +916,8 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
     expect(
       screen.queryByText("Not written yet. It arrives after first contact."),
     ).toBeNull();
+    // Not merely closed behind the menu: open it and there is no such item.
+    await openHeaderMenu();
     expect(screen.queryByRole("button", { name: /Edit details/ })).toBeNull();
   });
 
@@ -838,6 +958,13 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
     });
     renderWithClient(AgentDetail);
 
+    // Settings is in the More menu for a connected agent: its primary row
+    // has no Chat or Slack to sit beside.
+    await screen.findByRole("heading", { name: "warden" });
+    await fireEvent.click(moreTabsButton());
+    await fireEvent.click(screen.getByRole("tab", { name: "Settings" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Destroy..." }));
+
     expect(
       await screen.findByText(
         "This destroys the running agent and its platform identity. The repository belongs to your team and is left as it is. Memories die with the namespace.",
@@ -873,19 +1000,34 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
     stubFetch({ ...BASE_ROUTES, "/api/agents/warden": OPERATOR_VIEW });
   });
 
+  /** Opens the Settings tab, where both one-way changes live since the
+   * page-shell wave, and returns its panel. */
+  async function openSettings(): Promise<HTMLElement> {
+    await screen.findByRole("tab", { name: "Settings" });
+    await fireEvent.click(screen.getByRole("tab", { name: "Settings" }));
+    return document.getElementById("panel-settings") as HTMLElement;
+  }
+
   it("offers the action to an operator looking at a composed, ready agent", async () => {
     renderWithClient(AgentDetail);
+    const settings = await openSettings();
 
-    expect(
-      await screen.findByRole("button", { name: "Convert to connected" }),
-    ).not.toBeNull();
+    expect(within(settings).getByText("Convert to connected")).not.toBeNull();
+    expect(within(settings).getByRole("button", { name: "Convert..." })).not.toBeNull();
+  });
+
+  it("keeps the action out of every other tab, where it used to render", async () => {
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Chat" });
+
+    const chatPanel = document.getElementById("panel-chat") as HTMLElement;
+    expect(chatPanel.textContent).not.toContain("Convert to connected");
   });
 
   it("says what stops working before it will convert", async () => {
     renderWithClient(AgentDetail);
-    await fireEvent.click(
-      await screen.findByRole("button", { name: "Convert to connected" }),
-    );
+    await openSettings();
+    await fireEvent.click(screen.getByRole("button", { name: "Convert..." }));
 
     expect(
       screen.getByText(
@@ -900,9 +1042,8 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
 
   it("asks no run mode question, since a composed agent already serves web traffic", async () => {
     renderWithClient(AgentDetail);
-    await fireEvent.click(
-      await screen.findByRole("button", { name: "Convert to connected" }),
-    );
+    await openSettings();
+    await fireEvent.click(screen.getByRole("button", { name: "Convert..." }));
 
     expect(screen.queryByRole("radio")).toBeNull();
     expect(
@@ -930,12 +1071,20 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
     }
   });
 
+  // The three refusals below read the Settings panel's own text rather
+  // than asking for a visible control: every panel on this page stays
+  // mounted while hidden, so "the button is not reachable" would pass even
+  // for a row that is there and merely behind another tab. The row has to
+  // be absent, not hidden.
+
   it("hides the action from a caller who is not an operator", async () => {
     stubFetch({ ...BASE_ROUTES, "/api/agents/warden": READY_AGENT });
     renderWithClient(AgentDetail);
 
     await screen.findByRole("heading", { name: "warden" });
-    expect(screen.queryByRole("button", { name: "Convert to connected" })).toBeNull();
+    const settings = document.getElementById("panel-settings") as HTMLElement;
+    expect(settings.textContent).toContain("Build log");
+    expect(settings.textContent).not.toContain("Convert to connected");
   });
 
   it("hides the action on an agent that is already connected", async () => {
@@ -946,7 +1095,8 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
     renderWithClient(AgentDetail);
 
     await screen.findByRole("heading", { name: "warden" });
-    expect(screen.queryByRole("button", { name: "Convert to connected" })).toBeNull();
+    const settings = document.getElementById("panel-settings") as HTMLElement;
+    expect(settings.textContent).not.toContain("Convert to connected");
   });
 
   it("hides the action while the agent is still being provisioned", async () => {
@@ -957,6 +1107,7 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
     renderWithClient(AgentDetail);
 
     await screen.findByRole("heading", { name: "warden" });
-    expect(screen.queryByRole("button", { name: "Convert to connected" })).toBeNull();
+    const settings = document.getElementById("panel-settings") as HTMLElement;
+    expect(settings.textContent).not.toContain("Convert to connected");
   });
 });

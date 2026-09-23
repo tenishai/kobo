@@ -19,7 +19,8 @@ export type TabId =
   | "tooling"
   | "slack"
   | "secrets"
-  | "access";
+  | "access"
+  | "settings";
 
 export const TAB_LABELS: Record<TabId, string> = {
   chat: "Chat",
@@ -30,6 +31,7 @@ export const TAB_LABELS: Record<TabId, string> = {
   slack: "Slack",
   secrets: "Secrets",
   access: "Access",
+  settings: "Settings",
 };
 
 /**
@@ -46,10 +48,19 @@ export const TAB_LABELS: Record<TabId, string> = {
  * `kind` is the agent's own `kind` off either read route. A connected agent
  * keeps Access and nothing else: no Chat (the room has no way to talk to
  * it) and no Slack (the room did not make its chat app).
+ *
+ * Settings (page-shell wave, 2026-09-23) is last and unconditional for a
+ * composed agent: it holds the build log, which every agent has, so the
+ * tab always has a row in it. For a connected agent it moves into the More
+ * group instead -- see `advancedTabs` -- because a row holding one
+ * back-office tab and nothing else reads as a bar that failed to load.
  */
 export function primaryTabs(showAccess = false, kind: string = KIND_COMPOSED): TabId[] {
-  const base: TabId[] = kind === KIND_CONNECTED ? [] : ["chat", "slack"];
-  return showAccess ? [...base, "access"] : base;
+  if (kind === KIND_CONNECTED) {
+    return showAccess ? ["access"] : [];
+  }
+  const base: TabId[] = ["chat", "slack"];
+  return showAccess ? [...base, "access", "settings"] : [...base, "settings"];
 }
 
 /** The four Advanced tabs that read the BUNDLE the room composed. Not the
@@ -66,13 +77,15 @@ export const ADVANCED_TABS = ["learnings", "memory", "skills", "tooling"] as con
  * answers an empty list for a connected agent. */
 const CONNECTED_ADVANCED_TABS = ["secrets"] as const;
 
-/** Every Advanced tab, or just Secrets for a connected agent: the other
- * four read the bundle the room composed, and a connected agent has none.
- * The page hides the Advanced toggle itself when this is empty, which no
- * longer happens for either kind. */
+/** Every More tab, or Secrets and Settings for a connected agent: the
+ * other four read the bundle the room composed, and a connected agent has
+ * none. Settings is in here for a connected agent only -- a composed one
+ * shows it in the primary row, where there is room for it. The page hides
+ * the More menu itself when this is empty, which no longer happens for
+ * either kind. */
 export function advancedTabs(kind: string = KIND_COMPOSED): TabId[] {
   return kind === KIND_CONNECTED
-    ? [...CONNECTED_ADVANCED_TABS]
+    ? [...CONNECTED_ADVANCED_TABS, "settings"]
     : [...ADVANCED_TABS, ...CONNECTED_ADVANCED_TABS];
 }
 

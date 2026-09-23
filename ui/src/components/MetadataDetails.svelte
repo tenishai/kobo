@@ -44,12 +44,22 @@
     purposeTags,
     capability,
     frozen = false,
+    showTrigger = true,
   }: {
     agentName: string;
     team: string;
     purposeTags: string[];
     capability: string | null;
     frozen?: boolean;
+    /** Whether to draw this component's own "Edit details" button.
+     * AgentDetail turns it off (page-shell wave, 2026-09-23): the trigger
+     * there is an item in the header's overflow menu, and it calls
+     * `openEditor` below through a `bind:this`. The modal cannot live
+     * inside that menu -- closing the menu would take the modal with it --
+     * so the trigger and the modal are in two places, and this is the
+     * seam between them. Defaults to on, so every other caller (and this
+     * component's own tests) is unchanged. */
+    showTrigger?: boolean;
   } = $props();
 
   const queryClient = useQueryClient();
@@ -100,7 +110,9 @@
   let saveError = $state<string | null>(null);
   let regenerateError = $state<string | null>(null);
 
-  function openEditor(): void {
+  /** Opens the editor. Exported so a caller that draws its own trigger
+   * (AgentDetail's overflow menu) can reach it through `bind:this`. */
+  export function openEditor(): void {
     if (frozen) {
       return;
     }
@@ -272,14 +284,16 @@
   }
 </script>
 
-<button
-  type="button"
-  class="metadata-details__trigger"
-  disabled={frozen}
-  onclick={openEditor}
->
-  Edit details
-</button>
+{#if showTrigger}
+  <button
+    type="button"
+    class="metadata-details__trigger"
+    disabled={frozen}
+    onclick={openEditor}
+  >
+    Edit details
+  </button>
+{/if}
 
 <Modal {open} title="Edit details" onclose={closeEditor}>
   <form

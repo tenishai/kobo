@@ -9,12 +9,14 @@ import {
 } from "./tabs";
 
 describe("primaryTabs", () => {
-  it("is chat and slack with no argument", () => {
-    expect(primaryTabs()).toEqual(["chat", "slack"]);
+  it("is chat, slack and settings with no argument", () => {
+    expect(primaryTabs()).toEqual(["chat", "slack", "settings"]);
   });
 
-  it("appends access last when the invites probe succeeded", () => {
-    expect(primaryTabs(true)).toEqual(["chat", "slack", "access"]);
+  it("appends access before settings when the invites probe succeeded", () => {
+    // Settings stays last in the row: it is the page's back office, not one
+    // of the things an agent is for.
+    expect(primaryTabs(true)).toEqual(["chat", "slack", "access", "settings"]);
   });
 });
 
@@ -39,11 +41,14 @@ describe("advancedTabs", () => {
 describe("the tab model by kind (connected-agents design 2026-09-21)", () => {
   it("keeps every tab for a composed agent, named or defaulted", () => {
     expect(primaryTabs(false, "composed")).toEqual(primaryTabs());
-    expect(primaryTabs(true, "composed")).toEqual(["chat", "slack", "access"]);
+    expect(primaryTabs(true, "composed")).toEqual(["chat", "slack", "access", "settings"]);
     expect(advancedTabs("composed")).toEqual(advancedTabs());
   });
 
-  it("drops chat and slack for a connected agent", () => {
+  it("drops chat, slack and settings from a connected agent's primary row", () => {
+    // Settings goes with them, but only out of the ROW: it moves into the
+    // More menu below, because a connected agent's row would otherwise be
+    // one back-office tab and nothing else.
     expect(primaryTabs(false, "connected")).toEqual([]);
   });
 
@@ -51,12 +56,14 @@ describe("the tab model by kind (connected-agents design 2026-09-21)", () => {
     expect(primaryTabs(true, "connected")).toEqual(["access"]);
   });
 
-  it("keeps only Secrets in the advanced group for a connected agent", () => {
-    // Every other advanced tab reads the bundle the room composed. The
+  it("keeps Secrets and Settings in the More group for a connected agent", () => {
+    // Every other tab in the group reads the bundle the room composed. The
     // environment an agent runs with is not a bundle question, and a
     // team's own service has one exactly as much as an agent the room
-    // built (secrets and environment design 2026-09-22).
-    expect(advancedTabs("connected")).toEqual(["secrets"]);
+    // built (secrets and environment design 2026-09-22). Settings is the
+    // same kind of fact: a build log and a destroy belong to any workload
+    // the room deploys.
+    expect(advancedTabs("connected")).toEqual(["secrets", "settings"]);
   });
 
   it("puts Secrets last in the advanced group for a composed agent", () => {
@@ -70,7 +77,7 @@ describe("the tab model by kind (connected-agents design 2026-09-21)", () => {
   });
 
   it("treats an unknown kind as composed, rather than hiding everything", () => {
-    expect(primaryTabs(true, "adopted")).toEqual(["chat", "slack", "access"]);
+    expect(primaryTabs(true, "adopted")).toEqual(["chat", "slack", "access", "settings"]);
     expect(advancedTabs("adopted")).toEqual(advancedTabs());
   });
 });
@@ -86,6 +93,7 @@ describe("TAB_LABELS", () => {
       slack: "Slack",
       secrets: "Secrets",
       access: "Access",
+      settings: "Settings",
     });
   });
 });
