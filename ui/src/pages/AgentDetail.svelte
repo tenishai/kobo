@@ -693,6 +693,7 @@
               agentName={data.name}
               frozen={isFrozen(data.status)}
               active={activeTab === "secrets"}
+              deployed={data.status === "ready"}
             />
           {:else if tab === "slack"}
             <SlackPanel

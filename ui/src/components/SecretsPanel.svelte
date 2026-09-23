@@ -12,8 +12,8 @@
   //
   // The difference between the two kinds is what you can read back. A
   // SECRET's value goes up once and never comes down: a stored secret's row
-  // has no field at all, only dots, and there is deliberately no reveal, no
-  // mask and no "show" control to add one to. A pending secret has a
+  // has no field at all, only the lock below, and there is deliberately no
+  // reveal, no mask and no "show" control to add one to. A pending secret has a
   // password field until Save sends it, and after that the row is a stored
   // one like any other. A VARIABLE's value does come back and is edited in
   // place, because that list is for values that are not sensitive and a
@@ -40,20 +40,38 @@
   // still work, which is the point of checking rather than hiding the whole
   // panel.
   //
-  // There is no "Restart agent" button. The room has no route that rolls
-  // an agent's Deployment -- the one internal helper that does it
-  // (`kobo_api.main._request_tool_restart`) is fired by the tooling fast
-  // lane and exposed nowhere -- so the panel promises what is actually
-  // true and says changes reach the agent the next time it starts.
+  // THE LOCK (design 2026-09-23). A name in this table is not a
+  // credential in a pod, and the gap between the two is where somebody
+  // adds a secret, sees it listed, and has no idea whether their agent
+  // can actually read it. So every stored row carries the state of the
+  // platform's own delivery object: live, syncing, or not there. Nothing
+  // reads the Kubernetes Secret itself -- "is it set" never needs a
+  // value, and the room does not ask for one.
+  //
+  // The two secrets the ROOM sets (the colleague pass, the Slack values)
+  // are in the same table as locked rows with no remove button. The key
+  // rules have always refused those names; a list that refuses a name it
+  // does not show reads as broken.
+  //
+  // RESTART. A saved secret reaches a running agent at its next boot and
+  // not before, which used to leave this panel saying "the next time it
+  // starts" and nothing anybody could do about it. There is a route now,
+  // so there is a button, and the sentence after a save names it.
   import { untrack } from "svelte";
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import ErrorState from "./ErrorState.svelte";
   import Skeleton from "./Skeleton.svelte";
-  import { errorMessage, type AgentSecrets, type EnvWiring } from "../lib/api";
+  import {
+    errorMessage,
+    type AgentSecrets,
+    type EnvWiring,
+    type SecretSync,
+  } from "../lib/api";
   import { keyRefusal, MAX_KEYS, parseEnvPaste } from "../lib/dotenv";
   import {
     agentEnvQuery,
     agentSecretsQuery,
+    restartAgentMutation,
     saveAgentEnvMutation,
     saveAgentSecretsMutation,
   } from "../lib/queries";
@@ -62,6 +80,7 @@
     agentName,
     frozen = false,
     active = true,
+    deployed = true,
   }: {
     agentName: string;
     frozen?: boolean;
@@ -72,7 +91,32 @@
      * about an agent nobody was looking at and put a row in its audit
      * trail saying somebody did. */
     active?: boolean;
+    /** Whether the agent is running. The restart button rolls a
+     * Deployment, and an agent whose pipeline has not finished has none
+     * to roll -- the route says so, and the button does not offer it. */
+    deployed?: boolean;
   } = $props();
+
+  // How long the panel chases a save, and how often. A delivery normally
+  // lands in seconds; two minutes is long enough for a slow one and short
+  // enough that a tab left open all afternoon is not a poller.
+  const POLL_EVERY_MS = 10_000;
+  const POLL_FOR_MS = 120_000;
+  // How long the restart button says it is done before offering itself
+  // again.
+  const RESTARTED_FOR_MS = 5_000;
+
+  /** The interval the secrets read is on, or false for the ordinary
+   * state: nothing changes that list but a save from here. Declared
+   * before the query, because the query's own options closure reads it. */
+  let pollEvery = $state<number | false>(false);
+  /** True between a save and the first settled answer after it. A row
+   * whose delivery object does not exist yet would otherwise read as
+   * "not on the agent", which is alarming and, one second after a save,
+   * not what it means. */
+  let pendingSync = $state(false);
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let restartTimer: ReturnType<typeof setTimeout> | null = null;
 
   const queryClient = useQueryClient();
   // Read once, like every other panel here: AgentDetail remounts this
@@ -81,17 +125,19 @@
   // `active` rides into the query factories the way `manifestOpened` does
   // in SlackPanel: a closure the adapter re-reads, so flipping to this tab
   // starts the read and nothing before it does.
-  const secrets = createQuery(() => agentSecretsQuery(agentName, active));
+  const secrets = createQuery(() => agentSecretsQuery(agentName, active, pollEvery));
   const env = createQuery(() => agentEnvQuery(agentName, active));
   // svelte-ignore state_referenced_locally
   const saveSecrets = createMutation(() => saveAgentSecretsMutation(queryClient, agentName));
   // svelte-ignore state_referenced_locally
   const saveEnv = createMutation(() => saveAgentEnvMutation(queryClient, agentName));
+  // svelte-ignore state_referenced_locally
+  const restart = createMutation(() => restartAgentMutation(queryClient, agentName));
 
   const LEAD =
     "Secrets are stored in the secrets platform and reach the agent as " +
     "environment variables. Variables are for values that are not " +
-    "sensitive. Changes reach the agent the next time it starts.";
+    "sensitive. Restart the agent to pick up a change.";
 
   // --- The draft ------------------------------------------------------------
 
@@ -260,6 +306,13 @@
     pullRequest?: string;
     pendingUnwire?: boolean;
     emptied?: boolean;
+    /** Whether this save is one a restart would deliver. Worked out where
+     * the save happens rather than read off `wiring`, because the two
+     * halves mean different things by "unchanged": a secrets save that
+     * reports it still STORED a new value (only the one wiring line was
+     * already there), while an environment save that reports it wrote
+     * nothing at all. */
+    nudge?: boolean;
   };
 
   let landing = $state<Landing | null>(null);
@@ -281,11 +334,136 @@
     if (landing.wiring === "pull_request") {
       return "Saved. The agent's files belong to its team, so the change is waiting in a pull request.";
     }
+    if (landing.nudge && deployed) {
+      return "Saved. Restart the agent to pick up the change.";
+    }
     if (landing.wiring === "unchanged") {
       return "Saved. The agent's files already said this.";
     }
     return "Saved. The agent picks this up the next time it starts.";
   });
+
+  /** Whether the restart button is the thing to press right now. Drives
+   * nothing but its own emphasis: the button is there either way. */
+  const nudgingRestart = $derived(
+    landing?.nudge === true && deployed && !frozen && !restart.isPending,
+  );
+
+  // --- The lock -------------------------------------------------------------
+
+  const managed = $derived(secrets.data?.managed ?? []);
+
+  type Lock = { label: string; tone: string; title: string | null };
+
+  /** One delivery state as the words and the colour the Value cell shows.
+   *
+   * `pendingSync` is why this is not a plain lookup: for the first
+   * moments after a save the platform has not made its object yet, and
+   * the honest reading of "no object, one second after a write" is
+   * "on its way", not "not on the agent".
+   */
+  function lockOf(sync: SecretSync | null | undefined): Lock {
+    const settled = sync?.state ?? "unwired";
+    const state = pendingSync && settled === "unwired" ? "syncing" : settled;
+    if (state === "live") {
+      return { label: "Secret · live on the agent", tone: "live", title: null };
+    }
+    if (state === "syncing") {
+      return { label: "Secret · syncing", tone: "syncing", title: sync?.message ?? null };
+    }
+    return {
+      label: "Secret · not on the agent yet",
+      tone: "missing",
+      title: sync?.message ?? null,
+    };
+  }
+
+  /** Every delivery the platform says it could not make, once each. The
+   * tooltip on a row is not enough for this one: a secret that is not
+   * arriving is the whole reason somebody opened this tab. */
+  const syncProblems = $derived.by(() => {
+    const seen: string[] = [];
+    const add = (sync: SecretSync | null | undefined) => {
+      if (sync?.state === "error" && sync.message && !seen.includes(sync.message)) {
+        seen.push(sync.message);
+      }
+    };
+    add(secrets.data?.sync);
+    for (const row of managed) {
+      add(row.sync);
+    }
+    return seen;
+  });
+
+  function stopChasing(): void {
+    pollEvery = false;
+    pendingSync = false;
+    if (pollTimer !== null) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  /** Ask again, every few seconds, for a couple of minutes. A delivery is
+   * somebody else's work finishing after this browser's request has
+   * returned, so there is nothing to invalidate on: the only way to know
+   * it landed is to look again. */
+  function startChasing(): void {
+    pendingSync = true;
+    pollEvery = POLL_EVERY_MS;
+    if (pollTimer !== null) {
+      clearTimeout(pollTimer);
+    }
+    pollTimer = setTimeout(stopChasing, POLL_FOR_MS);
+  }
+
+  // Stop early the moment the answer settles: two minutes is the ceiling,
+  // not the plan.
+  $effect(() => {
+    const state = secrets.data?.sync?.state;
+    if (pollEvery !== false && (state === "live" || state === "error")) {
+      untrack(stopChasing);
+    }
+  });
+
+  // A panel that goes away mid-window must not leave timers behind.
+  $effect(() => () => {
+    if (pollTimer !== null) {
+      clearTimeout(pollTimer);
+    }
+    if (restartTimer !== null) {
+      clearTimeout(restartTimer);
+    }
+  });
+
+  // --- Restarting the agent -------------------------------------------------
+
+  let justRestarted = $state(false);
+  let restartError = $state<string | null>(null);
+
+  const restartLabel = $derived(
+    restart.isPending ? "Restarting" : justRestarted ? "Restarted" : "Restart agent",
+  );
+
+  async function handleRestart(): Promise<void> {
+    if (!deployed || frozen || restart.isPending) {
+      return;
+    }
+    restartError = null;
+    try {
+      await restart.mutateAsync();
+    } catch (err: unknown) {
+      restartError = errorMessage(err, "Couldn't restart the agent. Try again.");
+      return;
+    }
+    // The save's own sentence has been acted on, so it stops asking.
+    landing = null;
+    justRestarted = true;
+    if (restartTimer !== null) {
+      clearTimeout(restartTimer);
+    }
+    restartTimer = setTimeout(() => (justRestarted = false), RESTARTED_FOR_MS);
+  }
 
   // --- The controls ---------------------------------------------------------
 
@@ -321,6 +499,11 @@
     }
     saveError = null;
     landing = null;
+    restartError = null;
+    // Read before the save empties the draft: the rows below are re-seeded
+    // from the server's answer, and `secretsPending` is false by the time
+    // the chase would start.
+    const secretsPendingBefore = secretsPending;
     let keys = baseKeys;
     let values = baseEnv;
     let landed: Landing | null = null;
@@ -336,6 +519,10 @@
           pullRequest: result.pull_request,
           pendingUnwire: result.pending_unwire,
           emptied: result.emptied,
+          // A secrets save that landed stored a value, whatever the
+          // wiring line did or did not need. The two exceptions are the
+          // ones where the agent cannot read it yet anyway.
+          nudge: result.wiring !== "pull_request" && !result.pending_unwire,
         };
       }
       if (envPending) {
@@ -345,7 +532,14 @@
         // of the two outcomes that carry more than "saved": those two say
         // something about the secret that nothing else here would.
         if (!landed?.pendingUnwire && !landed?.emptied) {
-          landed = { wiring: result.wiring, pullRequest: result.pull_request };
+          landed = {
+            wiring: result.wiring,
+            pullRequest: result.pull_request,
+            // Only a commit changed anything here: "unchanged" from this
+            // half means the file already said it, and there is nothing
+            // for a restart to pick up.
+            nudge: landed?.nudge === true || result.wiring === "committed",
+          };
         }
       }
     } catch (err: unknown) {
@@ -355,6 +549,7 @@
       return;
     }
     landing = landed;
+    justRestarted = false;
     baseKeys = keys;
     baseEnv = values;
     baseSignature = JSON.stringify([keys, values]);
@@ -362,6 +557,11 @@
     paste = "";
     pasteProblems = [];
     pasteOpen = false;
+    if (secretsPendingBefore) {
+      // Only the secrets half: an environment variable is a file the
+      // room just wrote, with no delivery object to watch settle.
+      startChasing();
+    }
   }
 
   // --- Paste a .env ---------------------------------------------------------
@@ -433,6 +633,22 @@
     }
   }
 </script>
+
+{#snippet lock(sync: SecretSync | null | undefined)}
+  {@const shown = lockOf(sync)}
+  <span class="secrets__lock secrets__lock--{shown.tone}" title={shown.title}>
+    <svg class="secrets__padlock" viewBox="0 0 12 14" aria-hidden="true">
+      <path
+        d="M3 6V4a3 3 0 0 1 6 0v2"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.6"
+      />
+      <rect x="1" y="6" width="10" height="7" rx="1.5" fill="currentColor" />
+    </svg>
+    {shown.label}
+  </span>
+{/snippet}
 
 <section class="secrets" aria-labelledby="secrets-heading">
   <div class="secrets__header">
@@ -551,7 +767,7 @@
         </tr>
       </thead>
       <tbody>
-        {#if rows.length === 0}
+        {#if rows.length === 0 && managed.length === 0}
           <tr>
             <td class="secrets__empty" colspan="4">No secrets or variables yet.</td>
           </tr>
@@ -582,8 +798,7 @@
             </td>
             <td class="secrets__cell">
               {#if row.kind === "secret" && !row.fresh}
-                <span class="secrets__dots" aria-hidden="true">••••••••</span>
-                <span class="secrets__sr">Value hidden</span>
+                {@render lock(secrets.data?.sync)}
               {:else}
                 <input
                   class="secrets__input"
@@ -618,12 +833,33 @@
             </tr>
           {/if}
         {/each}
+        {#each managed as row (`${row.secret_name}/${row.name}`)}
+          <tr class="secrets__row">
+            <td class="secrets__cell">
+              <code class="secrets__name">{row.name}</code>
+            </td>
+            <td class="secrets__cell">
+              <span class="secrets__kind">Set by the room</span>
+            </td>
+            <td class="secrets__cell">{@render lock(row.sync)}</td>
+            <!-- No remove button, and no field: this one is not an
+                 owner's to change. The key rules already refuse its name
+                 on both sides of a write. -->
+            <td class="secrets__cell secrets__cell--remove"></td>
+          </tr>
+        {/each}
       </tbody>
     </table>
+
+    {#each syncProblems as problem (problem)}
+      <p class="secrets__note secrets__note--fail">{problem}</p>
+    {/each}
 
     <div class="secrets__footer">
       {#if saveError}
         <p class="secrets__status secrets__fail" role="alert">{saveError}</p>
+      {:else if restartError}
+        <p class="secrets__status secrets__fail" role="alert">{restartError}</p>
       {:else if landingText}
         <p class="secrets__status">
           <span role="status">{landingText}</span>
@@ -648,6 +884,17 @@
             onclick={discard}
           >
             Discard
+          </button>
+        {/if}
+        {#if deployed}
+          <button
+            type="button"
+            class="secrets__button"
+            class:secrets__button--emphasis={nudgingRestart}
+            disabled={frozen || restart.isPending}
+            onclick={handleRestart}
+          >
+            {restartLabel}
           </button>
         {/if}
         <button
@@ -743,6 +990,14 @@
   .secrets__button--quiet {
     border-color: transparent;
     color: var(--muted);
+  }
+
+  /* The restart button after a save that needs one. Not the primary
+     style: Save is still the primary control here, and two filled
+     buttons side by side say neither is the one to press. */
+  .secrets__button--emphasis {
+    border-color: var(--accent);
+    color: var(--accent);
   }
 
   .secrets__button--primary {
@@ -854,9 +1109,27 @@
     text-transform: uppercase;
   }
 
-  .secrets__dots {
+  .secrets__lock {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
     color: var(--muted);
-    letter-spacing: 0.1em;
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+
+  .secrets__padlock {
+    width: 0.7em;
+    height: 0.82em;
+    flex: none;
+  }
+
+  .secrets__lock--live {
+    color: var(--ok);
+  }
+
+  .secrets__lock--missing {
+    color: var(--fail);
   }
 
   .secrets__input {
