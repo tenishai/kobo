@@ -782,3 +782,115 @@ textarea.field__input {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* --- One plain form -------------------------------------------------------
+   What the create dialog needed and every other form can use: a label with
+   one quiet action beside it, a list with a floor under it, and a section
+   that stays folded until somebody asks for it. */
+
+/* A field's label and the one quiet action that belongs to it, on one
+   line: the label reads left, the way out reads right. */
+.field__label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+/* A button that reads as a link. The alternative to a field, never the
+   point of it, so it carries no border and no weight of its own. */
+.btn--link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn--link:hover {
+  text-decoration: underline;
+}
+
+/* The toggle on a section that starts folded. Quiet, and it says which way
+   it is facing through aria-expanded on the button itself. */
+.field__disclosure {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.field__disclosure:hover {
+  color: var(--accent);
+}
+
+/* A field's rule and its verdict on one line: what is allowed on the left,
+   what the room makes of what you typed on the right. */
+.field__help-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+/* Two short fields that read as one line, so a form of mostly one-line
+   answers does not run down the page. They stack again on their own when
+   there is no room for two, and a pair with only one field in it takes the
+   whole width rather than sitting in half of it. */
+.field-pair {
+  display: grid;
+  align-items: start;
+  gap: var(--space-md);
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+}
+
+/* What a disclosure opens. */
+.field__drawer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+/* A list with a floor under it: about five rows tall, scrolling past that,
+   so a long catalog cannot set the height of the dialog around it.
+
+   It is also where the width is held. A flex child defaults to
+   min-width:auto, which means its content, not its container, decides how
+   wide it gets -- that is what let one long description push a row, the
+   list, and the dialog body past the edge of the dialog. Every level here
+   says min-width:0 instead, so the description cell (which already
+   truncates) is what gives way. */
+.list--scroll {
+  /* Four rows and most of a fifth. Cutting the fifth is deliberate: a box
+     that ends on a clean row edge looks like the end of the list. */
+  max-height: 12rem;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.list--scroll .list__row {
+  min-height: 2.5rem;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.list--scroll .list__row > * {
+  min-width: 0;
+}
+
+/* The name can give way too, rather than holding the row open at its own
+   full width, on the rare catalog entry with a very long one. */
+.list--scroll .list__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

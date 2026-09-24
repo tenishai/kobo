@@ -1,17 +1,18 @@
 // @vitest-environment jsdom
-import { fireEvent, screen, waitFor, within } from "@testing-library/svelte";
+import { fireEvent, screen, waitFor } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import CreateModal from "./CreateModal.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 
-// The create station's fresh-open effect (`$effect` gated on `open`) resets
-// every field, and every catalog query CreateModal owns fires immediately
-// on mount regardless of `open` (same "warm modal" queries App.svelte
-// prefetches) — so every case here needs the full catalog stub set, in
-// subpath-before-catch-all order (stubFetch matches by `url.includes`, so
-// `/api/personas/search` and `/api/personas/draft` must precede a bare
-// `/api/personas` needle, and every specific route must precede the `/api/`
-// catch-all).
+// The create dialog is one plain form now (plain-form wave): persona,
+// name, group, model, and a purpose-tags disclosure, all of it on screen
+// at once with no stepper and no generated names. Every catalog query it
+// owns still fires on mount regardless of `open` (the same "warm modal"
+// queries App.svelte prefetches), so every case here needs the full
+// catalog stub set, in subpath-before-catch-all order (stubFetch matches by
+// `url.includes`, so `/api/personas/search` and `/api/personas/draft` must
+// precede a bare `/api/personas` needle, and every specific route must
+// precede the `/api/` catch-all).
 function stubCreateModalCatalogs(extra: Record<string, unknown> = {}): void {
   stubFetch({
     "/api/catalog/models": {
@@ -31,174 +32,353 @@ function stubCreateModalCatalogs(extra: Record<string, unknown> = {}): void {
   });
 }
 
-// The Create form's own stable, always-rendered anchor: station 3's
-// "unlocking" is purely visual (opacity, see the doc comment at the top of
-// CreateModal.svelte), so the Purpose tags field is present in the DOM the
-// moment the modal mounts, regardless of persona/naming progress — same
-// role the removed Team dropdown used to play as a wait-for-render point in
-// these tests before the "team vs group" ruling retired it.
-async function findCreateStationReady(): Promise<void> {
-  await screen.findByLabelText("Purpose tags");
+const HELPER = {
+  id: "helper",
+  name: "Helper",
+  description: "Helps with things.",
+  team: "shared",
+  tags: [],
+  builtin: true,
+};
+
+/** The form's stable, always-rendered anchor: the name field is a plain
+ * text input that is on screen from the first beat, whether or not a
+ * persona has been picked. */
+async function findFormReady(): Promise<HTMLInputElement> {
+  return (await screen.findByLabelText("Name")) as HTMLInputElement;
 }
 
-describe("CreateModal — team vs group ruling: team dropdown retired", () => {
+/** Opens the purpose-tags disclosure, which starts shut. */
+async function openPurposeTags(): Promise<void> {
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Add purpose tags (optional)" }),
+  );
+}
+
+/** Picks the seeded Helper persona and types a name the availability stub
+ * will call free, leaving the form one group-pick away from submittable. */
+async function pickHelperAndName(value = "helper-bot"): Promise<void> {
+  await fireEvent.click(await screen.findByRole("radio", { name: /Helper/i }));
+  await fireEvent.input(await findFormReady(), { target: { value } });
+  await screen.findByText("Available", {}, { timeout: 2000 });
+}
+
+function createPostBody(): Record<string, unknown> {
+  const call = vi
+    .mocked(fetch)
+    .mock.calls.find(
+      ([url, init]) =>
+        String(url) === "/api/agents" &&
+        (init as RequestInit | undefined)?.method === "POST",
+    );
+  return JSON.parse((call?.[1] as RequestInit).body as string);
+}
+
+describe("CreateModal — one plain form (plain-form wave)", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("renders no Team dropdown or its Other... escape — team is a derived fact, edited later via Edit details", async () => {
+  it("shows every field at once, in order, with no stepper", async () => {
+    stubCreateModalCatalogs({
+      "/api/catalog/groups": { groups: [{ name: "shared", kind: "shared" }] },
+      "/api/personas/search": { results: [HELPER] },
+    });
+    const { container } = renderWithClient(CreateModal, {
+      open: true,
+      onclose: () => {},
+    });
+
+    await findFormReady();
+    await screen.findByLabelText("Group");
+
+    expect(container.querySelector(".modal__steps")).toBeNull();
+    expect(container.querySelectorAll(".modal__step")).toHaveLength(0);
+
+    const labels = Array.from(container.querySelectorAll(".field__label")).map(
+      (el) => el.textContent?.trim(),
+    );
+    expect(labels).toEqual(["Persona", "Name", "Group", "Model"]);
+
+    // Group and Model are one-line answers and share a line, which is what
+    // keeps all five fields inside a 70vh body on a laptop.
+    const pair = container.querySelector(".field-pair");
+    const paired = Array.from(pair?.querySelectorAll(".field__label") ?? []).map(
+      (el) => el.textContent?.trim(),
+    );
+    expect(paired).toEqual(["Group", "Model"]);
+
+    // Purpose tags are the only thing not on screen, and they say so.
+    expect(
+      screen.getByRole("button", { name: "Add purpose tags (optional)" }),
+    ).not.toBeNull();
+  });
+
+  it("sits at the dialog's default width, not the picker width", async () => {
+    stubCreateModalCatalogs();
+    const { container } = renderWithClient(CreateModal, {
+      open: true,
+      onclose: () => {},
+    });
+
+    await findFormReady();
+    expect(container.querySelector(".modal--wide")).toBeNull();
+  });
+
+  it("has one filled button, in a footer under the body", async () => {
+    stubCreateModalCatalogs();
+    const { container } = renderWithClient(CreateModal, {
+      open: true,
+      onclose: () => {},
+    });
+
+    await findFormReady();
+
+    const footer = container.querySelector(".modal__footer");
+    expect(footer).not.toBeNull();
+    expect(container.querySelector(".modal__body")?.contains(footer as Node)).toBe(
+      false,
+    );
+    expect(footer?.querySelector(".btn--primary")?.textContent?.trim()).toBe(
+      "Create agent",
+    );
+    expect(footer?.textContent).toContain("Cancel");
+    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
+  });
+});
+
+describe("CreateModal — the persona list (plain-form wave)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const LONG = {
+    id: "long",
+    name: "long-winded-helper",
+    description:
+      "Helps with things, and keeps helping long past the width of any one row in this list or any dialog that could hold it.",
+    team: "growth",
+    tags: [],
+    builtin: false,
+  };
+
+  it("scrolls in a fixed box and cuts each description off at the row's edge", async () => {
+    stubCreateModalCatalogs({ "/api/personas/search": { results: [LONG] } });
+    const { container } = renderWithClient(CreateModal, {
+      open: true,
+      onclose: () => {},
+    });
+
+    await screen.findByRole("radio", { name: /long-winded-helper/i });
+
+    const list = container.querySelector(".list");
+    // The fixed-height, width-bounded box: about five rows deep, and no
+    // row inside it may widen the dialog body.
+    expect(list?.className).toContain("list--scroll");
+
+    const row = list?.querySelector(".list__row");
+    expect(row?.querySelector(".list__name")?.textContent).toBe("long-winded-helper");
+    expect(row?.querySelector(".list__tag")?.textContent?.trim()).toBe("growth");
+    const desc = row?.querySelector(".list__desc");
+    expect(desc?.textContent).toBe(LONG.description);
+    // Truncation hides the rest, so the whole of it is on the cell itself.
+    expect(desc?.getAttribute("title")).toBe(LONG.description);
+  });
+
+  it("washes the picked row and leaves the others plain", async () => {
+    stubCreateModalCatalogs({
+      "/api/personas/search": {
+        results: [
+          HELPER,
+          {
+            id: "scribe",
+            name: "Scribe",
+            description: "Writes things down.",
+            team: "growth",
+            tags: [],
+            builtin: false,
+          },
+        ],
+      },
+    });
+    const { container } = renderWithClient(CreateModal, {
+      open: true,
+      onclose: () => {},
+    });
+
+    await fireEvent.click(await screen.findByRole("radio", { name: /Helper/i }));
+
+    const selected = container.querySelectorAll(".list__row--selected");
+    expect(selected).toHaveLength(1);
+    expect(selected[0].querySelector(".list__name")?.textContent).toBe("Helper");
+  });
+
+  it("says so plainly when a search matches nothing", async () => {
     stubCreateModalCatalogs();
     renderWithClient(CreateModal, { open: true, onclose: () => {} });
 
-    await findCreateStationReady();
+    await findFormReady();
+    await fireEvent.input(screen.getByLabelText("Search personas"), {
+      target: { value: "nothing-like-this" },
+    });
 
-    expect(screen.queryByLabelText("Team")).toBeNull();
-    expect(screen.queryByLabelText("Team name")).toBeNull();
-    expect(screen.queryByText("lowercase-with-dashes")).toBeNull();
+    expect(await screen.findByText("No personas match.")).not.toBeNull();
   });
 
-  it("submits with no team key in the POST body at all", async () => {
-    stubCreateModalCatalogs({
-      "/api/personas/search": {
-        results: [
-          {
-            id: "helper",
-            name: "Helper",
-            description: "Helps with things.",
-            team: "shared",
-            tags: [],
-            builtin: true,
-          },
-        ],
-      },
-      "/api/agents/name-suggestions": { suggestions: [] },
-      "/api/agents": { name: "helper-bot", status: "provisioning" },
-      "/api/availability": { available: true, reason: null },
-    });
-    renderWithClient(CreateModal, { open: true, onclose: () => {} });
-
-    await findCreateStationReady();
-
-    // Station 1: pick the one seeded persona.
-    const personaRadio = await screen.findByRole("radio", { name: /Helper/i });
-    await fireEvent.click(personaRadio);
-
-    // Station 2: no suggestions came back, so go straight to manual naming.
-    await fireEvent.click(
-      await screen.findByRole("button", { name: "name it yourself" }),
-    );
-    const nameInput = await screen.findByLabelText("Name");
-    await fireEvent.input(nameInput, { target: { value: "helper-bot" } });
-    await screen.findByText("✓ Available", {}, { timeout: 2000 });
-
-    // Station 3: model defaults, no groups configured — ready to submit.
-    const submit = screen.getByRole("button", { name: "Create agent" }) as HTMLButtonElement;
-    expect(submit.disabled).toBe(false);
-    await fireEvent.click(submit);
-
-    await waitFor(() => {
-      expect(
-        vi.mocked(fetch).mock.calls.some(
-          ([url, init]) =>
-            String(url) === "/api/agents" &&
-            (init as RequestInit | undefined)?.method === "POST",
-        ),
-      ).toBe(true);
+  it("offers no Start from scratch row at all", async () => {
+    stubCreateModalCatalogs({ "/api/personas/search": { results: [HELPER] } });
+    const { container } = renderWithClient(CreateModal, {
+      open: true,
+      onclose: () => {},
     });
 
-    const call = vi
-      .mocked(fetch)
-      .mock.calls.find(
-        ([url, init]) =>
-          String(url) === "/api/agents" &&
-          (init as RequestInit | undefined)?.method === "POST",
-      );
-    const sentBody = JSON.parse((call?.[1] as RequestInit).body as string);
-    expect(sentBody).not.toHaveProperty("team");
-    expect(sentBody.name).toBe("helper-bot");
-    expect(sentBody.persona).toBe("helper");
+    await findFormReady();
+    expect(screen.queryByText("Start from scratch")).toBeNull();
+    expect(container.querySelector(".list__row--action")).toBeNull();
+  });
+
+  it("Build your own persona sits on the label row and opens the builder in place", async () => {
+    stubCreateModalCatalogs({ "/api/personas/search": { results: [HELPER] } });
+    const { container } = renderWithClient(CreateModal, {
+      open: true,
+      onclose: () => {},
+    });
+
+    await findFormReady();
+
+    const link = screen.getByRole("button", { name: "Build your own persona" });
+    expect(link.closest(".field__label-row")?.querySelector(".field__label")?.textContent)
+      .toBe("Persona");
+
+    await fireEvent.click(link);
+
+    // The builder takes the whole form over, same as before.
+    expect(
+      await screen.findByLabelText("What should this agent do for you?"),
+    ).not.toBeNull();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(screen.queryByLabelText("Name")).toBeNull();
+    // The shell's pinned footer steps aside entirely: the builder draws its
+    // own sticky one inside the body, so the two are never both on screen.
+    expect(
+      container.querySelector(".modal__body")?.nextElementSibling,
+    ).toBeNull();
+    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
   });
 });
 
-describe("CreateModal -- skills station removed (skills move to the post-create Skills tab)", () => {
+describe("CreateModal — the name is typed, never generated (plain-form wave)", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("submits with an empty skills list and offers no skills station", async () => {
+  it("offers one text input and no generated suggestions", async () => {
+    stubCreateModalCatalogs({ "/api/personas/search": { results: [HELPER] } });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    const nameInput = await findFormReady();
+    expect(nameInput.placeholder).toBe("e.g. release-notes");
+    expect(
+      screen.getByText("Lowercase letters, numbers, and hyphens. 2 to 24 characters."),
+    ).not.toBeNull();
+
+    await fireEvent.click(await screen.findByRole("radio", { name: /Helper/i }));
+
+    expect(screen.queryByRole("button", { name: "Offer more" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "name it yourself" })).toBeNull();
+    expect(screen.queryByRole("radiogroup", { name: "Suggested names" })).toBeNull();
+  });
+
+  it("never asks the name-suggestions route for anything", async () => {
     stubCreateModalCatalogs({
-      "/api/personas/search": {
-        results: [
-          {
-            id: "helper",
-            name: "Helper",
-            description: "Helps with things.",
-            team: "shared",
-            tags: [],
-            builtin: true,
-          },
-        ],
-      },
-      "/api/agents/name-suggestions": { suggestions: [] },
-      "/api/agents": { name: "helper-bot", status: "provisioning" },
+      "/api/personas/search": { results: [HELPER] },
       "/api/availability": { available: true, reason: null },
     });
     renderWithClient(CreateModal, { open: true, onclose: () => {} });
 
-    await findCreateStationReady();
+    await findFormReady();
+    await pickHelperAndName();
 
-    // The station heading is gone entirely -- skills are added post-create,
-    // in the Skills tab, not at the bench.
-    expect(screen.queryByText("Skills")).toBeNull();
-
-    // Station 1: pick the one seeded persona.
-    const personaRadio = await screen.findByRole("radio", { name: /Helper/i });
-    await fireEvent.click(personaRadio);
-
-    // Station 2: no suggestions came back, so go straight to manual naming.
-    await fireEvent.click(
-      await screen.findByRole("button", { name: "name it yourself" }),
-    );
-    const nameInput = await screen.findByLabelText("Name");
-    await fireEvent.input(nameInput, { target: { value: "helper-bot" } });
-    await screen.findByText("✓ Available", {}, { timeout: 2000 });
-
-    const submit = screen.getByRole("button", { name: "Create agent" }) as HTMLButtonElement;
-    expect(submit.disabled).toBe(false);
-    await fireEvent.click(submit);
-
-    await waitFor(() => {
-      expect(
-        vi.mocked(fetch).mock.calls.some(
-          ([url, init]) =>
-            String(url) === "/api/agents" &&
-            (init as RequestInit | undefined)?.method === "POST",
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([url]) =>
+          String(url).includes("/api/agents/name-suggestions"),
         ),
-      ).toBe(true);
+    ).toHaveLength(0);
+  });
+
+  it("validates on every keystroke and only then checks availability", async () => {
+    stubCreateModalCatalogs({
+      "/api/personas/search": { results: [HELPER] },
+      "/api/availability": { available: true, reason: null },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    const nameInput = await findFormReady();
+
+    await fireEvent.input(nameInput, { target: { value: "Helper Bot" } });
+    expect(
+      await screen.findByText("Use lowercase letters, numbers, and hyphens only."),
+    ).not.toBeNull();
+    // An obviously-bad name never costs a round trip.
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([url]) =>
+        String(url).includes("/api/availability"),
+      ),
+    ).toHaveLength(0);
+
+    await fireEvent.input(nameInput, { target: { value: "helper-bot" } });
+    expect(await screen.findByText("Available", {}, { timeout: 2000 })).not.toBeNull();
+  });
+
+  it("says Taken in the fail tone when the room already has that name", async () => {
+    stubCreateModalCatalogs({
+      "/api/personas/search": { results: [HELPER] },
+      "/api/availability": { available: false, reason: null },
+    });
+    const { container } = renderWithClient(CreateModal, {
+      open: true,
+      onclose: () => {},
     });
 
-    const call = vi
-      .mocked(fetch)
-      .mock.calls.find(
-        ([url, init]) =>
-          String(url) === "/api/agents" &&
-          (init as RequestInit | undefined)?.method === "POST",
-      );
-    const sentBody = JSON.parse((call?.[1] as RequestInit).body as string);
-    expect(sentBody.skills).toEqual([]);
+    await fireEvent.input(await findFormReady(), { target: { value: "helper-bot" } });
+
+    const taken = await screen.findByText("Taken", {}, { timeout: 2000 });
+    expect(taken.className).toContain("field__status--error");
+    expect(container.querySelector(".field__status--ok")).toBeNull();
   });
 });
 
-describe("CreateModal — purpose tags (persona-metadata plan)", () => {
+describe("CreateModal — purpose tags hide behind a disclosure (plain-form wave)", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("starts shut, with nothing of the chips editor on screen", async () => {
+    stubCreateModalCatalogs();
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    await findFormReady();
+
+    const disclosure = screen.getByRole("button", {
+      name: "Add purpose tags (optional)",
+    });
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByLabelText("Purpose tags")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add" })).toBeNull();
+
+    await fireEvent.click(disclosure);
+    expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByLabelText("Purpose tags")).not.toBeNull();
   });
 
   it("has no capability field at create — it arrives after first contact", async () => {
     stubCreateModalCatalogs();
     renderWithClient(CreateModal, { open: true, onclose: () => {} });
 
-    await findCreateStationReady();
+    await findFormReady();
+    await openPurposeTags();
     expect(screen.queryByLabelText(/capability/i)).toBeNull();
     expect(screen.queryByText(/first contact/i)).toBeNull();
   });
@@ -207,7 +387,8 @@ describe("CreateModal — purpose tags (persona-metadata plan)", () => {
     stubCreateModalCatalogs();
     renderWithClient(CreateModal, { open: true, onclose: () => {} });
 
-    await findCreateStationReady();
+    await findFormReady();
+    await openPurposeTags();
     expect(
       screen.getByText(
         "Short labels that help people and agents discover what this agent is for.",
@@ -220,7 +401,8 @@ describe("CreateModal — purpose tags (persona-metadata plan)", () => {
     stubCreateModalCatalogs();
     renderWithClient(CreateModal, { open: true, onclose: () => {} });
 
-    await findCreateStationReady();
+    await findFormReady();
+    await openPurposeTags();
 
     const networking = screen.getByRole("button", { name: "networking" }) as HTMLButtonElement;
     const incident = screen.getByRole("button", {
@@ -262,7 +444,10 @@ describe("CreateModal — purpose tags (persona-metadata plan)", () => {
     stubCreateModalCatalogs();
     renderWithClient(CreateModal, { open: true, onclose: () => {} });
 
-    const tagInput = (await screen.findByLabelText("Purpose tags")) as HTMLInputElement;
+    await findFormReady();
+    await openPurposeTags();
+
+    const tagInput = screen.getByLabelText("Purpose tags") as HTMLInputElement;
     const addButton = screen.getByRole("button", { name: "Add" });
     expect(screen.getByText("Up to 8 tags.")).not.toBeNull();
 
@@ -291,6 +476,206 @@ describe("CreateModal — purpose tags (persona-metadata plan)", () => {
     expect(screen.queryByText("support")).toBeNull();
     expect(screen.getAllByRole("button", { name: /^Remove /i })).toHaveLength(7);
   });
+
+  it("pre-fills purpose chips from the persona builder's drafted purpose_tags, and opens the disclosure to show them", async () => {
+    stubCreateModalCatalogs({
+      "/api/personas/draft": {
+        name: "billing-helper",
+        who_they_are: "a calm guide through confusing invoices",
+        what_they_do: "Answers billing questions and escalates refunds.",
+        purpose_tags: ["billing", "support"],
+      },
+      "/api/personas": {
+        id: "billing-helper",
+        name: "billing-helper",
+        description: "a calm guide through confusing invoices",
+        team: "shared",
+        tags: ["billing"],
+      },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    await findFormReady();
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Build your own persona" }),
+    );
+
+    const jobField = screen.getByLabelText("What should this agent do for you?");
+    await fireEvent.input(jobField, {
+      target: { value: "Help customers with billing questions." },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Draft persona" }));
+
+    await screen.findByRole("button", { name: "Create persona" });
+    await fireEvent.click(screen.getByRole("button", { name: "Create persona" }));
+
+    // "billing" is also one of the example-chip labels (below the field),
+    // so the pre-filled tag is asserted via its unique "Remove billing"
+    // button rather than `getByText`, which would otherwise match both the
+    // example chip and the pre-filled tag chip.
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Remove billing" })).not.toBeNull();
+      expect(screen.getByText("support")).not.toBeNull();
+    });
+    expect(
+      screen
+        .getByRole("button", { name: "Add purpose tags (optional)" })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+  });
+});
+
+describe("CreateModal — the footer says what is still missing (plain-form wave)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("names the persona first, then the name, then the group — one sentence at a time", async () => {
+    stubCreateModalCatalogs({
+      "/api/catalog/groups": { groups: [{ name: "shared", kind: "shared" }] },
+      "/api/personas/search": { results: [HELPER] },
+      "/api/availability": { available: true, reason: null },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    await findFormReady();
+    expect(await screen.findByText("Pick a persona first.")).not.toBeNull();
+    expect(screen.queryByText("Give it a name.")).toBeNull();
+    expect(screen.queryByText("Choose a group.")).toBeNull();
+
+    await fireEvent.click(await screen.findByRole("radio", { name: /Helper/i }));
+    expect(await screen.findByText("Give it a name.")).not.toBeNull();
+    expect(screen.queryByText("Pick a persona first.")).toBeNull();
+
+    await fireEvent.input(screen.getByLabelText("Name"), {
+      target: { value: "helper-bot" },
+    });
+    await screen.findByText("Available", {}, { timeout: 2000 });
+    expect(await screen.findByText("Choose a group.")).not.toBeNull();
+
+    await fireEvent.change(screen.getByLabelText("Group"), {
+      target: { value: "shared" },
+    });
+    await waitFor(() => {
+      expect(screen.queryByText("Choose a group.")).toBeNull();
+    });
+    const submit = screen.getByRole("button", { name: "Create agent" }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(false);
+  });
+
+  it("says nothing at all once the form is complete", async () => {
+    stubCreateModalCatalogs({
+      "/api/personas/search": { results: [HELPER] },
+      "/api/availability": { available: true, reason: null },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    await findFormReady();
+    await pickHelperAndName();
+
+    await waitFor(() => {
+      expect(screen.queryByText("Pick a persona first.")).toBeNull();
+      expect(screen.queryByText("Give it a name.")).toBeNull();
+      expect(screen.queryByText("Choose a group.")).toBeNull();
+    });
+  });
+});
+
+describe("CreateModal — the create request (payload unchanged)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sends the typed name, the picked persona, an empty skills list, and no team key", async () => {
+    stubCreateModalCatalogs({
+      "/api/personas/search": { results: [HELPER] },
+      "/api/agents": { name: "helper-bot", status: "provisioning" },
+      "/api/availability": { available: true, reason: null },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    await findFormReady();
+    await pickHelperAndName();
+
+    // Skills are added post-create, in the Skills tab -- not here.
+    expect(screen.queryByText("Skills")).toBeNull();
+
+    const submit = screen.getByRole("button", { name: "Create agent" }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(false);
+    await fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(
+        vi.mocked(fetch).mock.calls.some(
+          ([url, init]) =>
+            String(url) === "/api/agents" &&
+            (init as RequestInit | undefined)?.method === "POST",
+        ),
+      ).toBe(true);
+    });
+
+    const sentBody = createPostBody();
+    expect(sentBody).not.toHaveProperty("team");
+    expect(sentBody.name).toBe("helper-bot");
+    expect(sentBody.persona).toBe("helper");
+    expect(sentBody.skills).toEqual([]);
+    expect(sentBody.model).toBe("gpt-5");
+    expect(sentBody.purpose_tags).toEqual([]);
+  });
+
+  it("carries the purpose tags the disclosure collected", async () => {
+    stubCreateModalCatalogs({
+      "/api/personas/search": { results: [HELPER] },
+      "/api/agents": { name: "helper-bot", status: "provisioning" },
+      "/api/availability": { available: true, reason: null },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    await findFormReady();
+    await openPurposeTags();
+    await fireEvent.click(screen.getByRole("button", { name: "gcp" }));
+    await pickHelperAndName();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+    await waitFor(() => {
+      expect(
+        vi.mocked(fetch).mock.calls.some(
+          ([url, init]) =>
+            String(url) === "/api/agents" &&
+            (init as RequestInit | undefined)?.method === "POST",
+        ),
+      ).toBe(true);
+    });
+    expect(createPostBody().purpose_tags).toEqual(["gcp"]);
+  });
+
+  it("sends the chosen group when the room has groups", async () => {
+    stubCreateModalCatalogs({
+      "/api/catalog/groups": { groups: [{ name: "payments-eng", kind: "engineering" }] },
+      "/api/personas/search": { results: [HELPER] },
+      "/api/agents": { name: "helper-bot", status: "provisioning" },
+      "/api/availability": { available: true, reason: null },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    await findFormReady();
+    await pickHelperAndName();
+    await fireEvent.change(screen.getByLabelText("Group"), {
+      target: { value: "payments-eng" },
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+    await waitFor(() => {
+      expect(
+        vi.mocked(fetch).mock.calls.some(
+          ([url, init]) =>
+            String(url) === "/api/agents" &&
+            (init as RequestInit | undefined)?.method === "POST",
+        ),
+      ).toBe(true);
+    });
+    expect(createPostBody().group_name).toBe("payments-eng");
+  });
 });
 
 describe("CreateModal — group picker (access-control Task B2)", () => {
@@ -302,7 +687,7 @@ describe("CreateModal — group picker (access-control Task B2)", () => {
     stubCreateModalCatalogs();
     renderWithClient(CreateModal, { open: true, onclose: () => {} });
 
-    await findCreateStationReady();
+    await findFormReady();
     expect(screen.queryByLabelText("Group")).toBeNull();
   });
 
@@ -342,49 +727,6 @@ describe("CreateModal — group picker (access-control Task B2)", () => {
 
     await fireEvent.change(groupSelect, { target: { value: "payments-eng" } });
     expect(groupSelect.value).toBe("payments-eng");
-  });
-
-  it("pre-fills purpose chips from the persona builder's drafted purpose_tags", async () => {
-    stubCreateModalCatalogs({
-      "/api/personas/draft": {
-        name: "billing-helper",
-        who_they_are: "a calm guide through confusing invoices",
-        what_they_do: "Answers billing questions and escalates refunds.",
-        purpose_tags: ["billing", "support"],
-      },
-      "/api/personas": {
-        id: "billing-helper",
-        name: "billing-helper",
-        description: "a calm guide through confusing invoices",
-        team: "shared",
-        tags: ["billing"],
-      },
-      "/api/agents/name-suggestions": { suggestions: [] },
-    });
-    renderWithClient(CreateModal, { open: true, onclose: () => {} });
-
-    await findCreateStationReady();
-    await fireEvent.click(
-      screen.getByRole("button", { name: "Start from scratch" }),
-    );
-
-    const jobField = screen.getByLabelText("What should this agent do for you?");
-    await fireEvent.input(jobField, {
-      target: { value: "Help customers with billing questions." },
-    });
-    await fireEvent.click(screen.getByRole("button", { name: "Draft persona" }));
-
-    await screen.findByRole("button", { name: "Create persona" });
-    await fireEvent.click(screen.getByRole("button", { name: "Create persona" }));
-
-    // "billing" is also one of the example-chip labels (below the field),
-    // so the pre-filled tag is asserted via its unique "Remove billing"
-    // button rather than `getByText`, which would otherwise match both the
-    // example chip and the pre-filled tag chip.
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Remove billing" })).not.toBeNull();
-      expect(screen.getByText("support")).not.toBeNull();
-    });
   });
 });
 
@@ -638,19 +980,7 @@ describe("CreateModal — the group menu has a commons, a directory, and a door 
   it("submit stays blocked while 'My group is not listed...' is picked — it is never sent as a real group_name", async () => {
     stubCreateModalCatalogs({
       "/api/catalog/groups": { groups: [{ name: "shared", kind: "shared" }] },
-      "/api/personas/search": {
-        results: [
-          {
-            id: "helper",
-            name: "Helper",
-            description: "Helps with things.",
-            team: "shared",
-            tags: [],
-            builtin: true,
-          },
-        ],
-      },
-      "/api/agents/name-suggestions": { suggestions: [] },
+      "/api/personas/search": { results: [HELPER] },
       "/api/availability": { available: true, reason: null },
     });
     renderWithClient(CreateModal, { open: true, onclose: () => {} });
@@ -660,322 +990,10 @@ describe("CreateModal — the group menu has a commons, a directory, and a door 
       target: { value: notListedValue(groupSelect) },
     });
 
-    const personaRadio = await screen.findByRole("radio", { name: /Helper/i });
-    await fireEvent.click(personaRadio);
-    await fireEvent.click(
-      await screen.findByRole("button", { name: "name it yourself" }),
-    );
-    await fireEvent.input(await screen.findByLabelText("Name"), {
-      target: { value: "helper-bot" },
-    });
-    await screen.findByText("✓ Available", {}, { timeout: 2000 });
+    await pickHelperAndName();
 
     const submit = screen.getByRole("button", { name: "Create agent" }) as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
-  });
-});
-
-describe("CreateModal — the dialog idiom (modal wave)", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  const HELPER = {
-    id: "helper",
-    name: "Helper",
-    description:
-      "Helps with things, and keeps helping long past the width of any one row in this list.",
-    team: "growth",
-    tags: [],
-    builtin: false,
-  };
-
-  it("has one filled button, in a footer under the body", async () => {
-    stubCreateModalCatalogs({ "/api/personas/search": { results: [HELPER] } });
-    const { container } = renderWithClient(CreateModal, {
-      open: true,
-      onclose: () => {},
-    });
-
-    await findCreateStationReady();
-
-    const footer = container.querySelector(".modal__footer");
-    expect(footer).not.toBeNull();
-    expect(container.querySelector(".modal__body")?.contains(footer as Node)).toBe(
-      false,
-    );
-    expect(footer?.querySelector(".btn--primary")?.textContent?.trim()).toBe(
-      "Create agent",
-    );
-    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
-  });
-
-  it("steps are a line of numbers at the top, not serif headings", async () => {
-    stubCreateModalCatalogs({ "/api/personas/search": { results: [HELPER] } });
-    const { container } = renderWithClient(CreateModal, {
-      open: true,
-      onclose: () => {},
-    });
-
-    await findCreateStationReady();
-
-    const steps = Array.from(container.querySelectorAll(".modal__step")).map((s) =>
-      s.textContent?.replace(/\s+/g, " ").trim(),
-    );
-    expect(steps).toEqual(["1 Persona", "2 Name", "3 Create"]);
-    // Persona is where everyone starts, so it is the one in ink.
-    expect(
-      container.querySelector(".modal__step--current")?.textContent?.includes("Persona"),
-    ).toBe(true);
-    expect(container.querySelectorAll(".modal__step--current")).toHaveLength(1);
-  });
-
-  it("offers personas as rows: a name, a tag, and one line that is cut off", async () => {
-    stubCreateModalCatalogs({ "/api/personas/search": { results: [HELPER] } });
-    const { container } = renderWithClient(CreateModal, {
-      open: true,
-      onclose: () => {},
-    });
-
-    await screen.findByRole("radio", { name: /Helper/i });
-
-    const row = container.querySelector(".list__row--selected, .list .list__row:not(.list__row--action)");
-    expect(row?.querySelector(".list__name")?.textContent).toBe("Helper");
-    expect(row?.querySelector(".list__tag")?.textContent?.trim()).toBe("growth");
-    const desc = row?.querySelector(".list__desc");
-    expect(desc?.textContent).toBe(HELPER.description);
-    // Truncation hides the rest, so the whole of it is on the row itself.
-    expect(desc?.getAttribute("title")).toBe(HELPER.description);
-    expect(container.querySelector(".persona-card")).toBeNull();
-  });
-
-  it("start from scratch is a quiet row at the top of the list, and still opens the builder", async () => {
-    stubCreateModalCatalogs({
-      "/api/personas/search": { results: [HELPER] },
-      "/api/agents/name-suggestions": { suggestions: [] },
-    });
-    const { container } = renderWithClient(CreateModal, {
-      open: true,
-      onclose: () => {},
-    });
-
-    await findCreateStationReady();
-
-    const scratch = screen.getByRole("button", { name: "Start from scratch" });
-    expect(scratch.className).toContain("list__row--action");
-    expect(scratch).toBe(container.querySelector(".list")?.firstElementChild);
-
-    await fireEvent.click(scratch);
-    expect(
-      await screen.findByLabelText("What should this agent do for you?"),
-    ).not.toBeNull();
-  });
-});
-
-describe("CreateModal - naming station warm-up (perf fix: prefetch on persona pick)", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  // The naming station's own `nameSuggestions` query is already reactive
-  // (a persona commit sets `nameSuggestionParams`, which the query's own
-  // `derived` options read), but that's still gated behind whatever tick
-  // Svelte schedules the effect on, so an explicit prefetch at the exact
-  // moment of picking makes the warm-up unambiguous and no longer dependent
-  // on that scheduling detail. `who_they_are` is already known client-side
-  // from the search result (persona.description, no network round trip
-  // needed), so this is the earliest possible moment to start the Vertex
-  // call. create-identity Task 4: the key now carries `persona_id` (the
-  // server does the real-body lookup) rather than the persona's bare label
-  // standing in for `what_they_do`.
-  it("prefetches name suggestions exactly once, with the right key, the moment a persona is picked from search", async () => {
-    stubCreateModalCatalogs({
-      "/api/personas/search": {
-        results: [
-          {
-            id: "helper",
-            name: "Helper",
-            description: "Helps with things.",
-            team: "shared",
-            tags: [],
-            builtin: true,
-          },
-        ],
-      },
-      "/api/agents/name-suggestions": { suggestions: [] },
-    });
-    const { client } = renderWithClient(CreateModal, { open: true, onclose: () => {} });
-    await findCreateStationReady();
-
-    const personaRadio = await screen.findByRole("radio", { name: /Helper/i });
-    const prefetchSpy = vi.spyOn(client, "prefetchQuery");
-
-    await fireEvent.click(personaRadio);
-
-    expect(prefetchSpy).toHaveBeenCalledTimes(1);
-    expect(prefetchSpy.mock.calls[0][0]).toMatchObject({
-      queryKey: [
-        "names",
-        "suggestions",
-        {
-          who_they_are: "Helps with things.",
-          persona_id: "helper",
-          exclude: [],
-          round: 0,
-        },
-      ],
-    });
-    // Not the persona's bare label -- a resolved persona_id makes the
-    // server ignore what_they_do anyway, but it must never be sent as the
-    // thin label itself.
-    const key = prefetchSpy.mock.calls[0][0] as { queryKey: unknown[] };
-    expect((key.queryKey[2] as { what_they_do: string }).what_they_do).not.toBe(
-      "Helper",
-    );
-  });
-});
-
-describe("CreateModal — naming station: three cards, honest Offer more (create-identity)", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  const HELPER_PERSONA = {
-    id: "helper",
-    name: "Helper",
-    description: "Helps with things.",
-    team: "shared",
-    tags: [],
-    builtin: true,
-  };
-
-  async function pickHelperPersona(): Promise<void> {
-    const personaRadio = await screen.findByRole("radio", { name: /Helper/i });
-    await fireEvent.click(personaRadio);
-  }
-
-  it("renders exactly three name cards", async () => {
-    stubCreateModalCatalogs({
-      "/api/personas/search": { results: [HELPER_PERSONA] },
-      "/api/agents/name-suggestions": {
-        suggestions: [
-          { name: "ember", reason: "a steady hand" },
-          { name: "cedar", reason: "quiet and quick" },
-          { name: "flint", reason: "sharp and precise" },
-        ],
-      },
-    });
-    renderWithClient(CreateModal, { open: true, onclose: () => {} });
-    await findCreateStationReady();
-    await pickHelperPersona();
-
-    const radiogroup = await screen.findByRole("radiogroup", {
-      name: "Suggested names",
-    });
-    expect(
-      within(radiogroup).getAllByRole("radio"),
-    ).toHaveLength(3);
-  });
-
-  it("offer more excludes every name already shown and bumps the round", async () => {
-    let nameSuggestionCalls = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        if (url.includes("/api/agents/name-suggestions")) {
-          nameSuggestionCalls += 1;
-          const suggestions =
-            nameSuggestionCalls === 1
-              ? [
-                  { name: "ember", reason: "a steady hand" },
-                  { name: "cedar", reason: "quiet and quick" },
-                  { name: "flint", reason: "sharp and precise" },
-                ]
-              : [
-                  { name: "loom", reason: "warm at the bench" },
-                  { name: "anvil", reason: "never in a hurry" },
-                  { name: "birch", reason: "built to last" },
-                ];
-          return new Response(JSON.stringify({ suggestions }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        const routes: Record<string, unknown> = {
-          "/api/catalog/models": {
-            models: [{ id: "gpt-5", label: "GPT-5" }],
-            default: "gpt-5",
-          },
-          "/api/catalog/groups": { groups: [] },
-          "/api/catalog/teams": { teams: ["shared"] },
-          "/api/teams": { teams: ["growth", "platform"], default: "shared" },
-          "/api/org/status": { org: "acme", wired: true, checks: [] },
-          "/api/personas/search": { results: [HELPER_PERSONA] },
-          "/api/": {},
-        };
-        for (const [needle, payload] of Object.entries(routes)) {
-          if (url.includes(needle)) {
-            return new Response(JSON.stringify(payload), {
-              status: 200,
-              headers: { "Content-Type": "application/json" },
-            });
-          }
-        }
-        throw new Error(`unstubbed fetch: ${url}, init=${JSON.stringify(init)}`);
-      }),
-    );
-
-    renderWithClient(CreateModal, { open: true, onclose: () => {} });
-    await findCreateStationReady();
-    await pickHelperPersona();
-    await screen.findByRole("radio", { name: /ember/i });
-
-    await fireEvent.click(screen.getByRole("button", { name: "Offer more" }));
-
-    await waitFor(() => {
-      expect(screen.getByRole("radio", { name: /loom/i })).not.toBeNull();
-    });
-
-    const nameSuggestionRequests = vi
-      .mocked(fetch)
-      .mock.calls.filter(([url]) => String(url).includes("/api/agents/name-suggestions"));
-    expect(nameSuggestionRequests).toHaveLength(2);
-
-    const secondBody = JSON.parse(
-      (nameSuggestionRequests[1]?.[1] as RequestInit).body as string,
-    );
-    expect(secondBody.round).toBe(1);
-    expect(secondBody.exclude).toEqual(
-      expect.arrayContaining(["ember", "cedar", "flint"]),
-    );
-    expect(secondBody.exclude).toHaveLength(3);
-  });
-
-  it("catalog picks send persona_id instead of the label-as-what", async () => {
-    stubCreateModalCatalogs({
-      "/api/personas/search": { results: [HELPER_PERSONA] },
-      "/api/agents/name-suggestions": { suggestions: [] },
-    });
-    renderWithClient(CreateModal, { open: true, onclose: () => {} });
-    await findCreateStationReady();
-    await pickHelperPersona();
-
-    await waitFor(() => {
-      expect(
-        vi
-          .mocked(fetch)
-          .mock.calls.some(([url]) =>
-            String(url).includes("/api/agents/name-suggestions"),
-          ),
-      ).toBe(true);
-    });
-
-    const call = vi
-      .mocked(fetch)
-      .mock.calls.find(([url]) => String(url).includes("/api/agents/name-suggestions"));
-    const body = JSON.parse((call?.[1] as RequestInit).body as string);
-    expect(body.persona_id).toBe("helper");
-    expect(body.what_they_do).not.toBe("Helper");
+    expect(await screen.findByText("Choose a group.")).not.toBeNull();
   });
 });

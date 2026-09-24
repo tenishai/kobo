@@ -81,32 +81,27 @@
   // create payload omits it, same as `createAgent`'s payload does now.
   //
   // `oncreated` hands back the full created CatalogEntry, not just its id
-  // (create flow v2 "naming ceremony" addendum): CreateModal needs the
-  // persona's `description` (== `who_they_are` verbatim — see
-  // `kobo_api.personas`) right away to seed the naming station's
-  // suggestion fetch, and reading it back off the persona search cache
-  // would race that cache's own debounced refetch after this mutation's
-  // `invalidateQueries` — the mutation result is already sitting right
-  // here, so CreateModal just takes it directly instead.
+  // (create flow v2 "naming ceremony" addendum): CreateModal selects this
+  // persona the moment it lands, and reading it back off the persona
+  // search cache would race that cache's own debounced refetch after this
+  // mutation's `invalidateQueries` — the mutation result is already sitting
+  // right here, so CreateModal just takes it directly instead.
   //
   // `oncreated`'s second argument (persona-metadata plan, 2026-08-18) is
   // whatever purpose tags the draft/distill step came up with
   // (`draft.purpose_tags`/`distilled.purpose_tags`) — captured at that time
-  // and carried through step 2 untouched, so CreateModal can pre-fill the
-  // Create station's chips editor the moment this persona is actually
-  // created. `[]` when neither happened, or either one failed (the classic
-  // empty fallback form).
+  // and carried through step 2 untouched, so CreateModal can pre-fill its
+  // own chips editor the moment this persona is actually created. `[]` when
+  // neither happened, or either one failed (the classic empty fallback
+  // form).
   //
-  // `oncreated`'s third argument (create-identity, Task 4) is this
-  // persona's own drafted `whatTheyDo`, first 2000 chars -- the created
-  // `CatalogEntry` carries no such field (`description` maps to
-  // `who_they_are` only), and a builder-created persona has no catalog id
-  // yet at the moment its own naming-station prefetch fires (below, at the
-  // "Create persona" click, before the create-persona POST even resolves),
-  // so this lane can't lean on server-side `persona_id` resolution the way
-  // a search pick does. Sending the real body directly here is what lets
-  // CreateModal's own naming query key match the one this component's
-  // prefetch already warmed.
+  // There used to be a third argument, and a name-suggestions prefetch at
+  // the "Create persona" click to go with it: the create dialog's old
+  // naming station asked a generator for three names, and this was the
+  // earliest moment its who/what pair was final. The plain-form wave
+  // retired that station -- a person types the name now -- so both are
+  // gone, and a persona create no longer starts a generator call nobody
+  // will read the result of.
   import { createMutation, useQueryClient } from "@tanstack/svelte-query";
   import {
     ApiError,
@@ -118,7 +113,6 @@
     createPersonaMutation,
     distillPersonaMutation,
     draftPersonaMutation,
-    nameSuggestionsQuery,
   } from "../lib/queries";
   import { mergeDistillFields, mergeDraftFields, splitLines } from "../lib/validate";
 
@@ -127,7 +121,7 @@
     oncreated,
   }: {
     oncancel: () => void;
-    oncreated: (persona: CatalogEntry, purposeTags: string[], whatTheyDo: string) => void;
+    oncreated: (persona: CatalogEntry, purposeTags: string[]) => void;
   } = $props();
 
   const queryClient = useQueryClient();
@@ -419,27 +413,6 @@
       return;
     }
     submitError = null;
-    // Naming station perf fix, updated for create-identity Task 4: warms
-    // the suggestion cache the moment this persona's who/what pair is
-    // FINAL, at this click, not at any keystroke above (`canCreate` already
-    // guarantees both fields are non-empty). Fired here rather than
-    // waiting for `oncreated` (CreateModal's own `selectPersona`, called
-    // once the mutation below actually succeeds) so the naming station's
-    // Vertex call runs IN PARALLEL with the create-persona POST, instead of
-    // only starting once that round trip lands.
-    //
-    // Sends the drafted body itself (first 2000 chars, matching the
-    // route's own `what_they_do` cap) rather than `persona_id` -- nothing
-    // has been created yet at this exact click, so there is no id to send.
-    // `oncreated`'s third argument carries this SAME truncated string
-    // through to CreateModal so its own naming query, once the mutation
-    // below actually succeeds, addresses the identical cache key this
-    // prefetch just warmed rather than drifting onto `persona_id` and
-    // warming a dead one.
-    const namingWhatTheyDo = whatTheyDo.slice(0, 2000);
-    void queryClient.prefetchQuery(
-      nameSuggestionsQuery({ whoTheyAre, whatTheyDo: namingWhatTheyDo }),
-    );
     const body: PersonaForm = {
       name,
       who_they_are: whoTheyAre,
@@ -449,7 +422,7 @@
     };
     mutation.mutate(body, {
       onSuccess: (created) => {
-        oncreated(created, draftedPurposeTags, namingWhatTheyDo);
+        oncreated(created, draftedPurposeTags);
       },
       onError: (error: unknown) => {
         if (error instanceof ApiError && error.status === 409) {
