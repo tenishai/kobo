@@ -696,6 +696,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     remove_skill_endpoint = _endpoint(app, "DELETE", "/api/agents/{name}/skills/{skill_id}")
     add_tool_endpoint = _endpoint(app, "POST", "/api/agents/{name}/tooling")
     set_persona_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/persona")
+    metadata_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/metadata")
     set_runtime_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/runtime")
     request_repo_access_endpoint = _endpoint(app, "POST", "/api/agents/{name}/repo-access")
     list_repo_access_endpoint = _endpoint(app, "GET", "/api/repo-access")
@@ -1705,6 +1706,45 @@ def register(mcp: FastMCP, app: Any) -> None:
 
         body = _persona_route_result(response)
         return {"agent": agent, "persona": body.get("persona"), "commit": body.get("sha")}
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @audited("kobo_move_agent")
+    async def kobo_move_agent(ctx: Context, agent: str, group: str) -> dict:
+        """Re-file `agent` under `group` -- the ACL namespace that decides who
+        may see and act on it. `group` is a room group name, or "shared" for
+        the commons everyone sees. Operators only: this changes who the
+        agent is visible to. Nothing in the agent's repository moves; its
+        team (the skills axis), skills, knowledge and persona stay as they
+        are. Returns the agent and the group it now sits under.
+        """
+        from kobo_api.main import AgentMetadataPatch
+
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            response = await _off_loop(
+                metadata_endpoint,
+                name=agent,
+                payload=AgentMetadataPatch(group=group),
+                request=req,
+                session=session,
+            )
+        finally:
+            session.close()
+
+        if response.status_code == 403:
+            # The agent gate's 403 folds into "not found" like every tool; the
+            # operator gate's does not, since the caller can SEE the agent and
+            # the answer is about their standing, not the agent's existence.
+            error = str(_parse(response).get("error", ""))
+            if "operator" in error:
+                raise ToolError(error)
+        if response.status_code == 422:
+            raise ToolError(
+                str(_parse(response).get("error", "that request could not be completed"))
+            )
+        body = _agent_route_result(response)
+        return {"agent": agent, "group": body.get("group")}
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
     @audited("kobo_restart_agent")

@@ -430,6 +430,7 @@ def test_build_mcp_server_registers_exactly_the_named_tools(
         "kobo_set_agent_env",
         "kobo_restart_agent",
         "kobo_set_agent_persona",
+        "kobo_move_agent",
         "kobo_move_persona",
         "kobo_archive_persona",
     }
@@ -3842,4 +3843,43 @@ def test_set_agent_persona_names_a_persona_that_does_not_exist(
             _ctx_for(MEMBER_A_EMAIL),
             agent=SECRETS_AGENT,
             persona="nobody",
+        )
+
+
+# --- kobo_move_agent -------------------------------------------------------------
+
+
+def test_move_agent_refiles_it_under_a_group(session_factory, config, fake_storage):
+    _seed_secrets_agent(session_factory, created_by=OPERATOR_EMAIL)
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage))
+
+    result = _call_tool(
+        mcp, "kobo_move_agent", _ctx_for(OPERATOR_EMAIL), agent=SECRETS_AGENT, group=GROUP_B
+    )
+
+    assert result == {"agent": SECRETS_AGENT, "group": GROUP_B}
+    session = session_factory()
+    try:
+        assert session.query(Agent).filter_by(name=SECRETS_AGENT).one().group_name == GROUP_B
+    finally:
+        session.close()
+
+
+def test_move_agent_is_an_operators_call(session_factory, config, fake_storage):
+    _seed_secrets_agent(session_factory)  # owned by member A, who is not an operator
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage))
+
+    with pytest.raises(ToolError, match="operator"):
+        _call_tool(
+            mcp, "kobo_move_agent", _ctx_for(MEMBER_A_EMAIL), agent=SECRETS_AGENT, group=GROUP_B
+        )
+
+
+def test_move_agent_names_a_group_the_room_does_not_know(session_factory, config, fake_storage):
+    _seed_secrets_agent(session_factory, created_by=OPERATOR_EMAIL)
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage))
+
+    with pytest.raises(ToolError, match="no group named finance"):
+        _call_tool(
+            mcp, "kobo_move_agent", _ctx_for(OPERATOR_EMAIL), agent=SECRETS_AGENT, group="finance"
         )

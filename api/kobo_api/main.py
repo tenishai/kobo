@@ -734,6 +734,11 @@ class AgentMetadataPatch(BaseModel):
     team: str | None = None
     purpose_tags: list[str] | None = None
     capability: str | None = None
+    # The ACL group the agent sits under (`Agent.group_name`), by its room
+    # name; `SHARED_GROUP` for the commons. Operator-only, since it decides
+    # who may see and act on the agent. Distinct from `team` (the skills
+    # axis), and never conflated with it (see `Agent.group_name`).
+    group: str | None = None
 
 
 class AgentRuntimePatch(BaseModel):
@@ -8015,6 +8020,31 @@ def create_app(
         if gate is not None:
             return gate
 
+        group_name = agent.group_name
+        if payload.group is not None:
+            # Moving an agent between groups changes who may see and act on
+            # it, so it is an operator's call, the way moving a persona into
+            # or out of the commons is. The group has to be one the room
+            # knows, or the commons; a name the room does not know would file
+            # the agent where nobody can reach it.
+            cfg: Config = app.state.config
+            # IAP-disabled short-circuits to allowed, the same escape hatch
+            # `_owner_or_operator_or_403` documents: a room with no perimeter
+            # has no operator to name, and locking the move behind one would
+            # close it for local rooms and this test suite alike.
+            if cfg.iap_audience and not _is_admin(request):
+                return JSONResponse(
+                    {"error": "only a room operator can move an agent between groups"},
+                    status_code=403,
+                )
+            known = {SHARED_GROUP, *(g.name for g in cfg.groups)}
+            wanted = payload.group.strip()
+            if wanted not in known:
+                return JSONResponse(
+                    {"error": f"there is no group named {wanted}"}, status_code=422
+                )
+            group_name = None if wanted == SHARED_GROUP else wanted
+
         team = agent.team
         if payload.team is not None:
             if not TEAM_SLUG_RE.match(payload.team):
@@ -8043,6 +8073,22 @@ def create_app(
         agent.team = team
         agent.purpose_tags = encode_tags(tags)
         agent.capability = capability
+        agent.group_name = group_name
+        group = group_name or SHARED_GROUP
+        if payload.team is None and payload.purpose_tags is None and payload.capability is None:
+            # A move alone. The group is the room's own filing, not something
+            # the bundle's card carries, so there is nothing to commit and no
+            # directory detail to resync.
+            session.commit()
+            return JSONResponse(
+                {
+                    "team": team,
+                    "purpose_tags": tags,
+                    "capability": capability,
+                    "group": group,
+                    "sha": None,
+                }
+            )
 
         try:
             sha = commit_card_metadata(
@@ -8071,7 +8117,13 @@ def create_app(
         # response (see _sync_directory_best_effort's own docstring).
         _sync_directory_best_effort(app.state.clients, app.state.config, agent)
         return JSONResponse(
-            {"team": team, "purpose_tags": tags, "capability": capability, "sha": sha}
+            {
+                "team": team,
+                "purpose_tags": tags,
+                "capability": capability,
+                "group": group,
+                "sha": sha,
+            }
         )
 
     @app.post("/api/agents/{name}/metadata/regenerate")

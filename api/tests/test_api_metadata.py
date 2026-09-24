@@ -196,6 +196,7 @@ def test_patch_metadata_updates_all_three_fields_and_returns_sha(session_factory
         "team": "acme-team",
         "purpose_tags": ["billing", "support"],
         "capability": "Helps customers with billing.",
+        "group": "shared",
         "sha": response.json()["sha"],
     }
     assert response.json()["sha"]
@@ -392,6 +393,7 @@ def test_patch_metadata_directory_sync_failure_does_not_change_response_or_statu
         "team": "acme-team",
         "purpose_tags": ["billing"],
         "capability": "Helps with billing.",
+        "group": "shared",
         "sha": response.json()["sha"],
     }
     assert "directory sync failed" in caplog.text
@@ -639,3 +641,77 @@ def test_regenerate_metadata_persona_lookup_failure_returns_502(session_factory,
 
     assert response.status_code == 502
     assert response.json() == {"error": "couldn't read this agent's persona. Try again."}
+
+
+# --- group: the ACL namespace an agent sits under --------------------------------
+
+
+def _grouped_config(config):
+    from kobo_api.config import GroupChoice
+
+    return config.model_copy(
+        update={
+            "groups": [
+                GroupChoice(name="marketing", okta_group="okta-marketing", kind="non-engineering"),
+                GroupChoice(name="sre", okta_group="okta-sre"),
+            ]
+        }
+    )
+
+
+def _group_on_row(session_factory):
+    session = session_factory()
+    try:
+        return session.query(Agent).filter_by(name=AGENT_NAME).one().group_name
+    finally:
+        session.close()
+
+
+def test_patch_metadata_moves_the_agent_to_a_configured_group(session_factory, config):
+    cfg = _grouped_config(config)
+    github = FakeGitHub()
+    client = _make_client(session_factory, cfg, github=github)
+    _seed_agent(session_factory, cfg, group_name=None)
+
+    response = client.patch(f"/api/agents/{AGENT_NAME}/metadata", json={"group": "marketing"})
+
+    assert response.status_code == 200
+    assert response.json()["group"] == "marketing"
+    assert _group_on_row(session_factory) == "marketing"
+    # The group is the room's own filing, not something the bundle carries:
+    # no card commit for a move alone.
+    assert github.pushes == []
+
+
+def test_patch_metadata_moves_the_agent_back_to_the_commons(session_factory, config):
+    cfg = _grouped_config(config)
+    client = _make_client(session_factory, cfg)
+    _seed_agent(session_factory, cfg, group_name="marketing")
+
+    response = client.patch(f"/api/agents/{AGENT_NAME}/metadata", json={"group": "shared"})
+
+    assert response.status_code == 200
+    assert response.json()["group"] == "shared"
+    assert _group_on_row(session_factory) is None
+
+
+def test_patch_metadata_refuses_a_group_the_room_does_not_know(session_factory, config):
+    cfg = _grouped_config(config)
+    client = _make_client(session_factory, cfg)
+    _seed_agent(session_factory, cfg, group_name="sre")
+
+    response = client.patch(f"/api/agents/{AGENT_NAME}/metadata", json={"group": "finance"})
+
+    assert response.status_code == 422
+    assert "finance" in response.json()["error"]
+    assert _group_on_row(session_factory) == "sre"
+
+
+def test_patch_metadata_group_reads_back_on_the_agent(session_factory, config):
+    cfg = _grouped_config(config)
+    client = _make_client(session_factory, cfg)
+    _seed_agent(session_factory, cfg, group_name=None)
+    client.patch(f"/api/agents/{AGENT_NAME}/metadata", json={"group": "marketing"})
+
+    body = client.get(f"/api/agents/{AGENT_NAME}").json()
+    assert body["group_name"] == "marketing"
