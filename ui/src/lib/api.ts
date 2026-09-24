@@ -161,10 +161,11 @@ export type CatalogEntry = {
  * preview actually shows: no `tags` (the server derives them from
  * name/who_they_are/what_they_do — `kobo_api.personas._derive_tags`), no
  * role/purpose/tone/tone_note (Rules absorbs what Boundaries used to), and
- * (as of the teamless-create addendum) no `team` — the create modal's Team
- * station is gone, so this is never sent; the server defaults the recorded
- * team to `"shared"` (`CreatePersonaRequest.team`) when the key is
- * omitted. */
+ * `team` (persona team scope): the group the persona is filed under,
+ * picked on the builder's "Who is this persona for?" field. `"shared"` is
+ * the commons; any other team takes membership (the server's team gate).
+ * Optional on the type because the server still defaults an omitted key
+ * to `"shared"` (`CreatePersonaRequest.team`). */
 export type PersonaForm = {
   name: string;
   who_they_are: string;
@@ -173,6 +174,7 @@ export type PersonaForm = {
   /** Create-flow polish (2026-08-28): tags persist from the draft or the
    * hand -- the server no longer derives any. */
   purpose_tags: string[];
+  team?: string;
 };
 
 /** The Persona v3 "describe the job, approve the soul" draft step's result
@@ -800,13 +802,19 @@ export async function searchSkills(
   return data.results;
 }
 
+/** Which personas a search covers (persona team scope): `"mine"` is the
+ * shared ones plus those filed under the caller's own groups (an operator
+ * sees all), `"all"` is the whole catalog. A filter, not access control. */
+export type PersonaScope = "mine" | "all";
+
 export async function searchPersonas(
   q: string,
   team: string | null,
+  scope: PersonaScope = "mine",
 ): Promise<CatalogEntry[]> {
-  const res = await fetch(
-    `/api/personas/search?${searchQueryString(q, team)}`,
-  );
+  const params = new URLSearchParams(searchQueryString(q, team));
+  params.set("scope", scope);
+  const res = await fetch(`/api/personas/search?${params.toString()}`);
   const data = await parse<{ results: CatalogEntry[] }>(res);
   return data.results;
 }
@@ -891,6 +899,29 @@ export async function unarchivePersona(id: string): Promise<CatalogEntry> {
     method: "POST",
   });
   return parse<CatalogEntry>(res);
+}
+
+/** `PATCH /api/personas/{id}` — re-files one persona under `team`. Two
+ * server gates: the caller may move it (its maker, a member of its current
+ * team, or an operator; built-ins never move), and may file it there (the
+ * create route's own team gate). A refusal is a 403 `{error}` naming which,
+ * through `parse`. Only the team changes. */
+export async function movePersona(id: string, team: string): Promise<CatalogEntry> {
+  const res = await fetch(`/api/personas/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ team }),
+  });
+  return parse<CatalogEntry>(res);
+}
+
+/** `GET /api/personas/movable` — the ids of the personas this caller may
+ * re-file, worked out server-side so the Personas page never copies the
+ * rule. */
+export async function movablePersonas(): Promise<string[]> {
+  const res = await fetch("/api/personas/movable");
+  const data = await parse<{ ids: string[] }>(res);
+  return data.ids;
 }
 
 export async function fetchTeams(): Promise<string[]> {

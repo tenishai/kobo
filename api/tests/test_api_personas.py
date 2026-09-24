@@ -1393,3 +1393,352 @@ def test_get_persona_503_when_catalogs_are_not_set_up(clients, tmp_path):
     response = client.get("/api/personas/aria")
 
     assert response.status_code == 503
+
+
+# --- Persona team scope (operator ruling: personas belong to the group that made them) ---
+#
+# `GET /api/personas/search?scope=mine|all` is a filter, not a wall: `mine`
+# (the default) is the commons plus the caller's own groups, `all` is the
+# whole catalog. `PATCH /api/personas/{id}` re-files one persona under a new
+# team, behind the create route's own team gate plus an ownership rule.
+
+SCOPE_ENTRIES = [
+    {"id": "commons-one", "name": "commons-one", "description": "d",
+     "team": "shared", "tags": [], "builtin": False},
+    {"id": "sre-one", "name": "sre-one", "description": "d",
+     "team": "sre", "tags": [], "builtin": False},
+    {"id": "qa-one", "name": "qa-one", "description": "d",
+     "team": "qa", "tags": [], "builtin": False},
+    # A built-in counts as shared even when a stale index files it elsewhere.
+    {"id": "helpful-generalist", "name": "helpful-generalist", "description": "d",
+     "team": "legacy", "tags": [], "builtin": True},
+]
+
+
+def _scope_client(gate_config, fake_storage, tmp_path, mapping):
+    client, key = _gate_client(
+        gate_config, fake_storage, tmp_path, groups_resolver=_GroupsStub(mapping)
+    )
+    _seed_personas_index(fake_storage, SCOPE_ENTRIES)
+    return client, key
+
+
+def _search_ids(client, key, email, **params) -> set[str]:
+    response = client.get(
+        "/api/personas/search", params=params, headers=_gate_headers(key, email=email)
+    )
+    assert response.status_code == 200, response.text
+    return {e["id"] for e in response.json()["results"]}
+
+
+def test_search_scope_mine_is_the_default_and_keeps_to_the_callers_groups(
+    gate_config, fake_storage, tmp_path
+):
+    client, key = _scope_client(gate_config, fake_storage, tmp_path, {MEMBER_EMAIL: ["sre"]})
+
+    default = _search_ids(client, key, MEMBER_EMAIL)
+    mine = _search_ids(client, key, MEMBER_EMAIL, scope="mine")
+
+    assert default == mine == {"commons-one", "sre-one", "helpful-generalist"}
+
+
+def test_search_scope_all_returns_every_group(gate_config, fake_storage, tmp_path):
+    client, key = _scope_client(gate_config, fake_storage, tmp_path, {MEMBER_EMAIL: ["sre"]})
+
+    assert _search_ids(client, key, MEMBER_EMAIL, scope="all") == {
+        "commons-one", "sre-one", "qa-one", "helpful-generalist",
+    }
+
+
+def test_search_scope_mine_for_an_operator_is_everything(gate_config, fake_storage, tmp_path):
+    client, key = _scope_client(gate_config, fake_storage, tmp_path, {OPERATOR_EMAIL: []})
+
+    assert _search_ids(client, key, OPERATOR_EMAIL) == {
+        "commons-one", "sre-one", "qa-one", "helpful-generalist",
+    }
+
+
+def test_search_scope_mine_with_no_groups_is_shared_only(gate_config, fake_storage, tmp_path):
+    client, key = _scope_client(gate_config, fake_storage, tmp_path, {STRANGER_EMAIL: []})
+
+    assert _search_ids(client, key, STRANGER_EMAIL) == {"commons-one", "helpful-generalist"}
+
+
+def test_search_scope_mine_with_the_directory_down_is_shared_only(
+    gate_config, fake_storage, tmp_path
+):
+    # No entry for the caller: the resolver answers None (couldn't tell).
+    client, key = _scope_client(gate_config, fake_storage, tmp_path, {})
+
+    assert _search_ids(client, key, STRANGER_EMAIL) == {"commons-one", "helpful-generalist"}
+
+
+def test_search_scope_mine_still_honors_q_and_team(gate_config, fake_storage, tmp_path):
+    client, key = _scope_client(gate_config, fake_storage, tmp_path, {MEMBER_EMAIL: ["sre"]})
+
+    assert _search_ids(client, key, MEMBER_EMAIL, q="sre") == {"sre-one"}
+    assert _search_ids(client, key, MEMBER_EMAIL, team="qa") == set()
+    assert _search_ids(client, key, MEMBER_EMAIL, team="qa", scope="all") == {"qa-one"}
+
+
+def test_search_scope_rejects_an_unknown_value(gate_config, fake_storage, tmp_path):
+    client, key = _scope_client(gate_config, fake_storage, tmp_path, {MEMBER_EMAIL: ["sre"]})
+
+    response = client.get(
+        "/api/personas/search",
+        params={"scope": "everyone"},
+        headers=_gate_headers(key, email=MEMBER_EMAIL),
+    )
+
+    assert response.status_code == 422
+
+
+def test_search_scope_mine_is_everything_when_the_room_has_no_sign_in(client, fake_storage):
+    # No IAP at all: nobody to scope to, the room behaves as it always has
+    # (the same escape hatch agent visibility uses).
+    _seed_personas_index(fake_storage, SCOPE_ENTRIES)
+
+    response = client.get("/api/personas/search")
+
+    assert {e["id"] for e in response.json()["results"]} == {
+        "commons-one", "sre-one", "qa-one", "helpful-generalist",
+    }
+
+
+def test_create_persona_records_who_made_it(gate_config, fake_storage, tmp_path):
+    resolver = _GroupsStub({MEMBER_EMAIL: ["sre"]})
+    client, key = _gate_client(gate_config, fake_storage, tmp_path, groups_resolver=resolver)
+
+    response = client.post(
+        "/api/personas",
+        json={**VALID_PAYLOAD, "team": "sre"},
+        headers=_gate_headers(key, email=MEMBER_EMAIL.upper()),
+    )
+
+    assert response.status_code == 201
+    index = json.loads(fake_storage.read_bytes("personas-bucket", "index.json"))
+    (entry,) = index["entries"]
+    assert entry["created_by"] == MEMBER_EMAIL
+
+
+# --- PATCH /api/personas/{id}: re-filing -------------------------------------------
+
+CREATOR_EMAIL = "maker@example.com"
+
+MOVE_SHARED = {"id": "wire-probe", "name": "Wire Probe", "description": "a test persona",
+               "team": "shared", "tags": ["probe"], "builtin": False,
+               "created_by": CREATOR_EMAIL}
+MOVE_TEAM = {"id": "stoic-mentor", "name": "stoic-mentor", "description": "d",
+             "team": "sre", "tags": ["calm"], "builtin": False,
+             "created_by": CREATOR_EMAIL}
+MOVE_BUILTIN = {"id": "helpful-generalist", "name": "helpful-generalist",
+                "description": "d", "team": "shared", "tags": [], "builtin": True}
+
+
+def _move_client(gate_config, fake_storage, tmp_path, mapping, entries=None):
+    client, key = _gate_client(
+        gate_config, fake_storage, tmp_path, groups_resolver=_GroupsStub(mapping)
+    )
+    _seed_personas_index(
+        fake_storage, entries if entries is not None else [MOVE_SHARED, MOVE_TEAM, MOVE_BUILTIN]
+    )
+    return client, key
+
+
+def _move(client, key, email, persona_id, team):
+    return client.patch(
+        f"/api/personas/{persona_id}",
+        json={"team": team},
+        headers=_gate_headers(key, email=email),
+    )
+
+
+def _index_entry(fake_storage, persona_id):
+    index = json.loads(fake_storage.read_bytes("personas-bucket", "index.json"))
+    return next(e for e in index["entries"] if e["id"] == persona_id)
+
+
+def test_move_shared_persona_by_its_creator_into_their_group(gate_config, fake_storage, tmp_path):
+    client, key = _move_client(gate_config, fake_storage, tmp_path, {CREATOR_EMAIL: ["qa"]})
+
+    response = _move(client, key, CREATOR_EMAIL, "wire-probe", "qa")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["team"] == "qa"
+    # Only the team changed: every other field of the catalog entry survives.
+    assert _index_entry(fake_storage, "wire-probe") == {**MOVE_SHARED, "team": "qa"}
+
+
+def test_move_is_searchable_under_the_new_team_right_away(gate_config, fake_storage, tmp_path):
+    client, key = _move_client(gate_config, fake_storage, tmp_path, {CREATOR_EMAIL: ["qa"]})
+    assert _search_ids(client, key, CREATOR_EMAIL, team="qa") == set()
+
+    assert _move(client, key, CREATOR_EMAIL, "wire-probe", "qa").status_code == 200
+
+    assert _search_ids(client, key, CREATOR_EMAIL, team="qa") == {"wire-probe"}
+
+
+def test_move_keeps_the_skills_catalog(gate_config, fake_storage, tmp_path):
+    client, key = _move_client(gate_config, fake_storage, tmp_path, {CREATOR_EMAIL: ["qa"]})
+    headers = _gate_headers(key, email=CREATOR_EMAIL)
+    pre = client.get("/api/skills/search", params={"q": "revi"}, headers=headers).json()
+    assert pre["results"]
+
+    assert _move(client, key, CREATOR_EMAIL, "wire-probe", "qa").status_code == 200
+
+    post = client.get("/api/skills/search", params={"q": "revi"}, headers=headers).json()
+    assert post == pre
+
+
+def test_move_shared_persona_by_someone_else_403(gate_config, fake_storage, tmp_path):
+    client, key = _move_client(gate_config, fake_storage, tmp_path, {MEMBER_EMAIL: ["qa"]})
+
+    response = _move(client, key, MEMBER_EMAIL, "wire-probe", "qa")
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": "only the person who made a shared persona, or a room operator, can move it"
+    }
+    assert _index_entry(fake_storage, "wire-probe")["team"] == "shared"
+
+
+def test_move_shared_persona_by_an_operator(gate_config, fake_storage, tmp_path):
+    client, key = _move_client(gate_config, fake_storage, tmp_path, {OPERATOR_EMAIL: []})
+
+    response = _move(client, key, OPERATOR_EMAIL, "wire-probe", "sre")
+
+    assert response.status_code == 200
+    assert _index_entry(fake_storage, "wire-probe")["team"] == "sre"
+
+
+def test_move_team_persona_by_a_member_of_its_team(gate_config, fake_storage, tmp_path):
+    client, key = _move_client(gate_config, fake_storage, tmp_path, {MEMBER_EMAIL: ["sre"]})
+
+    response = _move(client, key, MEMBER_EMAIL, "stoic-mentor", "shared")
+
+    assert response.status_code == 200
+    assert _index_entry(fake_storage, "stoic-mentor") == {**MOVE_TEAM, "team": "shared"}
+
+
+def test_move_team_persona_by_its_creator_after_leaving_the_team(
+    gate_config, fake_storage, tmp_path
+):
+    client, key = _move_client(gate_config, fake_storage, tmp_path, {CREATOR_EMAIL: ["qa"]})
+
+    response = _move(client, key, CREATOR_EMAIL, "stoic-mentor", "qa")
+
+    assert response.status_code == 200
+    assert _index_entry(fake_storage, "stoic-mentor")["team"] == "qa"
+
+
+def test_move_team_persona_by_an_outsider_403(gate_config, fake_storage, tmp_path):
+    client, key = _move_client(gate_config, fake_storage, tmp_path, {STRANGER_EMAIL: ["qa"]})
+
+    response = _move(client, key, STRANGER_EMAIL, "stoic-mentor", "qa")
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": "you must be a member of team sre, or the person who made this persona, to move it"
+    }
+
+
+def test_move_team_persona_with_the_directory_down_403(gate_config, fake_storage, tmp_path):
+    client, key = _move_client(gate_config, fake_storage, tmp_path, {})
+
+    response = _move(client, key, MEMBER_EMAIL, "stoic-mentor", "shared")
+
+    assert response.status_code == 403
+
+
+def test_move_into_a_team_the_caller_is_not_in_403(gate_config, fake_storage, tmp_path):
+    # Allowed to move it (they made it), not allowed to file it there.
+    client, key = _move_client(gate_config, fake_storage, tmp_path, {CREATOR_EMAIL: ["qa"]})
+
+    response = _move(client, key, CREATOR_EMAIL, "wire-probe", "sre")
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": "you must be a member of team sre to file a persona under it"
+    }
+    assert _index_entry(fake_storage, "wire-probe")["team"] == "shared"
+
+
+def test_move_builtin_persona_is_refused_even_for_an_operator(gate_config, fake_storage, tmp_path):
+    # The boot-time seed files every built-in back under the commons, so a
+    # move would quietly undo itself on the next restart.
+    client, key = _move_client(gate_config, fake_storage, tmp_path, {OPERATOR_EMAIL: []})
+
+    response = _move(client, key, OPERATOR_EMAIL, "helpful-generalist", "sre")
+
+    assert response.status_code == 403
+    assert response.json() == {"error": "built-in personas stay shared with everyone"}
+
+
+def test_move_unknown_persona_404(gate_config, fake_storage, tmp_path):
+    client, key = _move_client(gate_config, fake_storage, tmp_path, {OPERATOR_EMAIL: []})
+
+    response = _move(client, key, OPERATOR_EMAIL, "ghost", "sre")
+
+    assert response.status_code == 404
+    assert response.json() == {"error": "no persona with that id"}
+
+
+def test_move_rejects_a_bad_team_shape(gate_config, fake_storage, tmp_path):
+    client, key = _move_client(gate_config, fake_storage, tmp_path, {OPERATOR_EMAIL: []})
+
+    assert _move(client, key, OPERATOR_EMAIL, "wire-probe", "Not A Team").status_code == 422
+
+
+def test_move_502_on_storage_read_error(gate_config, tmp_path):
+    client, key = _gate_client(
+        gate_config, FakeStorage(read_error="storage is on fire"), tmp_path,
+        groups_resolver=_GroupsStub(),
+    )
+
+    assert _move(client, key, OPERATOR_EMAIL, "wire-probe", "sre").status_code == 502
+
+
+def test_move_is_logged(gate_config, fake_storage, tmp_path, caplog):
+    client, key = _move_client(gate_config, fake_storage, tmp_path, {CREATOR_EMAIL: ["qa"]})
+
+    with caplog.at_level("INFO", logger="kobo_api.main"):
+        assert _move(client, key, CREATOR_EMAIL, "wire-probe", "qa").status_code == 200
+
+    assert "persona wire-probe moved from shared to qa by maker@example.com" in caplog.text
+
+
+# --- GET /api/personas/movable: which cards get a Move action ----------------------
+
+
+def _movable(client, key, email) -> list[str]:
+    response = client.get("/api/personas/movable", headers=_gate_headers(key, email=email))
+    assert response.status_code == 200, response.text
+    return response.json()["ids"]
+
+
+def test_movable_lists_what_the_caller_made_or_shares_a_team_with(
+    gate_config, fake_storage, tmp_path
+):
+    client, key = _move_client(
+        gate_config, fake_storage, tmp_path,
+        {CREATOR_EMAIL: ["qa"], MEMBER_EMAIL: ["sre"], STRANGER_EMAIL: ["qa"]},
+    )
+
+    assert _movable(client, key, CREATOR_EMAIL) == ["stoic-mentor", "wire-probe"]
+    assert _movable(client, key, MEMBER_EMAIL) == ["stoic-mentor"]
+    assert _movable(client, key, STRANGER_EMAIL) == []
+
+
+def test_movable_for_an_operator_is_everything_but_builtins(gate_config, fake_storage, tmp_path):
+    client, key = _move_client(gate_config, fake_storage, tmp_path, {OPERATOR_EMAIL: []})
+
+    assert _movable(client, key, OPERATOR_EMAIL) == ["stoic-mentor", "wire-probe"]
+
+
+def test_movable_skips_archived_personas(gate_config, fake_storage, tmp_path):
+    client, key = _move_client(
+        gate_config, fake_storage, tmp_path, {CREATOR_EMAIL: ["qa"]},
+        entries=[{**MOVE_SHARED, "archived": True}, MOVE_TEAM],
+    )
+
+    assert _movable(client, key, CREATOR_EMAIL) == ["stoic-mentor"]

@@ -183,4 +183,131 @@ describe("Personas page", () => {
       ).toBe(true);
     });
   });
+
+  describe("Move to... (persona team scope)", () => {
+    /** whoami, the movable list, the search and the PATCH, with the PATCH
+     * answer up to the test. */
+    function stubMoveRoom(
+      movable: string[],
+      patch: { status: number; body: unknown } = {
+        status: 200,
+        body: { ...GROWTH_SCOUT, team: "qa" },
+      },
+    ): void {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = String(input);
+          const json = (body: unknown, status = 200) =>
+            new Response(JSON.stringify(body), {
+              status,
+              headers: { "Content-Type": "application/json" },
+            });
+          if (init?.method === "PATCH") {
+            return json(patch.body, patch.status);
+          }
+          if (url.includes("/api/personas/movable")) {
+            return json({ ids: movable });
+          }
+          if (url.includes("/api/personas/search")) {
+            return json({ results: [HELPER, GROWTH_SCOUT] });
+          }
+          if (url.includes("/api/whoami")) {
+            return json({
+              email: "me@example.com",
+              operator: false,
+              groups: ["growth", "qa"],
+              groups_unavailable: false,
+            });
+          }
+          return json({});
+        }),
+      );
+    }
+
+    function patchCalls(): Array<[string, RequestInit]> {
+      return vi
+        .mocked(fetch)
+        .mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === "PATCH")
+        .map(([url, init]) => [String(url), init as RequestInit]);
+    }
+
+    it("lists every group, not just the caller's", async () => {
+      stubMoveRoom([]);
+      renderWithClient(Personas);
+      await screen.findByText("Helper");
+
+      const searches = vi
+        .mocked(fetch)
+        .mock.calls.map(([url]) => String(url))
+        .filter((url) => url.includes("/api/personas/search"));
+      expect(searches.every((url) => url.includes("scope=all"))).toBe(true);
+    });
+
+    it("appears only on personas the caller may move", async () => {
+      stubMoveRoom(["growth-scout"]);
+      renderWithClient(Personas);
+
+      const move = await screen.findByLabelText("Move growth-scout to");
+      expect(move.closest(".persona-card")?.textContent).toContain("growth-scout");
+      expect(screen.queryByLabelText("Move Helper to")).toBeNull();
+    });
+
+    it("offers the caller's other groups and everyone, never where it already is", async () => {
+      stubMoveRoom(["growth-scout"]);
+      renderWithClient(Personas);
+
+      const move = (await screen.findByLabelText("Move growth-scout to")) as HTMLSelectElement;
+      await vi.waitFor(() => expect(move.options.length).toBeGreaterThan(2));
+
+      expect([...move.options].map((o) => o.textContent?.trim())).toEqual([
+        "Move to...",
+        "qa",
+        "Everyone (shared)",
+      ]);
+    });
+
+    it("moving sends just the new team and says where it went", async () => {
+      stubMoveRoom(["growth-scout"]);
+      renderWithClient(Personas);
+
+      const move = (await screen.findByLabelText("Move growth-scout to")) as HTMLSelectElement;
+      await vi.waitFor(() => expect(move.options.length).toBeGreaterThan(2));
+      await fireEvent.change(move, { target: { value: "qa" } });
+
+      await vi.waitFor(() => expect(patchCalls()).toHaveLength(1));
+      const [url, init] = patchCalls()[0];
+      expect(url).toBe("/api/personas/growth-scout");
+      expect(JSON.parse(String(init.body))).toEqual({ team: "qa" });
+      await vi.waitFor(() => {
+        expect(
+          toasts.some((t) => t.kind === "success" && t.title === "Moved growth-scout to qa"),
+        ).toBe(true);
+      });
+    });
+
+    it("a refusal shows the server's own reason as a toast", async () => {
+      stubMoveRoom(["growth-scout"], {
+        status: 403,
+        body: { error: "you must be a member of team qa to file a persona under it" },
+      });
+      renderWithClient(Personas);
+
+      const move = (await screen.findByLabelText("Move growth-scout to")) as HTMLSelectElement;
+      await vi.waitFor(() => expect(move.options.length).toBeGreaterThan(2));
+      await fireEvent.change(move, { target: { value: "qa" } });
+
+      await vi.waitFor(() => {
+        expect(
+          toasts.some(
+            (t) =>
+              t.kind === "error" &&
+              t.title === "Couldn't move that persona" &&
+              t.body === "you must be a member of team qa to file a persona under it",
+          ),
+        ).toBe(true);
+      });
+      expect(move.value).toBe("");
+    });
+  });
 });

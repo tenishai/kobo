@@ -1011,14 +1011,28 @@ def _seed_persona(
     return json.loads(response.body)
 
 
-def _search_personas(app, session_factory, *, q: str = "", team: str | None = None) -> dict:
+def _search_personas(
+    app,
+    session_factory,
+    *,
+    q: str = "",
+    team: str | None = None,
+    scope: str = "mine",
+    email: str = MEMBER_A_EMAIL,
+) -> dict:
     """The route's own answer, called the same way -- through `_endpoint`,
     not a second implementation -- so the tool's output can be compared
     against it directly for parity."""
     search_personas_endpoint = _endpoint(app, "GET", "/api/personas/search")
     session = session_factory()
     try:
-        return search_personas_endpoint(q=q, team=team, session=session)
+        return search_personas_endpoint(
+            request=authz.room_request(app, email),
+            q=q,
+            team=team,
+            scope=scope,
+            session=session,
+        )
     finally:
         session.close()
 
@@ -1070,6 +1084,43 @@ def test_list_personas_q_and_team_filter_parity(session_factory, config):
     q_route = _search_personas(app, session_factory, q="aria")
     assert q_result == {"result": q_route["results"]}
     assert [p["name"] for p in q_result["result"]] == ["Aria the Assistant"]
+
+
+def test_list_personas_scope_mine_is_the_default_and_all_shows_every_group(
+    session_factory, config
+):
+    app = _personas_app(session_factory, config, groups_resolver=_resolver())
+    _seed_persona(app, session_factory, name="Aria the Assistant", team="shared")
+    _seed_persona(
+        app, session_factory, name="Birch the Builder", team=GROUP_A, creator_email=OWNER_A_EMAIL
+    )
+    _seed_persona(
+        app, session_factory, name="Cedar the Critic", team=GROUP_B, creator_email=OWNER_B_EMAIL
+    )
+    mcp = build_mcp_server(app)
+
+    mine = _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL))
+    assert mine == {"result": _search_personas(app, session_factory)["results"]}
+    assert [p["name"] for p in mine["result"]] == ["Aria the Assistant", "Birch the Builder"]
+
+    every = _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL), scope="all")
+    assert every == {"result": _search_personas(app, session_factory, scope="all")["results"]}
+    assert [p["name"] for p in every["result"]] == [
+        "Aria the Assistant",
+        "Birch the Builder",
+        "Cedar the Critic",
+    ]
+
+    operator = _call_tool(mcp, "kobo_list_personas", _ctx_for(OPERATOR_EMAIL))
+    assert len(operator["result"]) == 3
+
+
+def test_list_personas_rejects_an_unknown_scope(session_factory, config):
+    app = _personas_app(session_factory, config, groups_resolver=_resolver())
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="scope must be mine or all"):
+        _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL), scope="everyone")
 
 
 def test_list_personas_result_key_shape(session_factory, config):

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   mergeDistillFields,
   mergeDraftFields,
+  personaTeamOptions,
   splitLines,
   splitTags,
   validateName,
@@ -321,5 +322,33 @@ describe("mergeDistillFields", () => {
 
     expect(() => mergeDistillFields(current, malformed)).not.toThrow();
     expect(mergeDistillFields(current, malformed)).toEqual(current);
+  });
+});
+
+describe("personaTeamOptions", () => {
+  const ROOM = [
+    { name: "shared", kind: "shared" as const },
+    { name: "sre", kind: "engineering" as const },
+    { name: "qa", kind: "engineering" as const },
+    { name: "design", kind: "non-engineering" as const },
+  ];
+
+  it("is the caller's own groups, without the commons", () => {
+    expect(
+      personaTeamOptions({ operator: false, groups: ["qa", "shared", "sre"] }, ROOM),
+    ).toEqual(["qa", "sre"]);
+  });
+
+  it("is every named group for an operator, then any of their own the room does not list", () => {
+    expect(personaTeamOptions({ operator: true, groups: ["ops"] }, ROOM)).toEqual([
+      "sre",
+      "qa",
+      "design",
+      "ops",
+    ]);
+  });
+
+  it("is empty before whoami has answered", () => {
+    expect(personaTeamOptions(undefined, ROOM)).toEqual([]);
   });
 });

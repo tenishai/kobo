@@ -27,6 +27,8 @@ import {
   generateAvatar,
   listAgents,
   listKnowledge,
+  movablePersonas,
+  movePersona,
   patchAgentMetadata,
   postThreadTurn,
   regenerateAgentMetadata,
@@ -834,7 +836,15 @@ describe("catalog search / teams / persona builder / org status client", () => {
 
     await expect(searchPersonas("help", null)).resolves.toEqual(results);
 
-    expect(fetch).toHaveBeenCalledWith("/api/personas/search?q=help");
+    expect(fetch).toHaveBeenCalledWith("/api/personas/search?q=help&scope=mine");
+  });
+
+  it("searchPersonas sends scope=all when asked for every group", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ results: [] }));
+
+    await searchPersonas("", null, "all");
+
+    expect(fetch).toHaveBeenCalledWith("/api/personas/search?q=&scope=all");
   });
 
   it("searchPersonas escapes a hostile q containing '&' and spaces, and includes team", async () => {
@@ -843,7 +853,7 @@ describe("catalog search / teams / persona builder / org status client", () => {
     await searchPersonas("a&b c", "growth team");
 
     expect(fetch).toHaveBeenCalledWith(
-      "/api/personas/search?q=a%26b+c&team=growth+team",
+      "/api/personas/search?q=a%26b+c&team=growth+team&scope=mine",
     );
   });
 
@@ -1109,6 +1119,45 @@ describe("catalog search / teams / persona builder / org status client", () => {
     expect(fetch).toHaveBeenCalledWith("/api/personas/helper/archive", {
       method: "POST",
     });
+  });
+
+  it("movePersona PATCHes /api/personas/{id} with just the team", async () => {
+    const moved = {
+      id: "a b",
+      name: "Helper",
+      description: "d",
+      team: "sre",
+      tags: [],
+      builtin: false,
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(moved));
+
+    await expect(movePersona("a b", "sre")).resolves.toEqual(moved);
+    expect(fetch).toHaveBeenCalledWith("/api/personas/a%20b", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ team: "sre" }),
+    });
+  });
+
+  it("movePersona surfaces a 403's {error} message", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        { error: "you must be a member of team sre to file a persona under it" },
+        { status: 403, statusText: "Forbidden" },
+      ),
+    );
+
+    await expect(movePersona("helper", "sre")).rejects.toThrow(
+      "you must be a member of team sre to file a persona under it",
+    );
+  });
+
+  it("movablePersonas GETs /api/personas/movable and unwraps {ids}", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ids: ["a", "b"] }));
+
+    await expect(movablePersonas()).resolves.toEqual(["a", "b"]);
+    expect(fetch).toHaveBeenCalledWith("/api/personas/movable");
   });
 
   it("archivePersona encodes the id in the URL", async () => {

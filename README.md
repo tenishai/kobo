@@ -85,6 +85,14 @@ Kobo is opinionated by design:
 - **Personas**: the soul an agent is built from. Archive one from the Personas page when it
   has outlived its use, and restore it later; nothing is destroyed. Good persona names pass
   the glance test: a stranger reading the card knows what picking it gets them.
+
+  A persona belongs to the group that made it. The builder asks who it is for (one of your
+  groups, or Everyone), and the create dialog lists your groups' personas plus the shared
+  ones, with a quiet Show all groups link for the rest. Shared is the commons: anyone may
+  file there, and built-ins always live there. That list is a filter, not a lock; every
+  persona stays findable by anyone. To re-file one, use Move to... on the Personas page: the
+  person who made it, a member of its group, or an operator may move it (a shared one, only
+  its maker or an operator), and only into a group you belong to.
 - **MCP**: the room's tools are reachable from MCP clients (claude.ai connectors, Claude Code)
   as the signed-in user, over the room's own OAuth — no service account, no second permission
   system. Every call resolves the same visibility, ownership, and admin as the UI: check who

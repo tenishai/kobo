@@ -195,3 +195,26 @@ export function mergeDistillFields(
     whoTheyAre: pickField(current.whoTheyAre, fillableString(distilled.who_they_are)),
   };
 }
+
+/**
+ * The groups a persona may be filed under from this caller's seat (persona
+ * team scope), for the builder's "Who is this persona for?" select and the
+ * Personas page's "Move to..." menu. Never includes the commons: both
+ * surfaces add "Everyone (shared)" as their own last option.
+ *
+ * A caller's own groups come from whoami (config names, the same names the
+ * create form's Group select lists). An operator may file anywhere, so it
+ * is every group the room has named, then any of their own the room does
+ * not list. The server's team gate is still the real check.
+ */
+export function personaTeamOptions(
+  whoami: { operator: boolean; groups: string[] } | undefined,
+  roomGroups: { name: string; kind: string }[] | undefined,
+): string[] {
+  const own = (whoami?.groups ?? []).filter((g) => g !== "shared");
+  if (!whoami?.operator) {
+    return own;
+  }
+  const named = (roomGroups ?? []).filter((g) => g.kind !== "shared").map((g) => g.name);
+  return [...named, ...own.filter((g) => !named.includes(g))];
+}

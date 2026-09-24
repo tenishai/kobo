@@ -404,18 +404,30 @@ def register(mcp: FastMCP, app: Any) -> None:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     @audited("kobo_list_personas")
     async def kobo_list_personas(
-        ctx: Context, q: str = "", team: str | None = None
+        ctx: Context, q: str = "", team: str | None = None, scope: str = "mine"
     ) -> dict:
-        """List every persona in the room's catalog: id, name,
-        description, owning team, tags, and whether it is a room
-        builtin. Optional q matches name/description; optional team
-        filters to one team. Before creating a new persona, ALWAYS
-        list and check fit here first -- prefer an existing persona
-        over a near-twin. Any signed-in caller may list.
+        """List personas in the room's catalog: id, name, description,
+        owning team, tags, and whether it is a room builtin. `scope`
+        "mine" (the default) is the shared personas plus those filed
+        under your own groups (a room operator sees all); "all" is the
+        whole catalog. Optional q matches name/description; optional team
+        filters to one team. Before creating a new persona, ALWAYS list
+        and check fit here first (try scope="all" too) -- prefer an
+        existing persona over a near-twin. Any signed-in caller may list.
         """
+        if scope not in ("mine", "all"):
+            raise ToolError("scope must be mine or all")
+        req = authz.room_request(app, get_user_email(ctx))
         session = app.state.session_factory()
         try:
-            body = await _off_loop(search_personas_endpoint, q=q, team=team, session=session)
+            body = await _off_loop(
+                search_personas_endpoint,
+                request=req,
+                q=q,
+                team=team,
+                scope=scope,
+                session=session,
+            )
         finally:
             session.close()
         return {"result": body["results"]}

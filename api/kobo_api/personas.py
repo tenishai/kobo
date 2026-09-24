@@ -379,6 +379,28 @@ def set_persona_archived(
     raise PersonaError(f"no persona with id {persona_id!r}")
 
 
+def set_persona_team(
+    storage: StorageClient,
+    *,
+    bucket: str,
+    prefix: str = "",
+    persona_id: str,
+    team: str,
+) -> dict:
+    """Re-file one index entry under `team`, touching nothing else on it:
+    name, description, tags, builtin, created_by and any archived flag all
+    survive as they were, and the persona.md object is never rewritten.
+    Returns the updated entry. Raises PersonaError when `persona_id` is not
+    in the index, same honesty rule as `set_persona_archived` above."""
+    index = _read_index(storage, bucket, prefix)
+    for entry in index:
+        if entry["id"] == persona_id:
+            entry["team"] = team
+            _write_index(storage, bucket, prefix, index)
+            return entry
+    raise PersonaError(f"no persona with id {persona_id!r}")
+
+
 def create_persona(
     storage: StorageClient,
     *,
@@ -386,8 +408,14 @@ def create_persona(
     prefix: str = "",
     fields: PersonaFields,
     team: str,
+    created_by: str | None = None,
 ) -> CatalogEntry:
     """Write a room-authored persona: storage only, never touches search.
+
+    `created_by`, when known, is the creating caller's verified email,
+    lowercased into the index entry: the ownership axis `PATCH
+    /api/personas/{id}` checks (the person who made a persona may re-file
+    it). Absent when the room has no sign-in to say who asked.
 
     `search.ingest_indexes` does a full catalog rebuild from every
     configured bucket at once (Task 3) — calling it here with just the
@@ -423,16 +451,17 @@ def create_persona(
     )
 
     tags = normalize_tags(fields.purpose_tags)[:_TAG_CAP]
-    index.append(
-        {
-            "id": id_,
-            "name": fields.name,
-            "description": fields.who_they_are,
-            "team": team,
-            "tags": tags,
-            "builtin": False,
-        }
-    )
+    entry = {
+        "id": id_,
+        "name": fields.name,
+        "description": fields.who_they_are,
+        "team": team,
+        "tags": tags,
+        "builtin": False,
+    }
+    if created_by:
+        entry["created_by"] = created_by.lower()
+    index.append(entry)
     _write_index(storage, bucket, prefix, index)
 
     return CatalogEntry(

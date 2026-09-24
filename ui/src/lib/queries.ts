@@ -43,7 +43,9 @@
 //                                                      the Edit details
 //                                                      team picker
 //   ["catalog", "skills", {q, team}]                - a skill catalog search
-//   ["catalog", "personas", {q, team}]              - a persona catalog search
+//   ["catalog", "personas", {q, team, scope}]       - a persona catalog search
+//   ["personas", "movable"]                         - the persona ids the
+//                                                      caller may re-file
 //   ["personas", "archived"]                        - every archived persona
 //                                                      (hardening wave archive
 //                                                      lane), fetched lazily
@@ -132,6 +134,7 @@ import {
   type PersonaDistillResult,
   type PersonaDraft,
   type PersonaForm,
+  type PersonaScope,
   type RequestableAgent,
   type RequestableResult,
   type ScanFinding,
@@ -198,6 +201,8 @@ import {
   listLearnings,
   listSkills,
   listTooling,
+  movablePersonas,
+  movePersona,
   patchAgentMetadata,
   patchAgentRuntime,
   postThreadTurn,
@@ -361,14 +366,46 @@ export function recommendedSkillsQuery(who: string, what: string) {
   });
 }
 
-/** A persona catalog search for the given query/team. Keyed on both so each
- * distinct search has its own cache entry. */
-export function personasSearchQuery(q: string, team: string | null) {
+/** A persona catalog search for the given query/team/scope. Keyed on all
+ * three so each distinct search has its own cache entry. `scope` defaults
+ * to "mine" (the shared personas plus the caller's own groups), the same
+ * default the server takes. */
+export function personasSearchQuery(
+  q: string,
+  team: string | null,
+  scope: PersonaScope = "mine",
+) {
   return queryOptions({
-    queryKey: ["catalog", "personas", { q, team }] as const,
-    queryFn: () => searchPersonas(q, team),
+    queryKey: ["catalog", "personas", { q, team, scope }] as const,
+    queryFn: () => searchPersonas(q, team, scope),
     staleTime: CATALOG_SEARCH_STALE_MS,
   });
+}
+
+/** The ids of the personas this caller may re-file (`GET
+ * /api/personas/movable`): which cards on the Personas page get a Move
+ * action. */
+export function movablePersonasQuery() {
+  return queryOptions({
+    queryKey: ["personas", "movable"] as const,
+    queryFn: movablePersonas,
+  });
+}
+
+/** Re-files one persona under a new team (`PATCH /api/personas/{id}`). A
+ * move changes which list a persona shows up in and the team on its card,
+ * so every persona search, the team list, the movable list and the detail
+ * cards are refreshed. */
+export function movePersonaMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: ({ id, team }: { id: string; team: string }) => movePersona(id, team),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["catalog", "personas"] });
+      queryClient.invalidateQueries({ queryKey: ["catalog", "teams"] });
+      queryClient.invalidateQueries({ queryKey: ["personas", "movable"] });
+      queryClient.invalidateQueries({ queryKey: ["personas", "detail"] });
+    },
+  };
 }
 
 /**

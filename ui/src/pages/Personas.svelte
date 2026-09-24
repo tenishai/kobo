@@ -22,8 +22,15 @@
   // refusal's exact `{error}` copy (naming the actual requirement) surfaces
   // as an error toast, the house idiom (toast.svelte.ts) AgentDetail's own
   // retry/avatar failures already use.
+  //
+  // "Move to..." (persona team scope): a persona the caller may re-file --
+  // they made it, they share its team, or they run the room; the server
+  // says which (`movablePersonasQuery`, never recomputed here) -- carries a
+  // small select of the caller's groups plus "Everyone (shared)", minus the
+  // team it already sits under. Picking one PATCHes just the team. This page
+  // lists every group (scope "all"): it is the whole catalog, where the
+  // create dialog's list is the short one.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import { derived, writable } from "svelte/store";
   import EmptyState from "../components/EmptyState.svelte";
   import ErrorState from "../components/ErrorState.svelte";
   import Skeleton from "../components/Skeleton.svelte";
@@ -31,12 +38,60 @@
   import {
     archivePersonaMutation,
     archivedPersonasQuery,
+    groupsQuery,
+    movablePersonasQuery,
+    movePersonaMutation,
     personasSearchQuery,
     unarchivePersonaMutation,
+    whoamiQuery,
   } from "../lib/queries";
   import { toast } from "../lib/toast.svelte";
+  import { personaTeamOptions } from "../lib/validate";
 
-  const active = createQuery(() => (personasSearchQuery("", null)));
+  const queryClient = useQueryClient();
+  const active = createQuery(() => personasSearchQuery("", null, "all"));
+
+  const SHARED_TEAM = "shared";
+  const whoami = createQuery(() => whoamiQuery());
+  const roomGroups = createQuery(() => ({
+    ...groupsQuery(),
+    enabled: whoami.data?.operator === true,
+  }));
+  const movable = createQuery(() => movablePersonasQuery());
+  const movableIds = $derived(new Set(movable.data ?? []));
+  const teamOptions = $derived(personaTeamOptions(whoami.data, roomGroups.data));
+  const moveMutation = createMutation(() => movePersonaMutation(queryClient));
+
+  /** Where this persona could go: the caller's groups, then everyone,
+   * minus where it already is. */
+  function moveChoicesFor(persona: CatalogEntry): string[] {
+    return [...teamOptions, SHARED_TEAM].filter((t) => t !== persona.team);
+  }
+
+  function handleMove(persona: CatalogEntry, select: HTMLSelectElement): void {
+    const team = select.value;
+    // The select is a menu, not a field: it always rests on "Move to...".
+    select.value = "";
+    if (team === "") {
+      return;
+    }
+    moveMutation.mutate(
+      { id: persona.id, team },
+      {
+        onSuccess: () => {
+          toast.success(
+            `Moved ${persona.name} to ${team === SHARED_TEAM ? "everyone" : team}`,
+          );
+        },
+        onError: (error: unknown) => {
+          toast.error(
+            "Couldn't move that persona",
+            errorMessage(error, "Something went wrong. Try again."),
+          );
+        },
+      },
+    );
+  }
 
   let showArchived = $state(false);
   const archived = createQuery(() => (archivedPersonasQuery(showArchived)));
@@ -45,7 +100,6 @@
     showArchived = !showArchived;
   }
 
-  const queryClient = useQueryClient();
   const archiveMutation = createMutation(() => (archivePersonaMutation(queryClient)));
   const unarchiveMutation = createMutation(() => (unarchivePersonaMutation(queryClient)));
 
@@ -149,6 +203,23 @@
       </div>
     </div>
     {#if mode === "archive"}
+      {@const moveChoices = moveChoicesFor(persona)}
+      {#if movableIds.has(persona.id) && moveChoices.length > 0}
+        <select
+          class="persona-card__action persona-card__move"
+          aria-label={`Move ${persona.name} to`}
+          value=""
+          disabled={moveMutation.isPending}
+          onchange={(event) => handleMove(persona, event.currentTarget)}
+        >
+          <option value="" disabled>Move to...</option>
+          {#each moveChoices as team (team)}
+            <option value={team}>
+              {team === SHARED_TEAM ? "Everyone (shared)" : team}
+            </option>
+          {/each}
+        </select>
+      {/if}
       <button
         type="button"
         class="persona-card__action"
@@ -305,6 +376,12 @@
   .persona-card__action:hover:not(:disabled) {
     border-color: var(--accent);
     color: var(--accent);
+  }
+
+  /* The move menu reads as a quiet button, not a form field. */
+  .persona-card__move {
+    font-weight: 500;
+    color: var(--muted);
   }
 
   .persona-card__action:disabled {

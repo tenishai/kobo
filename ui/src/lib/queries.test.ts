@@ -27,6 +27,8 @@ import {
   intakeQuery,
   intakeRefetchInterval,
   modelsQuery,
+  movablePersonasQuery,
+  movePersonaMutation,
   nameSuggestionsQuery,
   orgStatusQuery,
   patchMetadataMutation,
@@ -807,11 +809,16 @@ describe("skillsSearchQuery", () => {
 });
 
 describe("personasSearchQuery", () => {
-  it("has queryKey ['catalog', 'personas', {q, team}]", () => {
+  it("has queryKey ['catalog', 'personas', {q, team, scope}], scope mine by default", () => {
     expect(personasSearchQuery("help", null).queryKey).toEqual([
       "catalog",
       "personas",
-      { q: "help", team: null },
+      { q: "help", team: null, scope: "mine" },
+    ]);
+    expect(personasSearchQuery("help", null, "all").queryKey).toEqual([
+      "catalog",
+      "personas",
+      { q: "help", team: null, scope: "all" },
     ]);
   });
 
@@ -832,7 +839,7 @@ describe("personasSearchQuery", () => {
       callQueryFn<CatalogEntry[]>(personasSearchQuery("help", "growth")),
     ).resolves.toEqual([]);
     expect(fetch).toHaveBeenCalledWith(
-      "/api/personas/search?q=help&team=growth",
+      "/api/personas/search?q=help&team=growth&scope=mine",
     );
 
     vi.unstubAllGlobals();
@@ -878,6 +885,50 @@ describe("archivedPersonasQuery (hardening wave archive lane)", () => {
     expect(fetch).toHaveBeenCalledWith("/api/personas/archived");
 
     vi.unstubAllGlobals();
+  });
+});
+
+describe("movablePersonasQuery (persona team scope)", () => {
+  it("has queryKey ['personas', 'movable']", () => {
+    expect(movablePersonasQuery().queryKey).toEqual(["personas", "movable"]);
+  });
+});
+
+describe("movePersonaMutation (persona team scope)", () => {
+  it("mutationFn PATCHes the persona with its new team", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ id: "helper", team: "sre" }),
+    } as Response);
+    const queryClient = { invalidateQueries: vi.fn() } as unknown as QueryClient;
+
+    await movePersonaMutation(queryClient).mutationFn({ id: "helper", team: "sre" });
+
+    expect(fetch).toHaveBeenCalledWith("/api/personas/helper", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ team: "sre" }),
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("refreshes every persona search, the movable list and the detail cards", () => {
+    const queryClient = { invalidateQueries: vi.fn() } as unknown as QueryClient;
+
+    movePersonaMutation(queryClient).onSuccess();
+
+    const keys = vi
+      .mocked(queryClient.invalidateQueries)
+      .mock.calls.map((call) => (call[0] as { queryKey: unknown }).queryKey);
+    expect(keys).toEqual([
+      ["catalog", "personas"],
+      ["catalog", "teams"],
+      ["personas", "movable"],
+      ["personas", "detail"],
+    ]);
   });
 });
 

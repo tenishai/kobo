@@ -2428,6 +2428,27 @@ def test_create_persona_shared_lands_and_is_instantly_listable(
     assert any(entry["id"] == result["id"] for entry in listed["result"])
 
 
+def test_create_persona_records_the_caller_as_its_maker(session_factory, config, fake_storage):
+    """The index entry carries the MCP caller's email, the same ownership
+    axis PATCH /api/personas/{id} checks, so a persona made from a chat
+    session can be re-filed by the person who made it."""
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    _call_tool(
+        mcp,
+        "kobo_create_persona",
+        _ctx_for(MEMBER_A_EMAIL),
+        name="Night Auditor",
+        who_they_are="a meticulous overnight reconciler",
+        what_they_do="Reconcile the day's transactions and flag anomalies.",
+    )
+
+    index = json.loads(fake_storage.read_bytes(config.personas_bucket, "index.json"))
+    (entry,) = [e for e in index["entries"] if e["id"] == "night-auditor"]
+    assert entry["created_by"] == MEMBER_A_EMAIL
+
+
 def test_create_persona_named_team_member_passes(session_factory, config, fake_storage):
     """A caller resolved into the claimed team lands under it -- the
     route's own `_persona_team_gate` membership arm, not a bypass."""

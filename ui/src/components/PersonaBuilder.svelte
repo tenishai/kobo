@@ -74,11 +74,18 @@
   // post them — it does NOT own the "which persona is selected" or "am I
   // showing the list or the builder" state, both of which stay in
   // CreateModal (this is the thing that swaps in and out, not the thing
-  // deciding when to swap). No `team` prop (Persona v3 / teamless-create
-  // addendum): the create modal's Team station is gone entirely, so there
-  // is nothing to tag the new persona with — the server defaults the
-  // recorded team to "shared" (`CreatePersonaRequest.team`) when the
-  // create payload omits it, same as `createAgent`'s payload does now.
+  // deciding when to swap).
+  //
+  // "Who is this persona for?" (persona team scope, operator ruling: "most
+  // personas are created under the shared tag; they should be scoped to
+  // the group that created them"): a select of the caller's own groups
+  // (whoami's `groups`, the config names the create form's Group select
+  // also lists) plus "Everyone (shared)", sent as `team` on create. An
+  // operator sees every group the room has named (`groupsQuery`). The
+  // default is the Group already picked on the create form when the caller
+  // is in it (`defaultTeam`), else their only group when they have exactly
+  // one, else everyone. The server's team gate is still the real check; a
+  // refusal from it reads as one plain sentence.
   //
   // `oncreated` hands back the full created CatalogEntry, not just its id
   // (create flow v2 "naming ceremony" addendum): CreateModal selects this
@@ -102,7 +109,7 @@
   // retired that station -- a person types the name now -- so both are
   // gone, and a persona create no longer starts a generator call nobody
   // will read the result of.
-  import { createMutation, useQueryClient } from "@tanstack/svelte-query";
+  import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import {
     ApiError,
     errorMessage,
@@ -113,15 +120,25 @@
     createPersonaMutation,
     distillPersonaMutation,
     draftPersonaMutation,
+    groupsQuery,
+    whoamiQuery,
   } from "../lib/queries";
-  import { mergeDistillFields, mergeDraftFields, splitLines } from "../lib/validate";
+  import {
+    mergeDistillFields,
+    mergeDraftFields,
+    personaTeamOptions,
+    splitLines,
+  } from "../lib/validate";
 
   let {
     oncancel,
     oncreated,
+    defaultTeam = null,
   }: {
     oncancel: () => void;
     oncreated: (persona: CatalogEntry, purposeTags: string[]) => void;
+    /** The Group already chosen on the create form, if any. */
+    defaultTeam?: string | null;
   } = $props();
 
   const queryClient = useQueryClient();
@@ -134,6 +151,30 @@
   const mutation = createMutation(() => (createPersonaMutation(queryClient)));
 
   let step = $state<"draft" | "preview">("draft");
+
+  // --- Who the persona is for ----------------------------------------------
+
+  const SHARED_TEAM = "shared";
+  const whoami = createQuery(() => whoamiQuery());
+  const isOperator = $derived(whoami.data?.operator === true);
+  const roomGroups = createQuery(() => ({ ...groupsQuery(), enabled: isOperator }));
+
+  const myGroups = $derived(
+    (whoami.data?.groups ?? []).filter((g) => g !== SHARED_TEAM),
+  );
+  const teamOptions = $derived(personaTeamOptions(whoami.data, roomGroups.data));
+  const suggestedTeam = $derived(
+    defaultTeam && (defaultTeam === SHARED_TEAM || teamOptions.includes(defaultTeam))
+      ? defaultTeam
+      : myGroups.length === 1
+        ? myGroups[0]
+        : SHARED_TEAM,
+  );
+  let teamOverride = $state<string | null>(null);
+  const selectedTeam = $derived(teamOverride ?? suggestedTeam);
+
+  const TEAM_REFUSED =
+    "You are not in that group, so the persona can't be filed there. Pick one of your groups, or Everyone.";
 
   // Tracks whether step 2 was reached via a successful draft, as opposed to
   // a bring-your-own-persona upload/paste or a draft that failed - purely a
@@ -419,6 +460,7 @@
       what_they_do: whatTheyDo,
       rules,
       purpose_tags: draftedPurposeTags,
+      team: selectedTeam,
     };
     mutation.mutate(body, {
       onSuccess: (created) => {
@@ -433,6 +475,8 @@
           // wondering whether to go look for it.
           submitError =
             "A persona with that name already exists. It may already be in the list.";
+        } else if (error instanceof ApiError && error.status === 403) {
+          submitError = TEAM_REFUSED;
         } else {
           submitError = errorMessage(error, "Something went wrong. Try again.");
         }
@@ -706,6 +750,28 @@
           </p>
         {/if}
       </div>
+    </div>
+
+    <div class="field">
+      <label class="field__label" for="persona-builder-team">
+        Who is this persona for?
+      </label>
+      <select
+        id="persona-builder-team"
+        class="field__input"
+        value={selectedTeam}
+        onchange={(event) =>
+          (teamOverride = (event.currentTarget as HTMLSelectElement).value)}
+      >
+        {#each teamOptions as team (team)}
+          <option value={team}>{team}</option>
+        {/each}
+        <option value={SHARED_TEAM}>Everyone (shared)</option>
+      </select>
+      <p class="field__help">
+        People in this group see it in their persona list. Anyone can still
+        find it with Show all groups.
+      </p>
     </div>
 
     {#if submitError}

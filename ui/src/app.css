@@ -844,6 +844,24 @@ textarea.field__input {
   text-decoration: underline;
 }
 
+/* A link that adjusts a view rather than starting something: muted until
+   it is pointed at, so it never competes with the link beside it. */
+.btn--link-quiet {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.btn--link-quiet:hover {
+  color: var(--ink);
+}
+
+/* More than one link on a label row, kept together at its far end. */
+.field__label-actions {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+
 /* The toggle on a section that starts folded. Quiet, and it says which way
    it is facing through aria-expanded on the button itself. */
 .field__disclosure {

@@ -63,6 +63,7 @@
     checkAvailability,
     errorMessage,
     type CatalogEntry,
+    type PersonaScope,
   } from "../lib/api";
   import { debounced } from "../lib/debounce";
   import {
@@ -156,7 +157,14 @@
 
   let personaQ = $state("");
   let personaSearchTerm = $state("");
-  const personas = createQuery(() => (personasSearchQuery(personaSearchTerm, null)));
+  // Persona team scope: the list starts on the personas for this person's
+  // own groups plus the shared ones ("mine"); the quiet toggle on the label
+  // row widens it to every group ("all"). A filter for a shorter list, not
+  // access control: each row still carries its team tag either way.
+  let personaScope = $state<PersonaScope>("mine");
+  const personas = createQuery(() =>
+    personasSearchQuery(personaSearchTerm, null, personaScope),
+  );
 
   const commitPersonaSearch = debounced((value: string) => {
     personaSearchTerm = value;
@@ -444,6 +452,7 @@
       submitError = null;
       personaQ = "";
       personaSearchTerm = "";
+      personaScope = "mine";
       builderOpen = false;
       groupValue = "";
       groupRequestName = "";
@@ -557,19 +566,30 @@
       <PersonaBuilder
         oncancel={() => (builderOpen = false)}
         oncreated={handlePersonaCreated}
+        defaultTeam={groupChosen ? groupValue : null}
       />
     {:else}
       <!-- 1. Persona -->
       <div class="field">
         <div class="field__label-row">
           <span class="field__label" id="create-persona-label">Persona</span>
-          <button
-            type="button"
-            class="btn--link"
-            onclick={() => (builderOpen = true)}
-          >
-            Build your own persona
-          </button>
+          <span class="field__label-actions">
+            <button
+              type="button"
+              class="btn--link btn--link-quiet"
+              aria-pressed={personaScope === "all"}
+              onclick={() => (personaScope = personaScope === "all" ? "mine" : "all")}
+            >
+              {personaScope === "all" ? "Show mine" : "Show all groups"}
+            </button>
+            <button
+              type="button"
+              class="btn--link"
+              onclick={() => (builderOpen = true)}
+            >
+              Build your own persona
+            </button>
+          </span>
         </div>
         <input
           id="create-persona-search"

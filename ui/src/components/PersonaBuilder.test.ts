@@ -648,3 +648,183 @@ describe("PersonaBuilder - the dialog idiom (modal wave)", () => {
     ).toBe("Create persona");
   });
 });
+
+describe("PersonaBuilder - who the persona is for (persona team scope)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const CATALOG_GROUPS = {
+    groups: [
+      { name: "shared", kind: "shared" },
+      { name: "sre", kind: "engineering" },
+      { name: "qa", kind: "engineering" },
+      { name: "design", kind: "non-engineering" },
+    ],
+  };
+
+  /** Answers whoami and the group catalog, records every create body, and
+   * lets a test swap in its own create response. */
+  function stubRoom(
+    whoami: { groups: string[]; operator?: boolean },
+    createResponse: { status: number; body: unknown } = {
+      status: 201,
+      body: {
+        id: "billing-buddy",
+        name: "billing-buddy",
+        description: "d",
+        team: "shared",
+        tags: [],
+        builtin: false,
+      },
+    },
+  ): Array<Record<string, unknown>> {
+    const sent: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const json = (body: unknown, status = 200) =>
+          new Response(JSON.stringify(body), {
+            status,
+            headers: { "Content-Type": "application/json" },
+          });
+        if (url.includes("/api/whoami")) {
+          return json({
+            email: "me@example.com",
+            operator: whoami.operator ?? false,
+            groups: whoami.groups,
+            groups_unavailable: false,
+          });
+        }
+        if (url.includes("/api/catalog/groups")) {
+          return json(CATALOG_GROUPS);
+        }
+        if (url.includes("/api/personas/draft")) {
+          return json(DRAFT_RESPONSE);
+        }
+        if (url.includes("/api/personas") && init?.method === "POST") {
+          sent.push(JSON.parse(String(init.body)));
+          return json(createResponse.body, createResponse.status);
+        }
+        return json({});
+      }),
+    );
+    return sent;
+  }
+
+  async function forField(): Promise<HTMLSelectElement> {
+    await reachStep2();
+    const select = screen.getByLabelText("Who is this persona for?") as HTMLSelectElement;
+    await waitFor(() => expect(select.options.length).toBeGreaterThan(1));
+    return select;
+  }
+
+  it("defaults to the group already chosen on the create form", async () => {
+    const sent = stubRoom({ groups: ["sre", "qa"] });
+    renderWithClient(PersonaBuilder, {
+      oncancel: () => {},
+      oncreated: () => {},
+      defaultTeam: "qa",
+    });
+
+    const select = await forField();
+    await waitFor(() => expect(select.value).toBe("qa"));
+
+    await fireEvent.click(screen.getByRole("button", { name: "Create persona" }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toEqual({
+      name: DRAFT_RESPONSE.name,
+      who_they_are: DRAFT_RESPONSE.who_they_are,
+      what_they_do: DRAFT_RESPONSE.what_they_do,
+      rules: [],
+      purpose_tags: DRAFT_RESPONSE.purpose_tags,
+      team: "qa",
+    });
+  });
+
+  it("defaults to the caller's only group when they have exactly one", async () => {
+    const sent = stubRoom({ groups: ["sre"] });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    const select = await forField();
+    await waitFor(() => expect(select.value).toBe("sre"));
+    expect([...select.options].map((o) => o.value)).toEqual(["sre", "shared"]);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Create persona" }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0].team).toBe("sre");
+  });
+
+  it("defaults to everyone when the caller has several groups and the form chose none", async () => {
+    stubRoom({ groups: ["sre", "qa"] });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    const select = await forField();
+
+    expect(select.value).toBe("shared");
+  });
+
+  it("ignores a form group the caller is not in", async () => {
+    stubRoom({ groups: ["sre"] });
+    renderWithClient(PersonaBuilder, {
+      oncancel: () => {},
+      oncreated: () => {},
+      defaultTeam: "design",
+    });
+
+    const select = await forField();
+
+    await waitFor(() => expect(select.value).toBe("sre"));
+  });
+
+  it("the everyone option sends shared", async () => {
+    const sent = stubRoom({ groups: ["sre"] });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    const select = await forField();
+    await waitFor(() => expect(select.value).toBe("sre"));
+    await fireEvent.change(select, { target: { value: "shared" } });
+    expect(screen.getByRole("option", { name: "Everyone (shared)" })).not.toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Create persona" }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0].team).toBe("shared");
+  });
+
+  it("an operator can file under any group", async () => {
+    stubRoom({ groups: [], operator: true });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    const select = await forField();
+
+    expect([...select.options].map((o) => o.value)).toEqual([
+      "sre",
+      "qa",
+      "design",
+      "shared",
+    ]);
+    expect(select.value).toBe("shared");
+  });
+
+  it("a refusal from the group check reads as a plain sentence", async () => {
+    stubRoom(
+      { groups: ["sre"] },
+      {
+        status: 403,
+        body: { error: "you must be a member of team sre to file a persona under it" },
+      },
+    );
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    await forField();
+    await fireEvent.click(screen.getByRole("button", { name: "Create persona" }));
+
+    expect(
+      await screen.findByText(
+        "You are not in that group, so the persona can't be filed there. Pick one of your groups, or Everyone.",
+      ),
+    ).not.toBeNull();
+    expect(screen.queryByText(/member of team sre/)).toBeNull();
+  });
+});

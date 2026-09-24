@@ -165,6 +165,7 @@ from kobo_api.personas import (
     create_persona,
     parse_persona_body,
     set_persona_archived,
+    set_persona_team,
     upsert_persona,
 )
 from kobo_api.personas import (
@@ -660,6 +661,15 @@ class CreatePersonaRequest(PersonaFields):
     """
 
     team: str = Field(default="shared", pattern=TEAM_SLUG_RE.pattern)
+
+
+class MovePersonaRequest(BaseModel):
+    """PATCH /api/personas/{id} body: the one field a re-file changes, in
+    the same slug shape `CreatePersonaRequest.team` takes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    team: str = Field(pattern=TEAM_SLUG_RE.pattern)
 
 
 class PersonaDraftRequest(BaseModel):
@@ -1854,6 +1864,31 @@ def _is_admin(request: Request) -> bool:
         return False
     member_groups = resolver.groups_for(email) or []
     return bool(set(member_groups) & set(cfg.admin_groups))
+
+
+def _persona_visible_teams(request: Request) -> list[str] | None:
+    """The teams the persona list's "mine" scope keeps to, or `None` for
+    no filter at all (operator ruling: personas belong to the group that
+    made them; the list is a filter, not a wall).
+
+    Same branch order `_visible_agents` uses for agents: a room with no
+    sign-in, an operator, or a room with no directory wired sees
+    everything. Otherwise the commons plus the caller's own groups, and a
+    directory that cannot answer right now narrows that to the commons
+    alone, never wider. Built-ins always pass (`search.search` adds them).
+    """
+    cfg: Config = request.app.state.config
+    if not cfg.iap_audience:
+        return None
+    if _is_admin(request):
+        return None
+    clients: Clients | None = request.app.state.clients
+    resolver = clients.groups if clients is not None else None
+    if resolver is None:
+        return None
+    email = (getattr(request.state, "iap_email", None) or "").lower()
+    groups = (resolver.groups_for(email) if email else None) or []
+    return [SHARED_GROUP, *[g for g in groups if g != SHARED_GROUP]]
 
 
 def _operator_block(request: Request, config: Config) -> JSONResponse | None:
@@ -3154,10 +3189,20 @@ def create_app(
 
     @app.get("/api/personas/search")
     def search_personas(
-        q: str = "", team: str | None = None, session: Session = Depends(get_session)  # noqa: B008
+        request: Request,
+        q: str = "",
+        team: str | None = None,
+        scope: Literal["mine", "all"] = "mine",
+        session: Session = Depends(get_session),  # noqa: B008
     ) -> dict:
+        # `scope` (persona team scope): "mine", the default, is the commons
+        # plus the caller's own groups (`_persona_visible_teams`); "all" is
+        # the whole catalog. A filter for a shorter list, not access
+        # control: "all" stays open to every signed-in caller, as this
+        # route always was.
         engine = session.get_bind()
         _maybe_refresh_catalogs(app, engine)
+        visible_teams = _persona_visible_teams(request) if scope == "mine" else None
         return {
             "results": [
                 {
@@ -3168,7 +3213,9 @@ def create_app(
                     "tags": e.tags,
                     "builtin": e.builtin,
                 }
-                for e in catalog_search(engine, "persona", q, team=team)
+                for e in catalog_search(
+                    engine, "persona", q, team=team, visible_teams=visible_teams
+                )
             ]
         }
 
@@ -3285,6 +3332,7 @@ def create_app(
                 bucket=cfg.personas_bucket,
                 fields=payload,
                 team=payload.team,
+                created_by=getattr(request.state, "iap_email", None),
             )
             # Ingest right away, with the FULL kind->bucket mapping (Task 4
             # controller decision #1) — NOT just {"persona": ...}, since
@@ -3400,6 +3448,131 @@ def create_app(
         persona_id: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
     ) -> JSONResponse:
         return _set_archived_route(persona_id, request, session, archived=False)
+
+    # --- Re-filing (persona team scope) --------------------------------------
+
+    def _persona_move_block(request: Request, entry: dict) -> JSONResponse | None:
+        """Who may re-file this persona, whatever the destination: the
+        person who made it, a member of the team it sits under now, or an
+        operator. A persona in the commons has no team to be a member of,
+        so only its maker or an operator may move it. Built-ins never move
+        at all: the boot-time seed files every one back under the commons,
+        so a move would quietly undo itself on the next restart.
+
+        The destination is `_persona_team_gate`'s, checked separately by
+        the route: being allowed to move a persona is not being allowed to
+        file it anywhere."""
+        if entry.get("builtin"):
+            return JSONResponse(
+                {"error": "built-in personas stay shared with everyone"}, status_code=403
+            )
+        if _is_admin(request):
+            return None
+        email = (getattr(request.state, "iap_email", None) or "").lower()
+        creator = (entry.get("created_by") or "").lower()
+        if email and creator == email:
+            return None
+        team = entry.get("team", "")
+        if team == SHARED_GROUP:
+            return JSONResponse(
+                {
+                    "error": (
+                        "only the person who made a shared persona, "
+                        "or a room operator, can move it"
+                    )
+                },
+                status_code=403,
+            )
+        if _persona_team_gate(request, team) is None:
+            return None
+        return JSONResponse(
+            {
+                "error": (
+                    f"you must be a member of team {team}, "
+                    "or the person who made this persona, to move it"
+                )
+            },
+            status_code=403,
+        )
+
+    @app.patch("/api/personas/{persona_id}")
+    def move_persona_route(
+        persona_id: str,
+        payload: MovePersonaRequest,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        if clients is None or clients.storage is None or not cfg.personas_bucket:
+            return JSONResponse({"error": "catalogs aren't set up yet"}, status_code=503)
+
+        try:
+            index = personas_read_index(clients.storage, cfg.personas_bucket, "")
+        except ClientError as exc:
+            log.warning("persona move index read failed: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        entry = next((e for e in index if e.get("id") == persona_id), None)
+        if entry is None:
+            return JSONResponse({"error": "no persona with that id"}, status_code=404)
+
+        block = _persona_move_block(request, entry)
+        if block is not None:
+            return block
+        gate = _persona_team_gate(request, payload.team)
+        if gate is not None:
+            return gate
+
+        previous = entry.get("team", "")
+        caller = getattr(request.state, "iap_email", None) or "nobody"
+        try:
+            updated = set_persona_team(
+                clients.storage,
+                bucket=cfg.personas_bucket,
+                persona_id=persona_id,
+                team=payload.team,
+            )
+            # Same instant-ingest idiom as create/archive: the FULL
+            # kind->bucket mapping, so the move shows in search at once and
+            # the skills table is rebuilt alongside rather than wiped.
+            engine = session.get_bind()
+            ingest_indexes(engine, clients.storage, configured_catalogs(cfg))
+            app.state.catalog_loaded_at = time.monotonic()
+        except PersonaError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        except ClientError as exc:
+            log.warning("persona move failed: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        log.info(
+            "persona %s moved from %s to %s by %s",
+            persona_id,
+            previous,
+            payload.team,
+            caller,
+        )
+        return JSONResponse(updated)
+
+    # Which cards on the Personas page get a Move action: the ids this
+    # caller may re-file (`_persona_move_block` above), worked out here so
+    # the page never has to copy the rule. Active personas only, sorted.
+    # A literal GET path, so it sits above GET /api/personas/{persona_id}.
+    @app.get("/api/personas/movable")
+    def movable_personas_route(request: Request) -> JSONResponse:
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        if clients is None or clients.storage is None or not cfg.personas_bucket:
+            return JSONResponse({"error": "catalogs aren't set up yet"}, status_code=503)
+        try:
+            index = personas_read_index(clients.storage, cfg.personas_bucket, "")
+        except ClientError as exc:
+            log.warning("movable persona listing failed: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        ids = sorted(
+            e["id"]
+            for e in index
+            if not e.get("archived") and _persona_move_block(request, e) is None
+        )
+        return JSONResponse({"ids": ids})
 
     # Declared before any GET /api/personas/{persona_id} that might arrive
     # later: distinct method+path from the archive/unarchive POSTs above

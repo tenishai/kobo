@@ -1170,3 +1170,125 @@ describe("CreateModal — the persona hover card", () => {
     expect(personaDetailCalls("helper")).toHaveLength(1);
   });
 });
+
+describe("CreateModal — the persona list keeps to your groups (persona team scope)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const OTHER_GROUP = {
+    id: "qa-critic",
+    name: "QA Critic",
+    description: "Finds the bug first.",
+    team: "qa",
+    tags: [],
+    builtin: false,
+  };
+
+  /** The mine list holds Helper alone; the all list adds a persona filed
+   * under another group. Everything else answers like the shared stub. */
+  function stubScopedSearch(): void {
+    stubCreateModalCatalogs();
+    const catalogs = vi.mocked(fetch).getMockImplementation()!;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/api/personas/search")) {
+          const scope = new URL(url, "http://room").searchParams.get("scope");
+          const results = scope === "all" ? [HELPER, OTHER_GROUP] : [HELPER];
+          return new Response(JSON.stringify({ results }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return catalogs(input, init);
+      }),
+    );
+  }
+
+  function searchScopes(): Array<string | null> {
+    return vi
+      .mocked(fetch)
+      .mock.calls.map(([url]) => String(url))
+      .filter((url) => url.includes("/api/personas/search"))
+      .map((url) => new URL(url, "http://room").searchParams.get("scope"));
+  }
+
+  it("asks for your own groups by default", async () => {
+    stubScopedSearch();
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    await screen.findByRole("radio", { name: /Helper/i });
+
+    expect(searchScopes().length).toBeGreaterThan(0);
+    expect(new Set(searchScopes())).toEqual(new Set(["mine"]));
+  });
+
+  it("the toggle flips the list to every group and back", async () => {
+    stubScopedSearch();
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+    await screen.findByRole("radio", { name: /Helper/i });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Show all groups" }));
+    await waitFor(() => expect(searchScopes()).toContain("all"));
+
+    const back = await screen.findByRole("button", { name: "Show mine" });
+    await fireEvent.click(back);
+    expect(await screen.findByRole("button", { name: "Show all groups" })).not.toBeNull();
+  });
+
+  it("personas from other groups appear only after the toggle, still tagged", async () => {
+    stubScopedSearch();
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+    await screen.findByRole("radio", { name: /Helper/i });
+
+    expect(screen.queryByRole("radio", { name: /QA Critic/i })).toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Show all groups" }));
+
+    const row = (await screen.findByRole("radio", { name: /QA Critic/i })).closest(
+      ".list__row",
+    ) as HTMLElement;
+    expect(row.querySelector(".list__tag")?.textContent?.trim()).toBe("qa");
+  });
+
+  it("hands the chosen group to the persona builder as its default", async () => {
+    stubCreateModalCatalogs({
+      "/api/catalog/groups": {
+        groups: [
+          { name: "shared", kind: "shared" },
+          { name: "sre", kind: "engineering" },
+          { name: "qa", kind: "engineering" },
+        ],
+      },
+      "/api/whoami": {
+        email: "me@example.com",
+        operator: false,
+        groups: ["sre", "qa"],
+        groups_unavailable: false,
+      },
+      "/api/personas/draft": {
+        name: "billing-buddy",
+        who_they_are: "a calm troubleshooter",
+        what_they_do: "Helps.",
+        purpose_tags: [],
+      },
+      "/api/personas/search": { results: [HELPER] },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    const group = (await screen.findByLabelText("Group")) as HTMLSelectElement;
+    await fireEvent.change(group, { target: { value: "qa" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Build your own persona" }));
+    await fireEvent.input(screen.getByLabelText("What should this agent do for you?"), {
+      target: { value: "Help with billing." },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Draft persona" }));
+
+    const forWhom = (await screen.findByLabelText(
+      "Who is this persona for?",
+    )) as HTMLSelectElement;
+    await waitFor(() => expect(forWhom.value).toBe("qa"));
+  });
+});

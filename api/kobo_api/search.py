@@ -636,10 +636,35 @@ _POSTGRES_TSVECTOR_EXPR = (
 )
 
 
+def _scope_clause(visible_teams: list[str] | None, params: dict) -> str:
+    """The SQL for `search()`'s `visible_teams` filter, or "" when there is
+    none: rows filed under one of those teams, plus every built-in (a
+    built-in always counts as shared, whatever a stale index says)."""
+    if visible_teams is None:
+        return ""
+    names = []
+    for i, name in enumerate(visible_teams):
+        params[f"vt{i}"] = name
+        names.append(f":vt{i}")
+    params["vt_builtin"] = True
+    listed = f"team IN ({', '.join(names)}) OR " if names else ""
+    return f" AND ({listed}builtin = :vt_builtin)"
+
+
 def search(
-    engine: Engine, kind: str, q: str, team: str | None = None, limit: int = 50
+    engine: Engine,
+    kind: str,
+    q: str,
+    team: str | None = None,
+    limit: int = 50,
+    visible_teams: list[str] | None = None,
 ) -> list[CatalogEntry]:
     """Entries of `kind`, optionally filtered to `team`, matching `q`.
+
+    `visible_teams`, when given, further keeps only rows filed under one of
+    those teams, plus every built-in (the persona list's "mine" scope). It
+    runs in SQL, ahead of `limit`, so a scoped list is never a short page
+    cut from an unscoped one.
 
     Blank/whitespace-only `q` returns everything of `kind` (team-filtered),
     ordered by name -- the "browse" case, identical on both engines. A
@@ -658,6 +683,7 @@ def search(
         if team is not None:
             sql += " AND team = :team"
             params["team"] = team
+        sql += _scope_clause(visible_teams, params)
         sql += " ORDER BY name LIMIT :limit"
     elif _is_postgres(engine):
         params["match"] = _build_tsquery(q)
@@ -668,6 +694,7 @@ def search(
         if team is not None:
             sql += " AND team = :team"
             params["team"] = team
+        sql += _scope_clause(visible_teams, params)
         sql += (
             f" ORDER BY ts_rank({_POSTGRES_TSVECTOR_EXPR}, "
             "to_tsquery('simple', :match)) DESC LIMIT :limit"
@@ -678,6 +705,7 @@ def search(
         if team is not None:
             sql += " AND team = :team"
             params["team"] = team
+        sql += _scope_clause(visible_teams, params)
         sql += " ORDER BY bm25(catalog_fts) LIMIT :limit"
 
     with engine.connect() as conn:
