@@ -1831,6 +1831,7 @@ class FakeLadon:
         read_error: str | None = None,
         delete_error: str | None = None,
         unsync_error: str | None = None,
+        offboard_error: str | None = None,
         missing_k8s_namespaces: set[str] | None = None,
         updated_at: str | None = "2026-09-22T10:00:00.000000Z",
     ):
@@ -1839,6 +1840,7 @@ class FakeLadon:
         self._read_error = read_error
         self._delete_error = delete_error
         self._unsync_error = unsync_error
+        self._offboard_error = offboard_error
         self._missing_k8s_namespaces = set(missing_k8s_namespaces or ())
         self._updated_at = updated_at
         self.puts: list[tuple[str, str, dict[str, str]]] = []
@@ -1848,6 +1850,9 @@ class FakeLadon:
         self.deletes: list[tuple[str, str]] = []
         self.unsyncs: list[tuple[str, str, str, str]] = []
         self.absent_unsyncs: list[tuple[str, str, str, str]] = []
+        # Off-boarding calls, in order with the unsyncs and deletes they must
+        # follow: (acting_email, app, k8s_namespace).
+        self.offboards: list[tuple[str, str, str]] = []
         self.stored: dict[str, dict[str, str]] = {}
 
     def put_secret(
@@ -1902,6 +1907,11 @@ class FakeLadon:
         if self._unsync_error is not None:
             raise ClientError(self._unsync_error)
         self.unsyncs.append((acting_email, app, k8s_namespace, name))
+
+    def offboard(self, acting_email: str, app: str, k8s_namespace: str) -> None:
+        if self._offboard_error is not None:
+            raise ClientError(self._offboard_error)
+        self.offboards.append((acting_email, app, k8s_namespace))
 
 
 class FakePeopleSearch:

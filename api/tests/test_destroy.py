@@ -1642,6 +1642,78 @@ def test_destroy_secrets_removes_all_three_paths_and_their_cluster_objects(
     session.close()
 
 
+def test_destroy_secrets_takes_the_identity_down_after_the_three_paths(
+    session_factory, config
+):
+    """The store, service account, role and policy the platform made for
+    this agent go last: the platform refuses to remove an identity while
+    an ExternalSecret still reads through it, so the three objects go
+    first, and the identity once nothing is left that needs it."""
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+    order: list[str] = []
+
+    class _Ordered(FakeLadon):
+        def unsync(self, acting_email, app, k8s_namespace, name):
+            order.append(f"unsync:{name}")
+            super().unsync(acting_email, app, k8s_namespace, name)
+
+        def delete_secret(self, acting_email, path):
+            order.append(f"delete:{path}")
+            super().delete_secret(acting_email, path)
+
+        def offboard(self, acting_email, app, k8s_namespace):
+            order.append("offboard")
+            super().offboard(acting_email, app, k8s_namespace)
+
+    ladon = _Ordered()
+    for purpose in ("cabal", "slack", "env"):
+        ladon.stored[f"apps/{AGENT_NAME}/{purpose}"] = {"A_KEY": "not-a-real-value"}
+
+    detail = _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+
+    assert ladon.offboards == [(OWNER_EMAIL, AGENT_NAME, AGENT_NAME)]
+    assert order[-1] == "offboard"
+    assert all(step != "offboard" for step in order[:-1])
+    assert detail == "removed: cabal, slack, env, identity"
+    session.close()
+
+
+def test_destroy_secrets_leaves_the_identity_when_a_path_could_not_go(
+    session_factory, config
+):
+    """An identity taken down while an ExternalSecret it serves is still
+    there is exactly the dangling object the platform refuses; the room
+    does not ask for it, and the raised message says how far it got."""
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+    ladon = FakeLadon(unsync_error="the platform refused")
+
+    with pytest.raises(RuntimeError, match="could not remove cabal, slack, env"):
+        _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+
+    assert ladon.offboards == []
+    session.close()
+
+
+def test_destroy_secrets_that_cannot_take_the_identity_down_fails_the_step(
+    session_factory, config
+):
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+    ladon = _ladon_holding_everything()
+    ladon._offboard_error = "the platform refused"
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+
+    message = str(excinfo.value)
+    assert "could not remove identity" in message
+    assert "removed: cabal, slack, env" in message
+    assert ladon.stored == {}
+    session.close()
+
+
 def test_destroy_secrets_takes_the_cluster_object_away_before_the_path(
     session_factory, config
 ):

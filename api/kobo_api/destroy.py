@@ -49,7 +49,14 @@ from kobo_api.clients import ClientError, cabal_enabled
 from kobo_api.config import Config
 from kobo_api.directory import retire_directory
 from kobo_api.kinds import KIND_COMPOSED, is_connected
-from kobo_api.models import A2AInvite, Agent, AgentStatus, AgentStep, RepoAccess, StepStatus
+from kobo_api.models import (
+    A2AInvite,
+    Agent,
+    AgentStatus,
+    AgentStep,
+    RepoAccess,
+    StepStatus,
+)
 from kobo_api.pairs import sync_dispatch_pairs_best_effort
 from kobo_api.provisioner import _get_or_create_step
 from kobo_api.steps import refresh_colleague_rosters
@@ -183,7 +190,9 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
 
     Three purposes, because the room writes three: `cabal` (the colleague
     pass), `slack` (the tokens an owner pasted) and `env` (whatever they
-    added in the panel). Named as a fixed list rather than discovered,
+    added in the panel). Then, once all three are gone, the agent's
+    identity on the platform (`LadonClient.offboard`): its store, service
+    account, role and policy. Named as a fixed list rather than discovered,
     for the reason `destroy-access` gives about the GSA: nothing on the
     agent's row records which of them were ever written, and asking about
     a path that was never there costs one call and answers cleanly.
@@ -262,6 +271,28 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
             failures.append(purpose)
             continue
         removed.append(purpose)
+
+    if not failures:
+        # The identity last, and only once every object that read through
+        # it is gone: the platform refuses to take a store down while an
+        # ExternalSecret still points at it (the right refusal; the
+        # alternative is a dangling object made on purpose), so the three
+        # purposes above are what make this call answerable. What goes:
+        # the ClusterSecretStore, the service account, the JWT role and
+        # the read-only policy the platform made when this room's first
+        # sync onboarded the agent -- the four objects a destroy used to
+        # leave behind (registered 2026-09-24, closed here).
+        try:
+            ladon.offboard(acting_email, agent.name, agent.name)
+        except Exception as exc:  # noqa: BLE001 - same collection rule as the purposes above
+            log.warning(
+                "destroy-secrets: could not remove the identity of agent %s (%s)",
+                agent.name,
+                type(exc).__name__,
+            )
+            failures.append("identity")
+        else:
+            removed.append("identity")
 
     if failures:
         # Raised, not noted: unlike the directory listing, a secret left

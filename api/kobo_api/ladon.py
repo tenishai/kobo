@@ -215,6 +215,24 @@ class LadonClient(Protocol):
         """
         ...
 
+    def offboard(self, acting_email: str, app: str, k8s_namespace: str) -> None:
+        """Remove `app`'s identity on the platform: the store its
+        ExternalSecrets read through, the service account that logs in
+        for them, and the role and policy behind that login -- the four
+        objects the platform made when this room's first sync for the
+        agent onboarded it.
+
+        Run LAST, after every `unsync` and `delete_secret` for the agent:
+        the platform refuses to take an identity down while an
+        ExternalSecret still reads through it, which is the right refusal
+        (the alternative is a dangling object made on purpose) and the
+        reason the order matters. Idempotent by the lane's contract: an
+        identity already gone is a success. Raises `ClientError` on a
+        refusal, and when the lane reports a cluster object it could not
+        remove.
+        """
+        ...
+
 
 def _jwt_times(token: str) -> tuple[int | None, int | None]:
     """The `exp` and `iat` claims of a JWT, each None when this room cannot
@@ -492,6 +510,27 @@ class HttpxLadonClient:
             # `deleted` and stopping would leave an ExternalSecret behind
             # that nothing in this room knows about.
             raise ClientError(f"{what}: something else now stands at {name}")
+
+    def offboard(self, acting_email: str, app: str, k8s_namespace: str) -> None:
+        what = f"could not remove the secrets platform identity of {app}"
+        report = self._send(
+            "DELETE",
+            "/api/service/app",
+            what=what,
+            json={
+                "acting_email": acting_email,
+                "namespace": self._namespace,
+                "app": app,
+                "k8s_namespace": k8s_namespace,
+                "apply": True,
+            },
+        )
+        blocked = _blocked_targets(_decoded(report))
+        if blocked:
+            # The same 200-over-an-undelivered-answer the sync can give: a
+            # cluster object the platform could not remove is named in the
+            # report, and reading the status alone would call it gone.
+            raise ClientError(f"{what}: the cluster did not release {', '.join(blocked)}")
 
     def _post(self, route: str, body: dict, what: str) -> object | None:
         """POST `body` and hand back the decoded 2xx body (None when it is

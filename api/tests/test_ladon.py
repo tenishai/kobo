@@ -854,6 +854,52 @@ def test_unsync_request_shape_names_the_object_and_nothing_else():
     }
 
 
+def test_offboard_request_shape_names_the_application_and_nothing_else():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"applied": True, "report": ["ClusterSecretStore/x: delete"], "blocked": []},
+        )
+
+    _client(handler).offboard(EMAIL, AGENT, AGENT)
+
+    assert captured["method"] == "DELETE"
+    assert captured["url"] == f"{URL}/api/service/app"
+    assert captured["json"] == {
+        "acting_email": EMAIL,
+        "namespace": NAMESPACE,
+        "app": AGENT,
+        "k8s_namespace": AGENT,
+        "apply": True,
+    }
+
+
+def test_offboard_raises_when_the_platform_refuses():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            409, json={"error": "2 ExternalSecret(s) in 'clio' still read through the store"}
+        )
+
+    with pytest.raises(ClientError, match="still read through"):
+        _client(handler).offboard(EMAIL, AGENT, AGENT)
+
+
+def test_offboard_raises_when_a_cluster_object_was_blocked():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"applied": True, "report": ["ServiceAccount/ladon/x: blocked"], "blocked": ["ServiceAccount/ladon/x"]},
+        )
+
+    with pytest.raises(ClientError, match="ServiceAccount/ladon/x"):
+        _client(handler).offboard(EMAIL, AGENT, AGENT)
+
+
 def test_unsync_of_an_object_already_gone_is_a_success():
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
