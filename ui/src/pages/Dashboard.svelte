@@ -109,13 +109,13 @@
 {/if}
 
 <style>
-  /* `grid-auto-rows: 1fr` is what makes every card in the grid the same
-     height, not just every card in a row: one shape repeated, whatever any
-     one agent has to say for itself. */
+  /* Cards in one row share a height (grid stretch does that on its own);
+     rows are not forced to match each other, so one wordy agent does not
+     stretch every card on the page. Columns are wide enough for a name,
+     a status and a one-line description without clipping the name. */
   .dashboard-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
-    grid-auto-rows: 1fr;
+    grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
     gap: var(--space-md);
   }
 

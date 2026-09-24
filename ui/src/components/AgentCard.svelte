@@ -141,7 +141,7 @@
             stroke-linecap="round"
           />
         </svg>
-        <span class="agent-card__sr">Observability</span>
+        <span class="agent-card__observability-label">Observability</span>
       </a>
     {/if}
   </div>
@@ -319,22 +319,30 @@
   }
 
   /* Positioned (not static) so it paints above the stretched link that
-     precedes it in the DOM — see the module doc comment above — while
-     staying in normal flow (no offsets applied). An icon, not a coloured
-     word: the card already has one thing to click, and a second blue word
-     would compete with it. */
+     precedes it in the DOM (see the module doc comment above) while staying
+     in normal flow. A labelled link, not a bare icon: the operator could
+     not tell what the icon was for, and a link nobody recognises is not a
+     link. Quiet by default, link-coloured on hover so it still defers to
+     the card's one primary click. */
   .agent-card__observability {
     position: relative;
     display: inline-flex;
     flex-shrink: 0;
+    align-items: center;
+    gap: 0.3rem;
     margin-left: auto;
-    padding: var(--space-2xs);
-    color: var(--muted);
+    padding: var(--space-2xs) var(--space-xs);
+    border-radius: var(--radius-sm);
+    color: var(--link);
+    font-size: 0.8rem;
+    text-decoration: none;
+    white-space: nowrap;
   }
 
   .agent-card__observability:hover,
   .agent-card__observability:focus-visible {
-    color: var(--ink);
+    background: var(--accent-soft);
+    text-decoration: underline;
   }
 
   .agent-card__icon {
@@ -342,13 +350,4 @@
     height: 1rem;
   }
 
-  .agent-card__sr {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
 </style>

@@ -178,9 +178,12 @@ describe("AgentCard — the observability link (card wave 2026-09-23)", () => {
       "https://argus.example.com/projects/agents/dashboards/warden-agent-health",
     );
     expect(link.querySelector("svg")).not.toBeNull();
-    expect(
-      container.querySelector(".agent-card__observability .agent-card__sr")
-        ?.textContent,
-    ).toBe("Observability");
+    // The label is visible text, not screen-reader-only: an icon alone did
+    // not read as a link to the operator.
+    const label = container.querySelector(
+      ".agent-card__observability .agent-card__observability-label",
+    );
+    expect(label?.textContent).toBe("Observability");
+    expect(container.querySelector(".agent-card__observability .agent-card__sr")).toBeNull();
   });
 });
