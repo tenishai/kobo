@@ -164,6 +164,7 @@ from kobo_api.personas import (
     PersonaFields,
     create_persona,
     parse_persona_body,
+    seed_default_personas,
     set_persona_archived,
     set_persona_team,
     upsert_persona,
@@ -2337,6 +2338,46 @@ def get_session(request: Request) -> Iterator[Session]:
         session.close()
 
 
+def _seed_builtin_personas(app: FastAPI) -> dict | None:
+    """Put the packaged built-in personas (`templates/personas/*.md`) in the
+    room's personas bucket at boot, idempotently, and re-ingest the catalog
+    when any were new so they are pickable at once.
+
+    The bootstrap CLI used to be the only thing that seeded them, so a
+    release that added a built-in shipped nothing until an operator ran
+    it again by hand. Boot is never blocked and never fails over this:
+    storage trouble is logged and the room serves whatever is there.
+    None when the room has no personas bucket or no storage client.
+    """
+    cfg: Config = app.state.config
+    clients = app.state.clients
+    if clients is None or clients.storage is None or not cfg.personas_bucket:
+        return None
+    try:
+        counts = seed_default_personas(clients.storage, bucket=cfg.personas_bucket)
+    except ClientError as exc:
+        log.warning("built-in persona seed failed, serving what is there: %s", exc)
+        return None
+    if counts["seeded"] == 0:
+        return counts
+    log.info(
+        "built-in personas seeded: %s new, %s already there",
+        counts["seeded"],
+        counts["skipped"],
+    )
+    session = app.state.session_factory()
+    try:
+        engine = session.get_bind()
+        with app.state.catalog_ingest_lock:
+            ingest_indexes(engine, clients.storage, configured_catalogs(cfg))
+        app.state.catalog_loaded_at = time.monotonic()
+    except ClientError as exc:
+        log.warning("catalog ingest after persona seed failed: %s", exc)
+    finally:
+        session.close()
+    return counts
+
+
 def _start_repo_warmer(app: FastAPI) -> RepoWarmer | None:
     """Put the connect form's repository listing in hand before the first
     person opens the form, and keep it there.
@@ -2376,6 +2417,11 @@ async def _room_lifespan(app: FastAPI):
         # blocking `gh` call: on the loop it would stall every request in
         # the process for as long as GitHub takes.
         warmer = _start_repo_warmer(app)
+        # Same reasoning: the seed is a handful of blocking storage calls,
+        # so it runs on a daemon thread rather than on the loop.
+        threading.Thread(
+            target=_seed_builtin_personas, args=(app,), daemon=True, name="persona-seed"
+        ).start()
         try:
             yield
         finally:

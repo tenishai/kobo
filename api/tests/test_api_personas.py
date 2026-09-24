@@ -130,6 +130,39 @@ def client(config, clients, tmp_path):
     return _make_client(config, clients, tmp_path)
 
 
+# --- boot-time seed of the built-ins -------------------------------------------
+
+
+def test_seed_builtin_personas_at_boot_writes_the_packaged_set_once(client, fake_storage):
+    from kobo_api.main import _seed_builtin_personas
+    from kobo_api.personas import _PACKAGE_PERSONAS_DIR
+
+    packaged = len(list(_PACKAGE_PERSONAS_DIR.glob("*.md")))
+    assert packaged >= 11
+
+    first = _seed_builtin_personas(client.app)
+    assert first == {"seeded": packaged, "skipped": 0}
+    written = [k for k in fake_storage._buckets["personas-bucket"] if k.endswith("/persona.md")]
+    assert len(written) == packaged
+
+    # Pickable at once: the seed re-ingests the catalog itself.
+    listed = client.get("/api/personas/search", params={"q": "", "scope": "all"}).json()["results"]
+    assert sum(1 for entry in listed if entry["builtin"]) == packaged
+
+    # Idempotent: a second boot writes nothing.
+    second = _seed_builtin_personas(client.app)
+    assert second == {"seeded": 0, "skipped": packaged}
+
+
+def test_seed_builtin_personas_is_a_no_op_without_a_personas_bucket(tmp_path):
+    from kobo_api.main import _seed_builtin_personas
+
+    config = Config(workdir=tmp_path / "work", skills_bucket="skills-bucket")
+    storage = FakeStorage(buckets={"skills-bucket": {"index.json": (_index_bytes(SKILL_ENTRIES), {})}})
+    client = _make_client(config, _minimal_clients(storage=storage), tmp_path)
+    assert _seed_builtin_personas(client.app) is None
+
+
 def test_create_persona_201(client, fake_storage):
     response = client.post("/api/personas", json=VALID_PAYLOAD)
 
