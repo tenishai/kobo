@@ -29,7 +29,8 @@
   // small select of the caller's groups plus "Everyone (shared)", minus the
   // team it already sits under. Picking one PATCHes just the team. This page
   // lists every group (scope "all"): it is the whole catalog, where the
-  // create dialog's list is the short one.
+  // create dialog's list is the short one. Built-ins lead under their own
+  // heading, with every team persona under "From all groups" beneath them.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import EmptyState from "../components/EmptyState.svelte";
   import ErrorState from "../components/ErrorState.svelte";
@@ -93,6 +94,17 @@
     );
   }
 
+  // The API sends built-ins first; the split keeps each group in that order.
+  const personaGroups = $derived(
+    [
+      { heading: "Built-in", personas: (active.data ?? []).filter((p) => p.builtin) },
+      {
+        heading: "From all groups",
+        personas: (active.data ?? []).filter((p) => !p.builtin),
+      },
+    ].filter((group) => group.personas.length > 0),
+  );
+
   let showArchived = $state(false);
   const archived = createQuery(() => (archivedPersonasQuery(showArchived)));
 
@@ -149,11 +161,19 @@
   {:else if active.data.length === 0}
     <EmptyState message="No personas yet." />
   {:else}
-    <ul class="persona-list">
-      {#each active.data as persona (persona.id)}
-        {@render personaCard(persona, "archive")}
-      {/each}
-    </ul>
+    <!-- Built-ins first (operator ruling): they are the main set, and the
+         team personas sit under them. A group with nothing in it drops
+         its heading. -->
+    {#each personaGroups as group (group.heading)}
+      <section class="personas-page__section">
+        <h2 class="personas-page__group">{group.heading}</h2>
+        <ul class="persona-list">
+          {#each group.personas as persona (persona.id)}
+            {@render personaCard(persona, "archive")}
+          {/each}
+        </ul>
+      </section>
+    {/each}
   {/if}
 
   {#if showArchived}
@@ -204,7 +224,9 @@
     </div>
     {#if mode === "archive"}
       {@const moveChoices = moveChoicesFor(persona)}
-      {#if movableIds.has(persona.id) && moveChoices.length > 0}
+      <!-- Never on a built-in, whatever the movable list says: built-ins
+           belong to everyone and stay where they are. -->
+      {#if !persona.builtin && movableIds.has(persona.id) && moveChoices.length > 0}
         <select
           class="persona-card__action persona-card__move"
           aria-label={`Move ${persona.name} to`}
@@ -273,6 +295,19 @@
   .personas-page__toggle:hover {
     border-color: var(--accent);
     color: var(--accent);
+  }
+
+  .personas-page__section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+
+  .personas-page__group {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-weight: 600;
   }
 
   .personas-page__archived {

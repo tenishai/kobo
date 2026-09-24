@@ -749,6 +749,18 @@ textarea.field__input {
   white-space: nowrap;
 }
 
+/* A group heading over a run of rows (the persona list: Built-in, then
+   the team personas). Small and muted: it names the run, it is not a row
+   anyone picks. */
+.list__group {
+  padding: var(--space-2xs) var(--space-sm);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
 .list__empty {
   padding: var(--space-sm);
   color: var(--muted);

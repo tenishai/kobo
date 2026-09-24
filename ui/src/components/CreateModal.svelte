@@ -166,6 +166,11 @@
     personasSearchQuery(personaSearchTerm, null, personaScope),
   );
 
+  // The API already sends built-ins first; these keep each group in the
+  // order it arrived.
+  const builtinPersonas = $derived((personas.data ?? []).filter((p) => p.builtin));
+  const teamPersonas = $derived((personas.data ?? []).filter((p) => !p.builtin));
+
   const commitPersonaSearch = debounced((value: string) => {
     personaSearchTerm = value;
   }, 250);
@@ -535,6 +540,53 @@
   }
 </script>
 
+{#snippet personaRow(persona: CatalogEntry)}
+  <!-- The label IS the control here: it wraps the radio, so a
+       click anywhere on the row picks that persona. The card's
+       own keyboard route is the radio's focus/blur below, which
+       is where a keyboard user actually lands. -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <label
+    class="list__row"
+    class:list__row--selected={persona.id === selectedPersona}
+    onmouseenter={(event) =>
+      showCardAfterDelay(persona.id, event.currentTarget)}
+    onmouseleave={releaseCard}
+    onkeydown={handlePersonaKeydown}
+  >
+    <input
+      type="radio"
+      name="persona"
+      value={persona.id}
+      checked={persona.id === selectedPersona}
+      onchange={() => {
+        personaOverride = persona.id;
+        hideCard();
+      }}
+      onfocus={(event) =>
+        showCardAfterDelay(
+          persona.id,
+          event.currentTarget.closest(".list__row"),
+        )}
+      onblur={releaseCard}
+      aria-describedby={hoveredPersona === persona.id
+        ? HOVER_CARD_ID
+        : undefined}
+    />
+    <span class="list__name">{persona.name}</span>
+    <!-- A built-in's heading already says Built-in; only a team
+         persona carries a tag naming its team. -->
+    {#if !persona.builtin}
+      <span class="list__tag">{persona.team}</span>
+    {/if}
+    <!-- No `title`: the hover card is the answer now, and two
+         tooltips over the same row fight each other. -->
+    <span class="list__desc">
+      {persona.description}
+    </span>
+  </label>
+{/snippet}
+
 <!-- The one filled button in this dialog, and the only one: the persona
      builder draws its own footer while it is swapped in (below), so the two
      are never on screen at once. -->
@@ -620,50 +672,26 @@
           {:else if personas.data.length === 0}
             <p class="list__empty">No personas match.</p>
           {:else}
-            {#each personas.data as persona (persona.id)}
-              <!-- The label IS the control here: it wraps the radio, so a
-                   click anywhere on the row picks that persona. The card's
-                   own keyboard route is the radio's focus/blur below, which
-                   is where a keyboard user actually lands. -->
-              <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-              <label
-                class="list__row"
-                class:list__row--selected={persona.id === selectedPersona}
-                onmouseenter={(event) =>
-                  showCardAfterDelay(persona.id, event.currentTarget)}
-                onmouseleave={releaseCard}
-                onkeydown={handlePersonaKeydown}
-              >
-                <input
-                  type="radio"
-                  name="persona"
-                  value={persona.id}
-                  checked={persona.id === selectedPersona}
-                  onchange={() => {
-                    personaOverride = persona.id;
-                    hideCard();
-                  }}
-                  onfocus={(event) =>
-                    showCardAfterDelay(
-                      persona.id,
-                      event.currentTarget.closest(".list__row"),
-                    )}
-                  onblur={releaseCard}
-                  aria-describedby={hoveredPersona === persona.id
-                    ? HOVER_CARD_ID
-                    : undefined}
-                />
-                <span class="list__name">{persona.name}</span>
-                <span class="list__tag" class:list__tag--accent={persona.builtin}>
-                  {persona.builtin ? "Built-in" : persona.team}
-                </span>
-                <!-- No `title`: the hover card is the answer now, and two
-                     tooltips over the same row fight each other. -->
-                <span class="list__desc">
-                  {persona.description}
-                </span>
-              </label>
-            {/each}
+            <!-- Two groups (built-ins first ruling): the built-ins are the
+                 main set and always lead; team personas sit under them.
+                 A heading is a presentation row, never a radio, so arrow
+                 keys move between personas and skip it. A group with
+                 nothing matching drops its heading. The scope toggle only
+                 ever changes the second group. -->
+            {#if builtinPersonas.length > 0}
+              <div class="list__group" role="presentation">Built-in</div>
+              {#each builtinPersonas as persona (persona.id)}
+                {@render personaRow(persona)}
+              {/each}
+            {/if}
+            {#if teamPersonas.length > 0}
+              <div class="list__group" role="presentation">
+                {personaScope === "all" ? "From all groups" : "From your groups"}
+              </div>
+              {#each teamPersonas as persona (persona.id)}
+                {@render personaRow(persona)}
+              {/each}
+            {/if}
           {/if}
         </div>
         {#if hoveredPersona !== null}

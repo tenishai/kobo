@@ -673,18 +673,25 @@ def search(
     relevant) on SQLite, or `to_tsvector`/`to_tsquery` ordered by
     `ts_rank(...)` descending (higher is more relevant) on Postgres -- same
     "best match first" result ordering, opposite raw score direction.
+
+    Personas are the exception to ranked ordering: the built-ins are the
+    main set, so a persona list always comes back built-ins first
+    (alphabetical by name), then team personas (alphabetical), with or
+    without `q`. The match still decides which rows come back; only the
+    order changes. Skills keep their ranked order.
     """
     ensure_fts(engine)
     q = q.strip()
 
     params: dict = {"kind": kind, "limit": limit}
+    persona_order = " ORDER BY builtin DESC, name LIMIT :limit" if kind == "persona" else None
     if not q:
         sql = f"SELECT {_COLUMNS} FROM catalog_fts WHERE kind = :kind"
         if team is not None:
             sql += " AND team = :team"
             params["team"] = team
         sql += _scope_clause(visible_teams, params)
-        sql += " ORDER BY name LIMIT :limit"
+        sql += persona_order or " ORDER BY name LIMIT :limit"
     elif _is_postgres(engine):
         params["match"] = _build_tsquery(q)
         sql = (
@@ -695,7 +702,7 @@ def search(
             sql += " AND team = :team"
             params["team"] = team
         sql += _scope_clause(visible_teams, params)
-        sql += (
+        sql += persona_order or (
             f" ORDER BY ts_rank({_POSTGRES_TSVECTOR_EXPR}, "
             "to_tsquery('simple', :match)) DESC LIMIT :limit"
         )
@@ -706,7 +713,7 @@ def search(
             sql += " AND team = :team"
             params["team"] = team
         sql += _scope_clause(visible_teams, params)
-        sql += " ORDER BY bm25(catalog_fts) LIMIT :limit"
+        sql += persona_order or " ORDER BY bm25(catalog_fts) LIMIT :limit"
 
     with engine.connect() as conn:
         rows = conn.execute(text(sql), params).all()

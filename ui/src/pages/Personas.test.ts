@@ -253,6 +253,14 @@ describe("Personas page", () => {
       expect(screen.queryByLabelText("Move Helper to")).toBeNull();
     });
 
+    it("never appears on a built-in, even if the server listed it", async () => {
+      stubMoveRoom(["helper", "growth-scout"]);
+      renderWithClient(Personas);
+
+      await screen.findByLabelText("Move growth-scout to");
+      expect(screen.queryByLabelText("Move Helper to")).toBeNull();
+    });
+
     it("offers the caller's other groups and everyone, never where it already is", async () => {
       stubMoveRoom(["growth-scout"]);
       renderWithClient(Personas);
@@ -308,6 +316,65 @@ describe("Personas page", () => {
         ).toBe(true);
       });
       expect(move.value).toBe("");
+    });
+  });
+
+  describe("built-ins first (built-ins are the main personas)", () => {
+    const QA_CRITIC = {
+      id: "qa-critic",
+      name: "QA Critic",
+      description: "finds the bug first",
+      team: "qa",
+      tags: [],
+      builtin: false,
+    };
+    const BEE = {
+      id: "bee",
+      name: "Bee",
+      description: "busy",
+      team: "shared",
+      tags: [],
+      builtin: true,
+    };
+
+    /** Headings and card names in page order, headings as `heading:<text>`. */
+    function pageOrder(container: HTMLElement): string[] {
+      return Array.from(
+        container.querySelectorAll(".personas-page__group, .persona-card__name"),
+      ).map((el) =>
+        el.classList.contains("personas-page__group")
+          ? `heading:${el.textContent?.trim()}`
+          : (el.textContent ?? ""),
+      );
+    }
+
+    it("groups the cards under Built-in, then From all groups", async () => {
+      stubFetch({
+        "/api/personas/search": { results: [QA_CRITIC, HELPER, GROWTH_SCOUT, BEE] },
+        "/api/": {},
+      });
+      const { container } = renderWithClient(Personas);
+      await screen.findByText("Helper");
+
+      expect(pageOrder(container)).toEqual([
+        "heading:Built-in",
+        "Helper",
+        "Bee",
+        "heading:From all groups",
+        "QA Critic",
+        "growth-scout",
+      ]);
+    });
+
+    it("drops a group's heading when it has no personas", async () => {
+      stubFetch({
+        "/api/personas/search": { results: [GROWTH_SCOUT] },
+        "/api/": {},
+      });
+      const { container } = renderWithClient(Personas);
+      await screen.findByText("growth-scout");
+
+      expect(pageOrder(container)).toEqual(["heading:From all groups", "growth-scout"]);
     });
   });
 });

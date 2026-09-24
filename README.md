@@ -84,7 +84,9 @@ Kobo is opinionated by design:
   on and nothing else: the room composed none of the rest.
 - **Personas**: the soul an agent is built from. Archive one from the Personas page when it
   has outlived its use, and restore it later; nothing is destroyed. Good persona names pass
-  the glance test: a stranger reading the card knows what picking it gets them.
+  the glance test: a stranger reading the card knows what picking it gets them. The
+  built-ins are the main set, one for each general kind of agent, so every list shows
+  them first and the personas teams built appear under them.
 
   A persona belongs to the group that made it. The builder asks who it is for (one of your
   groups, or Everyone), and the create dialog lists your groups' personas plus the shared

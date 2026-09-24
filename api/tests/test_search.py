@@ -1241,3 +1241,51 @@ def test_the_two_advisory_lock_keys_are_distinct():
     # A shared key would make a catalog refresh and a learnings sweep
     # exclude each other for no reason.
     assert CATALOG_INGEST_LOCK_ID != LEARNINGS_SWEEP_LOCK_ID
+
+
+# --- Built-ins first (operator ruling: the built-ins are the main personas) ---
+#
+# The persona list comes back built-ins first, alphabetical by name within,
+# then team personas, alphabetical. Deliberately inserted out of order below
+# (team rows first, names reversed) so neither insertion order nor rank can
+# explain a passing result.
+MIXED_PERSONAS = [
+    {"id": "zeta-team", "name": "Zeta team helper", "description": "helper for sre",
+     "team": "sre", "tags": [], "builtin": False},
+    {"id": "alpha-team", "name": "Alpha team helper", "description": "helper helper helper",
+     "team": "qa", "tags": ["helper"], "builtin": False},
+    {"id": "yak-builtin", "name": "Yak builtin helper", "description": "helper",
+     "team": "shared", "tags": [], "builtin": True},
+    {"id": "bee-builtin", "name": "Bee builtin helper", "description": "a helper",
+     "team": "shared", "tags": [], "builtin": True},
+]
+
+
+def _ingest_mixed(engine):
+    storage = FakeStorage(
+        buckets={"personas-bucket": {"index.json": (_index_bytes(MIXED_PERSONAS), {})}}
+    )
+    ingest_indexes(engine, storage, {"persona": "personas-bucket"})
+
+
+BUILTINS_FIRST = ["bee-builtin", "yak-builtin", "alpha-team", "zeta-team"]
+
+
+@pytest.mark.parametrize("q", ["", "helper", "  help  "])
+def test_persona_search_returns_builtins_first_then_teams_by_name(engine, q):
+    _ingest_mixed(engine)
+    results = search(engine, "persona", q)
+    assert [e.id for e in results] == BUILTINS_FIRST
+    assert [e.builtin for e in results] == [True, True, False, False]
+
+
+def test_persona_search_builtins_first_holds_under_a_team_scope(engine):
+    _ingest_mixed(engine)
+    results = search(engine, "persona", "helper", visible_teams=["sre"])
+    assert [e.id for e in results] == ["bee-builtin", "yak-builtin", "zeta-team"]
+
+
+def test_persona_search_keeps_the_limit_after_ordering(engine):
+    _ingest_mixed(engine)
+    results = search(engine, "persona", "helper", limit=3)
+    assert [e.id for e in results] == BUILTINS_FIRST[:3]
