@@ -49,6 +49,12 @@
 //                                                      lane), fetched lazily
 //                                                      behind the "Show
 //                                                      archived" toggle
+//   ["personas", "detail", id]                      - one whole persona, for
+//                                                      the hover card in the
+//                                                      create dialog's list
+//                                                      (fetched lazily, once
+//                                                      a row has been rested
+//                                                      on)
 //   ["org", "status"]                               - org bootstrap/wiring status
 //   ["whoami"]                                       - the signed-in identity
 //                                                      this room's server has
@@ -122,6 +128,7 @@ import {
   type OrgStatus,
   type PeopleSearchResult,
   type Person,
+  type PersonaDetail,
   type PersonaDistillResult,
   type PersonaDraft,
   type PersonaForm,
@@ -163,6 +170,7 @@ import {
   destroyAgent,
   distillPersona,
   draftPersona,
+  fetchPersona,
   fetchColleagueFeed,
   fetchDeliveryState,
   fetchGroupRequests,
@@ -360,6 +368,29 @@ export function personasSearchQuery(q: string, team: string | null) {
     queryKey: ["catalog", "personas", { q, team }] as const,
     queryFn: () => searchPersonas(q, team),
     staleTime: CATALOG_SEARCH_STALE_MS,
+  });
+}
+
+/**
+ * One whole persona (`GET /api/personas/{id}`) — what the hover card in the
+ * create dialog's persona list reads.
+ *
+ * Disabled until `id` is non-null, which is the whole point: the card's
+ * request must not leave before a human has actually rested on a row for
+ * the hover delay, so the caller passes null until then (the same
+ * "don't fetch until someone asks" idiom `archivedPersonasQuery` above and
+ * `groupRequestsQuery` both use).
+ *
+ * Five minutes of freshness because a persona's own text barely moves —
+ * far longer than a catalog search, and long enough that sweeping back and
+ * forth across the same list costs exactly one request per persona.
+ */
+export function personaQuery(id: string | null) {
+  return queryOptions({
+    queryKey: ["personas", "detail", id] as const,
+    queryFn: () => fetchPersona(id as string),
+    enabled: id !== null,
+    staleTime: 5 * 60_000,
   });
 }
 
@@ -1555,6 +1586,7 @@ export type {
   OrgStatus,
   PeopleSearchResult,
   Person,
+  PersonaDetail,
   PersonaDistillResult,
   PersonaDraft,
   PersonaForm,

@@ -56,6 +56,7 @@
   import ErrorState from "./ErrorState.svelte";
   import Modal from "./Modal.svelte";
   import PersonaBuilder from "./PersonaBuilder.svelte";
+  import PersonaHoverCard from "./PersonaHoverCard.svelte";
   import Skeleton from "./Skeleton.svelte";
   import {
     ApiError,
@@ -171,6 +172,83 @@
       commitPersonaSearch.cancel();
     };
   });
+
+  // --- The persona hover card ---------------------------------------------
+  //
+  // A row gives one truncated line, which is enough to recognise a persona
+  // you already know and not enough to choose one you don't. Resting on a
+  // row -- or tabbing onto its radio -- opens the whole persona beside the
+  // list (PersonaHoverCard).
+  //
+  // The delay is the point: a pointer crossing the list on its way to the
+  // name field would otherwise fire a request for every row it passed
+  // over. Nothing is fetched until someone has actually stopped on one.
+  const HOVER_DELAY_MS = 250;
+  // Leaving the row does not close the card instantly: the card sits a few
+  // pixels off the list, and crossing that gap to click "Open the full
+  // persona" would otherwise dismiss the thing on the way. The card itself
+  // cancels this the moment the pointer (or focus) arrives.
+  const HOVER_GRACE_MS = 150;
+  const HOVER_CARD_ID = "create-persona-card";
+
+  let hoveredPersona = $state<string | null>(null);
+  let hoveredRow = $state<HTMLElement | null>(null);
+  let personaListEl = $state<HTMLElement | null>(null);
+  let showTimer: ReturnType<typeof setTimeout> | null = null;
+  let hideTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** The box the card is kept inside: the dialog's own scrolling body. */
+  const cardBoundary = $derived(
+    (personaListEl?.closest(".modal__body") as HTMLElement | null) ?? null,
+  );
+
+  function cancelHover(): void {
+    if (showTimer !== null) {
+      clearTimeout(showTimer);
+      showTimer = null;
+    }
+    if (hideTimer !== null) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+  }
+
+  function showCardAfterDelay(id: string, row: HTMLElement | null): void {
+    cancelHover();
+    showTimer = setTimeout(() => {
+      showTimer = null;
+      hoveredPersona = id;
+      hoveredRow = row;
+    }, HOVER_DELAY_MS);
+  }
+
+  /** Leaving the row or the radio: close, but not before the pointer has
+   * had a moment to land on the card itself. */
+  function releaseCard(): void {
+    cancelHover();
+    hideTimer = setTimeout(hideCard, HOVER_GRACE_MS);
+  }
+
+  function hideCard(): void {
+    cancelHover();
+    hoveredPersona = null;
+    hoveredRow = null;
+  }
+
+  /** Escape takes the card first and the dialog second: while a card is up,
+   * the keystroke is spent dismissing it and goes no further. */
+  function handlePersonaKeydown(event: KeyboardEvent): void {
+    if (event.key !== "Escape") {
+      return;
+    }
+    const showing = hoveredPersona !== null;
+    hideCard();
+    if (showing) {
+      event.stopPropagation();
+    }
+  }
+
+  $effect(() => cancelHover);
 
   let builderOpen = $state(false);
 
@@ -375,6 +453,7 @@
       tagsOpen = false;
       purposeTags = [];
       purposeTagInput = "";
+      hideCard();
     }
   });
 
@@ -505,6 +584,7 @@
           class="list list--scroll"
           role="radiogroup"
           aria-labelledby="create-persona-label"
+          bind:this={personaListEl}
         >
           {#if personas.isPending}
             <div class="list__empty">
@@ -521,28 +601,61 @@
             <p class="list__empty">No personas match.</p>
           {:else}
             {#each personas.data as persona (persona.id)}
+              <!-- The label IS the control here: it wraps the radio, so a
+                   click anywhere on the row picks that persona. The card's
+                   own keyboard route is the radio's focus/blur below, which
+                   is where a keyboard user actually lands. -->
+              <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
               <label
                 class="list__row"
                 class:list__row--selected={persona.id === selectedPersona}
+                onmouseenter={(event) =>
+                  showCardAfterDelay(persona.id, event.currentTarget)}
+                onmouseleave={releaseCard}
+                onkeydown={handlePersonaKeydown}
               >
                 <input
                   type="radio"
                   name="persona"
                   value={persona.id}
                   checked={persona.id === selectedPersona}
-                  onchange={() => (personaOverride = persona.id)}
+                  onchange={() => {
+                    personaOverride = persona.id;
+                    hideCard();
+                  }}
+                  onfocus={(event) =>
+                    showCardAfterDelay(
+                      persona.id,
+                      event.currentTarget.closest(".list__row"),
+                    )}
+                  onblur={releaseCard}
+                  aria-describedby={hoveredPersona === persona.id
+                    ? HOVER_CARD_ID
+                    : undefined}
                 />
                 <span class="list__name">{persona.name}</span>
                 <span class="list__tag" class:list__tag--accent={persona.builtin}>
                   {persona.builtin ? "Built-in" : persona.team}
                 </span>
-                <span class="list__desc" title={persona.description}>
+                <!-- No `title`: the hover card is the answer now, and two
+                     tooltips over the same row fight each other. -->
+                <span class="list__desc">
                   {persona.description}
                 </span>
               </label>
             {/each}
           {/if}
         </div>
+        {#if hoveredPersona !== null}
+          <PersonaHoverCard
+            id={HOVER_CARD_ID}
+            personaId={hoveredPersona}
+            row={hoveredRow}
+            boundary={cardBoundary}
+            onkeep={cancelHover}
+            onrelease={releaseCard}
+          />
+        {/if}
       </div>
 
       <!-- 2. Name -->

@@ -737,8 +737,8 @@ textarea.field__input {
   color: var(--ink);
 }
 
-/* The one line of description: truncated, with the whole of it on the
-   row's title attribute for anyone who wants the rest. */
+/* The one line of description: truncated. Where the rest of it lives is
+   the list's own business — the persona list answers with a hover card. */
 .list__desc {
   flex: 1;
   min-width: 0;

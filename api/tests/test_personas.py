@@ -23,6 +23,7 @@ from kobo_api.personas import (
     PersonaExists,
     PersonaFields,
     create_persona,
+    parse_persona_body,
     persona_id,
     render_persona,
     seed_default_personas,
@@ -494,3 +495,71 @@ def test_seed_default_personas_preserves_archived_flag():
     index = json.loads(storage.read_bytes("b", "index.json"))
     entry = next(e for e in index["entries"] if e["id"] == "helpful-generalist")
     assert entry.get("archived") is True
+
+
+# --- parse_persona_body: the inverse of render_persona ---------------------
+
+
+def test_parse_persona_body_round_trips_render_persona():
+    """The contract this parser exists for: anything render_persona wrote,
+    parse_persona_body reads back field for field."""
+    fields = _fields(
+        what_they_do="Help customers fix billing problems quickly.\n\nEscalate anything that smells like fraud.",
+        rules=["Never share account numbers.", "Say when you do not know."],
+    )
+
+    parsed = parse_persona_body(render_persona(fields))
+
+    assert parsed.who_they_are == fields.who_they_are
+    assert parsed.what_they_do == fields.what_they_do
+    assert parsed.rules == fields.rules
+
+
+def test_parse_persona_body_round_trips_without_rules():
+    fields = _fields()
+
+    parsed = parse_persona_body(render_persona(fields))
+
+    assert parsed.who_they_are == fields.who_they_are
+    assert parsed.what_they_do == fields.what_they_do
+    assert parsed.rules == []
+
+
+def test_parse_persona_body_ignores_a_description_header_line():
+    """The packaged templates lead with `<!-- description: ... -->`; a
+    rendered body that has had one prepended still parses."""
+    fields = _fields()
+    text = "<!-- description: a calm troubleshooter -->\n" + render_persona(fields)
+
+    parsed = parse_persona_body(text)
+
+    assert parsed.who_they_are == fields.who_they_are
+    assert parsed.what_they_do == fields.what_they_do
+
+
+def test_parse_persona_body_sectionless_template_yields_nothing():
+    """A packaged built-in has no "## What you do" heading at all — the
+    parser says so (None) rather than guessing a body out of the prose."""
+    # The opening line reads like a who-they-are and even ends in a period.
+    # Without the heading it is still just prose, and gets no special
+    # reading at all.
+    text = (
+        "You are {name}, a helpful assistant.\n"
+        "Be concise, be warm, and say so plainly when you do not know something.\n"
+    )
+
+    parsed = parse_persona_body(text)
+
+    assert parsed.who_they_are is None
+    assert parsed.what_they_do is None
+    assert parsed.rules == []
+
+
+def test_parse_persona_body_keeps_braces_in_the_body():
+    """Free-form persona text can carry literal braces; nothing here runs
+    the body back through str.format, so they survive."""
+    fields = _fields(what_they_do="Read the {payload} and answer.")
+
+    parsed = parse_persona_body(render_persona(fields))
+
+    assert parsed.what_they_do == "Read the {payload} and answer."

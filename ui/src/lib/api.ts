@@ -811,6 +811,38 @@ export async function searchPersonas(
   return data.results;
 }
 
+/** One whole persona (`GET /api/personas/{id}`) — the catalog entry a
+ * search result already carries, plus the stored persona.md read back
+ * apart server-side (`kobo_api.personas.parse_persona_body`). What the
+ * hover card in the create dialog's persona list shows.
+ *
+ * `what_they_do` is cut at 4000 characters, with `truncated` saying so —
+ * the card fades after about a dozen lines anyway and links to the full
+ * persona. A packaged built-in has no sections in its file, so both prose
+ * fields come back as the catalog's one-line description instead, and
+ * `rules` is empty. `created_by`/`created_at` are null when the stored
+ * object carries no metadata to read them from. */
+export type PersonaDetail = {
+  id: string;
+  name: string;
+  team: string;
+  builtin: boolean;
+  tags: string[];
+  who_they_are: string;
+  what_they_do: string;
+  rules: string[];
+  created_by: string | null;
+  created_at: string | null;
+  truncated: boolean;
+};
+
+/** `GET /api/personas/{id}` — see `PersonaDetail`. Ungated, same as
+ * `searchPersonas`; an archived or unknown id answers 404. */
+export async function fetchPersona(id: string): Promise<PersonaDetail> {
+  const res = await fetch(`/api/personas/${encodeURIComponent(id)}`);
+  return parse<PersonaDetail>(res);
+}
+
 /** One archived persona (`GET /api/personas/archived`, hardening wave archive
  * lane) — the same raw index-entry shape `searchPersonas` already projects
  * into `CatalogEntry`, plus `archived: true`. Archived is presence-based

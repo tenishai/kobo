@@ -181,8 +181,9 @@ describe("CreateModal — the persona list (plain-form wave)", () => {
     expect(row?.querySelector(".list__tag")?.textContent?.trim()).toBe("growth");
     const desc = row?.querySelector(".list__desc");
     expect(desc?.textContent).toBe(LONG.description);
-    // Truncation hides the rest, so the whole of it is on the cell itself.
-    expect(desc?.getAttribute("title")).toBe(LONG.description);
+    // Truncation hides the rest, and the hover card (not a title tooltip)
+    // is what shows it now.
+    expect(desc?.getAttribute("title")).toBeNull();
   });
 
   it("washes the picked row and leaves the others plain", async () => {
@@ -995,5 +996,177 @@ describe("CreateModal — the group menu has a commons, a directory, and a door 
     const submit = screen.getByRole("button", { name: "Create agent" }) as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
     expect(await screen.findByText("Choose a group.")).not.toBeNull();
+  });
+});
+
+// --- the persona hover card ------------------------------------------------
+
+const HELPER_DETAIL = {
+  id: "helper",
+  name: "Helper",
+  team: "shared",
+  builtin: true,
+  tags: [],
+  who_they_are: "Helps with things.",
+  what_they_do: "Answers questions and keeps the answer short.",
+  rules: [],
+  created_by: "kobo",
+  created_at: null,
+  truncated: false,
+};
+
+/** Every fetch this suite made for one persona's detail. */
+function personaDetailCalls(id: string): unknown[] {
+  return vi
+    .mocked(fetch)
+    .mock.calls.filter(([url]) => String(url) === `/api/personas/${id}`);
+}
+
+/** Rest on a row for longer than the hover delay, on a fake clock, and hand
+ * the real one back before anything is asserted — testing-library's own
+ * waiting helpers are not driven by vitest's fake timers. */
+async function rest(row: Element, ms = 300): Promise<void> {
+  vi.useFakeTimers();
+  try {
+    await fireEvent.mouseEnter(row);
+    await vi.advanceTimersByTimeAsync(ms);
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+describe("CreateModal — the persona hover card", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function openWithHelper() {
+    stubCreateModalCatalogs({
+      "/api/personas/search": { results: [HELPER] },
+      "/api/personas/helper": HELPER_DETAIL,
+    });
+    const rendered = renderWithClient(CreateModal, { open: true, onclose: () => {} });
+    const radio = await screen.findByRole("radio", { name: /Helper/i });
+    const row = radio.closest("label") as HTMLElement;
+    return { ...rendered, radio, row };
+  }
+
+  it("the description cell no longer carries a title — the card is the answer now", async () => {
+    const { row } = await openWithHelper();
+    expect(row.querySelector(".list__desc")?.getAttribute("title")).toBeNull();
+  });
+
+  it("asks for nothing until the row has actually been rested on", async () => {
+    const { row } = await openWithHelper();
+
+    vi.useFakeTimers();
+    try {
+      await fireEvent.mouseEnter(row);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(personaDetailCalls("helper")).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("shows the card once the delay is up, and points the row at it", async () => {
+    const { radio, row } = await openWithHelper();
+
+    await rest(row);
+
+    const card = await screen.findByRole("tooltip");
+    expect(radio.getAttribute("aria-describedby")).toBe(card.id);
+    expect(await screen.findByText("What they do")).not.toBeNull();
+  });
+
+  it("hides again when the pointer leaves", async () => {
+    const { radio, row } = await openWithHelper();
+    await rest(row);
+    await screen.findByRole("tooltip");
+
+    await fireEvent.mouseLeave(row);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("tooltip")).toBeNull();
+    });
+    expect(radio.getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("opens on keyboard focus too, and closes on blur", async () => {
+    const { radio } = await openWithHelper();
+
+    vi.useFakeTimers();
+    try {
+      await fireEvent.focus(radio);
+      await vi.advanceTimersByTimeAsync(300);
+    } finally {
+      vi.useRealTimers();
+    }
+    await screen.findByRole("tooltip");
+
+    await fireEvent.blur(radio);
+    await waitFor(() => {
+      expect(screen.queryByRole("tooltip")).toBeNull();
+    });
+  });
+
+  it("holds open while the pointer is on the card itself", async () => {
+    // Otherwise the card would dismiss itself on the way to its own
+    // "Open the full persona" link.
+    const { row } = await openWithHelper();
+    await rest(row);
+    const card = await screen.findByRole("tooltip");
+
+    vi.useFakeTimers();
+    try {
+      await fireEvent.mouseLeave(row);
+      await fireEvent.mouseEnter(card);
+      await vi.advanceTimersByTimeAsync(400);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(screen.queryByRole("tooltip")).not.toBeNull();
+  });
+
+  it("Escape dismisses the card", async () => {
+    const { row } = await openWithHelper();
+    await rest(row);
+    await screen.findByRole("tooltip");
+
+    await fireEvent.keyDown(row, { key: "Escape" });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("tooltip")).toBeNull();
+    });
+  });
+
+  it("picking a persona dismisses the card", async () => {
+    const { radio, row } = await openWithHelper();
+    await rest(row);
+    await screen.findByRole("tooltip");
+
+    await fireEvent.click(radio);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("tooltip")).toBeNull();
+    });
+  });
+
+  it("costs one request per persona, however often it is hovered", async () => {
+    const { row } = await openWithHelper();
+
+    await rest(row);
+    await screen.findByRole("tooltip");
+    await fireEvent.mouseLeave(row);
+    await waitFor(() => {
+      expect(screen.queryByRole("tooltip")).toBeNull();
+    });
+
+    await rest(row);
+    await screen.findByRole("tooltip");
+
+    expect(personaDetailCalls("helper")).toHaveLength(1);
   });
 });

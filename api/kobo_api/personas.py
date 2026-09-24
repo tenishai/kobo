@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
@@ -192,6 +193,88 @@ def render_persona(fields: PersonaFields) -> str:
         lines.append("")
         lines.extend("- " + rule for rule in fields.rules)
     return "\n".join(lines) + "\n"
+
+
+# --- reading a rendered persona back apart ---------------------------------
+
+# The three fixed landmarks render_persona lays down, written once here so
+# the parser below can never drift from the renderer by a stray character.
+_WHO_LINE_RE = re.compile(r"^You are \{name\}, (?P<who>.+)\.$")
+_WHAT_HEADING = "## What you do"
+_RULES_HEADING = "## Rules"
+_DESCRIPTION_LINE_RE = re.compile(r"^<!--\s*description:.*-->\s*$")
+
+
+@dataclass
+class ParsedPersona:
+    """What `parse_persona_body` could recover from a persona.md.
+
+    `who_they_are`/`what_they_do` are None (not "") when the landmark that
+    carries them isn't in the file at all — the honest answer for a
+    packaged built-in, whose body is plain prose with no sections. The
+    caller decides what to show instead; the parser never guesses.
+    """
+
+    who_they_are: str | None = None
+    what_they_do: str | None = None
+    rules: list[str] = field(default_factory=list)
+
+
+def parse_persona_body(text: str) -> ParsedPersona:
+    """The inverse of `render_persona`: read a stored persona.md back into
+    the three fields that wrote it.
+
+    Round-trip is the contract (test_personas.py pins it both ways): every
+    body `render_persona` emits parses back field for field, braces and
+    blank lines included. Nothing here calls `str.format` or any markdown
+    renderer — the `{name}` placeholder in the opening line is matched
+    literally, and free-form persona text that carries its own `{`/`}`
+    passes through untouched.
+
+    A leading `<!-- description: ... -->` header (the packaged templates'
+    convention, see `kobo_api.catalog._parse_persona_file`) is skipped
+    first. A body with no `## What you do` heading — every packaged
+    built-in — yields None for both prose fields and no rules, rather than
+    a guess at which paragraph was meant to be which.
+    """
+    lines = text.splitlines()
+    if lines and _DESCRIPTION_LINE_RE.match(lines[0]):
+        lines = lines[1:]
+
+    parsed = ParsedPersona()
+
+    # The `## What you do` heading is the tell that render_persona wrote
+    # this file. Without it nothing else is read either -- not even the
+    # opening line, which in a packaged template is ordinary prose that
+    # merely starts the same way ("You are {name}, a helpful assistant. Be
+    # concise...") and would otherwise be mistaken for a who-they-are.
+    try:
+        what_at = lines.index(_WHAT_HEADING)
+    except ValueError:
+        return parsed
+
+    for line in lines[:what_at]:
+        match = _WHO_LINE_RE.match(line)
+        if match:
+            parsed.who_they_are = match.group("who")
+            break
+
+    try:
+        rules_at = lines.index(_RULES_HEADING, what_at + 1)
+    except ValueError:
+        rules_at = len(lines)
+
+    body = lines[what_at + 1 : rules_at]
+    while body and not body[0].strip():
+        body.pop(0)
+    while body and not body[-1].strip():
+        body.pop()
+    parsed.what_they_do = "\n".join(body)
+
+    parsed.rules = [
+        line[2:].strip() for line in lines[rules_at + 1 :] if line.startswith("- ")
+    ]
+    return parsed
 
 
 # The room's real limit on a persona (upload/limits addendum): the MERGED

@@ -163,6 +163,7 @@ from kobo_api.personas import (
     PersonaExists,
     PersonaFields,
     create_persona,
+    parse_persona_body,
     set_persona_archived,
     upsert_persona,
 )
@@ -252,6 +253,13 @@ if TYPE_CHECKING:
 # route can answer a shape mismatch with plain rejection copy rather than
 # the generic `RequestValidationError` message a Field pattern would trigger.
 TEAM_SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,23}$")
+
+# How much of a persona's "what they do" body GET /api/personas/{id} hands
+# back. The stored body's own ceiling is 48KB (kobo_api.personas), which is
+# far more than the hover card this feeds can ever show -- the card fades
+# after about a dozen lines and links to the full persona. Cutting here
+# keeps a wall of text off a wire that exists to answer a hover.
+_PERSONA_BODY_CHARS = 4000
 
 
 class SkillPick(BaseModel):
@@ -3420,6 +3428,97 @@ def create_app(
             return JSONResponse({"error": str(exc)}, status_code=502)
         return JSONResponse(
             {"personas": [e for e in index if e.get("archived")]}
+        )
+
+    # The most a caller can learn about one persona without provisioning an
+    # agent from it: the index entry plus the persona.md read back apart
+    # (kobo_api.personas.parse_persona_body). Feeds the hover card in the
+    # create dialog's persona list.
+    #
+    # MUST stay below the two literal GET paths above (/api/personas/search
+    # and /api/personas/archived) -- FastAPI matches in declaration order,
+    # so a {persona_id} route in front of them would swallow both words.
+    # test_api_personas.py pins that ordering.
+    #
+    # Ungated, exactly like GET /api/personas/search: the persona catalog is
+    # room-readable, and this route adds no field the search projection and
+    # the agent a caller could create from the persona wouldn't already
+    # show. Archived answers 404 rather than a body, so a retired persona
+    # can't be browsed back into use through here.
+    @app.get("/api/personas/{persona_id}")
+    def get_persona_route(persona_id: str) -> JSONResponse:
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        if clients is None or clients.storage is None or not cfg.personas_bucket:
+            return JSONResponse({"error": "catalogs aren't set up yet"}, status_code=503)
+
+        try:
+            index = personas_read_index(clients.storage, cfg.personas_bucket, "")
+        except ClientError as exc:
+            log.warning("persona read failed: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=502)
+
+        entry = next((e for e in index if e.get("id") == persona_id), None)
+        if entry is None:
+            return JSONResponse({"error": "no persona with that id"}, status_code=404)
+        if entry.get("archived"):
+            return JSONResponse({"error": "that persona is archived"}, status_code=404)
+
+        key = f"{persona_id}/persona.md"
+        try:
+            raw = clients.storage.read_bytes(cfg.personas_bucket, key)
+        except StorageNotFound:
+            # The index entry is the one thing that always exists. A body
+            # that isn't in the bucket gives a thin card off the entry
+            # alone, never a 500.
+            raw = None
+        except ClientError as exc:
+            log.warning("persona body read failed: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=502)
+
+        parsed = parse_persona_body(raw.decode()) if raw is not None else None
+        description = entry.get("description", "")
+        # Both prose fields fall back to the catalog's one line: that's the
+        # honest answer for a packaged built-in (plain prose, no sections)
+        # and for a body that has gone missing.
+        who_they_are = (parsed.who_they_are if parsed else None) or description
+        what_they_do = (parsed.what_they_do if parsed else None) or description
+        rules = parsed.rules if parsed else []
+
+        truncated = len(what_they_do) > _PERSONA_BODY_CHARS
+        if truncated:
+            what_they_do = what_they_do[:_PERSONA_BODY_CHARS]
+
+        created_by = entry.get("created_by")
+        created_at = entry.get("created_at")
+        if raw is not None and (created_by is None or created_at is None):
+            # The write paths record `creator` in the object's own custom
+            # metadata (kobo_api.personas.create_persona/upsert_persona) and
+            # the bucket stamps the timestamp -- neither is in the index.
+            # Any trouble reading it leaves the footer blank rather than
+            # failing a read that already has everything else it needs.
+            try:
+                meta = clients.storage.object_metadata(cfg.personas_bucket, key)
+            except Exception:  # noqa: BLE001 -- a missing footer is not a failed read
+                meta = {}
+            custom = meta.get("metadata") or {}
+            created_by = created_by or custom.get("creator")
+            created_at = created_at or meta.get("timeCreated") or meta.get("updated")
+
+        return JSONResponse(
+            {
+                "id": entry["id"],
+                "name": entry.get("name") or entry["id"],
+                "team": entry.get("team", ""),
+                "builtin": bool(entry.get("builtin")),
+                "tags": list(entry.get("tags") or []),
+                "who_they_are": who_they_are,
+                "what_they_do": what_they_do,
+                "rules": rules,
+                "created_by": created_by or None,
+                "created_at": created_at or None,
+                "truncated": truncated,
+            }
         )
 
     def _persona_archived_in_index(persona_id: str) -> bool:

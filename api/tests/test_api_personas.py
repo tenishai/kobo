@@ -1202,3 +1202,194 @@ def test_distill_persona_invalid_payload_never_reaches_the_generator(config, tmp
     client.post("/api/personas/distill", json={"body": ""})
 
     assert fake_name.distill_calls == []
+
+
+# --- GET /api/personas/{persona_id} (hover card) ---------------------------
+
+
+def _seeded_client(config, clients, tmp_path, fake_storage, entries, objects=None):
+    """A client whose personas bucket already holds `entries` in its index
+    and, optionally, the persona.md objects behind them."""
+    fake_storage.write_bytes("personas-bucket", "index.json", _index_bytes(entries))
+    for key, (data, meta) in (objects or {}).items():
+        fake_storage.write_bytes("personas-bucket", key, data, metadata=meta)
+    return _make_client(config, clients, tmp_path)
+
+
+ROOM_PERSONA_BODY = (
+    "You are {name}, a calm troubleshooter for billing questions.\n"
+    "\n"
+    "Speak in the first person, plainly. Lead with the answer; skip\n"
+    "throat-clearing. Say \"I don't know yet\" when it's true.\n"
+    "\n"
+    "## What you do\n"
+    "\n"
+    "Help customers fix billing problems quickly.\n"
+    "\n"
+    "Escalate anything that smells like fraud.\n"
+    "\n"
+    "## Rules\n"
+    "\n"
+    "- Never share account numbers.\n"
+    "- Say when you do not know.\n"
+)
+
+ROOM_ENTRY = {
+    "id": "aria",
+    "name": "Aria the Assistant",
+    "description": "a calm troubleshooter for billing questions",
+    "team": "cs-team",
+    "tags": ["billing", "support"],
+    "builtin": False,
+}
+
+
+def test_get_persona_returns_the_parsed_sections(config, clients, tmp_path, fake_storage):
+    client = _seeded_client(
+        config,
+        clients,
+        tmp_path,
+        fake_storage,
+        [ROOM_ENTRY],
+        {"aria/persona.md": (ROOM_PERSONA_BODY.encode(), {"team": "cs-team", "creator": "room"})},
+    )
+
+    response = client.get("/api/personas/aria")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "aria",
+        "name": "Aria the Assistant",
+        "team": "cs-team",
+        "builtin": False,
+        "tags": ["billing", "support"],
+        "who_they_are": "a calm troubleshooter for billing questions",
+        "what_they_do": (
+            "Help customers fix billing problems quickly.\n"
+            "\n"
+            "Escalate anything that smells like fraud."
+        ),
+        "rules": ["Never share account numbers.", "Say when you do not know."],
+        # From the object's own custom metadata / server timestamp — the
+        # index entry carries neither.
+        "created_by": "room",
+        "created_at": "2026-08-03T00:00:00Z",
+        "truncated": False,
+    }
+
+
+def test_get_persona_builtin_without_sections_falls_back_to_its_description(
+    config, clients, tmp_path, fake_storage
+):
+    """A packaged template is plain prose with no "## What you do" heading;
+    the room answers with the one line the catalog already knows rather
+    than inventing sections that aren't there."""
+    entry = {
+        "id": "helpful-generalist",
+        "name": "helpful-generalist",
+        "description": "A friendly, concise generalist assistant.",
+        "team": "shared",
+        "tags": [],
+        "builtin": True,
+    }
+    body = b"You are {name}, a helpful assistant. Be concise and be warm.\n"
+    client = _seeded_client(
+        config,
+        clients,
+        tmp_path,
+        fake_storage,
+        [entry],
+        {"helpful-generalist/persona.md": (body, {"team": "shared", "creator": "kobo"})},
+    )
+
+    response = client.get("/api/personas/helpful-generalist")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["builtin"] is True
+    assert payload["who_they_are"] == "A friendly, concise generalist assistant."
+    assert payload["what_they_do"] == "A friendly, concise generalist assistant."
+    assert payload["rules"] == []
+    assert payload["created_by"] == "kobo"
+
+
+def test_get_persona_unknown_id_404(config, clients, tmp_path, fake_storage):
+    client = _seeded_client(config, clients, tmp_path, fake_storage, [ROOM_ENTRY])
+
+    response = client.get("/api/personas/ghost")
+
+    assert response.status_code == 404
+    assert response.json() == {"error": "no persona with that id"}
+
+
+def test_get_persona_archived_id_404(config, clients, tmp_path, fake_storage):
+    """Archived is gone as far as a picker is concerned — the same 404 an
+    unknown id gets, with copy that says which it was."""
+    client = _seeded_client(
+        config, clients, tmp_path, fake_storage, [{**ROOM_ENTRY, "archived": True}]
+    )
+
+    response = client.get("/api/personas/aria")
+
+    assert response.status_code == 404
+    assert response.json() == {"error": "that persona is archived"}
+
+
+def test_get_persona_truncates_a_long_body(config, clients, tmp_path, fake_storage):
+    long_body = "x" * 4500
+    body = (
+        "You are {name}, a very talkative helper.\n"
+        "\n"
+        "## What you do\n"
+        "\n" + long_body + "\n"
+    )
+    client = _seeded_client(
+        config,
+        clients,
+        tmp_path,
+        fake_storage,
+        [{**ROOM_ENTRY, "id": "talker"}],
+        {"talker/persona.md": (body.encode(), {"team": "cs-team", "creator": "room"})},
+    )
+
+    response = client.get("/api/personas/talker")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["what_they_do"]) == 4000
+    assert payload["truncated"] is True
+
+
+def test_get_persona_missing_file_still_answers_from_the_index(
+    config, clients, tmp_path, fake_storage
+):
+    """The index entry is the one thing that always exists; a persona.md
+    that isn't in the bucket gives a thin card, not a 500."""
+    client = _seeded_client(config, clients, tmp_path, fake_storage, [ROOM_ENTRY])
+
+    response = client.get("/api/personas/aria")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["who_they_are"] == "a calm troubleshooter for billing questions"
+    assert payload["what_they_do"] == "a calm troubleshooter for billing questions"
+    assert payload["rules"] == []
+    assert payload["created_by"] is None
+    assert payload["created_at"] is None
+
+
+def test_get_persona_does_not_shadow_the_literal_paths(config, clients, tmp_path, fake_storage):
+    """"search" and "archived" must keep reaching their own routes rather
+    than being read as a {persona_id}."""
+    client = _seeded_client(config, clients, tmp_path, fake_storage, [ROOM_ENTRY])
+
+    assert client.get("/api/personas/search").status_code == 200
+    assert client.get("/api/personas/archived").status_code == 200
+
+
+def test_get_persona_503_when_catalogs_are_not_set_up(clients, tmp_path):
+    client = _make_client(Config(workdir=tmp_path / "work"), clients, tmp_path)
+
+    response = client.get("/api/personas/aria")
+
+    assert response.status_code == 503
