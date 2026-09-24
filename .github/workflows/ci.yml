@@ -44,7 +44,10 @@ jobs:
         run: uv sync --extra dev --python 3.12
       - name: pytest
         working-directory: api
-        run: PYTHONPATH=. .venv/bin/python -m pytest -q
+        # One worker per available core: the suite is CPU-bound and each test
+        # owns its own SQLite file, so this is the difference between ten
+        # minutes and one on a self-hosted runner.
+        run: PYTHONPATH=. .venv/bin/python -m pytest -q -n auto
 
   ui:
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
@@ -150,6 +153,12 @@ jobs:
           platforms: linux/amd64
           provenance: false
           tags: ${{ vars.KOBO_IMAGE }}:${{ steps.meta.outputs.tag }}
+          # Layer cache in the registry beside the images: a self-hosted
+          # runner starts empty every time, so without this every build
+          # reinstalls every dependency from scratch. `pull: true` above still
+          # refreshes the base image, so the stale-base fix holds.
+          cache-from: type=registry,ref=${{ vars.KOBO_IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ vars.KOBO_IMAGE }}:buildcache,mode=max
       - name: Roll command (operator runs this)
         run: |
           {

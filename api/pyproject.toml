@@ -51,6 +51,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    # Parallel workers: the suite is CPU-bound and every test owns its own
+    # SQLite file and workdir, so four workers finish in under a minute where
+    # one takes ten on a shared runner.
+    "pytest-xdist",
     "ruff",
 ]
 
