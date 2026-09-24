@@ -438,6 +438,9 @@ _SLACK_APP_NOT_CONNECTED = (
 # ownership gate has already passed, so `_skill_route_result` surfaces
 # them verbatim rather than folding them into `_AGENT_NOT_FOUND` the way
 # every other 404 in this module still does.
+# The persona-change route's own "no such persona" sentence, see `_persona_route_result`.
+_PERSONA_NOT_FOUND_PREFIX = "there is no persona named "
+
 _SKILL_NOT_FOUND_PREFIX = "skill not found:"
 _SKILL_GONE_FROM_CATALOG_PREFIX = "skill no longer in the catalog:"
 
@@ -565,6 +568,22 @@ def _agent_route_result(response: JSONResponse) -> dict:
     raise ToolError(str(body.get("error", "that request could not be completed")))
 
 
+def _persona_route_result(response: JSONResponse) -> dict:
+    """`kobo_set_agent_persona`'s own status translation: table (A), except
+    that the route's persona-scoped 404 ("there is no persona named ...")
+    surfaces verbatim. It fires only AFTER the shared visibility and
+    ownership gate on the agent has passed, so it names nothing a caller
+    could not already list with `kobo_list_personas`, and folding it into
+    "agent not found" would send the caller looking at the wrong noun. The
+    gate's own 404 still folds, exactly like every other tool here."""
+    if response.status_code == 404:
+        body = _parse(response)
+        error = str(body.get("error", ""))
+        if error.startswith(_PERSONA_NOT_FOUND_PREFIX):
+            raise ToolError(error)
+    return _agent_route_result(response)
+
+
 def _skill_route_result(response: JSONResponse) -> dict:
     """`kobo_set_agent_skills`'s own status translation -- table (A) with
     the one documented, operator-ruled deviation this module's own
@@ -676,6 +695,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     add_skill_endpoint = _endpoint(app, "POST", "/api/agents/{name}/skills/catalog")
     remove_skill_endpoint = _endpoint(app, "DELETE", "/api/agents/{name}/skills/{skill_id}")
     add_tool_endpoint = _endpoint(app, "POST", "/api/agents/{name}/tooling")
+    set_persona_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/persona")
     set_runtime_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/runtime")
     request_repo_access_endpoint = _endpoint(app, "POST", "/api/agents/{name}/repo-access")
     list_repo_access_endpoint = _endpoint(app, "GET", "/api/repo-access")
@@ -1648,6 +1668,43 @@ def register(mcp: FastMCP, app: Any) -> None:
             "wiring": body.get("wiring"),
             "pull_request": body.get("pull_request"),
         }
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @audited("kobo_set_agent_persona")
+    async def kobo_set_agent_persona(ctx: Context, agent: str, persona: str) -> dict:
+        """Give a running agent a different persona: `persona` is a catalog id
+        (see `kobo_list_personas`). The room rewrites the agent's
+        `bundle/persona.md` exactly as it would have at birth, with the
+        agent's own name in place of the persona's placeholder, and its CI
+        rebuilds and rolls the agent. Nothing else about the agent moves:
+        not its group, its skills, its knowledge or its name. Returns the
+        commit that carries the change so you can watch it land.
+
+        You must own `agent` or be a room operator, `agent` must be READY,
+        and it must be one the room composed -- a connected agent runs from
+        its team's own repository, and its persona is theirs to change
+        there. A persona you cannot see, or an archived one, is "no such
+        persona".
+        """
+        # Same lazy import as `kobo_teach`'s `TeachPayload`: main imports
+        # this module's registrar, so the body model comes in at call time.
+        from kobo_api.main import SetPersonaBody
+
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            response = await _off_loop(
+                set_persona_endpoint,
+                name=agent,
+                body=SetPersonaBody(persona=persona),
+                request=req,
+                session=session,
+            )
+        finally:
+            session.close()
+
+        body = _persona_route_result(response)
+        return {"agent": agent, "persona": body.get("persona"), "commit": body.get("sha")}
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
     @audited("kobo_restart_agent")

@@ -168,6 +168,7 @@ from kobo_api.personas import (
     set_persona_archived,
     set_persona_team,
     upsert_persona,
+    write_persona_file,
 )
 from kobo_api.personas import (
     read_index as personas_read_index,
@@ -223,6 +224,7 @@ from kobo_api.steps import (
     _resolve_persona_body,
     refresh_after_capability_distill,
     refresh_colleague_rosters,
+    resolve_persona_body,
 )
 from kobo_api.teach import format_note, note_filename
 from kobo_api.tooling import (
@@ -1305,6 +1307,25 @@ RESTART_BUCKET = "agent-restart"
 # than the caller: there is no Deployment to roll until the pipeline has
 # finished making one.
 NOT_DEPLOYED_YET = "this agent is not running yet, so there is nothing to restart"
+
+# The persona-change route's own refusals (design 2026-09-24). A persona
+# changes through the bundle, so the agent must be running from a bundle
+# the room owns and may push to.
+PERSONA_NOT_READY = "this agent is not ready yet, so its persona cannot change"
+PERSONA_OF_A_CONNECTED_AGENT = (
+    "this agent runs from its team's own repository, so its persona is theirs to "
+    "change there, not the room's"
+)
+PERSONAS_NOT_SET_UP = "personas aren't set up yet"
+
+
+class SetPersonaBody(BaseModel):
+    """`PUT /api/agents/{name}/persona`: the catalog id of the persona to wear.
+    Module-level, like every other body model here: with postponed
+    annotations a model defined inside `create_app` is a string FastAPI
+    cannot resolve, and the parameter silently becomes a query field."""
+
+    persona: str = Field(min_length=1, max_length=80)
 RESTART_FAILED = "couldn't ask the cluster to restart this agent. Try again."
 TOO_MANY_RESTARTS = "that is a lot of restarting. Wait a minute"
 
@@ -7766,6 +7787,78 @@ def create_app(
         if result.pull_request is not None:
             body["pull_request"] = result.pull_request
         return JSONResponse(body)
+
+    @app.put("/api/agents/{name}/persona")
+    def set_agent_persona(
+        name: str,
+        body: SetPersonaBody,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Give a running agent a different persona (design 2026-09-24).
+
+        The persona is what `bundle/persona.md` says, so this is one commit
+        to that file, rendered exactly as the pipeline renders it at birth
+        (`resolve_persona_body`), plus the row's own `persona`. The
+        generated CI rebuilds and rolls the pod; the answer carries the
+        pushed head so a caller can watch that land the way a knowledge
+        save is watched. Nothing else about the agent moves.
+
+        Owner or operator, READY only, composed only: the room never pushes
+        to a team's own repository. A persona the caller cannot see, or one
+        that is archived, is "no such persona", the same answer as one that
+        never existed.
+        """
+        agent = _ready_agent_or_error(
+            session, request, name, not_ready_message=PERSONA_NOT_READY
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+        if is_connected(agent):
+            return JSONResponse({"error": PERSONA_OF_A_CONNECTED_AGENT}, status_code=409)
+        cfg: Config = app.state.config
+        clients: Clients | None = app.state.clients
+        if clients is None or clients.storage is None or not cfg.personas_bucket:
+            return JSONResponse({"error": PERSONAS_NOT_SET_UP}, status_code=503)
+
+        persona_id = body.persona.strip()
+        not_found = JSONResponse(
+            {"error": f"there is no persona named {persona_id}"}, status_code=404
+        )
+        index = personas_read_index(clients.storage, cfg.personas_bucket, "")
+        entry = next((e for e in index if e.get("id") == persona_id), None)
+        if entry is None or entry.get("archived"):
+            return not_found
+        visible = _persona_visible_teams(request)
+        if (
+            visible is not None
+            and not entry.get("builtin")
+            and entry.get("team") not in visible
+        ):
+            return not_found
+
+        try:
+            rendered = resolve_persona_body(cfg, clients.storage, persona_id, agent.name)
+        except RuntimeError:
+            return not_found
+        try:
+            sha = write_persona_file(
+                clients.github, agent.repo_full_name, rendered, persona_id=persona_id
+            )
+        except ClientError as exc:
+            log.warning(
+                "persona change failed for agent %s (%s)", agent.name, type(exc).__name__
+            )
+            return JSONResponse(
+                {"error": "the agent's repository could not be updated"}, status_code=502
+            )
+        agent.persona = persona_id
+        session.commit()
+        log.info("agent %s now wears persona %s", agent.name, persona_id)
+        return JSONResponse({"persona": persona_id, "sha": sha})
 
     @app.post("/api/agents/{name}/restart")
     def restart_agent(

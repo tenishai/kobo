@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -175,6 +176,32 @@ def in_reading_order(entries: list[dict]) -> list[dict]:
         return (1, 0, entry.get("name") or "")
 
     return sorted(entries, key=key)
+
+
+def write_persona_file(github, repo: str, body: str, *, persona_id: str) -> str:
+    """Make `bundle/persona.md` in `repo` say `body`, and push it.
+
+    The one file the runtime reads its persona from, rendered by the
+    caller exactly as the pipeline renders it at birth (`{name}` already
+    substituted, the catalog's header line already gone), so a changed
+    persona and a born-with one are byte-for-byte the same kind of file.
+    Same shape as `kobo_api.knowledge.save_knowledge_file`: clone, write,
+    `commit_push`, return the pushed head. Identical content is a
+    `commit_push` that reports nothing to do, and the returned head is then
+    the truthful answer: the bundle already says this.
+
+    Never `[skip ci]`: the persona reaches the running agent only through
+    the rebuild and rollout the generated CI does on every push, which is
+    the delivery, not a side effect of it.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        workdir = Path(tmp)
+        github.clone(repo, workdir)
+        bundle = workdir / "bundle"
+        bundle.mkdir(parents=True, exist_ok=True)
+        (bundle / "persona.md").write_text(body, encoding="utf-8")
+        github.commit_push(workdir, f"kobo: persona is now {persona_id}")
+        return github.local_head(workdir)
 
 
 def check_name_length(name: str) -> None:

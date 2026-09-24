@@ -55,6 +55,7 @@ from kobo_api.models import (
 from kobo_api.personas import seed_default_personas
 from kobo_api.slack_state import encode_channels
 from tests.fakes import (
+    FAKE_LOCAL_HEAD_DEFAULT,
     FakeAgent,
     FakeCabal,
     FakeCloud,
@@ -428,6 +429,7 @@ def test_build_mcp_server_registers_exactly_the_named_tools(
         "kobo_set_agent_secrets",
         "kobo_set_agent_env",
         "kobo_restart_agent",
+        "kobo_set_agent_persona",
         "kobo_move_persona",
         "kobo_archive_persona",
     }
@@ -3763,3 +3765,81 @@ def test_restart_agent_says_what_the_room_said_when_the_cluster_refuses(
 
     # The house phrasing for a 5xx, never the cluster's own words.
     assert "Unable to connect" not in str(exc_info.value)
+
+
+# --- kobo_set_agent_persona -----------------------------------------------------
+
+
+class _PersonaCapturingGitHub(FakeGitHub):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.captured_persona: str | None = None
+
+    def commit_push(self, workdir, message: str) -> bool:
+        target = workdir / "bundle" / "persona.md"
+        if target.is_file():
+            self.captured_persona = target.read_text()
+        return super().commit_push(workdir, message)
+
+
+def test_set_agent_persona_rewrites_the_bundle_and_reports_the_commit(
+    session_factory, config, fake_storage
+):
+    github = _PersonaCapturingGitHub(
+        existing_repos={SECRETS_REPO},
+        repo_files={"gojira.yaml": SECRETS_GOJIRA_YAML},
+        extra_clone_files={"gojira.yaml": SECRETS_GOJIRA_YAML},
+    )
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(
+        _secrets_app(session_factory, config, fake_storage, github=github)
+    )
+
+    result = _call_tool(
+        mcp,
+        "kobo_set_agent_persona",
+        _ctx_for(MEMBER_A_EMAIL),
+        agent=SECRETS_AGENT,
+        persona="marketing-strategist",
+    )
+
+    assert result == {
+        "agent": SECRETS_AGENT,
+        "persona": "marketing-strategist",
+        "commit": FAKE_LOCAL_HEAD_DEFAULT,
+    }
+    assert github.captured_persona is not None
+    assert github.captured_persona.startswith(f"You are {SECRETS_AGENT}, a marketing strategist")
+    assert github.pushes[-1][1] == "kobo: persona is now marketing-strategist"
+
+
+def test_set_agent_persona_hides_an_agent_the_caller_does_not_own(
+    session_factory, config, fake_storage
+):
+    _seed_secrets_agent(session_factory, created_by="someone-else@example.com")
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage))
+
+    with pytest.raises(ToolError, match="agent not found"):
+        _call_tool(
+            mcp,
+            "kobo_set_agent_persona",
+            _ctx_for(MEMBER_A_EMAIL),
+            agent=SECRETS_AGENT,
+            persona="marketing-strategist",
+        )
+
+
+def test_set_agent_persona_names_a_persona_that_does_not_exist(
+    session_factory, config, fake_storage
+):
+    _seed_secrets_agent(session_factory)
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage))
+
+    with pytest.raises(ToolError, match="no persona named nobody"):
+        _call_tool(
+            mcp,
+            "kobo_set_agent_persona",
+            _ctx_for(MEMBER_A_EMAIL),
+            agent=SECRETS_AGENT,
+            persona="nobody",
+        )

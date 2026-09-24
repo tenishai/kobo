@@ -58,7 +58,13 @@ from kobo_api.clients import (
     gsa_email,
 )
 from kobo_api.colleagues import deliver_pass
-from kobo_api.composer import BundleSpec, _colleagues_md, _self_md, compose, validate_agent_yaml
+from kobo_api.composer import (
+    BundleSpec,
+    _colleagues_md,
+    _self_md,
+    compose,
+    validate_agent_yaml,
+)
 from kobo_api.config import Config, vertex_location_for
 from kobo_api.directory import sync_directory
 from kobo_api.kinds import KIND_CONNECTED, RUN_MODE_HEADLESS, is_connected
@@ -198,12 +204,22 @@ def _resolve_persona_body(
     misinterpret) any other literal `{...}` the persona's own purpose/
     boundaries text might carry (the ledgered P1a brace hazard this closes).
     """
-    key = f"{agent.persona}/persona.md"
+    return resolve_persona_body(config, storage, agent.persona, agent.name)
+
+
+def resolve_persona_body(config: Config, storage: StorageClient, persona_id: str, agent_name: str) -> str:
+    """The body `bundle/persona.md` carries for `agent_name` wearing
+    `persona_id`: the catalog body with its header line gone and `{name}`
+    replaced. The one renderer, shared by the pipeline (at birth) and the
+    persona-change route (later), so the two can never disagree about what a
+    persona looks like in a bundle. Raises `RuntimeError` naming the persona
+    when the catalog has no such body."""
+    key = f"{persona_id}/persona.md"
     try:
         raw = storage.read_bytes(config.personas_bucket, key)
     except StorageNotFound as exc:
         raise RuntimeError(
-            f"persona {agent.persona!r} (recorded on agent {agent.name!r}) is not "
+            f"persona {persona_id!r} (recorded on agent {agent_name!r}) is not "
             "in the persona catalog"
         ) from exc
 
@@ -214,7 +230,7 @@ def _resolve_persona_body(
         body = text[newline + 1 :] if newline != -1 else ""
     else:
         body = text
-    return body.replace("{name}", agent.name)
+    return body.replace("{name}", agent_name)
 
 
 @dataclass
