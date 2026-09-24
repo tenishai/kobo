@@ -506,7 +506,7 @@ def test_create_agent_without_a_name_uses_the_naming_stations_first_suggestion(
     # `who_they_are` was passed as `what_they_do` -- proof `persona_id`
     # resolved server-side rather than the thin fallback text riding
     # through untouched.
-    assert "helpful assistant" in what
+    assert "helpful generalist" in what
     assert what != PERSONA
 
 

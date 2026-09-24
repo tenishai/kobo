@@ -68,7 +68,7 @@ from tests.fakes import (
 
 AGENT_NAME = "clio"
 PERSONA = "helpful-generalist"
-PERSONA_DESCRIPTION = "A friendly, concise generalist assistant."
+PERSONA_DESCRIPTION = "A friendly, plain-spoken generalist for everyday questions, drafts and quick research."
 REPO = "acme/agent-clio"
 
 APP_ID = "A0EXISTING"

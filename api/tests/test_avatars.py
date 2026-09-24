@@ -11,7 +11,7 @@ from kobo_api.avatars import avatar_prompt, set_avatar
 from tests.fakes import FAKE_LOCAL_HEAD_DEFAULT, FakeGitHub
 
 NAME = "clio"
-DESCRIPTION = "A friendly, concise generalist assistant."
+DESCRIPTION = "A friendly, plain-spoken generalist for everyday questions, drafts and quick research."
 
 
 class _CapturingGitHub(FakeGitHub):
@@ -57,7 +57,7 @@ def test_avatar_prompt_exact_template():
     # contract, not just "contains the right substrings".
     assert avatar_prompt(NAME, DESCRIPTION) == (
         "friendly square avatar portrait of a character named clio; "
-        "persona: A friendly, concise generalist assistant.; "
+        "persona: A friendly, plain-spoken generalist for everyday questions, drafts and quick research.; "
         "the face and styling should feel like a \"clio\" -- let the name "
         "and persona set the character's vibe; flat, minimal, centered, plain "
         "background; no text in image."

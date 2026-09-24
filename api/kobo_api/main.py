@@ -82,8 +82,6 @@ from kobo_api.clients import (
 from kobo_api.config import SHARED_GROUP, Config
 from kobo_api.connect_scan import NAME_TAKEN, Finding, ScanReport, scan_repo
 from kobo_api.db import init_db, make_engine, make_session_factory
-from kobo_api.metrics import install as install_metrics
-from kobo_api.tracing import install as install_tracing
 from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
 from kobo_api.directory import retire_directory, sync_directory
 from kobo_api.iap import HttpsOnlyMiddleware, IapMiddleware, IapVerifier
@@ -94,6 +92,8 @@ from kobo_api.intake import (
     list_intake,
     upload_intake_file,
 )
+from kobo_api.jira_broker import fetch_issue as jira_fetch_issue
+from kobo_api.jira_broker import search_issues as jira_search_issues
 from kobo_api.kinds import (
     KIND_CONNECTED,
     RUN_MODE_HEADLESS,
@@ -121,10 +121,15 @@ from kobo_api.metadata import (
     skill_descriptions_for_agent,
     tooling_filenames_for,
 )
-from kobo_api.repo_search import MAX_QUERY_CHARS, RepoIndex, RepoWarmer
-from kobo_api.runtime import commit_runtime_image, validate_runtime_image
+from kobo_api.metrics import install as install_metrics
 from kobo_api.models import (
     GROUP_REQUEST_DECLINED,
+    GROUP_REQUEST_DONE,
+    GROUP_REQUEST_PENDING,
+    INVITE_ACCEPTED,
+    INVITE_DECLINED,
+    INVITE_PENDING,
+    INVITE_REVOKED,
     LEARNING_APPROVED,
     LEARNING_DENIED,
     LEARNING_PENDING,
@@ -133,19 +138,13 @@ from kobo_api.models import (
     REPO_ACCESS_REQUESTED,
     REPO_ACCESS_REVOKED,
     REPO_ACCESS_STATUSES,
-    RepoAccess,
-    GROUP_REQUEST_DONE,
-    GROUP_REQUEST_PENDING,
-    INVITE_ACCEPTED,
-    INVITE_DECLINED,
-    INVITE_PENDING,
-    INVITE_REVOKED,
     A2AInvite,
     Agent,
     AgentLearning,
     AgentStatus,
     AgentUserGrant,
     GroupRequest,
+    RepoAccess,
     Thread,
     ThreadParticipant,
 )
@@ -163,6 +162,7 @@ from kobo_api.personas import (
     PersonaExists,
     PersonaFields,
     create_persona,
+    in_reading_order,
     parse_persona_body,
     seed_default_personas,
     set_persona_archived,
@@ -172,6 +172,7 @@ from kobo_api.personas import (
 from kobo_api.personas import (
     read_index as personas_read_index,
 )
+from kobo_api.pr_broker import BrokerAuthError, mint_scoped_token, verify_agent_token
 from kobo_api.provisioner import (
     STEP_LABELS,
     interrupted_sweep_loop,
@@ -181,9 +182,6 @@ from kobo_api.provisioner import (
     run_pipeline,
     sweep_interrupted,
 )
-from kobo_api.jira_broker import fetch_issue as jira_fetch_issue
-from kobo_api.jira_broker import search_issues as jira_search_issues
-from kobo_api.pr_broker import BrokerAuthError, mint_scoped_token, verify_agent_token
 from kobo_api.purpose_tags import (
     MAX_CREATE_TAGS,
     clean_tags,
@@ -191,6 +189,8 @@ from kobo_api.purpose_tags import (
     encode_tags,
     normalize_tags,
 )
+from kobo_api.repo_search import MAX_QUERY_CHARS, RepoIndex, RepoWarmer
+from kobo_api.runtime import commit_runtime_image, validate_runtime_image
 from kobo_api.search import (
     CATALOG_TTL_S,
     catalog_index_metadata,
@@ -235,6 +235,7 @@ from kobo_api.tooling import (
     list_tooling,
     upload_tooling_file,
 )
+from kobo_api.tracing import install as install_tracing
 
 log = logging.getLogger(__name__)
 
@@ -3188,7 +3189,7 @@ def create_app(
     _RECOMMEND_RESULTS = 5
 
     @app.get("/api/skills/recommended")
-    def recommend_skills(  # noqa: B008
+    def recommend_skills(
         who: str = "",
         what: str = "",
         session: Session = Depends(get_session),
@@ -3250,19 +3251,21 @@ def create_app(
         _maybe_refresh_catalogs(app, engine)
         visible_teams = _persona_visible_teams(request) if scope == "mine" else None
         return {
-            "results": [
-                {
-                    "id": e.id,
-                    "name": e.name,
-                    "description": e.description,
-                    "team": e.team,
-                    "tags": e.tags,
-                    "builtin": e.builtin,
-                }
-                for e in catalog_search(
-                    engine, "persona", q, team=team, visible_teams=visible_teams
-                )
-            ]
+            "results": in_reading_order(
+                [
+                    {
+                        "id": e.id,
+                        "name": e.name,
+                        "description": e.description,
+                        "team": e.team,
+                        "tags": e.tags,
+                        "builtin": e.builtin,
+                    }
+                    for e in catalog_search(
+                        engine, "persona", q, team=team, visible_teams=visible_teams
+                    )
+                ]
+            )
         }
 
     @app.get("/api/catalog/teams")
@@ -5107,7 +5110,7 @@ def create_app(
     _BUILD_LOG_TAIL_LINES = 400
 
     @app.get("/api/agents/{name}/build-log")
-    def agent_build_log(  # noqa: B008
+    def agent_build_log(
         name: str,
         request: Request,
         session: Session = Depends(get_session),
@@ -5166,7 +5169,7 @@ def create_app(
         )
 
     @app.post("/api/agents/{name}/repo-access")
-    def request_repo_access(  # noqa: B008
+    def request_repo_access(
         name: str,
         payload: RepoAccessRequest,
         request: Request,
@@ -5224,7 +5227,7 @@ def create_app(
         )
 
     @app.get("/api/repo-access")
-    def list_repo_access(  # noqa: B008
+    def list_repo_access(
         request: Request,
         status: str | None = None,
         session: Session = Depends(get_session),
@@ -5262,7 +5265,7 @@ def create_app(
         )
 
     @app.post("/api/repo-access/decide")
-    def decide_repo_access(  # noqa: B008
+    def decide_repo_access(
         payload: RepoAccessDecision,
         request: Request,
         session: Session = Depends(get_session),
@@ -5302,7 +5305,7 @@ def create_app(
         )
 
     @app.post("/broker/agents/{name}/github-token")
-    def mint_agent_github_token(  # noqa: B008
+    def mint_agent_github_token(
         name: str,
         request: Request,
         session: Session = Depends(get_session),

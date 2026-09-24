@@ -25,8 +25,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from kobo_api.catalog import _parse_persona_file
 from kobo_api.clients import StorageClient, StorageNotFound
-from kobo_api.search import CatalogEntry
 from kobo_api.purpose_tags import normalize_tags
+from kobo_api.search import CatalogEntry
 
 # A persona id: lowercase, starts with a letter, up to 40 chars of
 # letters/digits/hyphens after that (trailing hyphens are fine — see
@@ -62,18 +62,7 @@ _PACKAGE_PERSONAS_DIR = Path(__file__).parent / "templates" / "personas"
 # blurb, and `_derive_tags`'s own longest-first ordering already pushes
 # short filler words to the bottom before the cap(6) cuts them.
 _STOPWORDS = frozenset(
-    "a an the and or but nor of to in on at for with without by from as "
-    "is are was were be been being "
-    "who whom whose what which when where why how "
-    "they them their theirs you your yours we us our ours i me my mine "
-    "he him his she her hers it its this that these those itself himself "
-    "herself myself yourself "
-    "do does did done doing have has had having "
-    "will would shall should could can may might must "
-    "not no so if then than "
-    "each every any all some one two three first second next last more "
-    "most other another such only own same too very "
-    "s t re ve ll d m just also".split()
+    ["a", "an", "the", "and", "or", "but", "nor", "of", "to", "in", "on", "at", "for", "with", "without", "by", "from", "as", "is", "are", "was", "were", "be", "been", "being", "who", "whom", "whose", "what", "which", "when", "where", "why", "how", "they", "them", "their", "theirs", "you", "your", "yours", "we", "us", "our", "ours", "i", "me", "my", "mine", "he", "him", "his", "she", "her", "hers", "it", "its", "this", "that", "these", "those", "itself", "himself", "herself", "myself", "yourself", "do", "does", "did", "done", "doing", "have", "has", "had", "having", "will", "would", "shall", "should", "could", "can", "may", "might", "must", "not", "no", "so", "if", "then", "than", "each", "every", "any", "all", "some", "one", "two", "three", "first", "second", "next", "last", "more", "most", "other", "another", "such", "only", "own", "same", "too", "very", "s", "t", "re", "ve", "ll", "d", "m", "just", "also"]
 )
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
@@ -141,6 +130,51 @@ class PersonaFields(BaseModel):
             if "\n" in item:
                 raise ValueError(f"each rule must be a single line (no newlines): {item!r}")
         return v
+
+
+# The order the built-in personas are shown in, everywhere the room lists
+# them (the Personas page, the Create-agent picker, the MCP list). Curated,
+# not alphabetical, and read top to bottom by the people it is for: the
+# everyday personas a non-technical newcomer would pick sit first, the
+# specialist and engineering ones follow, and the operators of specific
+# clouds close the list (operator ruling 2026-09-24: "showing the
+# non-technical ones first is less daunting"). A new template must be
+# placed here, once; `tests/test_persona_templates.py` refuses one that is
+# not. Team personas are never in this list and always follow it, by name.
+BUILTIN_ORDER: tuple[str, ...] = (
+    "helpful-generalist",
+    "onboarding-guide",
+    "workspace-admin",
+    "marketing-strategist",
+    "billing-analyst",
+    "legal-reader",
+    "identity-admin",
+    "frontend-designer",
+    "code-reviewer",
+    "aws-operator",
+    "gcp-operator",
+    "azure-operator",
+)
+_BUILTIN_RANK = {id_: rank for rank, id_ in enumerate(BUILTIN_ORDER)}
+
+
+def in_reading_order(entries: list[dict]) -> list[dict]:
+    """The catalog entries as a person should read them: built-ins first, in
+    `BUILTIN_ORDER` (a built-in the list does not name yet goes after the
+    named ones, by name), then every team persona by name.
+
+    The search layer already puts built-ins ahead of team personas; it can
+    only sort by columns it stores, and the reading order is not a column,
+    so it is applied here, once, for every caller that lists personas. Same
+    input order in, same output order out: the sort is stable."""
+    unlisted = len(BUILTIN_ORDER)
+
+    def key(entry: dict) -> tuple[int, int, str]:
+        if entry.get("builtin"):
+            return (0, _BUILTIN_RANK.get(entry.get("id", ""), unlisted), entry.get("name") or "")
+        return (1, 0, entry.get("name") or "")
+
+    return sorted(entries, key=key)
 
 
 def check_name_length(name: str) -> None:

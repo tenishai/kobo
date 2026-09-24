@@ -19,6 +19,8 @@ from pydantic import ValidationError
 import kobo_api.personas as personas_module
 from kobo_api.clients import StorageNotFound
 from kobo_api.personas import (
+    BUILTIN_ORDER,
+    in_reading_order,
     PersonaError,
     PersonaExists,
     PersonaFields,
@@ -587,3 +589,43 @@ def test_parse_persona_body_keeps_braces_in_the_body():
     parsed = parse_persona_body(render_persona(fields))
 
     assert parsed.what_they_do == "Read the {payload} and answer."
+
+
+# --- in_reading_order --------------------------------------------------------------
+
+
+def _entry(id_, *, builtin=False, team="shared"):
+    return {"id": id_, "name": id_, "description": "", "team": team, "tags": [], "builtin": builtin}
+
+
+def test_reading_order_puts_builtins_first_by_the_curated_list_then_teams_by_name():
+    entries = [
+        _entry("zed-team", team="sre"),
+        _entry("gcp-operator", builtin=True),
+        _entry("alpha-team", team="qa"),
+        _entry("helpful-generalist", builtin=True),
+        _entry("code-reviewer", builtin=True),
+    ]
+    ordered = [e["id"] for e in in_reading_order(entries)]
+    assert ordered == [
+        "helpful-generalist",
+        "code-reviewer",
+        "gcp-operator",
+        "alpha-team",
+        "zed-team",
+    ]
+
+
+def test_reading_order_places_an_unlisted_builtin_after_the_listed_ones_by_name():
+    entries = [
+        _entry("zz-new-builtin", builtin=True),
+        _entry("aa-new-builtin", builtin=True),
+        _entry("gcp-operator", builtin=True),
+    ]
+    ordered = [e["id"] for e in in_reading_order(entries)]
+    assert ordered == ["gcp-operator", "aa-new-builtin", "zz-new-builtin"]
+
+
+def test_reading_order_is_stable_for_a_list_already_in_order():
+    entries = [_entry(id_, builtin=True) for id_ in BUILTIN_ORDER]
+    assert [e["id"] for e in in_reading_order(entries)] == list(BUILTIN_ORDER)

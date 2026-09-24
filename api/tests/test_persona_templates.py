@@ -6,9 +6,8 @@ lays down and the same copy rules the room's own text follows: no em or
 en dashes, no company, client or product names, and a size well inside
 the room's persona ceiling.
 
-`helpful-generalist` predates the house shape and is kept as it is: it is
-held to the universal checks (header, placeholder, dashes, names, size)
-but not to the section checks.
+Every template, `helpful-generalist` included since 2026-09-24, is held to
+the section checks as well as the universal ones.
 
 No shared name blocklist existed in the repo when this was written, so
 the one below is a small explicit list: the operating company, the
@@ -21,12 +20,13 @@ from pathlib import Path
 import pytest
 
 from kobo_api.catalog import _parse_persona_file
-from kobo_api.personas import parse_persona_body
+from kobo_api.personas import BUILTIN_ORDER, parse_persona_body
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "kobo_api" / "templates" / "personas"
 
 EXPECTED_IDS = {
     "helpful-generalist",
+    "marketing-strategist",
     "code-reviewer",
     "billing-analyst",
     "onboarding-guide",
@@ -39,8 +39,9 @@ EXPECTED_IDS = {
     "identity-admin",
 }
 
-# Kept in the pre-house shape on purpose (see module docstring).
-LEGACY_IDS = {"helpful-generalist"}
+# Nothing is kept in the pre-house shape any more; the set stays so a future
+# exception has one place to be declared and read.
+LEGACY_IDS: set[str] = set()
 
 VOICE_PARAGRAPH = (
     "Speak in the first person, plainly. Lead with the answer; skip\n"
@@ -81,8 +82,21 @@ def _ids(paths):
     return [p.stem for p in paths]
 
 
-def test_the_id_set_is_the_baseline_eleven():
+def test_the_id_set_is_the_baseline_twelve():
     assert {p.stem for p in ALL_FILES} == EXPECTED_IDS
+
+
+def test_every_builtin_has_a_place_in_the_reading_order():
+    """The list a newcomer reads runs from everyday personas to technical
+    ones, and it is a curated list, not the alphabet: a new template has to
+    be placed in it, once, or the room cannot say where it belongs."""
+    assert list(BUILTIN_ORDER) == sorted(BUILTIN_ORDER, key=BUILTIN_ORDER.index)
+    assert len(set(BUILTIN_ORDER)) == len(BUILTIN_ORDER)
+    assert set(BUILTIN_ORDER) == EXPECTED_IDS
+    # Everyday first, operators of specific clouds last.
+    assert BUILTIN_ORDER[0] == "helpful-generalist"
+    assert BUILTIN_ORDER.index("code-reviewer") > BUILTIN_ORDER.index("marketing-strategist")
+    assert set(BUILTIN_ORDER[-3:]) == {"aws-operator", "gcp-operator", "azure-operator"}
 
 
 @pytest.mark.parametrize("path", ALL_FILES, ids=_ids(ALL_FILES))

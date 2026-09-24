@@ -36,7 +36,7 @@ from tests.fakes import (
 
 AGENT_NAME = "clio"
 PERSONA = "helpful-generalist"
-PERSONA_DESCRIPTION = "A friendly, concise generalist assistant."
+PERSONA_DESCRIPTION = "A friendly, plain-spoken generalist for everyday questions, drafts and quick research."
 REPO = "acme/agent-clio"
 
 EXPECTED_PROMPT = avatar_prompt(AGENT_NAME, PERSONA_DESCRIPTION)

@@ -1320,7 +1320,7 @@ def test_get_persona_builtin_without_sections_falls_back_to_its_description(
     entry = {
         "id": "helpful-generalist",
         "name": "helpful-generalist",
-        "description": "A friendly, concise generalist assistant.",
+        "description": "A friendly, plain-spoken generalist for everyday questions, drafts and quick research.",
         "team": "shared",
         "tags": [],
         "builtin": True,
@@ -1340,8 +1340,8 @@ def test_get_persona_builtin_without_sections_falls_back_to_its_description(
     assert response.status_code == 200
     payload = response.json()
     assert payload["builtin"] is True
-    assert payload["who_they_are"] == "A friendly, concise generalist assistant."
-    assert payload["what_they_do"] == "A friendly, concise generalist assistant."
+    assert payload["who_they_are"] == "A friendly, plain-spoken generalist for everyday questions, drafts and quick research."
+    assert payload["what_they_do"] == "A friendly, plain-spoken generalist for everyday questions, drafts and quick research."
     assert payload["rules"] == []
     assert payload["created_by"] == "kobo"
 
