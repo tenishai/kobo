@@ -285,8 +285,9 @@
   }
 
   .persona-card__badge--builtin {
-    border-color: var(--accent);
-    color: var(--accent);
+    border-color: transparent;
+    background: var(--accent-soft);
+    color: var(--ink);
   }
 
   .persona-card__action {

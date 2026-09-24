@@ -986,6 +986,9 @@ def test_list_agents_returns_name_status_model_created_at(client, config):
     assert row["status"] in {"pending", "provisioning", "ready"}
     assert row["model"] == config.models[0].id
     assert isinstance(row["created_at"], str) and row["created_at"]
+    # The card's description line reads these off the list, not a per-card fetch.
+    assert row["persona"] == PERSONA
+    assert "capability" in row
 
 
 def test_list_agents_empty_when_none_created(client):

@@ -187,7 +187,6 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--panel);
-    font-family: var(--font-mono);
     font-size: 0.8rem;
     white-space: pre-wrap;
   }

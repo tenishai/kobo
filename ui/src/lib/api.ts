@@ -41,6 +41,16 @@ export type AgentSummary = {
    * the room only deploys. Present on the list as well as the detail so a
    * card can carry the marker without a per-agent fetch. */
   kind: string;
+  /** The agent's one-sentence capability line, same field `AgentDetail`
+   * carries. OPTIONAL here, and absent from `GET /api/agents` as it
+   * stands: the card asks for it first (`agentDescription`) and falls
+   * through to the tags the list does send, so a server that starts
+   * sending it upgrades every card with no change on this side. */
+  capability?: string | null;
+  /** The persona's name, same shape and the same story as `capability`
+   * above: the card's second choice for its description line, absent from
+   * the list route today. */
+  persona?: string | null;
 };
 
 /** The two kinds of agent (`kobo_api/kinds.py`, connected-agents design

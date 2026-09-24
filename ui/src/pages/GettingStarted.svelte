@@ -120,7 +120,4 @@
     line-height: 1.6;
   }
 
-  .getting-started a {
-    color: var(--accent);
-  }
 </style>

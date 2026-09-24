@@ -4465,6 +4465,11 @@ def create_app(
                     # placeholder string.
                     "created_by": a.created_by,
                     "group_name": a.group_name,
+                    # The dashboard card's one-line description: the capability
+                    # sentence when the agent has one, else the persona name.
+                    # Both from the row, so no per-card fetch.
+                    "capability": a.capability,
+                    "persona": a.persona,
                     # Team-guide UI (team-guide spec 2026-09-14, Task 5): the
                     # create modal's "deploy your team's guide" pre-check
                     # needs to tell, from the list alone, whether a picked

@@ -708,9 +708,9 @@
      server's `status` field on this row is exactly "enforced" — every other
      row keeps the plain "stored" look above. */
   .tooling-row__badge--enforced {
-    border-color: var(--accent);
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border-color: transparent;
+    background: var(--accent-soft);
+    color: var(--ink);
   }
 
   .tooling-panel__delivery {

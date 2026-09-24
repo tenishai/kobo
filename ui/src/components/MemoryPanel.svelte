@@ -1166,7 +1166,6 @@
   }
 
   .memory-form__textarea {
-    font-family: var(--font-mono);
     font-size: 0.85rem;
     resize: vertical;
   }
@@ -1350,7 +1349,6 @@
   }
 
   .intake-form__textarea {
-    font-family: var(--font-mono);
     font-size: 0.85rem;
     resize: vertical;
   }

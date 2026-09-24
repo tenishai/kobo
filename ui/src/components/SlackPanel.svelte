@@ -846,7 +846,7 @@
   }
 
   .slack-panel__link {
-    color: var(--accent);
+    color: var(--link);
     text-decoration: none;
   }
 

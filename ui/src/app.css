@@ -13,19 +13,28 @@
   --ink: #0f172a;
   --muted: #4b5563;
 
-  --accent: #2563eb;
+  /* Graphite, not blue (palette v2). The accent is what a primary button is
+     filled with and what a selected thing is marked with, so it has to be a
+     colour that can carry white text and still read as "the room", not as
+     "a link". Links have their own token below. */
+  --accent: #1f2937;
   --accent-ink: #ffffff;
 
-  /* A 10% wash of the accent, for a selected row or an accent badge.
-     One token instead of every component mixing its own. */
-  --accent-soft: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  /* A pale wash for a selected row or a badge. Always under --ink text,
+     never under --accent text: in this scheme the two are too close. */
+  --accent-soft: #eef1f5;
+
+  /* Anything that goes somewhere: an anchor, a text link. Deep slate, so a
+     link is still obviously a link once the accent stops being blue. */
+  --link: #1e3a8a;
 
   --ok: #15803d;
   --fail: #b91c1c;
   --warn: #b45309;
 
-  /* Used by the `pulse` keyframes below for in-progress state. */
-  --pulse: #2563eb;
+  /* Used by the `pulse` keyframes below for in-progress state. Follows --ok
+     so a working room glows in the colour it is heading towards. */
+  --pulse: var(--ok);
 
   --space-2xs: 0.25rem;
   --space-xs: 0.5rem;
@@ -57,14 +66,15 @@
     --ink: #e5e7eb;
     --muted: #a3adbd;
 
-    --accent: #60a5fa;
+    /* The light-mode pair, inverted: a near-white fill under dark ink. */
+    --accent: #e5e7eb;
     --accent-ink: #0b1220;
+    --accent-soft: #1f2937;
+    --link: #93c5fd;
 
     --ok: #4ade80;
     --fail: #f87171;
     --warn: #fbbf24;
-
-    --pulse: #60a5fa;
   }
 }
 
@@ -78,6 +88,14 @@ html,
 body {
   margin: 0;
   padding: 0;
+}
+
+/* One origin for the whole rem scale, a notch under a browser default:
+   Inter at 16px sets more loosely than this room wants. Every spacing token
+   above is in rem, so the room tightens with the text rather than drifting
+   away from it. */
+html {
+  font-size: 15px;
 }
 
 body {
@@ -103,6 +121,14 @@ code,
 pre,
 kbd {
   font-family: var(--font-mono);
+}
+
+/* Anything that goes somewhere reads in --link, never in the accent: the
+   accent is a fill for buttons and selection now. `:where()` keeps this at
+   zero specificity, so an anchor dressed as a button or a sidebar row
+   (which names its own colour) is untouched. */
+:where(a) {
+  color: var(--link);
 }
 
 /* One focus ring for the whole room, on anything a keyboard can land on.
@@ -353,7 +379,8 @@ kbd {
 
 .btn--primary:hover:not(:disabled) {
   color: var(--accent-ink);
-  filter: brightness(1.05);
+  /* A brightness nudge is invisible on graphite; mix a little panel in. */
+  background: color-mix(in srgb, var(--accent) 82%, var(--panel));
 }
 
 .btn--danger {
@@ -531,7 +558,7 @@ kbd {
 }
 
 .modal__step-number {
-  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 /* --- Fields ---------------------------------------------------------------
@@ -702,9 +729,12 @@ textarea.field__input {
   white-space: nowrap;
 }
 
+/* A tag the room wants noticed: the soft wash under ordinary ink. Never the
+   accent as text -- see --accent-soft's own note. */
 .list__tag--accent {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: transparent;
+  background: var(--accent-soft);
+  color: var(--ink);
 }
 
 /* The one line of description: truncated, with the whole of it on the

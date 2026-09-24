@@ -1036,7 +1036,7 @@
     padding: 0;
     border: none;
     background: none;
-    color: var(--accent);
+    color: var(--link);
     font: inherit;
     font-size: 0.85rem;
     text-decoration: underline;
@@ -1236,7 +1236,7 @@
   }
 
   .secrets__link {
-    color: var(--accent);
+    color: var(--link);
     font-weight: 600;
   }
 

@@ -523,7 +523,9 @@
              them: what it runs on, where its code is, who it belongs to,
              who made it, who it is, and where to watch it. -->
         <div class="agent-detail__meta">
-          <span class="agent-detail__model" title={data.model}>{data.model_label}</span>
+          <!-- The model is a fact about the agent, in the reading face like
+               every other fact on this line -- not an identifier to match. -->
+          <span title={data.model}>{data.model_label}</span>
           {#if data.repo_full_name}
             <!-- A connected agent's page names the repository rather than
                  saying "source": it is somebody else's repository, and
@@ -868,12 +870,8 @@
     color: var(--border);
   }
 
-  .agent-detail__model {
-    font-family: var(--font-mono);
-  }
-
   .agent-detail__repo {
-    color: var(--accent);
+    color: var(--link);
   }
 
   /* Soul-line (persona-naming law): the persona is one grey fact among the

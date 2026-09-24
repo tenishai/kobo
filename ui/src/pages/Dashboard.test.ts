@@ -2,9 +2,10 @@
 import { fireEvent, screen } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Dashboard from "./Dashboard.svelte";
+import type { AgentSummary } from "../lib/queries";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 
-const AGENT = {
+const AGENT: AgentSummary = {
   name: "warden",
   status: "ready",
   model: "gpt-5",
@@ -13,7 +14,19 @@ const AGENT = {
   has_avatar: false,
   created_by: null,
   group_name: null,
+  archetype: null,
+  purpose_tags: [],
+  kind: "composed",
 };
+
+function agent(fields: Partial<AgentSummary>): AgentSummary {
+  return { ...AGENT, ...fields };
+}
+
+/** `n` agents named a1..aN, enough to cross the controls threshold. */
+function many(n: number): AgentSummary[] {
+  return Array.from({ length: n }, (_, i) => agent({ name: `a${i + 1}` }));
+}
 
 // `GroupRequestsCard` (mounted unconditionally by Dashboard, shared-group +
 // group-requests wave) queries whoami on its own — every case here needs
@@ -26,16 +39,22 @@ const WHOAMI_NON_ADMIN = {
   groups_unavailable: false,
 };
 
+/** The three routes every render of this page reaches for. */
+function stub(agents: AgentSummary[], groups_unavailable = false, whoami = WHOAMI_NON_ADMIN) {
+  stubFetch({
+    "/api/agents": { agents, groups_unavailable },
+    "/api/whoami": whoami,
+    "/api/": {},
+  });
+}
+
 describe("Dashboard — server-filtered list + groups_unavailable banner (access-control Task B2)", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
   });
 
   it("renders exactly what GET /api/agents returns, with no banner when visibility is normal", async () => {
-    stubFetch({
-      "/api/agents": { agents: [AGENT], groups_unavailable: false },
-      "/api/whoami": WHOAMI_NON_ADMIN,
-    });
+    stub([AGENT]);
     renderWithClient(Dashboard);
 
     await screen.findByText("warden");
@@ -43,10 +62,7 @@ describe("Dashboard — server-filtered list + groups_unavailable banner (access
   });
 
   it("shows the Global Constraints banner verbatim when groups_unavailable is true", async () => {
-    stubFetch({
-      "/api/agents": { agents: [AGENT], groups_unavailable: true },
-      "/api/whoami": WHOAMI_NON_ADMIN,
-    });
+    stub([AGENT], true);
     renderWithClient(Dashboard);
 
     await screen.findByText("warden");
@@ -58,10 +74,7 @@ describe("Dashboard — server-filtered list + groups_unavailable banner (access
   });
 
   it("shows the empty state, not the banner, when the filtered list is empty and visibility is normal", async () => {
-    stubFetch({
-      "/api/agents": { agents: [], groups_unavailable: false },
-      "/api/whoami": WHOAMI_NON_ADMIN,
-    });
+    stub([]);
     renderWithClient(Dashboard);
 
     await screen.findByText("No agents yet. Create your first.");
@@ -69,10 +82,7 @@ describe("Dashboard — server-filtered list + groups_unavailable banner (access
   });
 
   it("shows both the banner and the empty state when a stranger's visibility degrades to nothing", async () => {
-    stubFetch({
-      "/api/agents": { agents: [], groups_unavailable: true },
-      "/api/whoami": WHOAMI_NON_ADMIN,
-    });
+    stub([], true);
     renderWithClient(Dashboard);
 
     await screen.findByText("No agents yet. Create your first.");
@@ -90,10 +100,7 @@ describe("Dashboard — group requests admin card (shared-group + group-requests
   });
 
   it("does not render the group requests card for a non-admin caller", async () => {
-    stubFetch({
-      "/api/agents": { agents: [AGENT], groups_unavailable: false },
-      "/api/whoami": WHOAMI_NON_ADMIN,
-    });
+    stub([AGENT]);
     renderWithClient(Dashboard);
 
     await screen.findByText("warden");
@@ -122,6 +129,7 @@ describe("Dashboard — group requests admin card (shared-group + group-requests
           },
         ],
       },
+      "/api/": {},
     });
     renderWithClient(Dashboard);
 
@@ -130,5 +138,77 @@ describe("Dashboard — group requests admin card (shared-group + group-requests
 
     await fireEvent.click(toggle);
     await screen.findByText("design-team");
+  });
+});
+
+// Card wave 2026-09-23: a small room needs no controls at all. They appear
+// with the seventh card, and they remember nothing between visits.
+describe("Dashboard — finding an agent in a big room", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("offers no search and no group picker at six agents", async () => {
+    stub(many(6));
+    renderWithClient(Dashboard);
+
+    await screen.findByText("a1");
+    expect(screen.queryByLabelText("Search agents")).toBeNull();
+    expect(screen.queryByLabelText("Group")).toBeNull();
+  });
+
+  it("offers both at seven", async () => {
+    stub(many(7));
+    renderWithClient(Dashboard);
+
+    await screen.findByText("a1");
+    expect(screen.getByLabelText("Search agents")).not.toBeNull();
+    expect(screen.getByLabelText("Group")).not.toBeNull();
+  });
+
+  it("filters the grid by what was typed, and says so when nothing matches", async () => {
+    stub([
+      ...many(6),
+      agent({ name: "warden", group_name: "sre", purpose_tags: ["fleet"] }),
+    ]);
+    renderWithClient(Dashboard);
+
+    const search = await screen.findByLabelText("Search agents");
+    await fireEvent.input(search, { target: { value: "warden" } });
+
+    expect(screen.getByText("warden")).not.toBeNull();
+    expect(screen.queryByText("a1")).toBeNull();
+
+    await fireEvent.input(search, { target: { value: "nobody" } });
+    expect(screen.getByText("No agents match that.")).not.toBeNull();
+  });
+
+  it("finds an agent by its group and by the line on its card", async () => {
+    stub([
+      ...many(6),
+      agent({ name: "warden", group_name: "sre", purpose_tags: ["fleet"] }),
+    ]);
+    renderWithClient(Dashboard);
+
+    const search = await screen.findByLabelText("Search agents");
+
+    await fireEvent.input(search, { target: { value: "sre" } });
+    expect(screen.getByText("warden")).not.toBeNull();
+    expect(screen.queryByText("a1")).toBeNull();
+
+    await fireEvent.input(search, { target: { value: "fleet" } });
+    expect(screen.getByText("warden")).not.toBeNull();
+  });
+
+  it("narrows to one group from the picker, which offers only the groups present", async () => {
+    stub([...many(6), agent({ name: "warden", group_name: "sre" })]);
+    renderWithClient(Dashboard);
+
+    const picker = (await screen.findByLabelText("Group")) as HTMLSelectElement;
+    expect([...picker.options].map((o) => o.text)).toEqual(["All groups", "sre"]);
+
+    await fireEvent.change(picker, { target: { value: "sre" } });
+    expect(screen.getByText("warden")).not.toBeNull();
+    expect(screen.queryByText("a1")).toBeNull();
   });
 });

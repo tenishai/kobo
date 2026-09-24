@@ -419,7 +419,7 @@
     border-radius: var(--radius-sm);
     background: var(--bg);
     color: var(--ink);
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
     font-size: 0.8rem;
   }
 
@@ -453,7 +453,7 @@
   .colleague-terminal__chip--active {
     border-color: var(--accent);
     background: var(--accent);
-    color: var(--panel);
+    color: var(--accent-ink);
   }
 
   /* The timestamp: a dim date directly before the time on every line, so a
@@ -489,7 +489,7 @@
     border-radius: 999px;
     background: transparent;
     color: var(--term-ink);
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
     font-size: 0.75rem;
     cursor: pointer;
   }
@@ -553,6 +553,7 @@
   .colleague-terminal__text {
     margin: 0;
     color: var(--term-ink);
+    font-family: var(--font-sans);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }

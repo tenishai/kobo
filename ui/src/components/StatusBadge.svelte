@@ -36,8 +36,10 @@
     background: var(--fail);
   }
 
+  /* Amber, like every other in-between state in the room. The ring it
+     pulses is --pulse; the dot itself is the status colour. */
   .status-badge__dot--warn {
-    background: var(--pulse);
+    background: var(--warn);
   }
 
   .status-badge__label {

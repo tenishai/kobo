@@ -20,9 +20,24 @@
   import GroupRequestsCard from "../components/GroupRequestsCard.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import { errorMessage } from "../lib/api";
+  import { CONTROLS_OVER, agentGroups, filterAgents } from "../lib/agents";
   import { agentsQuery } from "../lib/queries";
 
   const agents = createQuery(() => (agentsQuery()));
+
+  // Card wave 2026-09-23: what a person typed and what they picked. Local
+  // state and nothing else -- no URL, no storage. A dashboard that
+  // remembered a filter would hide agents from the next visit and never say
+  // why. Both reset the moment the page is left.
+  let query = $state("");
+  let group = $state("");
+
+  let all = $derived(agents.data?.agents ?? []);
+  // Six cards fit on a screen; the seventh is when looking becomes
+  // searching. Below that the controls are not hidden, they do not exist.
+  let controls = $derived(all.length > CONTROLS_OVER);
+  let groups = $derived(agentGroups(all));
+  let shown = $derived(controls ? filterAgents(all, query, group) : all);
 </script>
 
 <!-- Shared-group + group-requests wave: the least-invasive existing home
@@ -56,22 +71,89 @@
       own.
     </p>
   {/if}
-  {#if agents.data.agents.length === 0}
+  {#if all.length === 0}
     <EmptyState message="No agents yet. Create your first." />
   {:else}
-    <div class="dashboard-grid">
-      {#each agents.data.agents as agent (agent.name)}
-        <AgentCard {agent} />
-      {/each}
-    </div>
+    {#if controls}
+      <div class="dashboard-controls">
+        <label class="dashboard-controls__field">
+          <span class="dashboard-controls__label">Search agents</span>
+          <input
+            class="dashboard-controls__input"
+            type="search"
+            placeholder="Name, group, what it does"
+            bind:value={query}
+          />
+        </label>
+        <label class="dashboard-controls__field">
+          <span class="dashboard-controls__label">Group</span>
+          <select class="dashboard-controls__input" bind:value={group}>
+            <option value="">All groups</option>
+            {#each groups as name (name)}
+              <option value={name}>{name}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
+    {/if}
+    {#if shown.length === 0}
+      <EmptyState message="No agents match that." />
+    {:else}
+      <div class="dashboard-grid">
+        {#each shown as agent (agent.name)}
+          <AgentCard {agent} />
+        {/each}
+      </div>
+    {/if}
   {/if}
 {/if}
 
 <style>
+  /* `grid-auto-rows: 1fr` is what makes every card in the grid the same
+     height, not just every card in a row: one shape repeated, whatever any
+     one agent has to say for itself. */
   .dashboard-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+    grid-auto-rows: 1fr;
     gap: var(--space-md);
+  }
+
+  .dashboard-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-md);
+  }
+
+  .dashboard-controls__field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .dashboard-controls__label {
+    color: var(--muted);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .dashboard-controls__input {
+    min-width: 14rem;
+    padding: var(--space-2xs) var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    font: inherit;
+    font-size: 0.9rem;
+  }
+
+  .dashboard-controls select.dashboard-controls__input {
+    min-width: 10rem;
   }
 
   .skeleton-card {
