@@ -33,6 +33,7 @@ from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import create_app
 from kobo_api.models import Base
 from kobo_api.org import OrgState
+from kobo_api.personas import _PACKAGE_PERSONAS_DIR
 from tests.fakes import (
     FakeAgent,
     FakeCloud,
@@ -41,6 +42,9 @@ from tests.fakes import (
     FakeKubectl,
     FakeStorage,
 )
+
+# The seeded count is however many built-ins ship in the package.
+_PACKAGED_PERSONA_COUNT = len(list(_PACKAGE_PERSONAS_DIR.glob("*.md")))
 
 ORG_REPO = "acme-corp/kobo-config"
 GITHUB_ORG = "acme-corp"
@@ -121,7 +125,7 @@ def test_all_green_against_seeded_fakes(wired_config, fake_storage, tmp_path, wi
             "id": "personas-seeded",
             "label": "Personas",
             "ok": True,
-            "detail": "1 personas",
+            "detail": f"{_PACKAGED_PERSONA_COUNT} personas",
         },
         {
             "id": "deploy-platform",

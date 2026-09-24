@@ -31,6 +31,9 @@ from kobo_api.personas import (
 )
 from tests.fakes import FakeStorage
 
+# Every packaged built-in the seed writes (templates/personas/*.md).
+_PACKAGED_IDS = {p.stem for p in personas_module._PACKAGE_PERSONAS_DIR.glob("*.md")}
+
 
 def _fields(**overrides) -> PersonaFields:
     base = {
@@ -384,11 +387,11 @@ def test_seed_default_personas_first_run_writes_all():
 
     result = seed_default_personas(storage, bucket="personas-bucket")
 
-    assert result == {"seeded": 1, "skipped": 0}
+    assert result == {"seeded": len(_PACKAGED_IDS), "skipped": 0}
 
     index = json.loads(storage.read_bytes("personas-bucket", "index.json"))
     ids = {e["id"] for e in index["entries"]}
-    assert ids == {"helpful-generalist"}
+    assert ids == _PACKAGED_IDS
     for entry in index["entries"]:
         assert entry["builtin"] is True
         assert entry["team"] == "shared"
@@ -400,8 +403,8 @@ def test_seed_default_personas_first_run_writes_all():
 
 def test_seed_default_personas_no_longer_seeds_blank():
     """Persona builder v2: "blank" confuses (operator feedback) and is
-    dropped from the packaged defaults entirely — helpful-generalist is the
-    only one that ships."""
+    dropped from the packaged defaults entirely; the baseline built-ins
+    ship instead."""
     storage = FakeStorage()
 
     seed_default_personas(storage, bucket="personas-bucket")
@@ -426,7 +429,7 @@ def test_seed_default_personas_second_run_all_skipped():
 
     result = seed_default_personas(storage, bucket="personas-bucket")
 
-    assert result == {"seeded": 0, "skipped": 1}
+    assert result == {"seeded": 0, "skipped": len(_PACKAGED_IDS)}
 
 
 def test_seed_default_personas_never_overwrites_existing_object():
@@ -455,7 +458,7 @@ def test_seed_default_personas_merges_with_preexisting_room_authored_entries():
 
     index = json.loads(storage.read_bytes("personas-bucket", "index.json"))
     ids = {e["id"] for e in index["entries"]}
-    assert ids == {"aria-the-assistant", "helpful-generalist"}
+    assert ids == {"aria-the-assistant"} | _PACKAGED_IDS
 
 
 # --- set_persona_archived (hardening wave: archive, not delete) --------
