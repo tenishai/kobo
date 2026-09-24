@@ -49,9 +49,10 @@ def deliver_pass(
     just re-mints a fresh token and overwrites it. A re-mint on every re-run
     is accepted (the plan's own call): the switchboard's mint endpoint has
     no "return the existing token" mode, and re-minting a fresh 365-day pass
-    on a retry is harmless — any prior token an already-running agent
-    process still holds in memory simply expires on its own schedule rather
-    than being actively revoked.
+    on a retry is harmless. Since 2026-09-24 the prior passes ARE revoked,
+    just before the mint (`CabalClient.revoke_colleague`), so a running agent
+    process holding an earlier pass loses it at that moment and picks up the
+    new one at its next boot, which the re-wire's own rollout brings.
 
     Raises `CabalError` (a `ClientError` subclass) on a minting failure, or
     `ClientError` on a secret-delivery failure — both left unwrapped for the
@@ -79,6 +80,13 @@ def deliver_pass(
     the next sync would quietly undo a human's repair. Unset (the default),
     the direct write below runs exactly as it always has.
     """
+    # Take the earlier passes back first (2026-09-24): every re-wire used
+    # to add one more live 365-day pass and revoke none. The switchboard
+    # refuses every token the subject was issued before the cutoff, and
+    # asking BEFORE the mint means the new pass, issued after, is the only
+    # one that works and can never fall to its own revocation. A refusal
+    # stops the step here, before a pass is minted over it.
+    cabal.revoke_colleague(agent.name)
     token = cabal.mint_colleague(agent.name)
     if ladon is not None:
         deliver_secret(

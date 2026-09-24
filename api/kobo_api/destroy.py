@@ -234,8 +234,9 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
     """
     agent = ctx.agent
     ladon = ctx.clients.ladon
-    if ladon is None:
-        return "no secrets platform configured; nothing was stored through one"
+    removed: list[str] = []
+    failures: list[str] = []
+    note: str | None = None
 
     # The operator who pressed destroy, and only then the agent's creator.
     # The platform records this name against the removal, so the person who
@@ -243,12 +244,56 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
     # fallback for a resume with no request behind it (the ledger retries
     # itself) and for a room with no identity perimeter.
     acting_email = (ctx.acting_email or agent.created_by or "").strip()
-    if not acting_email:
-        return (
+    if ladon is None:
+        note = "no secrets platform configured; nothing was stored through one"
+    elif not acting_email:
+        note = (
             "no person on record to remove these on behalf of; the stored "
             "secrets stay until an operator removes them"
         )
+    else:
+        removed, failures = _remove_stored_secrets(ctx, ladon, acting_email)
 
+    # The colleague pass, whatever the secrets platform's state: it is the
+    # one credential a destroy could not take back (destroy-orphans audit,
+    # 2026-09-21), and a destroyed agent's pass still cleared the
+    # switchboard. The switchboard now refuses every token the subject was
+    # issued before now, and this is where the room asks for that. Strict,
+    # like every purpose above: a pass left live is a credential left live.
+    if cabal_enabled(ctx.config) and ctx.clients.cabal is not None:
+        try:
+            ctx.clients.cabal.revoke_colleague(agent.name)
+        except Exception as exc:  # noqa: BLE001 - same collection rule as the purposes
+            log.warning(
+                "destroy-secrets: could not revoke the passes of agent %s (%s)",
+                agent.name,
+                type(exc).__name__,
+            )
+            failures.append("passes")
+        else:
+            removed.append("passes")
+
+    if failures:
+        # Raised, not noted: unlike the directory listing, a secret left
+        # behind is a live credential, and a step that reported success
+        # over one would be the exact gap this step exists to close. The
+        # message says what DID go so a resume reads as progress rather
+        # than as a run starting over.
+        raise RuntimeError(
+            f"could not remove {', '.join(failures)}"
+            + (f" (removed: {', '.join(removed)})" if removed else "")
+        )
+    if note is not None and not removed:
+        return note
+    if note is not None:
+        return f"{note}; removed: {', '.join(removed)}"
+    return f"removed: {', '.join(removed)}"
+
+
+def _remove_stored_secrets(ctx: DestroyCtx, ladon, acting_email: str) -> tuple[list[str], list[str]]:
+    """The secrets-platform half of `_destroy_secrets`: the three purposes,
+    then the identity. Returns what went and what did not."""
+    agent = ctx.agent
     removed: list[str] = []
     failures: list[str] = []
     for purpose in SECRET_PURPOSES:
@@ -293,18 +338,7 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
             failures.append("identity")
         else:
             removed.append("identity")
-
-    if failures:
-        # Raised, not noted: unlike the directory listing, a secret left
-        # behind is a live credential, and a step that reported success
-        # over one would be the exact gap this step exists to close. The
-        # message says what DID go so a resume reads as progress rather
-        # than as a run starting over.
-        raise RuntimeError(
-            f"could not remove {', '.join(failures)}"
-            + (f" (removed: {', '.join(removed)})" if removed else "")
-        )
-    return f"removed: {', '.join(removed)}"
+    return removed, failures
 
 
 def _destroy_access(ctx: DestroyCtx) -> str:

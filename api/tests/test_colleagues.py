@@ -215,3 +215,29 @@ def test_deliver_pass_through_the_lane_refuses_an_agent_with_no_creator():
     assert AGENT_NAME in str(exc_info.value)
     assert ladon.puts == []
     assert kubectl.secrets_applied == []
+
+
+# --- the earlier passes are taken back ----------------------------------------------
+
+
+def test_deliver_pass_revokes_the_agents_earlier_passes_before_minting_the_new_one():
+    """A re-wire used to add one more live 365-day pass per run and take
+    none back (the destroy-orphans audit, 2026-09-21). The switchboard now
+    refuses every token a subject was issued before a cutoff, and this
+    asks for that cutoff BEFORE minting, so the new pass is the only one
+    that works and never falls to its own revocation."""
+    cabal = FakeCabal()
+    deliver_pass(FakeKubectl(), cabal, _agent())
+    assert cabal.revoke_colleague_calls == [AGENT_NAME]
+    assert cabal.calls == [f"revoke:{AGENT_NAME}", f"mint:{AGENT_NAME}"]
+
+
+def test_deliver_pass_stops_before_minting_when_the_revocation_is_refused():
+    """A pass minted over a refused revocation is one more live credential
+    than there should be; the step fails first and mints nothing."""
+    cabal = FakeCabal(revoke_colleague_error="switchboard down")
+    kubectl = FakeKubectl()
+    with pytest.raises(CabalError):
+        deliver_pass(kubectl, cabal, _agent())
+    assert cabal.mint_colleague_calls == []
+    assert kubectl.secrets_applied == []

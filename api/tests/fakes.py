@@ -1669,6 +1669,7 @@ class FakeCabal:
         relay_error: str | None = None,
         mint_colleague_result: str = "fake-colleague-token",
         mint_colleague_error: str | None = None,
+        revoke_colleague_error: str | None = None,
         conversations_result: list[dict] | None = None,
         conversations_error: str | None = None,
         conversation_result: dict | None = None,
@@ -1683,6 +1684,11 @@ class FakeCabal:
         self._relay_error = relay_error
         self._mint_colleague_result = mint_colleague_result
         self._mint_colleague_error = mint_colleague_error
+        self._revoke_colleague_error = revoke_colleague_error
+        # Every subject whose earlier tokens were revoked, in call order
+        # alongside `mint_colleague_calls` so a test can check the order.
+        self.revoke_colleague_calls: list[str] = []
+        self.calls: list[str] = []
         self._conversations_result = (
             conversations_result if conversations_result is not None else []
         )
@@ -1729,7 +1735,14 @@ class FakeCabal:
             raise CabalError(f"relay failed: {self._relay_error}")
         return self._relay_result
 
+    def revoke_colleague(self, name: str) -> None:
+        self.calls.append(f"revoke:{name}")
+        if self._revoke_colleague_error is not None:
+            raise CabalError(f"revoke_colleague failed: {self._revoke_colleague_error}")
+        self.revoke_colleague_calls.append(name)
+
     def mint_colleague(self, name: str) -> str:
+        self.calls.append(f"mint:{name}")
         self.mint_colleague_calls.append(name)
         if self._mint_colleague_error is not None:
             raise CabalError(f"mint_colleague failed: {self._mint_colleague_error}")

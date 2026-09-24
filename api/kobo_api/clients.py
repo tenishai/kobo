@@ -4138,6 +4138,27 @@ class CabalClient:
             )
             raise CabalError(f"graduate({name!r}) failed ({resp.status_code})")
 
+    def revoke_colleague(self, name: str) -> None:
+        """Refuse every colleague pass `name` was issued before now, on the
+        switchboard (`POST /admin/token/revoke`, `sub=agent:<name>`). Called
+        BEFORE `mint_colleague` on a re-wire so the pass being replaced
+        stops working and the new one, minted after, is the only one that
+        does; and on destroy so nothing the agent held keeps working.
+        Raises `CabalError` on non-2xx; the response body is logged
+        server-side (truncated), never echoed into the raised message.
+        """
+        resp = self._client.post(
+            f"{self._base_url}/admin/token/revoke",
+            json={"sub": f"agent:{name}"},
+            headers=self._headers(),
+        )
+        if not resp.is_success:
+            log.warning(
+                "cabal revoke_colleague(%s) failed (%s): %s",
+                name, resp.status_code, resp.text[:200],
+            )
+            raise CabalError(f"revoke_colleague({name!r}) failed ({resp.status_code})")
+
     def absorb(self, name: str) -> None:
         """Delist `name` from the switchboard's directory. A 404 (already
         delisted — a repeat destroy, or a persona the switchboard never

@@ -5876,6 +5876,39 @@ def test_cabal_mint_colleague_request_shape_body_and_auth_header():
     assert token == "fresh-colleague-token"
 
 
+def test_cabal_revoke_colleague_request_shape_and_auth_header():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.content)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"sub": "agent:clio", "not_before": 1_700_000_000})
+
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.revoke_colleague("clio")
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "http://cabal.local/admin/token/revoke"
+    assert captured["json"] == {"sub": "agent:clio"}
+    assert captured["auth"] == "Bearer op-token"
+
+
+def test_cabal_revoke_colleague_raises_cabal_error_on_failure():
+    client = CabalClient(
+        "http://cabal.local", "op-token",
+        client=httpx.Client(
+            transport=httpx.MockTransport(lambda r: httpx.Response(503, text="down"))
+        ),
+    )
+    with pytest.raises(CabalError, match="revoke_colleague"):
+        client.revoke_colleague("clio")
+
+
 def test_cabal_mint_colleague_accepts_201_as_success():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(201, json={"access_token": "fresh-colleague-token"})

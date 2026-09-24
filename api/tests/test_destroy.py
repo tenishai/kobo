@@ -1714,6 +1714,63 @@ def test_destroy_secrets_that_cannot_take_the_identity_down_fails_the_step(
     session.close()
 
 
+def test_destroy_secrets_revokes_the_agents_colleague_passes(
+    session_factory, config, monkeypatch
+):
+    """The colleague pass is the one credential a destroy could not take
+    back (destroy-orphans audit #1, 2026-09-21): a destroyed agent's token
+    still cleared the switchboard. The switchboard now refuses every token
+    the subject was issued before now, and this is where the room asks."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+    cabal = FakeCabal()
+
+    detail = _destroy_secrets(_ctx(session, agent, cfg, ladon=_ladon_holding_everything(), cabal=cabal))
+
+    assert cabal.revoke_colleague_calls == [AGENT_NAME]
+    assert detail == "removed: cabal, slack, env, identity, passes"
+    session.close()
+
+
+def test_destroy_secrets_revokes_the_passes_even_with_no_secrets_platform(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    session, agent = _make_ctx_agent(session_factory)
+    cabal = FakeCabal()
+
+    detail = _destroy_secrets(_ctx(session, agent, cfg, cabal=cabal))
+
+    assert cabal.revoke_colleague_calls == [AGENT_NAME]
+    assert "passes" in detail
+    session.close()
+
+
+def test_destroy_secrets_that_cannot_revoke_the_passes_fails_the_step(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+    cabal = FakeCabal(revoke_colleague_error="switchboard down")
+
+    with pytest.raises(RuntimeError, match="could not remove passes"):
+        _destroy_secrets(_ctx(session, agent, cfg, ladon=_ladon_holding_everything(), cabal=cabal))
+    session.close()
+
+
+def test_destroy_secrets_without_a_switchboard_revokes_nothing(session_factory, config):
+    session, agent = _make_ctx_agent(session_factory)
+    agent.created_by = OWNER_EMAIL
+    detail = _destroy_secrets(_ctx(session, agent, config, ladon=_ladon_holding_everything()))
+    assert detail == "removed: cabal, slack, env, identity"
+    session.close()
+
+
 def test_destroy_secrets_takes_the_cluster_object_away_before_the_path(
     session_factory, config
 ):
