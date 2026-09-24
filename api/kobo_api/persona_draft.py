@@ -49,10 +49,13 @@ _WORD_RE = re.compile(r"[a-z0-9]+")
 # (e.g. pure punctuation) — PersonaFields.name still needs >=1 char.
 _FALLBACK_NAME_DEFAULT = "new-agent"
 
-# How many leading words of the job text the fallback name slugifies —
-# enough to be recognizable, short enough to comfortably clear
-# PersonaFields.name's 60-char cap even with long words.
-_FALLBACK_NAME_MAX_WORDS = 5
+# How many leading words of the job text the fallback name slugifies.
+# Short-names ruling (2026-09-24): a persona name is one or two words, so
+# the fallback takes two, and a model-drafted name with more is cut to its
+# LAST two (`_shorten_name`) -- the tail of "code-grounded-player-intel" is
+# the noun, the head is the trait list that belongs in who_they_are.
+_FALLBACK_NAME_MAX_WORDS = 2
+_NAME_MAX_WORDS = 2
 
 # A "clause" boundary for the fallback who_they_are line: the first
 # sentence-ish break in the job text (never a comma — that would cut most
@@ -88,10 +91,22 @@ def _slugify_name_candidate(words: list[str]) -> str:
             return _FALLBACK_NAME_DEFAULT
 
 
+def _shorten_name(name: str) -> str:
+    """Cut a model-drafted `name` down to its last `_NAME_MAX_WORDS` words
+    when it came back longer (words = alphanumeric runs). A name already
+    within the cap is returned untouched, spacing and case included, so a
+    short hand-shaped name like "Ada (Release)" still slugifies as before.
+    """
+    words = _WORD_RE.findall(name.lower())
+    if len(words) <= _NAME_MAX_WORDS:
+        return name
+    return _slugify_name_candidate(words[-_NAME_MAX_WORDS:])
+
+
 def _fallback_name(job: str) -> str:
     """Deterministic fallback persona name: the leading words of `job`,
     lowercased and hyphen-joined (e.g. "Help customers with billing." ->
-    "help-customers-with-billing"), clamped to PersonaFields.name's bound.
+    "help-customers"), clamped to PersonaFields.name's bound.
 
     Unlike an agent name (`kobo_api.namegen`'s `_FALLBACK_NAMES`/
     `validate_name`), a drafted persona name has no 2-24-char slug shape to
@@ -241,6 +256,8 @@ def finalize_draft(raw: dict | None, *, job: str) -> dict:
         except PersonaError:
             # Name failed persona_id validation; treat as None to trigger fallback
             name = None
+        else:
+            name = _shorten_name(name)
 
     who = _extract_field(raw, "who_they_are", max_len=_WHO_MAX, reject_newline=True)
     what = _extract_field(raw, "what_they_do", max_len=_WHAT_MAX)
@@ -374,6 +391,8 @@ def finalize_distill(raw: dict | None, *, body: str) -> dict:
             persona_id(name)
         except PersonaError:
             name = None
+        else:
+            name = _shorten_name(name)
 
     who = _extract_field(raw, "who_they_are", max_len=_WHO_MAX, reject_newline=True)
 

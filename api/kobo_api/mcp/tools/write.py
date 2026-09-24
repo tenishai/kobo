@@ -681,6 +681,8 @@ def register(mcp: FastMCP, app: Any) -> None:
     list_repo_access_endpoint = _endpoint(app, "GET", "/api/repo-access")
     decide_repo_access_endpoint = _endpoint(app, "POST", "/api/repo-access/decide")
     create_persona_endpoint = _endpoint(app, "POST", "/api/personas")
+    move_persona_endpoint = _endpoint(app, "PATCH", "/api/personas/{persona_id}")
+    archive_persona_endpoint = _endpoint(app, "POST", "/api/personas/{persona_id}/archive")
     bulk_decide_learnings_endpoint = _endpoint(app, "POST", "/api/agents/{name}/learnings/bulk")
     set_secrets_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/secrets")
     set_env_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/env")
@@ -1344,12 +1346,13 @@ def register(mcp: FastMCP, app: Any) -> None:
         run kobo_list_personas and check fit first; prefer an existing
         persona over a near-twin.
 
-        Name the behavior, not a codename: a good persona name passes the
-        glance test (a stranger reading the name plus who_they_are knows
-        what picking it gets them). Prefer lowercase hyphenated trait
-        words ("direct-factual-condensed-mellow"), an archetype plus a
-        qualifier ("stoic-mentor"), or a figure whose mannerisms the
-        persona adopts (mannerisms and tone only, never identity claims).
+        A name is short: one or two words, three at most ("ledger",
+        "stoic-mentor", "billing-analyst"); the create is refused past
+        three. Never a hyphenated list of traits and never a codename:
+        the traits live in who_they_are, which with the name must pass
+        the glance test (a stranger reading both knows what picking it
+        gets them). A figure's name is fine when the persona adopts their
+        mannerisms and tone only, never identity claims.
 
         `name` becomes the catalog id via the room's slug law (must not
         already exist). `who_they_are` is ONE
@@ -1380,6 +1383,61 @@ def register(mcp: FastMCP, app: Any) -> None:
         session = app.state.session_factory()
         try:
             response = await _off_loop(create_persona_endpoint,payload=payload, request=req, session=session)
+            return _create_result(response)
+        finally:
+            session.close()
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @audited("kobo_move_persona")
+    async def kobo_move_persona(ctx: Context, persona_id: str, team: str) -> dict:
+        """Re-file persona `persona_id` under `team` -- the same move the
+        Personas page's "Move to" menu makes. `team` is a group slug, or
+        "shared" for the commons everyone sees.
+
+        Who may move a persona: the person who made it, a member of the
+        team it sits under now, or a room operator; a persona already in
+        the commons moves only for its maker or an operator. Filing under a
+        named team needs your membership in it (an operator may name any
+        team). Built-ins never move. Returns the updated catalog entry.
+        """
+        from kobo_api.main import MovePersonaRequest
+
+        req = authz.room_request(app, get_user_email(ctx))
+        try:
+            payload = MovePersonaRequest(team=team)
+        except ValidationError as exc:
+            raise ToolError(_bad_request(exc)) from exc
+
+        session = app.state.session_factory()
+        try:
+            response = await _off_loop(
+                move_persona_endpoint,
+                persona_id=persona_id,
+                payload=payload,
+                request=req,
+                session=session,
+            )
+            return _create_result(response)
+        finally:
+            session.close()
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+    @audited("kobo_archive_persona")
+    async def kobo_archive_persona(ctx: Context, persona_id: str) -> dict:
+        """Archive persona `persona_id`: it leaves every list and picker but
+        nothing is deleted, and the Personas page's Archived view can bring
+        it back. Agents already built from it keep running unchanged.
+
+        Same gate as the room's own Archive button: the person who made
+        it, a member of its team, or a room operator. Returns the updated
+        catalog entry.
+        """
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            response = await _off_loop(
+                archive_persona_endpoint, persona_id=persona_id, request=req, session=session
+            )
             return _create_result(response)
         finally:
             session.close()

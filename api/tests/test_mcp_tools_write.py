@@ -387,7 +387,9 @@ def test_build_mcp_server_registers_exactly_the_named_tools(
     secrets and environment trio (design 2026-09-22) --
     `kobo_list_agent_secrets`, `kobo_set_agent_secrets`,
     `kobo_set_agent_env` -- and the restart button's own tool (design
-    2026-09-23), `kobo_restart_agent` -- one-for-one. A stray extra registration (a
+    2026-09-23), `kobo_restart_agent`, and the persona re-file pair
+    (`kobo_move_persona`/`kobo_archive_persona`, short-names wave
+    2026-09-24) -- one-for-one. A stray extra registration (a
     copy-paste twin, a leftover experiment) or a dropped one would fail
     this even though both narrower `<=` checks above would stay green.
     """
@@ -426,6 +428,8 @@ def test_build_mcp_server_registers_exactly_the_named_tools(
         "kobo_set_agent_secrets",
         "kobo_set_agent_env",
         "kobo_restart_agent",
+        "kobo_move_persona",
+        "kobo_archive_persona",
     }
 
 
@@ -2387,6 +2391,90 @@ def test_create_tool_is_marked_not_destructive(session_factory, config, fake_sto
     tool = next(t for t in mcp._tool_manager.list_tools() if t.name == "kobo_create_tool")
 
     assert tool.annotations.destructiveHint is False
+
+
+# --- kobo_move_persona / kobo_archive_persona (short-names wave) --------------
+#
+# Both call REAL routes (PATCH /api/personas/{id}, POST .../archive) the way
+# kobo_create_persona does; these prove the wiring and the status translation
+# only. The gates themselves are test_api_personas.py's to prove.
+
+
+def test_move_persona_refiles_and_the_listing_follows(session_factory, config, fake_storage):
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    created = _call_tool(
+        mcp,
+        "kobo_create_persona",
+        _ctx_for(MEMBER_A_EMAIL),
+        name="Night Auditor",
+        who_they_are="a meticulous overnight reconciler",
+        what_they_do="Reconcile the day's transactions and flag anomalies.",
+    )
+    moved = _call_tool(
+        mcp,
+        "kobo_move_persona",
+        _ctx_for(MEMBER_A_EMAIL),
+        persona_id=created["id"],
+        team=GROUP_A,
+    )
+    assert moved["team"] == GROUP_A
+
+    listed = _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL), team=GROUP_A)
+    assert any(entry["id"] == created["id"] for entry in listed["result"])
+
+
+def test_move_persona_unknown_id_is_a_tool_error(session_factory, config, fake_storage):
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="no persona with that id"):
+        _call_tool(
+            mcp,
+            "kobo_move_persona",
+            _ctx_for(MEMBER_A_EMAIL),
+            persona_id="never-made",
+            team=GROUP_A,
+        )
+
+
+def test_move_persona_bad_team_slug_is_a_tool_error(session_factory, config, fake_storage):
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError):
+        _call_tool(
+            mcp,
+            "kobo_move_persona",
+            _ctx_for(MEMBER_A_EMAIL),
+            persona_id="anything",
+            team="Not A Slug!",
+        )
+
+
+def test_archive_persona_hides_it_from_the_listing(session_factory, config, fake_storage):
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    created = _call_tool(
+        mcp,
+        "kobo_create_persona",
+        _ctx_for(MEMBER_A_EMAIL),
+        name="Retiring Reviewer",
+        who_they_are="a reviewer about to be archived",
+        what_they_do="Reviews things, briefly.",
+        team=GROUP_A,
+    )
+    # A member of the persona's own team may archive it (a commons persona
+    # would need an operator).
+    archived = _call_tool(
+        mcp, "kobo_archive_persona", _ctx_for(MEMBER_A_EMAIL), persona_id=created["id"]
+    )
+    assert archived["archived"] is True
+
+    listed = _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL))
+    assert not any(entry["id"] == created["id"] for entry in listed["result"])
 
 
 # --- kobo_create_persona (persona wave, Task 5) ------------------------------

@@ -38,6 +38,15 @@ _TAG_RE = re.compile(r"^[a-z][a-z0-9-]{0,23}$")
 
 _NON_ALNUM_RUN_RE = re.compile(r"[^a-z0-9]+")
 
+# Short-names ruling (2026-09-24): a persona name is one or two words,
+# three at the very most. "code-grounded-player-intel" and
+# "direct-factual-condensed-mellow" read as a trait list, not a name; the
+# who_they_are line is where the traits live. Enforced at create (room UI,
+# MCP tool, and the drafter's own output all land here), never on read, so
+# older long names in an existing index keep working.
+PERSONA_NAME_MAX_WORDS = 3
+_NAME_WORD_RE = re.compile(r"[a-z0-9]+")
+
 _PACKAGE_PERSONAS_DIR = Path(__file__).parent / "templates" / "personas"
 
 # --- tag derivation (Persona builder v2 addendum) --------------------------
@@ -132,6 +141,18 @@ class PersonaFields(BaseModel):
             if "\n" in item:
                 raise ValueError(f"each rule must be a single line (no newlines): {item!r}")
         return v
+
+
+def check_name_length(name: str) -> None:
+    """Raise `PersonaError` when `name` has more than
+    `PERSONA_NAME_MAX_WORDS` words (words = alphanumeric runs, so
+    "Ada (Release)" is two and "code-grounded-player-intel" is four)."""
+    words = _NAME_WORD_RE.findall(name.lower())
+    if len(words) > PERSONA_NAME_MAX_WORDS:
+        raise PersonaError(
+            f"persona names are one or two words, three at most: {name!r} has "
+            f"{len(words)}. Put the traits in who_they_are, not the name"
+        )
 
 
 def persona_id(name: str) -> str:
@@ -426,7 +447,8 @@ def create_persona(
     test_api_personas.py's regression test proving a pre-existing skill
     entry survives a persona create).
 
-    Raises `PersonaError` if `fields.name` doesn't slugify to a valid id, if
+    Raises `PersonaError` if `fields.name` has more than
+    `PERSONA_NAME_MAX_WORDS` words (short-names ruling), doesn't slugify to a valid id, if
     that name's rendered persona.md exceeds the room's real ceiling (200
     lines or 49152 bytes, checked by `_check_rendered_size` against the
     ACTUAL rendered body — never a per-field lookalike), or `PersonaExists`
@@ -434,6 +456,7 @@ def create_persona(
     normalized and capped — never derived (create-flow polish, 2026-08-28;
     `_derive_tags` is retired).
     """
+    check_name_length(fields.name)
     id_ = persona_id(fields.name)
 
     index = _read_index(storage, bucket, prefix)

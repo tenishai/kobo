@@ -374,10 +374,17 @@
   // as before. It exists purely so a name like "QAer" doesn't sail through
   // the field with zero feedback.
   const NAME_CHARSET_RE = /^[a-z0-9-]+$/;
+  // Short-names ruling: the room refuses a name past three words
+  // (PERSONA_NAME_MAX_WORDS, kobo_api/personas.py). Say so while typing
+  // rather than after the round trip.
+  const NAME_MAX_WORDS = 3;
+  const nameWordCount = $derived((name.toLowerCase().match(/[a-z0-9]+/g) ?? []).length);
   const nameHint = $derived(
     name.trim().length > 0 && !NAME_CHARSET_RE.test(name.trim())
       ? "Lowercase letters, numbers, and hyphens."
-      : null,
+      : nameWordCount > NAME_MAX_WORDS
+        ? "One or two words, three at most. The description carries the traits."
+        : null,
   );
 
   const canCreate = $derived(
@@ -647,10 +654,8 @@
         aria-describedby="persona-builder-name-hint"
       />
       <p class="field__help">
-        A name is a name: one or two words, the shape of a craftsman's
-        nickname, like "sentinel" or "ledger-keeper". Never a hyphenated
-        list of traits; the description line below is where the traits
-        live, so the name can just be remembered.
+        One or two words, like "sentinel" or "ledger-keeper". Never a
+        hyphenated list of traits; the description below carries those.
       </p>
       <div id="persona-builder-name-hint">
         {#if nameHint}

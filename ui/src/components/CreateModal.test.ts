@@ -748,7 +748,7 @@ describe("CreateModal — the group menu has a commons, a directory, and a door 
     return option.value;
   }
 
-  it("sections the select: My group is not listed first, then Shared, then Engineering groups (group-menu-leads-with-the-door ruling)", async () => {
+  it("sections the select: My group is not listed first, then Engineering groups, then Shared last (group-menu-leads-with-the-door + shared-last rulings)", async () => {
     stubCreateModalCatalogs({
       "/api/catalog/groups": {
         groups: [
@@ -771,19 +771,22 @@ describe("CreateModal — the group menu has a commons, a directory, and a door 
     expect(children[1].textContent).toBe("My group is not listed...");
 
     const optgroups = Array.from(groupSelect.querySelectorAll("optgroup"));
-    expect(optgroups.map((g) => g.label)).toEqual(["Shared", "Engineering groups"]);
-    // The not-listed option leads straight into the Shared optgroup.
+    expect(optgroups.map((g) => g.label)).toEqual(["Engineering groups", "Shared"]);
+    // The not-listed option leads straight into the first group section.
     expect(children[1].nextElementSibling).toBe(optgroups[0]);
 
-    const sharedOptions = Array.from(optgroups[0].querySelectorAll("option"));
+    const engineeringOptions = Array.from(optgroups[0].querySelectorAll("option"));
+    expect(engineeringOptions.map((o) => o.value)).toEqual(["payments-eng", "growth"]);
+
+    // Shared is the very last thing in the menu: teams should reach for
+    // their own group, and the commons is the exception.
+    const sharedOptions = Array.from(optgroups[1].querySelectorAll("option"));
     expect(sharedOptions.map((o) => o.value)).toEqual(["shared"]);
     expect(sharedOptions[0].textContent).toBe("shared (everyone in the company)");
-
-    const engineeringOptions = Array.from(optgroups[1].querySelectorAll("option"));
-    expect(engineeringOptions.map((o) => o.value)).toEqual(["payments-eng", "growth"]);
+    expect(groupSelect.lastElementChild).toBe(optgroups[1]);
   });
 
-  it("sections the select: Non-engineering groups sits between Shared and Engineering groups (create-modal non-engineering-wing ruling)", async () => {
+  it("sections the select: Non-engineering groups leads, Engineering groups next, Shared last (non-engineering-wing + shared-last rulings)", async () => {
     stubCreateModalCatalogs({
       "/api/catalog/groups": {
         groups: [
@@ -804,13 +807,13 @@ describe("CreateModal — the group menu has a commons, a directory, and a door 
 
     const optgroups = Array.from(groupSelect.querySelectorAll("optgroup"));
     expect(optgroups.map((g) => g.label)).toEqual([
-      "Shared",
       "Non-engineering groups",
       "Engineering groups",
+      "Shared",
     ]);
     expect(children[1].nextElementSibling).toBe(optgroups[0]);
 
-    const nonEngineeringOptions = Array.from(optgroups[1].querySelectorAll("option"));
+    const nonEngineeringOptions = Array.from(optgroups[0].querySelectorAll("option"));
     expect(nonEngineeringOptions.map((o) => o.value)).toEqual(["legal", "finance"]);
   });
 
@@ -827,7 +830,7 @@ describe("CreateModal — the group menu has a commons, a directory, and a door 
 
     const groupSelect = (await screen.findByLabelText("Group")) as HTMLSelectElement;
     const optgroups = Array.from(groupSelect.querySelectorAll("optgroup"));
-    expect(optgroups.map((g) => g.label)).toEqual(["Shared", "Engineering groups"]);
+    expect(optgroups.map((g) => g.label)).toEqual(["Engineering groups", "Shared"]);
   });
 
   it("shows the shared helper sentence only once shared is the picked value", async () => {

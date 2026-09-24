@@ -308,11 +308,13 @@
   // person sees rather than something buried at the bottom. After it, the
   // select sections on `kind` (never on a hardcoded "shared" string,
   // matching the server's own "don't hardcode SHARED_GROUP's spelling
-  // client-side" doc comment on `/api/catalog/groups`): a "Shared" optgroup
-  // next, a "Non-engineering groups" optgroup after that (create-modal
-  // non-engineering-wing ruling -- config-driven via `GroupChoice.kind`
-  // server-side, never a hardcoded list of names here), then an
-  // "Engineering groups" optgroup last. Each section is omitted entirely
+  // client-side" doc comment on `/api/catalog/groups`): a "Non-engineering
+  // groups" optgroup next (create-modal non-engineering-wing ruling --
+  // config-driven via `GroupChoice.kind` server-side, never a hardcoded
+  // list of names here), then "Engineering groups", then a "Shared"
+  // optgroup LAST (shared-last ruling, 2026-09-24: teams create under
+  // their own group; the commons is not where the eye should land first).
+  // Each section is omitted entirely
   // when it has no entries (same "don't render an empty optgroup" rule
   // already applied to every section).
   let groupValue = $state("");
@@ -771,13 +773,6 @@
             >
               <option value="" disabled>Choose a group</option>
               <option value={GROUP_NOT_LISTED}>My group is not listed...</option>
-              {#if sharedGroupOptions.length > 0}
-                <optgroup label="Shared">
-                  {#each sharedGroupOptions as group (group.name)}
-                    <option value={group.name}>{group.name} (everyone in the company)</option>
-                  {/each}
-                </optgroup>
-              {/if}
               {#if nonEngineeringGroupOptions.length > 0}
                 <optgroup label="Non-engineering groups">
                   {#each nonEngineeringGroupOptions as group (group.name)}
@@ -789,6 +784,16 @@
                 <optgroup label="Engineering groups">
                   {#each engineeringGroupOptions as group (group.name)}
                     <option value={group.name}>{group.name}</option>
+                  {/each}
+                </optgroup>
+              {/if}
+              <!-- Shared sits last on purpose: teams should pick their own
+                   group, and the commons is the exception, not the default
+                   eye lands on. -->
+              {#if sharedGroupOptions.length > 0}
+                <optgroup label="Shared">
+                  {#each sharedGroupOptions as group (group.name)}
+                    <option value={group.name}>{group.name} (everyone in the company)</option>
                   {/each}
                 </optgroup>
               {/if}

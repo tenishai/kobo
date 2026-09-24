@@ -16,6 +16,7 @@ from kobo_api.persona_draft import (
     _fallback_what,
     _fallback_who,
     _first_clause,
+    _shorten_name,
     finalize_distill,
     finalize_draft,
 )
@@ -38,14 +39,48 @@ def _assert_persona_valid(draft: dict) -> None:
 
 def test_fallback_name_slugifies_leading_words():
     assert _fallback_name("Help customers troubleshoot billing issues.") == (
-        "help-customers-troubleshoot-billing-issues"
+        "help-customers"
     )
 
 
-def test_fallback_name_caps_at_five_words():
-    assert _fallback_name("one two three four five six seven") == (
-        "one-two-three-four-five"
-    )
+def test_fallback_name_caps_at_two_words():
+    # Short-names ruling: a persona name is one or two words.
+    assert _fallback_name("one two three four five six seven") == "one-two"
+
+
+# --- _shorten_name (short-names ruling) --------------------------------------
+
+
+def test_shorten_name_leaves_a_short_name_alone():
+    assert _shorten_name("billing-buddy") == "billing-buddy"
+    assert _shorten_name("Ada (Release)") == "Ada (Release)"
+    assert _shorten_name("ledger") == "ledger"
+
+
+def test_shorten_name_keeps_the_last_two_words_of_a_long_one():
+    # The tail is the noun; the head is the trait list that belongs in
+    # who_they_are.
+    assert _shorten_name("code-grounded-player-intel") == "player-intel"
+    assert _shorten_name("direct factual condensed mellow") == "condensed-mellow"
+
+
+def test_finalize_draft_shortens_a_long_model_name():
+    raw = {
+        "name": "terse-skeptical-release-auditor",
+        "who_they_are": "a skeptical auditor who cites the clause",
+        "what_they_do": "Audit releases.",
+    }
+    result = finalize_draft(raw, job="Audit releases")
+    assert result["name"] == "release-auditor"
+
+
+def test_finalize_distill_shortens_a_long_model_name():
+    raw = {
+        "name": "cross-platform-player-intelligence",
+        "who_they_are": "the player intelligence agent",
+    }
+    result = finalize_distill(raw, body="# Player intel\n\nReads player code.")
+    assert result["name"] == "player-intelligence"
 
 
 def test_fallback_name_lowercases():

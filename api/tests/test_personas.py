@@ -22,6 +22,7 @@ from kobo_api.personas import (
     PersonaError,
     PersonaExists,
     PersonaFields,
+    check_name_length,
     create_persona,
     parse_persona_body,
     persona_id,
@@ -181,6 +182,26 @@ def test_persona_fields_what_they_do_accepts_long_content():
 def test_persona_fields_what_they_do_max_length():
     with pytest.raises(ValidationError):
         _fields(what_they_do="x" * 49153)
+
+
+# --- check_name_length (short-names ruling, 2026-09-24) -----------------------
+
+
+def test_check_name_length_allows_one_to_three_words():
+    for name in ("ledger", "billing-analyst", "cheerful triage nurse", "Ada (Release)"):
+        check_name_length(name)
+
+
+def test_check_name_length_refuses_four_words():
+    with pytest.raises(PersonaError, match="one or two words, three at most"):
+        check_name_length("code-grounded-player-intel")
+
+
+def test_check_name_length_counts_alphanumeric_runs_not_hyphens():
+    # Three words joined with mixed punctuation are still three words.
+    check_name_length("stoic_mentor.two")
+    with pytest.raises(PersonaError):
+        check_name_length("direct factual condensed mellow")
 
 
 def test_persona_fields_name_max_length():

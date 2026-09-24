@@ -568,9 +568,7 @@ describe("PersonaBuilder - naming law microcopy (hardening wave)", () => {
       ?.replace(/\s+/g, " ")
       .trim();
 
-    expect(helperText).toContain(
-      "A name is a name: one or two words, the shape of a craftsman's nickname",
-    );
+    expect(helperText).toContain('One or two words, like "sentinel" or "ledger-keeper"');
     expect(helperText).toContain("Never a hyphenated list of traits");
   });
 });
