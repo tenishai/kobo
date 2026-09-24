@@ -388,8 +388,10 @@ def test_reset_failed_steps_rewires_when_the_deploy_failed(session_factory, conf
     reset_failed_steps(session, agent_id)
     rows = {s.name: s for s in session.get(Agent, agent_id).steps}
     assert rows["wire"].status == StepStatus.PENDING
-    # The build stayed done: its image is fine, the rollout is what failed.
-    assert rows["build"].status == StepStatus.DONE
+    # The build is reset with the wiring: a re-run wiring step may push a
+    # commit and ask the platform to reprovision, and the CI run that starts
+    # then has to be watched by somebody before the rollout is judged.
+    assert rows["build"].status == StepStatus.PENDING
     assert rows["deploy"].status == StepStatus.PENDING
     session.close()
 

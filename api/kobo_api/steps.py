@@ -2113,6 +2113,20 @@ def _where_the_run_stands(github: GitHubClient, repo: str, run: dict) -> str:
     except ClientError as exc:
         log.warning("build step: jobs of run %s in %s could not be read: %s", run_id, repo, exc)
         return f"{verdict} (its jobs could not be read)"
+    # A run still going is described by where it IS: a job may have absorbed
+    # an earlier step's failure (continue-on-error) and kept going, and the
+    # step still running is the one an operator is waiting on. A run that
+    # concluded is described by what ended it.
+    if status != "completed":
+        for job in jobs:
+            running = next(
+                (s for s in job.get("steps") or [] if s.get("status") == "in_progress"), None
+            )
+            if running is not None:
+                return (
+                    f"{verdict}: job {job.get('name')!r} is still running step "
+                    f"{running.get('name')!r}"
+                )
     for job in jobs:
         steps = job.get("steps") or []
         ended_badly = next((s for s in steps if _step_ended_badly(s)), None)

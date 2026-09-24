@@ -1148,6 +1148,40 @@ def test_build_step_second_failure_names_the_step_that_failed(session_factory, c
     assert "automatic rerun" in message
 
 
+def test_build_step_timeout_names_the_running_step_over_an_earlier_tolerated_failure(
+    session_factory, config
+):
+    """A job may absorb an earlier step's failure (continue-on-error) and keep
+    going. While the run is still in progress, the step still running is
+    where it stands; the tolerated failure is history."""
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo)
+    job = [
+        {
+            "name": "build-and-deploy-dev",
+            "status": "in_progress",
+            "conclusion": None,
+            "steps": [
+                {"name": "Lint (advisory)", "status": "completed", "conclusion": "failure"},
+                {"name": "Deploy to dev", "status": "in_progress", "conclusion": None},
+            ],
+        }
+    ]
+    github = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={"deadbeef": [[{"id": 1, "status": "in_progress", "conclusion": None}]]},
+        jobs_by_run={1: job},
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        BuildStep().run(ctx)
+
+    message = str(excinfo.value)
+    assert "is still running step 'Deploy to dev'" in message
+    assert "Lint (advisory)" not in message
+
+
 def test_build_step_second_failure_names_a_cancelled_step_too(session_factory, config):
     """The heal fires on ANY non-success conclusion, so the second-failure
     message is reached for a cancelled or timed-out run as well. Its steps

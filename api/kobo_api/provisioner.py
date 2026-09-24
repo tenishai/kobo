@@ -653,8 +653,15 @@ def sweep_interrupted(
 # request in a repository the room does not own and delivers no Secret, so
 # re-running it repairs nothing and can newly fail (a service account the
 # owner has since set, a stale branch) for reasons unrelated to the build.
+#
+# The build is reset along with the wiring, even when only the deploy
+# failed: a re-run wiring step may push a commit and ask the platform to
+# reprovision, and the CI run that starts then has to be watched by
+# BuildStep before DeployStep judges the rollout. When nothing changed,
+# BuildStep finds the same head's completed run and its one self-heal rerun
+# rebuilds, which is the same rebuild a human would ask for.
 REWIRE_AFTER_FAILED = frozenset({"build", "deploy"})
-WIRE_STEP_NAME = "wire"
+REWIRE_RESETS = frozenset({"wire", "build"})
 
 
 def reset_failed_steps(session: Session, agent_id: int) -> None:
@@ -664,8 +671,8 @@ def reset_failed_steps(session: Session, agent_id: int) -> None:
     re-run only these (and anything after them that never got created/started).
 
     One exception to "only the failed ones": when the build or the deploy of
-    a composed agent is what failed, the wiring step is reset too, so the
-    retry re-runs it first. See `REWIRE_AFTER_FAILED`.
+    a composed agent is what failed, the wiring and build steps are reset
+    too, so the retry re-runs them first. See `REWIRE_AFTER_FAILED`.
     """
     rows = session.query(AgentStep).filter_by(agent_id=agent_id).all()
     failed_names = {row.name for row in rows if row.status == StepStatus.FAILED}
@@ -677,7 +684,7 @@ def reset_failed_steps(session: Session, agent_id: int) -> None:
     )
     for step_row in rows:
         if step_row.status == StepStatus.FAILED or (
-            rewire and step_row.name == WIRE_STEP_NAME and step_row.status == StepStatus.DONE
+            rewire and step_row.name in REWIRE_RESETS and step_row.status == StepStatus.DONE
         ):
             step_row.status = StepStatus.PENDING
             step_row.error = None
