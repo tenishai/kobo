@@ -499,6 +499,48 @@ def test_rerun_argv():
     assert runner.calls == [["gh", "run", "rerun", "99", "--repo", "acme/agent-clio"]]
 
 
+def test_run_jobs_argv_and_parsing():
+    payload = {
+        "jobs": [
+            {
+                "databaseId": 7,
+                "name": "build-and-deploy-dev",
+                "status": "completed",
+                "conclusion": "failure",
+                "url": "https://example.invalid/job/7",
+                "steps": [
+                    {"name": "Set up job", "status": "completed", "conclusion": "success", "number": 1},
+                    {"name": "Deploy to dev", "status": "completed", "conclusion": "failure", "number": 9},
+                ],
+            }
+        ]
+    }
+    runner = RecordingRunner(results=[(0, json.dumps(payload), "")])
+    client = GhCLI(runner=runner)
+    result = client.run_jobs("acme/agent-clio", 99)
+    assert runner.calls == [
+        ["gh", "run", "view", "99", "--repo", "acme/agent-clio", "--json", "jobs"]
+    ]
+    # Normalized to what the step reads: names and outcomes, nothing else.
+    assert result == [
+        {
+            "name": "build-and-deploy-dev",
+            "status": "completed",
+            "conclusion": "failure",
+            "steps": [
+                {"name": "Set up job", "status": "completed", "conclusion": "success"},
+                {"name": "Deploy to dev", "status": "completed", "conclusion": "failure"},
+            ],
+        }
+    ]
+
+
+def test_run_jobs_empty_payload():
+    runner = RecordingRunner(results=[(0, "", "")])
+    client = GhCLI(runner=runner)
+    assert client.run_jobs("acme/agent-clio", 99) == []
+
+
 def test_local_head_argv_and_parsing():
     # No trailing newline here — same rationale as test_head_sha_argv_and_parsing:
     # RecordingRunner intentionally skips CommandRunner's real strip so this

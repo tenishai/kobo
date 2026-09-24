@@ -9,7 +9,7 @@ that the manifest files exist — that's the assertion that would have caught
 the P0 defect (a missing ServiceAccount) before it ever reached a cluster.
 
 Same no-real-sleep discipline as test_steps.py: `_sleep` is monkeypatched to a
-no-op so BuildStep's 600s/10s poll (60 iterations at worst) and WireStep's
+no-op so BuildStep's 900s/10s poll (90 iterations at worst) and WireStep's
 reused onboarding poll never actually block.
 """
 
@@ -1021,6 +1021,201 @@ def test_build_step_times_out_after_max_polls(session_factory, config):
 
     expected_polls = BUILD_POLL_TIMEOUT_S // BUILD_POLL_INTERVAL_S
     assert github.calls.count(f"runs_for_commit:{repo}:deadbeef") == expected_polls
+
+
+def test_build_step_waits_longer_than_the_workflows_own_rollout_wait():
+    """The generated workflow waits up to 600s for the rollout after a build
+    of a minute or two. A room that gives up at the same 600s always times
+    out FIRST on a rollout that never finishes, and reports a run still
+    "in_progress" instead of the step that is actually failing. The wait
+    here has to outlast the workflow's, so the run concludes while the room
+    is still watching and the card can name what failed.
+
+    The 600 is the deploy platform's, not this repo's: its workflow
+    template's `kubectl rollout status ... --timeout=600s` (gojira,
+    `generator/templates/workflows/_deploy.j2`). If that number moves, this
+    one has to move with it, and this test is where that is written down.
+    """
+    platform_rollout_wait_s = 600
+    assert BUILD_POLL_TIMEOUT_S > platform_rollout_wait_s
+
+
+DEPLOY_JOB_RUNNING = [
+    {
+        "name": "build-and-deploy-dev",
+        "status": "in_progress",
+        "conclusion": None,
+        "steps": [
+            {"name": "Build and push image", "status": "completed", "conclusion": "success"},
+            {"name": "Deploy to dev", "status": "in_progress", "conclusion": None},
+        ],
+    }
+]
+
+DEPLOY_JOB_FAILED = [
+    {
+        "name": "build-and-deploy-dev",
+        "status": "completed",
+        "conclusion": "failure",
+        "steps": [
+            {"name": "Build and push image", "status": "completed", "conclusion": "success"},
+            {"name": "Deploy to dev", "status": "completed", "conclusion": "failure"},
+            {"name": "Post Run actions/checkout@v4", "status": "completed", "conclusion": "success"},
+        ],
+    }
+]
+
+
+def test_build_step_timeout_names_the_job_and_step_still_running(session_factory, config):
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo)
+    github = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={"deadbeef": [[{"id": 1, "status": "in_progress", "conclusion": None}]]},
+        jobs_by_run={1: DEPLOY_JOB_RUNNING},
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        BuildStep().run(ctx)
+
+    message = str(excinfo.value)
+    assert "timed out" in message
+    assert "run 1" in message
+    assert "build-and-deploy-dev" in message
+    assert "Deploy to dev" in message
+    assert "still running" in message
+    # Not the raw dict dump the card used to show.
+    assert "{'id'" not in message
+    assert github.calls.count(f"run_jobs:{repo}:1") == 1
+
+
+def test_build_step_timeout_still_says_so_when_the_jobs_cannot_be_read(session_factory, config):
+    """A gh failure carries a command line and whatever gh printed (URLs,
+    auth hints). That goes to the log; the card only learns that the jobs
+    could not be read, and still learns that the wait ended."""
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo)
+    github = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={"deadbeef": [[{"id": 1, "status": "in_progress", "conclusion": None}]]},
+        run_jobs_error=ClientError("gh run view 1 failed (rc=1): https://api.github.invalid/x"),
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        BuildStep().run(ctx)
+
+    message = str(excinfo.value)
+    assert "timed out" in message
+    assert "run 1" in message
+    assert "in_progress" in message
+    assert "could not be read" in message
+    assert "api.github.invalid" not in message
+    assert "rc=1" not in message
+
+
+def test_build_step_timeout_with_no_run_yet_says_none_registered(session_factory, config):
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo)
+    github = FakeGitHub(head_sha="deadbeef", runs_by_sha={"deadbeef": [[]]})
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    with pytest.raises(RuntimeError, match="no CI run has registered"):
+        BuildStep().run(ctx)
+
+
+def test_build_step_second_failure_names_the_step_that_failed(session_factory, config):
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo)
+    github = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={"deadbeef": [[{"id": 42, "status": "completed", "conclusion": "failure"}]]},
+        rerun_result={"status": "completed", "conclusion": "failure"},
+        jobs_by_run={42: DEPLOY_JOB_FAILED},
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        BuildStep().run(ctx)
+
+    message = str(excinfo.value)
+    assert "run 42" in message
+    assert "'failure'" in message
+    assert "build-and-deploy-dev" in message
+    assert "Deploy to dev" in message
+    assert "failed at step" in message
+    assert "automatic rerun" in message
+
+
+def test_build_step_second_failure_names_a_cancelled_step_too(session_factory, config):
+    """The heal fires on ANY non-success conclusion, so the second-failure
+    message is reached for a cancelled or timed-out run as well. Its steps
+    end 'cancelled', never 'failure', and the card still has to name one."""
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo)
+    cancelled_job = [
+        {
+            "name": "build-and-deploy-dev",
+            "status": "completed",
+            "conclusion": "cancelled",
+            "steps": [
+                {"name": "Build and push image", "status": "completed", "conclusion": "success"},
+                {"name": "Deploy to dev", "status": "completed", "conclusion": "cancelled"},
+                {"name": "Complete job", "status": "completed", "conclusion": "skipped"},
+            ],
+        }
+    ]
+    github = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={"deadbeef": [[{"id": 7, "status": "completed", "conclusion": "cancelled"}]]},
+        rerun_result={"status": "completed", "conclusion": "cancelled"},
+        jobs_by_run={7: cancelled_job},
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        BuildStep().run(ctx)
+
+    message = str(excinfo.value)
+    assert "run 7" in message
+    assert "build-and-deploy-dev" in message
+    assert "Deploy to dev" in message
+    assert "ended 'cancelled' at step" in message
+
+
+def test_build_step_second_failure_names_a_job_that_failed_before_any_step(
+    session_factory, config
+):
+    """A runner that fails before the steps start: the job concludes
+    'failure' and every step is skipped. There is no failing step to name,
+    and the message says that instead of falling back to the bare verdict."""
+    repo = _repo_full_name(config)
+    session, agent = _make_agent(session_factory, repo_full_name=repo)
+    job_without_steps = [
+        {
+            "name": "build-and-deploy-dev",
+            "status": "completed",
+            "conclusion": "failure",
+            "steps": [
+                {"name": "Set up job", "status": "completed", "conclusion": "skipped"},
+            ],
+        }
+    ]
+    github = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={"deadbeef": [[{"id": 8, "status": "completed", "conclusion": "failure"}]]},
+        rerun_result={"status": "completed", "conclusion": "failure"},
+        jobs_by_run={8: job_without_steps},
+    )
+    ctx = _make_ctx(session, agent, config, _clients(github=github))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        BuildStep().run(ctx)
+
+    message = str(excinfo.value)
+    assert "build-and-deploy-dev" in message
+    assert "concluded 'failure' with no failing step" in message
 
 
 def test_build_step_sleeps_at_the_configured_interval(session_factory, config, monkeypatch):

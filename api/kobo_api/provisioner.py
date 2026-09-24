@@ -637,22 +637,52 @@ def sweep_interrupted(
         session.close()
 
 
+# The steps whose failure a retry answers by running the wiring again. A build
+# that never concludes, or a rollout that never becomes ready, is in practice
+# a pod that cannot start, and the reason is nearly always wiring that did
+# not land: the Secret the Deployment's envFrom names is not there (live,
+# 2026-09-24: a colleague pass the secrets platform never delivered). The
+# wiring step is idempotent by construction (it re-delivers the pass, pushes
+# nothing when nothing changed, and still confirms the platform is active),
+# so re-running it is the repair, and this is how Retry becomes that repair
+# rather than a second wait on the same missing Secret. A failure after the
+# rollout (directory, hello) says nothing about the wiring, so it is left as
+# it was.
+#
+# Composed agents only. A connected agent's wiring step proposes a pull
+# request in a repository the room does not own and delivers no Secret, so
+# re-running it repairs nothing and can newly fail (a service account the
+# owner has since set, a stale branch) for reasons unrelated to the build.
+REWIRE_AFTER_FAILED = frozenset({"build", "deploy"})
+WIRE_STEP_NAME = "wire"
+
+
 def reset_failed_steps(session: Session, agent_id: int) -> None:
     """Flip every FAILED step of `agent_id` back to PENDING: the retry primitive.
 
     A subsequent `run_pipeline` call will then skip the DONE/SKIPPED steps and
     re-run only these (and anything after them that never got created/started).
+
+    One exception to "only the failed ones": when the build or the deploy of
+    a composed agent is what failed, the wiring step is reset too, so the
+    retry re-runs it first. See `REWIRE_AFTER_FAILED`.
     """
-    failed_steps = (
-        session.query(AgentStep)
-        .filter_by(agent_id=agent_id, status=StepStatus.FAILED)
-        .all()
+    rows = session.query(AgentStep).filter_by(agent_id=agent_id).all()
+    failed_names = {row.name for row in rows if row.status == StepStatus.FAILED}
+    agent = session.get(Agent, agent_id)
+    rewire = (
+        bool(failed_names & REWIRE_AFTER_FAILED)
+        and agent is not None
+        and not is_connected(agent)
     )
-    for step_row in failed_steps:
-        step_row.status = StepStatus.PENDING
-        step_row.error = None
-        step_row.started_at = None
-        step_row.finished_at = None
+    for step_row in rows:
+        if step_row.status == StepStatus.FAILED or (
+            rewire and step_row.name == WIRE_STEP_NAME and step_row.status == StepStatus.DONE
+        ):
+            step_row.status = StepStatus.PENDING
+            step_row.error = None
+            step_row.started_at = None
+            step_row.finished_at = None
     session.commit()
 
 

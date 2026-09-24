@@ -18,6 +18,7 @@ from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import Clients
 from kobo_api.db import init_db
+from kobo_api.kinds import KIND_COMPOSED, KIND_CONNECTED
 from kobo_api.models import Agent, AgentStatus, AgentStep, StepStatus
 from kobo_api.provisioner import (
     HEARTBEAT_THREAD_NAME,
@@ -54,10 +55,13 @@ class RecordingStep:
         return self.detail
 
 
-def _make_agent(session_factory, name: str) -> int:
+def _make_agent(session_factory, name: str, *, kind: str = KIND_COMPOSED) -> int:
     session = session_factory()
     agent = Agent(
-        name=name, persona="helpful-generalist", model_id="vertex_ai/claude-sonnet-4-5"
+        name=name,
+        persona="helpful-generalist",
+        model_id="vertex_ai/claude-sonnet-4-5",
+        kind=kind,
     )
     session.add(agent)
     session.commit()
@@ -333,6 +337,100 @@ def test_reset_failed_steps_only_resets_failed_rows(session_factory, config):
     assert rows["step-b"].error is None
     assert rows["step-b"].started_at is None
     assert rows["step-b"].finished_at is None
+    session.close()
+
+
+def _run_to_failure(session_factory, config, agent_id, steps):
+    thread = run_pipeline(
+        session_factory, agent_id, config=config, clients=NO_CLIENTS, steps=steps
+    )
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+
+
+def test_reset_failed_steps_rewires_when_the_build_failed(session_factory, config):
+    """A build or rollout that fails is, more often than not, wiring that did
+    not land: the Secret the Deployment names is not there, so the pod never
+    starts. The wiring step is idempotent, and re-running it is what
+    re-delivers that Secret. So a retry after a build or deploy failure runs
+    the wiring again rather than only the step that noticed."""
+    agent_id = _make_agent(session_factory, "agent-rewire")
+    calls: list[str] = []
+    steps = [
+        RecordingStep(name="wire", calls=calls),
+        RecordingStep(name="build", calls=calls, fail_times=1),
+    ]
+    _run_to_failure(session_factory, config, agent_id, steps)
+
+    session = session_factory()
+    reset_failed_steps(session, agent_id)
+    rows = {s.name: s for s in session.get(Agent, agent_id).steps}
+    assert rows["wire"].status == StepStatus.PENDING
+    assert rows["wire"].error is None
+    assert rows["build"].status == StepStatus.PENDING
+    session.close()
+
+    _run_to_failure(session_factory, config, agent_id, steps)
+    assert calls == ["wire", "build", "wire", "build"]
+
+
+def test_reset_failed_steps_rewires_when_the_deploy_failed(session_factory, config):
+    agent_id = _make_agent(session_factory, "agent-rewire-deploy")
+    calls: list[str] = []
+    steps = [
+        RecordingStep(name="wire", calls=calls),
+        RecordingStep(name="build", calls=calls),
+        RecordingStep(name="deploy", calls=calls, fail_times=1),
+    ]
+    _run_to_failure(session_factory, config, agent_id, steps)
+
+    session = session_factory()
+    reset_failed_steps(session, agent_id)
+    rows = {s.name: s for s in session.get(Agent, agent_id).steps}
+    assert rows["wire"].status == StepStatus.PENDING
+    # The build stayed done: its image is fine, the rollout is what failed.
+    assert rows["build"].status == StepStatus.DONE
+    assert rows["deploy"].status == StepStatus.PENDING
+    session.close()
+
+
+def test_reset_failed_steps_does_not_rewire_a_connected_agent(session_factory, config):
+    """A connected agent's wiring step proposes a pull request in a repo the
+    room does not own and delivers no Secret, so re-running it repairs
+    nothing and can newly fail for reasons unrelated to the build. Its
+    retry re-runs only what failed."""
+    agent_id = _make_agent(session_factory, "agent-connected", kind=KIND_CONNECTED)
+    calls: list[str] = []
+    steps = [
+        RecordingStep(name="wire", calls=calls),
+        RecordingStep(name="build", calls=calls, fail_times=1),
+    ]
+    _run_to_failure(session_factory, config, agent_id, steps)
+
+    session = session_factory()
+    reset_failed_steps(session, agent_id)
+    rows = {s.name: s for s in session.get(Agent, agent_id).steps}
+    assert rows["wire"].status == StepStatus.DONE
+    assert rows["build"].status == StepStatus.PENDING
+    session.close()
+
+
+def test_reset_failed_steps_leaves_the_wiring_alone_for_a_later_failure(session_factory, config):
+    agent_id = _make_agent(session_factory, "agent-no-rewire")
+    calls: list[str] = []
+    steps = [
+        RecordingStep(name="wire", calls=calls),
+        RecordingStep(name="build", calls=calls),
+        RecordingStep(name="deploy", calls=calls),
+        RecordingStep(name="hello", calls=calls, fail_times=1),
+    ]
+    _run_to_failure(session_factory, config, agent_id, steps)
+
+    session = session_factory()
+    reset_failed_steps(session, agent_id)
+    rows = {s.name: s for s in session.get(Agent, agent_id).steps}
+    assert rows["wire"].status == StepStatus.DONE
+    assert rows["hello"].status == StepStatus.PENDING
     session.close()
 
 

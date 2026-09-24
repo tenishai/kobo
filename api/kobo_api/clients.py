@@ -546,6 +546,19 @@ class GitHubClient(Protocol):
         """
         ...
 
+    def run_jobs(self, repo: str, run_id: int) -> list[dict]:
+        """The jobs of workflow run `run_id`, each a {"name", "status",
+        "conclusion", "steps": [{"name", "status", "conclusion"}]} dict --
+        names and outcomes only, in the run's own order.
+
+        What lets a step say WHERE a run stands ("job X is still on step
+        Y", "job X failed at step Y") instead of echoing the run's status:
+        a run that never concludes inside the room's wait is otherwise
+        reported as "in_progress", which names nothing anyone can act on.
+        Empty when the run has no jobs yet.
+        """
+        ...
+
     def commit_shas_for_paths(self, workdir: Path, paths: list[str]) -> dict[str, str]:
         """Each path's last-touch commit sha (`git log -1 --format=%H --
         <path>`, run once per path) inside an already-cloned `workdir`.
@@ -1130,6 +1143,29 @@ class GhCLI:
         self._runner.run(
             [self._gh, "run", "rerun", str(run_id), "--repo", repo], env=self._env()
         )
+
+    def run_jobs(self, repo: str, run_id: int) -> list[dict]:
+        out = self._runner.run(
+            [self._gh, "run", "view", str(run_id), "--repo", repo, "--json", "jobs"],
+            env=self._env(),
+        )
+        payload = json.loads(out) if out else {}
+        return [
+            {
+                "name": job.get("name", ""),
+                "status": job.get("status", ""),
+                "conclusion": job.get("conclusion") or None,
+                "steps": [
+                    {
+                        "name": step.get("name", ""),
+                        "status": step.get("status", ""),
+                        "conclusion": step.get("conclusion") or None,
+                    }
+                    for step in job.get("steps") or []
+                ],
+            }
+            for job in payload.get("jobs") or []
+        ]
 
     def commit_shas_for_paths(self, workdir: Path, paths: list[str]) -> dict[str, str]:
         return {

@@ -107,11 +107,20 @@ class StepSkipped(Exception):
 POLL_INTERVAL_S = 5
 POLL_TIMEOUT_S = 300
 
-# CI image-build poll cadence: every 10s, up to 600s total (BuildStep's own
+# CI image-build poll cadence: every 10s, up to 900s total (BuildStep's own
 # numbers — distinct constants from the gojira-onboarding ones above since the
 # two poll different backends on different cadences).
+#
+# 900 and not 600 because the generated workflow's own deploy step waits up
+# to 600s for the rollout, after a build of a minute or two. A room that
+# gave up at the same 600s always timed out FIRST on a rollout that never
+# finished, and the card said "in_progress" about a run whose failing step
+# it never got to see (live, 2026-09-24: a pod stuck on a missing Secret,
+# reported as a build that "timed out"). Outlasting the workflow means the
+# run concludes while the room is still watching, and `_where_the_run_stands`
+# below can name the job and step that failed.
 BUILD_POLL_INTERVAL_S = 10
-BUILD_POLL_TIMEOUT_S = 600
+BUILD_POLL_TIMEOUT_S = 900
 
 # Cap on how many times `head_sha` can advance (change between polls) during a
 # single BuildStep invocation. The pipeline pushes at most twice per provision
@@ -162,7 +171,7 @@ HELLO_RETRY_ATTEMPTS = 3
 HELLO_RETRY_BACKOFF_S = 20
 
 # Module-level sleep seam: tests monkeypatch this to a no-op so a 300s/5s (or
-# 600s/10s) poll loop — or a deliberately-triggered timeout, which walks the
+# 900s/10s) poll loop — or a deliberately-triggered timeout, which walks the
 # whole loop — never actually blocks. Referenced as a bare name inside each
 # step's run() so the monkeypatch (which rebinds this module attribute) is
 # visible at call time.
@@ -2058,18 +2067,84 @@ class BuildStep:
                     else:
                         raise RuntimeError(
                             f"build run {run_id} completed with conclusion "
-                            f"{conclusion!r} for commit {sha} (after an "
-                            "automatic rerun already failed once this "
+                            f"{conclusion!r} for commit {sha}: "
+                            f"{_where_the_run_stands(github, agent.repo_full_name, run)} "
+                            "(after an automatic rerun already failed once this "
                             "invocation)"
                         )
 
             if polls_remaining > 0:
                 _sleep(BUILD_POLL_INTERVAL_S)
 
+        standing = (
+            _where_the_run_stands(github, agent.repo_full_name, runs[0])
+            if runs
+            else "no CI run has registered for this commit yet"
+        )
         raise RuntimeError(
             f"timed out waiting for build run to complete after "
-            f"{BUILD_POLL_TIMEOUT_S}s for commit {sha} (last runs: {runs!r})"
+            f"{BUILD_POLL_TIMEOUT_S}s for commit {sha}: {standing}"
         )
+
+
+def _where_the_run_stands(github: GitHubClient, repo: str, run: dict) -> str:
+    """One clause naming where a CI run is, for the card: the job and step
+    that ended badly (failed, cancelled, timed out), or the job and step
+    still running, read from the run's jobs. A job that concluded badly
+    with no such step (a runner that fell over before the steps began) is
+    named as that.
+
+    Falls back to the run's own status when the jobs cannot be read, and
+    says only that: a `ClientError` from gh carries the command line and
+    whatever gh printed (URLs, auth hints), which belongs in the log and not
+    on a card every viewer of the agent can read -- the same rule
+    `CONNECTED_WIRE_GITHUB_UNAVAILABLE` states. Only `ClientError` is
+    absorbed; anything else is a programming error and surfaces as one.
+
+    Reads at most once, only when a step is about to raise: this is the
+    detail an operator wants on a failed card, not a per-poll cost.
+    """
+    run_id = run.get("id")
+    status = run.get("status")
+    conclusion = run.get("conclusion")
+    verdict = f"run {run_id} {status}" + (f"/{conclusion}" if conclusion else "")
+    try:
+        jobs = github.run_jobs(repo, run_id)
+    except ClientError as exc:
+        log.warning("build step: jobs of run %s in %s could not be read: %s", run_id, repo, exc)
+        return f"{verdict} (its jobs could not be read)"
+    for job in jobs:
+        steps = job.get("steps") or []
+        ended_badly = next((s for s in steps if _step_ended_badly(s)), None)
+        if ended_badly is not None:
+            how = ended_badly.get("conclusion")
+            verb = "failed at step" if how == "failure" else f"ended {how!r} at step"
+            return f"{verdict}: job {job.get('name')!r} {verb} {ended_badly.get('name')!r}"
+    for job in jobs:
+        running = next((s for s in job.get("steps") or [] if s.get("status") == "in_progress"), None)
+        if running is not None:
+            return (
+                f"{verdict}: job {job.get('name')!r} is still running step "
+                f"{running.get('name')!r}"
+            )
+    for job in jobs:
+        how = job.get("conclusion")
+        if job.get("status") == "completed" and how not in (None, "success", "skipped"):
+            return f"{verdict}: job {job.get('name')!r} concluded {how!r} with no failing step"
+        if job.get("status") != "completed":
+            return f"{verdict}: job {job.get('name')!r} is {job.get('status')} with no step started"
+    return verdict
+
+
+def _step_ended_badly(step: dict) -> bool:
+    """A completed step whose conclusion is anything but success or skipped:
+    failure, cancelled, timed_out, action_required -- the outcomes a card
+    should name."""
+    return step.get("status") == "completed" and step.get("conclusion") not in (
+        None,
+        "success",
+        "skipped",
+    )
 
 
 # --- DeployStep -------------------------------------------------------------------

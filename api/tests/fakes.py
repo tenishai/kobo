@@ -478,6 +478,8 @@ class FakeGitHub:
         tooling_files: dict[str, str] | None = None,
         tooling_source_files: dict[str, dict[str, str | bytes]] | None = None,
         rename_error: str | None = None,
+        jobs_by_run: dict[int, list[dict]] | None = None,
+        run_jobs_error: Exception | None = None,
         archive_error: str | None = None,
         agent_card: dict | None = None,
         clone_tree: dict[str, str] | None = None,
@@ -597,6 +599,12 @@ class FakeGitHub:
         self._rerun_result = rerun_result or {"status": "completed", "conclusion": "success"}
         self._rerun_followup = list(rerun_followup) if rerun_followup else None
         self.rerun_calls: list[tuple[str, int]] = []
+        # What `run_jobs` answers per run id: the jobs of that run with their
+        # steps, the shape `gh run view --json jobs` gives once normalized.
+        # Unscripted runs answer an empty list; `run_jobs_error` makes every
+        # read raise, for the step's own fallback wording.
+        self._jobs_by_run: dict[int, list[dict]] = dict(jobs_by_run or {})
+        self._run_jobs_error = run_jobs_error
 
     def repo_exists(self, repo: str) -> bool:
         self.calls.append(f"repo_exists:{repo}")
@@ -992,6 +1000,12 @@ class FakeGitHub:
         for run in poll_result:
             self._run_id_to_sha[run["id"]] = sha
         return [dict(run) for run in poll_result]
+
+    def run_jobs(self, repo: str, run_id: int) -> list[dict]:
+        self.calls.append(f"run_jobs:{repo}:{run_id}")
+        if self._run_jobs_error is not None:
+            raise self._run_jobs_error
+        return [dict(job) for job in self._jobs_by_run.get(run_id, [])]
 
     def rerun(self, repo: str, run_id: int) -> None:
         self.calls.append(f"rerun:{repo}:{run_id}")
