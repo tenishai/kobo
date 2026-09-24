@@ -1,123 +1,211 @@
 <script lang="ts">
-  // Static orientation page. No fetching, no state (just the one plain
-  // import below, for the dashboard link): the room's vocabulary and the
-  // shortest possible path to a first agent, told as the five-step journey a
-  // first-time visitor actually takes, in the order they actually take it
-  // (create, meet it, wire it into Slack, bring in teammates, grow it)
-  // rather than a features list. Plain language throughout: no repos,
-  // images, pods, or CI, the same house rule the rest of this room's own
-  // copy follows.
+  // The room's user guide, read from `GET /api/guide` and rendered here.
   //
-  // Rewritten for the UI-simplification wave: the old five sections (make
-  // an agent, talk to it, give it colleagues, put it in Slack, who can do
-  // what) described a room that no longer exists -- the build checklist has
-  // moved to the top of the agent's page, the create flow no longer asks
-  // about skills, and Slack's channel/DM answering rule and the nightly
-  // learnings approval gate are both new enough that the old copy never
-  // mentioned them. This version walks the five steps in the order a new
-  // user actually lives them, ending with the grow-it sections as the
-  // "later" step they actually are.
+  // Guide wave (2026-09-24): the old page was five short paragraphs written
+  // by hand in this file, and it drifted from the room three times in a
+  // month (suggested names that no longer exist, channel IDs the Slack tab
+  // no longer leads with, a Harness it named in one sentence). The text now
+  // lives in the API package as one markdown file per section, so the page
+  // and the `kobo_guide` MCP tool read the same words, and a section is
+  // updated once.
   //
-  // New-agent entry wave (2026-09-23): the rail's three buttons became one,
-  // so step 1 names that one button and the question it opens, rather than
-  // a button whose label no longer exists.
-  //
-  // Harness wave (2026-09-23): the row is Chat/Slack/Access/Harness/
-  // Settings, with no menu at the end of it, and the grow-it sections are
-  // inside Harness, so the copy below says Harness rather than More.
-  import { formatHash } from "../lib/router.svelte";
+  // Layout follows the Harness tab: sections down the left, one section's
+  // body on the right, the current one in the hash
+  // (`#/getting-started/<section>`) so a section can be linked to.
+  import { createQuery } from "@tanstack/svelte-query";
+  import ErrorState from "../components/ErrorState.svelte";
+  import Skeleton from "../components/Skeleton.svelte";
+  import { errorMessage } from "../lib/api";
+  import { renderMarkdown } from "../lib/markdown";
+  import { guideQuery } from "../lib/queries";
+  import { formatHash, navigate, route } from "../lib/router.svelte";
+
+  const guide = createQuery(() => guideQuery());
+
+  let sections = $derived(guide.data?.sections ?? []);
+  // The hash names the section; an unknown or missing id opens the first.
+  let current = $derived(
+    sections.find((section) => section.id === route.section) ?? sections[0],
+  );
+  let html = $derived(current ? renderMarkdown(current.body) : "");
 </script>
 
-<article class="getting-started">
-  <h1>Getting started</h1>
+<article class="guide">
+  {#if guide.isPending}
+    <div class="guide__loading">
+      <Skeleton rows={4} />
+    </div>
+  {:else if guide.isError}
+    <ErrorState
+      message={errorMessage(guide.error, "Couldn't load the guide.")}
+      onretry={() => guide.refetch()}
+    />
+  {:else if current}
+    <nav class="guide__nav" aria-label="Guide sections">
+      {#each sections as section, index (section.id)}
+        <a
+          class="guide__item"
+          href={formatHash({ page: "getting-started", section: section.id })}
+          aria-current={section.id === current.id ? "page" : undefined}
+          onclick={(event) => {
+            event.preventDefault();
+            navigate({ page: "getting-started", section: section.id });
+          }}
+        >
+          <span class="guide__number">{index + 1}</span>
+          <span>{section.title}</span>
+        </a>
+      {/each}
+    </nav>
 
-  <section>
-    <h2>1. Create your agent</h2>
-    <p>
-      On the <a href={formatHash({ page: "dashboard" })}>dashboard</a>, press
-      New agent. The room asks how you want to start, and there are three
-      ways: build an agent, a team guide in one step, or connect code your
-      team already owns. Building one is the usual way in. Pick a persona
-      from the catalog, or describe the job yourself and build one from
-      scratch. Accept one of the suggested names, or write your own, and
-      choose the group that will see it. A checklist appears at the top of
-      the agent's page while it builds, and it disappears on its own once
-      every step turns green.
-    </p>
-  </section>
-
-  <section>
-    <h2>2. Say hello</h2>
-    <p>
-      The Chat tab is where you meet your agent, so open it and say hello.
-      Whenever it says something worth keeping, or you tell it something it
-      should remember, press Teach this and the fact joins its memory for
-      good.
-    </p>
-  </section>
-
-  <section>
-    <h2>3. Put it in Slack</h2>
-    <p>
-      The Slack tab walks you through the whole setup: creating the app from
-      a ready-made manifest, pasting the two tokens it gives you, and
-      inviting the bot to a channel. Slack hands you that channel's ID when
-      you invite it, so paste that back into the Slack tab too, and the
-      agent is connected there. In a channel it only answers when you
-      @-mention it, but a direct message always reaches it.
-    </p>
-  </section>
-
-  <section>
-    <h2>4. Bring in teammates</h2>
-    <p>
-      Anyone already in the same group can see and chat with your agent, with
-      no extra setup needed. The Access tab lets you grant an individual person
-      outside the group by email, and colleague requests connect your agent
-      to agents in other groups so the two can consult each other.
-    </p>
-  </section>
-
-  <section>
-    <h2>5. Grow it (Harness)</h2>
-    <p>
-      Once the basics are working, the Harness tab has the rest: everything
-      that runs your agent, picked from the list down its left side. Model and
-      runtime says what it thinks with and what it runs on, and tells you when
-      the room has moved on without it. Persona is the soul it was built from.
-      Skills lets you add abilities from the catalog, including ones
-      recommended for this agent. Tooling shows the lanes every agent starts
-      with and any extras you add on top. Memory holds the notes you teach it
-      and any files you upload for it to learn from. Learnings shows what your
-      agent proposes from its own conversations each night, and nothing is
-      kept until you approve it.
-    </p>
-  </section>
+    <section class="guide__body" aria-labelledby="guide-title">
+      <h1 id="guide-title">{current.title}</h1>
+      <p class="guide__summary">{current.summary}</p>
+      <div class="guide__prose">
+        <!-- eslint-disable-next-line svelte/no-at-html-tags -- renderMarkdown escapes its input -->
+        {@html html}
+      </div>
+      <p class="guide__foot">
+        Your own assistant can read this guide too: connect it to the room
+        as an MCP server and ask for the guide tool. See "From your own
+        assistant".
+      </p>
+    </section>
+  {/if}
 </article>
 
 <style>
-  .getting-started {
-    display: flex;
-    flex-direction: column;
+  .guide {
+    display: grid;
+    grid-template-columns: 14rem minmax(0, 40rem);
     gap: var(--space-lg);
+    align-items: start;
+  }
+
+  .guide__loading {
+    grid-column: 1 / -1;
     max-width: 40rem;
   }
 
-  .getting-started h1 {
-    margin: 0;
-    color: var(--ink);
+  .guide__nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    position: sticky;
+    top: var(--space-md);
   }
 
-  .getting-started h2 {
-    margin: 0 0 var(--space-xs);
-    color: var(--ink);
-    font-size: 1rem;
-  }
-
-  .getting-started p {
-    margin: 0;
+  .guide__item {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-xs);
+    padding: var(--space-2xs) var(--space-xs);
+    border-left: 2px solid transparent;
     color: var(--muted);
+    font-size: 0.85rem;
+    text-decoration: none;
+  }
+
+  .guide__item:hover {
+    color: var(--ink);
+  }
+
+  .guide__item[aria-current="page"] {
+    border-left-color: var(--accent);
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  .guide__number {
+    min-width: 1.4em;
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+
+  .guide__body h1 {
+    margin: 0 0 var(--space-2xs);
+    color: var(--ink);
+  }
+
+  .guide__summary {
+    margin: 0 0 var(--space-md);
+    color: var(--muted);
+    font-size: 0.95rem;
+  }
+
+  .guide__prose {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    color: var(--ink);
     line-height: 1.6;
   }
 
+  .guide__prose :global(h2) {
+    margin: var(--space-sm) 0 0;
+    font-size: 1.05rem;
+  }
+
+  .guide__prose :global(h3) {
+    margin: var(--space-xs) 0 0;
+    font-size: 0.95rem;
+  }
+
+  .guide__prose :global(p),
+  .guide__prose :global(ul),
+  .guide__prose :global(ol) {
+    margin: 0;
+  }
+
+  .guide__prose :global(ul),
+  .guide__prose :global(ol) {
+    padding-left: 1.4rem;
+  }
+
+  .guide__prose :global(li) {
+    margin: var(--space-2xs) 0;
+  }
+
+  /* The mono face itself comes from app.css's global code rule. */
+  .guide__prose :global(code) {
+    padding: 0 0.3em;
+    border-radius: var(--radius-sm);
+    background: var(--accent-soft);
+    font-size: 0.85em;
+  }
+
+  .guide__prose :global(a) {
+    color: var(--link);
+  }
+
+  .guide__foot {
+    margin: var(--space-lg) 0 0;
+    padding-top: var(--space-sm);
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  @media (max-width: 44rem) {
+    .guide {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .guide__nav {
+      position: static;
+      flex-direction: row;
+      flex-wrap: wrap;
+    }
+
+    .guide__item {
+      border-left: none;
+      border-bottom: 2px solid transparent;
+    }
+
+    .guide__item[aria-current="page"] {
+      border-bottom-color: var(--accent);
+    }
+  }
 </style>

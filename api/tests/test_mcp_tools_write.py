@@ -401,6 +401,7 @@ def test_build_mcp_server_registers_exactly_the_named_tools(
     names = {tool.name for tool in mcp._tool_manager.list_tools()}
     assert names == {
         "kobo_whoami",
+        "kobo_guide",
         "kobo_list_agents",
         "kobo_get_agent",
         "kobo_feed",
@@ -434,6 +435,32 @@ def test_build_mcp_server_registers_exactly_the_named_tools(
         "kobo_move_persona",
         "kobo_archive_persona",
     }
+
+
+# --- kobo_guide (guide wave, 2026-09-24) --------------------------------------
+
+
+def test_guide_lists_sections_then_returns_one(session_factory, config, fake_storage):
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    listing = _call_tool(mcp, "kobo_guide", _ctx_for(MEMBER_A_EMAIL))
+    ids = [entry["id"] for entry in listing["sections"]]
+    assert ids[0] == "before-you-start"
+    assert "from-your-own-assistant" in ids
+    assert all(set(entry) == {"id", "title", "summary"} for entry in listing["sections"])
+
+    section = _call_tool(mcp, "kobo_guide", _ctx_for(MEMBER_A_EMAIL), section="slack")
+    assert section["title"] == "Slack"
+    assert "manifest" in section["body"]
+
+
+def test_guide_unknown_section_names_the_real_ones(session_factory, config, fake_storage):
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="before-you-start"):
+        _call_tool(mcp, "kobo_guide", _ctx_for(MEMBER_A_EMAIL), section="nope")
 
 
 # --- kobo_create_agent --------------------------------------------------------

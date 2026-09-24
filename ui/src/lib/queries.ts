@@ -178,6 +178,7 @@ import {
   fetchDeliveryState,
   fetchGroupRequests,
   fetchGroups,
+  fetchGuide,
   fetchModels,
   fetchObservability,
   fetchRecommendedSkills,
@@ -282,6 +283,16 @@ const ORG_STATUS_STALE_MS = 30_000;
 
 /** The model list + default. No polling — the model catalog doesn't change
  * on its own in the background. */
+/** The room's user guide (`GET /api/guide`). Static for the life of the
+ * process, so it never goes stale in the client. */
+export function guideQuery() {
+  return queryOptions({
+    queryKey: ["guide"] as const,
+    queryFn: fetchGuide,
+    staleTime: Infinity,
+  });
+}
+
 export function modelsQuery() {
   return queryOptions({
     queryKey: ["catalog", "models"] as const,

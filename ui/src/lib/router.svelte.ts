@@ -11,7 +11,7 @@
 export type Route =
   | { page: "dashboard" }
   | { page: "agent"; name: string; tab?: string; section?: string }
-  | { page: "getting-started" }
+  | { page: "getting-started"; section?: string }
   | { page: "personas" };
 
 const DASHBOARD: Route = { page: "dashboard" };
@@ -41,8 +41,15 @@ export function parseHash(hash: string): Route {
   const path = hash.startsWith("#") ? hash.slice(1) : hash;
   const segments = path.split("/").filter((segment) => segment.length > 0);
 
-  if (segments.length === 1 && segments[0] === "getting-started") {
-    return { page: "getting-started" };
+  // `#/getting-started/<section>` opens the guide at one section (guide
+  // wave, 2026-09-24); the section id is handed back verbatim, and the page
+  // falls back to the first section for an id the guide does not have.
+  if (segments[0] === "getting-started" && segments.length <= 2) {
+    const route: Route = { page: "getting-started" };
+    if (segments[1]) {
+      route.section = segments[1];
+    }
+    return route;
   }
   if (segments.length === 1 && segments[0] === "personas") {
     return { page: "personas" };
@@ -83,7 +90,7 @@ export function formatHash(route: Route): string {
     return `${base}/${route.tab}${tail}`;
   }
   if (route.page === "getting-started") {
-    return "#/getting-started";
+    return route.section ? `#/getting-started/${route.section}` : "#/getting-started";
   }
   if (route.page === "personas") {
     return "#/personas";
@@ -99,9 +106,10 @@ function currentHash(): string {
 type RouteState = {
   page: "dashboard" | "agent" | "getting-started" | "personas";
   name: string | null;
-  /** The agent page's tab, and the Harness tab's section, as written in the
-   * hash -- `null` when the hash names neither. Unvalidated on purpose; the
-   * page checks them against the tabs that agent actually has. */
+  /** The agent page's tab, and the Harness tab's section (or the guide's
+   * section on the getting-started page), as written in the hash -- `null`
+   * when the hash names neither. Unvalidated on purpose; the page checks
+   * them against the tabs that agent (or sections the guide) actually has. */
   tab: string | null;
   section: string | null;
 };
@@ -111,7 +119,10 @@ function toState(parsed: Route): RouteState {
     page: parsed.page,
     name: parsed.page === "agent" ? parsed.name : null,
     tab: parsed.page === "agent" ? parsed.tab ?? null : null,
-    section: parsed.page === "agent" ? parsed.section ?? null : null,
+    section:
+      parsed.page === "agent" || parsed.page === "getting-started"
+        ? parsed.section ?? null
+        : null,
   };
 }
 

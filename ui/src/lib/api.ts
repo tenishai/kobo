@@ -675,6 +675,16 @@ export async function fetchModels(): Promise<{
   );
 }
 
+/** `GET /api/guide`: the room's own user guide, every section with its
+ * markdown body, in reading order. One packaged source serves this page and
+ * the `kobo_guide` MCP tool, so the two never drift. */
+export type GuideSection = { id: string; title: string; summary: string; body: string };
+
+export async function fetchGuide(): Promise<{ sections: GuideSection[] }> {
+  const res = await fetch("/api/guide");
+  return parse<{ sections: GuideSection[] }>(res);
+}
+
 /** `GET /api/catalog/observability` (Task 4 of the observability-catalog
  * addendum) -- the org's dashboard base URL + project, both `null` unless
  * the room config carries both keys. A caller builds one agent's dashboard

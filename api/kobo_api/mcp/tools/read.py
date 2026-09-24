@@ -41,6 +41,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from kobo_api.clients import ClientError
+from kobo_api.guide import find_section, load_guide
 from kobo_api.marketplace import MarketplaceError, list_tools
 from kobo_api.mcp import authz
 from kobo_api.mcp.audit import audited
@@ -122,6 +123,29 @@ def register(mcp: FastMCP, app: Any) -> None:
             "groups": groups,
             "groups_unavailable": groups_unavailable,
         }
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @audited("kobo_guide")
+    async def kobo_guide(ctx: Context, section: str | None = None) -> dict:
+        """Read the room's own user guide -- the same text the Getting
+        started page shows. With no `section`, returns every section's id,
+        title and one-line summary in reading order; with a `section` id,
+        returns that section's full markdown body. Read the relevant
+        section BEFORE creating, wiring or changing an agent on someone's
+        behalf: it says what each step does, what the room asks for, and
+        which tool here matches which button in the room. Open to every
+        signed-in caller.
+        """
+        if section is None:
+            return {
+                "sections": [entry.listing() for entry in load_guide()],
+                "hint": "call again with section=<id> for the full text",
+            }
+        found = find_section(section)
+        if found is None:
+            known = ", ".join(entry.id for entry in load_guide())
+            raise ToolError(f"no guide section {section!r}; sections are: {known}")
+        return found.full()
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     @audited("kobo_list_agents")

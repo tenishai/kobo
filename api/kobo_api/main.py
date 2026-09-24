@@ -156,6 +156,7 @@ from kobo_api.pairs import (
     sync_dispatch_pairs_best_effort,
 )
 from kobo_api.persona_draft import finalize_distill, finalize_draft
+from kobo_api.guide import find_section, load_guide
 from kobo_api.personas import (
     PERSONA_ID_RE,
     PersonaError,
@@ -2872,6 +2873,20 @@ def create_app(
                 .count()
             )
         return result
+
+    @app.get("/api/guide")
+    def guide_index() -> dict:
+        """The room's user guide: every section with its body, in reading
+        order. One packaged source (`kobo_api.guide`) serves the Getting
+        started page and the `kobo_guide` MCP tool alike."""
+        return {"sections": [section.full() for section in load_guide()]}
+
+    @app.get("/api/guide/{section_id}")
+    def guide_section(section_id: str) -> JSONResponse:
+        section = find_section(section_id)
+        if section is None:
+            return JSONResponse({"error": "no guide section with that id"}, status_code=404)
+        return JSONResponse(section.full())
 
     @app.get("/api/catalog/models")
     def catalog_models() -> dict:

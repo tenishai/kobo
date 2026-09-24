@@ -269,6 +269,15 @@ The bootstrap CLI stands up a new org (config repo, buckets, seeded personas) id
 
 ## Documentation
 
+**For people using the room:** the Getting started page inside the room is the
+full user guide, one section per part of the room (first agent, the agent page,
+secrets, Slack, access, the harness, agents talking to agents, personas, the
+connector, a glossary). Its text is packaged with the API in
+[`api/kobo_api/templates/guide/`](api/kobo_api/templates/guide/), served at
+`GET /api/guide`, and read by the `kobo_guide` MCP tool, so a person's own
+assistant reads the same words the page shows. Edit a section there and both
+surfaces change.
+
 The design record lives in-repo and is the source of truth:
 
 - [docs/superpowers/specs/](docs/superpowers/specs/) — every arc's design document, from the

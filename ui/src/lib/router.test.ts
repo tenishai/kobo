@@ -148,6 +148,21 @@ it("parses #/getting-started", () => {
   expect(parseHash("#/getting-started")).toEqual({ page: "getting-started" });
 });
 
+it("parses #/getting-started/<section> and hands the section back verbatim", () => {
+  expect(parseHash("#/getting-started/slack")).toEqual({
+    page: "getting-started",
+    section: "slack",
+  });
+  // A third segment is not a guide address.
+  expect(parseHash("#/getting-started/slack/extra")).toEqual({ page: "dashboard" });
+});
+
+it("formats the getting-started route with and without a section", () => {
+  expect(formatHash({ page: "getting-started", section: "the-harness" })).toBe(
+    "#/getting-started/the-harness",
+  );
+});
+
 it("formats the getting-started route", () => {
   expect(formatHash({ page: "getting-started" })).toBe("#/getting-started");
 });
