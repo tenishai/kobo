@@ -71,6 +71,16 @@ _METADATA_IDENTITY_URL = (
 # a secret delivery for no reason other than clock margin.
 _TOKEN_EXPIRY_MARGIN_S = 60
 
+# And never hold a token longer than this after it was issued, whatever its
+# `exp` says. The secrets platform refuses a machine token issued more than
+# fifteen minutes ago (its own ceiling on how long a minted credential stays
+# usable, independent of the issuer's generous hour), so a cache keyed on
+# `exp` alone handed the platform a token it would not take (live,
+# 2026-09-24: a Retry twenty minutes after the first answered "no service
+# identity"). Ten minutes leaves clock skew and an in-flight request well
+# inside that ceiling.
+_TOKEN_MAX_AGE_S = 600
+
 # How long the metadata server is given to answer. It is link-local; if it
 # is slow, something is wrong with the node rather than with the network,
 # and a secret delivery should say so quickly instead of hanging a step.
@@ -206,8 +216,9 @@ class LadonClient(Protocol):
         ...
 
 
-def _jwt_exp(token: str) -> int | None:
-    """The `exp` claim of a JWT, or None when this room cannot read one.
+def _jwt_times(token: str) -> tuple[int | None, int | None]:
+    """The `exp` and `iat` claims of a JWT, each None when this room cannot
+    read it.
 
     Decodes ONLY -- never verifies. The token is not this room's to verify
     (the secrets platform does that, against Google's keys); all that is
@@ -220,9 +231,18 @@ def _jwt_exp(token: str) -> int | None:
         # JWT base64url segments carry no padding; urlsafe_b64decode wants it.
         padded = payload_b64 + "=" * (-len(payload_b64) % 4)
         claims = json.loads(base64.urlsafe_b64decode(padded))
-        return int(claims["exp"])
-    except (IndexError, ValueError, TypeError, KeyError, binascii.Error):
-        return None
+    except (IndexError, ValueError, TypeError, binascii.Error):
+        return None, None
+    if not isinstance(claims, dict):
+        return None, None
+
+    def _int(key: str) -> int | None:
+        try:
+            return int(claims[key])
+        except (KeyError, ValueError, TypeError):
+            return None
+
+    return _int("exp"), _int("iat")
 
 
 class MetadataIdentityTokenProvider:
@@ -230,8 +250,11 @@ class MetadataIdentityTokenProvider:
     minted for `audience` by the metadata server.
 
     Thread-safe and cached until `_TOKEN_EXPIRY_MARGIN_S` before the token's
-    own `exp` (a token whose `exp` this room cannot read is used once and
-    never cached, rather than pinned for a guessed window) -- the same
+    own `exp` or `_TOKEN_MAX_AGE_S` after its `iat` (its mint time when the
+    token names none), whichever comes first -- the platform's own ceiling
+    on a token's age is the shorter of the two by far. A token whose `exp`
+    this room cannot read is used once and never cached, rather than pinned
+    for a guessed window. The same
     lock-held-across-the-fetch discipline `kobo_api.clients.CachedGcloudToken`
     documents, for the same reason: concurrent provisions must cost one
     fetch, not one each.
@@ -266,10 +289,15 @@ class MetadataIdentityTokenProvider:
                 and self._now() < self._expires_at
             ):
                 return self._token
+            minted_at = self._now()
             token = self._fetch()
-            exp = _jwt_exp(token)
+            exp, iat = _jwt_times(token)
             self._token = token
-            self._expires_at = exp - _TOKEN_EXPIRY_MARGIN_S if exp is not None else None
+            if exp is None:
+                self._expires_at = None
+            else:
+                issued = float(iat) if iat is not None else minted_at
+                self._expires_at = min(exp - _TOKEN_EXPIRY_MARGIN_S, issued + _TOKEN_MAX_AGE_S)
             return token
 
     def _fetch(self) -> str:

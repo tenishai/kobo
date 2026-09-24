@@ -20,6 +20,7 @@ import pytest
 
 from kobo_api.clients import ClientError
 from kobo_api.ladon import (
+    _TOKEN_MAX_AGE_S,
     HttpxLadonClient,
     MetadataIdentityTokenProvider,
     deliver_secret,
@@ -421,16 +422,17 @@ def test_a_token_that_cannot_be_minted_fails_the_call_before_anything_is_sent():
 # --- MetadataIdentityTokenProvider --------------------------------------------
 
 
-def _jwt(exp: int) -> str:
-    """A JWT-shaped string with `exp` in its payload -- unsigned and never
-    verified here or in kobo_api.ladon (the platform verifies; this room only
-    reads `exp` to know how long to cache)."""
+def _jwt(exp: int, iat: int | None = None) -> str:
+    """A JWT-shaped string with `exp` (and `iat` when given) in its payload --
+    unsigned and never verified here or in kobo_api.ladon (the platform
+    verifies; this room only reads the two to know how long to cache)."""
 
     def segment(payload: dict) -> str:
         raw = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
         return raw.rstrip("=")
 
-    return f"{segment({'alg': 'RS256'})}.{segment({'exp': exp})}.signature"
+    claims = {"exp": exp} if iat is None else {"exp": exp, "iat": iat}
+    return f"{segment({'alg': 'RS256'})}.{segment(claims)}.signature"
 
 
 def test_identity_token_is_requested_from_the_metadata_server_for_the_audience():
@@ -462,7 +464,40 @@ def test_identity_token_is_requested_from_the_metadata_server_for_the_audience()
     assert captured["flavor"] == "Google"
 
 
-def test_identity_token_is_cached_until_shortly_before_it_expires():
+def test_identity_token_is_cached_no_longer_than_the_lane_accepts_it():
+    """An hour-long token is not an hour of cache. The secrets platform refuses
+    a machine token issued more than 15 minutes ago whatever its `exp` says
+    (live, 2026-09-24: a Retry 20 minutes after the first one answered "no
+    service identity" on a token this room was still holding). The cache is
+    bounded by the token's `iat` plus `_TOKEN_MAX_AGE_S`, well inside that."""
+    calls = []
+    clock = {"now": 1_000.0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        now = int(clock["now"])
+        return httpx.Response(200, text=_jwt(now + 3600, iat=now))
+
+    provider = MetadataIdentityTokenProvider(
+        AUDIENCE,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        now=lambda: clock["now"],
+    )
+
+    first = provider()
+    clock["now"] += _TOKEN_MAX_AGE_S - 1
+    assert provider() == first
+    assert len(calls) == 1
+
+    clock["now"] += 2  # past iat + the age this room allows itself
+    second = provider()
+
+    assert len(calls) == 2
+    assert second != first
+    assert _TOKEN_MAX_AGE_S < 900  # the platform's own ceiling, with room to spare
+
+
+def test_identity_token_with_no_iat_is_aged_from_when_it_was_minted():
     calls = []
     clock = {"now": 1_000.0}
 
@@ -475,17 +510,34 @@ def test_identity_token_is_cached_until_shortly_before_it_expires():
         client=httpx.Client(transport=httpx.MockTransport(handler)),
         now=lambda: clock["now"],
     )
-
     first = provider()
-    clock["now"] += 3600 - 61  # still inside the 60s margin before exp
-    assert provider() == first
-    assert len(calls) == 1
-
-    clock["now"] += 2  # now past exp - 60
-    second = provider()
-
+    clock["now"] += _TOKEN_MAX_AGE_S + 1
+    assert provider() != first
     assert len(calls) == 2
-    assert second != first
+
+
+def test_identity_token_is_still_re_minted_shortly_before_a_short_expiry():
+    """A token shorter than the age bound is still refreshed at its own
+    `exp` margin: the bound is a ceiling on the cache, not a floor."""
+    calls = []
+    clock = {"now": 1_000.0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        now = int(clock["now"])
+        return httpx.Response(200, text=_jwt(now + 120, iat=now))
+
+    provider = MetadataIdentityTokenProvider(
+        AUDIENCE,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        now=lambda: clock["now"],
+    )
+    first = provider()
+    clock["now"] += 120 - 61  # inside the 60s margin before exp
+    assert provider() == first
+    clock["now"] += 2
+    assert provider() != first
+    assert len(calls) == 2
 
 
 def test_an_identity_token_whose_expiry_cannot_be_read_is_never_cached():
