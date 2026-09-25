@@ -42,12 +42,12 @@ from kobo_api.config import Config, GroupChoice
 from kobo_api.groups import GroupResolver, OktaGroupResolver, OktaPeopleSearch
 
 if TYPE_CHECKING:
-    # kobo_api.ladon imports ClientError from this module, so this import
-    # exists only for the annotation on `Clients.ladon` below -- `from
-    # __future__ import annotations` keeps it from being evaluated at
-    # runtime, and `Clients.real` imports the implementation at call time,
-    # the same deferral `installation_token_provider` uses for
-    # kobo_api.github_app.
+    # kobo_api.ladon and kobo_api.github_app import ClientError from this
+    # module, so these imports exist only for annotations (`Clients.ladon`,
+    # `installation_token_provider`) -- `from __future__ import annotations`
+    # keeps them from being evaluated at runtime, and the implementations
+    # are imported at call time.
+    from kobo_api.github_app import InstallationTokenProvider
     from kobo_api.ladon import LadonClient
 
 log = logging.getLogger(__name__)
@@ -308,12 +308,20 @@ class GitHubClient(Protocol):
         report, not a stack trace. Anything else still raises, because a
         bad token says nothing about this repository.
 
-        `can_write` reads `.permissions.push`, and is False when the
-        response carries no `permissions` object at all. A response that
-        does not say the room may write is not a response that says it
-        may: the scan's own message names what write access is for, so an
-        owner reading it knows what to grant, whereas assuming write here
-        would surface instead as a failed pull request halfway through a
+        `can_write` has two sources, by how the client is authenticated.
+        Running as an installed App (`installation_writes` given), it is
+        the installation's own `contents` grant: GitHub returns
+        `permissions` on a repository read as a USER's standing and answers
+        an App with every field False, `push` and `pull` alike, even on a
+        repository the App created and pushes to daily. Reading `push`
+        there refused every repository (example-org, 2026-09-25). Running under
+        an operator's `gh auth` (dev), `push` is that person's real
+        standing and is read as before; a response with no `permissions`
+        object at all is still no write. A response that does not say the
+        room may write is not a response that says it may: the scan's own
+        message names what write access is for, so an owner reading it
+        knows what to grant, whereas assuming write here would surface
+        instead as a failed pull request halfway through a
         pipeline.
         """
         ...
@@ -739,11 +747,17 @@ class GhCLI:
         git: str = "git",
         gh: str = "gh",
         token_provider: Callable[[], str] | None = None,
+        installation_writes: Callable[[], bool] | None = None,
     ):
         self._runner = runner or CommandRunner()
         self._git = git
         self._gh = gh
         self._token_provider = token_provider
+        # Set alongside an App `token_provider`: whether the installation
+        # may write contents (`InstallationTokenProvider.can_write_contents`).
+        # `repo_access` reads it instead of GitHub's per-repository
+        # `permissions`, which are a user's standing and False for an App.
+        self._installation_writes = installation_writes
 
     def _env(self) -> dict[str, str] | None:
         if self._token_provider is None:
@@ -919,9 +933,15 @@ class GhCLI:
         # same thing here (see the Protocol's docstring for why that reads
         # as no write).
         permissions = data.get("permissions") or {}
+        if self._installation_writes is not None:
+            # An App: the repository is visible (200 above) and the grant
+            # is the installation's, so the grant is the answer.
+            can_write = self._installation_writes()
+        else:
+            can_write = bool(permissions.get("push", False))
         return RepoAccessInfo(
             visible=True,
-            can_write=bool(permissions.get("push", False)),
+            can_write=can_write,
             default_branch=data.get("default_branch") or "",
             full_name=data.get("full_name") or "",
         )
@@ -4702,9 +4722,11 @@ def _extract_relay_reply(response: dict) -> str:
 # --- Wiring -----------------------------------------------------------------------
 
 
-def installation_token_provider(config: Config) -> Callable[[], str] | None:
+def installation_token_provider(config: Config) -> InstallationTokenProvider | None:
     """The GitHub App installation-token provider for `config`, or None when
-    the App is not fully configured (dev = operator's gh login).
+    the App is not fully configured (dev = operator's gh login). Callers take
+    `.token` for `GhCLI.token_provider` and `.can_write_contents` for its
+    `installation_writes`, from the one object, so both read one mint.
 
     Extracted out of `Clients.real` so `build_default_app` (kobo_api.main)
     can wire the same App-authed provider into the separate GhCLI it builds
@@ -4725,7 +4747,7 @@ def installation_token_provider(config: Config) -> Callable[[], str] | None:
             config.github_app_id,
             config.github_app_installation_id,
             config.github_app_private_key_path,
-        ).token
+        )
     return None
 
 
@@ -4832,7 +4854,9 @@ class Clients:
         from kobo_api.ladon import HttpxLadonClient
 
         runner = CommandRunner()
-        token_provider = installation_token_provider(config)
+        provider = installation_token_provider(config)
+        token_provider = provider.token if provider else None
+        installation_writes = provider.can_write_contents if provider else None
         # One shared CachedGcloudToken across every client that defaults its
         # own token_provider to `_gcloud_print_access_token` (image, name,
         # storage) — a token minted for one is reused by the others until it
@@ -4846,7 +4870,11 @@ class Clients:
         kubectl = KubectlCLI(runner=runner)
         slack_store = slack_token_store(config, kubectl)
         return cls(
-            github=GhCLI(runner=runner, token_provider=token_provider),
+            github=GhCLI(
+                runner=runner,
+                token_provider=token_provider,
+                installation_writes=installation_writes,
+            ),
             gojira=HttpxGojiraClient(config.gojira_url, token=config.gojira_token),
             cloud=GcloudClient(config.gcp_project, runner=runner),
             agent=KubectlAgentClient(),

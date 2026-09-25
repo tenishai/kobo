@@ -72,6 +72,11 @@ class InstallationTokenProvider:
         self._private_key: str | None = None
         self._token: str | None = None
         self._expires_at: float | None = None
+        # The permissions GitHub granted the installation, as returned with
+        # every minted token ({"contents": "write", ...}). Kept because the
+        # `permissions` object on a repository read is a USER's standing and
+        # says nothing true about an App (see `can_write_contents`).
+        self._permissions: dict[str, str] = {}
 
     def _load_private_key(self) -> str:
         if self._private_key is None:
@@ -132,3 +137,21 @@ class InstallationTokenProvider:
         data = resp.json()
         self._token = data["token"]
         self._expires_at = datetime.fromisoformat(data["expires_at"]).timestamp()
+        self._permissions = {
+            str(k): str(v) for k, v in (data.get("permissions") or {}).items()
+        }
+
+    def can_write_contents(self) -> bool:
+        """Whether this installation may change repository contents.
+
+        The App's `contents` permission is granted per installation, not per
+        repository, and GitHub states it in the body of every minted token.
+        That is the only honest source: `GET repos/{repo}` answers an App
+        with `permissions` all False, `pull` included, even on a repository
+        the App created and pushes to daily (example-org, 2026-09-25: nine such
+        repositories, all `push: false`). Reading `push` there made every
+        connect scan refuse every repository. Mints a token first if none
+        is cached, so the answer is never a stale default.
+        """
+        self.token()
+        return self._permissions.get("contents") in {"write", "admin"}

@@ -257,3 +257,49 @@ def test_missing_private_key_file_raises_client_error_naming_only_the_path(tmp_p
         provider.token()
 
     assert str(missing_path) in str(exc_info.value)
+
+
+# --- what the installation was granted, read from the mint --------------------
+
+
+def _provider_with_mint(tmp_path, body: dict, fixed_now: float = 1_700_000_000.0):
+    private_key, _ = _generate_rsa_keypair()
+    key_path = _write_pem(tmp_path, private_key)
+    body = {"token": "ghs_abc123", "expires_at": _iso_expiry(fixed_now + 3600), **body}
+    captured: list[httpx.Request] = []
+    http_client = httpx.Client(
+        transport=httpx.MockTransport(
+            _recording_transport(captured, [httpx.Response(201, json=body)])
+        )
+    )
+    provider = InstallationTokenProvider(
+        APP_ID, INSTALLATION_ID, key_path, http_client=http_client, now=lambda: fixed_now
+    )
+    return provider, captured
+
+
+def test_can_write_contents_reads_the_grant_github_returns_with_the_token(tmp_path):
+    """The App's contents permission is per installation and GitHub states it
+    in the mint body. That is the source, not a repository's `permissions`,
+    which GitHub fills for a user and leaves all-False for an App."""
+    provider, captured = _provider_with_mint(
+        tmp_path, {"permissions": {"contents": "write", "metadata": "read"}}
+    )
+    assert provider.can_write_contents() is True
+    assert len(captured) == 1  # the check minted once; a second read is cached
+    assert provider.can_write_contents() is True
+    assert len(captured) == 1
+
+
+@pytest.mark.parametrize(
+    "permissions", [{"contents": "read"}, {"metadata": "read"}, {}, None]
+)
+def test_can_write_contents_is_false_unless_contents_is_write(tmp_path, permissions):
+    body = {} if permissions is None else {"permissions": permissions}
+    provider, _ = _provider_with_mint(tmp_path, body)
+    assert provider.can_write_contents() is False
+
+
+def test_can_write_contents_accepts_admin_as_write(tmp_path):
+    provider, _ = _provider_with_mint(tmp_path, {"permissions": {"contents": "admin"}})
+    assert provider.can_write_contents() is True

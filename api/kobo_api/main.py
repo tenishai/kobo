@@ -9772,8 +9772,9 @@ def build_default_app() -> FastAPI:
     # validation failure itself and falls back to `local_config` unchanged,
     # paired with an unwired OrgState an unwired room can render honestly
     # (Tasks 3/8 consume `app.state.org`).
+    provider = installation_token_provider(local_config)
     github = GhCLI(
-        runner=CommandRunner(), token_provider=installation_token_provider(local_config)
+        runner=CommandRunner(), token_provider=provider.token if provider else None
     )
     config, org = load_org_config(local_config, github)
 

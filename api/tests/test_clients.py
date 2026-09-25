@@ -1070,6 +1070,57 @@ def test_repo_access_claims_no_write_when_the_response_carries_no_permissions():
     assert access.can_write is False
 
 
+def test_repo_access_as_an_app_trusts_the_installations_grant_not_push():
+    """GitHub answers an App's repository read with `permissions` all False,
+    `push` and `pull` alike, even on a repository the App created (example-org,
+    2026-09-25: nine of them). Reading `push` refused every repository. As an
+    App the verdict is the installation's own contents grant."""
+    runner = RecordingRunner(
+        results=[
+            (
+                0,
+                (
+                    '{"default_branch":"main","full_name":"acme/clio",'
+                    '"permissions":{"admin":false,"pull":false,"push":false}}'
+                ),
+                "",
+            )
+        ]
+    )
+    client = GhCLI(
+        runner=runner, token_provider=lambda: "ghs_x", installation_writes=lambda: True
+    )
+
+    access = client.repo_access("acme/clio")
+
+    assert access.visible is True
+    assert access.can_write is True
+    assert access.default_branch == "main"
+
+
+def test_repo_access_as_an_app_without_the_contents_grant_is_read_only():
+    runner = RecordingRunner(results=[(0, REPO_JSON, "")])  # push:true, and irrelevant
+    client = GhCLI(
+        runner=runner, token_provider=lambda: "ghs_x", installation_writes=lambda: False
+    )
+
+    assert client.repo_access("acme/clio").can_write is False
+
+
+def test_repo_access_as_an_app_still_reports_not_visible_on_a_404():
+    """The grant answers "may the room write what it can see"; it never
+    conjures a repository the App cannot see."""
+    runner = RecordingRunner(results=[NOT_FOUND])
+    client = GhCLI(
+        runner=runner, token_provider=lambda: "ghs_x", installation_writes=lambda: True
+    )
+
+    access = client.repo_access("acme/private-thing")
+
+    assert access.visible is False
+    assert access.can_write is False
+
+
 def test_repo_access_not_visible_on_a_404():
     runner = RecordingRunner(results=[NOT_FOUND])
     client = GhCLI(runner=runner)
@@ -7908,14 +7959,14 @@ def test_installation_token_provider_wires_callable_when_app_config_fully_set(tm
     )
     provider = installation_token_provider(config)
     assert provider is not None
-    assert callable(provider)
-    # Bound to an InstallationTokenProvider instance configured from this
-    # same config — not just "some callable" — without minting a real token
-    # (construction reads the key lazily, only on first `.token()` call).
-    bound_provider = provider.__self__
-    assert bound_provider._app_id == "123"
-    assert bound_provider._installation_id == "456"
-    assert bound_provider._private_key_path == key_path
+    # The provider itself, configured from this same config, so a caller
+    # takes `.token` and `.can_write_contents` from ONE object (one mint
+    # answers both) — without minting anything here (construction reads
+    # the key lazily, only on first `.token()` call).
+    assert callable(provider.token) and callable(provider.can_write_contents)
+    assert provider._app_id == "123"
+    assert provider._installation_id == "456"
+    assert provider._private_key_path == key_path
 
 
 def test_installation_token_provider_wired_into_boot_org_clone_gh_cli():
@@ -7934,7 +7985,10 @@ def test_installation_token_provider_wired_into_boot_org_clone_gh_cli():
         github_app_installation_id="456",
         github_app_private_key_path=Path("/nonexistent/app.pem"),
     )
-    github = GhCLI(runner=CommandRunner(), token_provider=installation_token_provider(config))
+    provider = installation_token_provider(config)
+    github = GhCLI(
+        runner=CommandRunner(), token_provider=provider.token if provider else None
+    )
     assert github._token_provider is not None
     assert github._token_provider.__self__._app_id == "123"
 
