@@ -20,8 +20,28 @@ from kobo_api.models import Base
 # a WAIT: it changes nothing when there is no contention.
 SQLITE_BUSY_TIMEOUT_S = 30
 
+_BARE_POSTGRES = "postgresql://"
+_PSYCOPG2_POSTGRES = "postgresql+psycopg2://"
+
+
+def driver_qualified(url: str) -> str:
+    """The URL with its Postgres driver named, so SQLAlchemy's default cannot
+    choose one for us.
+
+    A bare `postgresql://` leaves the driver to SQLAlchemy, and SQLAlchemy 2.1
+    moved that default from psycopg2 to psycopg (v3). The image ships
+    psycopg2-binary, the driver every deployed room has run on, so a bare URL
+    is read as psycopg2 here, in the one place the app, alembic and the
+    schema tripwire all take their engine from. A URL that already names a
+    driver, and every non-Postgres URL, is returned untouched.
+    """
+    if url.startswith(_BARE_POSTGRES):
+        return _PSYCOPG2_POSTGRES + url[len(_BARE_POSTGRES) :]
+    return url
+
 
 def make_engine(url: str) -> Engine:
+    url = driver_qualified(url)
     connect_args: dict[str, object] = {}
     if url.startswith("sqlite"):
         connect_args["check_same_thread"] = False

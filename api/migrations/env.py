@@ -33,6 +33,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from kobo_api.config import Config
+from kobo_api.db import driver_qualified
 from kobo_api.models import Base
 
 config = context.config
@@ -52,13 +53,17 @@ target_metadata = Base.metadata
 
 
 def _db_url() -> str:
+    # Whatever the source, the Postgres driver is named before SQLAlchemy sees
+    # the URL (kobo_api.db.driver_qualified): a bare `postgresql://` under
+    # SQLAlchemy 2.1 asks for psycopg v3, which the image does not ship, and
+    # this is the first engine the room builds at boot.
     configured = config.get_main_option("sqlalchemy.url")
     if configured:
-        return configured
+        return driver_qualified(configured)
     override = os.environ.get("KOBO_DB_URL")
     if override:
-        return override
-    return Config.load().db_url
+        return driver_qualified(override)
+    return driver_qualified(Config.load().db_url)
 
 
 def run_migrations_offline() -> None:

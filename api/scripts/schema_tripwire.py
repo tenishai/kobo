@@ -19,6 +19,7 @@ import sys
 
 from sqlalchemy import create_engine, inspect
 
+from kobo_api.db import driver_qualified
 from kobo_api.models import Base
 
 
@@ -28,7 +29,7 @@ def main() -> int:
         print("usage: schema_tripwire.py <db-url> (or set TRIPWIRE_DB_URL)")
         return 2
 
-    engine = create_engine(url)
+    engine = create_engine(driver_qualified(url))
     inspector = inspect(engine)
 
     missing: list[str] = []

@@ -10,7 +10,15 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi",
     "uvicorn",
-    "sqlalchemy>=2",
+    # PINNED BELOW 2.1: SQLAlchemy 2.1 changed the driver a bare
+    # `postgresql://` URL means from psycopg2 to psycopg (v3). The image
+    # ships psycopg2-binary only, so an unpinned build that resolved 2.1.1
+    # (2026-09-25, kobo:6488f3d) crashed at boot inside alembic with
+    # "No module named 'psycopg'" while every test, running on SQLite,
+    # stayed green. `kobo_api.db.driver_qualified` also names the driver
+    # explicitly; the pin keeps the rest of 2.1's surface out until it is
+    # adopted on purpose, as its own change.
+    "sqlalchemy>=2,<2.1",
     "pydantic>=2",
     "pyyaml",
     "httpx",
