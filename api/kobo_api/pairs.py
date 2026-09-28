@@ -188,9 +188,9 @@ def sync_dispatch_pairs_best_effort(
     (`kobo_api.main`'s `_boot_sync_dispatch_pairs`, final-review fix round,
     HIGH-2a). New READY agents join their group's implicit pairs through
     the same `allowed_pairs` query every other trigger recomputes from
-    scratch; a group change has no trigger of its own because `group_name`
-    is immutable once an agent is created (nothing in this room currently
-    changes it after create).
+    scratch; a group change is its own trigger (`kobo_api.main`'s
+    metadata route pushes after any move), since a move changes which
+    agents share a group.
 
     Lives here, next to `allowed_pairs`/`sync_dispatch_pairs` themselves,
     rather than in `kobo_api.main` alongside its structurally identical

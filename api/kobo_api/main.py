@@ -8058,7 +8058,13 @@ def create_app(
                 return JSONResponse(
                     {"error": f"there is no group named {wanted}"}, status_code=422
                 )
-            group_name = None if wanted == SHARED_GROUP else wanted
+            # The commons is stored under its own name. It used to be stored
+            # as no group at all, which is a different thing: `_visible_agents`
+            # shows a commons agent to every caller by matching SHARED_GROUP,
+            # so a group-less row was invisible to exactly the people the
+            # move was for. Moving a group-less agent "to shared" again
+            # repairs a row an earlier move left that way.
+            group_name = wanted
 
         team = agent.team
         if payload.team is not None:
@@ -8088,6 +8094,11 @@ def create_app(
         agent.team = team
         agent.purpose_tags = encode_tags(tags)
         agent.capability = capability
+        # Agents that share a group may call each other, so a move changes who
+        # may call whom. The switchboard only knows what the room pushes, and
+        # without a push here a moved agent kept its old neighbors, and had
+        # none of its new ones, until some unrelated event triggered a sync.
+        moved = group_name != agent.group_name
         agent.group_name = group_name
         group = group_name or SHARED_GROUP
         if payload.team is None and payload.purpose_tags is None and payload.capability is None:
@@ -8095,6 +8106,8 @@ def create_app(
             # the bundle's card carries, so there is nothing to commit and no
             # directory detail to resync.
             session.commit()
+            if moved:
+                _sync_dispatch_pairs(session)
             return JSONResponse(
                 {
                     "team": team,
@@ -8131,6 +8144,8 @@ def create_app(
         # failure here is logged and swallowed, never turned into a failure
         # response (see _sync_directory_best_effort's own docstring).
         _sync_directory_best_effort(app.state.clients, app.state.config, agent)
+        if moved:
+            _sync_dispatch_pairs(session)
         return JSONResponse(
             {
                 "team": team,
