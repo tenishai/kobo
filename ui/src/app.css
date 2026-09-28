@@ -944,8 +944,8 @@ textarea.field__input {
   right: 0;
   bottom: 0;
   left: 0;
-  height: 2.5rem;
-  background: linear-gradient(to bottom, transparent, var(--panel));
+  height: 3.5rem;
+  background: linear-gradient(to bottom, transparent, var(--panel) 85%);
   content: "";
   opacity: 0;
   pointer-events: none;
@@ -967,23 +967,28 @@ textarea.field__input {
   overflow-x: hidden;
   overflow-y: auto;
   /* Overlay scrollbars (macOS default) hide until the pointer moves, so a
-     still box gives no sign it scrolls. A thin, always-drawn track does. */
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+     still box gives no sign it scrolls. The `::-webkit-scrollbar` rules
+     below make Chrome and Safari draw a classic, always-visible one.
+     Do NOT add `scrollbar-width` or `scrollbar-color` here: when either is
+     set, Chrome ignores every `::-webkit-scrollbar` rule and goes back to
+     the overlay scrollbar that hides (that is how the first version of this
+     shipped, and the bar vanished again). Firefox has no way to force a
+     visible bar on macOS; there the fade below is the hint. */
   scrollbar-gutter: stable;
 }
 
 .list--scroll::-webkit-scrollbar {
-  width: 8px;
+  width: 10px;
 }
 
 .list--scroll::-webkit-scrollbar-thumb {
-  border-radius: 4px;
-  background: var(--border);
+  border: 2px solid var(--panel);
+  border-radius: 5px;
+  background: var(--muted);
 }
 
 .list--scroll::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--bg);
 }
 
 .list--scroll .list__row {
