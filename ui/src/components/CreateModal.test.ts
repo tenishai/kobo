@@ -1354,6 +1354,39 @@ describe("CreateModal — built-ins are the main personas (built-ins first rulin
     );
   }
 
+  it("shows a fade at the bottom while more personas are below the fold", async () => {
+    // jsdom lays nothing out, so the scroll metrics are set by hand, the
+    // same way ColleagueConversations.test.ts does.
+    stubMixedSearch();
+    const { container } = renderWithClient(CreateModal, { open: true, onclose: () => {} });
+    await screen.findByText("Built-in");
+    const list = container.querySelector(".list--scroll") as HTMLElement;
+    const shell = list.parentElement as HTMLElement;
+    expect(shell.classList.contains("list-scroll")).toBe(true);
+
+    Object.defineProperty(list, "scrollHeight", { value: 600, configurable: true });
+    Object.defineProperty(list, "clientHeight", { value: 200, configurable: true });
+    list.scrollTop = 0;
+    await fireEvent.scroll(list);
+    expect(shell.classList.contains("list-scroll--more")).toBe(true);
+
+    // Scrolled to the end: nothing is hidden, so nothing is faded.
+    list.scrollTop = 400;
+    await fireEvent.scroll(list);
+    expect(shell.classList.contains("list-scroll--more")).toBe(false);
+  });
+
+  it("shows no fade when every persona fits in the box", async () => {
+    stubMixedSearch();
+    const { container } = renderWithClient(CreateModal, { open: true, onclose: () => {} });
+    await screen.findByText("Built-in");
+    const list = container.querySelector(".list--scroll") as HTMLElement;
+    Object.defineProperty(list, "scrollHeight", { value: 200, configurable: true });
+    Object.defineProperty(list, "clientHeight", { value: 200, configurable: true });
+    await fireEvent.scroll(list);
+    expect(list.parentElement?.classList.contains("list-scroll--more")).toBe(false);
+  });
+
   it("shows a Built-in heading first, then From your groups", async () => {
     stubMixedSearch();
     const { container } = renderWithClient(CreateModal, {

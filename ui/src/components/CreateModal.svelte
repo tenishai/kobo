@@ -51,6 +51,7 @@
   // covers its absence, and it stays editable after the fact through Edit
   // details. Skills are picked post-create, in the Skills tab. No capability
   // field either -- that's earned after first contact.
+  import { tick } from "svelte";
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import EmptyState from "./EmptyState.svelte";
   import ErrorState from "./ErrorState.svelte";
@@ -207,6 +208,29 @@
   let hoveredPersona = $state<string | null>(null);
   let hoveredRow = $state<HTMLElement | null>(null);
   let personaListEl = $state<HTMLElement | null>(null);
+
+  /** Whether the persona box has rows below its bottom edge. Drives the fade
+   * on the box's shell: a scrolling list that ends on a clean row edge looks
+   * finished, and this room's four built-ins plus the group heading fill the
+   * box to exactly that edge. Re-measured on scroll and whenever the rows
+   * change (a search, the scope toggle, the catalog answering). */
+  let personaMore = $state(false);
+  function measurePersonaList(): void {
+    const el = personaListEl;
+    if (!el) {
+      personaMore = false;
+      return;
+    }
+    personaMore = el.scrollHeight - el.scrollTop - el.clientHeight > 1;
+  }
+  $effect(() => {
+    // Read the rows so a change in them re-runs this, then measure after
+    // the DOM has them.
+    void builtinPersonas;
+    void teamPersonas;
+    void personaListEl;
+    tick().then(measurePersonaList);
+  });
   let showTimer: ReturnType<typeof setTimeout> | null = null;
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -654,11 +678,15 @@
           aria-label="Search personas"
           autocomplete="off"
         />
+        <!-- The shell only exists to carry the fade: a `::after` on the
+             scrolling box itself would scroll away with the rows. -->
+        <div class="list-scroll" class:list-scroll--more={personaMore}>
         <div
           class="list list--scroll"
           role="radiogroup"
           aria-labelledby="create-persona-label"
           bind:this={personaListEl}
+          onscroll={measurePersonaList}
         >
           {#if personas.isPending}
             <div class="list__empty">
@@ -695,6 +723,7 @@
               {/each}
             {/if}
           {/if}
+        </div>
         </div>
         {#if hoveredPersona !== null}
           <PersonaHoverCard
