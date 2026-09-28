@@ -698,6 +698,74 @@ def test_patch_metadata_moves_the_agent_back_to_the_commons(session_factory, con
     assert _group_on_row(session_factory) == "shared"
 
 
+def _seed_neighbor(session_factory, config, *, name, group_name):
+    session = session_factory()
+    session.add(
+        Agent(
+            name=name,
+            persona=PERSONA,
+            model_id=config.models[0].id,
+            status=AgentStatus.READY,
+            repo_full_name=f"acme/agent-{name}",
+            team="shared",
+            group_name=group_name,
+        )
+    )
+    session.commit()
+    session.close()
+
+
+def test_a_group_move_tells_the_switchboard_who_may_call_whom(
+    session_factory, config, monkeypatch
+):
+    """Agents in one group may call each other. A move changes the group, so
+    it changes that set, and the switchboard only knows what the room pushes.
+    Before this, a moved agent kept its old neighbors and had none of its new
+    ones until some unrelated event happened to trigger a sync."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _grouped_config(_enabled_config(config))
+    fake_cabal = FakeCabal()
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg, group_name="marketing")
+    _seed_neighbor(session_factory, cfg, name="otto", group_name="sre")
+
+    response = client.patch(f"/api/agents/{AGENT_NAME}/metadata", json={"group": "sre"})
+
+    assert response.status_code == 200
+    assert fake_cabal.put_dispatch_pairs_calls, "the move pushed nothing"
+    pushed = fake_cabal.put_dispatch_pairs_calls[-1]
+    assert (f"agent:{AGENT_NAME}", "otto") in pushed
+    assert ("agent:otto", AGENT_NAME) in pushed
+
+
+def test_a_group_move_survives_a_switchboard_that_is_down(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _grouped_config(_enabled_config(config))
+    fake_cabal = FakeCabal(put_dispatch_pairs_error="switchboard unreachable")
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg, group_name="marketing")
+
+    response = client.patch(f"/api/agents/{AGENT_NAME}/metadata", json={"group": "sre"})
+
+    assert response.status_code == 200
+    assert _group_on_row(session_factory) == "sre"
+
+
+def test_a_change_that_is_not_a_move_pushes_no_pairs(session_factory, config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _grouped_config(_enabled_config(config))
+    fake_cabal = FakeCabal()
+    client = _make_client(session_factory, cfg, cabal=fake_cabal)
+    _seed_agent(session_factory, cfg, group_name="sre")
+
+    response = client.patch(f"/api/agents/{AGENT_NAME}/metadata", json={"group": "sre"})
+
+    assert response.status_code == 200
+    assert fake_cabal.put_dispatch_pairs_calls == []
+
+
 def test_patch_metadata_refuses_a_group_the_room_does_not_know(session_factory, config):
     cfg = _grouped_config(config)
     client = _make_client(session_factory, cfg)

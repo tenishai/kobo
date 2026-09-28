@@ -8094,6 +8094,11 @@ def create_app(
         agent.team = team
         agent.purpose_tags = encode_tags(tags)
         agent.capability = capability
+        # Agents that share a group may call each other, so a move changes who
+        # may call whom. The switchboard only knows what the room pushes, and
+        # without a push here a moved agent kept its old neighbors, and had
+        # none of its new ones, until some unrelated event triggered a sync.
+        moved = group_name != agent.group_name
         agent.group_name = group_name
         group = group_name or SHARED_GROUP
         if payload.team is None and payload.purpose_tags is None and payload.capability is None:
@@ -8101,6 +8106,8 @@ def create_app(
             # the bundle's card carries, so there is nothing to commit and no
             # directory detail to resync.
             session.commit()
+            if moved:
+                _sync_dispatch_pairs(session)
             return JSONResponse(
                 {
                     "team": team,
@@ -8137,6 +8144,8 @@ def create_app(
         # failure here is logged and swallowed, never turned into a failure
         # response (see _sync_directory_best_effort's own docstring).
         _sync_directory_best_effort(app.state.clients, app.state.config, agent)
+        if moved:
+            _sync_dispatch_pairs(session)
         return JSONResponse(
             {
                 "team": team,
