@@ -1,0 +1,28 @@
+---
+card: arch-card:kobo-access-control
+updated: 2026-09-28
+anchor: api/kobo_api/iap.py sha=e5cbea714933133b58d388fbfff5db78b472f53e
+anchor: api/kobo_api/mcp/authz.py sha=8e3dcca81547d6dfd86b20e13d3beb0b06de1633
+---
+# access-control — who may see and change which agent (UI, MCP, broker)
+
+WHAT / SEAM: identity is ONE attribute, `request.state.iap_email`, and every decision is made by a handful of module-level helpers in api/kobo_api/main.py (above `create_app`; they are not anchored here because main.py changes on nearly every commit, so re-check them by name): `_is_operator`, `_is_admin`, `_is_reader`, `_visible_agents`, `_visible_agent_or_404`, `_owner_or_operator_or_403`, `_decider_or_403`, `_operator_block` / `_admin_operator_block` / `_convert_operator_block` / `_repo_access_operator_block` / `_slack_operator_block`, `_group_choice_block`.
+Three entry lanes, one set of gates:
+- Browser/UI: `IapMiddleware` (iap.py) verifies `x-goog-iap-jwt-assertion` against Google's JWKS (12h cache) and `config.iap_audience`, stamps `iap_email`, and returns 401 otherwise. Only active when `iap_audience` is set.
+- MCP: `/oauth/*` is kobo's own OAuth 2.1 AS (mcp/oauth_as.py: Google OIDC, Workspace-domain gate, PKCE, dynamic registration); access tokens are kobo JWTs (mcp/jwt.py, key env `KOBO_MCP_JWT_KEY`, `sub` = email); refresh tokens rotate in families (mcp/refresh_tokens.py; reuse revokes the family). `mcp/authz.py room_request(app, email)` builds a synthetic Request so tools call the SAME main.py gates; write tools call the route functions themselves (mcp/tools/write.py).
+- Agents: `/broker/agents/{name}/*` authenticates the agent's cabal colleague JWT (pr_broker.py `verify_agent_token`: issuer cabal-core, sub `agent:<name>`), then mints a GitHub token scoped to that agent's APPROVED `RepoAccess` rows and PR-only permissions.
+OPS / FLOW: middleware order (Starlette runs last-added first): `HttpsOnlyMiddleware` → `IapMiddleware` → CORS → routes. IAP exemptions: `EXEMPT_PATHS` {/api/healthz, /metrics} and `EXEMPT_PREFIXES` (/mcp, /oauth, /.well-known, /broker), matched on the normalized path at segment boundaries. `HTTPS_ONLY_PREFIXES` (/mcp, /oauth, /.well-known) answer `X-Forwarded-Proto: http` with a 308 to https (GET/HEAD) or a refusal, before any credential is read; /broker is in-cluster only, so it is exempt from that check.
+Visibility (`_visible_agents`, in order): IAP off → all; admin → all; reader → all (read only); no group resolver → all; else owned (`created_by`) ∪ granted (`AgentUserGrant`) ∪ commons (`group_name == "shared"`) ∪ agents in the caller's resolved groups. Resolver returns None (Okta down) → owned ∪ granted ∪ commons, and the response flags `groups_unavailable`.
+INVARIANTS:
+- Authorization reads only the VERIFIED email (`iap_email` from IapMiddleware, or `sub` from a verified kobo JWT). Never trust a header or body field for identity.
+- "Not visible" and "does not exist" return the identical 404; MCP also collapses "visible but not yours" into NotFound (authz.py). WHY: status codes must not leak existence or ownership.
+- Visibility is enforced in exactly one place, `_visible_agent_or_404`; every agent-scoped route resolves through it. Don't add per-route checks.
+- Fail closed on the directory: an Okta outage removes group-derived visibility and group-based admin; it never widens. Grants and the commons survive (they are kobo DB rows, not Okta's).
+- Legacy agents with no `created_by` are operator-only to mutate.
+- Destroy, convert, admin resync, repo-access decisions, and group moves are operator (`_is_admin`) only. Teach and chat are open to any caller who can see the agent. `_convert_operator_block` must stay equal to `_operator_block` because the UI reads `destroy_visible` to offer convert (a test pins this).
+- Readers (`config.reader_groups`, raw Okta names) see everything and mutate nothing.
+- `/mcp` is mounted and the `mcp` SDK imported only when `config.mcp_enabled` (`mcp.oauth_client_id` set; workspace domain and issuer URL then required by validators).
+- Escape hatch: `iap_audience` unset ⇒ every gate allows ("the room trusts its perimeter only when it has one"). Empty `operators` AND `admin_groups` ⇒ operator gates are open.
+CONSUMERS: every route in api/kobo_api/main.py; api/kobo_api/mcp/tools/read.py + write.py (via authz.py); api/kobo_api/mcp/server.py `_KoboTokenVerifier`; tests: test_iap.py, test_web_visibility.py, test_web_ownership_gate.py, test_api_grants.py, test_mcp_authz.py, test_mcp_oauth.py.
+GOTCHA: the IAP-off escape hatch also applies to MCP callers, because `room_request` goes through the same gates. A room with MCP enabled but `iap_audience` unset gives every signed-in Workspace user full visibility and owner rights over every agent (read from code, not tested live).
+GOTCHA: the group-move route (PATCH /api/agents/{name}/metadata with `group: "shared"`) stores `group_name = None`, but agent create stores the literal `"shared"`, and visibility tests `group_name == "shared"`. An agent moved "to the commons" therefore becomes group-less and visible only to its owner, grantees, readers, and admins. tests/test_api_metadata.py asserts the None (read from code, not reproduced).
