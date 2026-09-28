@@ -6,7 +6,7 @@ anchor: api/tests/fakes.py sha=66685dc33d8c4ad8ee68e5bf99792ee4db7fa4fe
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
 
-WHAT / SEAM: api/kobo_api/clients.py. Every call kobo makes to the outside world goes through a `typing.Protocol`, and code depends on the Protocol, never the backend. The `Clients` dataclass (l.~4782) is the bag handed to steps and routes (`app.state.clients`, `Ctx.clients`).
+WHAT / SEAM: api/kobo_api/clients.py. The outside systems in the table below are reached through a `typing.Protocol` (cabal is a concrete class), and code depends on the Protocol, never the backend. Six outside calls do NOT: they use httpx directly, are not in `Clients`, and have no fake in tests/fakes.py: pr_broker.py (GitHub App token mint), jira_broker.py (Jira GET), mcp/oauth_as.py (Google token exchange), iap.py (JWKS fetch), github_app.py (installation token), bootstrap.py (catalog refresh POST). The `Clients` dataclass (l.~4782) is the bag handed to steps and routes (`app.state.clients`, `Ctx.clients`).
 | field | Protocol | real impl | fake (tests/fakes.py) |
 |---|---|---|---|
 | github | `GitHubClient` | `GhCLI` (shells `gh`/`git`) | `FakeGitHub` |
@@ -22,7 +22,7 @@ WHAT / SEAM: api/kobo_api/clients.py. Every call kobo makes to the outside world
 | ladon | `LadonClient` (ladon.py) | `HttpxLadonClient` | `FakeLadon` |
 OPS / FLOW: `Clients.real(config)` is called once per process in `main.build_default_app`; tests build `Clients(...)` from fakes and pass it to `create_app`. `CommandRunner.run()` raises `ClientError` on non-zero exit; callers that tolerate one failure catch it and inspect `.stderr` (e.g. `_gh_returned_404`). GitHub auth: a GitHub App installation token (`installation_token_provider`, github_app.py) passed as `GH_TOKEN` in the subprocess env when the App is configured, else the ambient `gh auth` session. Vertex/GCS tokens come from `CachedGcloudToken` (metadata server, then `gcloud` CLI fallback).
 INVARIANTS:
-- Optional fields are None when unconfigured, and None means "feature off" everywhere (slack, image, name, storage, cabal, groups, people_search, ladon). Check for None; never construct a client ad hoc in a route.
+- slack, cabal, groups, people_search and ladon are None when unconfigured, and None means "feature off". Check for None; never construct a client ad hoc in a route. `image`, `name` and `storage` are always built by `Clients.real`; their None default exists only so older test constructions of `Clients(...)` keep working.
 - Never put a token or secret value in a raised message or log. WHY: raised messages can reach route responses. `CabalClient` and `HttpxStorageClient` go further and keep response bodies out of raised messages (logged truncated, `resp.text[:200]`); `HttpxGojiraClient` does NOT (its `ClientError` includes `resp.text`), so don't copy it for a client whose responses may echo secrets.
 - A new external call gets a Protocol method + a fake method in tests/fakes.py in the same change; the fakes mirror P0-observed backend behavior (e.g. gojira's generated kustomization) so step tests mean something.
 - `GojiraConflict` (409 on create) is distinct from `ClientError` so onboard can decide whether the app is its own.
