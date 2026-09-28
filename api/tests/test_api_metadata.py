@@ -692,7 +692,10 @@ def test_patch_metadata_moves_the_agent_back_to_the_commons(session_factory, con
 
     assert response.status_code == 200
     assert response.json()["group"] == "shared"
-    assert _group_on_row(session_factory) is None
+    # The commons is a real namespace with a real name. Storing "no group"
+    # here made the agent group-less instead: visible to its owner, its
+    # grantees and admins, and to nobody the move was meant to reach.
+    assert _group_on_row(session_factory) == "shared"
 
 
 def test_patch_metadata_refuses_a_group_the_room_does_not_know(session_factory, config):

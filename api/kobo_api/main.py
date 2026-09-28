@@ -8058,7 +8058,13 @@ def create_app(
                 return JSONResponse(
                     {"error": f"there is no group named {wanted}"}, status_code=422
                 )
-            group_name = None if wanted == SHARED_GROUP else wanted
+            # The commons is stored under its own name. It used to be stored
+            # as no group at all, which is a different thing: `_visible_agents`
+            # shows a commons agent to every caller by matching SHARED_GROUP,
+            # so a group-less row was invisible to exactly the people the
+            # move was for. Moving a group-less agent "to shared" again
+            # repairs a row an earlier move left that way.
+            group_name = wanted
 
         team = agent.team
         if payload.team is not None:

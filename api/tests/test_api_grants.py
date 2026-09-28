@@ -336,6 +336,28 @@ def test_granted_email_can_reach_the_agent_detail_route(session_factory, config)
     assert response.status_code == 200
 
 
+def test_an_agent_moved_to_the_commons_is_seen_by_everyone(session_factory, config):
+    """Moving an agent to the commons has to do what creating one there
+    does. It used to store no group at all, so the room said "shared" and
+    every list outside the owner's came back without it."""
+    private_key, jwk = _generate_jwk()
+    c = _make_client(session_factory, config, _fetcher(jwk), groups_resolver=_EmptyGroupResolver())
+    _seed_agent(session_factory, name="a", created_by=OWNER_EMAIL, group_name="growth")
+
+    before = c.get("/api/agents", headers=_headers(private_key, email=STRANGER_EMAIL))
+    assert before.json()["agents"] == []
+
+    moved = c.patch(
+        "/api/agents/a/metadata",
+        json={"group": "shared"},
+        headers=_headers(private_key, email=OPERATOR_EMAIL),
+    )
+    assert moved.status_code == 200, moved.text
+
+    after = c.get("/api/agents", headers=_headers(private_key, email=STRANGER_EMAIL))
+    assert {a["name"] for a in after.json()["agents"]} == {"a"}
+
+
 def test_ungranted_stranger_still_sees_nothing(session_factory, config):
     private_key, jwk = _generate_jwk()
     c = _make_client(session_factory, config, _fetcher(jwk), groups_resolver=_EmptyGroupResolver())
