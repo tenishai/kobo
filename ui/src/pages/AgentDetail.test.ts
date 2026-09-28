@@ -178,6 +178,55 @@ describe("AgentDetail tabs", () => {
     expect(screen.getByRole("button", { name: /build log/i })).not.toBeNull();
   });
 
+  it("offers the destroy on a failed agent, above the tabs it cannot open", async () => {
+    // The destroy lives in Settings, and a failed agent's tabs are all dead,
+    // so there was no way to ask for it. It sits beside the build log now,
+    // which is above the tabs for the same reason.
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": {
+        ...READY_AGENT,
+        status: "failed",
+        error: "setup failed",
+        kind: "connected",
+        destroy_visible: true,
+      },
+    });
+    renderWithClient(AgentDetail);
+    const destroy = await screen.findByRole("button", { name: "Destroy..." });
+    expect(destroy.closest('[role="tabpanel"]')).toBeNull();
+    expect((screen.getByRole("tab", { name: "Settings" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect(screen.getAllByText("Destroy this agent")).toHaveLength(1);
+  });
+
+  it("offers no destroy on a failed agent to someone who may not destroy it", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": {
+        ...READY_AGENT,
+        status: "failed",
+        error: "setup failed",
+        destroy_visible: false,
+      },
+    });
+    renderWithClient(AgentDetail);
+    await screen.findByRole("button", { name: "Retry" });
+    expect(screen.queryByRole("button", { name: "Destroy..." })).toBeNull();
+  });
+
+  it("offers no destroy while an agent is still being built", async () => {
+    // The room refuses a destroy mid-build, so the page does not offer one.
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": { ...READY_AGENT, status: "provisioning", destroy_visible: true },
+    });
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Settings" });
+    expect(screen.queryByRole("button", { name: "Destroy..." })).toBeNull();
+  });
+
   it("disables every tab trigger while provisioning, so a click can't dead-end into a 409", async () => {
     stubFetch({
       ...BASE_ROUTES,

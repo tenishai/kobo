@@ -39,6 +39,7 @@
   import { derived, writable } from "svelte/store";
   import AccessPanel from "../components/AccessPanel.svelte";
   import BuildLogCard from "../components/BuildLogCard.svelte";
+  import DangerZone from "../components/DangerZone.svelte";
   import RepoAccessCard from "../components/RepoAccessCard.svelte";
   import ChatPanel from "../components/ChatPanel.svelte";
   import ColleagueConversations from "../components/ColleagueConversations.svelte";
@@ -671,6 +672,20 @@
            checklist, because that is exactly when somebody needs it and
            the Settings tab it otherwise lives in cannot be opened. -->
       <BuildLogCard agentName={data.name} />
+      <!-- The destroy lives in Settings too, and a failed agent cannot open
+           Settings, so a setup that never finished could not be taken back
+           out of the room. Failed only: the room refuses a destroy while an
+           agent is still being built. -->
+      {#if data.status === "failed" && data.destroy_visible}
+        <div class="agent-detail__danger">
+          <DangerZone
+            agentName={data.name}
+            status={data.status}
+            error={data.error}
+            kind={data.kind}
+          />
+        </div>
+      {/if}
     {/if}
 
     {@const primary = primaryTabs(invites.isSuccess, data.kind)}
@@ -771,7 +786,7 @@
               canConvert={!connected &&
                 data.destroy_visible &&
                 (data.status === "ready" || data.status === "failed")}
-              canDestroy={data.destroy_visible}
+              canDestroy={data.destroy_visible && data.status !== "failed"}
             />
           {:else if tab === "slack"}
             <SlackPanel
@@ -983,6 +998,10 @@
     text-decoration: none;
     white-space: nowrap;
     cursor: pointer;
+  }
+
+  .agent-detail__danger {
+    margin-top: var(--space-md);
   }
 
   .agent-detail__menu-item:hover:not(:disabled) {
