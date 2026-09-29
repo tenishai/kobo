@@ -33,6 +33,7 @@ from kobo_api.clients import Clients, StorageNotFound
 from kobo_api.config import Config
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import create_app, get_session
+from kobo_api.kinds import KIND_CONNECTED
 from kobo_api.models import Agent, AgentStatus, Base
 from kobo_api.provisioner import sweep_interrupted
 from tests.fakes import (
@@ -1337,6 +1338,37 @@ def test_retry_stamps_the_heartbeat_so_a_live_retry_is_not_swept(
 
     # Another replica sweeps right now, before the new run's first beat.
     assert sweep_interrupted(session_factory) == 0
+
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).one()
+    assert agent.status == AgentStatus.PROVISIONING
+    assert agent.error is None
+    session.close()
+
+
+def test_retry_resumes_an_agent_parked_on_its_setup_pull_request(
+    session_factory, config, clients, monkeypatch
+):
+    """WAITING is a resume by hand: the person who just merged the setup PR
+    does not have to wait for the sweep. Same 202, same primitive."""
+    _sweeping_pipeline_is_replaced(monkeypatch)
+    seed_session = session_factory()
+    seed_session.add(
+        Agent(
+            name=AGENT_NAME,
+            persona=PERSONA,
+            model_id=config.models[0].id,
+            kind=KIND_CONNECTED,
+            status=AgentStatus.WAITING,
+            error="Waiting for someone on your team to review and merge the setup pull request: https://github.com/o/r/pull/3",
+            gojira_app_id=4,
+        )
+    )
+    seed_session.commit()
+    seed_session.close()
+
+    resume_client = TestClient(create_app(session_factory, config=config, clients=clients))
+    assert resume_client.post(f"/api/agents/{AGENT_NAME}/retry").status_code == 202
 
     session = session_factory()
     agent = session.query(Agent).filter_by(name=AGENT_NAME).one()

@@ -201,6 +201,32 @@ describe("AgentDetail tabs", () => {
     expect(screen.getAllByText("Destroy this agent")).toHaveLength(1);
   });
 
+  it("shows a parked connected agent as waiting, with Resume instead of Retry", async () => {
+    // Its setup pull request is open and a person merges it. The banner is
+    // not an alert, it carries the reason, and Resume is the same request
+    // Retry makes (the route treats waiting as a resume).
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": {
+        ...READY_AGENT,
+        status: "waiting",
+        kind: "connected",
+        error:
+          "Waiting for someone on your team to review and merge the setup pull request: https://github.com/o/r/pull/9. The room resumes on its own once it is merged.",
+      },
+    });
+    renderWithClient(AgentDetail);
+    const resume = await screen.findByRole("button", { name: "Resume" });
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    // Not an alert: the page has other polite status regions (the checklist's
+    // own count line), so the banner is found from its button, not by role.
+    expect(screen.queryByRole("alert")).toBeNull();
+    const banner = resume.closest(".waiting-banner");
+    expect(banner).not.toBeNull();
+    expect(banner?.getAttribute("role")).toBe("status");
+    expect(banner?.textContent).toContain("pull/9");
+  });
+
   it("offers no destroy on a failed agent to someone who may not destroy it", async () => {
     stubFetch({
       ...BASE_ROUTES,

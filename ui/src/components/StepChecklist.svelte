@@ -33,7 +33,7 @@
     steps.filter((step) => stepTone(step.status) === "ok").length,
   );
 
-  function toneWord(tone: "ok" | "fail" | "active" | "skipped"): string {
+  function toneWord(tone: "ok" | "fail" | "active" | "skipped" | "waiting"): string {
     switch (tone) {
       case "ok":
         return "done";
@@ -41,9 +41,26 @@
         return "failed";
       case "skipped":
         return "skipped";
+      case "waiting":
+        return "waiting on someone";
       default:
         return "in progress";
     }
+  }
+
+  // A waiting step's reason ends with the link a person needs (the setup
+  // pull request). The one URL in it becomes a real link; the rest stays
+  // text. Anything without a URL renders as plain text, unchanged.
+  const URL_RE = /https?:\/\/\S+?(?=[.,;:)]*(?:\s|$))/;
+
+  function splitLink(text: string): { before: string; url: string | null; after: string } {
+    const match = URL_RE.exec(text);
+    if (match === null) {
+      return { before: text, url: null, after: "" };
+    }
+    const start = match.index;
+    const end = start + match[0].length;
+    return { before: text.slice(0, start), url: match[0], after: text.slice(end) };
   }
 </script>
 
@@ -66,6 +83,8 @@
               ✓
             {:else if tone === "skipped"}
               ○
+            {:else if tone === "waiting"}
+              …
             {:else}
               ✕
             {/if}
@@ -84,6 +103,18 @@
           <details class="step-row__details step-row__details--skipped">
             <summary>Why it was skipped</summary>
             <p class="step-row__error">{step.error}</p>
+          </details>
+        {:else if tone === "waiting" && step.error}
+          {@const parts = splitLink(step.error)}
+          <details class="step-row__details step-row__details--waiting" open>
+            <summary>What it is waiting for</summary>
+            <p class="step-row__error">
+              {parts.before}{#if parts.url}<a
+                  href={parts.url}
+                  target="_blank"
+                  rel="noreferrer">{parts.url}</a
+                >{/if}{parts.after}
+            </p>
           </details>
         {/if}
       </li>
@@ -154,6 +185,11 @@
     color: var(--muted);
   }
 
+  .step-row__icon--waiting {
+    background: color-mix(in srgb, var(--pulse) 15%, transparent);
+    color: var(--ink);
+  }
+
   .step-row__dot {
     width: 0.55rem;
     height: 0.55rem;
@@ -179,6 +215,10 @@
 
   .step-row__details--skipped summary {
     color: var(--muted);
+  }
+
+  .step-row__details--waiting summary {
+    color: var(--ink);
   }
 
   .step-row__error {

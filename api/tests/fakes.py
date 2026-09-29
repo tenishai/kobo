@@ -1122,7 +1122,12 @@ class FakeGojira:
         delete_summary: dict | None = None,
         delete_already_gone: bool = False,
         delete_error: str | None = None,
+        setup_pr_url: str | None = None,
     ):
+        # The link the platform reports once it has opened the setup pull
+        # request; carried in every app_status answer whose status is
+        # `awaiting_pr` (the waiting state's tests read it back).
+        self._setup_pr_url = setup_pr_url
         self._activate_after = activate_after
         self._end_status = end_status
         self._conflict_repos = set(conflict_repos) if conflict_repos else set()
@@ -1145,7 +1150,14 @@ class FakeGojira:
         self.calls: list[str] = []
 
     def create_app(
-        self, *, name, repo_full_name, cluster, namespace, workload_class="agent"
+        self,
+        *,
+        name,
+        repo_full_name,
+        cluster,
+        namespace,
+        workload_class="agent",
+        auto_merge_setup_pr=True,
     ) -> int:
         self.calls.append(f"create_app:{repo_full_name}")
         self.create_app_calls.append(
@@ -1155,6 +1167,7 @@ class FakeGojira:
                 "cluster": cluster,
                 "namespace": namespace,
                 "workload_class": workload_class,
+                "auto_merge_setup_pr": auto_merge_setup_pr,
             }
         )
         if repo_full_name in self._conflict_repos:
@@ -1171,7 +1184,7 @@ class FakeGojira:
             "status": "pending",
             "polls": 0,
             "setup_pr_url": None,
-            "auto_merge_setup_pr": True,
+            "auto_merge_setup_pr": auto_merge_setup_pr,
             "steps": [],
         }
         return app_id
@@ -1189,7 +1202,28 @@ class FakeGojira:
             app["status"] = self._end_status
         if app["status"] == "failed":
             app["steps"] = list(self._failed_steps)
+        if app["status"] == "awaiting_pr" and self._setup_pr_url:
+            app["setup_pr_url"] = self._setup_pr_url
         return dict(app)
+
+    def seed_app(self, app_id: int, *, status: str = "awaiting_pr") -> None:
+        """Register an app the platform already holds, for a test that starts
+        from an agent parked on it (a sweep, a resume) rather than from
+        `create_app`."""
+        self._apps[app_id] = {
+            "id": app_id,
+            "name": f"app-{app_id}",
+            "repo_full_name": "",
+            "cluster": "",
+            "namespace": "",
+            "workload_class": "agent",
+            "status": status,
+            "polls": 0,
+            "setup_pr_url": self._setup_pr_url if status == "awaiting_pr" else None,
+            "auto_merge_setup_pr": False,
+            "steps": [],
+        }
+        self._next_id = max(self._next_id, app_id + 1)
 
     def reprovision(self, app_id: int) -> None:
         self.calls.append(f"reprovision:{app_id}")

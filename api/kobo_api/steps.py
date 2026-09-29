@@ -92,6 +92,21 @@ if TYPE_CHECKING:
     from kobo_api.provisioner import Ctx
 
 
+class StepWaiting(Exception):
+    """Raise from a `Step.run()` to PARK the pipeline on a person: the step
+    is recorded WAITING with this message (what it waits for, a link
+    included), the agent goes WAITING, the steps after it stay pending, and
+    nothing is retried or aborted. `kobo_api.provisioner.sweep_waiting`
+    resumes the run when the wait is over; Retry does the same by hand.
+
+    One raiser today: `_wait_active`, when the deploy platform reports
+    `awaiting_pr` for a connected agent (Ember's review, 2026-09-29, point
+    2). Before this, the same state was polled to the timeout and then
+    recorded as a failure, which is what a person merging a pull request
+    at their own pace looked like from the agent's page.
+    """
+
+
 class StepSkipped(Exception):
     """Raise from a `Step.run()` to mark that step SKIPPED rather than DONE
     or FAILED -- for a best-effort step whose own outcome must never block
@@ -1180,6 +1195,21 @@ def _wait_active(ctx: Ctx, app_id: int) -> str:
         if status == "active":
             return f"gojira app {app_id} active"
 
+        if status == "awaiting_pr" and is_connected(ctx.agent):
+            # The platform opened the setup pull request and a person on
+            # the team merges it. That is the design for a connected
+            # repository, not a failure, and not something a poll budget
+            # should decide. A composed agent never parks here: the room
+            # merges its own repositories' setup PR, so `awaiting_pr` is a
+            # moment on the way to `active` and the loop keeps polling.
+            url = status_payload.get("setup_pr_url") or ""
+            where = f": {url}" if url else "."
+            raise StepWaiting(
+                "Waiting for someone on your team to review and merge the "
+                f"setup pull request{where} The room resumes on its own once "
+                "it is merged."
+            )
+
         if status == "failed":
             failed_names = [
                 step["name"]
@@ -1249,6 +1279,9 @@ class OnboardStep:
                 cluster=config.gojira_cluster,
                 namespace=agent.name,
                 workload_class=workload_class,
+                # The room merges its own repositories' setup PR without a
+                # person; a team's repository is the team's to merge.
+                auto_merge_setup_pr=not is_connected(agent),
             )
         except GojiraConflict as exc:
             if agent.gojira_app_id is None:

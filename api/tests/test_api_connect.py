@@ -58,6 +58,7 @@ from kobo_api.mcp import rate_limit
 from kobo_api.models import Agent, AgentStatus, Base
 from kobo_api.repo_search import MAX_MATCHES, RECENT_MATCHES, TTL_S, RepoIndex
 from tests.fakes import (
+    FAKE_CONNECTED_DOCKERFILE,
     FakeAgent,
     FakeCabal,
     FakeCloud,
@@ -218,6 +219,8 @@ def test_scan_reports_nothing_for_a_repository_the_room_can_work_with(client):
         "adds": ADDS,
         "adds_preamble": ADDS_PREAMBLE,
         "repo": REPO,
+        "repo_name": None,
+        "repo_service_account": None,
     }
 
 
@@ -230,6 +233,65 @@ def test_scan_reports_blockers_with_their_codes_and_their_sentences(client_for):
     body = response.json()
     assert [blocker["code"] for blocker in body["blockers"]] == [REPO_NOT_VISIBLE]
     assert "could not be reached" in body["blockers"][0]["message"]
+
+
+BASE_DEPLOYMENT = (
+    "kind: Deployment\nmetadata:\n  name: pr-reviewer\nspec:\n  template:\n"
+    "    spec:\n      serviceAccountName: pr-reviewer\n      containers: []\n"
+)
+
+
+def _deploying_repo() -> FakeGitHub:
+    return FakeGitHub(
+        existing_repos={REPO},
+        root_entries=["Dockerfile", "k8s"],
+        repo_files={
+            "Dockerfile": FAKE_CONNECTED_DOCKERFILE,
+            "k8s/base/deployment.yaml": BASE_DEPLOYMENT,
+        },
+    )
+
+
+def test_scan_reports_the_name_the_repository_already_deploys_under(client_for):
+    client = client_for(_deploying_repo())
+
+    body = client.post("/api/connect/scan", json=_payload(name="pr-reviewer")).json()
+
+    assert body["repo_name"] == "pr-reviewer"
+    assert body["repo_service_account"] == "pr-reviewer"
+    assert body["blockers"] == []
+
+
+def test_scan_blocks_a_name_the_repository_does_not_deploy_under(client_for):
+    client = client_for(_deploying_repo())
+
+    body = client.post("/api/connect/scan", json=_payload(name="prudence")).json()
+
+    assert [blocker["code"] for blocker in body["blockers"]] == ["repo_name_mismatch"]
+    assert body["repo_name"] == "pr-reviewer"
+
+
+def test_connect_refuses_to_rename_a_repository_that_already_deploys(
+    client_for, session_factory
+):
+    """The route runs the scan again for itself, so the form's word is not
+    what stands between a connect and an orphaned production overlay."""
+    client = client_for(_deploying_repo())
+
+    response = client.post("/api/agents/connect", json=_payload(name="prudence"))
+
+    assert response.status_code == 422
+    assert [b["code"] for b in response.json()["blockers"]] == ["repo_name_mismatch"]
+    assert _row(session_factory, name="prudence") is None
+
+
+def test_connect_takes_a_repository_under_its_own_name(client_for, session_factory):
+    client = client_for(_deploying_repo())
+
+    response = client.post("/api/agents/connect", json=_payload(name="pr-reviewer"))
+
+    assert response.status_code == 201, response.text
+    assert _row(session_factory, name="pr-reviewer").repo_full_name == REPO
 
 
 def test_scan_reports_warnings_without_blocking(client_for):

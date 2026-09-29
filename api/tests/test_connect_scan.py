@@ -16,6 +16,7 @@ import pytest
 
 from kobo_api.config import Config
 from kobo_api.connect_scan import (
+    REPO_NAME_MISMATCH,
     ADDS,
     ADDS_PREAMBLE,
     ALREADY_DEPLOYED,
@@ -554,11 +555,12 @@ def test_warnings_never_block(session_factory, config):
 # --- What it costs --------------------------------------------------------------
 
 
-def test_a_whole_scan_reads_github_five_times(session_factory, config):
-    """The repository, its root, its Dockerfile, its gojira.yaml, its
-    default branch. A form that scans on every keystroke would otherwise
-    spend a team's whole API budget, so the count is pinned here rather
-    than left to whoever adds the next finding.
+def test_a_whole_scan_reads_github_six_times(session_factory, config):
+    """The repository, its root, its Dockerfile, its gojira.yaml, its base
+    Deployment (the name it already deploys under), its default branch. A
+    form that scans on every keystroke would otherwise spend a team's whole
+    API budget, so the count is pinned here rather than left to whoever adds
+    the next finding.
     """
     github = FakeGitHub(
         existing_repos={REPO},
@@ -576,6 +578,7 @@ def test_a_whole_scan_reads_github_five_times(session_factory, config):
         f"list_root:{REPO}",
         f"read_file:{REPO}:Dockerfile",
         f"read_file:{REPO}:gojira.yaml",
+        f"read_file:{REPO}:k8s/base/deployment.yaml",
         f"branch_protected:{REPO}:main",
     ]
     assert len(github.calls) <= 6
@@ -590,3 +593,96 @@ def test_the_scan_never_clones_and_never_writes(session_factory, config):
     assert github.pushes == []
     assert github.open_pr_calls == []
     assert github.created_from_dir == []
+
+
+# --- a connected repository keeps its own name (Kyle's ruling, 2026-09-29) --------
+
+BASE_DEPLOYMENT_TEXT = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pr-reviewer
+  namespace: pr-reviewer
+spec:
+  template:
+    spec:
+      serviceAccountName: pr-reviewer
+      containers:
+        - name: pr-reviewer
+          image: pr-reviewer:latest
+"""
+
+
+def _repo_with_base(**extra_files):
+    return FakeGitHub(
+        existing_repos={REPO},
+        root_entries=["Dockerfile", "k8s"],
+        repo_files={
+            "Dockerfile": FAKE_CONNECTED_DOCKERFILE,
+            "k8s/base/deployment.yaml": BASE_DEPLOYMENT_TEXT,
+            **extra_files,
+        },
+    )
+
+
+def test_the_report_carries_the_name_the_repository_already_deploys_under(
+    session_factory, config
+):
+    """The base Deployment's metadata.name is the agent's name. The form
+    prefills and locks to it; the report says what was read."""
+    report = _scan(session_factory, config, _repo_with_base(), name="pr-reviewer")
+
+    assert report.repo_name == "pr-reviewer"
+    assert report.repo_service_account == "pr-reviewer"
+    assert _codes(report.blockers) == []
+
+
+def test_a_different_name_for_a_repository_that_already_deploys_is_a_blocker(
+    session_factory, config
+):
+    """Renaming orphans every overlay patch and image substitution that
+    targets the old name (the first connected repository would have broken
+    its production overlay on the next deploy). A rename is a reviewed change
+    in the repository, never a side effect of connecting it."""
+    report = _scan(session_factory, config, _repo_with_base(), name="prudence")
+
+    assert _codes(report.blockers) == [REPO_NAME_MISMATCH]
+    message = report.blockers[0].message
+    assert "pr-reviewer" in message and "k8s/base/deployment.yaml" in message
+    assert "rename it in the repository first" in message
+    assert report.repo_name == "pr-reviewer"  # still reported, so the form can offer it
+
+
+def test_a_repository_with_no_base_deployment_keeps_the_typed_name(session_factory, config):
+    github = FakeGitHub(
+        existing_repos={REPO},
+        root_entries=["Dockerfile"],
+        repo_files={"Dockerfile": FAKE_CONNECTED_DOCKERFILE},
+    )
+
+    report = _scan(session_factory, config, github, name="prudence")
+
+    assert report.repo_name is None
+    assert _codes(report.blockers) == []
+
+
+def test_an_unreadable_or_nameless_base_deployment_names_nothing(session_factory, config):
+    """Facts, not guesses: a file the room cannot parse, or a Deployment
+    without a name, says nothing about the repository's identity."""
+    for text in ("kind: Deployment\nmetadata: [\n", "kind: Service\nmetadata:\n  name: svc\n",
+                 "kind: Deployment\nmetadata: {}\n"):
+        report = _scan(
+            session_factory, config,
+            _repo_with_base(**{"k8s/base/deployment.yaml": text}), name="prudence",
+        )
+        assert report.repo_name is None, text
+        assert REPO_NAME_MISMATCH not in _codes(report.blockers), text
+
+
+def test_the_deployment_is_found_in_a_multi_document_file(session_factory, config):
+    text = "kind: ServiceAccount\nmetadata:\n  name: sa\n---\n" + BASE_DEPLOYMENT_TEXT
+    report = _scan(
+        session_factory, config, _repo_with_base(**{"k8s/base/deployment.yaml": text}),
+        name="pr-reviewer",
+    )
+    assert report.repo_name == "pr-reviewer"

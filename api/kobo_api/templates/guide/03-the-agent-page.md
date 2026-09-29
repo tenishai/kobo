@@ -27,6 +27,10 @@ A failed step shows a red mark and a **Why it failed** line with the reason the 
 
 **View build log** in the Settings tab shows the latest build's result and its log, so you can read the pipeline's own words without leaving the room.
 
+## When a step waits on you
+
+A connected agent's wiring arrives as a pull request on your repository, and someone on your team merges it. While that pull request is open the agent shows **Waiting**, not Failed: the **Platform onboarding** step carries a **What it is waiting for** line with the link, and the banner at the top offers **Resume**. You do not have to press it. The room checks once a minute and picks the setup back up on its own when the merge lands. Resume is for when you have just merged and do not want to wait.
+
 ## The tabs
 
 - **Chat.** Talk to the agent. See "Talk to it and teach it".

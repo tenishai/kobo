@@ -376,6 +376,33 @@ def _onboard_workload_class(session, agent, config) -> str:
     return gojira.create_app_calls[-1]["workload_class"]
 
 
+def _onboard_create_call(session, agent, config) -> dict:
+    gojira = FakeGojira(activate_after=1)
+    ctx = _make_ctx(session, agent, config, _clients(gojira=gojira, github=FakeGitHub()))
+    OnboardStep().run(ctx)
+    return gojira.create_app_calls[-1]
+
+
+def test_onboard_step_never_asks_the_platform_to_merge_a_connected_repos_setup_pr(
+    session_factory, config
+):
+    """A connected repository is a team's own; its owner merges the wiring
+    (Ember's review, 2026-09-29). The room's waiver of that review belongs
+    only to repositories the room authored. The platform refuses the flag
+    for hand-built repositories anyway; the room does not ask for it."""
+    session, agent = _make_agent(session_factory, config, kind=KIND_CONNECTED)
+
+    assert _onboard_create_call(session, agent, config)["auto_merge_setup_pr"] is False
+
+
+def test_onboard_step_still_merges_a_composed_repos_setup_pr_on_its_own(
+    session_factory, config
+):
+    session, agent = _make_agent(session_factory, config, kind=KIND_COMPOSED, run_mode=None)
+
+    assert _onboard_create_call(session, agent, config)["auto_merge_setup_pr"] is True
+
+
 def test_onboard_step_asks_for_the_ordinary_class_when_the_agent_serves_http(
     session_factory, config
 ):
@@ -995,3 +1022,61 @@ def test_a_connected_agent_provisions_to_ready_without_the_room_touching_its_rep
     ), f"steps: {steps}"
     assert _repo_mutations(github) == []
     assert github.created_from_dir == []
+
+
+# --- awaiting_pr: a person merges a connected repo's setup PR -------------------
+
+PR_URL = "https://github.com/example-org/team-chatbot/pull/12"
+
+
+def test_wait_active_parks_a_connected_agent_on_awaiting_pr_with_the_link(
+    session_factory, config, monkeypatch
+):
+    """The platform opened the setup pull request; the team merges it. That is
+    the design, not a failure, and not a poll budget's call (Ember's review,
+    2026-09-29). The step parks with the link a person needs."""
+    from kobo_api.steps import StepWaiting, _wait_active
+
+    monkeypatch.setattr("kobo_api.steps._sleep", lambda s: None)
+    session, agent = _make_agent(session_factory, config, kind=KIND_CONNECTED)
+    gojira = FakeGojira(status_sequence=["awaiting_pr"], setup_pr_url=PR_URL)
+    gojira.seed_app(1)
+    ctx = _make_ctx(session, agent, config, _clients(gojira=gojira, github=FakeGitHub()))
+
+    with pytest.raises(StepWaiting, match="merge the setup pull request") as excinfo:
+        _wait_active(ctx, 1)
+    assert PR_URL in str(excinfo.value)
+    assert gojira.calls.count("app_status:1") == 1  # decided on the first read, no budget spent
+
+
+def test_wait_active_keeps_polling_a_composed_agent_through_awaiting_pr(
+    session_factory, config, monkeypatch
+):
+    """The room merges its own repositories' setup PR, so for a composed
+    agent `awaiting_pr` is a moment on the way to `active`."""
+    from kobo_api.steps import _wait_active
+
+    monkeypatch.setattr("kobo_api.steps._sleep", lambda s: None)
+    session, agent = _make_agent(session_factory, config, kind=KIND_COMPOSED, run_mode=None)
+    gojira = FakeGojira(status_sequence=["awaiting_pr", "awaiting_pr", "active"], setup_pr_url=PR_URL)
+    gojira.seed_app(1, status="pending")
+    ctx = _make_ctx(session, agent, config, _clients(gojira=gojira, github=FakeGitHub()))
+
+    assert _wait_active(ctx, 1) == "gojira app 1 active"
+    assert gojira.calls.count("app_status:1") == 3
+
+
+def test_onboard_step_parks_a_connected_agent_when_the_platform_opens_the_pr(
+    session_factory, config, monkeypatch
+):
+    from kobo_api.steps import StepWaiting
+
+    monkeypatch.setattr("kobo_api.steps._sleep", lambda s: None)
+    session, agent = _make_agent(session_factory, config, kind=KIND_CONNECTED)
+    gojira = FakeGojira(activate_after=1, end_status="awaiting_pr", setup_pr_url=PR_URL)
+    ctx = _make_ctx(session, agent, config, _clients(gojira=gojira, github=FakeGitHub()))
+
+    with pytest.raises(StepWaiting) as excinfo:
+        OnboardStep().run(ctx)
+    assert PR_URL in str(excinfo.value)
+    assert agent.gojira_app_id == 1  # recorded, so the resume finds the same app

@@ -1,7 +1,7 @@
 """What the room can honestly say about a repository it has been asked to
 connect, before it touches anything (connected-agents design 2026-09-21).
 
-Read-only by construction: four GitHub reads through the contents and
+Read-only by construction: five GitHub reads through the contents and
 branches endpoints, one database question, and no clone. It runs twice for
 every connect -- once for the form's own report, once inside the connect
 route -- because a report the browser holds is a claim about a repository
@@ -90,6 +90,11 @@ HTTP_PORT = "8080"
 
 DOCKERFILE = "Dockerfile"
 GOJIRA_YAML = "gojira.yaml"
+# Where a repository that already deploys says what it is called. The
+# deploy platform regenerates this file under the AGENT's name, so the two
+# names have to agree before anything is written (see `_scan_identity`).
+BASE_DEPLOYMENT = "k8s/base/deployment.yaml"
+REPO_NAME_MISMATCH = "repo_name_mismatch"
 ENV_FILE = ".env"
 BUNDLE_DIR = "bundle"
 
@@ -119,6 +124,15 @@ class ScanReport:
     # the name as given until then. This is what the connect route records,
     # so one repository cannot become two rows apart from each other's case.
     repo: str = ""
+    # The name the repository already deploys under (its base Deployment's
+    # metadata.name), when it has one. The form prefills and locks the Name
+    # field to it, and the connect route refuses any other name: a connected
+    # repository keeps its own name (Kyle's ruling, 2026-09-29). None for a
+    # repository with no k8s/base/deployment.yaml, where the typed name
+    # stands because there is nothing for it to disagree with.
+    repo_name: str | None = None
+    # Its service account, read from the same Deployment, for the report.
+    repo_service_account: str | None = None
 
 
 def scan_repo(
@@ -248,6 +262,9 @@ def _scan_the_repository(
 
     if GOJIRA_YAML in entries:
         _scan_gojira_yaml(github, report, repo=repo, name=name)
+    # Not gated on the listing: the file sits two directories down, and one
+    # read that answers None is the same cost as an existence check.
+    _scan_identity(github, report, repo=repo, name=name)
 
     if ENV_FILE in entries:
         report.warnings.append(
@@ -355,6 +372,57 @@ def _scan_gojira_yaml(
                 f"This repository is already set up to deploy as {app}. One "
                 f"repository is one agent, so connect it as {app} or remove "
                 "its gojira.yaml first.",
+            )
+        )
+
+
+def _scan_identity(
+    github: GitHubClient, report: ScanReport, *, repo: str, name: str
+) -> None:
+    """A repository that already deploys has a name, and the room does not
+    rename it.
+
+    The deploy platform regenerates `k8s/base` under the agent's name. Its
+    overlays keep targeting the old one (image substitutions, patches, a
+    production overlay's namespace), so a rename orphans every one of them
+    and the next deploy of the environment the room does not manage breaks.
+    The first repository connected this way had exactly that shape
+    (2026-09-25). So the base Deployment's `metadata.name` IS the agent's
+    name: the form takes it, and a different name is a blocker that says
+    what to do instead. Renaming is a reviewed change in the repository,
+    never a side effect of connecting it.
+
+    Unreadable or unparseable is silence, the way `_scan_gojira_yaml`
+    treats its file: the room refuses on facts, not on guesses.
+    """
+    text = github.read_file(repo, BASE_DEPLOYMENT)
+    if text is None:
+        return
+    try:
+        docs = [d for d in yaml.safe_load_all(text) if isinstance(d, dict)]
+    except (yaml.YAMLError, RecursionError):
+        log.info("connect scan could not read %s in %s", BASE_DEPLOYMENT, repo)
+        return
+    deployment = next((d for d in docs if d.get("kind") == "Deployment"), None)
+    if deployment is None:
+        return
+    metadata = deployment.get("metadata") or {}
+    repo_name = metadata.get("name") if isinstance(metadata, dict) else None
+    if not isinstance(repo_name, str) or not repo_name:
+        return
+    report.repo_name = repo_name
+    pod = ((deployment.get("spec") or {}).get("template") or {}).get("spec") or {}
+    service_account = pod.get("serviceAccountName") if isinstance(pod, dict) else None
+    if isinstance(service_account, str) and service_account:
+        report.repo_service_account = service_account
+    if name and name != repo_name:
+        report.blockers.append(
+            Finding(
+                REPO_NAME_MISMATCH,
+                f"This repository already deploys as {repo_name} "
+                f"({BASE_DEPLOYMENT}). Connect it under that name, or rename it "
+                "in the repository first. The room never renames a repository "
+                "it did not write.",
             )
         )
 

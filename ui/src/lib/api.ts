@@ -532,6 +532,12 @@ export type ScanReport = {
   adds: string[];
   adds_preamble: string;
   repo: string;
+  /** The name the repository already deploys under (its base Deployment's
+   * own name), or null when it has none. A connected repository keeps its
+   * own name: the form takes this as the Name and locks the field, and the
+   * scan lists any other name among the blockers. */
+  repo_name: string | null;
+  repo_service_account: string | null;
 };
 
 /** The three fields the scan reads: the repository, the name it checks

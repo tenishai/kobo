@@ -69,7 +69,9 @@ export function detailRefetchInterval(
  *  - anything else (a status this code doesn't recognize) -> active, the
  *    safest default: it doesn't falsely claim success or failure.
  */
-export function stepTone(status: string): "ok" | "fail" | "active" | "skipped" {
+export function stepTone(
+  status: string,
+): "ok" | "fail" | "active" | "skipped" | "waiting" {
   switch (status) {
     case "done":
       return "ok";
@@ -77,6 +79,11 @@ export function stepTone(status: string): "ok" | "fail" | "active" | "skipped" {
       return "skipped";
     case "failed":
       return "fail";
+    // Parked on a person (a connected repo's setup pull request awaiting
+    // its owner's merge): not running, not failed, not done. Its own tone,
+    // so the row can show what it waits for and the page can offer Resume.
+    case "waiting":
+      return "waiting";
     case "pending":
     case "running":
       return "active";
@@ -139,6 +146,7 @@ export function agentTone(status: string): "ok" | "fail" | "warn" {
       return "fail";
     case "pending":
     case "provisioning":
+    case "waiting":
       return "warn";
     default:
       return "warn";

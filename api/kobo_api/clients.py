@@ -1256,6 +1256,7 @@ class GojiraClient(Protocol):
         cluster: str,
         namespace: str,
         workload_class: str = "agent",
+        auto_merge_setup_pr: bool = True,
     ) -> int:
         """POST /api/v1/apps; returns the new app id. Raises GojiraConflict on 409.
 
@@ -1264,6 +1265,14 @@ class GojiraClient(Protocol):
         sent; a connected agent that serves no HTTP port asks for whichever
         class this deployment names for that (connected-agents design
         2026-09-21), since the ordinary class probes a port over HTTP.
+
+        `auto_merge_setup_pr` is the room waiving review of the platform's
+        setup pull request. That waiver belongs only to a repository the
+        room itself authored, where there is no human content to protect;
+        a connected repository is a team's own, and its owner merges the
+        wiring (Ember's review, 2026-09-29). The platform refuses the flag
+        for a repository it recognises as hand-built anyway, but the room
+        should not ask for what it must not have.
         """
         ...
 
@@ -1319,7 +1328,14 @@ class HttpxGojiraClient:
         return {}
 
     def create_app(
-        self, *, name, repo_full_name, cluster, namespace, workload_class="agent"
+        self,
+        *,
+        name,
+        repo_full_name,
+        cluster,
+        namespace,
+        workload_class="agent",
+        auto_merge_setup_pr=True,
     ) -> int:
         resp = self._client.post(
             f"{self._base_url}/api/v1/apps",
@@ -1328,7 +1344,7 @@ class HttpxGojiraClient:
                 "repo_full_name": repo_full_name,
                 "workload_class": workload_class,
                 "environments": [{"name": "dev", "cluster": cluster, "namespace": namespace}],
-                "auto_merge_setup_pr": True,
+                "auto_merge_setup_pr": auto_merge_setup_pr,
             },
             headers=self._headers(),
         )

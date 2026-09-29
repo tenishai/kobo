@@ -19,6 +19,8 @@ const CLEAN_REPORT = {
   adds: ["gojira.yaml", "k8s/ (including k8s/base/serviceaccount.yaml)"],
   adds_preamble: "The room cannot check who owns this repository.",
   repo: "acme/release-bot",
+  repo_name: null,
+  repo_service_account: null,
 };
 
 /** ConnectModal fires `groupsQuery` on mount. Groups empty by default (the
@@ -154,6 +156,59 @@ describe("ConnectModal — the scan report", () => {
       screen.getByText("This room can read acme/release-bot but cannot change it."),
     ).not.toBeNull();
     await fireEvent.click(screen.getByRole("checkbox", { name: OWNER_CHECKBOX }));
+    expect(connectButton().disabled).toBe(true);
+  });
+
+  it("locks the name to the one the repository already deploys under", async () => {
+    // A connected repository keeps its own name (2026-09-29): the scan read
+    // it from the base Deployment, the form shows it as the Name and stops
+    // it being edited while that scan stands.
+    stubConnectRoutes({
+      "/api/connect/scan": {
+        ...CLEAN_REPORT,
+        repo_name: "release-bot",
+        repo_service_account: "release-bot",
+      },
+    });
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await fillTheForm();
+    await fireEvent.click(scanButton());
+
+    await screen.findByText("Nothing is in the way.");
+    const nameField = screen.getByLabelText("Name") as HTMLInputElement;
+    expect(nameField.value).toBe("release-bot");
+    expect(nameField.readOnly).toBe(true);
+    expect(screen.getByText(/keeps its own name/)).not.toBeNull();
+  });
+
+  it("puts the repository's own name in the field when a different one was typed", async () => {
+    // The report answered for the typed name and says so in its blocker.
+    // Filling the field with the repository's name stales that report, so
+    // the next Scan answers for the name the connect will actually use.
+    stubConnectRoutes({
+      "/api/connect/scan": {
+        ...CLEAN_REPORT,
+        repo_name: "pr-reviewer",
+        blockers: [
+          {
+            code: "repo_name_mismatch",
+            message:
+              "This repository already deploys as pr-reviewer (k8s/base/deployment.yaml). Connect it under that name, or rename it in the repository first.",
+          },
+        ],
+      },
+    });
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await fillTheForm();
+    await fireEvent.click(scanButton());
+
+    expect(await screen.findByText(/already deploys as pr-reviewer/)).not.toBeNull();
+    const nameField = screen.getByLabelText("Name") as HTMLInputElement;
+    expect(nameField.value).toBe("pr-reviewer");
+    expect(nameField.readOnly).toBe(false); // the report is stale now; Scan again
+    expect(screen.getByText("Something changed since this scan. Scan again before connecting.")).not.toBeNull();
     expect(connectButton().disabled).toBe(true);
   });
 

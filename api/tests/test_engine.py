@@ -26,8 +26,10 @@ from kobo_api.provisioner import (
     reset_failed_steps,
     run_pipeline,
     sweep_interrupted,
+    sweep_waiting,
 )
-from tests.fakes import FakeCabal
+from kobo_api.steps import StepWaiting
+from tests.fakes import FakeCabal, FakeGojira
 
 # No real backend is touched by the toy steps below, so every client slot is None.
 NO_CLIENTS = Clients(github=None, gojira=None, cloud=None, agent=None, kubectl=None)
@@ -1112,3 +1114,171 @@ def test_two_processes_racing_a_failed_steps_resume_run_it_exactly_once(tmp_path
     assert rows["step-a"].status == StepStatus.DONE
     assert rows["step-b"].status == StepStatus.DONE
     session.close()
+
+
+# --- waiting: a step parked on a person (Ember's review 2026-09-29, point 2) ----
+
+
+@dataclass
+class WaitingStep:
+    """Raises StepWaiting `wait_times` times (decrementing), then returns."""
+
+    name: str
+    calls: list[str]
+    wait_times: int = 1
+    message: str = "Waiting for someone to merge: https://github.com/o/r/pull/9"
+
+    def run(self, ctx) -> str:
+        self.calls.append(self.name)
+        if self.wait_times > 0:
+            self.wait_times -= 1
+            raise StepWaiting(self.message)
+        return "ok"
+
+
+def _run(session_factory, agent_id, config, steps, clients=NO_CLIENTS):
+    thread = run_pipeline(session_factory, agent_id, config=config, clients=clients, steps=steps)
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+
+
+def test_a_waiting_step_parks_the_run_without_failing_or_aborting_anything(
+    session_factory, config
+):
+    """Not a failure: the step and the agent both say WAITING and carry the
+    reason (the PR link), the steps after it are left untouched rather than
+    aborted, and nothing is marked failed."""
+    agent_id = _make_agent(session_factory, "agent-parks", kind=KIND_CONNECTED)
+    calls: list[str] = []
+    steps = [
+        RecordingStep(name="step-a", calls=calls),
+        WaitingStep(name="step-b", calls=calls),
+        RecordingStep(name="step-c", calls=calls),
+    ]
+
+    _run(session_factory, agent_id, config, steps)
+
+    agent, rows = _load(session_factory, agent_id)
+    assert agent.status == AgentStatus.WAITING
+    assert "pull/9" in (agent.error or "")
+    assert rows["step-a"].status == StepStatus.DONE
+    assert rows["step-b"].status == StepStatus.WAITING
+    assert "pull/9" in rows["step-b"].error
+    assert "step-c" not in rows  # never reached, never aborted
+    assert calls == ["step-a", "step-b"]
+
+
+def test_reset_turns_a_waiting_step_back_to_pending_and_the_rerun_finishes(
+    session_factory, config
+):
+    agent_id = _make_agent(session_factory, "agent-resumes", kind=KIND_CONNECTED)
+    calls: list[str] = []
+    waiting = WaitingStep(name="step-b", calls=calls)
+    steps = [RecordingStep(name="step-a", calls=calls), waiting, RecordingStep(name="step-c", calls=calls)]
+    _run(session_factory, agent_id, config, steps)
+
+    session = session_factory()
+    reset_failed_steps(session, agent_id)
+    rows = {s.name: s.status for s in session.get(Agent, agent_id).steps}
+    session.close()
+    assert rows["step-b"] == StepStatus.PENDING  # the resume primitive
+    assert rows["step-a"] == StepStatus.DONE
+
+    _run(session_factory, agent_id, config, steps)  # the wait is over: waiting.wait_times is 0
+
+    agent, rows = _load(session_factory, agent_id)
+    assert agent.status == AgentStatus.READY
+    assert agent.error is None
+    assert [rows[n].status for n in ("step-a", "step-b", "step-c")] == [StepStatus.DONE] * 3
+    assert calls == ["step-a", "step-b", "step-b", "step-c"]
+
+
+def _park(session_factory, name: str, app_id: int) -> int:
+    """An agent already parked on the platform's app `app_id`, its onboard
+    step WAITING, the way `_run_pipeline_body` leaves it."""
+    session = session_factory()
+    agent = Agent(
+        name=name,
+        persona="connected",
+        model_id="vertex_ai/claude-sonnet-4-5",
+        kind=KIND_CONNECTED,
+        status=AgentStatus.WAITING,
+        error="Waiting for someone to merge: https://github.com/o/r/pull/9",
+        gojira_app_id=app_id,
+    )
+    session.add(agent)
+    session.commit()
+    session.add(AgentStep(agent_id=agent.id, name="onboard", status=StepStatus.WAITING, error=agent.error))
+    session.commit()
+    agent_id = agent.id
+    session.close()
+    return agent_id
+
+
+def _gojira_clients(gojira) -> Clients:
+    return Clients(github=None, gojira=gojira, cloud=None, agent=None, kubectl=None)
+
+
+def test_sweep_waiting_resumes_an_agent_whose_setup_pr_was_merged(session_factory, config):
+    gojira = FakeGojira()
+    gojira.seed_app(7, status="active")
+    agent_id = _park(session_factory, "agent-merged", 7)
+    launched: list[int] = []
+
+    def recorder(sf, aid, *, config, clients, steps):
+        launched.append(aid)
+
+    touched = sweep_waiting(
+        session_factory, config=config, clients=_gojira_clients(gojira), runner=recorder
+    )
+
+    assert touched == 1
+    assert launched == [agent_id]
+    agent, rows = _load(session_factory, agent_id)
+    assert agent.status == AgentStatus.PROVISIONING  # flipped BEFORE the run, so a second replica skips it
+    assert agent.error is None
+    assert agent.run_heartbeat_at is not None
+    assert rows["onboard"].status == StepStatus.PENDING
+
+
+def test_sweep_waiting_leaves_an_agent_still_waiting_alone(session_factory, config):
+    gojira = FakeGojira()
+    gojira.seed_app(7, status="awaiting_pr")
+    agent_id = _park(session_factory, "agent-still-waits", 7)
+    launched: list[int] = []
+
+    touched = sweep_waiting(
+        session_factory, config=config, clients=_gojira_clients(gojira),
+        runner=lambda *a, **k: launched.append(1),
+    )
+
+    assert touched == 0 and launched == []
+    agent, rows = _load(session_factory, agent_id)
+    assert agent.status == AgentStatus.WAITING
+    assert rows["onboard"].status == StepStatus.WAITING
+
+
+def test_sweep_waiting_fails_an_agent_whose_platform_run_failed_while_parked(
+    session_factory, config
+):
+    gojira = FakeGojira(failed_steps=[{"name": "generate_artifacts", "status": "failed"}])
+    gojira.seed_app(7, status="failed")
+    agent_id = _park(session_factory, "agent-broke-waiting", 7)
+
+    touched = sweep_waiting(
+        session_factory, config=config, clients=_gojira_clients(gojira),
+        runner=lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
+
+    assert touched == 1
+    agent, rows = _load(session_factory, agent_id)
+    assert agent.status == AgentStatus.FAILED
+    assert "generate_artifacts" in agent.error
+    assert rows["onboard"].status == StepStatus.FAILED
+    assert "generate_artifacts" in rows["onboard"].error
+
+
+def test_sweep_waiting_is_a_noop_without_a_platform_client(session_factory, config):
+    _park(session_factory, "agent-no-platform", 7)
+    assert sweep_waiting(session_factory, config=config, clients=None) == 0
+    assert sweep_waiting(session_factory, config=config, clients=NO_CLIENTS) == 0

@@ -69,6 +69,34 @@ describe("StepChecklist -- per-step tone", () => {
     expect(screen.getByText("gojira never came up")).not.toBeNull();
   });
 
+  it("shows a waiting step's reason, with the pull request as a real link", () => {
+    render(StepChecklist, {
+      steps: [
+        step({
+          name: "onboard",
+          label: "Platform onboarding",
+          status: "waiting",
+          error:
+            "Waiting for someone on your team to review and merge the setup pull request: https://github.com/o/r/pull/9. The room resumes on its own once it is merged.",
+        }),
+      ],
+    });
+    expect(screen.getByText("What it is waiting for")).not.toBeNull();
+    const link = screen.getByRole("link", { name: "https://github.com/o/r/pull/9" });
+    expect(link.getAttribute("href")).toBe("https://github.com/o/r/pull/9");
+    expect(screen.queryByText("Why it failed")).toBeNull();
+  });
+
+  it("does not count a waiting step as done", () => {
+    render(StepChecklist, {
+      steps: [
+        step({ name: "a", status: "done" }),
+        step({ name: "b", status: "waiting", error: "Waiting: https://x/pull/1" }),
+      ],
+    });
+    expect(screen.getByText("1 of 2 steps done")).not.toBeNull();
+  });
+
   it("shows no error details for a skipped step with no reason", () => {
     render(StepChecklist, {
       steps: [step({ name: "avatar", status: "skipped", error: null })],

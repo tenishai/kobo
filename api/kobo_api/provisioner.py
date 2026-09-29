@@ -71,6 +71,7 @@ from kobo_api.steps import (
     OnboardStep,
     RepoStep,
     StepSkipped,
+    StepWaiting,
     WireStep,
     refresh_colleague_rosters,
 )
@@ -333,6 +334,21 @@ def _run_pipeline_body(
 
                 try:
                     step.run(ctx)
+                except StepWaiting as exc:
+                    # Parked on a person. The step and the agent both say
+                    # so, the steps after it stay pending (nothing is
+                    # aborted, nothing failed), and this run ends here. The
+                    # waiting sweep, or a Retry, runs the pipeline again;
+                    # `reset_failed_steps` turns the WAITING row back to
+                    # PENDING and the step re-decides against the platform.
+                    log.info("step %r is waiting for agent %s: %s", step.name, agent_id, exc)
+                    step_row.status = StepStatus.WAITING
+                    step_row.error = str(exc)
+                    session.commit()
+                    agent.status = AgentStatus.WAITING
+                    agent.error = str(exc)
+                    session.commit()
+                    return
                 except StepSkipped as exc:
                     # Best-effort step (AvatarStep today): SKIPPED is not a
                     # failure -- unlike the FAILED branch below, this never
@@ -660,12 +676,125 @@ def sweep_interrupted(
 # BuildStep before DeployStep judges the rollout. When nothing changed,
 # BuildStep finds the same head's completed run and its one self-heal rerun
 # rebuilds, which is the same rebuild a human would ask for.
+# How often every replica asks the platform whether a parked connected
+# agent's setup pull request has been merged. A minute is the pace of a
+# person merging a PR; the agent's page tells them the room resumes on its
+# own, and a minute is "on its own".
+WAITING_SWEEP_INTERVAL_S = 60.0
+
+
+async def waiting_sweep_loop(app, *, interval_s: float = WAITING_SWEEP_INTERVAL_S) -> None:
+    """Re-run `sweep_waiting` every `interval_s` for the life of the process,
+    the same shape as `interrupted_sweep_loop`. Sleeps first: nothing is
+    parked at boot that was not parked a minute ago."""
+    import asyncio
+
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            await asyncio.to_thread(
+                sweep_waiting,
+                app.state.session_factory,
+                config=app.state.config,
+                clients=app.state.clients,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("waiting sweep failed")
+
+
+def sweep_waiting(
+    session_factory: sessionmaker[Session],
+    *,
+    config: Config,
+    clients: Clients | None,
+    runner: Callable[..., None] | None = None,
+) -> int:
+    """Resume every WAITING agent whose setup pull request the platform now
+    reports merged; fail the ones whose platform run failed while parked.
+
+    The one question is the platform's: `app_status` for the agent's app.
+    `active` means the merge landed and deploys flow, so the parked step is
+    reset and the pipeline runs again from it (`runner`, `run_pipeline` by
+    default; a test passes a recorder). `failed` means the platform gave up
+    on its side while nobody was watching, and the agent should say so
+    instead of waiting forever. Anything else (still `awaiting_pr`, or a
+    re-run in progress) is left exactly as it is.
+
+    Idempotent across replicas the way `sweep_interrupted` is: resuming
+    flips the agent to PROVISIONING before the pipeline starts, so a second
+    replica's sweep a moment later no longer sees it WAITING. Returns the
+    number of agents resumed or failed.
+    """
+    if clients is None or clients.gojira is None:
+        return 0
+    run = runner or run_pipeline
+    session = session_factory()
+    touched = 0
+    try:
+        parked = session.query(Agent).filter(Agent.status == AgentStatus.WAITING).all()
+        for agent in parked:
+            if agent.gojira_app_id is None:
+                continue
+            try:
+                status_payload = clients.gojira.app_status(agent.gojira_app_id)
+            except Exception:  # noqa: BLE001 - one unreachable platform read must not stop the sweep
+                log.warning(
+                    "sweep_waiting: could not read platform status for agent %s",
+                    agent.name, exc_info=True,
+                )
+                continue
+            status = status_payload.get("status")
+            if status == "active":
+                reset_failed_steps(session, agent.id)
+                agent.status = AgentStatus.PROVISIONING
+                agent.error = None
+                agent.run_heartbeat_at = naive_utc(datetime.now(UTC))
+                session.commit()
+                log.info("sweep_waiting: setup PR merged, resuming agent %s", agent.name)
+                run(
+                    session_factory,
+                    agent.id,
+                    config=config,
+                    clients=clients,
+                    steps=pipeline_for(agent),
+                )
+                touched += 1
+            elif status == "failed":
+                names = ", ".join(
+                    step["name"]
+                    for step in status_payload.get("steps", [])
+                    if step.get("status") == "failed"
+                ) or "unknown"
+                message = (
+                    f"gojira provisioning failed for app {agent.gojira_app_id} while "
+                    f"waiting on the setup pull request: failed steps: {names}"
+                )
+                waiting_rows = (
+                    session.query(AgentStep)
+                    .filter_by(agent_id=agent.id, status=StepStatus.WAITING)
+                    .all()
+                )
+                for step_row in waiting_rows:
+                    step_row.status = StepStatus.FAILED
+                    step_row.error = message
+                agent.status = AgentStatus.FAILED
+                agent.error = message
+                session.commit()
+                touched += 1
+        return touched
+    finally:
+        session.close()
+
+
 REWIRE_AFTER_FAILED = frozenset({"build", "deploy"})
 REWIRE_RESETS = frozenset({"wire", "build"})
 
 
 def reset_failed_steps(session: Session, agent_id: int) -> None:
-    """Flip every FAILED step of `agent_id` back to PENDING: the retry primitive.
+    """Flip every FAILED (or WAITING) step of `agent_id` back to PENDING: the
+    retry primitive, and the resume primitive for a parked run.
 
     A subsequent `run_pipeline` call will then skip the DONE/SKIPPED steps and
     re-run only these (and anything after them that never got created/started).
@@ -683,7 +812,7 @@ def reset_failed_steps(session: Session, agent_id: int) -> None:
         and not is_connected(agent)
     )
     for step_row in rows:
-        if step_row.status == StepStatus.FAILED or (
+        if step_row.status in (StepStatus.FAILED, StepStatus.WAITING) or (
             rewire and step_row.name in REWIRE_RESETS and step_row.status == StepStatus.DONE
         ):
             step_row.status = StepStatus.PENDING

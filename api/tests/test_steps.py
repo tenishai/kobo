@@ -1791,6 +1791,7 @@ def test_onboard_step_create_app_receives_expected_arguments(session_factory, co
             "cluster": config.gojira_cluster,
             "namespace": AGENT_NAME,
             "workload_class": "agent",
+            "auto_merge_setup_pr": True,
         }
     ]
 

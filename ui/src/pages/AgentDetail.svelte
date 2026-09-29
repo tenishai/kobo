@@ -268,9 +268,16 @@
   });
 
   function handleRetry(): void {
+    // The same request resumes a WAITING agent (its owner merged the setup
+    // pull request and does not want to wait for the room's sweep) and
+    // retries a FAILED one; only the words differ.
+    const resuming = agent.data?.status === "waiting";
     retry.mutate(undefined, {
       onSuccess: () => {
-        toast.success("Retrying", `Re-running ${name}'s setup…`);
+        toast.success(
+          resuming ? "Resuming" : "Retrying",
+          resuming ? `Picking ${name}'s setup back up…` : `Re-running ${name}'s setup…`,
+        );
       },
       onError: (error: unknown) => {
         toast.error("Retry failed", errorMessage(error, "Something went wrong."));
@@ -659,6 +666,24 @@
           onclick={handleRetry}
         >
           {retry.isPending ? "Retrying…" : "Retry"}
+        </button>
+      </div>
+    {:else if data.status === "waiting"}
+      <!-- Parked on a person, not broken: a connected repository's setup
+           pull request is open and its owner merges it. The room resumes on
+           its own once the platform reports the merge; Resume is for the
+           person who just merged it and does not want to wait a minute. -->
+      <div class="waiting-banner" role="status">
+        <p class="waiting-banner__message">
+          {data.error ?? "Waiting for someone on your team to merge the setup pull request."}
+        </p>
+        <button
+          type="button"
+          class="waiting-banner__resume"
+          disabled={retry.isPending}
+          onclick={handleRetry}
+        >
+          {retry.isPending ? "Resuming…" : "Resume"}
         </button>
       </div>
     {/if}
@@ -1087,6 +1112,45 @@
   }
 
   .failed-banner__retry:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .waiting-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    padding: var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel);
+  }
+
+  .waiting-banner__message {
+    margin: 0;
+    color: var(--ink);
+    font-size: 0.9rem;
+    overflow-wrap: anywhere;
+  }
+
+  .waiting-banner__resume {
+    padding: var(--space-xs) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .waiting-banner__resume:hover:not(:disabled) {
+    filter: brightness(0.97);
+  }
+
+  .waiting-banner__resume:disabled {
     opacity: 0.6;
     cursor: not-allowed;
   }

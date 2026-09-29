@@ -183,6 +183,7 @@ from kobo_api.provisioner import (
     reset_failed_steps,
     run_pipeline,
     sweep_interrupted,
+    waiting_sweep_loop,
 )
 from kobo_api.purpose_tags import (
     MAX_CREATE_TAGS,
@@ -1433,6 +1434,12 @@ def _scan_report_body(report: ScanReport) -> dict:
         "adds": list(report.adds),
         "adds_preamble": report.adds_preamble,
         "repo": report.repo,
+        # The name the repository already deploys under, when it has one:
+        # the form prefills and locks the Name field to it, and a different
+        # name is among the blockers above (a connected repository keeps
+        # its own name, 2026-09-29).
+        "repo_name": report.repo_name,
+        "repo_service_account": report.repo_service_account,
     }
 
 
@@ -2441,6 +2448,9 @@ async def _room_lifespan(app: FastAPI):
     async with mcp_lifespan(app):
         nightly = asyncio.create_task(learnings_nightly_loop(app))
         sweeper = asyncio.create_task(interrupted_sweep_loop(app))
+        # Parked connected agents: asks the platform once a minute whether
+        # their setup pull request has been merged, and resumes them.
+        resumer = asyncio.create_task(waiting_sweep_loop(app))
         # A thread rather than a task, because the listing it reads is a
         # blocking `gh` call: on the loop it would stall every request in
         # the process for as long as GitHub takes.
@@ -2459,7 +2469,7 @@ async def _room_lifespan(app: FastAPI):
                 # with a timeout, and on a daemon thread, so it can never
                 # be the reason this process will not exit.
                 warmer.stop()
-            for task in (nightly, sweeper):
+            for task in (nightly, sweeper, resumer):
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
@@ -5076,7 +5086,11 @@ def create_app(
         if isinstance(agent, JSONResponse):
             return agent
 
-        if agent.status != AgentStatus.FAILED:
+        # FAILED is a retry. WAITING is a resume by hand, for the person who
+        # just merged the setup pull request and does not want to wait for
+        # the sweep. Same primitive either way: the parked step goes back to
+        # PENDING and re-decides against the platform.
+        if agent.status not in (AgentStatus.FAILED, AgentStatus.WAITING):
             return JSONResponse(
                 {"error": f"cannot retry agent in status {agent.status!r}"}, status_code=409
             )

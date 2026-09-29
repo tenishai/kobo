@@ -119,6 +119,16 @@ describe("stepTone", () => {
   it("maps pending -> active (queued work still reads as in-progress)", () => {
     expect(stepTone("pending")).toBe("active");
   });
+
+  it("maps waiting -> its own tone (parked on a person, not failed and not running)", () => {
+    expect(stepTone("waiting")).toBe("waiting");
+  });
+});
+
+describe("agentTone for a parked agent", () => {
+  it("shows waiting as warn: still mid-flight from the room's point of view", () => {
+    expect(agentTone("waiting")).toBe("warn");
+  });
 });
 
 describe("isDestroyComplete", () => {

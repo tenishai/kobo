@@ -89,6 +89,12 @@
   let report = $state<ScanReport | null>(null);
   let scannedFields = $state<string | null>(null);
   let scanError = $state<string | null>(null);
+  // The name the scanned repository already deploys under, once a scan has
+  // said so. A connected repository keeps its own name: the field is filled
+  // with this and locked while the scan it came from still stands, and a
+  // scan that finds it different from what was typed puts it in the field,
+  // which stales that report so the next Scan answers for the right name.
+  let repoName = $state<string | null>(null);
 
   // Set once a scan says this room has no class for an agent with no HTTP
   // port. Holds the server's own sentence, and disables that option from
@@ -326,6 +332,11 @@
   const scanIsClean = $derived(
     report !== null && !scanIsStale && report.blockers.length === 0,
   );
+  // Locked to the repository's own name only while the report that named
+  // it still describes this form: edit the repository and it opens again.
+  const nameLocked = $derived(
+    repoName !== null && name === repoName && report !== null && !scanIsStale,
+  );
 
   /** The blockers to show: the server's own, when a Connect was refused,
    * otherwise the scan's. A refusal is about the answers that were sent, so
@@ -362,6 +373,7 @@
       confirmOwner = false;
       report = null;
       scannedFields = null;
+      repoName = null;
       scanError = null;
       headlessMessage = null;
       connectBlockers = [];
@@ -398,6 +410,14 @@
       onSuccess: (result) => {
         report = result;
         scannedFields = scannedFor;
+        repoName = result.repo_name ?? null;
+        if (repoName !== null && name !== repoName) {
+          // The repository has a name and it is not the one typed. Put its
+          // own name in the field: that marks this report stale (it
+          // answered for the typed one, and says so among the blockers),
+          // and the next Scan answers for the name the connect will use.
+          name = repoName;
+        }
         const headless = result.blockers.find(
           (finding) => finding.code === HEADLESS_UNAVAILABLE,
         );
@@ -413,6 +433,7 @@
       onError: (error: unknown) => {
         report = null;
         scannedFields = null;
+        repoName = null;
         scanError = errorMessage(error, "Couldn't read that repository.");
       },
     });
@@ -611,11 +632,20 @@
         placeholder="e.g. release-bot"
         autocomplete="off"
         spellcheck="false"
+        readonly={nameLocked}
         aria-invalid={nameError !== null}
       />
-      <p class="field__help">
-        Lowercase letters, numbers, and hyphens. 2-24 characters.
-      </p>
+      {#if nameLocked}
+        <p class="field__help">
+          The name this repository already deploys under, taken from its
+          deployment. A connected repository keeps its own name; rename it in
+          the repository if you want another.
+        </p>
+      {:else}
+        <p class="field__help">
+          Lowercase letters, numbers, and hyphens. 2-24 characters.
+        </p>
+      {/if}
       {#if nameError}
         <p class="field__status field__status--error" role="alert">{nameError}</p>
       {:else if nameTaken !== null && nameTaken === name}
