@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from kobo_api.catalog import _parse_persona_file
-from kobo_api.personas import BUILTIN_ORDER, parse_persona_body
+from kobo_api.personas import BUILTIN_ORDER, RETIRED_TEMPLATES, TEAM_TEMPLATES, parse_persona_body
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "kobo_api" / "templates" / "personas"
 
@@ -29,7 +29,6 @@ EXPECTED_IDS = {
     "marketing-strategist",
     "code-reviewer",
     "billing-analyst",
-    "onboarding-guide",
     "legal-reader",
     "frontend-designer",
     "aws-operator",
@@ -82,7 +81,7 @@ def _ids(paths):
     return [p.stem for p in paths]
 
 
-def test_the_id_set_is_the_baseline_twelve():
+def test_the_id_set_is_the_baseline_eleven():
     assert {p.stem for p in ALL_FILES} == EXPECTED_IDS
 
 
@@ -92,11 +91,12 @@ def test_every_builtin_has_a_place_in_the_reading_order():
     be placed in it, once, or the room cannot say where it belongs."""
     assert list(BUILTIN_ORDER) == sorted(BUILTIN_ORDER, key=BUILTIN_ORDER.index)
     assert len(set(BUILTIN_ORDER)) == len(BUILTIN_ORDER)
-    assert set(BUILTIN_ORDER) == EXPECTED_IDS
-    # Everyday first, operators of specific clouds last.
+    # Five built-ins (2026-09-29); every other template is a group's.
+    assert set(BUILTIN_ORDER) | set(TEAM_TEMPLATES) == EXPECTED_IDS
+    assert not set(BUILTIN_ORDER) & set(TEAM_TEMPLATES)
     assert BUILTIN_ORDER[0] == "helpful-generalist"
-    assert BUILTIN_ORDER.index("code-reviewer") > BUILTIN_ORDER.index("marketing-strategist")
-    assert set(BUILTIN_ORDER[-3:]) == {"aws-operator", "gcp-operator", "azure-operator"}
+    assert BUILTIN_ORDER[-1] == "gcp-operator"
+    assert not set(RETIRED_TEMPLATES) & EXPECTED_IDS
 
 
 @pytest.mark.parametrize("path", ALL_FILES, ids=_ids(ALL_FILES))

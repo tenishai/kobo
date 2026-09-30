@@ -167,6 +167,8 @@ describe("CreateModal — the persona list (plain-form wave)", () => {
       onclose: () => {},
     });
 
+    // A group persona sits behind its group's pill (2026-09-29).
+    await fireEvent.click(await screen.findByRole("button", { name: "growth" }));
     await screen.findByRole("radio", { name: /long-winded-helper/i });
 
     const list = container.querySelector(".list");
@@ -945,23 +947,18 @@ describe("CreateModal — the persona hover card", () => {
   });
 });
 
-describe("CreateModal — the persona list keeps to your groups (persona team scope)", () => {
+
+describe("CreateModal — five built-ins lead, group personas sit behind pills (2026-09-29)", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
   });
 
-  const OTHER_GROUP = {
-    id: "qa-critic",
-    name: "QA Critic",
-    description: "Finds the bug first.",
-    team: "qa",
-    tags: [],
-    builtin: false,
-  };
+  const SCRIBE = { id: "scribe", name: "Scribe", description: "Writes things down.", team: "sre", tags: [], builtin: false };
+  const QA_CRITIC = { id: "qa-critic", name: "QA Critic", description: "Finds the bug first.", team: "qa", tags: [], builtin: false };
 
-  /** The mine list holds Helper alone; the all list adds a persona filed
-   * under another group. Everything else answers like the shared stub. */
-  function stubScopedSearch(): void {
+  /** The whole catalog, team rows first on purpose: the list's grouping,
+   * not the payload order, puts built-ins on top and team rows behind pills. */
+  function stubWholeCatalog(): void {
     stubCreateModalCatalogs();
     const catalogs = vi.mocked(fetch).getMockImplementation()!;
     vi.stubGlobal(
@@ -969,9 +966,8 @@ describe("CreateModal — the persona list keeps to your groups (persona team sc
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.includes("/api/personas/search")) {
-          const scope = new URL(url, "http://room").searchParams.get("scope");
-          const results = scope === "all" ? [HELPER, OTHER_GROUP] : [HELPER];
-          return new Response(JSON.stringify({ results }), {
+          expect(new URL(url, "http://room").searchParams.get("scope")).toBe("all");
+          return new Response(JSON.stringify({ results: [QA_CRITIC, SCRIBE, HELPER] }), {
             status: 200,
             headers: { "Content-Type": "application/json" },
           });
@@ -981,294 +977,37 @@ describe("CreateModal — the persona list keeps to your groups (persona team sc
     );
   }
 
-  function searchScopes(): Array<string | null> {
-    return vi
-      .mocked(fetch)
-      .mock.calls.map(([url]) => String(url))
-      .filter((url) => url.includes("/api/personas/search"))
-      .map((url) => new URL(url, "http://room").searchParams.get("scope"));
-  }
-
-  it("asks for your own groups by default", async () => {
-    stubScopedSearch();
+  it("shows the built-ins, then a pill per group, and no group persona until a pill is pressed", async () => {
+    stubWholeCatalog();
     renderWithClient(CreateModal, { open: true, onclose: () => {} });
 
     await screen.findByRole("radio", { name: /Helper/i });
-
-    expect(searchScopes().length).toBeGreaterThan(0);
-    expect(new Set(searchScopes())).toEqual(new Set(["mine"]));
+    expect(screen.getByText("Built-in")).not.toBeNull();
+    const pills = screen.getByRole("group", { name: "Group personas" });
+    const labels = Array.from(pills.querySelectorAll("button")).map((b) => b.textContent?.trim());
+    expect(labels).toEqual(["qa", "sre"]);
+    expect(screen.queryByRole("radio", { name: /QA Critic/i })).toBeNull();
+    expect(screen.queryByRole("radio", { name: /Scribe/i })).toBeNull();
   });
 
-  it("the toggle flips the list to every group and back", async () => {
-    stubScopedSearch();
+  it("a pressed pill shows that group's personas, and pressing it again hides them", async () => {
+    stubWholeCatalog();
     renderWithClient(CreateModal, { open: true, onclose: () => {} });
     await screen.findByRole("radio", { name: /Helper/i });
 
-    await fireEvent.click(screen.getByRole("button", { name: "Show all groups" }));
-    await waitFor(() => expect(searchScopes()).toContain("all"));
+    const qa = screen.getByRole("button", { name: "qa" });
+    await fireEvent.click(qa);
+    expect(qa.getAttribute("aria-pressed")).toBe("true");
+    expect(await screen.findByRole("radio", { name: /QA Critic/i })).not.toBeNull();
+    expect(screen.queryByRole("radio", { name: /Scribe/i })).toBeNull();
 
-    const back = await screen.findByRole("button", { name: "Show mine" });
-    await fireEvent.click(back);
-    expect(await screen.findByRole("button", { name: "Show all groups" })).not.toBeNull();
-  });
-
-  it("personas from other groups appear only after the toggle, still tagged", async () => {
-    stubScopedSearch();
-    renderWithClient(CreateModal, { open: true, onclose: () => {} });
-    await screen.findByRole("radio", { name: /Helper/i });
-
+    await fireEvent.click(screen.getByRole("button", { name: "sre" }));
+    expect(await screen.findByRole("radio", { name: /Scribe/i })).not.toBeNull();
     expect(screen.queryByRole("radio", { name: /QA Critic/i })).toBeNull();
 
-    await fireEvent.click(screen.getByRole("button", { name: "Show all groups" }));
-
-    const row = (await screen.findByRole("radio", { name: /QA Critic/i })).closest(
-      ".list__row",
-    ) as HTMLElement;
-    expect(row.querySelector(".list__tag")?.textContent?.trim()).toBe("qa");
-  });
-
-  it("hands the chosen group to the persona builder as its default", async () => {
-    stubCreateModalCatalogs({
-      "/api/catalog/groups": {
-        groups: [
-          { name: "shared", kind: "shared" },
-          { name: "sre", kind: "engineering" },
-          { name: "qa", kind: "engineering" },
-        ],
-      },
-      "/api/whoami": {
-        email: "me@example.com",
-        operator: false,
-        groups: ["sre", "qa"],
-        groups_unavailable: false,
-      },
-      "/api/personas/draft": {
-        name: "billing-buddy",
-        who_they_are: "a calm troubleshooter",
-        what_they_do: "Helps.",
-        purpose_tags: [],
-      },
-      "/api/personas/search": { results: [HELPER] },
+    await fireEvent.click(screen.getByRole("button", { name: "sre" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("radio", { name: /Scribe/i })).toBeNull();
     });
-    renderWithClient(CreateModal, { open: true, onclose: () => {} });
-
-    const group = (await screen.findByLabelText("Group")) as HTMLSelectElement;
-    await fireEvent.change(group, { target: { value: "qa" } });
-    await fireEvent.click(screen.getByRole("button", { name: "Build your own persona" }));
-    await fireEvent.input(screen.getByLabelText("What should this agent do for you?"), {
-      target: { value: "Help with billing." },
-    });
-    await fireEvent.click(screen.getByRole("button", { name: "Draft persona" }));
-
-    const forWhom = (await screen.findByLabelText(
-      "Who is this persona for?",
-    )) as HTMLSelectElement;
-    await waitFor(() => expect(forWhom.value).toBe("qa"));
-  });
-});
-
-describe("CreateModal — built-ins are the main personas (built-ins first ruling)", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  const SCRIBE = {
-    id: "scribe",
-    name: "Scribe",
-    description: "Writes things down.",
-    team: "sre",
-    tags: [],
-    builtin: false,
-  };
-  const QA_CRITIC = {
-    id: "qa-critic",
-    name: "QA Critic",
-    description: "Finds the bug first.",
-    team: "qa",
-    tags: [],
-    builtin: false,
-  };
-
-  /** Mine answers Helper plus a persona from the caller's own group; all
-   * adds one from another group. Team rows come first in the payload on
-   * purpose: the list's grouping, not the payload order, puts built-ins on
-   * top. */
-  function stubMixedSearch(): void {
-    stubCreateModalCatalogs();
-    const catalogs = vi.mocked(fetch).getMockImplementation()!;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        if (url.includes("/api/personas/search")) {
-          const scope = new URL(url, "http://room").searchParams.get("scope");
-          const results =
-            scope === "all" ? [QA_CRITIC, SCRIBE, HELPER] : [SCRIBE, HELPER];
-          return new Response(JSON.stringify({ results }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        return catalogs(input, init);
-      }),
-    );
-  }
-
-  /** The list's rows in order, as `heading:<text>` or the persona name. */
-  function listOrder(container: HTMLElement): string[] {
-    return Array.from(
-      container.querySelectorAll(".list > .list__group, .list > .list__row"),
-    ).map((el) =>
-      el.classList.contains("list__group")
-        ? `heading:${el.textContent?.trim()}`
-        : (el.querySelector(".list__name")?.textContent ?? ""),
-    );
-  }
-
-  it("shows a fade at the bottom while more personas are below the fold", async () => {
-    // jsdom lays nothing out, so the scroll metrics are set by hand, the
-    // same way ColleagueConversations.test.ts does.
-    stubMixedSearch();
-    const { container } = renderWithClient(CreateModal, { open: true, onclose: () => {} });
-    await screen.findByText("Built-in");
-    const list = container.querySelector(".list--scroll") as HTMLElement;
-    const shell = list.parentElement as HTMLElement;
-    expect(shell.classList.contains("list-scroll")).toBe(true);
-
-    Object.defineProperty(list, "scrollHeight", { value: 600, configurable: true });
-    Object.defineProperty(list, "clientHeight", { value: 200, configurable: true });
-    list.scrollTop = 0;
-    await fireEvent.scroll(list);
-    expect(shell.classList.contains("list-scroll--more")).toBe(true);
-
-    // Scrolled to the end: nothing is hidden, so nothing is faded.
-    list.scrollTop = 400;
-    await fireEvent.scroll(list);
-    expect(shell.classList.contains("list-scroll--more")).toBe(false);
-  });
-
-  it("shows no fade when every persona fits in the box", async () => {
-    stubMixedSearch();
-    const { container } = renderWithClient(CreateModal, { open: true, onclose: () => {} });
-    await screen.findByText("Built-in");
-    const list = container.querySelector(".list--scroll") as HTMLElement;
-    Object.defineProperty(list, "scrollHeight", { value: 200, configurable: true });
-    Object.defineProperty(list, "clientHeight", { value: 200, configurable: true });
-    await fireEvent.scroll(list);
-    expect(list.parentElement?.classList.contains("list-scroll--more")).toBe(false);
-  });
-
-  it("shows a Built-in heading first, then From your groups", async () => {
-    stubMixedSearch();
-    const { container } = renderWithClient(CreateModal, {
-      open: true,
-      onclose: () => {},
-    });
-    await screen.findByRole("radio", { name: /Scribe/i });
-
-    expect(listOrder(container)).toEqual([
-      "heading:Built-in",
-      "Helper",
-      "heading:From your groups",
-      "Scribe",
-    ]);
-  });
-
-  it("built-in rows drop the Built-in tag, team rows keep theirs", async () => {
-    stubMixedSearch();
-    renderWithClient(CreateModal, { open: true, onclose: () => {} });
-
-    const helper = (await screen.findByRole("radio", { name: /Helper/i })).closest(
-      ".list__row",
-    ) as HTMLElement;
-    const scribe = screen
-      .getByRole("radio", { name: /Scribe/i })
-      .closest(".list__row") as HTMLElement;
-    expect(helper.querySelector(".list__tag")).toBeNull();
-    expect(scribe.querySelector(".list__tag")?.textContent?.trim()).toBe("sre");
-  });
-
-  it("omits a group's heading when nothing in it matches", async () => {
-    stubCreateModalCatalogs({ "/api/personas/search": { results: [HELPER] } });
-    const { container } = renderWithClient(CreateModal, {
-      open: true,
-      onclose: () => {},
-    });
-    await screen.findByRole("radio", { name: /Helper/i });
-    expect(listOrder(container)).toEqual(["heading:Built-in", "Helper"]);
-  });
-
-  it("omits the Built-in heading when only team personas match", async () => {
-    stubCreateModalCatalogs({ "/api/personas/search": { results: [SCRIBE] } });
-    const { container } = renderWithClient(CreateModal, {
-      open: true,
-      onclose: () => {},
-    });
-    await screen.findByRole("radio", { name: /Scribe/i });
-    expect(listOrder(container)).toEqual(["heading:From your groups", "Scribe"]);
-  });
-
-  it("shows no headings at all when nothing matches", async () => {
-    stubCreateModalCatalogs();
-    const { container } = renderWithClient(CreateModal, {
-      open: true,
-      onclose: () => {},
-    });
-    expect(await screen.findByText("No personas match.")).not.toBeNull();
-    expect(container.querySelector(".list__group")).toBeNull();
-  });
-
-  it("headings are presentation rows: not focusable, not options", async () => {
-    stubMixedSearch();
-    const { container } = renderWithClient(CreateModal, {
-      open: true,
-      onclose: () => {},
-    });
-    await screen.findByRole("radio", { name: /Scribe/i });
-
-    const headings = Array.from(container.querySelectorAll(".list__group"));
-    expect(headings).toHaveLength(2);
-    for (const heading of headings) {
-      expect(heading.getAttribute("role")).toBe("presentation");
-      expect(heading.hasAttribute("tabindex")).toBe(false);
-      expect(heading.querySelector("input, button, [tabindex]")).toBeNull();
-      expect(heading.tagName).not.toBe("LABEL");
-    }
-    // Only the personas are radios: arrow keys move between them and
-    // never land on a heading.
-    expect(screen.getAllByRole("radio").map((r) => (r as HTMLInputElement).value)).toEqual([
-      "helper",
-      "scribe",
-    ]);
-  });
-
-  it("the toggle changes only the second group", async () => {
-    stubMixedSearch();
-    const { container } = renderWithClient(CreateModal, {
-      open: true,
-      onclose: () => {},
-    });
-    await screen.findByRole("radio", { name: /Scribe/i });
-
-    await fireEvent.click(screen.getByRole("button", { name: "Show all groups" }));
-    await screen.findByRole("radio", { name: /QA Critic/i });
-
-    expect(listOrder(container)).toEqual([
-      "heading:Built-in",
-      "Helper",
-      "heading:From all groups",
-      "QA Critic",
-      "Scribe",
-    ]);
-
-    await fireEvent.click(screen.getByRole("button", { name: "Show mine" }));
-    await waitFor(() =>
-      expect(listOrder(container)).toEqual([
-        "heading:Built-in",
-        "Helper",
-        "heading:From your groups",
-        "Scribe",
-      ]),
-    );
   });
 });

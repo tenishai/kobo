@@ -147,7 +147,12 @@ def test_seed_builtin_personas_at_boot_writes_the_packaged_set_once(client, fake
 
     # Pickable at once: the seed re-ingests the catalog itself.
     listed = client.get("/api/personas/search", params={"q": "", "scope": "all"}).json()["results"]
-    assert sum(1 for entry in listed if entry["builtin"]) == packaged
+    # Five built-ins in the commons, the rest filed under their groups
+    # (TEAM_TEMPLATES, 2026-09-29); together they are the packaged set.
+    from kobo_api.personas import BUILTIN_ORDER, TEAM_TEMPLATES
+
+    assert sum(1 for entry in listed if entry["builtin"]) == len(BUILTIN_ORDER)
+    assert len(BUILTIN_ORDER) + len(TEAM_TEMPLATES) == packaged
 
     # Idempotent: a second boot writes nothing.
     second = _seed_builtin_personas(client.app)

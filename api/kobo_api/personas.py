@@ -144,18 +144,30 @@ class PersonaFields(BaseModel):
 # not. Team personas are never in this list and always follow it, by name.
 BUILTIN_ORDER: tuple[str, ...] = (
     "helpful-generalist",
-    "onboarding-guide",
-    "workspace-admin",
-    "marketing-strategist",
     "billing-analyst",
-    "legal-reader",
     "identity-admin",
-    "frontend-designer",
     "code-reviewer",
-    "aws-operator",
     "gcp-operator",
-    "azure-operator",
 )
+
+# Packaged templates that are a GROUP's personas rather than the room's
+# built-ins (2026-09-29: five built-ins, the rest filed where they belong).
+# The seeder writes each under its group, not the commons, and the create
+# form shows them behind that group's pill. Keys are template ids, values
+# are group names from the org config.
+TEAM_TEMPLATES: dict[str, str] = {
+    "aws-operator": "infra-engineering",
+    "azure-operator": "infra-engineering",
+    "frontend-designer": "navex-ios",
+    "legal-reader": "security",
+    "marketing-strategist": "marketing",
+    "workspace-admin": "corporate-it",
+}
+
+# Templates the room no longer ships. An index entry left over from an
+# earlier seed is archived on the next boot, never resurrected, and never
+# deleted: agents built from it keep running.
+RETIRED_TEMPLATES: tuple[str, ...] = ("onboarding-guide",)
 _BUILTIN_RANK = {id_: rank for rank, id_ in enumerate(BUILTIN_ORDER)}
 
 
@@ -664,6 +676,7 @@ def seed_default_personas(storage: StorageClient, *, bucket: str, prefix: str = 
         except StorageNotFound:
             exists = False
 
+        team = TEAM_TEMPLATES.get(info.id, "shared")
         if exists:
             skipped += 1
         else:
@@ -671,7 +684,7 @@ def seed_default_personas(storage: StorageClient, *, bucket: str, prefix: str = 
                 bucket,
                 key,
                 path.read_bytes(),
-                metadata={"team": "shared", "creator": "kobo"},
+                metadata={"team": team, "creator": "kobo"},
                 content_type="text/markdown",
             )
             seeded += 1
@@ -681,13 +694,17 @@ def seed_default_personas(storage: StorageClient, *, bucket: str, prefix: str = 
         # the display name, same as how these ship with no other naming
         # convention to draw from.
         previous = index_by_id.get(info.id)
+        # The entry is rewritten every boot, so a template moved from the
+        # commons to a group (TEAM_TEMPLATES) moves in the index on the next
+        # restart, and a room that seeded it as a built-in earlier converges
+        # without anyone editing storage.
         index_by_id[info.id] = {
             "id": info.id,
             "name": info.id,
             "description": info.description,
-            "team": "shared",
+            "team": team,
             "tags": [],
-            "builtin": True,
+            "builtin": info.id not in TEAM_TEMPLATES,
         }
         # The resurrect trap (hardening wave): this rewrite runs every
         # boot; without carrying the flag forward, an archived builtin
@@ -695,5 +712,8 @@ def seed_default_personas(storage: StorageClient, *, bucket: str, prefix: str = 
         if previous and previous.get("archived"):
             index_by_id[info.id]["archived"] = True
 
+    for retired in RETIRED_TEMPLATES:
+        if retired in index_by_id:
+            index_by_id[retired]["archived"] = True
     _write_index(storage, bucket, prefix, list(index_by_id.values()))
     return {"seeded": seeded, "skipped": skipped}

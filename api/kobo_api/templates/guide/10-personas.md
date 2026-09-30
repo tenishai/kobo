@@ -5,11 +5,11 @@ A persona is the soul of an agent: who it is, how it works, and its always and n
 
 ## Built-in personas
 
-The room ships a set of general personas for common kinds of agent, kept to the house standard: efficient, pleasant, plain. They sit first in every list and belong to everyone. Among them are a code reviewer, an onboarding guide, a billing analyst, a legal reader, a frontend designer, a marketing strategist, an identity admin, a workspace admin, and steady operators for each major cloud. Start from one of these whenever it fits.
+The room ships five general personas, kept to the house standard: efficient, pleasant, plain. They sit first in every list and belong to everyone: a helpful generalist, a billing analyst, an identity admin, a code reviewer, and a cloud operator. Start from one of these when it fits, and build your own when it does not.
 
 ## Personas from your groups
 
-Below the built-ins are personas people have made. On the create form you see your groups' personas by default; **Show all groups** shows everyone's. A persona is filed under the group that made it, so it stays that team's unless they choose to share it.
+Below the built-ins sits a pill for every group that has personas of its own. Press one to see that group's personas. A persona is filed under the group that made it, so it stays that team's unless they choose to share it. Some of the room's earlier built-ins now live this way: the other cloud operators under infra-engineering, the marketing strategist under marketing, the workspace admin under corporate-it.
 
 ## Build your own
 

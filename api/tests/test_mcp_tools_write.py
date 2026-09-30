@@ -3828,17 +3828,17 @@ def test_set_agent_persona_rewrites_the_bundle_and_reports_the_commit(
         "kobo_set_agent_persona",
         _ctx_for(MEMBER_A_EMAIL),
         agent=SECRETS_AGENT,
-        persona="marketing-strategist",
+        persona="billing-analyst",
     )
 
     assert result == {
         "agent": SECRETS_AGENT,
-        "persona": "marketing-strategist",
+        "persona": "billing-analyst",
         "commit": FAKE_LOCAL_HEAD_DEFAULT,
     }
     assert github.captured_persona is not None
-    assert github.captured_persona.startswith(f"You are {SECRETS_AGENT}, a marketing strategist")
-    assert github.pushes[-1][1] == "kobo: persona is now marketing-strategist"
+    assert github.captured_persona.startswith(f"You are {SECRETS_AGENT}, a billing analyst")
+    assert github.pushes[-1][1] == "kobo: persona is now billing-analyst"
 
 
 def test_set_agent_persona_hides_an_agent_the_caller_does_not_own(

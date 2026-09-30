@@ -64,7 +64,6 @@
     checkAvailability,
     errorMessage,
     type CatalogEntry,
-    type PersonaScope,
   } from "../lib/api";
   import { debounced } from "../lib/debounce";
   import {
@@ -162,15 +161,22 @@
   // own groups plus the shared ones ("mine"); the quiet toggle on the label
   // row widens it to every group ("all"). A filter for a shorter list, not
   // access control: each row still carries its team tag either way.
-  let personaScope = $state<PersonaScope>("mine");
-  const personas = createQuery(() =>
-    personasSearchQuery(personaSearchTerm, null, personaScope),
-  );
-
-  // The API already sends built-ins first; these keep each group in the
-  // order it arrived.
+  // One query over the whole catalog (2026-09-29): the built-ins lead the
+  // list, and every group that has personas of its own gets a pill under
+  // them. Pressing a pill shows that group's personas; nothing else of the
+  // catalog is on screen until asked for.
+  const personas = createQuery(() => personasSearchQuery(personaSearchTerm, null, "all"));
   const builtinPersonas = $derived((personas.data ?? []).filter((p) => p.builtin));
-  const teamPersonas = $derived((personas.data ?? []).filter((p) => !p.builtin));
+  let selectedPersonaTeam = $state<string | null>(null);
+  const personaTeams = $derived(
+    [...new Set((personas.data ?? []).filter((p) => !p.builtin).map((p) => p.team))].sort(),
+  );
+  const teamPersonas = $derived(
+    (personas.data ?? []).filter((p) => !p.builtin && p.team === selectedPersonaTeam),
+  );
+  function togglePersonaTeam(team: string): void {
+    selectedPersonaTeam = selectedPersonaTeam === team ? null : team;
+  }
 
   const commitPersonaSearch = debounced((value: string) => {
     personaSearchTerm = value;
@@ -435,7 +441,7 @@
       submitError = null;
       personaQ = "";
       personaSearchTerm = "";
-      personaScope = "mine";
+      selectedPersonaTeam = null;
       builderOpen = false;
       groupValue = "";
       groupRequestName = "";
@@ -602,14 +608,6 @@
           <span class="field__label-actions">
             <button
               type="button"
-              class="btn--link btn--link-quiet"
-              aria-pressed={personaScope === "all"}
-              onclick={() => (personaScope = personaScope === "all" ? "mine" : "all")}
-            >
-              {personaScope === "all" ? "Show mine" : "Show all groups"}
-            </button>
-            <button
-              type="button"
               class="btn--link btn--link-strong"
               onclick={() => (builderOpen = true)}
             >
@@ -662,13 +660,29 @@
                 {@render personaRow(persona)}
               {/each}
             {/if}
-            {#if teamPersonas.length > 0}
-              <div class="list__group" role="presentation">
-                {personaScope === "all" ? "From all groups" : "From your groups"}
+            {#if personaTeams.length > 0}
+              <div class="list__group" role="presentation">Group personas</div>
+              <div class="chip-row persona-teams" role="group" aria-label="Group personas">
+                {#each personaTeams as team (team)}
+                  <button
+                    type="button"
+                    class="chip chip--action"
+                    aria-pressed={selectedPersonaTeam === team}
+                    onclick={() => togglePersonaTeam(team)}
+                  >
+                    {team}
+                  </button>
+                {/each}
               </div>
-              {#each teamPersonas as persona (persona.id)}
-                {@render personaRow(persona)}
-              {/each}
+            {/if}
+            {#if selectedPersonaTeam !== null}
+              {#if teamPersonas.length > 0}
+                {#each teamPersonas as persona (persona.id)}
+                  {@render personaRow(persona)}
+                {/each}
+              {:else}
+                <p class="list__empty">No personas from {selectedPersonaTeam} match.</p>
+              {/if}
             {/if}
           {/if}
         </div>
@@ -852,6 +866,10 @@
 </Modal>
 
 <style>
+  .persona-teams {
+    padding: var(--space-2xs) var(--space-sm) var(--space-xs);
+  }
+
   /* The "my group isn't listed" mini-form: the one thing in this dialog
      that is a form inside a field, so it says so with a rule around it. */
   .create-form__request {
