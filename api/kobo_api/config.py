@@ -16,6 +16,14 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class ModelChoice(BaseModel):
     id: str  # LiteLLM route, e.g. vertex_ai/claude-sonnet-4-5
     label: str
+    # How the picker names it (2026-09-29): a `family` ("Claude", "Gemini")
+    # and a `tier` ("best", "balanced", "fast") instead of a model number.
+    # When any model carries a tier the picker shows only tiered models,
+    # grouped by family; the label above still names the exact model on
+    # the agent's card. Both optional so an org config without them keeps
+    # the flat list of labels.
+    family: str | None = None
+    tier: str | None = None
     # Per-model Vertex location override (Gemini-3.1-Pro-Preview arc):
     # Gemini previews serve ONLY on Vertex's global endpoint (a regional
     # endpoint 404s), while the Claude partner models stay on the org's

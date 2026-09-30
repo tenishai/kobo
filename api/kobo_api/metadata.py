@@ -36,6 +36,7 @@ from pathlib import Path
 
 from kobo_api.clients import AgentClient, ClientError, GitHubClient, KubectlClient
 from kobo_api.composer import update_agent_card_metadata
+from kobo_api.purpose_tags import MAX_CREATE_TAGS, normalize_tags
 from kobo_api.search import get_entry
 from kobo_api.tooling import list_tooling
 
@@ -122,6 +123,23 @@ def generate_capability(
             if cleaned:
                 return cleaned
     return _fallback_capability(persona_body)
+
+
+def generate_tags(
+    model_client, persona_body: str, capability: str, group: str | None
+) -> list[str]:
+    """Two to five purpose tags an agent gives itself after first contact,
+    normalized the way caller-typed tags are and capped at the same
+    ceiling. NEVER raises: no client, a ClientError, or an unusable reply
+    all mean no tags, which is what the agent had before."""
+    if model_client is None:
+        return []
+    try:
+        raw = model_client.tags(persona_body, capability, group)
+    except ClientError as exc:
+        log.warning("tag generation failed, leaving tags unset: %r", exc)
+        return []
+    return normalize_tags(raw)[:MAX_CREATE_TAGS]
 
 
 def clean_capability_text(text: str) -> str | None:

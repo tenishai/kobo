@@ -58,6 +58,7 @@ export function primaryTabs(showAccess = false, kind: string = KIND_COMPOSED): T
 /** One section of the Harness tab -- the left-hand list inside it. */
 export type HarnessSectionId =
   | "runtime"
+  | "identity"
   | "persona"
   | "skills"
   | "tooling"
@@ -66,6 +67,7 @@ export type HarnessSectionId =
 
 export const HARNESS_SECTION_LABELS: Record<HarnessSectionId, string> = {
   runtime: "Model and runtime",
+  identity: "Identity and access",
   persona: "Persona",
   skills: "Skills",
   tooling: "Tooling",
@@ -86,7 +88,11 @@ export const DEFAULT_HARNESS_SECTION: HarnessSectionId = "runtime";
  * Harness is a single section with one muted line explaining why.
  */
 export function harnessSections(kind: string = KIND_COMPOSED): HarnessSectionId[] {
-  return kind === KIND_CONNECTED ? [DEFAULT_HARNESS_SECTION] : [...HARNESS_SECTION_IDS];
+  // Identity is true of any agent the room deploys, connected included:
+  // both kinds run as the service account the room made for them.
+  return kind === KIND_CONNECTED
+    ? [DEFAULT_HARNESS_SECTION, "identity"]
+    : [...HARNESS_SECTION_IDS];
 }
 
 /** Whether a hash segment names a tab. The hash is whatever somebody typed

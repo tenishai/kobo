@@ -3213,6 +3213,16 @@ class NameClient(Protocol):
         """
         ...
 
+    def tags(self, persona_body: str, capability: str, group: str | None) -> list[str]:
+        """Ask the generator for a handful of short purpose tags for an agent
+        that has just made first contact (2026-09-29: agents tag themselves;
+        the create form no longer asks). Raise ClientError on a
+        transport/envelope/parse failure. `kobo_api.metadata.generate_tags`
+        normalizes and caps the reply and falls back to no tags on any
+        failure, so nothing here can block readiness.
+        """
+        ...
+
     def distill(self, body: str) -> dict:
         """Ask the generator to read a ready-made persona document (`body`,
         the operator's own upload/paste) and pull out discovery metadata for
@@ -3394,6 +3404,25 @@ def _build_persona_draft_prompt(job: str, rules: list[str]) -> str:
 # at all — kobo_api.metadata.generate_capability always has a deterministic
 # fallback to fall through to, so this string only ever reaches a log line.
 _CAPABILITY_FAILED = "capability generation failed"
+_TAGS_FAILED = "tag generation failed"
+
+
+def _build_tags_prompt(persona_body: str, capability: str, group: str | None) -> str:
+    """The prompt behind `NameClient.tags`. Plain concatenation, never
+    `str.format()` against the persona body (the brace hazard
+    `_build_capability_prompt` documents)."""
+    group_line = f"It works for the {group} team.\n" if group else ""
+    return (
+        "You are labelling a small software agent for a directory, so people "
+        "and other agents can find it by what it is for.\n\n"
+        "Its persona:\n" + persona_body + "\n\n"
+        "What it can do, in one sentence:\n" + capability + "\n"
+        + group_line
+        + "\nRespond with ONLY a JSON array of 2 to 5 short lowercase tags, "
+        "each one or two words joined by a hyphen, naming the work it does "
+        "and the area it works in (for example [\"billing\", \"gcp\", "
+        "\"cost-review\"]). No prose before or after the array."
+    )
 
 
 def _build_capability_prompt(
@@ -3720,6 +3749,37 @@ class VertexNameClient:
         # generate_capability is what clamps to CAPABILITY_MAX_LEN and strips
         # em/en dashes defensively.
         return text.strip()
+
+    def tags(self, persona_body: str, capability: str, group: str | None) -> list[str]:
+        url = (
+            f"https://{self._location}-aiplatform.googleapis.com/v1/projects/"
+            f"{self._project}/locations/{self._location}/publishers/google/"
+            f"models/{self._model}:generateContent"
+        )
+        prompt = _build_tags_prompt(persona_body, capability, group)
+        request_body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
+        try:
+            token = self._token_provider()
+        except ClientError as exc:
+            log.warning("token provider failed for tag generation: %r", exc)
+            raise ClientError(_TAGS_FAILED) from exc
+        try:
+            resp = self._http_client.post(
+                url, json=request_body, headers={"Authorization": f"Bearer {token}"}
+            )
+        except httpx.HTTPError as exc:
+            log.warning("tag generation request failed: %r", exc)
+            raise ClientError(_TAGS_FAILED) from exc
+        if resp.status_code != 200:
+            log.warning("tag generation failed (%s): %s", resp.status_code, resp.text[:200])
+            raise ClientError(_TAGS_FAILED)
+        try:
+            text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            parsed = _extract_json_array(str(text))
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            log.warning("malformed tag generation reply: %r (body: %s)", exc, resp.text[:200])
+            raise ClientError(_TAGS_FAILED) from exc
+        return [item for item in parsed if isinstance(item, str)]
 
     def distill(self, body: str) -> dict:
         url = (

@@ -785,6 +785,7 @@
               canDecideLearnings={data.can_decide_learnings}
               capability={data.capability}
               purposeTags={data.purpose_tags}
+              identity={data.identity ?? null}
               bind:section={harnessSection}
               persona={connected ? undefined : personaSection}
             />

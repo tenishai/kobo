@@ -63,7 +63,7 @@ describe("HarnessPanel sections", () => {
     expect(body("skills").hasAttribute("hidden")).toBe(true);
   });
 
-  it("lists all six sections in order for an agent the room composed", async () => {
+  it("lists all seven sections in order for an agent the room composed", async () => {
     renderWithClient(HarnessPanel, { ...BASE_PROPS });
 
     const labels = within(await screen.findByRole("navigation", { name: "Harness sections" }))
@@ -71,6 +71,7 @@ describe("HarnessPanel sections", () => {
       .map((b) => b.textContent?.trim());
     expect(labels).toEqual([
       "Model and runtime",
+      "Identity and access",
       "Persona",
       "Skills",
       "Tooling",
@@ -206,7 +207,7 @@ describe("HarnessPanel for a connected agent", () => {
     stubFetch(BASE_ROUTES);
   });
 
-  it("shows Model and runtime alone, and says why the rest is missing", async () => {
+  it("shows Model and runtime plus Identity, and says why the rest is missing", async () => {
     renderWithClient(HarnessPanel, {
       ...BASE_PROPS,
       kind: "connected",
@@ -216,7 +217,7 @@ describe("HarnessPanel for a connected agent", () => {
     const labels = within(nav())
       .getAllByRole("button")
       .map((b) => b.textContent?.trim());
-    expect(labels).toEqual(["Model and runtime"]);
+    expect(labels).toEqual(["Model and runtime", "Identity and access"]);
     expect(
       screen.getByText(
         "This agent brings its own harness. The room shows what it runs on and nothing more.",
@@ -233,5 +234,39 @@ describe("HarnessPanel for a connected agent", () => {
     expect(
       vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/skills")),
     ).toBe(false);
+  });
+});
+
+
+describe("HarnessPanel — identity and access (2026-09-29)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    stubFetch(BASE_ROUTES);
+  });
+
+  const identity = {
+    service_account: "agent-warden",
+    gsa_email: "agent-warden@example-project.iam.gserviceaccount.com",
+    project: "example-project",
+  };
+
+  it("names the service accounts and writes an access request, refusing basic roles", async () => {
+    renderWithClient(HarnessPanel, { ...BASE_PROPS, identity, section: "identity" });
+    expect(screen.getByText("agent-warden")).not.toBeNull();
+    expect(screen.getByText(identity.gsa_email)).not.toBeNull();
+
+    await fireEvent.input(screen.getByLabelText("Project"), { target: { value: "example-data-prod" } });
+    await fireEvent.input(screen.getByLabelText("Roles"), { target: { value: "roles/editor" } });
+    expect(screen.getByRole("alert").textContent).toContain("Basic roles are not granted");
+    expect((screen.getByRole("button", { name: "Copy the request" }) as HTMLButtonElement).disabled).toBe(true);
+
+    await fireEvent.input(screen.getByLabelText("Roles"), {
+      target: { value: "roles/bigquery.dataViewer\nroles/storage.objectViewer" },
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+    const request = document.querySelector(".harness__request")?.textContent ?? "";
+    expect(request).toContain("Service account: " + identity.gsa_email);
+    expect(request).toContain("Needs access to GCP project: example-data-prod");
+    expect(request).toContain("  - roles/bigquery.dataViewer");
   });
 });

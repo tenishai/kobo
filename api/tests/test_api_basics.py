@@ -11,4 +11,7 @@ def test_catalog_models(client, config):
     assert response.status_code == 200
     body = response.json()
     assert body["default"] == config.models[0].id
-    assert {"id": config.models[0].id, "label": config.models[0].label} in body["models"]
+    first = config.models[0]
+    assert {
+        "id": first.id, "label": first.label, "family": first.family, "tier": first.tier,
+    } in body["models"]

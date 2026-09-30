@@ -67,6 +67,7 @@ from kobo_api.archetypes import (
 from kobo_api.avatars import avatar_prompt, set_avatar
 from kobo_api.catalog import RESERVED_NAMES, validate_name
 from kobo_api.clients import (
+    gsa_email,
     CabalError,
     ClientError,
     StorageNotFound,
@@ -2908,7 +2909,10 @@ def create_app(
     def catalog_models() -> dict:
         cfg: Config = app.state.config
         return {
-            "models": [{"id": m.id, "label": m.label} for m in cfg.models],
+            "models": [
+                {"id": m.id, "label": m.label, "family": m.family, "tier": m.tier}
+                for m in cfg.models
+            ],
             "default": cfg.models[0].id,
         }
 
@@ -4928,6 +4932,15 @@ def create_app(
                 # may offer at all is a property of the kind, so the page
                 # reads it from the same fetch that draws the header.
                 "kind": agent.kind,
+                # The identity the agent runs as (2026-09-29): the Kubernetes
+                # service account in its namespace and the Google service
+                # account bound to it (AccessStep), the same for both kinds.
+                # What an access request to another project names.
+                "identity": {
+                    "service_account": f"agent-{agent.name}",
+                    "gsa_email": gsa_email(f"agent-{agent.name}", cfg.gcp_project),
+                    "project": cfg.gcp_project,
+                },
                 # What this agent runs on, and what the room builds on today
                 # (harness wave, 2026-09-23). Both, because the page's whole
                 # sentence is the comparison: an agent is current or it is

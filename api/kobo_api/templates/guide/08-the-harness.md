@@ -1,11 +1,15 @@
 # The harness
 <!-- summary: What runs the agent: model and runtime, persona, skills, tooling, memory, learnings. -->
 
-The **Harness** tab is everything that runs your agent, in six sections down its left side. A connected agent shows only the first, because it brings its own harness.
+The **Harness** tab is everything that runs your agent, in seven sections down its left side. A connected agent shows only the first two, because it brings its own harness.
 
 ## Model and runtime
 
 The model the agent thinks with, and the runtime it runs on. The runtime is one shared image the room maintains for every agent it builds. When the room moves to a newer runtime, this section says **Behind: the room now builds on** the newer version and offers **Update to current**. Pressing it rebuilds the agent on the new runtime. Nothing else about the agent changes: its memory, its Slack app and its learnings stay.
+
+## Identity and access
+
+The service account the agent runs as, the Google service account bound to it, and the room's project. Below them, **Ask for access to another project**: name the project and the roles, one per line, and the room writes the request you hand to the SRE team. Basic roles like owner, editor and viewer are refused; ask for the narrowest role that does the job.
 
 ## Persona
 

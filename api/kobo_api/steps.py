@@ -71,12 +71,13 @@ from kobo_api.kinds import KIND_CONNECTED, RUN_MODE_HEADLESS, is_connected
 from kobo_api.metadata import (
     commit_card_metadata,
     generate_capability,
+    generate_tags,
     skill_descriptions_for_agent,
     tooling_filenames_for,
 )
 from kobo_api.models import INVITE_ACCEPTED, A2AInvite, Agent, AgentStatus
 from kobo_api.pairs import implicitly_paired
-from kobo_api.purpose_tags import decode_tags
+from kobo_api.purpose_tags import decode_tags, encode_tags
 from kobo_api.repo_name import split_repo
 from kobo_api.search import get_entry, read_marketplace_catalog
 from kobo_api.tooling import ToolingError, _validate_content, _validate_filename
@@ -2334,6 +2335,13 @@ def _earn_capability(ctx: Ctx) -> None:
         return
 
     agent.capability = capability
+    # The agent tags itself (2026-09-29): the create form no longer asks
+    # for purpose tags, so the first contact is where they come from. Only
+    # when it has none: tags a person or the persona builder set stand.
+    if not decode_tags(agent.purpose_tags):
+        tags = generate_tags(ctx.clients.name, persona_body, capability, agent.group_name)
+        if tags:
+            agent.purpose_tags = encode_tags(tags)
 
     try:
         # Roster refresh lane (Task 6): the room's regenerated view of this

@@ -153,6 +153,39 @@
 
   const nameSettled = $derived(nameLocallyValid && availability.status === "available");
 
+  // --- Model tiers (2026-09-29) --------------------------------------------
+  // The picker names a family and a tier, never a model number. When the
+  // room's config gives any model a tier, only tiered models are offered,
+  // grouped by family in the order the config lists them; a room without
+  // tiers keeps the flat list of labels.
+  const TIER_ORDER = ["best", "balanced", "fast"];
+  const TIER_LABELS: Record<string, string> = {
+    best: "Best (most expensive)",
+    balanced: "Balanced",
+    fast: "Fast (cheapest)",
+  };
+  function tierLabel(tier: string | null | undefined): string {
+    return tier ? (TIER_LABELS[tier] ?? tier) : "";
+  }
+  const tieredFamilies = $derived.by(() => {
+    const list = (models.data?.models ?? []).filter((m) => m.family && m.tier);
+    const families: { name: string; models: typeof list }[] = [];
+    for (const model of list) {
+      let family = families.find((f) => f.name === model.family);
+      if (!family) {
+        family = { name: model.family as string, models: [] };
+        families.push(family);
+      }
+      family.models.push(model);
+    }
+    for (const family of families) {
+      family.models.sort(
+        (a, b) => TIER_ORDER.indexOf(a.tier as string) - TIER_ORDER.indexOf(b.tier as string),
+      );
+    }
+    return families;
+  });
+
   // --- Persona search / builder -------------------------------------------
 
   let personaQ = $state("");
@@ -846,9 +879,19 @@
               onchange={(event) =>
                 (modelOverride = (event.currentTarget as HTMLSelectElement).value)}
             >
-              {#each models.data.models ?? [] as model (model.id)}
-                <option value={model.id}>{model.label}</option>
-              {/each}
+              {#if tieredFamilies.length > 0}
+                {#each tieredFamilies as family (family.name)}
+                  <optgroup label={family.name}>
+                    {#each family.models as model (model.id)}
+                      <option value={model.id}>{tierLabel(model.tier)}</option>
+                    {/each}
+                  </optgroup>
+                {/each}
+              {:else}
+                {#each models.data.models ?? [] as model (model.id)}
+                  <option value={model.id}>{model.label}</option>
+                {/each}
+              {/if}
             </select>
           {/if}
         </div>

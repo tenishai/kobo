@@ -138,6 +138,16 @@ export type AgentDetail = AgentSummary & {
    * the comparison of the two: equal is "Current", different is "Behind".
    * Absent on an older server. */
   room_runtime_image?: string;
+  /** The identity the agent runs as: its Kubernetes service account and
+   * the Google service account bound to it, plus the room's project. What
+   * an access request to another project names. Absent on an older server. */
+  identity?: AgentIdentity;
+};
+
+export type AgentIdentity = {
+  service_account: string;
+  gsa_email: string;
+  project: string;
 };
 
 /** One catalog search result — a skill or a persona, both served by the
@@ -674,11 +684,14 @@ export async function destroyAgent(name: string): Promise<{ status: string }> {
  * below, but the model list is small and fixed, so it's still fetched
  * whole. */
 export async function fetchModels(): Promise<{
-  models: { id: string; label: string }[];
+  models: { id: string; label: string; family?: string | null; tier?: string | null }[];
   default: string;
 }> {
   const res = await fetch("/api/catalog/models");
-  return parse<{ models: { id: string; label: string }[]; default: string }>(
+  return parse<{
+    models: { id: string; label: string; family?: string | null; tier?: string | null }[];
+    default: string;
+  }>(
     res,
   );
 }

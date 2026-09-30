@@ -76,6 +76,7 @@ describe("harnessSections", () => {
   it("is model and runtime first, then everything the room composed", () => {
     expect(harnessSections()).toEqual([
       "runtime",
+      "identity",
       "persona",
       "skills",
       "tooling",
@@ -85,7 +86,7 @@ describe("harnessSections", () => {
   });
 
   it("is model and runtime alone for a connected agent: there is no bundle behind the rest", () => {
-    expect(harnessSections("connected")).toEqual(["runtime"]);
+    expect(harnessSections("connected")).toEqual(["runtime", "identity"]);
   });
 
   it("treats an unknown kind as composed", () => {
@@ -101,6 +102,7 @@ describe("harnessSections", () => {
   it("labels every section in plain words", () => {
     expect(HARNESS_SECTION_LABELS).toEqual({
       runtime: "Model and runtime",
+      identity: "Identity and access",
       persona: "Persona",
       skills: "Skills",
       tooling: "Tooling",

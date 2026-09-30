@@ -26,6 +26,6 @@ If your group is not listed, choose **My group is not listed**, type its name, a
 
 ## 4. Model
 
-The model the agent thinks with. The list is the set your room has enabled. The first entry is the room's default. Pick another if the work calls for it. The model is fixed when the agent is created.
+The model the agent thinks with, named by family and tier: **Best** costs the most and thinks the hardest, **Balanced** is the everyday choice, **Fast** is the cheapest. Pick the tier the work calls for. The exact model behind each tier is the room's choice and shows on the agent's Harness tab.
 
 Press **Create agent**. The room takes you to the agent's page, where a checklist shows the build as it happens. Nothing else is asked of you.

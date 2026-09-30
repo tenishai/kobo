@@ -994,6 +994,7 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
     const nav = screen.getByRole("navigation", { name: "Harness sections" });
     expect(within(nav).getAllByRole("button").map((b) => b.textContent?.trim())).toEqual([
       "Model and runtime",
+      "Identity and access",
     ]);
     expect(
       screen.getByText(

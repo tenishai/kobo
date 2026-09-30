@@ -2065,6 +2065,7 @@ class FakeName:
         draft_error: str | None = None,
         capability: str = "Helps with billing questions and small talk.",
         capability_error: str | None = None,
+        tags: list[str] | None = None,
         distill: dict | None = None,
         distill_error: str | None = None,
     ):
@@ -2094,6 +2095,8 @@ class FakeName:
         self.draft_calls: list[tuple[str, list[str]]] = []
         self._capability = capability
         self._capability_error = capability_error
+        self._tags = list(tags or [])
+        self.tags_calls: list[tuple[str, str, str | None]] = []
         self.capability_calls: list[tuple[str, list[str], list[str]]] = []
         self._distill = (
             dict(distill)
@@ -2142,6 +2145,10 @@ class FakeName:
         if self._capability_error is not None:
             raise ClientError(self._capability_error)
         return self._capability
+
+    def tags(self, persona_body: str, capability: str, group: str | None) -> list[str]:
+        self.tags_calls.append((persona_body, capability, group))
+        return list(self._tags)
 
     def distill(self, body: str) -> dict:
         self.distill_calls.append(body)
