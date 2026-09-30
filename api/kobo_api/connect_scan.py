@@ -95,6 +95,7 @@ GOJIRA_YAML = "gojira.yaml"
 # names have to agree before anything is written (see `_scan_identity`).
 BASE_DEPLOYMENT = "k8s/base/deployment.yaml"
 REPO_NAME_MISMATCH = "repo_name_mismatch"
+SERVICE_ACCOUNT_CHANGES = "service_account_changes"
 ENV_FILE = ".env"
 BUNDLE_DIR = "bundle"
 
@@ -421,6 +422,26 @@ def _scan_identity(
     service_account = pod.get("serviceAccountName") if isinstance(pod, dict) else None
     if isinstance(service_account, str) and service_account:
         report.repo_service_account = service_account
+        # 1:1 naming (ruling 2026-09-30): the agent, its service account and
+        # everything derived from the name follow the repository's name. The
+        # setup pull request writes `service_account: agent-<name>` into
+        # gojira.yaml, and the deploy platform reads the old deployment's
+        # account only when there is no gojira.yaml, so the regenerated base
+        # runs as the room's account. That is right, and it is a change the
+        # team should see coming: anything granted to the old account by
+        # hand does not follow it.
+        expected_account = f"agent-{repo_name}"
+        if service_account != expected_account:
+            report.warnings.append(
+                Finding(
+                    SERVICE_ACCOUNT_CHANGES,
+                    f"This repository deploys as service account {service_account} "
+                    f"({BASE_DEPLOYMENT}). The setup pull request moves it to "
+                    f"{expected_account}, the account the room grants model and "
+                    f"cloud access to. Anything granted to {service_account} by "
+                    "hand does not follow; review that line before merging.",
+                )
+            )
     containers = pod.get("containers") if isinstance(pod, dict) else None
     first = containers[0] if isinstance(containers, list) and containers else {}
     ports = first.get("ports") if isinstance(first, dict) else None

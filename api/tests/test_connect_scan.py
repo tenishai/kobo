@@ -17,6 +17,7 @@ import pytest
 from kobo_api.config import Config
 from kobo_api.connect_scan import (
     REPO_NAME_MISMATCH,
+    SERVICE_ACCOUNT_CHANGES,
     ADDS,
     ADDS_PREAMBLE,
     ALREADY_DEPLOYED,
@@ -635,6 +636,35 @@ def test_the_report_carries_the_name_the_repository_already_deploys_under(
     assert report.repo_name == "pr-reviewer"
     assert report.repo_service_account == "pr-reviewer"
     assert _codes(report.blockers) == []
+
+
+def test_a_service_account_that_is_not_the_agents_is_a_warning_naming_the_move(
+    session_factory, config
+):
+    """The setup PR moves the pod onto agent-<name> (gojira.yaml's
+    service_account wins once it exists). Not a blocker: the change is
+    reviewed in that PR. A warning, so nobody is surprised by it."""
+    report = _scan(session_factory, config, _repo_with_base(), name="pr-reviewer")
+
+    assert _codes(report.warnings) == [SERVICE_ACCOUNT_CHANGES]
+    message = report.warnings[0].message
+    assert "pr-reviewer" in message and "agent-pr-reviewer" in message
+    assert "review that line before merging" in message
+
+
+def test_a_repository_already_on_the_agents_service_account_gets_no_warning(
+    session_factory, config
+):
+    text = BASE_DEPLOYMENT_TEXT.replace(
+        "serviceAccountName: pr-reviewer", "serviceAccountName: agent-pr-reviewer"
+    )
+    report = _scan(
+        session_factory, config, _repo_with_base(**{"k8s/base/deployment.yaml": text}),
+        name="pr-reviewer",
+    )
+
+    assert report.repo_service_account == "agent-pr-reviewer"
+    assert SERVICE_ACCOUNT_CHANGES not in _codes(report.warnings)
 
 
 def test_a_different_name_for_a_repository_that_already_deploys_is_a_blocker(
