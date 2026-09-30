@@ -4,10 +4,9 @@
 Press **New agent** in the left rail. The room asks how you want to start:
 
 - **Build an agent.** Pick a persona and the room builds and deploys it. Start here.
-- **Team guide in one step.** A guide for your team that answers questions from its documents. One form, no persona to choose.
 - **Connect a repository you already have.** Your code, your runtime. Covered in "Before you start".
 
-Choose **Build an agent**. The create form is one column with five fields.
+Choose **Build an agent**. The create form is one column with four fields.
 
 ## 1. Persona
 
@@ -21,16 +20,12 @@ Type the agent's name. Lowercase letters, numbers and hyphens, 2 to 24 character
 
 ## 3. Group
 
-Who can see and use this agent. The menu lists your directory groups, with the shared group at the bottom. Pick your own group. Shared means everyone in the company can see the agent, and that is the exception, not the default.
+Who can see and use this agent. The menu lists your directory groups. Pick your own.
 
-If your group is not listed, choose **My group is not listed**, type its name, and press **Request it**. An operator adds it. You can wait, or create under shared for now.
+If your group is not listed, choose **My group is not listed**, type its name, and press **Request it**. An operator adds it, and you create the agent once it is there.
 
 ## 4. Model
 
 The model the agent thinks with. The list is the set your room has enabled. The first entry is the room's default. Pick another if the work calls for it. The model is fixed when the agent is created.
-
-## 5. Purpose tags (optional)
-
-Short labels like `billing` or `incident-response` that help people and other agents find what this agent is for. Up to eight.
 
 Press **Create agent**. The room takes you to the agent's page, where a checklist shows the build as it happens. Nothing else is asked of you.

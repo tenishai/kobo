@@ -482,7 +482,7 @@ export async function createAgent(body: {
   /** Purpose chips (persona-metadata plan) — normalized/capped (8)
    * server-side; an over-cap list (after de-dupe) 422s with "Eight tags at
    * most." */
-  purpose_tags: string[];
+  purpose_tags?: string[];
   /** The ACL namespace this agent belongs to (access-control Task B2,
    * always includes the commons as of the shared-group + group-requests
    * wave) — omitted (or `null`) only in the defensive case where
@@ -538,6 +538,9 @@ export type ScanReport = {
    * scan lists any other name among the blockers. */
   repo_name: string | null;
   repo_service_account: string | null;
+  /** How the agent runs, decided by the scan from the repository: "http"
+   * when it listens on a port, "headless" when it does not. */
+  run_mode: string;
 };
 
 /** The three fields the scan reads: the repository, the name it checks
@@ -547,7 +550,6 @@ export type ScanReport = {
 export type ScanRepoBody = {
   repo: string;
   name: string;
-  run_mode: string;
   group_name?: string | null;
 };
 

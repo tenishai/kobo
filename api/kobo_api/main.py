@@ -358,7 +358,10 @@ class ScanRepoRequest(BaseModel):
 
     repo: str
     name: str
-    run_mode: str = RUN_MODE_HTTP
+    # Optional since 2026-09-29: the scan decides it from the repository
+    # (a containerPort or an EXPOSE means it listens). A caller who says
+    # so explicitly is believed; the form no longer asks.
+    run_mode: str | None = None
     # The same ACL namespace `CreateAgentRequest` carries, gated by the
     # same helper on both routes. The scan carries it too, and not as a
     # formality: it reads private repositories with the room's own
@@ -1379,7 +1382,7 @@ def _connect_fields_block(payload: ScanRepoRequest) -> JSONResponse | None:
         return JSONResponse(
             {"error": f"invalid name ({name_reason}): {payload.name!r}"}, status_code=422
         )
-    if payload.run_mode not in RUN_MODES:
+    if payload.run_mode is not None and payload.run_mode not in RUN_MODES:
         return JSONResponse({"error": RUN_MODE_REFUSAL}, status_code=422)
     return None
 
@@ -1440,6 +1443,9 @@ def _scan_report_body(report: ScanReport) -> dict:
         # its own name, 2026-09-29).
         "repo_name": report.repo_name,
         "repo_service_account": report.repo_service_account,
+        # Decided by the scan, unless the caller said so: what the connect
+        # route will record.
+        "run_mode": report.run_mode,
     }
 
 
@@ -4603,7 +4609,7 @@ def create_app(
             model_id=cfg.models[0].id,
             skills=[],
             kind=KIND_CONNECTED,
-            run_mode=payload.run_mode,
+            run_mode=report.run_mode,
             secret_names=secret_names,
             # The route records the repository; `ConnectStep` checks it and
             # creates nothing.

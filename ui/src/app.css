@@ -856,6 +856,16 @@ textarea.field__input {
   text-decoration: underline;
 }
 
+/* The link the room wants pressed: the persona builder. Larger and bolder
+   than its neighbours, underlined at rest, so a first-time eye finds it
+   before the list of ready-made personas below it. */
+.btn--link-strong {
+  font-size: 0.95rem;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
 /* A link that adjusts a view rather than starting something: muted until
    it is pointed at, so it never competes with the link beside it. */
 .btn--link-quiet {

@@ -446,7 +446,7 @@ def test_guide_lists_sections_then_returns_one(session_factory, config, fake_sto
 
     listing = _call_tool(mcp, "kobo_guide", _ctx_for(MEMBER_A_EMAIL))
     ids = [entry["id"] for entry in listing["sections"]]
-    assert ids[0] == "before-you-start"
+    assert ids[0] == "quick-start"
     assert "from-your-own-assistant" in ids
     assert all(set(entry) == {"id", "title", "summary"} for entry in listing["sections"])
 

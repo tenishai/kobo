@@ -221,6 +221,7 @@ def test_scan_reports_nothing_for_a_repository_the_room_can_work_with(client):
         "repo": REPO,
         "repo_name": None,
         "repo_service_account": None,
+        "run_mode": "http",
     }
 
 

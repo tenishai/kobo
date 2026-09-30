@@ -1,7 +1,7 @@
 <script module lang="ts">
   /** Which station a row stands for. Exported from the module block so the
    * shell can name the choice it is handed without redeclaring the union. */
-  export type NewAgentChoice = "build" | "guide" | "connect";
+  export type NewAgentChoice = "build" | "connect";
 </script>
 
 <script lang="ts">
@@ -36,11 +36,6 @@
       choice: "build",
       title: "Build an agent",
       desc: "Pick a persona and the room builds and deploys it on its runtime.",
-    },
-    {
-      choice: "guide",
-      title: "Team guide in one step",
-      desc: "A guide for your team that answers questions from its documents. One form.",
     },
     {
       choice: "connect",

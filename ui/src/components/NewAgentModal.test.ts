@@ -16,11 +16,6 @@ const ROWS: { title: string; desc: string; choice: string }[] = [
     choice: "build",
   },
   {
-    title: "Team guide in one step",
-    desc: "A guide for your team that answers questions from its documents. One form.",
-    choice: "guide",
-  },
-  {
     title: "Connect a repository you already have",
     desc: "Your code, your runtime. The room deploys and watches it.",
     choice: "connect",
@@ -53,7 +48,7 @@ describe("NewAgentModal", () => {
     expect(screen.getByText("How do you want to start?")).not.toBeNull();
   });
 
-  it("offers exactly three ways to start, in order, each with its one line", () => {
+  it("offers exactly two ways to start, in order, each with its one line", () => {
     const { container } = renderWithClient(NewAgentModal, {
       open: true,
       onclose: () => {},
@@ -61,7 +56,7 @@ describe("NewAgentModal", () => {
     });
 
     const rows = [...container.querySelectorAll(".list__row")];
-    expect(rows.length).toBe(3);
+    expect(rows.length).toBe(2);
     rows.forEach((row, index) => {
       expect(row.tagName.toLowerCase()).toBe("button");
       expect(row.textContent).toContain(ROWS[index].title);

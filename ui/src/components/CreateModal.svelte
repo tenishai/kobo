@@ -295,16 +295,11 @@
    * operator has no reason to open. A persona picked from search carries no
    * draft and so touches the tags not at all: switching persona must not
    * quietly wipe tags somebody typed by hand. */
-  function handlePersonaCreated(persona: CatalogEntry, draftedTags: string[]): void {
+  function handlePersonaCreated(persona: CatalogEntry, _draftedTags: string[]): void {
     personaOverride = persona.id;
     builderOpen = false;
     personaQ = "";
     personaSearchTerm = "";
-    if (draftedTags.length > 0) {
-      purposeTags = draftedTags;
-      purposeTagInput = "";
-      tagsOpen = true;
-    }
     toast.success("Persona ready");
   }
 
@@ -413,49 +408,6 @@
     );
   }
 
-  // --- Purpose tags (persona-metadata plan) -------------------------------
-  //
-  // Free chips behind a disclosure that starts shut: most agents are created
-  // without any, and an editor nobody uses is the wrong thing to spend the
-  // top of a dialog on. Pre-filled once when a builder-drafted persona
-  // arrives with tags (see `handlePersonaCreated`), otherwise a plain
-  // add/remove list capped at 8 -- same normalize-on-add discipline
-  // `MetadataDetails`'s own chips editor uses. The example row offers four
-  // starter tags that add themselves through `addExampleTag`, the same
-  // normalize/cap-checked path just skinned as a one-click chip.
-
-  let tagsOpen = $state(false);
-  let purposeTags = $state<string[]>([]);
-  let purposeTagInput = $state("");
-  const PURPOSE_TAGS_CAP = 8;
-
-  /** Picked to fit this room's own world (all four are names of real work
-   * this room's agents actually do), not a generic SaaS example set. */
-  const PURPOSE_TAG_EXAMPLES = ["networking", "incident-response", "gcp", "billing"];
-
-  function addPurposeTag(): void {
-    const value = purposeTagInput.trim().toLowerCase();
-    if (value.length === 0) {
-      return;
-    }
-    if (purposeTags.includes(value) || purposeTags.length >= PURPOSE_TAGS_CAP) {
-      purposeTagInput = "";
-      return;
-    }
-    purposeTags = [...purposeTags, value];
-    purposeTagInput = "";
-  }
-
-  function addExampleTag(tag: string): void {
-    if (purposeTags.includes(tag) || purposeTags.length >= PURPOSE_TAGS_CAP) {
-      return;
-    }
-    purposeTags = [...purposeTags, tag];
-  }
-
-  function removePurposeTag(value: string): void {
-    purposeTags = purposeTags.filter((t) => t !== value);
-  }
 
   // --- Unwired / empty catalogs --------------------------------------------
 
@@ -490,9 +442,6 @@
       groupRequestNote = "";
       groupRequestError = null;
       groupRequestConfirmed = false;
-      tagsOpen = false;
-      purposeTags = [];
-      purposeTagInput = "";
       hideCard();
     }
   });
@@ -542,7 +491,6 @@
         // dialog no longer picks them.
         skills: [],
         model: selectedModel,
-        purpose_tags: purposeTags,
         group_name: groupOptionsAvailable ? groupValue : undefined,
       },
       {
@@ -662,7 +610,7 @@
             </button>
             <button
               type="button"
-              class="btn--link"
+              class="btn--link btn--link-strong"
               onclick={() => (builderOpen = true)}
             >
               Build your own persona
@@ -816,28 +764,16 @@
                   {/each}
                 </optgroup>
               {/if}
-              <!-- Shared sits last on purpose: teams should pick their own
-                   group, and the commons is the exception, not the default
-                   eye lands on. -->
-              {#if sharedGroupOptions.length > 0}
-                <optgroup label="Shared">
-                  {#each sharedGroupOptions as group (group.name)}
-                    <option value={group.name}>{group.name} (everyone in the company)</option>
-                  {/each}
-                </optgroup>
-              {/if}
+              <!-- No Shared entry (2026-09-29): an agent belongs to a team.
+                   The commons still exists for an operator to move an agent
+                   into; it is not a place to create one. -->
             </select>
             <p class="field__help">Who can see and use this agent.</p>
-            {#if selectedGroupKind === "shared"}
-              <p class="field__help">
-                Shared agents are visible to everyone in the company.
-              </p>
-            {/if}
 
             {#if groupRequestConfirmed}
               <p class="field__status field__status--ok" role="status">
-                Requested. A room admin will add it. Pick shared to create this
-                agent now, or wait for your group.
+                Requested. A room admin will add it, and you can create the
+                agent once it is listed.
               </p>
             {:else if groupValue === GROUP_NOT_LISTED}
               <div class="create-form__request">
@@ -902,83 +838,6 @@
             </select>
           {/if}
         </div>
-      </div>
-
-      <!-- 5. Purpose tags, folded away until asked for -->
-      <div class="field">
-        <button
-          type="button"
-          class="field__disclosure"
-          aria-expanded={tagsOpen}
-          aria-controls="create-purpose-tags"
-          onclick={() => (tagsOpen = !tagsOpen)}
-        >
-          Add purpose tags (optional)
-        </button>
-        {#if tagsOpen}
-          <div id="create-purpose-tags" class="field__drawer">
-            <p class="field__help">
-              Short labels that help people and agents discover what this agent is for.
-            </p>
-            <div class="chip-row">
-              {#each PURPOSE_TAG_EXAMPLES as example (example)}
-                <button
-                  type="button"
-                  class="chip chip--action"
-                  disabled={purposeTags.includes(example) ||
-                    purposeTags.length >= PURPOSE_TAGS_CAP}
-                  onclick={() => addExampleTag(example)}
-                >
-                  {example}
-                </button>
-              {/each}
-            </div>
-            {#if purposeTags.length > 0}
-              <div class="chip-row">
-                {#each purposeTags as tag (tag)}
-                  <span class="chip">
-                    {tag}
-                    <button
-                      type="button"
-                      class="chip__remove"
-                      aria-label={`Remove ${tag}`}
-                      onclick={() => removePurposeTag(tag)}
-                    >
-                      &times;
-                    </button>
-                  </span>
-                {/each}
-              </div>
-            {/if}
-            <div class="field__row">
-              <input
-                id="create-purpose-tag-input"
-                class="field__input"
-                type="text"
-                bind:value={purposeTagInput}
-                placeholder="Add a tag"
-                aria-label="Purpose tags"
-                autocomplete="off"
-                onkeydown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    addPurposeTag();
-                  }
-                }}
-              />
-              <button
-                type="button"
-                class="btn"
-                disabled={purposeTagInput.trim().length === 0 ||
-                  purposeTags.length >= PURPOSE_TAGS_CAP}
-                onclick={addPurposeTag}
-              >
-                Add
-              </button>
-            </div>
-            <p class="field__help">Up to 8 tags.</p>
-          </div>
-        {/if}
       </div>
 
       {#if submitError}

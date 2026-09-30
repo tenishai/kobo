@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 
 from kobo_api.clients import GitHubClient, GojiraClient
 from kobo_api.config import Config
-from kobo_api.kinds import RUN_MODE_HEADLESS
+from kobo_api.kinds import RUN_MODE_HEADLESS, RUN_MODE_HTTP
 from kobo_api.models import Agent
 from kobo_api.repo_name import is_in_org
 from kobo_api.runtime import registry_root_of
@@ -133,6 +133,16 @@ class ScanReport:
     repo_name: str | None = None
     # Its service account, read from the same Deployment, for the report.
     repo_service_account: str | None = None
+    # The first container's first containerPort in that Deployment, if any.
+    repo_port: int | None = None
+    # Whether the Dockerfile EXPOSEs the port the platform probes; None until
+    # the Dockerfile has been read.
+    dockerfile_exposes_http: bool | None = None
+    # How the agent runs, decided by the scan (2026-09-29: the form no longer
+    # asks): `http` when the repository says it listens (a containerPort in
+    # its Deployment, or an EXPOSE in its Dockerfile), else `headless`. A
+    # caller may still say so explicitly and is believed.
+    run_mode: str = RUN_MODE_HTTP
 
 
 def scan_repo(
@@ -143,9 +153,12 @@ def scan_repo(
     *,
     repo: str,
     name: str,
-    run_mode: str,
+    run_mode: str | None = None,
 ) -> ScanReport:
     """Everything the room knows about connecting `repo` as `name`.
+
+    `run_mode` None means "decide from the repository" (see
+    `ScanReport.run_mode`); a value is a caller's explicit word.
 
     `gojira` is taken and not consulted. The deploy platform exposes no
     lookup by repository -- its API creates an app and answers 409 when one
@@ -186,7 +199,7 @@ def scan_repo(
         report.blockers.append(
             Finding(NAME_TAKEN, f"The name {name} is already taken in this room.")
         )
-    if run_mode == RUN_MODE_HEADLESS and not config.connected_headless_class:
+    if report.run_mode == RUN_MODE_HEADLESS and not config.connected_headless_class:
         report.blockers.append(Finding(HEADLESS_UNAVAILABLE_CODE, HEADLESS_UNAVAILABLE))
 
     return report
@@ -200,7 +213,7 @@ def _scan_the_repository(
     *,
     repo: str,
     name: str,
-    run_mode: str,
+    run_mode: str | None,
 ) -> None:
     """The reads, in the order a person would make them, stopping the moment
     an answer makes the next question meaningless."""
@@ -250,7 +263,7 @@ def _scan_the_repository(
     entries = set(github.list_root(repo))
 
     if DOCKERFILE in entries:
-        _scan_dockerfile(github, config, report, repo=repo, run_mode=run_mode)
+        _scan_dockerfile(github, config, report, repo=repo)
     else:
         report.blockers.append(
             Finding(
@@ -265,6 +278,7 @@ def _scan_the_repository(
     # Not gated on the listing: the file sits two directories down, and one
     # read that answers None is the same cost as an existence check.
     _scan_identity(github, report, repo=repo, name=name)
+    _decide_run_mode(report, requested=run_mode)
 
     if ENV_FILE in entries:
         report.warnings.append(
@@ -302,7 +316,6 @@ def _scan_dockerfile(
     report: ScanReport,
     *,
     repo: str,
-    run_mode: str,
 ) -> None:
     text = github.read_file(repo, DOCKERFILE)
     if text is None:
@@ -335,14 +348,7 @@ def _scan_dockerfile(
                 )
             )
 
-    if run_mode != RUN_MODE_HEADLESS and not _exposes_http_port(text):
-        report.warnings.append(
-            Finding(
-                NO_PORT_EXPOSED,
-                f"Nothing in the Dockerfile opens port {HTTP_PORT}. The "
-                "deploy will show whether it serves one either way.",
-            )
-        )
+    report.dockerfile_exposes_http = _exposes_http_port(text)
 
 
 def _scan_gojira_yaml(
@@ -415,6 +421,14 @@ def _scan_identity(
     service_account = pod.get("serviceAccountName") if isinstance(pod, dict) else None
     if isinstance(service_account, str) and service_account:
         report.repo_service_account = service_account
+    containers = pod.get("containers") if isinstance(pod, dict) else None
+    first = containers[0] if isinstance(containers, list) and containers else {}
+    ports = first.get("ports") if isinstance(first, dict) else None
+    for entry in ports or []:
+        port = entry.get("containerPort") if isinstance(entry, dict) else None
+        if isinstance(port, int) and not isinstance(port, bool) and 0 < port < 65536:
+            report.repo_port = port
+            break
     if name and name != repo_name:
         report.blockers.append(
             Finding(
@@ -425,6 +439,36 @@ def _scan_identity(
                 "it did not write.",
             )
         )
+
+
+def _decide_run_mode(report: ScanReport, *, requested: str | None) -> None:
+    """How the agent runs, from what the repository says, unless a caller
+    said so themselves.
+
+    The form used to ask (2026-09-29 it stopped): a person choosing between
+    "listens on a port" and "does not" was answering a question the
+    repository already answers, and could answer it wrong. A containerPort
+    in the base Deployment or an EXPOSE in the Dockerfile means the platform
+    can probe it; nothing of either means a worker or a chat bot, which the
+    room hosts as headless when it has a class for that (the blocker at the
+    end of `scan_repo` says when it does not).
+
+    An explicit `requested` mode is kept, with the old warning when it
+    claims a port the repository does not show.
+    """
+    listens = report.repo_port is not None or bool(report.dockerfile_exposes_http)
+    if requested is not None:
+        report.run_mode = requested
+        if requested != RUN_MODE_HEADLESS and not listens:
+            report.warnings.append(
+                Finding(
+                    NO_PORT_EXPOSED,
+                    f"Nothing in the repository opens port {HTTP_PORT}. The "
+                    "deploy will show whether it serves one either way.",
+                )
+            )
+        return
+    report.run_mode = RUN_MODE_HTTP if listens else RUN_MODE_HEADLESS
 
 
 def _base_image(dockerfile_text: str) -> str | None:

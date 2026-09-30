@@ -12,6 +12,7 @@ from kobo_api.guide import _PACKAGE_GUIDE_DIR, GuideError, find_section, load_gu
 from kobo_api.main import create_app
 
 EXPECTED_ORDER = [
+    "quick-start",
     "before-you-start",
     "create-your-first-agent",
     "the-agent-page",

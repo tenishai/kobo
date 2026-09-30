@@ -9,8 +9,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import ConnectModal from "./ConnectModal.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 
-const HTTP_CHOICE = "It listens on a port (the platform checks its health there)";
-const HEADLESS_CHOICE = "It does not listen on a port (a chat bot or a worker)";
 const OWNER_CHECKBOX = "I own this repository or have its owner's agreement";
 
 const CLEAN_REPORT = {
@@ -64,24 +62,12 @@ describe("ConnectModal — the form", () => {
     stubConnectRoutes();
   });
 
-  it("asks for a repository, a name, how it runs, and the owner's word", async () => {
+  it("asks for a repository, a name, and the owner's word", async () => {
     renderWithClient(ConnectModal, { open: true, onclose: () => {} });
 
     expect(await screen.findByLabelText("Repository")).not.toBeNull();
     expect(screen.getByLabelText("Name")).not.toBeNull();
-    expect(screen.getByRole("radio", { name: HTTP_CHOICE })).not.toBeNull();
-    expect(screen.getByRole("radio", { name: HEADLESS_CHOICE })).not.toBeNull();
     expect(screen.getByRole("checkbox", { name: OWNER_CHECKBOX })).not.toBeNull();
-  });
-
-  it("says the agent only ever gets an in-cluster address, either way it runs", async () => {
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    expect(
-      await screen.findByText(
-        "Either way the agent gets an address inside the cluster only. Nothing here makes it reachable from outside.",
-      ),
-    ).not.toBeNull();
   });
 
   it("keeps Scan and Connect shut on an empty form", async () => {
@@ -268,54 +254,6 @@ describe("ConnectModal — the scan report", () => {
     ).not.toBeNull();
   });
 
-  it("disables the no-HTTP-port option, with the room's own reason, once a scan says the room has no class for it", async () => {
-    stubConnectRoutes({
-      "/api/connect/scan": {
-        ...CLEAN_REPORT,
-        blockers: [
-          {
-            code: "headless_unavailable",
-            message: "agents with no HTTP port are not available in this room yet",
-          },
-        ],
-      },
-    });
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await fillTheForm();
-    await fireEvent.click(screen.getByRole("radio", { name: HEADLESS_CHOICE }));
-    await fireEvent.click(scanButton());
-
-    await waitFor(() => {
-      expect(
-        (screen.getByRole("radio", { name: HEADLESS_CHOICE }) as HTMLInputElement)
-          .disabled,
-      ).toBe(true);
-    });
-    // The room's sentence, not a reworded one. It appears both as the
-    // blocker and beside the option it disables.
-    expect(
-      screen.getAllByText(
-        "agents with no HTTP port are not available in this room yet",
-      ).length,
-    ).toBeGreaterThan(0);
-
-    const headless = screen.getByRole("radio", {
-      name: HEADLESS_CHOICE,
-    }) as HTMLInputElement;
-    const http = screen.getByRole("radio", { name: HTTP_CHOICE }) as HTMLInputElement;
-    expect(http.disabled).toBe(false);
-    // The answer moves off the option that was just switched off, so the
-    // form is still one a person can finish.
-    expect(http.checked).toBe(true);
-    expect(headless.checked).toBe(false);
-    // And the reason is tied to the control, not only printed under it.
-    expect(headless.getAttribute("aria-describedby")).toBe("connect-headless-reason");
-    expect(document.getElementById("connect-headless-reason")?.textContent).toContain(
-      "agents with no HTTP port are not available in this room yet",
-    );
-  });
-
 });
 
 describe("ConnectModal — connecting", () => {
@@ -323,7 +261,7 @@ describe("ConnectModal — connecting", () => {
     vi.unstubAllGlobals();
   });
 
-  it("posts the repository, the name, the run mode, empty secret names and the confirmation", async () => {
+  it("posts the repository, the name, empty secret names and the confirmation", async () => {
     stubConnectRoutes({
       "/api/connect/scan": CLEAN_REPORT,
       "/api/agents/connect": { name: "release-bot", status: "pending" },
@@ -356,7 +294,7 @@ describe("ConnectModal — connecting", () => {
     const body = JSON.parse((call?.[1] as RequestInit).body as string);
     expect(body.repo).toBe("acme/release-bot");
     expect(body.name).toBe("release-bot");
-    expect(body.run_mode).toBe("http");
+    expect(body).not.toHaveProperty("run_mode");
     expect(body.secret_names).toEqual([]);
     expect(body.confirm_repo_owner).toBe(true);
     await waitFor(() => {
