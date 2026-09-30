@@ -24,7 +24,7 @@ Look around:
 Create and shape an agent:
 - **create agent**: persona, group, name, tags, skills. Same rules as the form, same checklist on the agent's page.
 - **set agent persona**, **set agent skills**, **add agent tool**: change what the agent is and does.
-- **create persona**, **move persona**, **archive persona**: the Personas page from chat.
+- **create persona**, **move persona**, **archive persona**: the persona builder and the Manage row from chat.
 - **create skill**, **create tool**: publish to your organization's catalogs.
 
 Run it:

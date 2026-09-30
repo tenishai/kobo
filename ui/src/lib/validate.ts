@@ -199,7 +199,7 @@ export function mergeDistillFields(
 /**
  * The groups a persona may be filed under from this caller's seat (persona
  * team scope), for the builder's "Who is this persona for?" select and the
- * Personas page's "Move to..." menu. Never includes the commons: both
+ * persona sheet's "Move to..." menu. Never includes the commons: both
  * surfaces add "Everyone (shared)" as their own last option.
  *
  * A caller's own groups come from whoami (config names, the same names the

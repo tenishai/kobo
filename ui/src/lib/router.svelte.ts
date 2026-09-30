@@ -11,8 +11,7 @@
 export type Route =
   | { page: "dashboard" }
   | { page: "agent"; name: string; tab?: string; section?: string }
-  | { page: "getting-started"; section?: string }
-  | { page: "personas" };
+  | { page: "getting-started"; section?: string };
 
 const DASHBOARD: Route = { page: "dashboard" };
 
@@ -50,9 +49,6 @@ export function parseHash(hash: string): Route {
       route.section = segments[1];
     }
     return route;
-  }
-  if (segments.length === 1 && segments[0] === "personas") {
-    return { page: "personas" };
   }
   if (segments[0] === "agents" && segments.length > 1 && segments[1].length > 0) {
     const raw = segments[1];
@@ -92,9 +88,6 @@ export function formatHash(route: Route): string {
   if (route.page === "getting-started") {
     return route.section ? `#/getting-started/${route.section}` : "#/getting-started";
   }
-  if (route.page === "personas") {
-    return "#/personas";
-  }
   return "#/";
 }
 
@@ -104,7 +97,7 @@ function currentHash(): string {
 
 /** Flat, mutable shape of the live route state (see `route` below). */
 type RouteState = {
-  page: "dashboard" | "agent" | "getting-started" | "personas";
+  page: "dashboard" | "agent" | "getting-started";
   name: string | null;
   /** The agent page's tab, and the Harness tab's section (or the guide's
    * section on the getting-started page), as written in the hash -- `null`

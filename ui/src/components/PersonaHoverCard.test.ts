@@ -134,14 +134,14 @@ describe("PersonaHoverCard", () => {
     expect(container.querySelector(".hover-card__footer")).toBeNull();
   });
 
-  it("links to the personas page for the whole thing", async () => {
+  it("hands the persona id to onopen for the whole thing", async () => {
     stubFetch({ "/api/personas/aria": ARIA });
-    renderCard();
+    const onopen = vi.fn();
+    renderWithClient(PersonaHoverCard, { personaId: "aria", row: null, boundary: null, onopen });
 
-    const link = (await screen.findByText(
-      "Open the full persona",
-    )) as HTMLAnchorElement;
-    expect(link.getAttribute("href")).toBe("#/personas");
+    const button = await screen.findByRole("button", { name: "Read the full persona" });
+    button.click();
+    expect(onopen).toHaveBeenCalledWith("aria");
   });
 
   it("says so plainly when it cannot load", async () => {

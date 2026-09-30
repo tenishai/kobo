@@ -394,7 +394,7 @@ export function personasSearchQuery(
 }
 
 /** The ids of the personas this caller may re-file (`GET
- * /api/personas/movable`): which cards on the Personas page get a Move
+ * /api/personas/movable`): which personas get a Move
  * action. */
 export function movablePersonasQuery() {
   return queryOptions({

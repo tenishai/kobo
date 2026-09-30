@@ -99,18 +99,6 @@ describe("Sidebar", () => {
     expect(getting.getAttribute("title")).toBe("Getting started");
   });
 
-  it("renders a Personas nav link pointing at #/personas, marked current only on the personas page", () => {
-    renderWithClient(Sidebar, { active: "personas", onnewagent: () => {}, onprefetch: () => {} });
-    const personas = screen.getByRole("link", { name: "Personas" });
-    expect(personas.getAttribute("href")).toBe("#/personas");
-    expect(personas.getAttribute("aria-current")).toBe("page");
-    expect(personas.getAttribute("aria-label")).toBe("Personas");
-    expect(personas.getAttribute("title")).toBe("Personas");
-
-    const agents = screen.getByRole("link", { name: "Agents" });
-    expect(agents.getAttribute("aria-current")).toBeNull();
-  });
-
   it("keeps the new-agent button's accessible name 'New agent' via an unconditional aria-label", () => {
     renderWithClient(Sidebar, { active: "dashboard", onnewagent: () => {}, onprefetch: () => {} });
     const button = screen.getByRole("button", { name: "New agent" });

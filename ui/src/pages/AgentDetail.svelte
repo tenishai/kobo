@@ -558,7 +558,22 @@
                  who-they-are on the hover. The whole line was its own grey
                  row until this wave; in a one-line run it would crowd out
                  every other fact beside it. -->
-            <span class="agent-detail__persona" title={personaLine}>{personaName}</span>
+            {#if data.repo_full_name}
+              <!-- Personas-in-place wave: the one place a persona lives in
+                   GitHub is the agent's own bundle, so the name opens that
+                   file -- exactly what the running agent was built from. -->
+              <a
+                class="agent-detail__repo agent-detail__persona"
+                href={`https://github.com/${data.repo_full_name}/blob/main/bundle/persona.md`}
+                target="_blank"
+                rel="noreferrer"
+                title={personaLine}
+              >
+                {personaName}
+              </a>
+            {:else}
+              <span class="agent-detail__persona" title={personaLine}>{personaName}</span>
+            {/if}
           {/if}
           {#if dashboardUrl}
             <a
@@ -623,7 +638,19 @@
         <h2 class="panel__heading">Persona</h2>
         <dl class="agent-detail__facts">
           <dt>Soul</dt>
-          <dd>{personaLine}</dd>
+          <dd>
+            {personaLine}
+            {#if data.repo_full_name}
+              <a
+                class="agent-detail__repo"
+                href={`https://github.com/${data.repo_full_name}/blob/main/bundle/persona.md`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open in GitHub
+              </a>
+            {/if}
+          </dd>
           <dt>Team</dt>
           <dd>{data.team}</dd>
           <dt>Purpose</dt>

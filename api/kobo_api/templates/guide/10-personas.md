@@ -1,7 +1,7 @@
 # Personas
 <!-- summary: Built-in personas, building your own, the naming rule, and which group a persona belongs to. -->
 
-A persona is the soul of an agent: who it is, how it works, and its always and never rules. An agent is built from exactly one. The **Personas** page in the left rail lists them all.
+A persona is the soul of an agent: who it is, how it works, and its always and never rules. An agent is built from exactly one. You meet them on the create form, where you pick one.
 
 ## Built-in personas
 
@@ -10,6 +10,12 @@ The room ships five general personas, kept to the house standard: efficient, ple
 ## Personas from your groups
 
 Below the built-ins sits a pill for every group that has personas of its own. Press one to see that group's personas. A persona is filed under the group that made it, so it stays that team's unless they choose to share it. Some of the room's earlier built-ins now live this way: the other cloud operators under infra-engineering, the marketing strategist under marketing, the workspace admin under corporate-it.
+
+## Reading one in full
+
+Rest your pointer on a persona to see its card. **Read the full persona** opens the whole thing in place: who they are, everything they do, every rule, and who made it. **Back** returns you to the list with your pick unchanged.
+
+On an agent's page, the persona name links to the `bundle/persona.md` file in the agent's repository. That file is exactly what the running agent was built from.
 
 ## Build your own
 
@@ -26,4 +32,4 @@ A persona name is one or two words, three at most, like `sentinel`, `ledger-keep
 
 ## Moving and archiving
 
-On the Personas page, a persona's maker, a member of its group, or an operator can **Move to** another group or to everyone. **Archive** takes it out of every list without deleting it; agents already built from it keep running, and **Show archived** brings it back. Built-in personas stay shared and never move.
+At the bottom of the full persona, its maker, a member of its group, or an operator can **Move to** another group or to everyone, and **Archive** it. Archiving takes it out of every list without deleting it; agents already built from it keep running. Ask an operator to bring an archived persona back. Built-in personas stay shared and never move.

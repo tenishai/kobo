@@ -889,7 +889,7 @@ describe("CreateModal — the persona hover card", () => {
 
   it("holds open while the pointer is on the card itself", async () => {
     // Otherwise the card would dismiss itself on the way to its own
-    // "Open the full persona" link.
+    // "Read the full persona" button.
     const { row } = await openWithHelper();
     await rest(row);
     const card = await screen.findByRole("tooltip");

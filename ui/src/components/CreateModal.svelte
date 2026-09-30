@@ -57,6 +57,7 @@
   import ErrorState from "./ErrorState.svelte";
   import Modal from "./Modal.svelte";
   import PersonaBuilder from "./PersonaBuilder.svelte";
+  import PersonaSheet from "./PersonaSheet.svelte";
   import PersonaHoverCard from "./PersonaHoverCard.svelte";
   import Skeleton from "./Skeleton.svelte";
   import {
@@ -328,6 +329,22 @@
 
   let builderOpen = $state(false);
 
+  /** The persona being read in full, swapped in over the list the way the
+   * builder is (personas-in-place wave, 2026-09-30). */
+  let readingPersona = $state<string | null>(null);
+
+  function readPersona(id: string): void {
+    hideCard();
+    readingPersona = id;
+  }
+
+  /** An archived persona leaves the list; a selection of it goes with it. */
+  function handlePersonaArchived(id: string): void {
+    if (selectedPersona === id) {
+      personaOverride = null;
+    }
+  }
+
   /** A builder-drafted persona arrives with the tags its draft step already
    * worked out, so those seed the chips editor and the disclosure opens to
    * show them -- otherwise they would be filed away behind a shut fold the
@@ -476,6 +493,7 @@
       personaSearchTerm = "";
       selectedPersonaTeam = null;
       builderOpen = false;
+      readingPersona = null;
       groupValue = "";
       groupRequestName = "";
       groupRequestNote = "";
@@ -617,7 +635,12 @@
   </div>
 {/snippet}
 
-<Modal {open} title="Create agent" {onclose} footer={builderOpen ? undefined : createFooter}>
+<Modal
+  {open}
+  title="Create agent"
+  {onclose}
+  footer={builderOpen || readingPersona !== null ? undefined : createFooter}
+>
   <form
     class="modal__form"
     onsubmit={(event) => {
@@ -627,6 +650,12 @@
   >
     {#if personasUnwired}
       <EmptyState message={UNWIRED_MESSAGE} />
+    {:else if readingPersona !== null}
+      <PersonaSheet
+        personaId={readingPersona}
+        onback={() => (readingPersona = null)}
+        onarchived={handlePersonaArchived}
+      />
     {:else if builderOpen}
       <PersonaBuilder
         oncancel={() => (builderOpen = false)}
@@ -728,6 +757,7 @@
             boundary={cardBoundary}
             onkeep={cancelHover}
             onrelease={releaseCard}
+            onopen={readPersona}
           />
         {/if}
       </div>

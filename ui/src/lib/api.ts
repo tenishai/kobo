@@ -947,7 +947,7 @@ export async function movePersona(id: string, team: string): Promise<CatalogEntr
 }
 
 /** `GET /api/personas/movable` — the ids of the personas this caller may
- * re-file, worked out server-side so the Personas page never copies the
+ * re-file, worked out server-side so the persona sheet never copies the
  * rule. */
 export async function movablePersonas(): Promise<string[]> {
   const res = await fetch("/api/personas/movable");

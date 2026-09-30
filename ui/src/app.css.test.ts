@@ -106,6 +106,7 @@ describe("app.css typography", () => {
       "components/GroupRequestsCard.svelte": [".group-requests-card__name"], // group
       "components/HarnessPanel.svelte": [".harness__ref"], // image reference
       "components/PersonaHoverCard.svelte": [".hover-card__name"], // the persona
+      "components/PersonaSheet.svelte": [".sheet__name"], // the persona, read in full
       "components/MemoryPanel.svelte": [
         ".memory-row__name",
         ".memory-form__filename",
