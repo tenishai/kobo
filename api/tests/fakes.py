@@ -1586,6 +1586,11 @@ class FakeKubectl:
             raise ClientError(self._deployment_status_error)
         return self._deployment_status.get((namespace, deploy), FAKE_DEPLOYMENT_STATUS_SETTLED)
 
+    def pods_json(self, namespace: str) -> list[dict]:
+        # Set `fake.pods = {namespace: [pod, ...]}` on the instance; the
+        # health probe reads restart counts and wait reasons from them.
+        return list(getattr(self, "pods", {}).get(namespace, []))
+
     def restart_deploy(self, namespace: str, deploy: str) -> None:
         if self._restart_error is not None:
             raise ClientError(self._restart_error)

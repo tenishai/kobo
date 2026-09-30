@@ -442,7 +442,7 @@
       <div class="agent-detail__heading">
         <div class="agent-detail__title">
           <h1 class="agent-detail__name">{data.name}</h1>
-          <StatusBadge status={data.status} />
+          <StatusBadge status={data.status} health={data.health} />
           <!-- The same marker the dashboard card carries, in the same
                words, so the two pages agree about what this agent is. -->
           {#if connected}
@@ -712,6 +712,17 @@
         >
           {retry.isPending ? "Resuming…" : "Resume"}
         </button>
+      </div>
+    {:else if data.status === "ready" && data.health?.state === "down"}
+      <!-- Setup finished, pod is not running: the cluster's own verdict
+           (kobo_api.health), refreshed every minute. -->
+      <div class="waiting-banner waiting-banner--down" role="alert">
+        <p class="waiting-banner__message">
+          This agent is down: {data.health.reason ?? "it is not running"}.
+          {#if dashboardUrl}
+            <a href={dashboardUrl} target="_blank" rel="noreferrer">Open its dashboard</a> for logs.
+          {/if}
+        </p>
       </div>
     {/if}
 
@@ -1154,6 +1165,11 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--panel);
+  }
+
+  .waiting-banner--down {
+    border-color: var(--fail);
+    background: color-mix(in srgb, var(--fail) 8%, var(--panel));
   }
 
   .waiting-banner__message {

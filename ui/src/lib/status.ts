@@ -23,6 +23,10 @@ export function anyAgentActive(agents: { status: string }[]): boolean {
 
 /** Poll cadence while something is actively changing. */
 const ACTIVE_POLL_MS = 3500;
+/** Poll cadence once everything has settled: the room re-asks the cluster
+ * for each ready agent's health once a minute (kobo_api.health), and a
+ * dashboard left open should show a pod that went down without a reload. */
+const HEALTH_POLL_MS = 60_000;
 
 /**
  * Refetch interval for the agent list query. Polls while any agent is
@@ -37,7 +41,7 @@ export function listRefetchInterval(
   if (agents === undefined) {
     return false;
   }
-  return anyAgentActive(agents) ? ACTIVE_POLL_MS : false;
+  return anyAgentActive(agents) ? ACTIVE_POLL_MS : HEALTH_POLL_MS;
 }
 
 /**
@@ -52,7 +56,7 @@ export function detailRefetchInterval(
   if (agent === undefined) {
     return false;
   }
-  return isTerminal(agent.status) ? false : ACTIVE_POLL_MS;
+  return isTerminal(agent.status) ? HEALTH_POLL_MS : ACTIVE_POLL_MS;
 }
 
 /**

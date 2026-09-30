@@ -176,6 +176,7 @@ from kobo_api.personas import (
     read_index as personas_read_index,
 )
 from kobo_api.pr_broker import BrokerAuthError, mint_scoped_token, verify_agent_token
+from kobo_api.health import AgentHealth, health_sweep_loop
 from kobo_api.provisioner import (
     STEP_LABELS,
     interrupted_sweep_loop,
@@ -2458,6 +2459,9 @@ async def _room_lifespan(app: FastAPI):
         # Parked connected agents: asks the platform once a minute whether
         # their setup pull request has been merged, and resumes them.
         resumer = asyncio.create_task(waiting_sweep_loop(app))
+        # Is each ready agent actually running: asks the cluster once a
+        # minute so the dashboard never wears Ready over a crashed pod.
+        health = asyncio.create_task(health_sweep_loop(app))
         # A thread rather than a task, because the listing it reads is a
         # blocking `gh` call: on the loop it would stall every request in
         # the process for as long as GitHub takes.
@@ -2476,7 +2480,7 @@ async def _room_lifespan(app: FastAPI):
                 # with a timeout, and on a daemon thread, so it can never
                 # be the reason this process will not exit.
                 warmer.stop()
-            for task in (nightly, sweeper, resumer):
+            for task in (nightly, sweeper, resumer, health):
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
@@ -2736,6 +2740,9 @@ def create_app(
     app.state.config = config
     app.state.clients = clients
     app.state.session_factory = session_factory
+    # Live health per ready agent (kobo_api.health): filled by the sweep,
+    # read by the list and detail routes, never persisted.
+    app.state.health = {}
     # The repository typeahead's cache (kobo_api.repo_search): one listing
     # for the whole room, so it lives on the app rather than being rebuilt
     # per request. None when the room has no GitHub client, which is the
@@ -4820,6 +4827,12 @@ def create_app(
             {"name": agent.name, "kind": agent.kind, "run_mode": agent.run_mode}
         )
 
+    def _health_body(name: str) -> dict | None:
+        """The last health verdict for `name`, or None when nothing has
+        asked the cluster yet (a fresh replica, or an agent not ready)."""
+        verdict: AgentHealth | None = getattr(app.state, "health", {}).get(name)
+        return verdict.body() if verdict is not None else None
+
     @app.get("/api/agents")
     def list_agents(request: Request, session: Session = Depends(get_session)) -> dict:  # noqa: B008
         cfg: Config = app.state.config
@@ -4840,6 +4853,7 @@ def create_app(
                     "model_label": _model_label(cfg, a.model_id),
                     "created_at": a.created_at.isoformat(),
                     "has_avatar": a.avatar_png is not None,
+                    "health": _health_body(a.name),
                     # Owner-or-operator gate + "Made by <email>" (access-
                     # control Task A3): both columns are nullable (Task A2)
                     # and simply pass through as `None` for a pre-A2 or
@@ -4925,6 +4939,7 @@ def create_app(
                 "slack": slack,
                 "destroy_visible": _operator_block(request, cfg) is None,
                 "has_avatar": agent.avatar_png is not None,
+                "health": _health_body(agent.name),
                 "created_by": agent.created_by,
                 "group_name": agent.group_name,
                 "archetype": agent.archetype,

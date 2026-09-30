@@ -1,7 +1,7 @@
 # The agent page
 <!-- summary: The header, the build checklist, Retry, the build log, the tabs, and destroy. -->
 
-Every agent has one page. The header names it, shows its status, and under the name prints the model, a **source** link to its repository, its group, who made it, its persona, and an **Observability** link when your room has dashboards wired.
+Every agent has one page. The header names it, shows its status (**Ready** means setup finished; if the room finds it is not actually running, the badge says **Down** instead, with the reason on hover and a banner under the header), and under the name prints the model, a **source** link to its repository, its group, who made it, its persona, and an **Observability** link when your room has dashboards wired.
 
 Below that sits one sentence about what the agent can do. It reads "Not written yet. It arrives after first contact." until the agent has answered its first hello, then the agent writes it.
 

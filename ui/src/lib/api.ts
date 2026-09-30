@@ -6,6 +6,17 @@
 // some upstream that isn't kobo-api) into an ApiError too, instead of
 // letting a raw SyntaxError leak out of `JSON.parse`.
 
+/** Is the agent running right now, from the cluster (kobo_api.health):
+ * `down` when its Deployment has fewer available pods than it wants, with
+ * the count and the worst container's restarts and wait reason. `null`
+ * until the room has asked, and never sent for an agent that is not
+ * ready. Distinct from `status`, which is about setup, not today. */
+export type AgentHealth = {
+  state: "up" | "down";
+  reason: string | null;
+  checked_at: string;
+};
+
 export type AgentSummary = {
   name: string;
   status: string;
@@ -13,6 +24,7 @@ export type AgentSummary = {
   model_label: string;
   created_at: string;
   has_avatar: boolean;
+  health?: AgentHealth | null;
   /** The verified email that created this agent (access-control Task A2/
    * A3), `null` for a pre-A2 row or one created while IAP was off. Drives
    * the "Made by <email>" line on the card and detail Overview, and is the

@@ -50,8 +50,8 @@ describe("listRefetchInterval", () => {
     expect(listRefetchInterval(undefined)).toBe(false);
   });
 
-  it("is false for an empty list", () => {
-    expect(listRefetchInterval([])).toBe(false);
+  it("is the slow health poll for an empty list", () => {
+    expect(listRefetchInterval([])).toBe(60_000);
   });
 
   it("is 3500 when one agent is provisioning", () => {
@@ -64,16 +64,16 @@ describe("listRefetchInterval", () => {
     expect(listRefetchInterval([{ status: "pending" }])).toBe(3500);
   });
 
-  it("is false once every agent is ready", () => {
+  it("slows to the health poll once every agent is ready", () => {
     expect(
       listRefetchInterval([{ status: "ready" }, { status: "ready" }]),
-    ).toBe(false);
+    ).toBe(60_000);
   });
 
-  it("is false for a mix of only terminal statuses (ready + failed)", () => {
+  it("is the health poll for a mix of only terminal statuses (ready + failed)", () => {
     expect(
       listRefetchInterval([{ status: "ready" }, { status: "failed" }]),
-    ).toBe(false);
+    ).toBe(60_000);
   });
 });
 
@@ -90,12 +90,12 @@ describe("detailRefetchInterval", () => {
     expect(detailRefetchInterval({ status: "provisioning" })).toBe(3500);
   });
 
-  it("is false once the agent is ready", () => {
-    expect(detailRefetchInterval({ status: "ready" })).toBe(false);
+  it("slows to the health poll once the agent is ready", () => {
+    expect(detailRefetchInterval({ status: "ready" })).toBe(60_000);
   });
 
-  it("is false once the agent has failed", () => {
-    expect(detailRefetchInterval({ status: "failed" })).toBe(false);
+  it("is the health poll once the agent has failed", () => {
+    expect(detailRefetchInterval({ status: "failed" })).toBe(60_000);
   });
 });
 

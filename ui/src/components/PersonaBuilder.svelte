@@ -496,7 +496,21 @@
 {#if step === "draft"}
   <form class="modal__form" onsubmit={handleDraftSubmit}>
     <div class="modal__section">
-      <p class="field__label">Their persona</p>
+      <div class="field__label-row">
+        <p class="field__label">Their persona</p>
+        <span class="field__label-actions">
+          <!-- The guide's own section, in a new tab so the form keeps
+               what has been typed. -->
+          <a
+            class="btn--link"
+            href="#/getting-started/personas"
+            target="_blank"
+            rel="noreferrer"
+          >
+            How personas work
+          </a>
+        </span>
+      </div>
       <div class="field">
         <label class="field__label" for="persona-builder-persona-body">
           Paste their persona

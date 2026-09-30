@@ -2114,6 +2114,12 @@ class KubectlClient(Protocol):
         """
         ...
 
+    def pods_json(self, namespace: str) -> list[dict]:
+        """Every pod in the namespace (`kubectl get pods -o json`'s
+        `items`), for the health probe's restart counts and wait reasons
+        (kobo_api.health)."""
+        ...
+
     def restart_deploy(self, namespace: str, deploy: str) -> None:
         """Ask kubectl to roll the Deployment's pods now (`kubectl rollout
         restart`).
@@ -2220,6 +2226,10 @@ class KubectlCLI:
             [self._kubectl, "-n", namespace, "get", "deploy", deploy, "-o", "json"]
         )
         return json.loads(out)
+
+    def pods_json(self, namespace: str) -> list[dict]:
+        out = self._runner.run([self._kubectl, "-n", namespace, "get", "pods", "-o", "json"])
+        return list((json.loads(out) or {}).get("items") or [])
 
     def restart_deploy(self, namespace: str, deploy: str) -> None:
         self._runner.run(

@@ -70,7 +70,7 @@
       {/if}
       <span class="agent-card__name" title={agent.name}>{agent.name}</span>
     </span>
-    <StatusBadge status={agent.status} />
+    <StatusBadge status={agent.status} health={agent.health} />
   </div>
 
   <!-- One line, always: a card that says "No description yet." is still the
