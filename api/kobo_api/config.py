@@ -201,7 +201,10 @@ class Config(BaseModel):
     gcp_project: str = "example-project"
     vertex_project: str = "example-model-project"
     vertex_location: str = "us-east5"
-    model_group: str = "models@example.com"
+    # A Google Group that confers model access; every agent's identity joins
+    # it. Empty (the default): the Vertex role is granted on vertex_project
+    # directly, which works on any project, Workspace or not.
+    model_group: str = ""
     # Model garden image-generation model + region for agent avatar PNGs
     # (P2d) — a separate location from vertex_location since the avatar
     # model may not be available (or may be cheaper/faster) in a different

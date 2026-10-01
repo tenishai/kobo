@@ -369,9 +369,14 @@ def _destroy_access(ctx: DestroyCtx) -> str:
     cloud = ctx.clients.cloud
 
     email = cloud.gsa_email_for(f"agent-{agent.name}")
-    removed = cloud.remove_from_group(email, config.model_group)
+    if config.model_group:
+        removed = cloud.remove_from_group(email, config.model_group)
+        what = "membership"
+    else:
+        removed = cloud.revoke_model_access(email, config.vertex_project)
+        what = "model access"
     gone = cloud.delete_gsa(email)
-    return f"membership removed: {removed}, gsa deleted: {gone}"
+    return f"{what} removed: {removed}, gsa deleted: {gone}"
 
 
 def _destroy_slack(ctx: DestroyCtx) -> str:

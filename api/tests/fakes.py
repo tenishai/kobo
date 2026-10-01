@@ -1297,6 +1297,7 @@ class FakeCloud:
         self.gsas: set[str] = set()
         self.bindings: set[tuple[str, str, str]] = set()
         self.group_members: set[tuple[str, str]] = set()
+        self.model_grants: set[tuple[str, str]] = set()  # (gsa_email, project)
         self.calls: list[str] = []
 
     def ensure_gsa(self, name: str) -> str:
@@ -1320,6 +1321,17 @@ class FakeCloud:
         if (gsa_email, group) not in self.group_members:
             return False
         self.group_members.discard((gsa_email, group))
+        return True
+
+    def grant_model_access(self, gsa_email: str, project: str) -> None:
+        self.calls.append(f"grant_model_access:{gsa_email}:{project}")
+        self.model_grants.add((gsa_email, project))
+
+    def revoke_model_access(self, gsa_email: str, project: str) -> bool:
+        self.calls.append(f"revoke_model_access:{gsa_email}:{project}")
+        if (gsa_email, project) not in self.model_grants:
+            return False
+        self.model_grants.discard((gsa_email, project))
         return True
 
     def delete_gsa(self, email: str) -> bool:

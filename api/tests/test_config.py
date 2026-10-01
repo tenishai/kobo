@@ -28,7 +28,7 @@ def test_load_none_returns_defaults_without_touching_disk(tmp_path, monkeypatch)
     config = Config.load(None)
 
     assert config.github_org == "example-org"
-    assert config.model_group == "models@example.com"
+    assert config.model_group == ""  # no group: the Vertex role is granted directly
     assert config.workdir == Path.home() / ".kobo"
 
 

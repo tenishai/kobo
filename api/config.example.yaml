@@ -62,8 +62,10 @@ vertex_project: example-model-project
 # Google Cloud region for Vertex AI endpoints
 vertex_location: us-east5
 
-# Email group managing LLM model access and routing
-model_group: models@example.com
+# A Google Group that confers Vertex model access; each agent's identity is
+# added to it. Leave empty on a project without Workspace groups: the room
+# then grants roles/aiplatform.user on vertex_project to each agent directly.
+model_group: ""
 
 # Model garden model used to generate agent avatar PNGs
 avatar_model: gemini-2.5-flash-image

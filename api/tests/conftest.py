@@ -102,6 +102,9 @@ def config(tmp_path):
         workdir=tmp_path / "work",
         skills_bucket=SKILLS_BUCKET,
         personas_bucket=PERSONAS_BUCKET,
+        # The group road, as a Workspace org runs it; the no-group road has
+        # its own tests (test_steps / test_destroy, "without a model group").
+        model_group="models@example.com",
     )
 
 

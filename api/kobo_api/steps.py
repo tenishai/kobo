@@ -1361,7 +1361,8 @@ class OnboardStep:
 
 
 class AccessStep:
-    """Grants the agent's GSA workload identity, model-group membership,
+    """Grants the agent's GSA workload identity, model access (group
+    membership, or the Vertex role directly when the room has no group),
     and (resilience arc, Task 14) write access to its own agent-memory
     replica prefix when the room has one configured."""
 
@@ -1376,7 +1377,16 @@ class AccessStep:
         gsa_name = f"agent-{agent.name}"
         email = cloud.ensure_gsa(gsa_name)
         cloud.bind_workload_identity(email, namespace=agent.name, ksa=gsa_name)
-        cloud.add_to_group(email, config.model_group)
+        # Model access: through the org's group where there is one (what a
+        # Workspace org has: one grant on the group, every agent joins it),
+        # or granted on the Vertex project directly where there is not — a
+        # personal GCP project has no Cloud Identity and no groups to join,
+        # and this step used to fail there on the first agent (the tenish
+        # dogfood, 2026-10-01).
+        if config.model_group:
+            cloud.add_to_group(email, config.model_group)
+        else:
+            cloud.grant_model_access(email, config.vertex_project)
         # Connected agents get no memory prefix (design 2026-09-21): the
         # room replicates the memory its OWN runtime keeps, and it has not
         # read a team's code, so it has nothing to say about whether that

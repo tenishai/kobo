@@ -1437,6 +1437,16 @@ class CloudClient(Protocol):
         """Remove gsa_email from group. False if it was already absent."""
         ...
 
+    def grant_model_access(self, gsa_email: str, project: str) -> None:
+        """Grant gsa_email the Vertex AI user role on project directly — the
+        road taken when the room has no model group (a project with no
+        Workspace has no groups to join). Idempotent."""
+        ...
+
+    def revoke_model_access(self, gsa_email: str, project: str) -> bool:
+        """Remove that grant. False if it was already absent."""
+        ...
+
     def delete_gsa(self, email: str) -> bool:
         """Delete the GSA at email. False if it was already gone."""
         ...
@@ -1469,6 +1479,11 @@ class CloudClient(Protocol):
         object names.
         """
         ...
+
+
+# What a model group confers at Acme through membership; granted directly on
+# the Vertex project when the room runs with no group (2026-10-01).
+MODEL_ACCESS_ROLE = "roles/aiplatform.user"
 
 
 def gsa_email(name: str, project: str) -> str:
@@ -1575,6 +1590,32 @@ class GcloudClient:
             )
         except ClientError as exc:
             if "there is no such membership" in exc.stderr.lower():
+                return False
+            raise
+        return True
+
+    def grant_model_access(self, gsa_email: str, project: str) -> None:
+        # add-iam-policy-binding is idempotent: a binding already there is
+        # reported, not refused. --condition=None keeps gcloud from asking.
+        self._runner.run(
+            [
+                self._gcloud, "projects", "add-iam-policy-binding", project,
+                "--member", f"serviceAccount:{gsa_email}",
+                "--role", MODEL_ACCESS_ROLE, "--condition=None",
+            ]
+        )
+
+    def revoke_model_access(self, gsa_email: str, project: str) -> bool:
+        try:
+            self._runner.run(
+                [
+                    self._gcloud, "projects", "remove-iam-policy-binding", project,
+                    "--member", f"serviceAccount:{gsa_email}",
+                    "--role", MODEL_ACCESS_ROLE, "--condition=None",
+                ]
+            )
+        except ClientError as exc:
+            if "not found" in exc.stderr.lower():  # gcloud: "Policy binding ... not found!"
                 return False
             raise
         return True

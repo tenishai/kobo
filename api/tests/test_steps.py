@@ -2773,3 +2773,31 @@ def test_directory_step_graduate_failure_raises_for_retry(
 
     with pytest.raises(CabalError):
         DirectoryStep().run(ctx)
+
+
+# --- AccessStep without a model group (2026-10-01) ----------------------------------
+#
+# A project with no Workspace has no Google Groups to join. The room then
+# grants the Vertex role on vertex_project to the agent's identity directly,
+# and the rest of the step is unchanged.
+
+
+def test_access_step_without_a_model_group_grants_the_vertex_role_directly(
+    session_factory, config
+):
+    config.model_group = ""
+    config.vertex_project = "models-project"
+    session, agent = _make_agent(session_factory)
+    cloud = FakeCloud(project=config.gcp_project)
+    ctx = _make_ctx(session, agent, config, _clients(cloud=cloud))
+
+    AccessStep().run(ctx)
+
+    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    assert cloud.calls == [
+        f"ensure_gsa:agent-{AGENT_NAME}",
+        f"bind_workload_identity:{email}:{AGENT_NAME}/agent-{AGENT_NAME}",
+        f"grant_model_access:{email}:models-project",
+    ]
+    assert (email, "models-project") in cloud.model_grants
+    assert cloud.group_members == set()

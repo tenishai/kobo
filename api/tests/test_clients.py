@@ -8100,3 +8100,34 @@ def test_close_pr_tolerates_one_that_is_already_closed():
     client = GhCLI(runner=runner)
 
     client.close_pr("acme/clio", "https://example.test/pull/1", "superseded")
+
+
+# --- Model access without a group: the Vertex role on the project ---------------
+
+
+def test_grant_model_access_argv():
+    runner = RecordingRunner()
+    client = GcloudClient("example-project", runner=runner)
+    client.grant_model_access("agent-clio@example-project.iam.gserviceaccount.com", "models-project")
+    assert runner.calls == [
+        [
+            "gcloud", "projects", "add-iam-policy-binding", "models-project",
+            "--member", "serviceAccount:agent-clio@example-project.iam.gserviceaccount.com",
+            "--role", "roles/aiplatform.user", "--condition=None",
+        ]
+    ]
+
+
+def test_revoke_model_access_absent_binding_returns_false():
+    runner = RecordingRunner(
+        results=[(1, "", "ERROR: Policy binding with the specified principal and role not found!")]
+    )
+    client = GcloudClient("example-project", runner=runner)
+    assert client.revoke_model_access("e@example-project.iam.gserviceaccount.com", "models-project") is False
+
+
+def test_revoke_model_access_reraises_other_errors():
+    runner = RecordingRunner(results=[(1, "", "PERMISSION_DENIED")])
+    client = GcloudClient("example-project", runner=runner)
+    with pytest.raises(ClientError):
+        client.revoke_model_access("e@example-project.iam.gserviceaccount.com", "models-project")
