@@ -438,7 +438,15 @@ describe("AgentDetail tabs", () => {
     // The two that did not fit are a count, and the full set is in Edit
     // details -- which is where they are changed.
     expect(within(header).queryByText("cost-report")).toBeNull();
-    expect(within(header).getByText("+2")).not.toBeNull();
+    const more = within(header).getByText("+2");
+    expect(more.getAttribute("title")).toBe("cost-report, pager");
+
+    // The count is a button: pressing it shows the rest in place.
+    await fireEvent.click(more);
+    expect(within(header).getByText("cost-report")).not.toBeNull();
+    expect(within(header).getByText("pager")).not.toBeNull();
+    await fireEvent.click(within(header).getByText("less"));
+    expect(within(header).queryByText("pager")).toBeNull();
   });
 
   it("shows the pending badge on the Harness tab, where Learnings lives now", async () => {

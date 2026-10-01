@@ -13,7 +13,7 @@ The service account the agent runs as, the Google service account bound to it, a
 
 ## Persona
 
-The persona the agent was built from, with its team, purpose tags and capability sentence. **Edit details**, in the menu beside the agent's name, changes the team, purpose and description. The persona itself can be swapped from your own assistant with the set persona tool. See "Personas" for how personas are made.
+The persona the agent was built from, with its team, purpose tags and capability sentence. **Edit details**, in the **More** menu at the right of the agent's name, changes the team, purpose and description. The persona itself can be swapped from your own assistant with the set persona tool. See "Personas" for how personas are made.
 
 ## Skills
 

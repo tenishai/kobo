@@ -160,6 +160,10 @@
   // Escape, on a click outside it, and on Edit details (which opens a modal
   // of its own over the page).
   let menuOpen = $state(false);
+  // The header shows three chips and a count; the count is a button that
+  // shows the rest in place (2026-10-01: a "+1" nobody could open told
+  // nobody anything).
+  let chipsExpanded = $state(false);
   let menuEl = $state<HTMLElement | undefined>();
 
   // Edit details is a menu ITEM, so the modal behind it cannot live inside
@@ -433,8 +437,9 @@
           ...data.purpose_tags.map((tag) => ({ text: tag, skill: false })),
           ...data.skills.map((skill) => ({ text: skill.name, skill: true })),
         ]}
-    {@const shownChips = chips.slice(0, 3)}
+    {@const shownChips = chipsExpanded ? chips : chips.slice(0, 3)}
     {@const hiddenChips = chips.length - shownChips.length}
+    {@const hiddenNames = chips.slice(shownChips.length).map((chip) => chip.text).join(", ")}
     <header class="agent-detail__header">
       {#if data.has_avatar || avatarVersion !== null}
         <img class="agent-detail__avatar" src={avatarSrc} alt="{data.name}'s picture" />
@@ -455,8 +460,10 @@
               aria-haspopup="menu"
               aria-expanded={menuOpen}
               aria-label="More actions"
+              title="Portrait, details, destroy"
               onclick={() => (menuOpen = !menuOpen)}
             >
+              <span class="agent-detail__menu-label" aria-hidden="true">More</span>
               <span aria-hidden="true">⋯</span>
             </button>
             {#if menuOpen}
@@ -609,7 +616,23 @@
               </span>
             {/each}
             {#if hiddenChips > 0}
-              <span class="agent-detail__chip">+{hiddenChips}</span>
+              <button
+                type="button"
+                class="agent-detail__chip agent-detail__chip--more"
+                title={hiddenNames}
+                aria-label={`Show ${hiddenChips} more: ${hiddenNames}`}
+                onclick={() => (chipsExpanded = true)}
+              >
+                +{hiddenChips}
+              </button>
+            {:else if chipsExpanded && chips.length > 3}
+              <button
+                type="button"
+                class="agent-detail__chip agent-detail__chip--more"
+                onclick={() => (chipsExpanded = false)}
+              >
+                less
+              </button>
             {/if}
           </p>
         {/if}
@@ -966,6 +989,14 @@
     margin: 0;
   }
 
+  .agent-detail__chip--more {
+    background: none;
+    font: inherit;
+    font-size: 0.7rem;
+    color: var(--accent);
+    cursor: pointer;
+  }
+
   .agent-detail__chip--skill {
     color: var(--ink);
   }
@@ -1014,16 +1045,25 @@
     margin-left: auto;
   }
 
+  /* A visible button, not three faint dots: the portrait actions live in
+     here and nobody found them (2026-10-01). */
   .agent-detail__menu-button {
-    padding: 0 var(--space-xs);
-    border: 1px solid transparent;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding: 0.1rem var(--space-xs);
+    border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    background: none;
-    color: var(--muted);
+    background: var(--panel);
+    color: var(--ink);
     font: inherit;
-    font-size: 1.1rem;
+    font-size: 0.85rem;
     line-height: 1.4;
     cursor: pointer;
+  }
+
+  .agent-detail__menu-label {
+    font-size: 0.8rem;
   }
 
   .agent-detail__menu-button:hover,
