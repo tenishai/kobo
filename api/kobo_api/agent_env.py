@@ -103,6 +103,9 @@ RESERVED_KEYS = frozenset(
         "SLACK_BOT_TOKEN",
         "SLACK_APP_TOKEN",
         "SLACK_SIGNING_SECRET",
+        # The model the room picked for the agent (PATCH /api/agents/{name}/model):
+        # the composed agent.yaml reads `${AGENT_MODEL:-<birth model>}`.
+        "AGENT_MODEL",
         *MODEL_ENV_KEYS,
     }
 )

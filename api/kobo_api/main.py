@@ -80,7 +80,7 @@ from kobo_api.clients import (
     filter_cabal_event_stream,
     probe_slack_token_store,
 )
-from kobo_api.config import SHARED_GROUP, Config
+from kobo_api.config import SHARED_GROUP, Config, vertex_location_for
 from kobo_api.connect_scan import NAME_TAKEN, Finding, ScanReport, scan_repo
 from kobo_api.db import init_db, make_engine, make_session_factory
 from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
@@ -1353,6 +1353,13 @@ PERSONA_OF_A_CONNECTED_AGENT = (
     "change there, not the room's"
 )
 PERSONAS_NOT_SET_UP = "personas aren't set up yet"
+
+
+class SetModelBody(BaseModel):
+    """`PATCH /api/agents/{name}/model`: a catalog model id (`GET
+    /api/catalog/models`)."""
+
+    model: str
 
 
 class SetPersonaBody(BaseModel):
@@ -8031,6 +8038,88 @@ def create_app(
         session.commit()
         log.info("agent %s now wears persona %s", agent.name, persona_id)
         return JSONResponse({"persona": persona_id, "sha": sha})
+
+    @app.patch("/api/agents/{name}/model")
+    def set_agent_model(
+        name: str,
+        body: SetModelBody,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Move a deployed agent onto another model from the catalog.
+
+        The composed `agent.yaml` names its model as `${AGENT_MODEL:-<birth
+        model>}`, so the change is two environment variables in the agent's
+        gojira.yaml: `AGENT_MODEL`, and `VERTEXAI_LOCATION` for the model's
+        own region. Same lane as the environment panel (`edit_gojira_yaml`):
+        one commit, the platform regenerates and rolls. The row's `model_id`
+        follows, so every later reprovision agrees.
+
+        Owner or operator, READY only, composed only: a connected agent's
+        model is its own repository's to change.
+        """
+        agent = _ready_agent_or_error(
+            session, request, name, not_ready_message="agent is not ready for a model change yet"
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+        if is_connected(agent):
+            return JSONResponse(
+                {"error": "a connected agent's model is its own repository's to change"},
+                status_code=409,
+            )
+        cfg: Config = app.state.config
+        model_id = body.model.strip()
+        choice = next((m for m in cfg.models if m.id == model_id), None)
+        if choice is None:
+            return JSONResponse(
+                {"error": f"there is no model {model_id!r} in the room's list"}, status_code=422
+            )
+        clients = app.state.clients
+        location = vertex_location_for(cfg, model_id)
+
+        def edit(data: dict) -> bool:
+            # `apply_env` never touches the two model keys (an owner's wall);
+            # the location is the room's own to set, so it is written here.
+            changed = apply_env(data, {"AGENT_MODEL": model_id}, [])
+            env = data["env"]
+            if env.get("VERTEXAI_LOCATION") != location:
+                env["VERTEXAI_LOCATION"] = location
+                changed = True
+            return changed
+
+        try:
+            result = edit_gojira_yaml(
+                clients.github,
+                clients.gojira,
+                repo=agent.repo_full_name,
+                connected=False,
+                gojira_app_id=agent.gojira_app_id,
+                edit=edit,
+                message=f"kobo: model is now {choice.label}",
+            )
+        except DeployTriggerFailed as exc:
+            return _deploy_trigger_failed(agent, exc)
+        except RepoBusy as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except ClientError as exc:
+            return _lane_failed("file write", agent, exc, AGENT_FILES_UNREACHABLE)
+
+        previous = agent.model_id
+        agent.model_id = model_id
+        session.commit()
+        log.info("agent %s now runs %s (was %s)", agent.name, model_id, previous)
+        return JSONResponse(
+            {
+                "model": model_id,
+                "model_label": choice.label,
+                "previous_model": previous,
+                "wiring": result.how,
+            }
+        )
 
     @app.post("/api/agents/{name}/restart")
     def restart_agent(

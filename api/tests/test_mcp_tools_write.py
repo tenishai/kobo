@@ -431,6 +431,7 @@ def test_build_mcp_server_registers_exactly_the_named_tools(
         "kobo_set_agent_env",
         "kobo_restart_agent",
         "kobo_set_agent_persona",
+        "kobo_set_agent_model",
         "kobo_move_agent",
         "kobo_move_persona",
         "kobo_archive_persona",

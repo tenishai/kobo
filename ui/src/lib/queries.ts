@@ -205,6 +205,7 @@ import {
   movablePersonas,
   movePersona,
   patchAgentMetadata,
+  patchAgentModel,
   patchAgentRuntime,
   postThreadTurn,
   regenerateAgentMetadata,
@@ -740,6 +741,16 @@ export function convertToConnectedMutation(
  * because no dashboard card shows a runtime and the list route does not
  * serve one.
  */
+export function updateAgentModelMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (model: string) => patchAgentModel(name, model),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+  };
+}
+
 export function updateAgentRuntimeMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (runtimeImage: string) => patchAgentRuntime(name, runtimeImage),

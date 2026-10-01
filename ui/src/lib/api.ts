@@ -1673,6 +1673,26 @@ export type AgentRuntimeChange = {
  * and answers 422 for anything outside it, 409 for an agent that is not
  * ready, 403 for a caller who may not change it.
  */
+/** `PATCH /api/agents/{name}/model`: move a deployed agent onto another
+ * catalog model. The room writes `AGENT_MODEL` and the model's region into
+ * the agent's deploy contract, commits, and the platform regenerates and
+ * rolls it. `wiring` says how the change landed. */
+export type AgentModelChange = {
+  model: string;
+  model_label: string;
+  previous_model: string;
+  wiring: string;
+};
+
+export async function patchAgentModel(name: string, model: string): Promise<AgentModelChange> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/model`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model }),
+  });
+  return parse<AgentModelChange>(res);
+}
+
 export async function patchAgentRuntime(
   name: string,
   runtimeImage: string,

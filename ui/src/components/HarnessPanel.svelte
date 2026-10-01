@@ -19,14 +19,14 @@
   // Every section stays mounted and is merely hidden, the same rule the
   // page's own tabpanels follow: switching sections must not refetch a
   // panel's query or throw away a half-typed form.
-  import { createMutation, useQueryClient } from "@tanstack/svelte-query";
+  import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import type { Snippet } from "svelte";
   import LearningsPanel from "./LearningsPanel.svelte";
   import MemoryPanel from "./MemoryPanel.svelte";
   import SkillsPanel from "./SkillsPanel.svelte";
   import ToolingPanel from "./ToolingPanel.svelte";
   import { errorMessage, KIND_COMPOSED, KIND_CONNECTED } from "../lib/api";
-  import { updateAgentRuntimeMutation } from "../lib/queries";
+  import { modelsQuery, updateAgentModelMutation, updateAgentRuntimeMutation } from "../lib/queries";
   import {
     DEFAULT_HARNESS_SECTION,
     HARNESS_SECTION_LABELS,
@@ -162,6 +162,31 @@
     updateAgentRuntimeMutation(queryClient, agentName),
   );
 
+  // Change the model after deploy (2026-10-01): the room's list, the
+  // current one selected, Change enabled once another is picked. Same
+  // gate as the runtime update: owner or operator, composed, not frozen.
+  const canChangeModel = $derived(canUpdateRuntime && kind !== KIND_CONNECTED);
+  const models = createQuery(() => ({ ...modelsQuery(), enabled: canChangeModel }));
+  let pickedModel = $state<string | null>(null);
+  const modelChoice = $derived(pickedModel ?? model);
+  // svelte-ignore state_referenced_locally
+  const updateModel = createMutation(() => updateAgentModelMutation(queryClient, agentName));
+
+  function handleChangeModel(): void {
+    if (modelChoice === model || updateModel.isPending) {
+      return;
+    }
+    updateModel.mutate(modelChoice, {
+      onSuccess: (change) => {
+        pickedModel = null;
+        toast.success("Model changed", `${agentName} rebuilds on ${change.model_label} now.`);
+      },
+      onError: (err: unknown) => {
+        toast.error("Couldn't change the model", errorMessage(err, "Try again."));
+      },
+    });
+  }
+
   function handleUpdateRuntime(): void {
     if (!roomRuntimeImage) {
       return;
@@ -209,7 +234,33 @@
             <h2 class="panel__heading">Model and runtime</h2>
             <dl class="harness__facts">
               <dt>Model</dt>
-              <dd title={model}>{modelLabel}</dd>
+              <dd title={model}>
+                {#if canChangeModel && models.data}
+                  <span class="harness__model-change">
+                    <select
+                      class="field__input harness__model-select"
+                      aria-label="Model"
+                      disabled={frozen || updateModel.isPending}
+                      value={modelChoice}
+                      onchange={(event) => (pickedModel = event.currentTarget.value)}
+                    >
+                      {#each models.data.models as choice (choice.id)}
+                        <option value={choice.id}>{choice.label}</option>
+                      {/each}
+                    </select>
+                    <button
+                      type="button"
+                      class="btn btn--quiet"
+                      disabled={frozen || updateModel.isPending || modelChoice === model}
+                      onclick={handleChangeModel}
+                    >
+                      {updateModel.isPending ? "Changing…" : "Change model"}
+                    </button>
+                  </span>
+                {:else}
+                  {modelLabel}
+                {/if}
+              </dd>
               <dt>Runtime</dt>
               <dd class="harness__ref">{runtimeImage ?? "Not reported."}</dd>
             </dl>
@@ -471,5 +522,16 @@
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-sm);
+  }
+  .harness__model-change {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .harness__model-select {
+    width: auto;
+    min-width: 14rem;
   }
 </style>
