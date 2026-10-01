@@ -288,3 +288,5 @@ The design record lives in-repo and is the source of truth:
 ## License
 
 [AGPL-3.0-or-later](LICENSE), matching the tenishai family (gojira, techne, liminal, cabal, daedalus, argus).
+
+Tests: see [TESTING.md](TESTING.md) for what earns a place in the suite and the scaffold rule.

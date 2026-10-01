@@ -113,6 +113,25 @@ jobs:
         working-directory: api
         run: PYTHONPATH=. .venv/bin/python scripts/schema_tripwire.py "$DB_URL"
 
+  test-lifecycle:
+    # TESTING.md: a scaffold test drives a change and is deleted before the
+    # change merges. The directories may exist on a branch; a pull request
+    # that still carries a file in either does not merge.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: No scaffold tests past this point
+        run: |
+          left=$(find api/tests/scaffold ui/src/scaffold -type f 2>/dev/null || true)
+          if [ -n "$left" ]; then
+            echo "Scaffold tests must be deleted before merge (see TESTING.md):"
+            echo "$left"
+            exit 1
+          fi
+          echo "no scaffold tests"
+
   build-push:
     # Main-only, and only once the registry variables are configured.
     # Pushes the image; rolling it stays an operator action.
