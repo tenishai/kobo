@@ -57,6 +57,20 @@ def make_engine(url: str) -> Engine:
         # and the only symptom would be live runs swept (or dead ones never
         # swept) near a boundary.
         connect_args["options"] = "-c timezone=UTC"
+        # 5+10 was gone in one burst of feed requests (2026-10-01), and every
+        # waiter then sat 30s in a worker thread. Room for two replicas at
+        # 30 each against a 400-connection server, and a waiter gives up in
+        # 10s so a wedge surfaces as errors, not as a frozen process.
+        # pre_ping retires a connection the server dropped instead of
+        # handing it out.
+        return create_engine(
+            url,
+            connect_args=connect_args,
+            pool_size=10,
+            max_overflow=20,
+            pool_timeout=10,
+            pool_pre_ping=True,
+        )
     return create_engine(url, connect_args=connect_args)
 
 

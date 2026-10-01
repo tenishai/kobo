@@ -1831,6 +1831,46 @@ def _flatten_conversation_entries(detail: dict) -> list[dict]:
 _FEED_SCROLLBACK_CAP = 200
 
 
+class _InFlight:
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.result: object = None
+        self.error: BaseException | None = None
+
+
+_INFLIGHT_LOCK = threading.Lock()
+_FEED_INFLIGHT: dict[str, _InFlight] = {}
+
+
+def _coalesced(table: dict[str, _InFlight], key: str, fn):
+    """Run `fn` once for every burst of concurrent callers sharing `key`:
+    the first caller runs it, the rest wait for that result (or its
+    exception). Sequential calls run `fn` again; nothing is cached. The
+    entry is removed before its waiters are released, so a call that
+    starts after the leader finished is a new leader."""
+    with _INFLIGHT_LOCK:
+        slot = table.get(key)
+        leader = slot is None
+        if leader:
+            slot = table[key] = _InFlight()
+    assert slot is not None
+    if not leader:
+        slot.done.wait()
+        if slot.error is not None:
+            raise slot.error
+        return slot.result
+    try:
+        slot.result = fn()
+        return slot.result
+    except BaseException as exc:
+        slot.error = exc
+        raise
+    finally:
+        with _INFLIGHT_LOCK:
+            table.pop(key, None)
+        slot.done.set()
+
+
 # Uncalled by any route since Slack self-service (2026-08-17) — kept because
 # the `slack_operators` config field it reads stays live for other uses.
 def _slack_operator_block(request: Request, config: Config) -> JSONResponse | None:
@@ -2837,7 +2877,12 @@ def create_app(
         return JSONResponse({"error": _validation_error_message(exc)}, status_code=422)
 
     @app.get("/api/healthz")
-    def healthz() -> dict:
+    async def healthz() -> dict:
+        # `async`, on purpose: a sync route needs a worker thread, and when
+        # the pool is wedged every worker is parked on a checkout, so the
+        # liveness probe (1s) timed out and both replicas were killed
+        # (2026-10-01). The probe asks whether the process is up; it must
+        # not need anything the process is short of to say so.
         return {"ok": True}
 
     # --- Whoami (access-control Task A1, groups made real in Task B2) -------
@@ -8581,61 +8626,71 @@ def create_app(
         if gate is not None:
             return gate
 
-        try:
-            # Two server-side-scoped queries (see the docstring's "Fix
-            # round 2"): the conversations `agent` answered, and the ones
-            # it started. limit=200 is the switchboard's own clamp maximum,
-            # passed explicitly because OMITTING it means 50, not
-            # unbounded. Merged + deduped by task_id (a conversation can
-            # never genuinely match both filters, but dedupe is cheap and
-            # a duplicated row would double its feed lines).
-            incoming = clients.cabal.list_conversations(limit=200, target=agent)
-            outgoing = clients.cabal.list_conversations(limit=200, caller=f"agent:{agent}")
-        except (CabalError, httpx.HTTPError) as exc:
-            log.warning("colleague feed list failed for %s: %s", agent, exc)
-            return JSONResponse(
-                {"error": "The switchboard did not answer. Try again shortly."},
-                status_code=502,
-            )
+        # The DB's part is over: the agent is visible. Give the connection
+        # back BEFORE the switchboard fan-out below. Holding it through up
+        # to 400 serial HTTP calls is how a burst of open tabs
+        # exhausted the pool, failed an unrelated agent's provisioning
+        # write, starved the health probe and got both replicas killed
+        # (2026-10-01). A failing agent, or a watched one, must never reach
+        # the others through this process.
+        session.close()
 
-        seen_ids: set[str] = set()
-        conversations: list[dict] = []
-        for row in incoming + outgoing:
-            task_id = row.get("task_id")
-            if isinstance(task_id, str) and task_id in seen_ids:
-                continue
-            if isinstance(task_id, str):
-                seen_ids.add(task_id)
-            conversations.append(row)
-
-        # Belt: the switchboard already scoped both queries, but this
-        # room-side predicate is the single definition of "participates",
-        # and a filter regression upstream must not widen the feed.
-        scoped = [c for c in conversations if _conversation_has_participant(c, agent)]
-
-        entries: list[dict] = []
-        for row in scoped:
-            task_id = row.get("task_id")
-            if not isinstance(task_id, str):
-                continue
+        def build() -> tuple[int, dict]:
             try:
-                detail = clients.cabal.get_conversation(task_id)
+                # Two server-side-scoped queries (see the docstring's "Fix
+                # round 2"): the conversations `agent` answered, and the ones
+                # it started. limit=200 is the switchboard's own clamp maximum,
+                # passed explicitly because OMITTING it means 50, not
+                # unbounded. Merged + deduped by task_id (a conversation can
+                # never genuinely match both filters, but dedupe is cheap and
+                # a duplicated row would double its feed lines).
+                incoming = clients.cabal.list_conversations(limit=200, target=agent)
+                outgoing = clients.cabal.list_conversations(limit=200, caller=f"agent:{agent}")
             except (CabalError, httpx.HTTPError) as exc:
-                log.warning(
-                    "colleague feed detail failed for %s (agent=%s): %s", task_id, agent, exc
-                )
-                return JSONResponse(
-                    {"error": "The switchboard did not answer. Try again shortly."},
-                    status_code=502,
-                )
-            entries.extend(_flatten_conversation_entries(detail))
+                log.warning("colleague feed list failed for %s: %s", agent, exc)
+                return 502, {"error": "The switchboard did not answer. Try again shortly."}
 
-        entries.sort(key=lambda e: e["ts"])
-        truncated = len(entries) > _FEED_SCROLLBACK_CAP
-        if truncated:
-            entries = entries[-_FEED_SCROLLBACK_CAP:]
+            seen_ids: set[str] = set()
+            conversations: list[dict] = []
+            for row in incoming + outgoing:
+                task_id = row.get("task_id")
+                if isinstance(task_id, str) and task_id in seen_ids:
+                    continue
+                if isinstance(task_id, str):
+                    seen_ids.add(task_id)
+                conversations.append(row)
 
-        return JSONResponse({"entries": entries, "truncated": truncated})
+            # Belt: the switchboard already scoped both queries, but this
+            # room-side predicate is the single definition of "participates",
+            # and a filter regression upstream must not widen the feed.
+            scoped = [c for c in conversations if _conversation_has_participant(c, agent)]
+
+            entries: list[dict] = []
+            for row in scoped:
+                task_id = row.get("task_id")
+                if not isinstance(task_id, str):
+                    continue
+                try:
+                    detail = clients.cabal.get_conversation(task_id)
+                except (CabalError, httpx.HTTPError) as exc:
+                    log.warning(
+                        "colleague feed detail failed for %s (agent=%s): %s", task_id, agent, exc
+                    )
+                    return 502, {"error": "The switchboard did not answer. Try again shortly."}
+                entries.extend(_flatten_conversation_entries(detail))
+
+            entries.sort(key=lambda e: e["ts"])
+            truncated = len(entries) > _FEED_SCROLLBACK_CAP
+            if truncated:
+                entries = entries[-_FEED_SCROLLBACK_CAP:]
+
+            return 200, {"entries": entries, "truncated": truncated}
+
+        # Every open tab for this agent refetches on every stream frame;
+        # concurrent callers share one fan-out instead of each running
+        # their own (`_coalesced`).
+        status, body = _coalesced(_FEED_INFLIGHT, f"feed:{agent}", build)
+        return JSONResponse(body, status_code=status)
 
     # --- Avatar (P2d): persona-derived face, repo-backed with a display cache ---
 
