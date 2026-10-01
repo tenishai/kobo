@@ -1,0 +1,9 @@
+# Workload Identity: the room runs as this Google service account, which
+# holds the project roles it needs (service accounts, IAM, buckets, Vertex).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kobo
+  namespace: kobo
+  annotations:
+    iam.gke.io/gcp-service-account: kobo-room@shaz-learning.iam.gserviceaccount.com

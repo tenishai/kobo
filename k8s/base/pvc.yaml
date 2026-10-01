@@ -1,0 +1,11 @@
+# SQLite (db_url: sqlite:////data/kobo.db), the Slack token file and the
+# room's workdir. One replica mounts it (gojira class: gateway).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kobo-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi

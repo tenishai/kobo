@@ -1,0 +1,27 @@
+# Gojira deploy contract for the room itself (docs: tenishai/gojira
+# docs/design.md "gojira.yaml"). Gojira generates the Deployment, Service,
+# workflow and overlays from this; the objects under k8s/base are the ones
+# it does not generate and keeps as app-authored.
+app: kobo
+class: gateway                 # one replica, Recreate: SQLite on a volume
+environments:
+  - name: dev
+    cluster: gojira-sandbox
+    namespace: kobo
+port: 8080
+health: /api/healthz
+# Built on an arm64 runner and scheduled on arm64 nodes; Autopilot provides
+# those through its Scale-Out compute class.
+arch: arm64
+node_selector:
+  cloud.google.com/compute-class: Scale-Out
+service_account: kobo
+env:
+  KOBO_CONFIG: /config/config.yaml
+# The room's config file carries its platform token and App coordinates,
+# so it lives in a Secret; the App's key is a file too. Both are created
+# in the namespace out of band (never in git), like every Secret.
+secret_mounts:
+  - { name: kobo-config, path: /config/config.yaml, key: config.yaml }
+  - { name: kobo-github, path: /secrets/github/private-key.pem, key: private-key.pem }
+data_mount: { pvc: kobo-data, path: /data, fs_group: 1001 }

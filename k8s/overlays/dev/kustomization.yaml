@@ -1,0 +1,8 @@
+# Gojira regenerates this file and keeps the patches below.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: kobo
+resources:
+  - ../../base
+patches:
+  - path: patches/sa-workload-identity.yaml
