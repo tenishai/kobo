@@ -44,13 +44,14 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
-from sqlalchemy import and_, or_, update
+from sqlalchemy import select, and_, or_, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from kobo_api.clients import Clients
@@ -569,15 +570,193 @@ async def interrupted_sweep_loop(
     while True:
         await asyncio.sleep(interval_s)
         try:
-            await asyncio.to_thread(sweep_interrupted, app.state.session_factory)
+            await asyncio.to_thread(
+                sweep_interrupted,
+                app.state.session_factory,
+                queue_mode=getattr(app.state, "role", "all") != "all",
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
             log.exception("interrupted sweep failed")
 
 
+def _stale_conditions(cutoff: datetime, *, queue_mode: bool) -> list:
+    """A heartbeat older than the cutoff is a dead run in any mode. A row
+    that never had a heartbeat is a never-started launch in the old shape
+    (the thread died between the create landing and its first beat), but
+    in queue mode it is simply waiting for a worker to claim it -- the
+    claim is what writes the first heartbeat -- so it is left alone."""
+    conditions = [
+        and_(Agent.run_heartbeat_at.is_not(None), Agent.run_heartbeat_at < cutoff),
+    ]
+    if not queue_mode:
+        conditions.append(and_(Agent.run_heartbeat_at.is_(None), Agent.created_at < cutoff))
+    return conditions
+
+
+# --- The worker's queue (API/worker split, 2026-10-01) ------------------------
+#
+# An API replica leaves a new or retried agent PENDING with no heartbeat.
+# A worker claims it with one conditional UPDATE -- the claim IS the first
+# heartbeat, so two workers can never both run it and the interrupted sweep
+# can tell "queued" from "dead" -- and runs the pipeline exactly as the API
+# used to, on a thread of its own, heartbeat and all.
+
+QUEUE_POLL_INTERVAL_S = 3.0
+QUEUE_MAX_CONCURRENT = 4
+# How long a worker may keep running pipelines after being told to stop:
+# a roll waits for in-flight work rather than failing it (the deployment's
+# terminationGracePeriodSeconds must be at least this).
+QUEUE_DRAIN_TIMEOUT_S = 1500.0
+
+
+def claim_queued(
+    session_factory: sessionmaker[Session],
+    *,
+    limit: int = 1,
+    now: datetime | None = None,
+) -> list[int]:
+    """Claim up to `limit` queued agents, oldest first, and return their ids.
+    Queued means PENDING with no heartbeat. The claim is
+    `UPDATE ... WHERE status = 'pending' AND run_heartbeat_at IS NULL`, so
+    whichever worker's UPDATE lands first owns the row, the same shape as
+    `_claim_step`."""
+    if limit <= 0:
+        return []
+    stamp = naive_utc(now or datetime.now(UTC))
+    claimed: list[int] = []
+    with session_factory() as session:
+        candidates = session.scalars(
+            select(Agent.id)
+            .where(Agent.status == AgentStatus.PENDING, Agent.run_heartbeat_at.is_(None))
+            .order_by(Agent.created_at, Agent.id)
+            .limit(limit * 4)
+        ).all()
+        for agent_id in candidates:
+            result = session.execute(
+                update(Agent)
+                .where(
+                    Agent.id == agent_id,
+                    Agent.status == AgentStatus.PENDING,
+                    Agent.run_heartbeat_at.is_(None),
+                )
+                .values(run_heartbeat_at=stamp)
+            )
+            session.commit()
+            if result.rowcount == 1:
+                claimed.append(agent_id)
+                if len(claimed) >= limit:
+                    break
+    return claimed
+
+
+def queue_tick(
+    session_factory: sessionmaker[Session],
+    *,
+    config: Config,
+    clients: Clients | None,
+    runner: Callable[..., object] | None = None,
+    slots: int = QUEUE_MAX_CONCURRENT,
+) -> int:
+    """Claim and launch up to `slots` queued agents. Returns how many were
+    launched. `runner` is `run_pipeline` (a test passes a recorder). A
+    claim whose launch cannot even start is failed in the row, the same
+    way the create route fails a launch it could not start."""
+    launch = runner or run_pipeline
+    launched = 0
+    for agent_id in claim_queued(session_factory, limit=slots):
+        with session_factory() as session:
+            agent = session.get(Agent, agent_id)
+            if agent is None:
+                continue
+            try:
+                steps = pipeline_for(agent)
+            except Exception as exc:
+                log.exception("queue: cannot build the pipeline for agent %s", agent_id)
+                agent.status = AgentStatus.FAILED
+                agent.error = f"could not start provisioning: {exc}"
+                session.commit()
+                continue
+        try:
+            launch(session_factory, agent_id, config=config, clients=clients, steps=steps)
+        except Exception as exc:
+            log.exception("queue: failed to start provisioning for agent %s", agent_id)
+            with session_factory() as session:
+                agent = session.get(Agent, agent_id)
+                if agent is not None:
+                    agent.status = AgentStatus.FAILED
+                    agent.error = f"could not start provisioning: {exc}"
+                    session.commit()
+            continue
+        launched += 1
+    return launched
+
+
+def _live_pipeline_threads(app) -> list[threading.Thread]:
+    threads = [t for t in getattr(app.state, "pipeline_threads", []) if t.is_alive()]
+    app.state.pipeline_threads = threads
+    return threads
+
+
+async def queue_loop(
+    app,
+    *,
+    interval_s: float = QUEUE_POLL_INTERVAL_S,
+    max_concurrent: int = QUEUE_MAX_CONCURRENT,
+) -> None:
+    """For the life of a worker: every `interval_s`, fill the free slots
+    from the queue. The launched threads are kept on `app.state` so a
+    shutdown can wait for them (`drain_pipelines`)."""
+    import asyncio
+
+    def tick() -> None:
+        free = max_concurrent - len(_live_pipeline_threads(app))
+        if free <= 0:
+            return
+        before = set(threading.enumerate())
+        queue_tick(
+            app.state.session_factory,
+            config=app.state.config,
+            clients=app.state.clients,
+            slots=free,
+        )
+        for t in threading.enumerate():
+            if t not in before and t.daemon and t.name.startswith("Thread-"):
+                app.state.pipeline_threads.append(t)
+
+    app.state.pipeline_threads = []
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            await asyncio.to_thread(tick)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("queue tick failed")
+
+
+def drain_pipelines(app, *, timeout_s: float = QUEUE_DRAIN_TIMEOUT_S) -> int:
+    """Wait for in-flight pipelines to finish, up to `timeout_s`. Returns
+    how many were still running when time ran out (those will be swept as
+    interrupted by the next worker)."""
+    deadline = time.monotonic() + timeout_s
+    for t in _live_pipeline_threads(app):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        t.join(timeout=remaining)
+    left = len(_live_pipeline_threads(app))
+    if left:
+        log.warning("shutdown with %d pipelines still running", left)
+    return left
+
+
 def sweep_interrupted(
-    session_factory: sessionmaker[Session], *, now: datetime | None = None
+    session_factory: sessionmaker[Session],
+    *,
+    now: datetime | None = None,
+    queue_mode: bool = False,
 ) -> int:
     """Fail every agent left wedged in PENDING/PROVISIONING by a process
     that is no longer running its pipeline.
@@ -619,13 +798,7 @@ def sweep_interrupted(
             session.query(Agent)
             .filter(
                 Agent.status.in_([AgentStatus.PENDING, AgentStatus.PROVISIONING]),
-                or_(
-                    and_(
-                        Agent.run_heartbeat_at.is_not(None),
-                        Agent.run_heartbeat_at < cutoff,
-                    ),
-                    and_(Agent.run_heartbeat_at.is_(None), Agent.created_at < cutoff),
-                ),
+                or_(*_stale_conditions(cutoff, queue_mode=queue_mode)),
             )
             .all()
         )

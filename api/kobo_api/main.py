@@ -177,6 +177,7 @@ from kobo_api.personas import (
 )
 from kobo_api.pr_broker import BrokerAuthError, mint_scoped_token, verify_agent_token
 from kobo_api.health import AgentHealth, health_sweep_loop
+from kobo_api.roles import ROLE_ALL, launches_inline, role_from_env, runs_pipelines, serves_requests
 from kobo_api.provisioner import (
     STEP_LABELS,
     interrupted_sweep_loop,
@@ -184,6 +185,8 @@ from kobo_api.provisioner import (
     pipeline_for,
     reset_failed_steps,
     run_pipeline,
+    drain_pipelines,
+    queue_loop,
     sweep_interrupted,
     waiting_sweep_loop,
 )
@@ -2494,33 +2497,45 @@ async def _room_lifespan(app: FastAPI):
     instances used without `with` never enter lifespans at all, so unit
     tests see no background task unless they opt in."""
     async with mcp_lifespan(app):
-        nightly = asyncio.create_task(learnings_nightly_loop(app))
-        sweeper = asyncio.create_task(interrupted_sweep_loop(app))
+        role = getattr(app.state, "role", ROLE_ALL)
+        tasks: list[asyncio.Task] = []
+        if runs_pipelines(role):
+            tasks.append(asyncio.create_task(learnings_nightly_loop(app)))
+            tasks.append(asyncio.create_task(interrupted_sweep_loop(app)))
+            # The worker's queue: claims what an API replica left PENDING.
+            tasks.append(asyncio.create_task(queue_loop(app)))
         # Parked connected agents: asks the platform once a minute whether
         # their setup pull request has been merged, and resumes them.
-        resumer = asyncio.create_task(waiting_sweep_loop(app))
+            tasks.append(asyncio.create_task(waiting_sweep_loop(app)))
         # Is each ready agent actually running: asks the cluster once a
         # minute so the dashboard never wears Ready over a crashed pod.
-        health = asyncio.create_task(health_sweep_loop(app))
+        if serves_requests(role):
+            tasks.append(asyncio.create_task(health_sweep_loop(app)))
         # A thread rather than a task, because the listing it reads is a
         # blocking `gh` call: on the loop it would stall every request in
         # the process for as long as GitHub takes.
-        warmer = _start_repo_warmer(app)
+        warmer = _start_repo_warmer(app) if serves_requests(role) else None
         # Same reasoning: the seed is a handful of blocking storage calls,
         # so it runs on a daemon thread rather than on the loop.
-        threading.Thread(
-            target=_seed_builtin_personas, args=(app,), daemon=True, name="persona-seed"
-        ).start()
+        if serves_requests(role):
+            threading.Thread(
+                target=_seed_builtin_personas, args=(app,), daemon=True, name="persona-seed"
+            ).start()
         try:
             yield
         finally:
+            # A worker leaving waits for what it is running: a roll must
+            # never fail an agent's build. The manifest's grace period is
+            # what makes this wait real.
+            if runs_pipelines(role):
+                await asyncio.to_thread(drain_pipelines, app)
             if warmer is not None:
                 # Joined, not just signalled, so a shutdown does not race
                 # a listing still writing itself into the index -- but
                 # with a timeout, and on a daemon thread, so it can never
                 # be the reason this process will not exit.
                 warmer.stop()
-            for task in (nightly, sweeper, resumer, health):
+            for task in tasks:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
@@ -2773,8 +2788,12 @@ def create_app(
     clients: Clients | None = None,
     org: OrgState | None = None,
     iap_jwks_fetcher: Callable[[], dict] | None = None,
+    role: str = ROLE_ALL,
 ) -> FastAPI:
     app = FastAPI(title="kobo-api", lifespan=_room_lifespan)
+    # Which half of the room this process is (kobo_api.roles): `all` keeps
+    # the old shape, `api` enqueues, `worker` claims and runs.
+    app.state.role = role
     install_metrics(app)
     install_tracing(app)
     app.state.config = config
@@ -4401,6 +4420,11 @@ def create_app(
         status = agent.status
         agent_id = agent.id
 
+        if not launches_inline(app.state.role):
+            # An API replica: the row is PENDING with no heartbeat, which is
+            # the queue. A worker claims and runs it (provisioner.queue_loop).
+            return JSONResponse({"name": payload.name, "status": status}, status_code=201)
+
         try:
             run_pipeline(
                 request.app.state.session_factory,
@@ -4696,6 +4720,10 @@ def create_app(
 
         status = agent.status
         agent_id = agent.id
+
+        if not launches_inline(app.state.role):
+            # Queued for a worker, same as create.
+            return JSONResponse({"name": payload.name, "status": status}, status_code=201)
 
         try:
             run_pipeline(
@@ -5185,6 +5213,16 @@ def create_app(
             return gate
 
         reset_failed_steps(session, agent.id)
+
+        if not launches_inline(app.state.role):
+            # Back onto the queue: PENDING with no heartbeat is what a worker
+            # claims. The steps are already reset above, and the status flip
+            # below this still closes the double-retry window the same way.
+            agent.status = AgentStatus.PENDING
+            agent.error = None
+            agent.run_heartbeat_at = None
+            session.commit()
+            return JSONResponse({"name": name, "status": AgentStatus.PENDING}, status_code=202)
 
         # Flip to PROVISIONING (and clear the prior error) synchronously,
         # before starting the pipeline thread — mirrors create_agent's own
@@ -9906,7 +9944,8 @@ def build_default_app() -> FastAPI:
     # here, never in create_app, so the many tests that build their own
     # isolated fixture (agents seeded directly, no restart involved) aren't
     # affected by it.
-    sweep_interrupted(session_factory)
+    role = role_from_env()
+    sweep_interrupted(session_factory, queue_mode=role != ROLE_ALL)
     # One real Clients (and the httpx.Client(s) it owns) per process, built
     # once here rather than per-request: the accepted pattern for this app's
     # lifetime (a longer-lived httpx client pool is the deferred concern, not
@@ -9926,4 +9965,4 @@ def build_default_app() -> FastAPI:
     # here, right beside the org-config clone above, rather than waiting
     # for an organic consent-change trigger that might never come.
     _boot_sync_dispatch_pairs(clients, config, session_factory)
-    return create_app(session_factory, config=config, clients=clients, org=org)
+    return create_app(session_factory, config=config, clients=clients, org=org, role=role)
