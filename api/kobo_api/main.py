@@ -813,14 +813,35 @@ AVATAR_UPLOAD_MAX_BYTES = 2 * 1024 * 1024
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
+# Longest first, so "flash-lite" is not read as "flash".
+_MODEL_SIZE_WORDS = ("flash-lite", "haiku", "sonnet", "opus", "flash", "pro")
+
+
+def _model_family_size(model_id: str) -> tuple[str | None, str | None]:
+    """("claude", "sonnet") for `vertex_ai/claude-sonnet-4-5`; None where the
+    id names neither a family nor a size the room knows."""
+    low = model_id.lower()
+    family = "claude" if "claude" in low else "gemini" if "gemini" in low else None
+    size = next((word for word in _MODEL_SIZE_WORDS if word in low), None)
+    return family, size
+
+
 def _model_label(cfg: Config, model_id: str) -> str:
-    """The catalog label for `model_id`, or the raw id itself when it isn't
-    (or is no longer) in `cfg.models` — an agent created under an older
-    config whose model has since been retired from the catalog must still
-    render, not 500."""
+    """The catalog label for `model_id`. An id that is no longer in
+    `cfg.models` (an agent created under an older catalog) takes the label
+    of the catalog's model of the same family and size: the room names
+    models by price, not by number, and the name outlives the id (five
+    agents on claude-sonnet-4-5 read as raw ids beside one on sonnet-5,
+    2026-10-01). The raw id, which the hover still shows, is the answer
+    only when nothing in the catalog is kin to it."""
     for model in cfg.models:
         if model.id == model_id:
             return model.label
+    family, size = _model_family_size(model_id)
+    if family and size:
+        for model in cfg.models:
+            if _model_family_size(model.id) == (family, size):
+                return model.label
     return model_id
 
 

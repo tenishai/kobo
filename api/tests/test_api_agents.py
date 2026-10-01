@@ -2085,6 +2085,24 @@ def test_list_agents_model_label_falls_back_to_raw_id_when_not_in_catalog(
     assert row["model_label"] == "ancient-model-no-longer-offered"
 
 
+def test_model_label_for_a_retired_id_is_its_kin_in_the_catalog(
+    client, session_factory, config
+):
+    """The name outlives the id: an agent still on claude-sonnet-4-5 reads
+    as the catalog's Sonnet, with the raw id on the hover (`model`)."""
+    from kobo_api.config import ModelChoice
+
+    config.models = [
+        ModelChoice(id="vertex_ai/claude-sonnet-5", label="Claude Affordable (Sonnet)"),
+        ModelChoice(id="vertex_ai/gemini-3.5-flash", label="Gemini Affordable (Flash)"),
+    ]
+    _seed_agent(session_factory, config, model_id="vertex_ai/claude-sonnet-4-5")
+
+    row = client.get("/api/agents").json()["agents"][0]
+    assert row["model"] == "vertex_ai/claude-sonnet-4-5"
+    assert row["model_label"] == "Claude Affordable (Sonnet)"
+
+
 def test_get_agent_model_label_falls_back_to_raw_id_when_not_in_catalog(
     client, session_factory, config
 ):
