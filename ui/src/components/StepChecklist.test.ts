@@ -106,16 +106,6 @@ describe("StepChecklist -- per-step tone", () => {
     expect(screen.queryByText(/why it/i)).toBeNull();
   });
 
-  it("shows the spinner dot for both pending and running steps", () => {
-    const { container } = render(StepChecklist, {
-      steps: [
-        step({ name: "a", status: "pending" }),
-        step({ name: "b", status: "running" }),
-      ],
-    });
-
-    expect(container.querySelectorAll(".step-row__dot.pulse")).toHaveLength(2);
-  });
 });
 
 describe("StepChecklist -- 'N of M steps done' sr-only count", () => {

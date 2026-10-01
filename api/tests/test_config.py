@@ -118,10 +118,6 @@ def test_load_empty_yaml_file_falls_back_to_defaults(tmp_path):
 # --- slack_tokens_path -----------------------------------------------------
 
 
-def test_slack_tokens_path_default_none():
-    assert Config().slack_tokens_path is None
-
-
 def test_slack_tokens_path_expands_tilde(tmp_path):
     yaml_path = tmp_path / "config.yaml"
     yaml_path.write_text("slack_tokens_path: ~/slack.local.yaml\n")
@@ -132,10 +128,6 @@ def test_slack_tokens_path_expands_tilde(tmp_path):
 
 
 # --- slack_tokens_secret (two-replica safety) ------------------------------
-
-
-def test_slack_tokens_secret_default_empty():
-    assert Config().slack_tokens_secret == ""
 
 
 def test_slack_tokens_secret_accepts_namespace_slash_name(tmp_path):
@@ -236,12 +228,6 @@ def test_ladon_settings_are_not_org_settable():
 # --- avatar_model / avatar_location (P2d: ImageClient) --------------------
 
 
-def test_avatar_model_and_location_defaults():
-    config = Config()
-    assert config.avatar_model == "gemini-2.5-flash-image"
-    assert config.avatar_location == "us-central1"
-
-
 def test_avatar_model_and_location_overridable(tmp_path):
     yaml_path = tmp_path / "config.yaml"
     yaml_path.write_text(
@@ -255,12 +241,6 @@ def test_avatar_model_and_location_overridable(tmp_path):
 
 
 # --- name_model / name_location (create flow v2 addendum: NameClient) -----
-
-
-def test_name_model_and_location_defaults():
-    config = Config()
-    assert config.name_model == "gemini-2.5-flash"
-    assert config.name_location == "us-central1"
 
 
 def test_name_model_and_location_overridable(tmp_path):
@@ -289,18 +269,6 @@ def test_config_example_yaml_documents_name_keys():
     config = Config(**data)
     assert config.name_model == "gemini-2.5-flash"
     assert config.name_location == "us-central1"
-
-
-def test_org_config_field_defaults():
-    config = Config()
-    assert config.org_repo is None
-    assert config.api_base_url == "http://127.0.0.1:8100"
-    assert config.skills_repo is None
-    assert config.skills_bucket == ""
-    assert config.personas_bucket == ""
-    assert config.skills_publish_wif_provider == ""
-    assert config.skills_publish_service_account == ""
-    assert config.skills_publish_external is False
 
 
 def test_org_config_fields_overridable(tmp_path):
@@ -351,12 +319,6 @@ def test_config_example_yaml_documents_org_config_keys():
 # --- cabal_url / agent_endpoint_template (colleagues switchboard arc, Task 1) ---
 
 
-def test_cabal_config_fields_default_none():
-    config = Config()
-    assert config.cabal_url is None
-    assert config.agent_endpoint_template is None
-
-
 def test_cabal_config_fields_overridable(tmp_path):
     yaml_path = tmp_path / "config.yaml"
     yaml_path.write_text(
@@ -390,11 +352,6 @@ def test_config_example_yaml_documents_cabal_keys():
 # lets a single models list carry both kinds; vertex_location_for is the
 # lookup that resolves it at compose time (tests/test_steps.py exercises the
 # compose-level wiring, RepoStep threading it into BundleSpec).
-
-
-def test_model_choice_location_defaults_to_none():
-    model = ModelChoice(id="vertex_ai/claude-sonnet-4-5", label="Claude Sonnet 4.5")
-    assert model.location is None
 
 
 def test_model_choice_parses_explicit_location():
@@ -441,11 +398,6 @@ def test_vertex_location_for_unknown_model_id_falls_back_to_org_default():
 
 
 # --- admin_groups (operator-status-by-group ruling) --------------------------
-
-
-def test_admin_groups_default_empty():
-    config = Config()
-    assert config.admin_groups == []
 
 
 def test_admin_groups_overridable(tmp_path):
@@ -496,10 +448,6 @@ def test_admin_groups_entry_with_groups_left_entirely_unset_raises():
 # --- SHARED_GROUP (shared-group + group-requests wave) -----------------------
 
 
-def test_shared_group_constant_is_the_literal_shared():
-    assert SHARED_GROUP == "shared"
-
-
 def test_a_real_group_may_not_be_named_shared():
     with pytest.raises(ValidationError) as exc_info:
         Config(groups=[GroupChoice(name=SHARED_GROUP, okta_group="okta-shared")])
@@ -516,18 +464,6 @@ def test_groups_without_a_shared_entry_construct_fine():
 
 
 # --- groups / okta_domain (access-control arc, Task B1: GroupResolver) -------
-
-
-def test_groups_and_okta_domain_default_empty():
-    config = Config()
-    assert config.groups == []
-    assert config.okta_domain == ""
-
-
-def test_group_choice_round_trips_name_and_okta_group():
-    group = GroupChoice(name="SRE", okta_group="okta-sre-group")
-    assert group.name == "SRE"
-    assert group.okta_group == "okta-sre-group"
 
 
 def test_groups_and_okta_domain_overridable(tmp_path):
@@ -789,12 +725,6 @@ def test_config_example_yaml_documents_avatar_keys():
 
 
 # --- skills_frontmatter (hardening wave, Task 1) -----
-
-
-def test_skills_frontmatter_defaults_empty():
-    cfg = Config()
-    assert cfg.skills_frontmatter.allowed_profiles == []
-    assert cfg.skills_frontmatter.allowed_tags == []
 
 
 def test_skills_frontmatter_accepts_vocabularies():

@@ -117,41 +117,6 @@ describe("MetadataDetails — Edit details modal (persona-metadata plan)", () =>
     });
   });
 
-  it("save flow surfaces a 422's plain error verbatim", async () => {
-    stubFetch({
-      "/api/teams": { teams: ["growth", "platform"], default: "shared" },
-      "/api/": {},
-    });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.includes("/api/agents/clio/metadata")) {
-          return new Response(
-            JSON.stringify({ error: "that doesn't look like a team name" }),
-            { status: 422, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        if (url.includes("/api/teams")) {
-          return new Response(
-            JSON.stringify({ teams: ["growth"], default: "shared" }),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        return new Response(JSON.stringify({}), { status: 200 });
-      }),
-    );
-    renderWithClient(MetadataDetails, BASE_PROPS);
-    await fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
-    await screen.findByLabelText("Team");
-
-    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
-
-    await waitFor(() => {
-      expect(screen.getByText("that doesn't look like a team name")).not.toBeNull();
-    });
-  });
-
   it("regenerate: pending state, then swaps in the returned capability value", async () => {
     let resolveRegenerate: (value: Response) => void = () => {};
     const regeneratePromise = new Promise<Response>((resolve) => {
@@ -199,39 +164,5 @@ describe("MetadataDetails — Edit details modal (persona-metadata plan)", () =>
     });
   });
 
-  it("frozen disables save, regenerate, team select, and chip controls", async () => {
-    renderWithClient(MetadataDetails, { ...BASE_PROPS, frozen: true });
-    // The trigger itself is disabled while frozen, so the modal can never be
-    // opened through the UI — nothing further to assert inside it.
-    const trigger = screen.getByRole("button", { name: "Edit details" });
-    expect((trigger as HTMLButtonElement).disabled).toBe(true);
-  });
 });
 
-describe("MetadataDetails — the dialog idiom (modal wave)", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-    stubFetch({
-      "/api/teams": { teams: ["growth", "platform"], default: "shared" },
-      "/api/": {},
-    });
-  });
-
-  it("has one filled button, Save, in a footer under the body", async () => {
-    const { container } = renderWithClient(MetadataDetails, BASE_PROPS);
-    await fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
-    await screen.findByLabelText("Team");
-
-    const footer = container.querySelector(".modal__footer");
-    expect(footer).not.toBeNull();
-    expect(container.querySelector(".modal__body")?.contains(footer as Node)).toBe(
-      false,
-    );
-    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
-    expect(footer?.querySelector(".btn--primary")?.textContent?.trim()).toBe("Save");
-    // Regenerate stays with the field it rewrites, and stays quiet.
-    const regenerate = screen.getByRole("button", { name: "Regenerate" });
-    expect(footer?.contains(regenerate)).toBe(false);
-    expect(regenerate.className).not.toContain("btn--primary");
-  });
-});

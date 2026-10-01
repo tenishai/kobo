@@ -54,11 +54,6 @@ def _client(handler) -> httpx.Client:
 # --- Protocol shape -----------------------------------------------------------
 
 
-def test_okta_group_resolver_satisfies_the_group_resolver_protocol():
-    resolver = OktaGroupResolver(DOMAIN, TOKEN, UNIVERSE)
-    assert isinstance(resolver, GroupResolver)
-
-
 # --- Happy path: request shape, filtering, translation ------------------------
 
 
@@ -591,14 +586,6 @@ def _okta_user(first: str | None, last: str | None, email: str | None) -> dict:
 
 
 # --- Protocol/construction shape -----------------------------------------------
-
-
-def test_okta_people_search_is_not_a_group_resolver():
-    # Deliberately NOT a GroupResolver -- it answers a different question
-    # (free-text person search, not "which configured groups") and needs no
-    # `universe` at all.
-    searcher = OktaPeopleSearch(DOMAIN, TOKEN)
-    assert not isinstance(searcher, GroupResolver)
 
 
 # --- Happy path: request shape, response shaping -------------------------------

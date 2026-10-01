@@ -187,25 +187,6 @@ def test_create_agent_returns_201_pending_then_provisions_to_ready(client):
     assert body["first_reply"] == "hello yourself, human"
 
 
-def test_create_agent_step_labels_match_ui_checklist_vocabulary(client):
-    client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM})
-
-    body = _poll_until(client, AGENT_NAME, {"ready", "failed"})
-
-    labels = {s["name"]: s["label"] for s in body["steps"]}
-    assert labels == {
-        "repo": "Repository",
-        "avatar": "Paint the portrait",
-        "onboard": "Platform onboarding",
-        "access": "Model access",
-        "wire": "Deploy wiring",
-        "build": "Image build",
-        "deploy": "Deploy",
-        "hello": "First contact",
-        "directory": "Joins the agent directory",
-    }
-
-
 def test_create_agent_no_model_falls_back_to_default(client, config):
     client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM})
 

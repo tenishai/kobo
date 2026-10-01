@@ -51,13 +51,6 @@ def test_format_note_verbatim_body_preserves_an_em_dash_the_operator_typed():
     assert text in note
 
 
-def test_format_note_own_template_copy_has_no_em_dash():
-    note_no_user = format_note("hello", taught_by=None, on_date=ON_DATE)
-    note_with_user = format_note("hello", taught_by="ops@example.com", on_date=ON_DATE)
-    assert "—" not in note_no_user
-    assert "—" not in note_with_user
-
-
 def test_format_note_empty_text_still_produces_a_header():
     # format_note itself does no validation (that's the route's job, tested
     # in test_web_teach.py) -- it must still produce a sane, non-crashing

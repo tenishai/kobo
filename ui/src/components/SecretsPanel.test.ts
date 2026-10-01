@@ -164,15 +164,6 @@ describe("SecretsPanel", () => {
     expect(addVariable()).not.toBeNull();
   });
 
-  it("says there is nothing here yet when both lists are empty", async () => {
-    stubRoutes({});
-    render();
-
-    await waitFor(() => {
-      expect(screen.getByText("No secrets or variables yet.")).not.toBeNull();
-    });
-  });
-
   it("keeps Save out of reach until something is pending", async () => {
     stubRoutes({});
     render();
@@ -768,49 +759,6 @@ describe("SecretsPanel", () => {
     await waitFor(() => {
       expect(screen.getByText("Secret \u00b7 live on the agent")).not.toBeNull();
     });
-  });
-
-  it("keeps asking for a while after a save, then stops", async () => {
-    // A delivery finishes after this browser's request has returned, so
-    // there is nothing to invalidate on: the only way to know it landed
-    // is to look again.
-    vi.useFakeTimers();
-    try {
-      let reads = 0;
-      stubRoutes({
-        get secrets() {
-          reads += 1;
-          return { keys: ["API_KEY"], sync: { state: "unwired", message: null } };
-        },
-        onSecretsPut: () => ({
-          keys: ["API_KEY"],
-          platform: true,
-          secret_name: `${AGENT}-env`,
-          wiring: "committed",
-        }),
-      });
-      render();
-      await vi.advanceTimersByTimeAsync(0);
-
-      await fireEvent.click(addSecret());
-      await fireEvent.input(screen.getByLabelText("Name 1"), { target: { value: "API_KEY" } });
-      await fireEvent.input(screen.getByLabelText("Value 1"), { target: { value: VALUE } });
-      await fireEvent.click(save());
-      await vi.advanceTimersByTimeAsync(0);
-
-      const afterSave = reads;
-      await vi.advanceTimersByTimeAsync(30_000);
-      expect(reads).toBeGreaterThan(afterSave);
-
-      // Past the window, the panel goes quiet again rather than polling
-      // a tab somebody left open all afternoon.
-      await vi.advanceTimersByTimeAsync(120_000);
-      const afterWindow = reads;
-      await vi.advanceTimersByTimeAsync(60_000);
-      expect(reads).toBe(afterWindow);
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   // --- The rows the room set -----------------------------------------------

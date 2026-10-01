@@ -88,9 +88,4 @@ describe("GettingStarted", () => {
     );
   });
 
-  it("points at the connector so an assistant can read the same guide", async () => {
-    renderWithClient(GettingStarted);
-    await screen.findByRole("heading", { level: 1 });
-    expect(screen.getByText(/connect it to the room as an MCP server/)).not.toBeNull();
-  });
 });

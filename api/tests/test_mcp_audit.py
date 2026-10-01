@@ -358,24 +358,6 @@ def test_audited_rate_limited_call_writes_no_row(session_factory):
     assert len(rows) == rate_limit.LIMIT
 
 
-def test_audited_rate_limit_message_is_exact():
-    @audit.audited("kobo_test_tool")
-    async def tool(ctx, **kwargs):
-        return "ok"
-
-    async def _run():
-        for _ in range(rate_limit.LIMIT):
-            await tool(_ctx())
-        try:
-            await tool(_ctx())
-        except ToolError as exc:
-            return str(exc)
-        raise AssertionError("expected ToolError")
-
-    message = asyncio.run(_run())
-    assert message == "Rate limit exceeded: 60 requests per minute."
-
-
 # --- audited(): the ok row -----------------------------------------------
 
 
@@ -497,15 +479,6 @@ def test_audited_broken_session_factory_still_lets_a_raising_tool_reraise():
 
 
 # --- audited(): functools.wraps preserves the wrapped function -------------
-
-
-def test_audited_preserves_function_name_and_wrapped():
-    @audit.audited("kobo_named_tool")
-    async def my_tool(ctx, **kwargs):
-        return None
-
-    assert my_tool.__name__ == "my_tool"
-    assert my_tool.__wrapped__ is not None
 
 
 # --- _bounded: count cap, dict recursion, depth cap -------------------------

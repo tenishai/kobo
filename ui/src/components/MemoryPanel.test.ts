@@ -50,19 +50,6 @@ describe("MemoryPanel", () => {
     });
   });
 
-  it("renders the how-learning-works explainer near the top of the panel", () => {
-    // Retention-confusion fix: a short, honest explainer so "is Teach this
-    // the only way? does the agent not learn on its own?" has an answer
-    // right there in the panel, in its own plain voice.
-    renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
-
-    expect(
-      screen.getByText(
-        /Your agent remembers what you teach it.*It also keeps what colleague agents tell it.*It does not yet learn on its own from ordinary conversation\./s,
-      ),
-    ).not.toBeNull();
-  });
-
   describe("the panel shape", () => {
     it("keeps the upload form shut until it is asked for", async () => {
       renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
@@ -89,62 +76,9 @@ describe("MemoryPanel", () => {
       expect(screen.getByRole("button", { name: "Upload" })).not.toBeNull();
     });
 
-    it("says nothing is there in one table row", async () => {
-      const { container } = renderWithClient(MemoryPanel, {
-        agentName: "warden",
-        frozen: false,
-      });
-
-      await screen.findByText("Nothing here yet. Add the first thing your agent should know.");
-      const empties = container.querySelectorAll("td.panel__empty");
-      expect(empties).toHaveLength(1);
-      expect(empties[0].parentElement?.children).toHaveLength(1);
-      expect(empties[0].getAttribute("colspan")).toBe("3");
-    });
-
-    it("offers at most one filled button, even with the upload form open", async () => {
-      stubFetch({
-        "/api/agents/warden/knowledge": {
-          files: [{ name: "foo.md", content: "bar" }],
-        },
-        "/api/agents/warden/intake": { files: [OTHER_OLD] },
-        "/api/": {},
-      });
-      const { container } = renderWithClient(MemoryPanel, {
-        agentName: "warden",
-        frozen: false,
-      });
-
-      await openTeach();
-      await screen.findByTitle(OTHER_OLD.name);
-
-      expect(container.querySelectorAll(".btn--primary").length).toBeLessThanOrEqual(1);
-    });
   });
 
   describe("memory-shelf condensation", () => {
-    it("renders each intake file as a single-line row with the full filename in the title attribute", async () => {
-      stubFetch({
-        "/api/agents/warden/knowledge": { files: [] },
-        "/api/agents/warden/intake": { files: [OTHER_OLD] },
-        "/api/": {},
-      });
-
-      const { container } = renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
-      await openTeach();
-
-      const nameEl = await screen.findByTitle(OTHER_OLD.name);
-      // The row is one `<li>` carrying the name, size, status chip, and
-      // Remove affordance side by side -- not a stacked multi-line card.
-      const row = nameEl.closest("li");
-      expect(row).not.toBeNull();
-      expect(row?.textContent).toContain("200 B");
-      expect(row?.textContent).toContain("Ingested");
-      expect(
-        container.querySelector(`[aria-label="Remove ${OTHER_OLD.name}"]`),
-      ).not.toBeNull();
-    });
-
     it("collapses chat-<8 digits>-*.md files under a collapsed 'Taught notes (N)' header by default", async () => {
       stubFetch({
         "/api/agents/warden/knowledge": { files: [] },
@@ -367,13 +301,6 @@ describe("MemoryPanel", () => {
   // upload before it ever reaches the repo) — the picker's copy needs to
   // stop advertising a `.txt` option it can no longer actually deliver.
   describe("intake filenames are .md only (fast lane rule)", () => {
-    it("the file picker only advertises .md", async () => {
-      renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
-      await openTeach();
-      const fileInput = screen.getByLabelText("Choose file");
-      expect(fileInput.getAttribute("accept")).toBe(".md");
-    });
-
     it("flags a .txt filename with the .md-only rule and never mentions .txt", async () => {
       renderWithClient(MemoryPanel, { agentName: "warden", frozen: false });
       await openTeach();

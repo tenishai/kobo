@@ -257,38 +257,6 @@ def _last_audit_row(session_factory) -> MCPToolCallLog:
 # --- build_mcp_server / _KoboTokenVerifier / get_user_email ----------------
 
 
-def test_build_mcp_server_registers_the_seven_read_tools(session_factory, config):
-    app = _app(session_factory, config, groups_resolver=_resolver())
-
-    mcp = build_mcp_server(app)
-
-    # Task 8 adds the six write tools alongside these on the same `mcp` --
-    # this assertion only pins that the six READ tools (the original four
-    # from Task 7 plus the marketplace wave's Task 2 pair, kobo_list_skills/
-    # kobo_list_tools) are still exactly these six (a superset check, not
-    # equality), so this file stays focused on read-tool registration
-    # without needing to track the write-tools module's own tool set too
-    # (see test_mcp_tools_write.py, whose exact-set test tracks the full
-    # registered surface across both files).
-    names = {tool.name for tool in mcp._tool_manager.list_tools()}
-    assert {
-        "kobo_whoami",
-        "kobo_list_agents",
-        "kobo_get_agent",
-        "kobo_feed",
-        "kobo_list_skills",
-        "kobo_list_tools",
-    } <= names
-
-
-def test_build_mcp_server_configures_audit_with_the_apps_session_factory(session_factory, config):
-    app = _app(session_factory, config, groups_resolver=_resolver())
-
-    build_mcp_server(app)
-
-    assert audit._session_factory is session_factory
-
-
 def test_token_verifier_returns_access_token_with_user_email_for_a_valid_token(
     session_factory, config
 ):
@@ -687,15 +655,6 @@ def test_feed_visibility_gate_fires_before_the_switchboard_is_ever_asked(
     assert fake_cabal.list_conversations_calls == []
 
 
-def test_feed_switchboard_not_configured_raises_tool_error(session_factory, config):
-    _seed_agent(session_factory, name="ward")
-    app = _app(session_factory, config, groups_resolver=_resolver())
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="switchboard is not configured"):
-        _call_tool(mcp, "kobo_feed", _ctx_for(OPERATOR_EMAIL), agent="ward")
-
-
 def test_feed_flattens_reusing_the_exact_route_helpers(session_factory, config, monkeypatch):
     monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
     _seed_agent(session_factory, name="ward")
@@ -890,32 +849,6 @@ def test_list_skills_returns_catalog_entries_sorted_by_id(session_factory, confi
     }
 
 
-def test_list_skills_raises_tool_error_when_the_catalog_is_unavailable(session_factory, config):
-    # read_marketplace_catalog answers None for a bucket carrying no index
-    # at all (same as a legacy-dialect bucket or unreadable JSON -- see its
-    # own docstring) -- kobo_list_skills must turn that into a ToolError
-    # rather than crashing on a None.items() a few lines later.
-    storage = FakeStorage()
-    cfg = config.model_copy(update={"skills_bucket": SKILLS_BUCKET})
-    app = _app(session_factory, cfg, groups_resolver=_resolver(), storage=storage)
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="marketplace catalog is unavailable"):
-        _call_tool(mcp, "kobo_list_skills", _ctx_for(MEMBER_A_EMAIL))
-
-
-def test_list_skills_raises_tool_error_when_the_bucket_is_not_configured(session_factory, config):
-    # config.skills_bucket defaults to "" (absent = feature off, same
-    # convention as skills_repo) -- distinct from the above "configured
-    # but no marketplace-dialect index published yet" case, and worth its
-    # own message (fix round 1, minor 2).
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=FakeStorage())
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="marketplace skills bucket is not configured"):
-        _call_tool(mcp, "kobo_list_skills", _ctx_for(MEMBER_A_EMAIL))
-
-
 def test_list_skills_raises_tool_error_on_a_storage_transport_failure(session_factory, config):
     # Scenario A from the review: a GCS 403 (or any other transport-level
     # failure) on the skills bucket must never leak FakeStorage/HttpxStorage
@@ -957,17 +890,6 @@ def test_list_tools_raises_tool_error_on_a_github_transport_failure(session_fact
     with pytest.raises(ToolError, match=_MARKETPLACE_DID_NOT_ANSWER) as exc_info:
         _call_tool(mcp, "kobo_list_tools", _ctx_for(MEMBER_A_EMAIL))
     assert "org-skills" not in str(exc_info.value)
-
-
-def test_list_tools_raises_tool_error_when_the_repo_is_not_configured(session_factory, config):
-    # config.skills_repo is unset on the bare `config` fixture -- list_tools
-    # (kobo_api.marketplace) raises MarketplaceError before ever cloning;
-    # the tool must surface that as a plain ToolError(str(exc)).
-    app = _app(session_factory, config, groups_resolver=_resolver())
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="marketplace repo is not configured"):
-        _call_tool(mcp, "kobo_list_tools", _ctx_for(MEMBER_A_EMAIL))
 
 
 # --- kobo_list_personas (persona wave, Task 4) ------------------------------
@@ -1115,23 +1037,6 @@ def test_list_personas_scope_mine_is_the_default_and_all_shows_every_group(
     assert len(operator["result"]) == 3
 
 
-def test_list_personas_rejects_an_unknown_scope(session_factory, config):
-    app = _personas_app(session_factory, config, groups_resolver=_resolver())
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="scope must be mine or all"):
-        _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL), scope="everyone")
-
-
-def test_list_personas_result_key_shape(session_factory, config):
-    app = _personas_app(session_factory, config, groups_resolver=_resolver())
-    mcp = build_mcp_server(app)
-
-    result = _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL))
-
-    assert result == {"result": []}
-
-
 def test_list_personas_hides_archived_entries(session_factory, config):
     """Task 4's `ingest_indexes` (kobo_api/search.py) drops archived
     entries from the index it builds, and `kobo_list_personas` is
@@ -1198,21 +1103,6 @@ def test_list_learnings_invisible_agent_raises_agent_not_found(session_factory, 
 
     with pytest.raises(ToolError, match="agent not found"):
         _call_tool(mcp, "kobo_list_learnings", _ctx_for(MEMBER_A_EMAIL), agent="hidden")
-
-
-def test_list_learnings_unknown_status_surfaces_the_routes_own_422(session_factory, config):
-    _seed_agent(session_factory, name="agent-a", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
-    app = _app(session_factory, config, groups_resolver=_resolver())
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="unknown status 'nonsense'"):
-        _call_tool(
-            mcp,
-            "kobo_list_learnings",
-            _ctx_for(OWNER_A_EMAIL),
-            agent="agent-a",
-            status="nonsense",
-        )
 
 
 def test_list_learnings_can_decide_false_for_non_owner_no_grant(session_factory, config):

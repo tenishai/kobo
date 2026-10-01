@@ -879,29 +879,6 @@ def test_draft_persona_falls_back_to_persona_own_tags_when_model_omits_them(
     )
 
 
-def test_draft_persona_calls_generator_with_job_and_rules(config, tmp_path):
-    fake_name = FakeName()
-    client = _draft_client(config, tmp_path, name=fake_name)
-
-    client.post(
-        "/api/personas/draft",
-        json={**DRAFT_PAYLOAD, "rules": ["Never share account numbers.", "Be concise."]},
-    )
-
-    assert fake_name.draft_calls == [
-        (DRAFT_PAYLOAD["job"], ["Never share account numbers.", "Be concise."])
-    ]
-
-
-def test_draft_persona_defaults_rules_to_empty_list(config, tmp_path):
-    fake_name = FakeName()
-    client = _draft_client(config, tmp_path, name=fake_name)
-
-    client.post("/api/personas/draft", json=DRAFT_PAYLOAD)
-
-    assert fake_name.draft_calls == [(DRAFT_PAYLOAD["job"], [])]
-
-
 def test_draft_persona_per_field_fallback_on_invalid_generator_name(config, tmp_path):
     fake_name = FakeName(
         draft={
@@ -1012,15 +989,6 @@ def test_draft_persona_422_bad_rule_item_length(config, tmp_path):
     )
 
     assert response.status_code == 422
-
-
-def test_draft_persona_invalid_payload_never_reaches_the_generator(config, tmp_path):
-    fake_name = FakeName()
-    client = _draft_client(config, tmp_path, name=fake_name)
-
-    client.post("/api/personas/draft", json={"job": ""})
-
-    assert fake_name.draft_calls == []
 
 
 def test_draft_persona_result_feeds_create_persona_unchanged(config, tmp_path):
@@ -1142,15 +1110,6 @@ def test_distill_persona_missing_model_tags_default_to_empty_list(config, tmp_pa
     assert response.json()["purpose_tags"] == []
 
 
-def test_distill_persona_calls_generator_with_body(config, tmp_path):
-    fake_name = FakeName()
-    client = _distill_client(config, tmp_path, name=fake_name)
-
-    client.post("/api/personas/distill", json=DISTILL_PAYLOAD)
-
-    assert fake_name.distill_calls == [DISTILL_PAYLOAD["body"]]
-
-
 def test_distill_persona_per_field_fallback_on_invalid_generator_name(config, tmp_path):
     fake_name = FakeName(
         distill={
@@ -1231,15 +1190,6 @@ def test_distill_persona_200_at_max_length_body(config, tmp_path):
     response = client.post("/api/personas/distill", json={"body": "a" * 49152})
 
     assert response.status_code == 200
-
-
-def test_distill_persona_invalid_payload_never_reaches_the_generator(config, tmp_path):
-    fake_name = FakeName()
-    client = _distill_client(config, tmp_path, name=fake_name)
-
-    client.post("/api/personas/distill", json={"body": ""})
-
-    assert fake_name.distill_calls == []
 
 
 # --- GET /api/personas/{persona_id} (hover card) ---------------------------

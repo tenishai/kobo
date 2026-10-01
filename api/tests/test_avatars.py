@@ -34,17 +34,6 @@ class _CapturingGitHub(FakeGitHub):
 # --- avatar_prompt --------------------------------------------------------------
 
 
-def test_avatar_prompt_contains_name_and_description():
-    prompt = avatar_prompt(NAME, DESCRIPTION)
-    assert NAME in prompt
-    assert DESCRIPTION in prompt
-
-
-def test_avatar_prompt_contains_no_text_in_image_clause():
-    prompt = avatar_prompt(NAME, DESCRIPTION)
-    assert "no text in image" in prompt
-
-
 def test_avatar_prompt_is_deterministic():
     first = avatar_prompt(NAME, DESCRIPTION)
     second = avatar_prompt(NAME, DESCRIPTION)

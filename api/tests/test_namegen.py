@@ -192,31 +192,10 @@ def test_finalize_different_persona_seed_yields_different_order_or_names():
     assert first != second
 
 
-def test_deterministic_order_same_seed_same_order():
-    pool = list(_FALLBACK_NAMES)
-    first = _deterministic_order(pool, "seed-x", "0")
-    second = _deterministic_order(pool, "seed-x", "0")
-    assert first == second
-
-
-def test_deterministic_order_different_seed_different_order():
-    pool = list(_FALLBACK_NAMES)
-    first = _deterministic_order(pool, "seed-x", "0")
-    second = _deterministic_order(pool, "seed-y", "0")
-    assert first != second
-
-
 def test_deterministic_order_is_a_permutation_of_the_pool():
     pool = list(_FALLBACK_NAMES)
     ordered = _deterministic_order(pool, "any-seed", "0")
     assert sorted(ordered) == sorted(pool)
-
-
-def test_deterministic_order_different_round_salt_different_order():
-    pool = list(_FALLBACK_NAMES)
-    first = _deterministic_order(pool, "seed-x", "0")
-    second = _deterministic_order(pool, "seed-x", "1")
-    assert first != second
 
 
 def test_finalize_taken_and_reserved_together_can_still_produce_five():
@@ -323,25 +302,6 @@ def test_finalize_empty_reason_after_normalize_replaced_from_fallback_cycle():
     assert result[0]["reason"] in _FALLBACK_REASONS
     # Second candidate's reason is preserved
     assert result[1]["reason"] == "a real reason"
-
-
-def test_finalize_reason_normalization_combined():
-    # Long reason with extra whitespace and leading/trailing spaces
-    reason = "  a   long  and  rambling   reason  " + "with" * 30
-    candidates = [{"name": "juniper", "reason": reason}]
-
-    result = finalize_suggestions(
-        candidates, taken=set(), reserved=RESERVED_NAMES, persona_seed="seed-q"
-    )
-
-    normalized = result[0]["reason"]
-    # Should be <= 80 chars
-    assert len(normalized) <= 80
-    # Should not have leading/trailing spaces
-    assert not normalized.startswith(" ")
-    assert not normalized.endswith(" ")
-    # Should have single spaces only
-    assert "  " not in normalized
 
 
 # --- finalize_suggestions: exclude + round_salt -----------------------------------

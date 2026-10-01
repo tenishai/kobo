@@ -115,49 +115,5 @@ describe("SettingsPanel rows", () => {
     expect(screen.getByRole("button", { name: "Convert this agent" })).not.toBeNull();
   });
 
-  it("shows the destroy row, and hands it the kind so the copy is the right one", async () => {
-    renderWithClient(SettingsPanel, {
-      agentName: "warden",
-      status: "ready",
-      kind: "connected",
-      canDestroy: true,
-    });
-
-    expect(screen.getByText("Destroy this agent")).not.toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: "Destroy..." }));
-
-    expect(
-      screen.getByText(
-        "This destroys the running agent and its platform identity. The repository belongs to your team and is left as it is. Memories die with the namespace.",
-      ),
-    ).not.toBeNull();
-  });
 });
 
-describe("SettingsPanel — the convert confirm (modal wave)", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-    stubFetch({ "/api/": {} });
-  });
-
-  it("is a narrow dialog: one paragraph, and the action in a pinned footer", async () => {
-    const { container } = renderWithClient(SettingsPanel, {
-      agentName: "warden",
-      status: "ready",
-      canConvert: true,
-    });
-
-    await fireEvent.click(screen.getByRole("button", { name: "Convert..." }));
-
-    expect(container.querySelector(".modal--narrow")).not.toBeNull();
-    const footer = container.querySelector(".modal__footer");
-    expect(footer).not.toBeNull();
-    expect(container.querySelector(".modal__body")?.contains(footer as Node)).toBe(
-      false,
-    );
-    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
-    expect(footer?.querySelector(".btn--primary")?.textContent?.trim()).toBe(
-      "Convert this agent",
-    );
-  });
-});

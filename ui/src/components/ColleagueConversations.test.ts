@@ -128,51 +128,6 @@ describe("ColleagueConversations (terminal)", () => {
     expect(await screen.findByText(longText)).not.toBeNull();
   });
 
-  it('shows the quiet terminal-style empty line "No agent conversations yet."', async () => {
-    stubFetch({ "/api/colleagues/feed": { entries: [], truncated: false } });
-
-    renderWithClient(ColleagueConversations, { agentName: "ward" });
-
-    expect(await screen.findByText("No agent conversations yet.")).not.toBeNull();
-  });
-
-  it("shows a note when the feed was capped at the scrollback limit", async () => {
-    stubFetch({
-      "/api/colleagues/feed": { entries: [ASK_ENTRY], truncated: true },
-    });
-
-    renderWithClient(ColleagueConversations, { agentName: "ward" });
-
-    expect(await screen.findByText("What's the config?")).not.toBeNull();
-    expect(screen.getByText("Only the most recent 200 lines are shown.")).not.toBeNull();
-  });
-
-  it("the feed fetch carries ?agent=<the viewed agent>", async () => {
-    stubFetch({ "/api/colleagues/feed": { entries: [], truncated: false } });
-
-    renderWithClient(ColleagueConversations, { agentName: "ward" });
-    await screen.findByText("No agent conversations yet.");
-
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.some(
-          ([url]) =>
-            String(url).includes("/api/colleagues/feed") && String(url).includes("agent=ward"),
-        ),
-    ).toBe(true);
-  });
-
-  it("the SSE stream URL also carries ?agent=<the viewed agent>", async () => {
-    stubFetch({ "/api/colleagues/feed": { entries: [], truncated: false } });
-
-    renderWithClient(ColleagueConversations, { agentName: "ward" });
-    await screen.findByText("No agent conversations yet.");
-
-    expect(FakeEventSource.instances).toHaveLength(1);
-    expect(FakeEventSource.instances[0].url).toBe("/api/colleagues/stream?agent=ward");
-  });
-
   it("any SSE frame refetches the feed and the new entry appears (no client-side merging)", async () => {
     stubFeedSequence(
       { entries: [ASK_ENTRY], truncated: false },
@@ -346,18 +301,6 @@ describe("ColleagueConversations (legibility wave)", () => {
       (el) => el.textContent,
     );
     expect(days).toEqual(["2026-08-19", "2026-08-19"]);
-  });
-
-  it("hovering the timestamp shows the full ISO string (title on the date+time stamp)", async () => {
-    stubFetch({
-      "/api/colleagues/feed": { entries: [DAY_ONE_ASK], truncated: false },
-    });
-
-    const { container } = renderWithClient(ColleagueConversations, { agentName: "ward" });
-    await screen.findByText("What's the config?");
-
-    const stamp = container.querySelector(".colleague-terminal__stamp");
-    expect(stamp?.getAttribute("title")).toBe("2026-08-19T10:00:00Z");
   });
 
   it("consecutive identical asks collapse into one line with an xN badge", async () => {

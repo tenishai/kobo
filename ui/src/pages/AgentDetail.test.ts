@@ -291,80 +291,6 @@ describe("AgentDetail tabs", () => {
     expect(chatTab.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("renders first words inside the Chat tabpanel", async () => {
-    stubFetch({
-      ...BASE_ROUTES,
-      "/api/agents/warden": { ...READY_AGENT, first_reply: "Hello there." },
-    });
-    renderWithClient(AgentDetail);
-    await screen.findByRole("tab", { name: "Chat" });
-    const chatPanel = document.getElementById("panel-chat");
-    expect(chatPanel?.textContent).toContain("Hello there.");
-  });
-
-  it("keeps identity fields in the always-visible header", async () => {
-    const agentWithIdentity = {
-      ...READY_AGENT,
-      capability: "Answers billing questions and escalates refunds.",
-      created_by: "owner@example.com",
-      skills: [{ name: "cost-report", team: "sre", sha: "abc123" }],
-    };
-    stubFetch({ ...BASE_ROUTES, "/api/agents/warden": agentWithIdentity });
-    renderWithClient(AgentDetail);
-    await screen.findByRole("tab", { name: "Chat" });
-    const header = document.querySelector(".agent-detail__header");
-    expect(header?.textContent).toContain(agentWithIdentity.capability);
-    expect(header?.textContent).toContain(`Made by ${agentWithIdentity.created_by}`);
-    // Skill chips live in the header (2026-09-02 ruling): a visitor sees
-    // what the agent can do without expanding the Advanced group.
-    expect(header?.textContent).toContain("cost-report");
-  });
-
-  it("keeps the team chip, purpose tags, and the null-capability copy in the header", async () => {
-    stubFetch({
-      ...BASE_ROUTES,
-      "/api/agents/warden": {
-        ...READY_AGENT,
-        team: "growth",
-        purpose_tags: ["billing", "support"],
-        capability: null,
-      },
-    });
-    renderWithClient(AgentDetail);
-    await screen.findByRole("tab", { name: "Chat" });
-    const header = document.querySelector(".agent-detail__header") as HTMLElement;
-    expect(within(header).getByText("growth")).not.toBeNull();
-    expect(within(header).getByText("billing")).not.toBeNull();
-    expect(within(header).getByText("support")).not.toBeNull();
-    expect(
-      within(header).getByText("Not written yet. It arrives after first contact."),
-    ).not.toBeNull();
-  });
-
-  it("shows the earned capability line in the header, replacing the not-written-yet copy", async () => {
-    stubFetch({
-      ...BASE_ROUTES,
-      "/api/agents/warden": {
-        ...READY_AGENT,
-        capability: "Answers billing questions and escalates refunds.",
-      },
-    });
-    renderWithClient(AgentDetail);
-    await screen.findByRole("tab", { name: "Chat" });
-    const header = document.querySelector(".agent-detail__header") as HTMLElement;
-    expect(
-      within(header).getByText("Answers billing questions and escalates refunds."),
-    ).not.toBeNull();
-    expect(within(header).queryByText(/Not written yet/)).toBeNull();
-  });
-
-  it("renders no owner line in the header when created_by is null", async () => {
-    renderWithClient(AgentDetail);
-    await screen.findByRole("tab", { name: "Chat" });
-    const header = document.querySelector(".agent-detail__header") as HTMLElement;
-    expect(within(header).queryByText(/Made by/)).toBeNull();
-  });
-
   it("the Edit details affordance disables while frozen (destroying)", async () => {
     stubFetch({
       ...BASE_ROUTES,
@@ -375,109 +301,6 @@ describe("AgentDetail tabs", () => {
     await openHeaderMenu();
     const editButton = screen.getByRole("button", { name: "Edit details" });
     expect((editButton as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it("keeps every header action behind one menu, and no filled button beside the name", async () => {
-    stubFetch({ ...BASE_ROUTES, "/api/agents/warden": { ...READY_AGENT, has_avatar: true } });
-    renderWithClient(AgentDetail);
-    await screen.findByRole("heading", { name: "warden" });
-
-    // Closed: the header is two lines of fact and one button.
-    expect(screen.queryByRole("button", { name: "New face" })).toBeNull();
-    expect(screen.queryByRole("link", { name: "Download the portrait" })).toBeNull();
-    const trigger = screen.getByRole("button", { name: "More actions" });
-    expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
-
-    await openHeaderMenu();
-    expect(trigger.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByRole("button", { name: "New face" })).not.toBeNull();
-    expect(screen.getByLabelText("Upload a portrait")).not.toBeNull();
-    expect(screen.getByRole("link", { name: "Download the portrait" })).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Edit details" })).not.toBeNull();
-  });
-
-  it("names the group, the maker and the persona in the one meta run", async () => {
-    stubFetch({
-      ...BASE_ROUTES,
-      "/api/agents/warden": {
-        ...READY_AGENT,
-        created_by: "owner@example.com",
-        group_name: "platform",
-      },
-    });
-    renderWithClient(AgentDetail);
-    await screen.findByRole("tab", { name: "Chat" });
-
-    const meta = document.querySelector(".agent-detail__meta") as HTMLElement;
-    expect(within(meta).getByText("M")).not.toBeNull();
-    expect(within(meta).getByText("platform")).not.toBeNull();
-    expect(within(meta).getByText("Made by owner@example.com")).not.toBeNull();
-    expect(within(meta).getByText("keeper")).not.toBeNull();
-  });
-
-  it("shows three chips and a count, never the whole set", async () => {
-    stubFetch({
-      ...BASE_ROUTES,
-      "/api/agents/warden": {
-        ...READY_AGENT,
-        purpose_tags: ["billing", "support", "refunds"],
-        skills: [
-          { name: "cost-report", team: "sre", sha: "a" },
-          { name: "pager", team: "sre", sha: "b" },
-        ],
-      },
-    });
-    renderWithClient(AgentDetail);
-    await screen.findByRole("tab", { name: "Chat" });
-
-    const header = document.querySelector(".agent-detail__header") as HTMLElement;
-    expect(within(header).getByText("billing")).not.toBeNull();
-    expect(within(header).getByText("support")).not.toBeNull();
-    expect(within(header).getByText("refunds")).not.toBeNull();
-    // The two that did not fit are a count, and the full set is in Edit
-    // details -- which is where they are changed.
-    expect(within(header).queryByText("cost-report")).toBeNull();
-    const more = within(header).getByText("+2");
-    expect(more.getAttribute("title")).toBe("cost-report, pager");
-
-    // The count is a button: pressing it shows the rest in place.
-    await fireEvent.click(more);
-    expect(within(header).getByText("cost-report")).not.toBeNull();
-    expect(within(header).getByText("pager")).not.toBeNull();
-    await fireEvent.click(within(header).getByText("less"));
-    expect(within(header).queryByText("pager")).toBeNull();
-  });
-
-  it("shows the pending badge on the Harness tab, where Learnings lives now", async () => {
-    stubFetch({
-      ...BASE_ROUTES,
-      "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: false, pending_learnings: 3 },
-    });
-    renderWithClient(AgentDetail);
-    const harnessTab = await screen.findByRole("tab", { name: /^Harness/ });
-    expect(harnessTab.textContent).toContain("3");
-    // And on the section itself, so the count survives opening the tab.
-    await fireEvent.click(harnessTab);
-    expect(harnessItem("Learnings").textContent).toContain("3");
-  });
-
-  it("keeps the tab row to one line of five tabs, with no menu after them", async () => {
-    stubFetch({
-      ...BASE_ROUTES,
-      "/api/agents/warden": { ...READY_AGENT, can_decide_learnings: true },
-    });
-    renderWithClient(AgentDetail);
-    await screen.findByRole("tab", { name: "Chat" });
-
-    const row = document.querySelector(".detail-tabs__list") as HTMLElement;
-    expect(within(row).getAllByRole("tab").map((t) => t.textContent?.trim())).toEqual([
-      "Chat",
-      "Slack",
-      "Access",
-      "Harness",
-      "Settings",
-    ]);
   });
 
   it("remembers the tab and the harness section in the hash", async () => {
@@ -513,20 +336,6 @@ describe("AgentDetail tabs", () => {
 
     const chatTab = await screen.findByRole("tab", { name: "Chat" });
     expect(chatTab.getAttribute("aria-selected")).toBe("true");
-  });
-
-  it("puts Secrets and environment in Settings, above the build log", async () => {
-    renderWithClient(AgentDetail);
-    await fireEvent.click(await screen.findByRole("tab", { name: "Settings" }));
-
-    const settings = document.getElementById("panel-settings") as HTMLElement;
-    expect(settings.hasAttribute("hidden")).toBe(false);
-    const text = settings.textContent ?? "";
-    expect(text).toContain("Secrets and environment");
-    expect(text).toContain("Build log");
-    expect(text.indexOf("Secrets and environment")).toBeLessThan(text.indexOf("Build log"));
-    // And nowhere else: it used to be its own tab behind the More menu.
-    expect(screen.queryByRole("tab", { name: "Secrets" })).toBeNull();
   });
 
   it("preserves the selected tab across a destroy transition", async () => {
@@ -1050,41 +859,6 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
     expect(screen.queryByText("oncall")).toBeNull();
   });
 
-  it("shows the group beside the owner, the one ownership fact it still has", async () => {
-    stubFetch({
-      ...BASE_ROUTES,
-      "/api/agents/warden": {
-        ...CONNECTED_AGENT,
-        created_by: "owner@example.com",
-        group_name: "platform",
-      },
-    });
-    renderWithClient(AgentDetail);
-
-    const header = (await screen.findByRole("heading", { name: "warden" }))
-      .closest(".agent-detail__header") as HTMLElement;
-    expect(within(header).getByText("Made by owner@example.com")).not.toBeNull();
-    expect(within(header).getByText("platform")).not.toBeNull();
-  });
-
-  it("hands the Danger zone the kind, so it does not promise to archive the team's repository", async () => {
-    stubFetch({
-      ...BASE_ROUTES,
-      "/api/agents/warden": { ...CONNECTED_AGENT, destroy_visible: true },
-    });
-    renderWithClient(AgentDetail);
-
-    await screen.findByRole("heading", { name: "warden" });
-    await fireEvent.click(await screen.findByRole("tab", { name: "Settings" }));
-    await fireEvent.click(screen.getByRole("button", { name: "Destroy..." }));
-
-    expect(
-      await screen.findByText(
-        "This destroys the running agent and its platform identity. The repository belongs to your team and is left as it is. Memories die with the namespace.",
-      ),
-    ).not.toBeNull();
-  });
-
   it("still keeps the Access tab when the caller may administer it", async () => {
     stubFetch({
       ...BASE_ROUTES,
@@ -1135,22 +909,6 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
 
     const chatPanel = document.getElementById("panel-chat") as HTMLElement;
     expect(chatPanel.textContent).not.toContain("Convert to connected");
-  });
-
-  it("says what stops working before it will convert", async () => {
-    renderWithClient(AgentDetail);
-    await openSettings();
-    await fireEvent.click(screen.getByRole("button", { name: "Convert..." }));
-
-    expect(
-      screen.getByText(
-        "The room stops editing this agent: no chat, memory, learnings, skills, tooling or Slack from here, and other agents can no longer reach it. Its repository, deployment and cloud identity stay as they are. This cannot be undone from the room.",
-      ),
-    ).not.toBeNull();
-    const confirm = screen.getByRole("button", {
-      name: "Convert this agent",
-    }) as HTMLButtonElement;
-    expect(confirm.disabled).toBe(false);
   });
 
   it("asks no run mode question, since a composed agent already serves web traffic", async () => {

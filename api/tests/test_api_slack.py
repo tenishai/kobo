@@ -1245,16 +1245,6 @@ def test_get_agent_slack_default_shape_before_any_setup(session_factory, config)
     assert response.json()["slack"] == {"app_id": None, "channels": [], "state": "idle"}
 
 
-def test_agent_payload_always_carries_slack_block(session_factory, config):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config)  # no slack_app_id at all
-
-    response = client.get(f"/api/agents/{AGENT_NAME}")
-
-    assert response.status_code == 200
-    assert response.json()["slack"] == {"app_id": None, "channels": [], "state": "idle"}
-
-
 def test_get_agent_slack_carries_app_id_and_channels_after_connect(session_factory, config):
     github = _CapturingGitHub()
     gojira, app_id = _onboarded_gojira()

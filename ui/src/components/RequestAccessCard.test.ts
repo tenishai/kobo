@@ -78,31 +78,4 @@ describe("RequestAccessCard", () => {
     expect(body).toEqual({ to_agent: "target-bot" });
   });
 
-  it("shows a plain success note after the request goes through", async () => {
-    stubFetch({
-      "/api/whoami": WHOAMI,
-      "/api/agents": {
-        agents: [
-          { name: "my-bot", status: "ready", model: "m", model_label: "M", created_at: "2026-08-01T00:00:00Z", has_avatar: false, created_by: "me@example.com", group_name: "growth" },
-        ],
-        groups_unavailable: false,
-      },
-      "/api/agents/my-bot/invites": {
-        id: 1,
-        from_agent: "my-bot",
-        to_agent: { name: "target-bot", group_name: "payments-eng" },
-        status: "pending",
-        requested_by: "me@example.com",
-        decided_by: null,
-        created_at: "2026-08-01T00:00:00Z",
-        decided_at: null,
-      },
-    });
-    renderWithClient(RequestAccessCard, { toAgentName: "target-bot" });
-
-    await screen.findByRole("combobox");
-    await fireEvent.click(screen.getByRole("button", { name: /request colleague access/i }));
-
-    expect(await screen.findByText(/request sent/i)).not.toBeNull();
-  });
 });

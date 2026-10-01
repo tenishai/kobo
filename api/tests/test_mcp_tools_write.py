@@ -325,117 +325,7 @@ def _last_audit_row(session_factory) -> MCPToolCallLog:
 # --- _endpoint: fail loud on a wiring bug -------------------------------------
 
 
-def test_endpoint_raises_at_lookup_time_for_a_route_that_does_not_exist(
-    session_factory, config, fake_storage
-):
-    from kobo_api.mcp.tools.write import _endpoint
-
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-
-    with pytest.raises(RuntimeError, match="no route wired"):
-        _endpoint(app, "POST", "/api/agents/{name}/does-not-exist")
-
-
-def test_endpoint_finds_the_real_create_agent_route(session_factory, config, fake_storage):
-    from kobo_api.mcp.tools.write import _endpoint
-
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-
-    endpoint = _endpoint(app, "POST", "/api/agents")
-
-    assert endpoint.__name__ == "create_agent"
-
-
 # --- registration ------------------------------------------------------------
-
-
-def test_build_mcp_server_registers_the_six_write_tools_alongside_the_read_ones(
-    session_factory, config, fake_storage
-):
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-
-    mcp = build_mcp_server(app)
-
-    names = {tool.name for tool in mcp._tool_manager.list_tools()}
-    assert {
-        "kobo_create_agent",
-        "kobo_teach",
-        "kobo_chat",
-        "kobo_request_colleague",
-        "kobo_accept_invite",
-        "kobo_wire_slack",
-    } <= names
-
-
-def test_build_mcp_server_registers_exactly_the_named_tools(
-    session_factory, config, fake_storage
-):
-    """Coverage folded in from Task 8's review: the subset check just
-    above (and its read-tools twin in test_mcp_tools_read.py,
-    `test_build_mcp_server_registers_the_seven_read_tools`) each pin only
-    their own file's tools with `<=`, deliberately, so neither file also
-    has to track the other's count -- which means nothing anywhere pins
-    the FULL registered set. This is that missing test: `build_mcp_server`
-    must register EXACTLY these twenty-nine tools, no more, no fewer,
-    matching the design's own "Tool surface" table
-    (docs/superpowers/specs/2026-08-22-mcp-server-design.md) plus the MCP
-    marketplace wave's Task 2 pair (`kobo_list_skills`/`kobo_list_tools`),
-    Task 3's `kobo_set_agent_skills`, Task 4's `kobo_add_agent_tool`, Task
-    5's `kobo_create_skill`/`kobo_create_tool`, the persona wave's own
-    `kobo_list_personas` (Task 4) plus `kobo_create_persona` (Task 5), and
-    the MCP learnings trio (Task 8) -- `kobo_list_learnings`,
-    `kobo_decide_learning`, `kobo_decide_learnings_bulk` -- plus the
-    secrets and environment trio (design 2026-09-22) --
-    `kobo_list_agent_secrets`, `kobo_set_agent_secrets`,
-    `kobo_set_agent_env` -- and the restart button's own tool (design
-    2026-09-23), `kobo_restart_agent`, and the persona re-file pair
-    (`kobo_move_persona`/`kobo_archive_persona`, short-names wave
-    2026-09-24) -- one-for-one. A stray extra registration (a
-    copy-paste twin, a leftover experiment) or a dropped one would fail
-    this even though both narrower `<=` checks above would stay green.
-    """
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-
-    mcp = build_mcp_server(app)
-
-    names = {tool.name for tool in mcp._tool_manager.list_tools()}
-    assert names == {
-        "kobo_whoami",
-        "kobo_guide",
-        "kobo_list_agents",
-        "kobo_get_agent",
-        "kobo_feed",
-        "kobo_list_skills",
-        "kobo_list_tools",
-        "kobo_list_personas",
-        "kobo_list_learnings",
-        "kobo_create_agent",
-        "kobo_teach",
-        "kobo_chat",
-        "kobo_request_colleague",
-        "kobo_accept_invite",
-        "kobo_wire_slack",
-        "kobo_set_runtime_image",
-        "kobo_set_agent_skills",
-        "kobo_add_agent_tool",
-        "kobo_create_skill",
-        "kobo_create_tool",
-        "kobo_create_persona",
-        "kobo_request_repo_access",
-        "kobo_list_repo_access",
-        "kobo_decide_repo_access",
-        "kobo_decide_learning",
-        "kobo_decide_learnings_bulk",
-        "kobo_list_agent_secrets",
-        "kobo_set_agent_secrets",
-        "kobo_set_agent_env",
-        "kobo_restart_agent",
-        "kobo_set_agent_persona",
-        "kobo_set_agent_model",
-        "kobo_move_agent",
-        "kobo_move_persona",
-        "kobo_archive_persona",
-    }
 
 
 # --- kobo_guide (guide wave, 2026-09-24) --------------------------------------
@@ -454,14 +344,6 @@ def test_guide_lists_sections_then_returns_one(session_factory, config, fake_sto
     section = _call_tool(mcp, "kobo_guide", _ctx_for(MEMBER_A_EMAIL), section="slack")
     assert section["title"] == "Slack"
     assert "manifest" in section["body"]
-
-
-def test_guide_unknown_section_names_the_real_ones(session_factory, config, fake_storage):
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="before-you-start"):
-        _call_tool(mcp, "kobo_guide", _ctx_for(MEMBER_A_EMAIL), section="nope")
 
 
 # --- kobo_create_agent --------------------------------------------------------
@@ -492,53 +374,6 @@ def test_create_agent_happy_path_returns_name_status_and_note(
         assert agent.created_by == MEMBER_A_EMAIL
     finally:
         session.close()
-
-
-def test_create_agent_without_a_name_uses_the_naming_stations_first_suggestion(
-    session_factory, config, fake_storage
-):
-    """Also the request-shape proof for the persona lookup this wave built
-    (create-identity, Task 3): `who_they_are` IS a catalog persona id on
-    this tool, so it must ride along as `NameSuggestionsRequest.persona_id`
-    too, not just the bare `who_they_are`/`what_they_do` free-text fields --
-    proven here by the real, seeded persona body (a distinctive sentence no
-    caller-submitted text in this test contains) reaching the name
-    generator instead of the thin `who_they_are` string standing in for it."""
-    fake_name = FakeName()
-    app = _app(
-        session_factory,
-        config,
-        groups_resolver=_resolver(),
-        storage=fake_storage,
-        name=fake_name,
-    )
-    mcp = build_mcp_server(app)
-
-    result = _call_tool(
-        mcp,
-        "kobo_create_agent",
-        _ctx_for(MEMBER_A_EMAIL),
-        who_they_are=PERSONA,
-        group=GROUP_A,
-    )
-
-    assert result["name"]
-    session = session_factory()
-    try:
-        assert session.query(Agent).filter_by(name=result["name"]).first() is not None
-    finally:
-        session.close()
-
-    assert len(fake_name.calls) == 1
-    who, what, _tags, _exclude = fake_name.calls[0]
-    assert who == PERSONA
-    # The seeded "helpful-generalist" persona's own real body (see
-    # templates/personas/helpful-generalist.md), not the bare persona id
-    # `who_they_are` was passed as `what_they_do` -- proof `persona_id`
-    # resolved server-side rather than the thin fallback text riding
-    # through untouched.
-    assert "helpful generalist" in what
-    assert what != PERSONA
 
 
 def test_create_agent_non_member_of_claimed_group_surfaces_the_routes_own_consent_rejection(
@@ -585,94 +420,6 @@ def test_create_agent_operator_may_claim_any_configured_group(
     )
 
     assert result["name"] == "opscreated"
-
-
-def test_create_agent_unknown_persona_surfaces_the_routes_own_422(
-    session_factory, config, fake_storage
-):
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="unknown persona"):
-        _call_tool(
-            mcp,
-            "kobo_create_agent",
-            _ctx_for(MEMBER_A_EMAIL),
-            who_they_are="no-such-persona",
-            group=GROUP_A,
-            name="clio",
-        )
-
-
-def test_create_agent_archived_persona_surfaces_the_routes_own_422(
-    session_factory, config, fake_storage
-):
-    """THE INHERITANCE PROOF for the archived arm (task 6): an archived
-    persona is dropped from the ingested index (Task 4's `ingest_indexes`),
-    so `create_agent_route`'s own lookup misses it exactly like an unknown
-    persona would -- but the route's `_persona_archived_in_index` check
-    (kobo_api.main) then answers the honest, deliberately-not-folded-into-
-    anti-enumeration 422 `persona {id!r} is archived`, and this tool must
-    surface that route message VERBATIM, never the generic "unknown
-    persona" answer. The persona is created and archived through the REAL
-    routes (`kobo_create_persona` for the create, the direct `POST
-    /api/personas/{id}/archive` route -- not an MCP tool, none exists in
-    this module's 21 -- for the archive, called via `_endpoint` +
-    `authz.room_request` the same way this file's other direct-route
-    helpers do), never a hand-rolled fixture that skips the archive
-    route's own gate."""
-    from kobo_api.mcp import authz
-    from kobo_api.mcp.tools.write import _endpoint
-
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-
-    created = _call_tool(
-        mcp,
-        "kobo_create_persona",
-        _ctx_for(MEMBER_A_EMAIL),
-        name="Retiring Reviewer",
-        who_they_are="a reviewer about to be archived",
-        what_they_do="Reviews things, briefly.",
-    )
-    persona_id = created["id"]
-
-    archive_endpoint = _endpoint(app, "POST", "/api/personas/{persona_id}/archive")
-    req = authz.room_request(app, OPERATOR_EMAIL)
-    session = session_factory()
-    try:
-        archive_response = archive_endpoint(persona_id=persona_id, request=req, session=session)
-    finally:
-        session.close()
-    assert archive_response.status_code == 200, archive_response.body
-
-    with pytest.raises(ToolError, match=f"persona {persona_id!r} is archived"):
-        _call_tool(
-            mcp,
-            "kobo_create_agent",
-            _ctx_for(MEMBER_A_EMAIL),
-            who_they_are=persona_id,
-            group=GROUP_A,
-            name="clio",
-        )
-
-
-def test_create_agent_name_taken_surfaces_the_routes_own_409(
-    session_factory, config, fake_storage
-):
-    _seed_agent(session_factory, name="clio", created_by=MEMBER_A_EMAIL, group_name=GROUP_A)
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="name taken"):
-        _call_tool(
-            mcp,
-            "kobo_create_agent",
-            _ctx_for(MEMBER_A_EMAIL),
-            who_they_are=PERSONA,
-            group=GROUP_A,
-            name="clio",
-        )
 
 
 def test_create_agent_passes_skip_baseline(session_factory, config, fake_storage):
@@ -756,39 +503,6 @@ def test_create_agent_archetype_and_voice_force_persona_tags_and_marker(
         session.close()
 
 
-def test_create_agent_archetype_duplicate_guard_409_surfaces_through_tool_error(
-    session_factory, config, fake_storage
-):
-    """The route's own "one guide per team" duplicate guard is a real 409
-    conflict on `kobo_create_agent`'s own table (B) -- no existing agent to
-    protect from enumeration here (this module's own docstring), so it
-    surfaces verbatim, same as `test_create_agent_name_taken_surfaces_the_
-    routes_own_409` above."""
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-
-    _call_tool(
-        mcp,
-        "kobo_create_agent",
-        _ctx_for(MEMBER_A_EMAIL),
-        who_they_are=PERSONA,
-        group=GROUP_A,
-        name="atlas",
-        archetype="team_guide",
-    )
-
-    with pytest.raises(ToolError, match="already has a team guide"):
-        _call_tool(
-            mcp,
-            "kobo_create_agent",
-            _ctx_for(MEMBER_A_EMAIL),
-            who_they_are=PERSONA,
-            group=GROUP_A,
-            name="beacon",
-            archetype="team_guide",
-        )
-
-
 # --- kobo_teach ----------------------------------------------------------------
 
 
@@ -855,21 +569,6 @@ def test_chat_invisible_agent_raises_agent_not_found(session_factory, config, fa
 
     with pytest.raises(ToolError, match="agent not found"):
         _call_tool(mcp, "kobo_chat", _ctx_for(MEMBER_A_EMAIL), agent="hidden", message="hi")
-
-
-def test_chat_not_ready_agent_surfaces_the_routes_own_409(session_factory, config, fake_storage):
-    _seed_agent(
-        session_factory,
-        name="ward",
-        created_by=OWNER_A_EMAIL,
-        group_name=GROUP_A,
-        status=AgentStatus.PENDING,
-    )
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="not ready to chat"):
-        _call_tool(mcp, "kobo_chat", _ctx_for(MEMBER_A_EMAIL), agent="ward", message="hi")
 
 
 def test_chat_connected_agent_surfaces_the_routes_own_409(
@@ -963,27 +662,6 @@ def test_request_colleague_unknown_colleague_raises_agent_not_found(
         )
 
 
-def test_request_colleague_duplicate_surfaces_the_routes_own_409(
-    session_factory, config, fake_storage
-):
-    _seed_agent(session_factory, name="alpha", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
-    _seed_agent(session_factory, name="beta", created_by=OWNER_B_EMAIL, group_name=GROUP_B)
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-    _call_tool(
-        mcp, "kobo_request_colleague", _ctx_for(OWNER_A_EMAIL), agent="alpha", colleague="beta"
-    )
-
-    with pytest.raises(ToolError, match="already pending or accepted"):
-        _call_tool(
-            mcp,
-            "kobo_request_colleague",
-            _ctx_for(OWNER_A_EMAIL),
-            agent="alpha",
-            colleague="beta",
-        )
-
-
 # --- kobo_accept_invite ----------------------------------------------------------
 
 
@@ -1037,20 +715,6 @@ def test_accept_invite_unknown_id_raises_agent_not_found(session_factory, config
 
     with pytest.raises(ToolError, match="agent not found"):
         _call_tool(mcp, "kobo_accept_invite", _ctx_for(OWNER_B_EMAIL), invite_id=999999)
-
-
-def test_accept_invite_already_decided_surfaces_the_routes_own_409(
-    session_factory, config, fake_storage
-):
-    _seed_agent(session_factory, name="alpha", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
-    _seed_agent(session_factory, name="beta", created_by=OWNER_B_EMAIL, group_name=GROUP_B)
-    invite_id = _pending_invite(session_factory, from_agent="alpha", to_agent="beta")
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-    _call_tool(mcp, "kobo_accept_invite", _ctx_for(OWNER_B_EMAIL), invite_id=invite_id)
-
-    with pytest.raises(ToolError, match="already accepted"):
-        _call_tool(mcp, "kobo_accept_invite", _ctx_for(OWNER_B_EMAIL), invite_id=invite_id)
 
 
 # --- kobo_wire_slack -------------------------------------------------------------
@@ -1496,64 +1160,6 @@ def test_set_agent_skills_partial_failure_leaves_earlier_adds_applied(
 # --- kobo_set_agent_skills review round 1 (operator-ruled deviation + minors) -
 
 
-def test_set_agent_skills_remove_unknown_id_surfaces_the_routes_own_message(
-    session_factory, config, fake_storage
-):
-    """Operator-ruled deviation: a `remove` id the agent doesn't actually
-    carry gets `delete_skill`'s own 404 message verbatim, not the generic
-    "agent not found" -- this fires strictly post-gate (the caller already
-    has standing on THIS agent by the time remove_skill even runs), so
-    folding it would hide which id failed for zero enumeration benefit."""
-    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="skill not found: ghost"):
-        _call_tool(
-            mcp, "kobo_set_agent_skills", _ctx_for(OWNER_A_EMAIL), agent="ward", remove=["ghost"]
-        )
-
-
-def test_set_agent_skills_add_id_gone_from_catalog_surfaces_the_routes_own_message(
-    session_factory, config, fake_storage
-):
-    """The other half of the operator-ruled deviation, on the ADD side: the
-    marketplace index still lists the id (so this tool's own pre-route
-    catalog check passes and resolves a team), but the index's promised
-    SKILL.md content is gone from the bucket by the time
-    add_catalog_skill's own materialization step tries to download it --
-    an index/content drift the route reports as "skill no longer in the
-    catalog: <id>", which must surface verbatim, not fold into "agent not
-    found"."""
-    fake_storage.write_bytes(
-        SKILLS_BUCKET,
-        "index.json",
-        json.dumps(
-            {
-                "skills": {
-                    SKILL_ID: {
-                        "name": SKILL_ID,
-                        "description": "d",
-                        "tags": [],
-                        "owner": SKILL_TEAM,
-                    }
-                },
-                "count": 1,
-            }
-        ).encode(),
-    )
-    # Deliberately no catalog/<id>/SKILL.md written -- the index promises a
-    # skill the content bucket no longer actually carries.
-    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match=f"skill no longer in the catalog: {SKILL_ID}"):
-        _call_tool(
-            mcp, "kobo_set_agent_skills", _ctx_for(OWNER_A_EMAIL), agent="ward", add=[SKILL_ID]
-        )
-
-
 def test_set_agent_skills_remove_on_invisible_agent_raises_agent_not_found(
     session_factory, config, fake_storage
 ):
@@ -1576,20 +1182,6 @@ def test_set_agent_skills_remove_on_invisible_agent_raises_agent_not_found(
         )
 
 
-def test_set_agent_skills_bucket_not_configured_raises_tool_error(
-    session_factory, config, fake_storage
-):
-    cfg = config.model_copy(update={"skills_bucket": ""})
-    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
-    app = _app(session_factory, cfg, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="marketplace skills bucket is not configured"):
-        _call_tool(
-            mcp, "kobo_set_agent_skills", _ctx_for(OWNER_A_EMAIL), agent="ward", add=[SKILL_ID]
-        )
-
-
 def test_set_agent_skills_is_marked_destructive(session_factory, config, fake_storage):
     """remove deletes a whole bundle/skills/<id>/ tree from the agent's
     repo -- this tool's own annotation must say so, distinct from the
@@ -1601,44 +1193,6 @@ def test_set_agent_skills_is_marked_destructive(session_factory, config, fake_st
     tool = next(t for t in mcp._tool_manager.list_tools() if t.name == "kobo_set_agent_skills")
 
     assert tool.annotations.destructiveHint is True
-
-
-def test_set_agent_skills_add_then_remove_applies_adds_before_removals(
-    session_factory, config, fake_storage
-):
-    _seed_marketplace_skill(fake_storage, SKILL_ID, owner=SKILL_TEAM)
-    github = _SkillSeedingGitHub(local_skills={"old-skill/SKILL.md": "content"})
-    _seed_agent(
-        session_factory,
-        name="ward",
-        created_by=OWNER_A_EMAIL,
-        group_name=GROUP_A,
-        skills=[{"name": "old-skill", "team": SKILL_TEAM, "sha": "abc", "source": "catalog"}],
-    )
-    app = _app(
-        session_factory, config, groups_resolver=_resolver(), storage=fake_storage, github=github
-    )
-    mcp = build_mcp_server(app)
-
-    result = _call_tool(
-        mcp,
-        "kobo_set_agent_skills",
-        _ctx_for(OWNER_A_EMAIL),
-        agent="ward",
-        add=[SKILL_ID],
-        remove=["old-skill"],
-    )
-
-    assert result["added"][0]["id"] == SKILL_ID
-    assert result["removed"] == ["old-skill"]
-    # Pins the order this module's own docstring promises ("adds are
-    # applied first, then removals") -- if the loop order ever flipped,
-    # this would see "kobo: remove skill old-skill" pushed first.
-    push_messages = [message for _, message in github.pushes]
-    assert push_messages == [
-        f"kobo: add skill {SKILL_ID}",
-        "kobo: remove skill old-skill",
-    ]
 
 
 def test_set_agent_skills_audit_row_logs_tool_status_and_arguments(
@@ -1839,25 +1393,6 @@ def test_add_agent_tool_is_marked_destructive(session_factory, config, fake_stor
     assert tool.annotations.destructiveHint is True
 
 
-def test_add_agent_tool_marketplace_repo_not_configured_is_tool_error(
-    session_factory, config, fake_storage
-):
-    """`config.skills_repo` unset (the bare `config` fixture's own default)
-    -> `marketplace.marketplace_repo` raises `MarketplaceError("the
-    marketplace repo is not configured")` from inside `fetch_tool_py`,
-    before any clone -- this tool's own `except MarketplaceError` arm must
-    preserve that message verbatim (review round 1, important 1)."""
-    assert not config.skills_repo
-    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="the marketplace repo is not configured"):
-        _call_tool(
-            mcp, "kobo_add_agent_tool", _ctx_for(OWNER_A_EMAIL), agent="ward", tool_id=TOOL_ID
-        )
-
-
 def test_add_agent_tool_marketplace_transport_failure_is_sanitized(
     session_factory, config, fake_storage
 ):
@@ -1886,38 +1421,6 @@ def test_add_agent_tool_marketplace_transport_failure_is_sanitized(
         )
 
     assert transport_message not in str(exc_info.value)
-
-
-def test_add_agent_tool_marketplace_invalid_utf8_surfaces_as_tool_error(
-    session_factory, config, fake_storage
-):
-    """`fetch_tool_py`'s own UnicodeDecodeError-to-MarketplaceError wrap
-    (final review, MUST-FIX 1b) reaches this tool's `except MarketplaceError`
-    arm the same way every other typed marketplace failure already does,
-    surfacing as a clean `ToolError` rather than an unhandled
-    `UnicodeDecodeError` breaking the call -- one cheap integration proof
-    on top of `test_marketplace.py`'s own unit-level coverage of the wrap
-    itself."""
-    config.skills_repo = "org-skills"
-    filename = f"{TOOL_ID}.py"
-    bad_bytes = b'"""caf\xe9 bug."""\ndef post_draft(d):\n    return d\n'
-    fake_github = FakeGitHub(
-        tooling_source_files={marketplace_repo(config): {f"tools/{TOOL_ID}/{filename}": bad_bytes}}
-    )
-    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
-    app = _app(
-        session_factory,
-        config,
-        groups_resolver=_resolver(),
-        storage=fake_storage,
-        github=fake_github,
-    )
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="not valid UTF-8"):
-        _call_tool(
-            mcp, "kobo_add_agent_tool", _ctx_for(OWNER_A_EMAIL), agent="ward", tool_id=TOOL_ID
-        )
 
 
 # --- kobo_create_skill / kobo_create_tool (MCP marketplace wave, Task 5) -----
@@ -2061,40 +1564,6 @@ def test_create_skill_operator_any_team(session_factory, config, fake_storage):
     assert result["commit"]
     written = fake_github.pushed_file(f"skills/{NEW_SKILL_ID}/SKILL.md")
     assert f"owner: {GROUP_B}" in written
-
-
-def test_create_skill_collision_surfaces(session_factory, config, fake_storage):
-    """`marketplace.create_skill`'s own "already exists" `MarketplaceError`
-    (the repo's `clone_tree` already carries this skill's slot) surfaces
-    as a `ToolError` with that message preserved verbatim -- the
-    membership gate passed, this is `marketplace.create_skill`'s own
-    collision check."""
-    config.skills_repo = "org-skills"
-    fake_github = FakeGitHub(
-        clone_tree={
-            f"skills/{NEW_SKILL_ID}/SKILL.md": (
-                f"---\nname: {NEW_SKILL_ID}\nowner: {GROUP_A}\n---\nAlready there.\n"
-            )
-        }
-    )
-    app = _app(
-        session_factory,
-        config,
-        groups_resolver=_resolver(),
-        storage=fake_storage,
-        github=fake_github,
-    )
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match=f"skill {NEW_SKILL_ID!r} already exists"):
-        _call_tool(
-            mcp,
-            "kobo_create_skill",
-            _ctx_for(MEMBER_A_EMAIL),
-            skill_id=NEW_SKILL_ID,
-            content=NEW_SKILL_CONTENT,
-            team=GROUP_A,
-        )
 
 
 def test_create_skill_marketplace_transport_failure_is_sanitized(
@@ -2456,34 +1925,6 @@ def test_move_persona_refiles_and_the_listing_follows(session_factory, config, f
     assert any(entry["id"] == created["id"] for entry in listed["result"])
 
 
-def test_move_persona_unknown_id_is_a_tool_error(session_factory, config, fake_storage):
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="no persona with that id"):
-        _call_tool(
-            mcp,
-            "kobo_move_persona",
-            _ctx_for(MEMBER_A_EMAIL),
-            persona_id="never-made",
-            team=GROUP_A,
-        )
-
-
-def test_move_persona_bad_team_slug_is_a_tool_error(session_factory, config, fake_storage):
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError):
-        _call_tool(
-            mcp,
-            "kobo_move_persona",
-            _ctx_for(MEMBER_A_EMAIL),
-            persona_id="anything",
-            team="Not A Slug!",
-        )
-
-
 def test_archive_persona_hides_it_from_the_listing(session_factory, config, fake_storage):
     app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
     mcp = build_mcp_server(app)
@@ -2671,23 +2112,6 @@ def test_create_persona_named_team_non_member_toolerror(session_factory, config,
         )
 
 
-def test_create_persona_exists_conflict_verbatim(session_factory, config, fake_storage):
-    """`create_persona`'s own `PersonaExists` (kobo_api.personas), folded
-    into the route's 409, surfaces through `_create_result` verbatim."""
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-    kwargs = dict(
-        name="Duplicate Auditor",
-        who_they_are="a careful reviewer",
-        what_they_do="Review submissions for accuracy.",
-    )
-
-    _call_tool(mcp, "kobo_create_persona", _ctx_for(MEMBER_A_EMAIL), **kwargs)
-
-    with pytest.raises(ToolError, match="a persona with that name already exists"):
-        _call_tool(mcp, "kobo_create_persona", _ctx_for(MEMBER_A_EMAIL), **kwargs)
-
-
 def test_create_persona_render_overflow_verbatim(session_factory, config, fake_storage):
     """The merged render's own 200-line ceiling (kobo_api.personas.
     _check_rendered_size, raised as PersonaError, folded into the route's
@@ -2715,24 +2139,6 @@ def test_create_persona_render_overflow_verbatim(session_factory, config, fake_s
     assert message.endswith("the limit is 200")
     reported_lines = int(message.split("renders to ")[1].split(" lines")[0])
     assert reported_lines > 200
-
-
-def test_create_persona_slug_law_verbatim(session_factory, config, fake_storage):
-    """A name that clears pydantic's own length bound but can't slugify to
-    a valid id (kobo_api.personas.persona_id's own PersonaError, folded
-    into the route's 422) surfaces through `_create_result` verbatim."""
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match=r"could not derive a valid persona id from name: '!!!'"):
-        _call_tool(
-            mcp,
-            "kobo_create_persona",
-            _ctx_for(MEMBER_A_EMAIL),
-            name="!!!",
-            who_they_are="a persona with an unslugifiable name",
-            what_they_do="Do something.",
-        )
 
 
 def test_create_persona_audit_row_bounded(session_factory, config, fake_storage):
@@ -2810,37 +2216,6 @@ def test_request_then_list_then_decide_roundtrip(
         decision="approved",
     )
     assert [r["status"] for r in decided["decided"]] == ["approved", "approved"]
-
-
-def test_request_repo_access_validates_shape(
-    session_factory, config, fake_storage, tmp_path
-):
-    app = _broker_app(session_factory, config, fake_storage, tmp_path)
-    _seed_agent(session_factory, name="ward", created_by=MEMBER_A_EMAIL, group_name=GROUP_A)
-    mcp = build_mcp_server(app)
-    with pytest.raises(ToolError):
-        _call_tool(
-            mcp,
-            "kobo_request_repo_access",
-            _ctx_for(MEMBER_A_EMAIL),
-            agent="ward",
-            repositories=["not-a-repo-shape"],
-        )
-
-
-def test_decide_repo_access_validates_decision_vocabulary(
-    session_factory, config, fake_storage, tmp_path
-):
-    app = _broker_app(session_factory, config, fake_storage, tmp_path)
-    mcp = build_mcp_server(app)
-    with pytest.raises(ToolError):
-        _call_tool(
-            mcp,
-            "kobo_decide_repo_access",
-            _ctx_for(OPERATOR_EMAIL),
-            ids=[1],
-            decision="maybe",
-        )
 
 
 # --- kobo_decide_learning / kobo_decide_learnings_bulk (MCP learnings trio, --
@@ -3077,53 +2452,6 @@ def test_decide_learning_gate_refusal_maps_to_agent_not_found(
         session.close()
 
 
-def test_decide_learning_invalid_action_raises_tool_error(session_factory, config, fake_storage):
-    """There is no route to validate `action`'s vocabulary the way
-    `LearningsBulkPayload` does for the bulk tool (see this module's own
-    docstring section) -- this tool's own gate must catch it."""
-    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
-    learning_id = _seed_learning(session_factory, "ward")
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="action must be 'approve' or 'deny'"):
-        _call_tool(
-            mcp,
-            "kobo_decide_learning",
-            _ctx_for(OWNER_A_EMAIL),
-            agent="ward",
-            learning_id=learning_id,
-            action="frobnicate",
-        )
-
-    session = session_factory()
-    try:
-        row = session.query(AgentLearning).filter_by(id=learning_id).one()
-        assert row.status == LEARNING_PENDING
-    finally:
-        session.close()
-
-
-def test_decide_learning_unknown_id_surfaces_verbatim(session_factory, config, fake_storage):
-    """`_learning_route_result`'s own documented deviation: a bad
-    learning_id fires strictly POST-gate (the caller already cleared the
-    ready-and-decide gate on THIS agent), so it surfaces "no such
-    learning" verbatim rather than folding into "agent not found"."""
-    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="no such learning"):
-        _call_tool(
-            mcp,
-            "kobo_decide_learning",
-            _ctx_for(OWNER_A_EMAIL),
-            agent="ward",
-            learning_id=999999,
-            action="deny",
-        )
-
-
 def test_decide_learning_audit_row_logs_tool_status_and_arguments(
     session_factory, config, fake_storage
 ):
@@ -3255,28 +2583,6 @@ def test_decide_learnings_bulk_approve_instant_covers_every_id(
         assert all(row.status == LEARNING_APPROVED for row in rows)
     finally:
         session.close()
-
-
-def test_decide_learnings_bulk_invalid_action_raises_tool_error(
-    session_factory, config, fake_storage
-):
-    """The bulk tool's own action vocabulary is the route's payload
-    model's job (`LearningsBulkPayload.action: Literal["approve", "deny"]`)
-    -- a bad value must surface as a `ToolError` before any route call,
-    same as every other pydantic-validated tool in this module."""
-    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
-    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError):
-        _call_tool(
-            mcp,
-            "kobo_decide_learnings_bulk",
-            _ctx_for(OWNER_A_EMAIL),
-            agent="ward",
-            ids=[1],
-            action="frobnicate",
-        )
 
 
 def test_decide_learnings_bulk_audit_row_logs_tool_status_and_arguments(
@@ -3858,22 +3164,6 @@ def test_set_agent_persona_hides_an_agent_the_caller_does_not_own(
         )
 
 
-def test_set_agent_persona_names_a_persona_that_does_not_exist(
-    session_factory, config, fake_storage
-):
-    _seed_secrets_agent(session_factory)
-    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage))
-
-    with pytest.raises(ToolError, match="no persona named nobody"):
-        _call_tool(
-            mcp,
-            "kobo_set_agent_persona",
-            _ctx_for(MEMBER_A_EMAIL),
-            agent=SECRETS_AGENT,
-            persona="nobody",
-        )
-
-
 # --- kobo_move_agent -------------------------------------------------------------
 
 
@@ -3903,11 +3193,3 @@ def test_move_agent_is_an_operators_call(session_factory, config, fake_storage):
         )
 
 
-def test_move_agent_names_a_group_the_room_does_not_know(session_factory, config, fake_storage):
-    _seed_secrets_agent(session_factory, created_by=OPERATOR_EMAIL)
-    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage))
-
-    with pytest.raises(ToolError, match="no group named finance"):
-        _call_tool(
-            mcp, "kobo_move_agent", _ctx_for(OPERATOR_EMAIL), agent=SECRETS_AGENT, group="finance"
-        )

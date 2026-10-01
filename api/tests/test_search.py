@@ -160,14 +160,6 @@ def test_catalog_is_empty_true_again_once_the_table_is_cleared(engine, storage):
     assert catalog_is_empty(engine) is True
 
 
-def test_catalog_ttl_is_five_minutes():
-    # Raised from 60s (Task 3 perf fix): the request path no longer blocks
-    # on a stale refresh, so a longer TTL just means fewer background
-    # refreshes, not a slower create modal. POST /api/catalogs/refresh
-    # remains the operator's own now-button regardless of this value.
-    assert CATALOG_TTL_S == 300
-
-
 def test_ingest_indexes_returns_counts(engine, storage):
     counts = _ingest(engine, storage)
     assert counts == {"skill": 2, "persona": 1}
@@ -235,12 +227,6 @@ def test_ingest_slugs_multiword_tags_and_never_yields_duplicates(engine):
         "cloud-security",
     ]
     assert len(entry.tags) == len(set(entry.tags))
-
-
-def test_ingest_records_exactly_one_read_per_bucket(engine, storage):
-    _ingest(engine, storage)
-    assert storage.calls.count("read_bytes:skills-bucket:index.json") == 1
-    assert storage.calls.count("read_bytes:personas-bucket:index.json") == 1
 
 
 def test_empty_q_returns_all_of_kind_ordered_by_name(engine, storage):

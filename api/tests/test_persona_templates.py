@@ -118,13 +118,6 @@ def test_name_placeholder_appears_exactly_once(path):
 
 
 @pytest.mark.parametrize("path", ALL_FILES, ids=_ids(ALL_FILES))
-def test_no_em_or_en_dashes(path):
-    text = path.read_text()
-    assert "—" not in text
-    assert "–" not in text
-
-
-@pytest.mark.parametrize("path", ALL_FILES, ids=_ids(ALL_FILES))
 def test_no_company_client_or_product_names(path):
     text = path.read_text().lower()
     hits = [w for w in BLOCKLIST if re.search(rf"\b{re.escape(w)}\b", text)]

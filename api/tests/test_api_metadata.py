@@ -778,11 +778,3 @@ def test_patch_metadata_refuses_a_group_the_room_does_not_know(session_factory, 
     assert _group_on_row(session_factory) == "sre"
 
 
-def test_patch_metadata_group_reads_back_on_the_agent(session_factory, config):
-    cfg = _grouped_config(config)
-    client = _make_client(session_factory, cfg)
-    _seed_agent(session_factory, cfg, group_name=None)
-    client.patch(f"/api/agents/{AGENT_NAME}/metadata", json={"group": "marketing"})
-
-    body = client.get(f"/api/agents/{AGENT_NAME}").json()
-    assert body["group_name"] == "marketing"

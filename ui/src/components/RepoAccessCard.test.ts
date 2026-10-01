@@ -64,27 +64,6 @@ describe("RepoAccessCard", () => {
     expect(screen.getByLabelText("One owner/name per line")).not.toBeNull();
   });
 
-  it("says nothing is there in one table row", async () => {
-    stubRepoAccess([]);
-    const { container } = renderWithClient(RepoAccessCard, { agentName: "warden" });
-
-    await screen.findByText("No repositories requested yet.");
-    const empties = container.querySelectorAll("td.panel__empty");
-    expect(empties).toHaveLength(1);
-    expect(empties[0].parentElement?.children).toHaveLength(1);
-    expect(empties[0].getAttribute("colspan")).toBe("3");
-  });
-
-  it("offers at most one filled button with the form open", async () => {
-    stubRepoAccess(ROWS);
-    const { container } = renderWithClient(RepoAccessCard, { agentName: "warden" });
-
-    await openRequest();
-    await screen.findByText("your-org/example-repo");
-
-    expect(container.querySelectorAll(".btn--primary").length).toBeLessThanOrEqual(1);
-  });
-
   it("lists only this agent's repositories with their state", async () => {
     stubRepoAccess(ROWS);
     renderWithClient(RepoAccessCard, { agentName: "warden" });

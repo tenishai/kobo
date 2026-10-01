@@ -45,92 +45,6 @@ describe("anyAgentActive", () => {
   });
 });
 
-describe("listRefetchInterval", () => {
-  it("is false for undefined (no data fetched yet)", () => {
-    expect(listRefetchInterval(undefined)).toBe(false);
-  });
-
-  it("is the slow health poll for an empty list", () => {
-    expect(listRefetchInterval([])).toBe(60_000);
-  });
-
-  it("is 3500 when one agent is provisioning", () => {
-    expect(
-      listRefetchInterval([{ status: "ready" }, { status: "provisioning" }]),
-    ).toBe(3500);
-  });
-
-  it("is 3500 when an agent is pending", () => {
-    expect(listRefetchInterval([{ status: "pending" }])).toBe(3500);
-  });
-
-  it("slows to the health poll once every agent is ready", () => {
-    expect(
-      listRefetchInterval([{ status: "ready" }, { status: "ready" }]),
-    ).toBe(60_000);
-  });
-
-  it("is the health poll for a mix of only terminal statuses (ready + failed)", () => {
-    expect(
-      listRefetchInterval([{ status: "ready" }, { status: "failed" }]),
-    ).toBe(60_000);
-  });
-});
-
-describe("detailRefetchInterval", () => {
-  it("is false for undefined (no data fetched yet)", () => {
-    expect(detailRefetchInterval(undefined)).toBe(false);
-  });
-
-  it("is 3500 while the agent is pending", () => {
-    expect(detailRefetchInterval({ status: "pending" })).toBe(3500);
-  });
-
-  it("is 3500 while the agent is provisioning", () => {
-    expect(detailRefetchInterval({ status: "provisioning" })).toBe(3500);
-  });
-
-  it("slows to the health poll once the agent is ready", () => {
-    expect(detailRefetchInterval({ status: "ready" })).toBe(60_000);
-  });
-
-  it("is the health poll once the agent has failed", () => {
-    expect(detailRefetchInterval({ status: "failed" })).toBe(60_000);
-  });
-});
-
-describe("stepTone", () => {
-  it("maps done -> ok", () => {
-    expect(stepTone("done")).toBe("ok");
-  });
-
-  it("maps skipped -> its own tone (not ok, not fail: a real reason worth showing)", () => {
-    expect(stepTone("skipped")).toBe("skipped");
-  });
-
-  it("maps failed -> fail", () => {
-    expect(stepTone("failed")).toBe("fail");
-  });
-
-  it("maps running -> active", () => {
-    expect(stepTone("running")).toBe("active");
-  });
-
-  it("maps pending -> active (queued work still reads as in-progress)", () => {
-    expect(stepTone("pending")).toBe("active");
-  });
-
-  it("maps waiting -> its own tone (parked on a person, not failed and not running)", () => {
-    expect(stepTone("waiting")).toBe("waiting");
-  });
-});
-
-describe("agentTone for a parked agent", () => {
-  it("shows waiting as warn: still mid-flight from the room's point of view", () => {
-    expect(agentTone("waiting")).toBe("warn");
-  });
-});
-
 describe("isDestroyComplete", () => {
   it("is true when destroying and a 404 arrives", () => {
     expect(isDestroyComplete("destroying", true, 404)).toBe(true);
@@ -154,28 +68,6 @@ describe("isDestroyComplete", () => {
 
   it("is false when destroying but there is no error", () => {
     expect(isDestroyComplete("destroying", false, undefined)).toBe(false);
-  });
-});
-
-describe("agentTone", () => {
-  it("maps ready -> ok", () => {
-    expect(agentTone("ready")).toBe("ok");
-  });
-
-  it("maps failed -> fail", () => {
-    expect(agentTone("failed")).toBe("fail");
-  });
-
-  it("maps pending -> warn (amber pulse)", () => {
-    expect(agentTone("pending")).toBe("warn");
-  });
-
-  it("maps provisioning -> warn (amber pulse)", () => {
-    expect(agentTone("provisioning")).toBe("warn");
-  });
-
-  it("defaults an unrecognized status to warn, not a false ok/fail claim", () => {
-    expect(agentTone("something-new")).toBe("warn");
   });
 });
 

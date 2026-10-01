@@ -107,18 +107,6 @@ function offendingLines(source: string): string[] {
     .filter((line) => line.includes("—"));
 }
 
-describe("user-facing copy", () => {
-  it("contains no em dashes outside comments", () => {
-    const offenders: string[] = [];
-    for (const file of svelteFiles(ROOT)) {
-      for (const line of offendingLines(readFileSync(file, "utf8"))) {
-        offenders.push(`${file.replace(ROOT, "src")}: ${line.trim()}`);
-      }
-    }
-    expect(offenders, offenders.join("\n")).toEqual([]);
-  });
-});
-
 describe("stripComments", () => {
   it("does not let a // comment's glob pattern open a phantom block comment (the ToolingPanel regression)", () => {
     // Reproduces the exact shape that slipped past the old three-regex

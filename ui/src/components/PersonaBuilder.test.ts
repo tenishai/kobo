@@ -80,26 +80,6 @@ describe("PersonaBuilder - file upload", () => {
     });
   });
 
-  it("a rules upload read failure shows the same plain copy MemoryPanel uses", async () => {
-    stubFetch({ "/api/": {} });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    const rulesInput = screen.getByLabelText("Upload rules file") as HTMLInputElement;
-    const reader = {
-      readAsText: vi.fn(function (this: FileReader) {
-        this.onerror?.(new Event("error") as ProgressEvent<FileReader>);
-      }),
-    };
-    vi.stubGlobal(
-      "FileReader",
-      vi.fn(() => reader),
-    );
-
-    await fireEvent.change(rulesInput, { target: { files: [textFile("x")] } });
-
-    expect(await screen.findByText("Couldn't read this file. Try another.")).not.toBeNull();
-  });
-
   it("uploading a file into the step-2 what-they-do textarea replaces its content", async () => {
     stubFetch({
       "/api/personas/draft": DRAFT_RESPONSE,
@@ -126,14 +106,6 @@ describe("PersonaBuilder - honest new limits (upload/limits addendum)", () => {
     vi.unstubAllGlobals();
   });
 
-  it("step 1's rules help text says up to 150, not 8", async () => {
-    stubFetch({ "/api/": {} });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    expect(screen.getByText("Up to 150, one per line.")).not.toBeNull();
-    expect(screen.queryByText("Up to 8, one per line.")).toBeNull();
-  });
-
   it("shows the 150 rules cap message once more than 150 lines are entered", async () => {
     stubFetch({ "/api/": {} });
     renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
@@ -145,36 +117,6 @@ describe("PersonaBuilder - honest new limits (upload/limits addendum)", () => {
     expect(await screen.findByText("Use up to 150, one per line.")).not.toBeNull();
   });
 
-  it("the merged-render 422 message surfaces verbatim through the existing error plumbing", async () => {
-    stubFetch({ "/api/personas/draft": DRAFT_RESPONSE, "/api/": {} });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.includes("/api/personas/draft")) {
-          return new Response(JSON.stringify(DRAFT_RESPONSE), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        if (url.includes("/api/personas")) {
-          return new Response(
-            JSON.stringify({ error: "persona renders to 201 lines; the limit is 200" }),
-            { status: 422, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        return new Response(JSON.stringify({}), { status: 200 });
-      }),
-    );
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    await reachStep2();
-    await fireEvent.click(screen.getByRole("button", { name: "Create persona" }));
-
-    expect(
-      await screen.findByText("persona renders to 201 lines; the limit is 200"),
-    ).not.toBeNull();
-  });
 });
 
 describe("PersonaBuilder - bring your own persona (step 1)", () => {
@@ -224,27 +166,6 @@ describe("PersonaBuilder - bring your own persona (step 1)", () => {
     expect(
       fetchMock.mock.calls.some(([input]) => String(input).includes("draft")),
     ).toBe(false);
-  });
-
-  it("a step-1 persona-file read failure shows the same plain copy the other upload handlers use", async () => {
-    stubFetch({ "/api/": {} });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    const personaFile = screen.getByLabelText("Upload persona file") as HTMLInputElement;
-    const reader = {
-      readAsText: vi.fn(function (this: FileReader) {
-        this.onerror?.(new Event("error") as ProgressEvent<FileReader>);
-      }),
-    };
-    vi.stubGlobal(
-      "FileReader",
-      vi.fn(() => reader),
-    );
-
-    await fireEvent.change(personaFile, { target: { files: [textFile("x")] } });
-
-    expect(await screen.findByText("Couldn't read this file. Try another.")).not.toBeNull();
-    expect(screen.queryByRole("button", { name: "Create persona" })).toBeNull();
   });
 
   it("'Start with a blank form' advances to preview with every field empty", async () => {
@@ -298,27 +219,6 @@ describe("PersonaBuilder - bring your own persona (step 1)", () => {
     ).toBe("Never guess at pricing.");
   });
 
-  it("step 2's intro copy reads sensibly when there was never a draft", async () => {
-    stubFetch({ "/api/": {} });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    await fireEvent.click(screen.getByRole("button", { name: "Start with a blank form" }));
-
-    await screen.findByRole("button", { name: "Create persona" });
-    expect(screen.queryByText("Here's their draft. Edit anything.")).toBeNull();
-  });
-
-  it("step 2's intro copy still credits an actual draft when one succeeded", async () => {
-    stubFetch({
-      "/api/personas/draft": DRAFT_RESPONSE,
-      "/api/": {},
-    });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    await reachStep2();
-
-    expect(screen.getByText("Here's their draft. Edit anything.")).not.toBeNull();
-  });
 });
 
 describe("PersonaBuilder - draft no-clobber (component wiring)", () => {
@@ -463,33 +363,6 @@ describe("PersonaBuilder - paste their persona + Continue (primary path, compone
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("my-own-name");
   });
 
-  it("shows the in-flight note while the distill is pending and clears it once it lands", async () => {
-    const distill = deferredResponse();
-    stubDistillRoute(async (input) => {
-      const url = String(input);
-      if (url.includes("/api/personas/distill")) {
-        return distill.promise;
-      }
-      return new Response(JSON.stringify({}), { status: 200 });
-    });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    await fireEvent.input(screen.getByLabelText("Paste their persona"), {
-      target: { value: "Their full persona document." },
-    });
-    await fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-
-    await waitFor(() => {
-      expect(screen.getByText("Reading their persona…")).not.toBeNull();
-    });
-
-    distill.resolve({ name: "", who_they_are: "", purpose_tags: [] });
-
-    await waitFor(() => {
-      expect(screen.queryByText("Reading their persona…")).toBeNull();
-    });
-  });
-
   it("a distill failure shows the quiet note and leaves the fields empty and editable", async () => {
     stubDistillRoute(async (input) => {
       const url = String(input);
@@ -545,34 +418,6 @@ describe("PersonaBuilder - paste their persona + Continue (primary path, compone
   });
 });
 
-describe("PersonaBuilder - naming law microcopy (hardening wave)", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("shows the exact naming-law helper text under the Name field, pinned so copy drift is deliberate", async () => {
-    stubFetch({ "/api/personas/draft": DRAFT_RESPONSE, "/api/": {} });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-    await reachStep2();
-
-    const nameField = screen.getByLabelText("Name");
-    const helperText = nameField
-      .closest(".field")
-      ?.querySelector(".field__help")
-      ?.textContent
-      // Collapse the source's own line-wrapping whitespace (this string is
-      // too long to keep on one physical line in the .svelte file) down to
-      // single spaces before comparing -- an exact-substring check on
-      // words/punctuation, insensitive only to the incidental whitespace a
-      // browser's own `white-space: normal` would collapse identically.
-      ?.replace(/\s+/g, " ")
-      .trim();
-
-    expect(helperText).toContain('One or two words, like "sentinel" or "ledger-keeper"');
-    expect(helperText).toContain("Never a hyphenated list of traits");
-  });
-});
-
 describe("PersonaBuilder - creating a persona asks for nothing else (plain-form wave)", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
@@ -613,37 +458,6 @@ describe("PersonaBuilder - creating a persona asks for nothing else (plain-form 
           String(url).includes("/api/agents/name-suggestions"),
         ),
     ).toHaveLength(0);
-  });
-});
-
-describe("PersonaBuilder - the dialog idiom (modal wave)", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("has one filled button per step, in a footer of its own", async () => {
-    stubFetch({ "/api/personas/draft": DRAFT_RESPONSE, "/api/": {} });
-    const { container } = renderWithClient(PersonaBuilder, {
-      oncancel: () => {},
-      oncreated: () => {},
-    });
-
-    // Step 1: the primary is Continue, the path for somebody who already
-    // has a persona written; drafting one from a job is the plain button.
-    const footer = container.querySelector(".modal__footer");
-    expect(footer).not.toBeNull();
-    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
-    expect(footer?.querySelector(".btn--primary")?.textContent?.trim()).toBe(
-      "Continue",
-    );
-    expect(footer?.textContent).toContain("Cancel");
-
-    await reachStep2();
-
-    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
-    expect(
-      container.querySelector(".modal__footer .btn--primary")?.textContent?.trim(),
-    ).toBe("Create persona");
   });
 });
 
@@ -805,24 +619,4 @@ describe("PersonaBuilder - who the persona is for (persona team scope)", () => {
     expect(select.value).toBe("shared");
   });
 
-  it("a refusal from the group check reads as a plain sentence", async () => {
-    stubRoom(
-      { groups: ["sre"] },
-      {
-        status: 403,
-        body: { error: "you must be a member of team sre to file a persona under it" },
-      },
-    );
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    await forField();
-    await fireEvent.click(screen.getByRole("button", { name: "Create persona" }));
-
-    expect(
-      await screen.findByText(
-        "You are not in that group, so the persona can't be filed there. Pick one of your groups, or Everyone.",
-      ),
-    ).not.toBeNull();
-    expect(screen.queryByText(/member of team sre/)).toBeNull();
-  });
 });

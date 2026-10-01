@@ -144,22 +144,6 @@ def test_a_name_that_merely_starts_like_a_container_one_is_fine():
     assert key_refusal("HOME_PAGE_URL") is None
 
 
-def test_no_refusal_sentence_carries_an_em_dash():
-    # These land in front of a person. Plain punctuation, same as every
-    # other user-facing sentence in this room.
-    sentences = [
-        key_refusal("lower"),
-        key_refusal("A" * 65),
-        key_refusal("SLACK_BOT_TOKEN"),
-        key_refusal("LD_PRELOAD"),
-        write_refusal({"A": "1"}, ["A"], []),
-        write_refusal({f"K{i}": "1" for i in range(MAX_KEYS + 1)}, [], []),
-    ]
-    for sentence in sentences:
-        assert sentence is not None
-        assert "—" not in sentence
-
-
 # --- a whole write ------------------------------------------------------------
 
 

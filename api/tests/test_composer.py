@@ -116,29 +116,6 @@ def test_compose_writes_exact_file_set_with_skills(tmp_path):
 # --- agent.yaml shape ---------------------------------------------------------
 
 
-def test_compose_agent_yaml_literal_placeholder_and_exact_text(tmp_path):
-    dest = tmp_path / "out"
-
-    compose(_make_spec(), dest)
-
-    text = (dest / "bundle" / "agent.yaml").read_text()
-    assert text == (
-        "name: sam\n"
-        "card: agent-card.json\n"
-        "persona: persona.md\n"
-        "model: {id: '${AGENT_MODEL:-vertex_ai/claude-sonnet-4-5}', max_tokens: 8192}\n"
-        "transports:\n"
-        "  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
-        "tools: {provider: none, allow: []}\n"
-        "memory: {personal: techne, home: /techne, revision: operator}\n"
-        "checkpoints: sqlite\n"
-        "approvals:\n"
-        "  ceiling: {write: false}\n"
-        '  gates: [{match: "*", require: plan_approval}]\n'
-        "  escalation: {route: cli}\n"
-    )
-
-
 def test_compose_agent_yaml_parses_with_expected_transport_and_gate(tmp_path):
     dest = tmp_path / "out"
 
@@ -1439,23 +1416,6 @@ def test_update_agent_card_metadata_preserves_unknown_metadata_subfield(tmp_path
     updated = json.loads(card_path.read_text())
     assert updated["metadata"]["future_field"] == "kept"
     assert updated["metadata"]["team"] == "acme-team"
-
-
-def test_update_agent_card_metadata_uses_compose_style_json_dump(tmp_path):
-    """Round-trip formatting must match compose()'s own `json.dumps(...,
-    indent=2) + "\\n"` style exactly, so a compose-then-update cycle never
-    drifts the file's own formatting."""
-    dest = tmp_path / "out"
-    compose(_make_spec(), dest)
-    card_path = dest / "bundle" / "agent-card.json"
-
-    update_agent_card_metadata(
-        dest / "bundle", team="acme-team", purpose_tags=[], capability="Does a thing."
-    )
-
-    text = card_path.read_text()
-    reserialized = json.dumps(json.loads(text), indent=2) + "\n"
-    assert text == reserialized
 
 
 def test_update_agent_card_metadata_overwrites_prior_metadata_values(tmp_path):

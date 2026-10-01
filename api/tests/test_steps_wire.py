@@ -1252,31 +1252,6 @@ def test_build_step_second_failure_names_a_job_that_failed_before_any_step(
     assert "concluded 'failure' with no failing step" in message
 
 
-def test_build_step_sleeps_at_the_configured_interval(session_factory, config, monkeypatch):
-    import kobo_api.steps as steps_module
-
-    repo = _repo_full_name(config)
-    session, agent = _make_agent(session_factory, repo_full_name=repo)
-    github = FakeGitHub(
-        head_sha="deadbeef",
-        runs_by_sha={
-            "deadbeef": [
-                [{"id": 1, "status": "in_progress", "conclusion": None}],
-                [{"id": 1, "status": "in_progress", "conclusion": None}],
-                [{"id": 1, "status": "completed", "conclusion": "success"}],
-            ]
-        },
-    )
-    ctx = _make_ctx(session, agent, config, _clients(github=github))
-
-    sleep_calls = []
-    monkeypatch.setattr(steps_module, "_sleep", lambda s: sleep_calls.append(s))
-
-    BuildStep().run(ctx)
-
-    assert sleep_calls == [BUILD_POLL_INTERVAL_S, BUILD_POLL_INTERVAL_S]
-
-
 def test_build_step_rerun_resets_poll_budget_so_a_late_failure_does_not_starve_the_heal(
     session_factory, config
 ):

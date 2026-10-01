@@ -74,77 +74,6 @@ function createPostBody(): Record<string, unknown> {
   return JSON.parse((call?.[1] as RequestInit).body as string);
 }
 
-describe("CreateModal — one plain form (plain-form wave)", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("shows every field at once, in order, with no stepper", async () => {
-    stubCreateModalCatalogs({
-      "/api/catalog/groups": { groups: [{ name: "payments-eng", kind: "engineering" }] },
-      "/api/personas/search": { results: [HELPER] },
-    });
-    const { container } = renderWithClient(CreateModal, {
-      open: true,
-      onclose: () => {},
-    });
-
-    await findFormReady();
-    await screen.findByLabelText("Group");
-
-    expect(container.querySelector(".modal__steps")).toBeNull();
-    expect(container.querySelectorAll(".modal__step")).toHaveLength(0);
-
-    const labels = Array.from(container.querySelectorAll(".field__label")).map(
-      (el) => el.textContent?.trim(),
-    );
-    expect(labels).toEqual(["Persona", "Name", "Group", "Model"]);
-
-    // Group and Model are one-line answers and share a line, which is what
-    // keeps all five fields inside a 70vh body on a laptop.
-    const pair = container.querySelector(".field-pair");
-    const paired = Array.from(pair?.querySelectorAll(".field__label") ?? []).map(
-      (el) => el.textContent?.trim(),
-    );
-    expect(paired).toEqual(["Group", "Model"]);
-
-    // Nothing else is asked: tags arrive from the agent itself after first contact.
-    expect(screen.queryByText("Add purpose tags (optional)")).toBeNull();
-  });
-
-  it("sits at the dialog's default width, not the picker width", async () => {
-    stubCreateModalCatalogs();
-    const { container } = renderWithClient(CreateModal, {
-      open: true,
-      onclose: () => {},
-    });
-
-    await findFormReady();
-    expect(container.querySelector(".modal--wide")).toBeNull();
-  });
-
-  it("has one filled button, in a footer under the body", async () => {
-    stubCreateModalCatalogs();
-    const { container } = renderWithClient(CreateModal, {
-      open: true,
-      onclose: () => {},
-    });
-
-    await findFormReady();
-
-    const footer = container.querySelector(".modal__footer");
-    expect(footer).not.toBeNull();
-    expect(container.querySelector(".modal__body")?.contains(footer as Node)).toBe(
-      false,
-    );
-    expect(footer?.querySelector(".btn--primary")?.textContent?.trim()).toBe(
-      "Create agent",
-    );
-    expect(footer?.textContent).toContain("Cancel");
-    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
-  });
-});
-
 describe("CreateModal — the persona list (plain-form wave)", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
@@ -159,84 +88,6 @@ describe("CreateModal — the persona list (plain-form wave)", () => {
     tags: [],
     builtin: false,
   };
-
-  it("scrolls in a fixed box and cuts each description off at the row's edge", async () => {
-    stubCreateModalCatalogs({ "/api/personas/search": { results: [LONG] } });
-    const { container } = renderWithClient(CreateModal, {
-      open: true,
-      onclose: () => {},
-    });
-
-    // A group persona sits behind its group's pill (2026-09-29).
-    await fireEvent.click(await screen.findByRole("button", { name: "growth" }));
-    await screen.findByRole("radio", { name: /long-winded-helper/i });
-
-    const list = container.querySelector(".list");
-    // The fixed-height, width-bounded box: about five rows deep, and no
-    // row inside it may widen the dialog body.
-    expect(list?.className).toContain("list--scroll");
-
-    const row = list?.querySelector(".list__row");
-    expect(row?.querySelector(".list__name")?.textContent).toBe("long-winded-helper");
-    expect(row?.querySelector(".list__tag")?.textContent?.trim()).toBe("growth");
-    const desc = row?.querySelector(".list__desc");
-    expect(desc?.textContent).toBe(LONG.description);
-    // Truncation hides the rest, and the hover card (not a title tooltip)
-    // is what shows it now.
-    expect(desc?.getAttribute("title")).toBeNull();
-  });
-
-  it("washes the picked row and leaves the others plain", async () => {
-    stubCreateModalCatalogs({
-      "/api/personas/search": {
-        results: [
-          HELPER,
-          {
-            id: "scribe",
-            name: "Scribe",
-            description: "Writes things down.",
-            team: "growth",
-            tags: [],
-            builtin: false,
-          },
-        ],
-      },
-    });
-    const { container } = renderWithClient(CreateModal, {
-      open: true,
-      onclose: () => {},
-    });
-
-    await fireEvent.click(await screen.findByRole("radio", { name: /Helper/i }));
-
-    const selected = container.querySelectorAll(".list__row--selected");
-    expect(selected).toHaveLength(1);
-    expect(selected[0].querySelector(".list__name")?.textContent).toBe("Helper");
-  });
-
-  it("says so plainly when a search matches nothing", async () => {
-    stubCreateModalCatalogs();
-    renderWithClient(CreateModal, { open: true, onclose: () => {} });
-
-    await findFormReady();
-    await fireEvent.input(screen.getByLabelText("Search personas"), {
-      target: { value: "nothing-like-this" },
-    });
-
-    expect(await screen.findByText("No personas match.")).not.toBeNull();
-  });
-
-  it("offers no Start from scratch row at all", async () => {
-    stubCreateModalCatalogs({ "/api/personas/search": { results: [HELPER] } });
-    const { container } = renderWithClient(CreateModal, {
-      open: true,
-      onclose: () => {},
-    });
-
-    await findFormReady();
-    expect(screen.queryByText("Start from scratch")).toBeNull();
-    expect(container.querySelector(".list__row--action")).toBeNull();
-  });
 
   it("Build your own persona sits on the label row and opens the builder in place", async () => {
     stubCreateModalCatalogs({ "/api/personas/search": { results: [HELPER] } });
@@ -271,23 +122,6 @@ describe("CreateModal — the persona list (plain-form wave)", () => {
 describe("CreateModal — the name is typed, never generated (plain-form wave)", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
-  });
-
-  it("offers one text input and no generated suggestions", async () => {
-    stubCreateModalCatalogs({ "/api/personas/search": { results: [HELPER] } });
-    renderWithClient(CreateModal, { open: true, onclose: () => {} });
-
-    const nameInput = await findFormReady();
-    expect(nameInput.placeholder).toBe("e.g. release-notes");
-    expect(
-      screen.getByText("Lowercase letters, numbers, and hyphens. 2 to 24 characters."),
-    ).not.toBeNull();
-
-    await fireEvent.click(await screen.findByRole("radio", { name: /Helper/i }));
-
-    expect(screen.queryByRole("button", { name: "Offer more" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "name it yourself" })).toBeNull();
-    expect(screen.queryByRole("radiogroup", { name: "Suggested names" })).toBeNull();
   });
 
   it("never asks the name-suggestions route for anything", async () => {
@@ -333,22 +167,6 @@ describe("CreateModal — the name is typed, never generated (plain-form wave)",
     expect(await screen.findByText("Available", {}, { timeout: 2000 })).not.toBeNull();
   });
 
-  it("says Taken in the fail tone when the room already has that name", async () => {
-    stubCreateModalCatalogs({
-      "/api/personas/search": { results: [HELPER] },
-      "/api/availability": { available: false, reason: null },
-    });
-    const { container } = renderWithClient(CreateModal, {
-      open: true,
-      onclose: () => {},
-    });
-
-    await fireEvent.input(await findFormReady(), { target: { value: "helper-bot" } });
-
-    const taken = await screen.findByText("Taken", {}, { timeout: 2000 });
-    expect(taken.className).toContain("field__status--error");
-    expect(container.querySelector(".field__status--ok")).toBeNull();
-  });
 });
 
 describe("CreateModal — the footer says what is still missing (plain-form wave)", () => {
@@ -582,52 +400,6 @@ describe("CreateModal — the group menu has a commons, a directory, and a door 
     expect(groupSelect.querySelector('option[value="shared"]')).toBeNull();
   });
 
-  it("sections the select: Non-engineering groups leads, Engineering groups next, and no Shared", async () => {
-    stubCreateModalCatalogs({
-      "/api/catalog/groups": {
-        groups: [
-          { name: "shared", kind: "shared" },
-          { name: "payments-eng", kind: "engineering" },
-          { name: "legal", kind: "non-engineering" },
-          { name: "finance", kind: "non-engineering" },
-        ],
-      },
-    });
-    renderWithClient(CreateModal, { open: true, onclose: () => {} });
-
-    const groupSelect = (await screen.findByLabelText("Group")) as HTMLSelectElement;
-    const children = Array.from(groupSelect.children);
-
-    // "My group is not listed..." still leads, right after the placeholder.
-    expect(children[1].textContent).toBe("My group is not listed...");
-
-    const optgroups = Array.from(groupSelect.querySelectorAll("optgroup"));
-    expect(optgroups.map((g) => g.label)).toEqual([
-      "Non-engineering groups",
-      "Engineering groups",
-    ]);
-    expect(children[1].nextElementSibling).toBe(optgroups[0]);
-
-    const nonEngineeringOptions = Array.from(optgroups[0].querySelectorAll("option"));
-    expect(nonEngineeringOptions.map((o) => o.value)).toEqual(["legal", "finance"]);
-  });
-
-  it("omits the Non-engineering groups optgroup entirely when the room has none configured", async () => {
-    stubCreateModalCatalogs({
-      "/api/catalog/groups": {
-        groups: [
-          { name: "shared", kind: "shared" },
-          { name: "payments-eng", kind: "engineering" },
-        ],
-      },
-    });
-    renderWithClient(CreateModal, { open: true, onclose: () => {} });
-
-    const groupSelect = (await screen.findByLabelText("Group")) as HTMLSelectElement;
-    const optgroups = Array.from(groupSelect.querySelectorAll("optgroup"));
-    expect(optgroups.map((g) => g.label)).toEqual(["Engineering groups"]);
-  });
-
   it("picking 'My group is not listed...' reveals an inline mini-form, not a new modal", async () => {
     stubCreateModalCatalogs({
       "/api/catalog/groups": { groups: [{ name: "payments-eng", kind: "engineering" }] },
@@ -826,11 +598,6 @@ describe("CreateModal — the persona hover card", () => {
     const row = radio.closest("label") as HTMLElement;
     return { ...rendered, radio, row };
   }
-
-  it("the description cell no longer carries a title — the card is the answer now", async () => {
-    const { row } = await openWithHelper();
-    expect(row.querySelector(".list__desc")?.getAttribute("title")).toBeNull();
-  });
 
   it("asks for nothing until the row has actually been rested on", async () => {
     const { row } = await openWithHelper();

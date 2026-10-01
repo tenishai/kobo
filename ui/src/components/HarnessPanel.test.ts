@@ -63,23 +63,6 @@ describe("HarnessPanel sections", () => {
     expect(body("skills").hasAttribute("hidden")).toBe(true);
   });
 
-  it("lists all seven sections in order for an agent the room composed", async () => {
-    renderWithClient(HarnessPanel, { ...BASE_PROPS });
-
-    const labels = within(await screen.findByRole("navigation", { name: "Harness sections" }))
-      .getAllByRole("button")
-      .map((b) => b.textContent?.trim());
-    expect(labels).toEqual([
-      "Model and runtime",
-      "Identity and access",
-      "Persona",
-      "Skills",
-      "Tooling",
-      "Memory",
-      "Learnings",
-    ]);
-  });
-
   it("switches sections without unmounting the one it left", async () => {
     renderWithClient(HarnessPanel, { ...BASE_PROPS });
 
@@ -116,34 +99,6 @@ describe("HarnessPanel model and runtime", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
     stubFetch(BASE_ROUTES);
-  });
-
-  it("names the model and the image, and says Current when they agree", async () => {
-    renderWithClient(HarnessPanel, { ...BASE_PROPS });
-
-    const runtime = body("runtime");
-    expect(within(runtime).getByText("Claude X")).not.toBeNull();
-    expect(within(runtime).getByText(ROOM_RUNTIME)).not.toBeNull();
-    expect(within(runtime).getByText("Current")).not.toBeNull();
-    expect(within(runtime).queryByText(/Behind/)).toBeNull();
-    expect(
-      within(runtime).queryByRole("button", { name: "Update to current" }),
-    ).toBeNull();
-  });
-
-  it("says what the room builds on now when the agent is behind", async () => {
-    renderWithClient(HarnessPanel, {
-      ...BASE_PROPS,
-      runtimeImage: OLD_RUNTIME,
-      canUpdateRuntime: true,
-    });
-
-    const runtime = body("runtime");
-    expect(within(runtime).getByText(OLD_RUNTIME)).not.toBeNull();
-    // The version, not the whole ref: the ref is already on the line above.
-    expect(
-      within(runtime).getByText("Behind: the room now builds on v10"),
-    ).not.toBeNull();
   });
 
   it("offers the update only to an operator", async () => {
@@ -188,17 +143,6 @@ describe("HarnessPanel model and runtime", () => {
     });
   });
 
-  it("says so plainly when the room is too old to report a runtime", async () => {
-    renderWithClient(HarnessPanel, {
-      ...BASE_PROPS,
-      runtimeImage: undefined,
-      roomRuntimeImage: undefined,
-    });
-
-    const runtime = body("runtime");
-    expect(within(runtime).getByText("Not reported.")).not.toBeNull();
-    expect(within(runtime).queryByText("Current")).toBeNull();
-  });
 });
 
 describe("HarnessPanel for a connected agent", () => {

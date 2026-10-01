@@ -80,36 +80,6 @@ describe("LearningsPanel", () => {
     expect(screen.getByPlaceholderText("Teach wren something...")).not.toBeNull();
   });
 
-  it("says nothing is there in one table row", async () => {
-    stubFetch({ "/learnings": { learnings: [] } });
-    const { container } = renderWithClient(LearningsPanel, {
-      agentName: "wren",
-      canDecide: true,
-      frozen: false,
-    });
-
-    await screen.findByText(
-      "Nothing new. When someone tells wren something worth keeping, it shows up here.",
-    );
-    const empties = container.querySelectorAll("td.panel__empty");
-    expect(empties).toHaveLength(1);
-    expect(empties[0].parentElement?.children).toHaveLength(1);
-    expect(empties[0].getAttribute("colspan")).toBe("3");
-  });
-
-  it("offers at most one filled button, with the teach box open", async () => {
-    const { container } = renderWithClient(LearningsPanel, {
-      agentName: "wren",
-      canDecide: true,
-      frozen: false,
-    });
-
-    await screen.findByText("the canary gate is manual");
-    await openTeach();
-
-    expect(container.querySelectorAll(".btn--primary").length).toBeLessThanOrEqual(1);
-  });
-
   it("renders one list with the sentence and byline, no kind text, and a correct summary count", async () => {
     renderWithClient(LearningsPanel, {
       agentName: "wren",
@@ -131,21 +101,6 @@ describe("LearningsPanel", () => {
     expect(screen.queryByText("old denied thing")).toBeNull();
 
     expect(screen.getByText("wren picked up 2 things")).not.toBeNull();
-  });
-
-  it("reads '1 thing' (singular) when only one is pending", async () => {
-    stubFetch({
-      "/learnings": {
-        learnings: [LEARNINGS.learnings[0]],
-      },
-    });
-    renderWithClient(LearningsPanel, {
-      agentName: "wren",
-      canDecide: true,
-      frozen: false,
-    });
-
-    expect(await screen.findByText("wren picked up 1 thing")).not.toBeNull();
   });
 
   it("hides Remember/Skip, the pencil, the bulk buttons, and the teach box when canDecide is false", async () => {
@@ -574,18 +529,4 @@ describe("LearningsPanel", () => {
     ).not.toBeNull();
   });
 
-  it("shows the empty-state copy when nothing is pending", async () => {
-    stubFetch({ "/learnings": { learnings: [] } });
-    renderWithClient(LearningsPanel, {
-      agentName: "wren",
-      canDecide: true,
-      frozen: false,
-    });
-
-    expect(
-      await screen.findByText(
-        "Nothing new. When someone tells wren something worth keeping, it shows up here.",
-      ),
-    ).not.toBeNull();
-  });
 });

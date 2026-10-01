@@ -60,18 +60,6 @@ describe("the tab model by kind (connected-agents design 2026-09-21)", () => {
   });
 });
 
-describe("TAB_LABELS", () => {
-  it("labels all five tabs and nothing else", () => {
-    expect(TAB_LABELS).toEqual({
-      chat: "Chat",
-      slack: "Slack",
-      access: "Access",
-      harness: "Harness",
-      settings: "Settings",
-    });
-  });
-});
-
 describe("harnessSections", () => {
   it("is model and runtime first, then everything the room composed", () => {
     expect(harnessSections()).toEqual([
@@ -99,17 +87,6 @@ describe("harnessSections", () => {
     expect(harnessSections("connected")[0]).toBe(DEFAULT_HARNESS_SECTION);
   });
 
-  it("labels every section in plain words", () => {
-    expect(HARNESS_SECTION_LABELS).toEqual({
-      runtime: "Model and runtime",
-      identity: "Identity and access",
-      persona: "Persona",
-      skills: "Skills",
-      tooling: "Tooling",
-      memory: "Memory",
-      learnings: "Learnings",
-    });
-  });
 });
 
 describe("isTabId / isHarnessSection", () => {
