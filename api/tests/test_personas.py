@@ -19,7 +19,7 @@ from pydantic import ValidationError
 import kobo_api.personas as personas_module
 from kobo_api.clients import StorageNotFound
 from kobo_api.personas import (
-    BUILTIN_ORDER,
+    TEAM_TEMPLATES, BUILTIN_ORDER,
     in_reading_order,
     PersonaError,
     PersonaExists,
@@ -416,12 +416,17 @@ def test_seed_default_personas_first_run_writes_all():
     ids = {e["id"] for e in index["entries"]}
     assert ids == _PACKAGED_IDS
     for entry in index["entries"]:
-        assert entry["builtin"] is True
-        assert entry["team"] == "shared"
+        # Five built-ins in the commons; the rest filed under their groups
+        # (TEAM_TEMPLATES, 2026-09-29).
+        expected_team = TEAM_TEMPLATES.get(entry["id"], "shared")
+        assert entry["team"] == expected_team
+        assert entry["builtin"] is (entry["id"] not in TEAM_TEMPLATES)
         assert entry["tags"] == []
 
     meta = storage.object_metadata("personas-bucket", "helpful-generalist/persona.md")
     assert meta["metadata"] == {"team": "shared", "creator": "kobo"}
+    meta = storage.object_metadata("personas-bucket", "marketing-strategist/persona.md")
+    assert meta["metadata"] == {"team": "marketing", "creator": "kobo"}
 
 
 def test_seed_default_personas_no_longer_seeds_blank():

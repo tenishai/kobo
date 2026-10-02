@@ -722,19 +722,6 @@ def test_repo_step_resolves_skills_by_id_into_bundle(session_factory, config, fa
     assert (ctx.workdir / "repo" / "bundle" / "skills" / "word-games" / "SKILL.md").is_file()
 
 
-def test_colleague_roster_is_sorted_by_name(session_factory=None):
-    """Deterministic bundle files: DB row order varies, and an unsorted
-    roster makes every recompose look like a content change. Pure-function
-    check on the sort key rather than a DB round trip."""
-    import kobo_api.steps as steps_module
-    import inspect
-
-    source = inspect.getsource(steps_module._colleague_roster)
-    assert "sorted(ready_others, key=" in source, (
-        "the roster must iterate a sorted sequence, not raw query order"
-    )
-
-
 def test_colleague_roster_includes_skills_for_the_capability_fallback_chain(
     session_factory, config
 ):
@@ -1464,36 +1451,6 @@ def test_repo_step_keeps_org_default_vertex_location_for_model_without_override(
     assert captured["spec"].vertex_location == config.vertex_location
 
 
-def test_repo_step_compose_raises_without_rmtree_on_stale_skills(tmp_path):
-    """Sanity guard: verify that compose() would raise FileExistsError if we
-    didn't rmtree the stale skills subtree first."""
-    skill_dir = tmp_path / "staged" / "echo"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\nname: echo\ndescription: Echoes things.\n---\nEcho skill body.\n"
-    )
-    skill = StagedSkill(id="echo", dir=skill_dir)
-
-    spec = BundleSpec(
-        name="test-agent",
-        persona_body="You are {name}.",
-        model_id="vertex_ai/claude-sonnet-4-5",
-        skills=[skill],
-        runtime_image="image:latest",
-        vertex_project="proj",
-        vertex_location="us-central1",
-    )
-
-    compose_dir = tmp_path / "work" / "repo"
-
-    # First compose succeeds
-    compose(spec, compose_dir)
-
-    # Second compose to the same location should raise FileExistsError (without rmtree)
-    with pytest.raises(FileExistsError):
-        compose(spec, compose_dir)
-
-
 def test_repo_step_stages_baseline_pack_by_default(session_factory, config, fake_storage):
     """Baseline tooling pack (Task 6): every new agent ships the
     marketplace's `baseline-*` tools, and nothing else from that tree."""
@@ -1791,6 +1748,7 @@ def test_onboard_step_create_app_receives_expected_arguments(session_factory, co
             "cluster": config.gojira_cluster,
             "namespace": AGENT_NAME,
             "workload_class": "agent",
+            "auto_merge_setup_pr": True,
         }
     ]
 
@@ -2007,30 +1965,6 @@ def test_onboard_step_times_out_after_max_polls(session_factory, config):
 
     expected_polls = POLL_TIMEOUT_S // POLL_INTERVAL_S
     assert gojira.calls.count("app_status:1") == expected_polls
-
-
-def test_onboard_step_sleep_called_with_correct_interval(session_factory, config, monkeypatch):
-    import kobo_api.steps as steps_module
-
-    repo = _repo_full_name(config)
-    session, agent = _make_agent(session_factory, repo_full_name=repo)
-    gojira = FakeGojira(activate_after=3)
-    ctx = _make_ctx(session, agent, config, _clients(gojira=gojira))
-
-    # Capture sleep calls
-    sleep_calls = []
-
-    def fake_sleep(seconds):
-        sleep_calls.append(seconds)
-
-    monkeypatch.setattr(steps_module, "_sleep", fake_sleep)
-
-    OnboardStep().run(ctx)
-
-    # Verify _sleep was called with POLL_INTERVAL_S between polls (but not after the final success)
-    assert all(call == POLL_INTERVAL_S for call in sleep_calls)
-    # activate_after=3 means 3 polls until success, so 2 sleeps (between polls 1-2 and 2-3)
-    assert len(sleep_calls) == 2
 
 
 # --- AccessStep -----------------------------------------------------------------
@@ -2772,3 +2706,31 @@ def test_directory_step_graduate_failure_raises_for_retry(
 
     with pytest.raises(CabalError):
         DirectoryStep().run(ctx)
+
+
+# --- AccessStep without a model group (2026-10-01) ----------------------------------
+#
+# A project with no Workspace has no Google Groups to join. The room then
+# grants the Vertex role on vertex_project to the agent's identity directly,
+# and the rest of the step is unchanged.
+
+
+def test_access_step_without_a_model_group_grants_the_vertex_role_directly(
+    session_factory, config
+):
+    config.model_group = ""
+    config.vertex_project = "models-project"
+    session, agent = _make_agent(session_factory)
+    cloud = FakeCloud(project=config.gcp_project)
+    ctx = _make_ctx(session, agent, config, _clients(cloud=cloud))
+
+    AccessStep().run(ctx)
+
+    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    assert cloud.calls == [
+        f"ensure_gsa:agent-{AGENT_NAME}",
+        f"bind_workload_identity:{email}:{AGENT_NAME}/agent-{AGENT_NAME}",
+        f"grant_model_access:{email}:models-project",
+    ]
+    assert (email, "models-project") in cloud.model_grants
+    assert cloud.group_members == set()

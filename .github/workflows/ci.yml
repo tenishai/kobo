@@ -1,5 +1,4 @@
-# kobo CI: the three gates every change must pass, plus a build that only
-# runs on main and only when the registry variables are configured.
+# kobo CI: the gates every change must pass. Tests only.
 #
 # The migration job exists because of a trap this room hit three times:
 # a model change without a matching migration deploys cleanly and then
@@ -7,13 +6,10 @@
 # Postgres and schema_tripwire.py asserts the ORM maps nothing the chain
 # never created.
 #
-# Registry/build configuration lives in repo/org variables (KOBO_IMAGE,
-# GCP_WIF_PROVIDER, GCP_BUILD_SA) — never in this file. Where jobs run is
-# a variable too: CI_RUNS_ON for the three gates and CI_BUILD_RUNS_ON for the
-# image build, each a JSON string or list of runner labels (for example
-# '["self-hosted","linux","x64","kobo-ci"]'); unset means GitHub-hosted.
-# The build stays on GitHub-hosted runners unless the self-hosted one has Docker. Rolling the built
-# image stays an operator action; the build job prints the command.
+# Where jobs run is a variable: CI_RUNS_ON, a JSON string or list of runner
+# labels (for example '["self-hosted","linux","x64","kobo-ci"]'); unset
+# means GitHub-hosted. This repository builds and publishes no image; an
+# operator builds one from a commit and rolls it where it runs.
 
 name: ci
 
@@ -34,8 +30,8 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
           cache-dependency-glob: api/uv.lock
@@ -56,8 +52,8 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -98,8 +94,8 @@ jobs:
     env:
       DB_URL: postgresql+psycopg2://kobo:kobo@localhost:5432/kobo
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
           cache-dependency-glob: api/uv.lock
@@ -113,57 +109,21 @@ jobs:
         working-directory: api
         run: PYTHONPATH=. .venv/bin/python scripts/schema_tripwire.py "$DB_URL"
 
-  build-push:
-    # Main-only, and only once the registry variables are configured.
-    # Pushes the image; rolling it stays an operator action.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.KOBO_IMAGE != ''
-    needs: [api-tests, ui, migrations]
-    runs-on: ${{ fromJSON(vars.CI_BUILD_RUNS_ON || '"ubuntu-latest"') }}
-    permissions:
-      contents: read
-      id-token: write
+  test-lifecycle:
+    # TESTING.md: a scaffold test drives a change and is deleted before the
+    # change merges. The directories may exist on a branch; a pull request
+    # that still carries a file in either does not merge.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - name: Tag and registry host
-        id: meta
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: No scaffold tests past this point
         run: |
-          echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          echo "host=${KOBO_IMAGE%%/*}" >> "$GITHUB_OUTPUT"
-        env:
-          KOBO_IMAGE: ${{ vars.KOBO_IMAGE }}
-      - uses: google-github-actions/auth@v2
-        id: auth
-        with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_BUILD_SA }}
-          token_format: access_token
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ steps.meta.outputs.host }}
-          username: oauth2accesstoken
-          password: ${{ steps.auth.outputs.access_token }}
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          # --pull is the stale-base fix: without it, buildx reuses a weeks-old
-          # cached base layer and published CVE fixes never reach the image.
-          pull: true
-          push: true
-          platforms: linux/amd64
-          provenance: false
-          tags: ${{ vars.KOBO_IMAGE }}:${{ steps.meta.outputs.tag }}
-          # Layer cache in the registry beside the images: a self-hosted
-          # runner starts empty every time, so without this every build
-          # reinstalls every dependency from scratch. `pull: true` above still
-          # refreshes the base image, so the stale-base fix holds.
-          cache-from: type=registry,ref=${{ vars.KOBO_IMAGE }}:buildcache
-          cache-to: type=registry,ref=${{ vars.KOBO_IMAGE }}:buildcache,mode=max
-      - name: Roll command (operator runs this)
-        run: |
-          {
-            echo '## Image pushed'
-            echo '```'
-            echo "kubectl -n kobo set image deploy/kobo kobo=${{ vars.KOBO_IMAGE }}:${{ steps.meta.outputs.tag }}"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          left=$(find api/tests/scaffold ui/src/scaffold -type f 2>/dev/null || true)
+          if [ -n "$left" ]; then
+            echo "Scaffold tests must be deleted before merge (see TESTING.md):"
+            echo "$left"
+            exit 1
+          fi
+          echo "no scaffold tests"

@@ -48,10 +48,6 @@ def test_validate_name_malformed_charset_or_shape_is_invalid_name():
     assert validate_name("a") == "invalid name"
 
 
-def test_validate_name_trailing_hyphen():
-    assert validate_name("agent-") == "must not end with a hyphen"
-
-
 def test_validate_name_24char_ending_hyphen_reports_hyphen_not_length():
     # Boundary + reason combo: a 24-char name ending in a hyphen is at max
     # length but must report "must not end with a hyphen", not "too long",

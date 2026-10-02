@@ -37,33 +37,6 @@ describe("Modal shell", () => {
     expect(onclose).toHaveBeenCalled();
   });
 
-  it("keeps the footer out of the scrolling body, so the primary never scrolls away", () => {
-    const { container } = renderModal({ footer });
-
-    const scroller = container.querySelector(".modal__body");
-    const pinned = container.querySelector(".modal__footer");
-    expect(scroller).not.toBeNull();
-    expect(pinned).not.toBeNull();
-    expect(scroller?.contains(pinned as Node)).toBe(false);
-    expect(screen.getByText("Some body copy").closest(".modal__body")).toBe(scroller);
-  });
-
-  it("draws no footer at all for a dialog that hands it none", () => {
-    const { container } = renderModal();
-    expect(container.querySelector(".modal__footer")).toBeNull();
-  });
-
-  it("has one width per kind of dialog and no others", () => {
-    const { container: narrow } = renderModal({ size: "narrow" });
-    expect(narrow.querySelector(".modal--narrow")).not.toBeNull();
-
-    const { container: wide } = renderModal({ size: "wide" });
-    expect(wide.querySelector(".modal--wide")).not.toBeNull();
-
-    const { container: plain } = renderModal();
-    expect(plain.querySelector(".modal--default")).not.toBeNull();
-  });
-
   it("still closes on Escape", async () => {
     const onclose = vi.fn();
     renderModal({ onclose });

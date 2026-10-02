@@ -14,10 +14,10 @@
 - TDD, RED first: every behavior change lands with a test that fails against the old code.
 - Every test must discriminate the branch it claims. This project has repeatedly shipped tests that passed on the wrong code path; for each test, know what would fail if its target were deleted.
 - **Never patch an attribute on a stdlib module object in a test** (for example `monkeypatch.setattr(main_module.time, "monotonic", ...)`). It swaps that function for the entire process and hangs the suite. Assert on the shape of values instead. This cost a real debugging cycle on 2026-08-26.
-- **Three repos.** kobo `~/Documents/GitHub/kobo`, daedalus `~/Documents/GitHub/daedalus`, cabal `~/Documents/GitHub/cabal`. Every task names its repo; never commit one repo's change from another.
+- **Three repos.** kobo `.`, daedalus `../daedalus`, cabal `../cabal`. Every task names its repo; never commit one repo's change from another.
 - Vendor scan before EVERY kobo commit: `git diff --cached --name-only | xargs grep -l -f .superpowers/sdd/vendor-names.txt` must print nothing. Never write a GCP project name, the marketplace repo name, or any vendor name into a tracked kobo file.
 - No em dashes in any user-facing copy, docstring, comment, or knowledge text.
-- kobo API suite green before each kobo commit: `cd ~/Documents/GitHub/kobo/api && venv/bin/python -m pytest -q`. Cold imports take about 90 seconds; be patient rather than assuming a hang.
+- kobo API suite green before each kobo commit: `cd api && venv/bin/python -m pytest -q`. Cold imports take about 90 seconds; be patient rather than assuming a hang.
 - Arc 5 tasks must not change agent-facing behavior. Arc 3 and 4 tasks must not change the storage engine. If a task appears to need both, stop and report.
 
 ## File Structure
@@ -72,7 +72,7 @@ def test_teach_envelope_output_is_unchanged_by_the_refactor():
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `cd ~/Documents/GitHub/kobo/api && venv/bin/python -m pytest -q tests/test_clients.py -k system_task`
+Run: `cd api && venv/bin/python -m pytest -q tests/test_clients.py -k system_task`
 Expected: FAIL, `_build_system_task_envelope` is not defined.
 
 - [ ] **Step 3: Implement**
@@ -102,8 +102,8 @@ def _build_teach_envelope(note: str, filename: str) -> dict:
 - [ ] **Step 4: GREEN, full suite, commit**
 
 ```bash
-cd ~/Documents/GitHub/kobo/api && venv/bin/python -m pytest -q
-cd ~/Documents/GitHub/kobo
+cd api && venv/bin/python -m pytest -q
+cd .
 git add api/kobo_api/clients.py api/tests/test_clients.py
 git diff --cached --name-only | xargs grep -l -f .superpowers/sdd/vendor-names.txt || git commit -m "refactor(chat): extract a system-task envelope family from the teach builder"
 ```
@@ -409,7 +409,7 @@ The agent's suggestion renders as an offer with the colleague's name and why the
 
 - [ ] **Step 3: UI suite, commit**
 
-Run: `cd ~/Documents/GitHub/kobo/ui && npx vitest run`
+Run: `cd ui && npx vitest run`
 `feat(ui): shared threads with suggested participants`
 
 ---

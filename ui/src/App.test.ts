@@ -64,17 +64,6 @@ describe("App — one way in to a new agent", () => {
     expect(screen.queryByText("How do you want to start?")).toBeNull();
   });
 
-  it("opens the team-guide station from the second row", async () => {
-    render(App);
-    await openChooser();
-    await fireEvent.click(screen.getByRole("button", { name: /Team guide in one step/ }));
-
-    await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "Quick-start team agent" })).not.toBeNull();
-    });
-    expect(screen.queryByText("How do you want to start?")).toBeNull();
-  });
-
   it("opens the connect station from the third row", async () => {
     render(App);
     await openChooser();

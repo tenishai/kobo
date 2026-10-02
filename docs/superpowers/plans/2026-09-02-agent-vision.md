@@ -29,8 +29,8 @@
 
 | Tasks | Repo | Branch |
 |-------|------|--------|
-| 1-3 | `~/Documents/GitHub/daedalus` | `feat/vision` (from `feat/learnings`) |
-| 4 | `~/Documents/GitHub/kobo` | `feat/vision-scope` (from `main`) |
+| 1-3 | `../daedalus` | `feat/vision` (from `feat/learnings`) |
+| 4 | `.` | `feat/vision-scope` (from `main`) |
 
 ---
 
@@ -47,8 +47,8 @@
 - [ ] **Step 1: Create the branch**
 
 ```bash
-git -C ~/Documents/GitHub/daedalus checkout feat/learnings
-git -C ~/Documents/GitHub/daedalus checkout -b feat/vision
+git -C ../daedalus checkout feat/learnings
+git -C ../daedalus checkout -b feat/vision
 ```
 
 - [ ] **Step 2: Write the failing tests**
@@ -87,7 +87,7 @@ def test_from_text_carries_no_images():
 
 - [ ] **Step 3: Run to verify failure**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_task_images.py -x -q`
+Run: `cd ../daedalus && python -m pytest tests/test_task_images.py -x -q`
 Expected: FAIL with `ImportError: cannot import name 'ImagePart'`
 
 - [ ] **Step 4: Implement**
@@ -121,15 +121,15 @@ class Message(BaseModel):
 
 - [ ] **Step 5: Run the new tests, then the full suite**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_task_images.py -x -q && python -m pytest tests/ -x -q`
+Run: `cd ../daedalus && python -m pytest tests/test_task_images.py -x -q && python -m pytest tests/ -x -q`
 Expected: all pass (the full run proves checkpoint/journal/a2a paths tolerate the new optional field)
 
 - [ ] **Step 6: Lint and commit**
 
 ```bash
-cd ~/Documents/GitHub/daedalus && ruff check src tests
-git -C ~/Documents/GitHub/daedalus add src/daedalus/task.py tests/test_task_images.py
-git -C ~/Documents/GitHub/daedalus commit -m "feat(task): optional image parts on Message"
+cd ../daedalus && ruff check src tests
+git -C ../daedalus add src/daedalus/task.py tests/test_task_images.py
+git -C ../daedalus commit -m "feat(task): optional image parts on Message"
 ```
 
 ---
@@ -208,7 +208,7 @@ async def test_two_images_produce_two_image_parts_in_order():
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_agent_vision.py -x -q`
+Run: `cd ../daedalus && python -m pytest tests/test_agent_vision.py -x -q`
 Expected: FAIL -- content is the flat string, not a list
 
 - [ ] **Step 3: Implement the _messages branch**
@@ -239,7 +239,7 @@ In `src/daedalus/agent.py`, `_messages`'s history loop becomes:
 
 - [ ] **Step 4: Run the vision tests**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_agent_vision.py -x -q`
+Run: `cd ../daedalus && python -m pytest tests/test_agent_vision.py -x -q`
 Expected: 3 passed
 
 - [ ] **Step 5: Write the failing journal-strip test**
@@ -268,7 +268,7 @@ async def test_journal_strips_image_bytes_and_leaves_a_marker(tmp_path):
 
 - [ ] **Step 6: Run to verify failure, then implement the strip**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_agent_journal.py -x -q`
+Run: `cd ../daedalus && python -m pytest tests/test_agent_journal.py -x -q`
 Expected: the new test FAILS (base64 present in the journal)
 
 In `_journal_conversation`, replace the history dump line:
@@ -296,14 +296,14 @@ In `_journal_conversation`, replace the history dump line:
 
 - [ ] **Step 7: Run journal tests + full suite + lint**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_agent_journal.py tests/test_agent_vision.py -x -q && python -m pytest tests/ -x -q && ruff check src tests`
+Run: `cd ../daedalus && python -m pytest tests/test_agent_journal.py tests/test_agent_vision.py -x -q && python -m pytest tests/ -x -q && ruff check src tests`
 Expected: all pass
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git -C ~/Documents/GitHub/daedalus add src/daedalus/agent.py tests/test_agent_vision.py tests/test_agent_journal.py
-git -C ~/Documents/GitHub/daedalus commit -m "feat(agent): multimodal content for image messages, journal strips bytes"
+git -C ../daedalus add src/daedalus/agent.py tests/test_agent_vision.py tests/test_agent_journal.py
+git -C ../daedalus commit -m "feat(agent): multimodal content for image messages, journal strips bytes"
 ```
 
 ---
@@ -430,7 +430,7 @@ Note on the `handler.tasks` accessor and `event(files=...)`: extend the file's e
 
 - [ ] **Step 3: Run to verify failure**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_transport_slack.py -x -q`
+Run: `cd ../daedalus && python -m pytest tests/test_transport_slack.py -x -q`
 Expected: new tests FAIL (no files handling; `event()` may need the `files=` kwarg added first so collection succeeds)
 
 - [ ] **Step 4: Implement**
@@ -542,14 +542,14 @@ and the Message append becomes:
 
 - [ ] **Step 5: Run the transport tests, full suite, lint**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_transport_slack.py -x -q && python -m pytest tests/ -x -q && ruff check src tests`
+Run: `cd ../daedalus && python -m pytest tests/test_transport_slack.py -x -q && python -m pytest tests/ -x -q && ruff check src tests`
 Expected: all pass
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C ~/Documents/GitHub/daedalus add src/daedalus/transports/slack.py pyproject.toml tests/test_transport_slack.py
-git -C ~/Documents/GitHub/daedalus commit -m "feat(slack): image attachments reach the model -- bounded, announced, authenticated"
+git -C ../daedalus add src/daedalus/transports/slack.py pyproject.toml tests/test_transport_slack.py
+git -C ../daedalus commit -m "feat(slack): image attachments reach the model -- bounded, announced, authenticated"
 ```
 
 ---
@@ -565,16 +565,16 @@ git -C ~/Documents/GitHub/daedalus commit -m "feat(slack): image attachments rea
 - [ ] **Step 1: Create the branch**
 
 ```bash
-git -C ~/Documents/GitHub/kobo checkout main
-git -C ~/Documents/GitHub/kobo pull --ff-only
-git -C ~/Documents/GitHub/kobo checkout -b feat/vision-scope
+git -C . checkout main
+git -C . pull --ff-only
+git -C . checkout -b feat/vision-scope
 ```
 
 - [ ] **Step 2: Update the failing test pin first**
 
 In `api/tests/test_slack_setup.py`, the exact-scope-list assertion gains `"files:read"` in the position matching the implementation below (alphabetical-ish placement after `chat:write` matches the list's existing grouping -- mirror wherever you insert it in the source).
 
-Run: `cd ~/Documents/GitHub/kobo/api && uv run python -m pytest tests/test_slack_setup.py -x -q`
+Run: `cd api && uv run python -m pytest tests/test_slack_setup.py -x -q`
 Expected: FAIL (scope list mismatch)
 
 - [ ] **Step 3: Add the scope**
@@ -593,21 +593,21 @@ In `api/kobo_api/slack_setup.py`, `_BOT_SCOPES` gains (after `"chat:write"`):
 
 - [ ] **Step 4: Run the setup tests, then the full API suite**
 
-Run: `cd ~/Documents/GitHub/kobo/api && uv run python -m pytest tests/test_slack_setup.py -x -q && uv run python -m pytest tests/ -q`
+Run: `cd api && uv run python -m pytest tests/test_slack_setup.py -x -q && uv run python -m pytest tests/ -q`
 Expected: all pass (the engine racing test is known load-flaky; if it is the only failure, rerun it in isolation and say so)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C ~/Documents/GitHub/kobo add api/kobo_api/slack_setup.py api/tests/test_slack_setup.py
-git -C ~/Documents/GitHub/kobo commit -m "feat(slack): manifest carries files:read -- vision needs the download scope"
+git -C . add api/kobo_api/slack_setup.py api/tests/test_slack_setup.py
+git -C . commit -m "feat(slack): manifest carries files:read -- vision needs the download scope"
 ```
 
 ---
 
 ## Rollout (operator-driven, NOT part of task execution)
 
-1. daedalus: coworker merges #26 (learnings), THEN the feat/vision PR; rebuild runtime image from merged main (`<sha>-t<techne_ver>` tag); re-pin `runtime_image` in kobo-config.
+1. daedalus: coworker merges #26 (learnings), THEN the feat/vision PR; rebuild runtime image from merged main (`<sha>-t<techne_ver>` tag); re-pin `runtime_image` in the org config repo.
 2. kobo: merge feat/vision-scope -> main -> build/roll (can ride any kobo roll; the scope only matters when agents are recreated or manifests re-applied).
 3. Existing agents: re-apply the manifest at api.slack.com AND reinstall the app to the workspace (scope change) -- coordinate with agent owners (Leslie for clio).
 4. Wire acceptance: DM an image to a rebuilt agent, watch it describe the image; drop a 25 MB file and a PDF in one message, confirm both notes appear in the reply thread's context.

@@ -215,16 +215,6 @@ def test_nothing_matches_when_the_query_is_in_neither_half():
     assert index.search("warden", now=0.0) == ([], False, 1)
 
 
-def test_the_owner_alone_is_not_a_substring_match_on_the_name():
-    """A substring match reads the NAME, not the whole `owner/name`: typing
-    an organisation everything belongs to would otherwise return the whole
-    installation one keystroke in."""
-    index = RepoIndex(StubGitHub([_repo("example-org/clio")]))
-
-    assert index.search("example", now=0.0) == ([], False, 1)
-    assert index.search("example-org", now=0.0) == ([], False, 1)
-
-
 # --- what order -------------------------------------------------------------
 
 

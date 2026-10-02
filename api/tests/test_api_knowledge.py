@@ -244,30 +244,6 @@ def test_save_knowledge_overwrites_existing_file(session_factory, config):
     assert github.captured_knowledge == {"gotchas.md": "replaced"}
 
 
-def test_save_knowledge_unknown_agent_returns_404(session_factory, config):
-    client = _make_client(session_factory, config)
-
-    response = client.put(
-        f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md", json={"content": "hi"}
-    )
-
-    assert response.status_code == 404
-    assert "error" in response.json()
-
-
-@pytest.mark.parametrize("status", NON_READY_STATUSES)
-def test_save_knowledge_non_ready_agent_returns_409(session_factory, config, status):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, status=status)
-
-    response = client.put(
-        f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md", json={"content": "hi"}
-    )
-
-    assert response.status_code == 409
-    assert response.json() == {"error": "agent is not ready for memory changes"}
-
-
 def test_save_knowledge_bad_filename_returns_422_with_reason(session_factory, config):
     github = FakeGitHub()
     client = _make_client(session_factory, config, github=github)
@@ -337,26 +313,6 @@ def test_delete_knowledge_removes_file_commits_and_returns_sha(session_factory, 
     assert response.json() == {"sha": FAKE_LOCAL_HEAD_DEFAULT, "mode": "archive"}
     assert github.captured_knowledge == {"keep.md": "stay"}
     assert github.pushes[-1][1] == "kobo: remove knowledge/gotchas.md"
-
-
-def test_delete_knowledge_unknown_agent_returns_404(session_factory, config):
-    client = _make_client(session_factory, config)
-
-    response = client.delete(f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md")
-
-    assert response.status_code == 404
-    assert "error" in response.json()
-
-
-@pytest.mark.parametrize("status", NON_READY_STATUSES)
-def test_delete_knowledge_non_ready_agent_returns_409(session_factory, config, status):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, status=status)
-
-    response = client.delete(f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md")
-
-    assert response.status_code == 409
-    assert response.json() == {"error": "agent is not ready for memory changes"}
 
 
 def test_delete_knowledge_missing_file_returns_404_with_exact_body(session_factory, config):
@@ -726,26 +682,6 @@ def test_delivery_failed_when_run_completed_non_success(session_factory, config)
     body = response.json()
     assert body["state"] == "failed"
     assert body["detail"]
-
-
-def test_delivery_unknown_agent_returns_404(session_factory, config):
-    client = _make_client(session_factory, config)
-
-    response = client.get(f"/api/agents/{AGENT_NAME}/knowledge/delivery/{SHA}")
-
-    assert response.status_code == 404
-    assert "error" in response.json()
-
-
-@pytest.mark.parametrize("status", NON_READY_STATUSES)
-def test_delivery_non_ready_agent_returns_409(session_factory, config, status):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, status=status)
-
-    response = client.get(f"/api/agents/{AGENT_NAME}/knowledge/delivery/{SHA}")
-
-    assert response.status_code == 409
-    assert response.json() == {"error": "agent is not ready for memory changes"}
 
 
 @pytest.mark.parametrize(

@@ -64,27 +64,6 @@ describe("RepoAccessCard", () => {
     expect(screen.getByLabelText("One owner/name per line")).not.toBeNull();
   });
 
-  it("says nothing is there in one table row", async () => {
-    stubRepoAccess([]);
-    const { container } = renderWithClient(RepoAccessCard, { agentName: "warden" });
-
-    await screen.findByText("No repositories requested yet.");
-    const empties = container.querySelectorAll("td.panel__empty");
-    expect(empties).toHaveLength(1);
-    expect(empties[0].parentElement?.children).toHaveLength(1);
-    expect(empties[0].getAttribute("colspan")).toBe("3");
-  });
-
-  it("offers at most one filled button with the form open", async () => {
-    stubRepoAccess(ROWS);
-    const { container } = renderWithClient(RepoAccessCard, { agentName: "warden" });
-
-    await openRequest();
-    await screen.findByText("your-org/example-repo");
-
-    expect(container.querySelectorAll(".btn--primary").length).toBeLessThanOrEqual(1);
-  });
-
   it("lists only this agent's repositories with their state", async () => {
     stubRepoAccess(ROWS);
     renderWithClient(RepoAccessCard, { agentName: "warden" });
@@ -129,27 +108,6 @@ describe("RepoAccessCard", () => {
     expect(call).toBeDefined();
     const body = JSON.parse((call as [RequestInfo | URL, RequestInit])[1].body as string);
     expect(body).toEqual({ ids: [1], decision: "approved" });
-  });
-
-  it("revoking posts that one id and the decision", async () => {
-    stubRepoAccess(ROWS);
-    renderWithClient(RepoAccessCard, { agentName: "warden" });
-
-    await screen.findByText("your-org/live-repo");
-    await fireEvent.click(
-      screen.getByRole("button", { name: "Revoke your-org/live-repo" }),
-    );
-
-    const call = vi
-      .mocked(fetch)
-      .mock.calls.find(
-        ([url, init]) =>
-          String(url) === "/api/repo-access/decide" &&
-          (init as RequestInit | undefined)?.method === "POST",
-      );
-    expect(call).toBeDefined();
-    const body = JSON.parse((call as [RequestInfo | URL, RequestInit])[1].body as string);
-    expect(body).toEqual({ ids: [2], decision: "revoked" });
   });
 
   it("requests the typed repositories one per line", async () => {

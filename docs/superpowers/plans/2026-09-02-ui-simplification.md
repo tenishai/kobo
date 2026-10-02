@@ -15,7 +15,7 @@
 - The client's name NEVER appears in source, comments, or string literals.
 - NO EM DASHES in `.svelte` files (`ui/src/lib/copy.test.ts` fails the suite on them); avoid them in `.ts` too (use `--` in comments).
 - All UI commands run from `ui/`: tests `npx vitest run <file>` (full suite `npx vitest run`), type check `npm run check`.
-- kobo work happens on branch `feat/ui-simplification` in `~/Documents/GitHub/kobo`, branched from current `main`.
+- kobo work happens on branch `feat/ui-simplification` in `.`, branched from current `main`.
 - Tab model exacts: primary order `chat, slack, access` (access conditional, appended last, same probe as today); advanced order `learnings, memory, skills, tooling`; the `"overview"` TabId is retired everywhere.
 - The Advanced group defaults expanded when `data.can_decide_learnings` is true, collapsed otherwise; it force-expands whenever `activeTab` is an advanced tab; when collapsed with `pending_learnings > 0`, the pending badge renders on the Advanced toggle itself.
 - Provisioning story: `StepChecklist` renders between header and tabs only while `data.status !== "ready" && !isFrozen(data.status)`; `BuildLogCard` (already a collapsed toggle) renders there always; the failed-banner + retry stays with the checklist block.
@@ -55,9 +55,9 @@
 - [ ] **Step 1: Create the branch**
 
 ```bash
-git -C ~/Documents/GitHub/kobo checkout main
-git -C ~/Documents/GitHub/kobo pull --ff-only
-git -C ~/Documents/GitHub/kobo checkout -b feat/ui-simplification
+git -C . checkout main
+git -C . pull --ff-only
+git -C . checkout -b feat/ui-simplification
 ```
 
 - [ ] **Step 2: Rewrite the failing tests**
@@ -122,7 +122,7 @@ describe("defaultTab", () => {
 
 - [ ] **Step 3: Run to verify failure**
 
-Run: `cd ~/Documents/GitHub/kobo/ui && npx vitest run src/lib/tabs.test.ts`
+Run: `cd ui && npx vitest run src/lib/tabs.test.ts`
 Expected: FAIL (`primaryTabs` not exported)
 
 - [ ] **Step 4: Rewrite tabs.ts**
@@ -189,14 +189,14 @@ export function defaultTab(status: string): TabId | null {
 
 - [ ] **Step 5: Run to verify pass**
 
-Run: `cd ~/Documents/GitHub/kobo/ui && npx vitest run src/lib/tabs.test.ts`
+Run: `cd ui && npx vitest run src/lib/tabs.test.ts`
 Expected: PASS (AgentDetail.svelte still imports `visibleTabs`, so `npm run check` will fail until Task 2 -- that is expected; do NOT run the full suite yet)
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C ~/Documents/GitHub/kobo add ui/src/lib/tabs.ts ui/src/lib/tabs.test.ts
-git -C ~/Documents/GitHub/kobo commit -m "feat(ui): tab model splits primary from advanced, overview retired"
+git -C . add ui/src/lib/tabs.ts ui/src/lib/tabs.test.ts
+git -C . commit -m "feat(ui): tab model splits primary from advanced, overview retired"
 ```
 
 ---
@@ -281,7 +281,7 @@ Keep every existing test that does not touch overview/tab-default mechanics (fro
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd ~/Documents/GitHub/kobo/ui && npx vitest run src/pages/AgentDetail.test.ts`
+Run: `cd ui && npx vitest run src/pages/AgentDetail.test.ts`
 Expected: FAIL (new pins don't match the current structure)
 
 - [ ] **Step 3: Restructure the component**
@@ -411,14 +411,14 @@ IMPORTANT: the tabpanel `{#each}` iterates `[...primary, ...advanced]` unconditi
 
 - [ ] **Step 4: Run the page tests, then the whole suite + check**
 
-Run: `cd ~/Documents/GitHub/kobo/ui && npx vitest run src/pages/AgentDetail.test.ts && npx vitest run && npm run check`
+Run: `cd ui && npx vitest run src/pages/AgentDetail.test.ts && npx vitest run && npm run check`
 Expected: all pass (copy.test.ts included -- no em dashes in the new copy)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C ~/Documents/GitHub/kobo add ui/src/pages/AgentDetail.svelte ui/src/pages/AgentDetail.test.ts
-git -C ~/Documents/GitHub/kobo commit -m "feat(ui): identity header + advanced group, overview tab retired"
+git -C . add ui/src/pages/AgentDetail.svelte ui/src/pages/AgentDetail.test.ts
+git -C . commit -m "feat(ui): identity header + advanced group, overview tab retired"
 ```
 
 ---
@@ -448,7 +448,7 @@ it("submits with an empty skills list and offers no skills station", async () =>
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd ~/Documents/GitHub/kobo/ui && npx vitest run src/components/CreateModal.test.ts`
+Run: `cd ui && npx vitest run src/components/CreateModal.test.ts`
 Expected: FAIL (the Skills station heading renders)
 
 - [ ] **Step 3: Remove the station**
@@ -464,14 +464,14 @@ Delete from `CreateModal.svelte`:
 
 - [ ] **Step 4: Run the modal tests, then the whole suite + check**
 
-Run: `cd ~/Documents/GitHub/kobo/ui && npx vitest run src/components/CreateModal.test.ts && npx vitest run && npm run check`
+Run: `cd ui && npx vitest run src/components/CreateModal.test.ts && npx vitest run && npm run check`
 Expected: all pass, no unused-import warnings from check
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C ~/Documents/GitHub/kobo add ui/src/components/CreateModal.svelte ui/src/components/CreateModal.test.ts
-git -C ~/Documents/GitHub/kobo commit -m "feat(ui): create modal sheds the skills station -- skills live post-create"
+git -C . add ui/src/components/CreateModal.svelte ui/src/components/CreateModal.test.ts
+git -C . commit -m "feat(ui): create modal sheds the skills station -- skills live post-create"
 ```
 
 ---
@@ -517,7 +517,7 @@ it("omits the recommended strip when the agent has no capability or tags", async
 
 - [ ] **Step 3: Run to verify failure**
 
-Run: `cd ~/Documents/GitHub/kobo/ui && npx vitest run src/components/SkillsPanel.test.ts`
+Run: `cd ui && npx vitest run src/components/SkillsPanel.test.ts`
 Expected: FAIL (no recommended strip, no combobox)
 
 - [ ] **Step 4: Implement**
@@ -555,14 +555,14 @@ backed by `const recommended = createQuery(() => (recommendedSkillsQuery(recomme
 
 - [ ] **Step 5: Run the panel tests, then the whole suite + check**
 
-Run: `cd ~/Documents/GitHub/kobo/ui && npx vitest run src/components/SkillsPanel.test.ts && npx vitest run && npm run check`
+Run: `cd ui && npx vitest run src/components/SkillsPanel.test.ts && npx vitest run && npm run check`
 Expected: all pass
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C ~/Documents/GitHub/kobo add ui/src/components/SkillsPanel.svelte ui/src/pages/AgentDetail.svelte ui/src/components/SkillsPanel.test.ts
-git -C ~/Documents/GitHub/kobo commit -m "feat(ui): skills tab gains recommended strip + catalog combobox"
+git -C . add ui/src/components/SkillsPanel.svelte ui/src/pages/AgentDetail.svelte ui/src/components/SkillsPanel.test.ts
+git -C . commit -m "feat(ui): skills tab gains recommended strip + catalog combobox"
 ```
 
 ---
@@ -592,7 +592,7 @@ it("explains the built-in tool lanes near the top of the panel", () => {
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd ~/Documents/GitHub/kobo/ui && npx vitest run src/components/ToolingPanel.test.ts`
+Run: `cd ui && npx vitest run src/components/ToolingPanel.test.ts`
 Expected: FAIL
 
 - [ ] **Step 3: Add the explainer**
@@ -612,14 +612,14 @@ Near the top of `ToolingPanel.svelte`'s rendered section (mirroring MemoryPanel'
 
 - [ ] **Step 4: Run the panel tests, then the whole suite**
 
-Run: `cd ~/Documents/GitHub/kobo/ui && npx vitest run src/components/ToolingPanel.test.ts && npx vitest run`
+Run: `cd ui && npx vitest run src/components/ToolingPanel.test.ts && npx vitest run`
 Expected: all pass
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C ~/Documents/GitHub/kobo add ui/src/components/ToolingPanel.svelte ui/src/components/ToolingPanel.test.ts
-git -C ~/Documents/GitHub/kobo commit -m "feat(ui): tooling tab explains its built-in lanes"
+git -C . add ui/src/components/ToolingPanel.svelte ui/src/components/ToolingPanel.test.ts
+git -C . commit -m "feat(ui): tooling tab explains its built-in lanes"
 ```
 
 ---
@@ -644,14 +644,14 @@ Replace the article body with the five steps in the order a new user actually li
 
 - [ ] **Step 2: Run the copy test + full suite**
 
-Run: `cd ~/Documents/GitHub/kobo/ui && npx vitest run src/lib/copy.test.ts && npx vitest run && npm run check`
+Run: `cd ui && npx vitest run src/lib/copy.test.ts && npx vitest run && npm run check`
 Expected: all pass
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git -C ~/Documents/GitHub/kobo add ui/src/pages/GettingStarted.svelte
-git -C ~/Documents/GitHub/kobo commit -m "feat(ui): getting started rewritten as the five-step journey"
+git -C . add ui/src/pages/GettingStarted.svelte
+git -C . commit -m "feat(ui): getting started rewritten as the five-step journey"
 ```
 
 ---

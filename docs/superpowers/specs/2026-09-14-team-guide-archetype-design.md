@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-14
 **Status:** Approved in conversation (Kyle), spec for implementation
-**Scope:** kobo (api + ui + composer), the org's skills marketplace (one new skill), kobo-config (org.yaml keys)
+**Scope:** kobo (api + ui + composer), the org's skills marketplace (one new skill), the org config repo (org.yaml keys)
 
 ## Why
 

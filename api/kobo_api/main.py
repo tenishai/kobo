@@ -67,6 +67,7 @@ from kobo_api.archetypes import (
 from kobo_api.avatars import avatar_prompt, set_avatar
 from kobo_api.catalog import RESERVED_NAMES, validate_name
 from kobo_api.clients import (
+    gsa_email,
     CabalError,
     ClientError,
     StorageNotFound,
@@ -79,7 +80,7 @@ from kobo_api.clients import (
     filter_cabal_event_stream,
     probe_slack_token_store,
 )
-from kobo_api.config import SHARED_GROUP, Config
+from kobo_api.config import SHARED_GROUP, Config, vertex_location_for
 from kobo_api.connect_scan import NAME_TAKEN, Finding, ScanReport, scan_repo
 from kobo_api.db import init_db, make_engine, make_session_factory
 from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
@@ -175,6 +176,8 @@ from kobo_api.personas import (
     read_index as personas_read_index,
 )
 from kobo_api.pr_broker import BrokerAuthError, mint_scoped_token, verify_agent_token
+from kobo_api.health import AgentHealth, health_sweep_loop
+from kobo_api.roles import ROLE_ALL, launches_inline, role_from_env, runs_pipelines, serves_requests
 from kobo_api.provisioner import (
     STEP_LABELS,
     interrupted_sweep_loop,
@@ -182,7 +185,10 @@ from kobo_api.provisioner import (
     pipeline_for,
     reset_failed_steps,
     run_pipeline,
+    drain_pipelines,
+    queue_loop,
     sweep_interrupted,
+    waiting_sweep_loop,
 )
 from kobo_api.purpose_tags import (
     MAX_CREATE_TAGS,
@@ -357,7 +363,10 @@ class ScanRepoRequest(BaseModel):
 
     repo: str
     name: str
-    run_mode: str = RUN_MODE_HTTP
+    # Optional since 2026-09-29: the scan decides it from the repository
+    # (a containerPort or an EXPOSE means it listens). A caller who says
+    # so explicitly is believed; the form no longer asks.
+    run_mode: str | None = None
     # The same ACL namespace `CreateAgentRequest` carries, gated by the
     # same helper on both routes. The scan carries it too, and not as a
     # formality: it reads private repositories with the room's own
@@ -804,14 +813,35 @@ AVATAR_UPLOAD_MAX_BYTES = 2 * 1024 * 1024
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
+# Longest first, so "flash-lite" is not read as "flash".
+_MODEL_SIZE_WORDS = ("flash-lite", "haiku", "sonnet", "opus", "flash", "pro")
+
+
+def _model_family_size(model_id: str) -> tuple[str | None, str | None]:
+    """("claude", "sonnet") for `vertex_ai/claude-sonnet-4-5`; None where the
+    id names neither a family nor a size the room knows."""
+    low = model_id.lower()
+    family = "claude" if "claude" in low else "gemini" if "gemini" in low else None
+    size = next((word for word in _MODEL_SIZE_WORDS if word in low), None)
+    return family, size
+
+
 def _model_label(cfg: Config, model_id: str) -> str:
-    """The catalog label for `model_id`, or the raw id itself when it isn't
-    (or is no longer) in `cfg.models` — an agent created under an older
-    config whose model has since been retired from the catalog must still
-    render, not 500."""
+    """The catalog label for `model_id`. An id that is no longer in
+    `cfg.models` (an agent created under an older catalog) takes the label
+    of the catalog's model of the same family and size: the room names
+    models by price, not by number, and the name outlives the id (five
+    agents on claude-sonnet-4-5 read as raw ids beside one on sonnet-5,
+    2026-10-01). The raw id, which the hover still shows, is the answer
+    only when nothing in the catalog is kin to it."""
     for model in cfg.models:
         if model.id == model_id:
             return model.label
+    family, size = _model_family_size(model_id)
+    if family and size:
+        for model in cfg.models:
+            if _model_family_size(model.id) == (family, size):
+                return model.label
     return model_id
 
 
@@ -1325,6 +1355,13 @@ PERSONA_OF_A_CONNECTED_AGENT = (
 PERSONAS_NOT_SET_UP = "personas aren't set up yet"
 
 
+class SetModelBody(BaseModel):
+    """`PATCH /api/agents/{name}/model`: a catalog model id (`GET
+    /api/catalog/models`)."""
+
+    model: str
+
+
 class SetPersonaBody(BaseModel):
     """`PUT /api/agents/{name}/persona`: the catalog id of the persona to wear.
     Module-level, like every other body model here: with postponed
@@ -1378,7 +1415,7 @@ def _connect_fields_block(payload: ScanRepoRequest) -> JSONResponse | None:
         return JSONResponse(
             {"error": f"invalid name ({name_reason}): {payload.name!r}"}, status_code=422
         )
-    if payload.run_mode not in RUN_MODES:
+    if payload.run_mode is not None and payload.run_mode not in RUN_MODES:
         return JSONResponse({"error": RUN_MODE_REFUSAL}, status_code=422)
     return None
 
@@ -1433,6 +1470,15 @@ def _scan_report_body(report: ScanReport) -> dict:
         "adds": list(report.adds),
         "adds_preamble": report.adds_preamble,
         "repo": report.repo,
+        # The name the repository already deploys under, when it has one:
+        # the form prefills and locks the Name field to it, and a different
+        # name is among the blockers above (a connected repository keeps
+        # its own name, 2026-09-29).
+        "repo_name": report.repo_name,
+        "repo_service_account": report.repo_service_account,
+        # Decided by the scan, unless the caller said so: what the connect
+        # route will record.
+        "run_mode": report.run_mode,
     }
 
 
@@ -1814,6 +1860,46 @@ def _flatten_conversation_entries(detail: dict) -> list[dict]:
 # docstring for the full tradeoff. Each surviving conversation contributes
 # at most 2 entries, so this cap counts flattened entries, not conversations.
 _FEED_SCROLLBACK_CAP = 200
+
+
+class _InFlight:
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.result: object = None
+        self.error: BaseException | None = None
+
+
+_INFLIGHT_LOCK = threading.Lock()
+_FEED_INFLIGHT: dict[str, _InFlight] = {}
+
+
+def _coalesced(table: dict[str, _InFlight], key: str, fn):
+    """Run `fn` once for every burst of concurrent callers sharing `key`:
+    the first caller runs it, the rest wait for that result (or its
+    exception). Sequential calls run `fn` again; nothing is cached. The
+    entry is removed before its waiters are released, so a call that
+    starts after the leader finished is a new leader."""
+    with _INFLIGHT_LOCK:
+        slot = table.get(key)
+        leader = slot is None
+        if leader:
+            slot = table[key] = _InFlight()
+    assert slot is not None
+    if not leader:
+        slot.done.wait()
+        if slot.error is not None:
+            raise slot.error
+        return slot.result
+    try:
+        slot.result = fn()
+        return slot.result
+    except BaseException as exc:
+        slot.error = exc
+        raise
+    finally:
+        with _INFLIGHT_LOCK:
+            table.pop(key, None)
+        slot.done.set()
 
 
 # Uncalled by any route since Slack self-service (2026-08-17) — kept because
@@ -2439,27 +2525,45 @@ async def _room_lifespan(app: FastAPI):
     instances used without `with` never enter lifespans at all, so unit
     tests see no background task unless they opt in."""
     async with mcp_lifespan(app):
-        nightly = asyncio.create_task(learnings_nightly_loop(app))
-        sweeper = asyncio.create_task(interrupted_sweep_loop(app))
+        role = getattr(app.state, "role", ROLE_ALL)
+        tasks: list[asyncio.Task] = []
+        if runs_pipelines(role):
+            tasks.append(asyncio.create_task(learnings_nightly_loop(app)))
+            tasks.append(asyncio.create_task(interrupted_sweep_loop(app)))
+            # The worker's queue: claims what an API replica left PENDING.
+            tasks.append(asyncio.create_task(queue_loop(app)))
+        # Parked connected agents: asks the platform once a minute whether
+        # their setup pull request has been merged, and resumes them.
+            tasks.append(asyncio.create_task(waiting_sweep_loop(app)))
+        # Is each ready agent actually running: asks the cluster once a
+        # minute so the dashboard never wears Ready over a crashed pod.
+        if serves_requests(role):
+            tasks.append(asyncio.create_task(health_sweep_loop(app)))
         # A thread rather than a task, because the listing it reads is a
         # blocking `gh` call: on the loop it would stall every request in
         # the process for as long as GitHub takes.
-        warmer = _start_repo_warmer(app)
+        warmer = _start_repo_warmer(app) if serves_requests(role) else None
         # Same reasoning: the seed is a handful of blocking storage calls,
         # so it runs on a daemon thread rather than on the loop.
-        threading.Thread(
-            target=_seed_builtin_personas, args=(app,), daemon=True, name="persona-seed"
-        ).start()
+        if serves_requests(role):
+            threading.Thread(
+                target=_seed_builtin_personas, args=(app,), daemon=True, name="persona-seed"
+            ).start()
         try:
             yield
         finally:
+            # A worker leaving waits for what it is running: a roll must
+            # never fail an agent's build. The manifest's grace period is
+            # what makes this wait real.
+            if runs_pipelines(role):
+                await asyncio.to_thread(drain_pipelines, app)
             if warmer is not None:
                 # Joined, not just signalled, so a shutdown does not race
                 # a listing still writing itself into the index -- but
                 # with a timeout, and on a daemon thread, so it can never
                 # be the reason this process will not exit.
                 warmer.stop()
-            for task in (nightly, sweeper):
+            for task in tasks:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
@@ -2712,13 +2816,20 @@ def create_app(
     clients: Clients | None = None,
     org: OrgState | None = None,
     iap_jwks_fetcher: Callable[[], dict] | None = None,
+    role: str = ROLE_ALL,
 ) -> FastAPI:
     app = FastAPI(title="kobo-api", lifespan=_room_lifespan)
+    # Which half of the room this process is (kobo_api.roles): `all` keeps
+    # the old shape, `api` enqueues, `worker` claims and runs.
+    app.state.role = role
     install_metrics(app)
     install_tracing(app)
     app.state.config = config
     app.state.clients = clients
     app.state.session_factory = session_factory
+    # Live health per ready agent (kobo_api.health): filled by the sweep,
+    # read by the list and detail routes, never persisted.
+    app.state.health = {}
     # The repository typeahead's cache (kobo_api.repo_search): one listing
     # for the whole room, so it lives on the app rather than being rebuilt
     # per request. None when the room has no GitHub client, which is the
@@ -2813,7 +2924,12 @@ def create_app(
         return JSONResponse({"error": _validation_error_message(exc)}, status_code=422)
 
     @app.get("/api/healthz")
-    def healthz() -> dict:
+    async def healthz() -> dict:
+        # `async`, on purpose: a sync route needs a worker thread, and when
+        # the pool is wedged every worker is parked on a checkout, so the
+        # liveness probe (1s) timed out and both replicas were killed
+        # (2026-10-01). The probe asks whether the process is up; it must
+        # not need anything the process is short of to say so.
         return {"ok": True}
 
     # --- Whoami (access-control Task A1, groups made real in Task B2) -------
@@ -2892,7 +3008,10 @@ def create_app(
     def catalog_models() -> dict:
         cfg: Config = app.state.config
         return {
-            "models": [{"id": m.id, "label": m.label} for m in cfg.models],
+            "models": [
+                {"id": m.id, "label": m.label, "family": m.family, "tier": m.tier}
+                for m in cfg.models
+            ],
             "default": cfg.models[0].id,
         }
 
@@ -4329,6 +4448,11 @@ def create_app(
         status = agent.status
         agent_id = agent.id
 
+        if not launches_inline(app.state.role):
+            # An API replica: the row is PENDING with no heartbeat, which is
+            # the queue. A worker claims and runs it (provisioner.queue_loop).
+            return JSONResponse({"name": payload.name, "status": status}, status_code=201)
+
         try:
             run_pipeline(
                 request.app.state.session_factory,
@@ -4593,7 +4717,7 @@ def create_app(
             model_id=cfg.models[0].id,
             skills=[],
             kind=KIND_CONNECTED,
-            run_mode=payload.run_mode,
+            run_mode=report.run_mode,
             secret_names=secret_names,
             # The route records the repository; `ConnectStep` checks it and
             # creates nothing.
@@ -4624,6 +4748,10 @@ def create_app(
 
         status = agent.status
         agent_id = agent.id
+
+        if not launches_inline(app.state.role):
+            # Queued for a worker, same as create.
+            return JSONResponse({"name": payload.name, "status": status}, status_code=201)
 
         try:
             run_pipeline(
@@ -4800,6 +4928,12 @@ def create_app(
             {"name": agent.name, "kind": agent.kind, "run_mode": agent.run_mode}
         )
 
+    def _health_body(name: str) -> dict | None:
+        """The last health verdict for `name`, or None when nothing has
+        asked the cluster yet (a fresh replica, or an agent not ready)."""
+        verdict: AgentHealth | None = getattr(app.state, "health", {}).get(name)
+        return verdict.body() if verdict is not None else None
+
     @app.get("/api/agents")
     def list_agents(request: Request, session: Session = Depends(get_session)) -> dict:  # noqa: B008
         cfg: Config = app.state.config
@@ -4820,6 +4954,7 @@ def create_app(
                     "model_label": _model_label(cfg, a.model_id),
                     "created_at": a.created_at.isoformat(),
                     "has_avatar": a.avatar_png is not None,
+                    "health": _health_body(a.name),
                     # Owner-or-operator gate + "Made by <email>" (access-
                     # control Task A3): both columns are nullable (Task A2)
                     # and simply pass through as `None` for a pre-A2 or
@@ -4905,6 +5040,7 @@ def create_app(
                 "slack": slack,
                 "destroy_visible": _operator_block(request, cfg) is None,
                 "has_avatar": agent.avatar_png is not None,
+                "health": _health_body(agent.name),
                 "created_by": agent.created_by,
                 "group_name": agent.group_name,
                 "archetype": agent.archetype,
@@ -4912,6 +5048,15 @@ def create_app(
                 # may offer at all is a property of the kind, so the page
                 # reads it from the same fetch that draws the header.
                 "kind": agent.kind,
+                # The identity the agent runs as (2026-09-29): the Kubernetes
+                # service account in its namespace and the Google service
+                # account bound to it (AccessStep), the same for both kinds.
+                # What an access request to another project names.
+                "identity": {
+                    "service_account": f"agent-{agent.name}",
+                    "gsa_email": gsa_email(f"agent-{agent.name}", cfg.gcp_project),
+                    "project": cfg.gcp_project,
+                },
                 # What this agent runs on, and what the room builds on today
                 # (harness wave, 2026-09-23). Both, because the page's whole
                 # sentence is the comparison: an agent is current or it is
@@ -5076,7 +5221,11 @@ def create_app(
         if isinstance(agent, JSONResponse):
             return agent
 
-        if agent.status != AgentStatus.FAILED:
+        # FAILED is a retry. WAITING is a resume by hand, for the person who
+        # just merged the setup pull request and does not want to wait for
+        # the sweep. Same primitive either way: the parked step goes back to
+        # PENDING and re-decides against the platform.
+        if agent.status not in (AgentStatus.FAILED, AgentStatus.WAITING):
             return JSONResponse(
                 {"error": f"cannot retry agent in status {agent.status!r}"}, status_code=409
             )
@@ -5092,6 +5241,16 @@ def create_app(
             return gate
 
         reset_failed_steps(session, agent.id)
+
+        if not launches_inline(app.state.role):
+            # Back onto the queue: PENDING with no heartbeat is what a worker
+            # claims. The steps are already reset above, and the status flip
+            # below this still closes the double-retry window the same way.
+            agent.status = AgentStatus.PENDING
+            agent.error = None
+            agent.run_heartbeat_at = None
+            session.commit()
+            return JSONResponse({"name": name, "status": AgentStatus.PENDING}, status_code=202)
 
         # Flip to PROVISIONING (and clear the prior error) synchronously,
         # before starting the pipeline thread — mirrors create_agent's own
@@ -7880,6 +8039,88 @@ def create_app(
         log.info("agent %s now wears persona %s", agent.name, persona_id)
         return JSONResponse({"persona": persona_id, "sha": sha})
 
+    @app.patch("/api/agents/{name}/model")
+    def set_agent_model(
+        name: str,
+        body: SetModelBody,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Move a deployed agent onto another model from the catalog.
+
+        The composed `agent.yaml` names its model as `${AGENT_MODEL:-<birth
+        model>}`, so the change is two environment variables in the agent's
+        gojira.yaml: `AGENT_MODEL`, and `VERTEXAI_LOCATION` for the model's
+        own region. Same lane as the environment panel (`edit_gojira_yaml`):
+        one commit, the platform regenerates and rolls. The row's `model_id`
+        follows, so every later reprovision agrees.
+
+        Owner or operator, READY only, composed only: a connected agent's
+        model is its own repository's to change.
+        """
+        agent = _ready_agent_or_error(
+            session, request, name, not_ready_message="agent is not ready for a model change yet"
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+        if is_connected(agent):
+            return JSONResponse(
+                {"error": "a connected agent's model is its own repository's to change"},
+                status_code=409,
+            )
+        cfg: Config = app.state.config
+        model_id = body.model.strip()
+        choice = next((m for m in cfg.models if m.id == model_id), None)
+        if choice is None:
+            return JSONResponse(
+                {"error": f"there is no model {model_id!r} in the room's list"}, status_code=422
+            )
+        clients = app.state.clients
+        location = vertex_location_for(cfg, model_id)
+
+        def edit(data: dict) -> bool:
+            # `apply_env` never touches the two model keys (an owner's wall);
+            # the location is the room's own to set, so it is written here.
+            changed = apply_env(data, {"AGENT_MODEL": model_id}, [])
+            env = data["env"]
+            if env.get("VERTEXAI_LOCATION") != location:
+                env["VERTEXAI_LOCATION"] = location
+                changed = True
+            return changed
+
+        try:
+            result = edit_gojira_yaml(
+                clients.github,
+                clients.gojira,
+                repo=agent.repo_full_name,
+                connected=False,
+                gojira_app_id=agent.gojira_app_id,
+                edit=edit,
+                message=f"kobo: model is now {choice.label}",
+            )
+        except DeployTriggerFailed as exc:
+            return _deploy_trigger_failed(agent, exc)
+        except RepoBusy as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except ClientError as exc:
+            return _lane_failed("file write", agent, exc, AGENT_FILES_UNREACHABLE)
+
+        previous = agent.model_id
+        agent.model_id = model_id
+        session.commit()
+        log.info("agent %s now runs %s (was %s)", agent.name, model_id, previous)
+        return JSONResponse(
+            {
+                "model": model_id,
+                "model_label": choice.label,
+                "previous_model": previous,
+                "wiring": result.how,
+            }
+        )
+
     @app.post("/api/agents/{name}/restart")
     def restart_agent(
         name: str,
@@ -8533,61 +8774,71 @@ def create_app(
         if gate is not None:
             return gate
 
-        try:
-            # Two server-side-scoped queries (see the docstring's "Fix
-            # round 2"): the conversations `agent` answered, and the ones
-            # it started. limit=200 is the switchboard's own clamp maximum,
-            # passed explicitly because OMITTING it means 50, not
-            # unbounded. Merged + deduped by task_id (a conversation can
-            # never genuinely match both filters, but dedupe is cheap and
-            # a duplicated row would double its feed lines).
-            incoming = clients.cabal.list_conversations(limit=200, target=agent)
-            outgoing = clients.cabal.list_conversations(limit=200, caller=f"agent:{agent}")
-        except (CabalError, httpx.HTTPError) as exc:
-            log.warning("colleague feed list failed for %s: %s", agent, exc)
-            return JSONResponse(
-                {"error": "The switchboard did not answer. Try again shortly."},
-                status_code=502,
-            )
+        # The DB's part is over: the agent is visible. Give the connection
+        # back BEFORE the switchboard fan-out below. Holding it through up
+        # to 400 serial HTTP calls is how a burst of open tabs
+        # exhausted the pool, failed an unrelated agent's provisioning
+        # write, starved the health probe and got both replicas killed
+        # (2026-10-01). A failing agent, or a watched one, must never reach
+        # the others through this process.
+        session.close()
 
-        seen_ids: set[str] = set()
-        conversations: list[dict] = []
-        for row in incoming + outgoing:
-            task_id = row.get("task_id")
-            if isinstance(task_id, str) and task_id in seen_ids:
-                continue
-            if isinstance(task_id, str):
-                seen_ids.add(task_id)
-            conversations.append(row)
-
-        # Belt: the switchboard already scoped both queries, but this
-        # room-side predicate is the single definition of "participates",
-        # and a filter regression upstream must not widen the feed.
-        scoped = [c for c in conversations if _conversation_has_participant(c, agent)]
-
-        entries: list[dict] = []
-        for row in scoped:
-            task_id = row.get("task_id")
-            if not isinstance(task_id, str):
-                continue
+        def build() -> tuple[int, dict]:
             try:
-                detail = clients.cabal.get_conversation(task_id)
+                # Two server-side-scoped queries (see the docstring's "Fix
+                # round 2"): the conversations `agent` answered, and the ones
+                # it started. limit=200 is the switchboard's own clamp maximum,
+                # passed explicitly because OMITTING it means 50, not
+                # unbounded. Merged + deduped by task_id (a conversation can
+                # never genuinely match both filters, but dedupe is cheap and
+                # a duplicated row would double its feed lines).
+                incoming = clients.cabal.list_conversations(limit=200, target=agent)
+                outgoing = clients.cabal.list_conversations(limit=200, caller=f"agent:{agent}")
             except (CabalError, httpx.HTTPError) as exc:
-                log.warning(
-                    "colleague feed detail failed for %s (agent=%s): %s", task_id, agent, exc
-                )
-                return JSONResponse(
-                    {"error": "The switchboard did not answer. Try again shortly."},
-                    status_code=502,
-                )
-            entries.extend(_flatten_conversation_entries(detail))
+                log.warning("colleague feed list failed for %s: %s", agent, exc)
+                return 502, {"error": "The switchboard did not answer. Try again shortly."}
 
-        entries.sort(key=lambda e: e["ts"])
-        truncated = len(entries) > _FEED_SCROLLBACK_CAP
-        if truncated:
-            entries = entries[-_FEED_SCROLLBACK_CAP:]
+            seen_ids: set[str] = set()
+            conversations: list[dict] = []
+            for row in incoming + outgoing:
+                task_id = row.get("task_id")
+                if isinstance(task_id, str) and task_id in seen_ids:
+                    continue
+                if isinstance(task_id, str):
+                    seen_ids.add(task_id)
+                conversations.append(row)
 
-        return JSONResponse({"entries": entries, "truncated": truncated})
+            # Belt: the switchboard already scoped both queries, but this
+            # room-side predicate is the single definition of "participates",
+            # and a filter regression upstream must not widen the feed.
+            scoped = [c for c in conversations if _conversation_has_participant(c, agent)]
+
+            entries: list[dict] = []
+            for row in scoped:
+                task_id = row.get("task_id")
+                if not isinstance(task_id, str):
+                    continue
+                try:
+                    detail = clients.cabal.get_conversation(task_id)
+                except (CabalError, httpx.HTTPError) as exc:
+                    log.warning(
+                        "colleague feed detail failed for %s (agent=%s): %s", task_id, agent, exc
+                    )
+                    return 502, {"error": "The switchboard did not answer. Try again shortly."}
+                entries.extend(_flatten_conversation_entries(detail))
+
+            entries.sort(key=lambda e: e["ts"])
+            truncated = len(entries) > _FEED_SCROLLBACK_CAP
+            if truncated:
+                entries = entries[-_FEED_SCROLLBACK_CAP:]
+
+            return 200, {"entries": entries, "truncated": truncated}
+
+        # Every open tab for this agent refetches on every stream frame;
+        # concurrent callers share one fan-out instead of each running
+        # their own (`_coalesced`).
+        status, body = _coalesced(_FEED_INFLIGHT, f"feed:{agent}", build)
+        return JSONResponse(body, status_code=status)
 
     # --- Avatar (P2d): persona-derived face, repo-backed with a display cache ---
 
@@ -9803,7 +10054,8 @@ def build_default_app() -> FastAPI:
     # here, never in create_app, so the many tests that build their own
     # isolated fixture (agents seeded directly, no restart involved) aren't
     # affected by it.
-    sweep_interrupted(session_factory)
+    role = role_from_env()
+    sweep_interrupted(session_factory, queue_mode=role != ROLE_ALL)
     # One real Clients (and the httpx.Client(s) it owns) per process, built
     # once here rather than per-request: the accepted pattern for this app's
     # lifetime (a longer-lived httpx client pool is the deferred concern, not
@@ -9823,4 +10075,4 @@ def build_default_app() -> FastAPI:
     # here, right beside the org-config clone above, rather than waiting
     # for an organic consent-change trigger that might never come.
     _boot_sync_dispatch_pairs(clients, config, session_factory)
-    return create_app(session_factory, config=config, clients=clients, org=org)
+    return create_app(session_factory, config=config, clients=clients, org=org, role=role)

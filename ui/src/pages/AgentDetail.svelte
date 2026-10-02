@@ -39,6 +39,7 @@
   import { derived, writable } from "svelte/store";
   import AccessPanel from "../components/AccessPanel.svelte";
   import BuildLogCard from "../components/BuildLogCard.svelte";
+  import DangerZone from "../components/DangerZone.svelte";
   import RepoAccessCard from "../components/RepoAccessCard.svelte";
   import ChatPanel from "../components/ChatPanel.svelte";
   import ColleagueConversations from "../components/ColleagueConversations.svelte";
@@ -159,6 +160,10 @@
   // Escape, on a click outside it, and on Edit details (which opens a modal
   // of its own over the page).
   let menuOpen = $state(false);
+  // The header shows three chips and a count; the count is a button that
+  // shows the rest in place (2026-10-01: a "+1" nobody could open told
+  // nobody anything).
+  let chipsExpanded = $state(false);
   let menuEl = $state<HTMLElement | undefined>();
 
   // Edit details is a menu ITEM, so the modal behind it cannot live inside
@@ -267,9 +272,16 @@
   });
 
   function handleRetry(): void {
+    // The same request resumes a WAITING agent (its owner merged the setup
+    // pull request and does not want to wait for the room's sweep) and
+    // retries a FAILED one; only the words differ.
+    const resuming = agent.data?.status === "waiting";
     retry.mutate(undefined, {
       onSuccess: () => {
-        toast.success("Retrying", `Re-running ${name}'s setup…`);
+        toast.success(
+          resuming ? "Resuming" : "Retrying",
+          resuming ? `Picking ${name}'s setup back up…` : `Re-running ${name}'s setup…`,
+        );
       },
       onError: (error: unknown) => {
         toast.error("Retry failed", errorMessage(error, "Something went wrong."));
@@ -425,8 +437,9 @@
           ...data.purpose_tags.map((tag) => ({ text: tag, skill: false })),
           ...data.skills.map((skill) => ({ text: skill.name, skill: true })),
         ]}
-    {@const shownChips = chips.slice(0, 3)}
+    {@const shownChips = chipsExpanded ? chips : chips.slice(0, 3)}
     {@const hiddenChips = chips.length - shownChips.length}
+    {@const hiddenNames = chips.slice(shownChips.length).map((chip) => chip.text).join(", ")}
     <header class="agent-detail__header">
       {#if data.has_avatar || avatarVersion !== null}
         <img class="agent-detail__avatar" src={avatarSrc} alt="{data.name}'s picture" />
@@ -434,7 +447,7 @@
       <div class="agent-detail__heading">
         <div class="agent-detail__title">
           <h1 class="agent-detail__name">{data.name}</h1>
-          <StatusBadge status={data.status} />
+          <StatusBadge status={data.status} health={data.health} />
           <!-- The same marker the dashboard card carries, in the same
                words, so the two pages agree about what this agent is. -->
           {#if connected}
@@ -447,8 +460,10 @@
               aria-haspopup="menu"
               aria-expanded={menuOpen}
               aria-label="More actions"
+              title="Portrait, details, destroy"
               onclick={() => (menuOpen = !menuOpen)}
             >
+              <span class="agent-detail__menu-label" aria-hidden="true">More</span>
               <span aria-hidden="true">⋯</span>
             </button>
             {#if menuOpen}
@@ -550,7 +565,22 @@
                  who-they-are on the hover. The whole line was its own grey
                  row until this wave; in a one-line run it would crowd out
                  every other fact beside it. -->
-            <span class="agent-detail__persona" title={personaLine}>{personaName}</span>
+            {#if data.repo_full_name}
+              <!-- Personas-in-place wave: the one place a persona lives in
+                   GitHub is the agent's own bundle, so the name opens that
+                   file -- exactly what the running agent was built from. -->
+              <a
+                class="agent-detail__repo agent-detail__persona"
+                href={`https://github.com/${data.repo_full_name}/blob/main/bundle/persona.md`}
+                target="_blank"
+                rel="noreferrer"
+                title={personaLine}
+              >
+                {personaName}
+              </a>
+            {:else}
+              <span class="agent-detail__persona" title={personaLine}>{personaName}</span>
+            {/if}
           {/if}
           {#if dashboardUrl}
             <a
@@ -586,7 +616,23 @@
               </span>
             {/each}
             {#if hiddenChips > 0}
-              <span class="agent-detail__chip">+{hiddenChips}</span>
+              <button
+                type="button"
+                class="agent-detail__chip agent-detail__chip--more"
+                title={hiddenNames}
+                aria-label={`Show ${hiddenChips} more: ${hiddenNames}`}
+                onclick={() => (chipsExpanded = true)}
+              >
+                +{hiddenChips}
+              </button>
+            {:else if chipsExpanded && chips.length > 3}
+              <button
+                type="button"
+                class="agent-detail__chip agent-detail__chip--more"
+                onclick={() => (chipsExpanded = false)}
+              >
+                less
+              </button>
             {/if}
           </p>
         {/if}
@@ -615,7 +661,19 @@
         <h2 class="panel__heading">Persona</h2>
         <dl class="agent-detail__facts">
           <dt>Soul</dt>
-          <dd>{personaLine}</dd>
+          <dd>
+            {personaLine}
+            {#if data.repo_full_name}
+              <a
+                class="agent-detail__repo"
+                href={`https://github.com/${data.repo_full_name}/blob/main/bundle/persona.md`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open in GitHub
+              </a>
+            {/if}
+          </dd>
           <dt>Team</dt>
           <dd>{data.team}</dd>
           <dt>Purpose</dt>
@@ -660,6 +718,35 @@
           {retry.isPending ? "Retrying…" : "Retry"}
         </button>
       </div>
+    {:else if data.status === "waiting"}
+      <!-- Parked on a person, not broken: a connected repository's setup
+           pull request is open and its owner merges it. The room resumes on
+           its own once the platform reports the merge; Resume is for the
+           person who just merged it and does not want to wait a minute. -->
+      <div class="waiting-banner" role="status">
+        <p class="waiting-banner__message">
+          {data.error ?? "Waiting for someone on your team to merge the setup pull request."}
+        </p>
+        <button
+          type="button"
+          class="waiting-banner__resume"
+          disabled={retry.isPending}
+          onclick={handleRetry}
+        >
+          {retry.isPending ? "Resuming…" : "Resume"}
+        </button>
+      </div>
+    {:else if data.status === "ready" && data.health?.state === "down"}
+      <!-- Setup finished, pod is not running: the cluster's own verdict
+           (kobo_api.health), refreshed every minute. -->
+      <div class="waiting-banner waiting-banner--down" role="alert">
+        <p class="waiting-banner__message">
+          This agent is down: {data.health.reason ?? "it is not running"}.
+          {#if dashboardUrl}
+            <a href={dashboardUrl} target="_blank" rel="noreferrer">Open its dashboard</a> for logs.
+          {/if}
+        </p>
+      </div>
     {/if}
 
     <!-- `tabDisabled` (worked out in the script above, where the hash rules
@@ -671,6 +758,20 @@
            checklist, because that is exactly when somebody needs it and
            the Settings tab it otherwise lives in cannot be opened. -->
       <BuildLogCard agentName={data.name} />
+      <!-- The destroy lives in Settings too, and a failed agent cannot open
+           Settings, so a setup that never finished could not be taken back
+           out of the room. Failed only: the room refuses a destroy while an
+           agent is still being built. -->
+      {#if data.status === "failed" && data.destroy_visible}
+        <div class="agent-detail__danger">
+          <DangerZone
+            agentName={data.name}
+            status={data.status}
+            error={data.error}
+            kind={data.kind}
+          />
+        </div>
+      {/if}
     {/if}
 
     {@const primary = primaryTabs(invites.isSuccess, data.kind)}
@@ -745,6 +846,7 @@
               canDecideLearnings={data.can_decide_learnings}
               capability={data.capability}
               purposeTags={data.purpose_tags}
+              identity={data.identity ?? null}
               bind:section={harnessSection}
               persona={connected ? undefined : personaSection}
             />
@@ -771,7 +873,7 @@
               canConvert={!connected &&
                 data.destroy_visible &&
                 (data.status === "ready" || data.status === "failed")}
-              canDestroy={data.destroy_visible}
+              canDestroy={data.destroy_visible && data.status !== "failed"}
             />
           {:else if tab === "slack"}
             <SlackPanel
@@ -887,6 +989,14 @@
     margin: 0;
   }
 
+  .agent-detail__chip--more {
+    background: none;
+    font: inherit;
+    font-size: 0.7rem;
+    color: var(--accent);
+    cursor: pointer;
+  }
+
   .agent-detail__chip--skill {
     color: var(--ink);
   }
@@ -935,16 +1045,25 @@
     margin-left: auto;
   }
 
+  /* A visible button, not three faint dots: the portrait actions live in
+     here and nobody found them (2026-10-01). */
   .agent-detail__menu-button {
-    padding: 0 var(--space-xs);
-    border: 1px solid transparent;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding: 0.1rem var(--space-xs);
+    border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    background: none;
-    color: var(--muted);
+    background: var(--panel);
+    color: var(--ink);
     font: inherit;
-    font-size: 1.1rem;
+    font-size: 0.85rem;
     line-height: 1.4;
     cursor: pointer;
+  }
+
+  .agent-detail__menu-label {
+    font-size: 0.8rem;
   }
 
   .agent-detail__menu-button:hover,
@@ -983,6 +1102,10 @@
     text-decoration: none;
     white-space: nowrap;
     cursor: pointer;
+  }
+
+  .agent-detail__danger {
+    margin-top: var(--space-md);
   }
 
   .agent-detail__menu-item:hover:not(:disabled) {
@@ -1068,6 +1191,50 @@
   }
 
   .failed-banner__retry:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .waiting-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    padding: var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel);
+  }
+
+  .waiting-banner--down {
+    border-color: var(--fail);
+    background: color-mix(in srgb, var(--fail) 8%, var(--panel));
+  }
+
+  .waiting-banner__message {
+    margin: 0;
+    color: var(--ink);
+    font-size: 0.9rem;
+    overflow-wrap: anywhere;
+  }
+
+  .waiting-banner__resume {
+    padding: var(--space-xs) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .waiting-banner__resume:hover:not(:disabled) {
+    filter: brightness(0.97);
+  }
+
+  .waiting-banner__resume:disabled {
     opacity: 0.6;
     cursor: not-allowed;
   }

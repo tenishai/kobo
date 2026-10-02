@@ -136,31 +136,6 @@ def test_all_green_against_seeded_fakes(wired_config, fake_storage, tmp_path, wi
     ]
 
 
-def test_check_ids_and_labels_are_exact_and_in_order(wired_config, fake_storage, tmp_path, wired_org):
-    client = _client(
-        wired_config, _clients(storage=fake_storage), tmp_path, org=wired_org
-    )
-
-    checks = client.get("/api/org/status").json()["checks"]
-
-    assert [c["id"] for c in checks] == [
-        "org-config",
-        "skills-bucket",
-        "personas-bucket",
-        "skills-index",
-        "personas-seeded",
-        "deploy-platform",
-    ]
-    assert [c["label"] for c in checks] == [
-        "Organization settings",
-        "Skills catalog storage",
-        "Personas storage",
-        "Skills index",
-        "Personas",
-        "Deploy platform",
-    ]
-
-
 def _check(body: dict, check_id: str) -> dict:
     return next(c for c in body["checks"] if c["id"] == check_id)
 

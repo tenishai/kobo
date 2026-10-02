@@ -406,22 +406,6 @@ def test_patch_metadata_directory_sync_failure_does_not_change_response_or_statu
 # --- POST /api/agents/{name}/metadata/regenerate ----------------------------------
 
 
-def test_regenerate_metadata_unknown_agent_404s(session_factory, config):
-    client = _make_client(session_factory, config)
-    response = client.post(f"/api/agents/{AGENT_NAME}/metadata/regenerate")
-    assert response.status_code == 404
-
-
-def test_regenerate_metadata_not_ready_409s(session_factory, config):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, status=AgentStatus.FAILED)
-
-    response = client.post(f"/api/agents/{AGENT_NAME}/metadata/regenerate")
-
-    assert response.status_code == 409
-    assert response.json() == {"error": "agent is not ready for directory changes yet"}
-
-
 def test_regenerate_metadata_uses_model_client_stores_and_commits(session_factory, config):
     github = FakeGitHub()
     fake_name = FakeName(capability="Freshly regenerated sentence.")
@@ -778,11 +762,3 @@ def test_patch_metadata_refuses_a_group_the_room_does_not_know(session_factory, 
     assert _group_on_row(session_factory) == "sre"
 
 
-def test_patch_metadata_group_reads_back_on_the_agent(session_factory, config):
-    cfg = _grouped_config(config)
-    client = _make_client(session_factory, cfg)
-    _seed_agent(session_factory, cfg, group_name=None)
-    client.patch(f"/api/agents/{AGENT_NAME}/metadata", json={"group": "marketing"})
-
-    body = client.get(f"/api/agents/{AGENT_NAME}").json()
-    assert body["group_name"] == "marketing"

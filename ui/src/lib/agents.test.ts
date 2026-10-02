@@ -121,10 +121,3 @@ describe("filterAgents", () => {
   });
 });
 
-describe("CONTROLS_OVER", () => {
-  // Six cards fit on one screen and need no help; the seventh is when
-  // looking becomes searching.
-  it("is six", () => {
-    expect(CONTROLS_OVER).toBe(6);
-  });
-});

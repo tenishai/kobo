@@ -171,14 +171,8 @@ it("still falls back to dashboard for unknown paths", () => {
   expect(parseHash("#/getting")).toEqual({ page: "dashboard" });
 });
 
-it("parses #/personas", () => {
-  expect(parseHash("#/personas")).toEqual({ page: "personas" });
-});
-
-it("formats the personas route", () => {
-  expect(formatHash({ page: "personas" })).toBe("#/personas");
-});
-
-it("still falls back to dashboard for a near-miss of the personas path", () => {
-  expect(parseHash("#/persona")).toEqual({ page: "dashboard" });
+it("falls back to dashboard for the retired personas page", () => {
+  // The page went in the personas-in-place wave (2026-09-30); an old
+  // bookmark lands on the dashboard rather than a blank main.
+  expect(parseHash("#/personas")).toEqual({ page: "dashboard" });
 });

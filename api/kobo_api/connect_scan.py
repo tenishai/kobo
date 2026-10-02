@@ -1,7 +1,7 @@
 """What the room can honestly say about a repository it has been asked to
 connect, before it touches anything (connected-agents design 2026-09-21).
 
-Read-only by construction: four GitHub reads through the contents and
+Read-only by construction: five GitHub reads through the contents and
 branches endpoints, one database question, and no clone. It runs twice for
 every connect -- once for the form's own report, once inside the connect
 route -- because a report the browser holds is a claim about a repository
@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 
 from kobo_api.clients import GitHubClient, GojiraClient
 from kobo_api.config import Config
-from kobo_api.kinds import RUN_MODE_HEADLESS
+from kobo_api.kinds import RUN_MODE_HEADLESS, RUN_MODE_HTTP
 from kobo_api.models import Agent
 from kobo_api.repo_name import is_in_org
 from kobo_api.runtime import registry_root_of
@@ -90,6 +90,12 @@ HTTP_PORT = "8080"
 
 DOCKERFILE = "Dockerfile"
 GOJIRA_YAML = "gojira.yaml"
+# Where a repository that already deploys says what it is called. The
+# deploy platform regenerates this file under the AGENT's name, so the two
+# names have to agree before anything is written (see `_scan_identity`).
+BASE_DEPLOYMENT = "k8s/base/deployment.yaml"
+REPO_NAME_MISMATCH = "repo_name_mismatch"
+SERVICE_ACCOUNT_CHANGES = "service_account_changes"
 ENV_FILE = ".env"
 BUNDLE_DIR = "bundle"
 
@@ -119,6 +125,25 @@ class ScanReport:
     # the name as given until then. This is what the connect route records,
     # so one repository cannot become two rows apart from each other's case.
     repo: str = ""
+    # The name the repository already deploys under (its base Deployment's
+    # metadata.name), when it has one. The form prefills and locks the Name
+    # field to it, and the connect route refuses any other name: a connected
+    # repository keeps its own name (Kyle's ruling, 2026-09-29). None for a
+    # repository with no k8s/base/deployment.yaml, where the typed name
+    # stands because there is nothing for it to disagree with.
+    repo_name: str | None = None
+    # Its service account, read from the same Deployment, for the report.
+    repo_service_account: str | None = None
+    # The first container's first containerPort in that Deployment, if any.
+    repo_port: int | None = None
+    # Whether the Dockerfile EXPOSEs the port the platform probes; None until
+    # the Dockerfile has been read.
+    dockerfile_exposes_http: bool | None = None
+    # How the agent runs, decided by the scan (2026-09-29: the form no longer
+    # asks): `http` when the repository says it listens (a containerPort in
+    # its Deployment, or an EXPOSE in its Dockerfile), else `headless`. A
+    # caller may still say so explicitly and is believed.
+    run_mode: str = RUN_MODE_HTTP
 
 
 def scan_repo(
@@ -129,9 +154,12 @@ def scan_repo(
     *,
     repo: str,
     name: str,
-    run_mode: str,
+    run_mode: str | None = None,
 ) -> ScanReport:
     """Everything the room knows about connecting `repo` as `name`.
+
+    `run_mode` None means "decide from the repository" (see
+    `ScanReport.run_mode`); a value is a caller's explicit word.
 
     `gojira` is taken and not consulted. The deploy platform exposes no
     lookup by repository -- its API creates an app and answers 409 when one
@@ -172,7 +200,7 @@ def scan_repo(
         report.blockers.append(
             Finding(NAME_TAKEN, f"The name {name} is already taken in this room.")
         )
-    if run_mode == RUN_MODE_HEADLESS and not config.connected_headless_class:
+    if report.run_mode == RUN_MODE_HEADLESS and not config.connected_headless_class:
         report.blockers.append(Finding(HEADLESS_UNAVAILABLE_CODE, HEADLESS_UNAVAILABLE))
 
     return report
@@ -186,7 +214,7 @@ def _scan_the_repository(
     *,
     repo: str,
     name: str,
-    run_mode: str,
+    run_mode: str | None,
 ) -> None:
     """The reads, in the order a person would make them, stopping the moment
     an answer makes the next question meaningless."""
@@ -236,7 +264,7 @@ def _scan_the_repository(
     entries = set(github.list_root(repo))
 
     if DOCKERFILE in entries:
-        _scan_dockerfile(github, config, report, repo=repo, run_mode=run_mode)
+        _scan_dockerfile(github, config, report, repo=repo)
     else:
         report.blockers.append(
             Finding(
@@ -248,6 +276,10 @@ def _scan_the_repository(
 
     if GOJIRA_YAML in entries:
         _scan_gojira_yaml(github, report, repo=repo, name=name)
+    # Not gated on the listing: the file sits two directories down, and one
+    # read that answers None is the same cost as an existence check.
+    _scan_identity(github, report, repo=repo, name=name)
+    _decide_run_mode(report, requested=run_mode)
 
     if ENV_FILE in entries:
         report.warnings.append(
@@ -285,7 +317,6 @@ def _scan_dockerfile(
     report: ScanReport,
     *,
     repo: str,
-    run_mode: str,
 ) -> None:
     text = github.read_file(repo, DOCKERFILE)
     if text is None:
@@ -318,14 +349,7 @@ def _scan_dockerfile(
                 )
             )
 
-    if run_mode != RUN_MODE_HEADLESS and not _exposes_http_port(text):
-        report.warnings.append(
-            Finding(
-                NO_PORT_EXPOSED,
-                f"Nothing in the Dockerfile opens port {HTTP_PORT}. The "
-                "deploy will show whether it serves one either way.",
-            )
-        )
+    report.dockerfile_exposes_http = _exposes_http_port(text)
 
 
 def _scan_gojira_yaml(
@@ -357,6 +381,115 @@ def _scan_gojira_yaml(
                 "its gojira.yaml first.",
             )
         )
+
+
+def _scan_identity(
+    github: GitHubClient, report: ScanReport, *, repo: str, name: str
+) -> None:
+    """A repository that already deploys has a name, and the room does not
+    rename it.
+
+    The deploy platform regenerates `k8s/base` under the agent's name. Its
+    overlays keep targeting the old one (image substitutions, patches, a
+    production overlay's namespace), so a rename orphans every one of them
+    and the next deploy of the environment the room does not manage breaks.
+    The first repository connected this way had exactly that shape
+    (2026-09-25). So the base Deployment's `metadata.name` IS the agent's
+    name: the form takes it, and a different name is a blocker that says
+    what to do instead. Renaming is a reviewed change in the repository,
+    never a side effect of connecting it.
+
+    Unreadable or unparseable is silence, the way `_scan_gojira_yaml`
+    treats its file: the room refuses on facts, not on guesses.
+    """
+    text = github.read_file(repo, BASE_DEPLOYMENT)
+    if text is None:
+        return
+    try:
+        docs = [d for d in yaml.safe_load_all(text) if isinstance(d, dict)]
+    except (yaml.YAMLError, RecursionError):
+        log.info("connect scan could not read %s in %s", BASE_DEPLOYMENT, repo)
+        return
+    deployment = next((d for d in docs if d.get("kind") == "Deployment"), None)
+    if deployment is None:
+        return
+    metadata = deployment.get("metadata") or {}
+    repo_name = metadata.get("name") if isinstance(metadata, dict) else None
+    if not isinstance(repo_name, str) or not repo_name:
+        return
+    report.repo_name = repo_name
+    pod = ((deployment.get("spec") or {}).get("template") or {}).get("spec") or {}
+    service_account = pod.get("serviceAccountName") if isinstance(pod, dict) else None
+    if isinstance(service_account, str) and service_account:
+        report.repo_service_account = service_account
+        # 1:1 naming (ruling 2026-09-30): the agent, its service account and
+        # everything derived from the name follow the repository's name. The
+        # setup pull request writes `service_account: agent-<name>` into
+        # gojira.yaml, and the deploy platform reads the old deployment's
+        # account only when there is no gojira.yaml, so the regenerated base
+        # runs as the room's account. That is right, and it is a change the
+        # team should see coming: anything granted to the old account by
+        # hand does not follow it.
+        expected_account = f"agent-{repo_name}"
+        if service_account != expected_account:
+            report.warnings.append(
+                Finding(
+                    SERVICE_ACCOUNT_CHANGES,
+                    f"This repository deploys as service account {service_account} "
+                    f"({BASE_DEPLOYMENT}). The setup pull request moves it to "
+                    f"{expected_account}, the account the room grants model and "
+                    f"cloud access to. Anything granted to {service_account} by "
+                    "hand does not follow; review that line before merging.",
+                )
+            )
+    containers = pod.get("containers") if isinstance(pod, dict) else None
+    first = containers[0] if isinstance(containers, list) and containers else {}
+    ports = first.get("ports") if isinstance(first, dict) else None
+    for entry in ports or []:
+        port = entry.get("containerPort") if isinstance(entry, dict) else None
+        if isinstance(port, int) and not isinstance(port, bool) and 0 < port < 65536:
+            report.repo_port = port
+            break
+    if name and name != repo_name:
+        report.blockers.append(
+            Finding(
+                REPO_NAME_MISMATCH,
+                f"This repository already deploys as {repo_name} "
+                f"({BASE_DEPLOYMENT}). Connect it under that name, or rename it "
+                "in the repository first. The room never renames a repository "
+                "it did not write.",
+            )
+        )
+
+
+def _decide_run_mode(report: ScanReport, *, requested: str | None) -> None:
+    """How the agent runs, from what the repository says, unless a caller
+    said so themselves.
+
+    The form used to ask (2026-09-29 it stopped): a person choosing between
+    "listens on a port" and "does not" was answering a question the
+    repository already answers, and could answer it wrong. A containerPort
+    in the base Deployment or an EXPOSE in the Dockerfile means the platform
+    can probe it; nothing of either means a worker or a chat bot, which the
+    room hosts as headless when it has a class for that (the blocker at the
+    end of `scan_repo` says when it does not).
+
+    An explicit `requested` mode is kept, with the old warning when it
+    claims a port the repository does not show.
+    """
+    listens = report.repo_port is not None or bool(report.dockerfile_exposes_http)
+    if requested is not None:
+        report.run_mode = requested
+        if requested != RUN_MODE_HEADLESS and not listens:
+            report.warnings.append(
+                Finding(
+                    NO_PORT_EXPOSED,
+                    f"Nothing in the repository opens port {HTTP_PORT}. The "
+                    "deploy will show whether it serves one either way.",
+                )
+            )
+        return
+    report.run_mode = RUN_MODE_HTTP if listens else RUN_MODE_HEADLESS
 
 
 def _base_image(dockerfile_text: str) -> str | None:

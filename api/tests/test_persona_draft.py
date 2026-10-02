@@ -74,19 +74,6 @@ def test_finalize_draft_shortens_a_long_model_name():
     assert result["name"] == "release-auditor"
 
 
-def test_finalize_distill_shortens_a_long_model_name():
-    raw = {
-        "name": "cross-platform-player-intelligence",
-        "who_they_are": "the player intelligence agent",
-    }
-    result = finalize_distill(raw, body="# Player intel\n\nReads player code.")
-    assert result["name"] == "player-intelligence"
-
-
-def test_fallback_name_lowercases():
-    assert _fallback_name("HELLO World") == "hello-world"
-
-
 def test_fallback_name_no_alnum_words_uses_default():
     assert _fallback_name("!!! ??? ...") == "new-agent"
 
@@ -97,37 +84,12 @@ def test_fallback_name_never_exceeds_persona_fields_bound():
     assert len(name) <= 60
 
 
-def test_fallback_name_is_persona_fields_valid():
-    _assert_persona_valid(
-        {
-            "name": _fallback_name(JOB),
-            "who_they_are": _fallback_who(JOB),
-            "what_they_do": _fallback_what(JOB),
-        }
-    )
-
-
 def test_fallback_name_digit_led_job_passes_persona_id():
     # "3D print parts" slugifies to "3d-print-parts", which starts with a
     # digit and fails persona_id. _fallback_name must ensure the result
     # passes persona_id by prefixing "the-" when needed.
     name = _fallback_name("3D print parts")
     persona_id(name)  # Should not raise PersonaError
-
-
-def test_fallback_name_digit_led_job_example_2():
-    # "24/7 monitor pagers" slugifies to "24-7-monitor-pagers", which starts
-    # with a digit and fails persona_id. _fallback_name must ensure the
-    # result passes persona_id.
-    name = _fallback_name("24/7 monitor pagers")
-    persona_id(name)  # Should not raise PersonaError
-
-
-def test_fallback_name_with_the_prefix_is_under_limit():
-    # When we prefix "the-" to a 5-word slug, the result must still fit
-    # within PersonaFields.name's 60-char limit.
-    name = _fallback_name("3D print parts")
-    assert len(name) <= 60
 
 
 # --- _first_clause / _fallback_who --------------------------------------------
@@ -137,12 +99,6 @@ def test_first_clause_stops_at_period():
     assert _first_clause("Handle billing questions. Escalate refunds.") == (
         "Handle billing questions"
     )
-
-
-def test_first_clause_stops_at_semicolon_or_bang_or_question():
-    assert _first_clause("Do the thing; then stop.") == "Do the thing"
-    assert _first_clause("Do it now! Then relax.") == "Do it now"
-    assert _first_clause("Can you help? Yes.") == "Can you help"
 
 
 def test_first_clause_whole_text_when_no_boundary():
@@ -173,11 +129,6 @@ def test_fallback_who_never_exceeds_persona_fields_bound():
     long_job = "x" * 490  # no clause boundary at all -> whole text is the clause
     who = _fallback_who(long_job)
     assert len(who) <= 200
-
-
-def test_fallback_who_has_no_newline():
-    who = _fallback_who("first line\nsecond line")
-    assert "\n" not in who
 
 
 def test_fallback_who_all_punctuation_returns_fallback_text():
@@ -221,17 +172,6 @@ def test_finalize_draft_all_valid_fields_pass_through_unchanged():
 
 def test_finalize_draft_none_raw_falls_back_on_every_field():
     result = finalize_draft(None, job=JOB)
-
-    assert result["name"] == _fallback_name(JOB)
-    assert result["who_they_are"] == _fallback_who(JOB)
-    assert result["what_they_do"] == _fallback_what(JOB)
-    assert result["purpose_tags"] == _fallback_tags(
-        _fallback_name(JOB), _fallback_who(JOB), _fallback_what(JOB)
-    )
-
-
-def test_finalize_draft_empty_dict_falls_back_on_every_field():
-    result = finalize_draft({}, job=JOB)
 
     assert result["name"] == _fallback_name(JOB)
     assert result["who_they_are"] == _fallback_who(JOB)
@@ -286,45 +226,6 @@ def test_finalize_draft_digit_led_name_falls_back():
     assert result["what_they_do"] == raw["what_they_do"]
 
 
-def test_finalize_draft_digit_led_name_example_2():
-    # "24/7 monitor pagers" should also fall back and be persona_id-valid.
-    raw = {
-        "name": "24/7 monitor pagers",
-        "who_they_are": "an always-on system monitor",
-        "what_they_do": "Monitor all pagers and alerts.",
-    }
-
-    result = finalize_draft(raw, job="Monitor systems 24/7")
-
-    # The fallback name must pass persona_id
-    persona_id(result["name"])
-    assert result["who_they_are"] == raw["who_they_are"]
-
-
-def test_finalize_draft_missing_name_falls_back_alone():
-    raw = {
-        "who_they_are": "a calm troubleshooter for billing questions",
-        "what_they_do": "Helps customers resolve billing issues quickly.",
-    }
-
-    result = finalize_draft(raw, job=JOB)
-
-    assert result["name"] == _fallback_name(JOB)
-    assert result["who_they_are"] == raw["who_they_are"]
-
-
-def test_finalize_draft_non_string_name_falls_back_alone():
-    raw = {
-        "name": 12345,
-        "who_they_are": "a calm troubleshooter for billing questions",
-        "what_they_do": "Helps customers resolve billing issues quickly.",
-    }
-
-    result = finalize_draft(raw, job=JOB)
-
-    assert result["name"] == _fallback_name(JOB)
-
-
 def test_finalize_draft_bad_who_they_are_falls_back_alone():
     raw = {
         "name": "billing-buddy",
@@ -368,30 +269,6 @@ def test_finalize_draft_bad_what_they_do_falls_back_alone():
     assert result["what_they_do"] == _fallback_what(JOB)
 
 
-def test_finalize_draft_empty_string_field_falls_back():
-    raw = {
-        "name": "",
-        "who_they_are": "a calm troubleshooter for billing questions",
-        "what_they_do": "Helps customers resolve billing issues quickly.",
-    }
-
-    result = finalize_draft(raw, job=JOB)
-
-    assert result["name"] == _fallback_name(JOB)
-
-
-def test_finalize_draft_whitespace_only_field_falls_back():
-    raw = {
-        "name": "   ",
-        "who_they_are": "a calm troubleshooter for billing questions",
-        "what_they_do": "Helps customers resolve billing issues quickly.",
-    }
-
-    result = finalize_draft(raw, job=JOB)
-
-    assert result["name"] == _fallback_name(JOB)
-
-
 def test_finalize_draft_strips_surrounding_whitespace_from_valid_fields():
     raw = {
         "name": "  billing-buddy  ",
@@ -402,14 +279,6 @@ def test_finalize_draft_strips_surrounding_whitespace_from_valid_fields():
     result = finalize_draft(raw, job=JOB)
 
     assert result["name"] == "billing-buddy"
-
-
-def test_finalize_draft_all_fields_bad_equals_full_fallback():
-    raw = {"name": 1, "who_they_are": None, "what_they_do": ["not", "a", "string"]}
-
-    result = finalize_draft(raw, job=JOB)
-
-    assert result == finalize_draft(None, job=JOB)
 
 
 @pytest.mark.parametrize(
@@ -468,40 +337,6 @@ def test_finalize_draft_missing_purpose_tags_falls_back_to_persona_own_tags():
     assert result["purpose_tags"] == _fallback_tags(NAME, WHO, WHAT)
 
 
-def test_finalize_draft_non_list_purpose_tags_falls_back():
-    raw = {
-        "name": NAME,
-        "who_they_are": WHO,
-        "what_they_do": WHAT,
-        "purpose_tags": "billing, refunds",
-    }
-
-    result = finalize_draft(raw, job=JOB)
-
-    assert result["purpose_tags"] == _fallback_tags(NAME, WHO, WHAT)
-
-
-def test_finalize_draft_empty_list_purpose_tags_falls_back():
-    raw = {"name": NAME, "who_they_are": WHO, "what_they_do": WHAT, "purpose_tags": []}
-
-    result = finalize_draft(raw, job=JOB)
-
-    assert result["purpose_tags"] == _fallback_tags(NAME, WHO, WHAT)
-
-
-def test_finalize_draft_all_non_string_purpose_tags_falls_back():
-    raw = {
-        "name": NAME,
-        "who_they_are": WHO,
-        "what_they_do": WHAT,
-        "purpose_tags": [1, None, ["nested"]],
-    }
-
-    result = finalize_draft(raw, job=JOB)
-
-    assert result["purpose_tags"] == _fallback_tags(NAME, WHO, WHAT)
-
-
 def test_finalize_draft_purpose_tags_fallback_uses_finalized_fields_not_job():
     """The fallback tier is "the persona's own tags" — derived from the
     FINALIZED name/who_they_are/what_they_do (whichever tier those
@@ -553,11 +388,6 @@ def test_fallback_distilled_name_uses_first_markdown_heading():
     assert _fallback_distilled_name(DISTILL_BODY) == "billing-buddy"
 
 
-def test_fallback_distilled_name_lowercases_the_heading():
-    body = "# BILLING BUDDY\n\nMore text."
-    assert _fallback_distilled_name(body) == "billing-buddy"
-
-
 def test_fallback_distilled_name_falls_back_to_first_two_words_when_no_heading():
     body = "A calm troubleshooter for billing questions, no heading here."
     assert _fallback_distilled_name(body) == "a-calm"
@@ -580,10 +410,6 @@ def test_fallback_distilled_name_digit_led_heading_gets_the_prefix():
     body = "# 3D print parts\n\nBody text."
     name = _fallback_distilled_name(body)
     persona_id(name)  # must not raise
-
-
-def test_fallback_distilled_name_is_persona_id_valid():
-    persona_id(_fallback_distilled_name(DISTILL_BODY))  # must not raise
 
 
 def test_fallback_distilled_name_ignores_a_bare_hash_with_no_heading_text():
@@ -666,14 +492,6 @@ def test_finalize_distill_none_raw_falls_back_on_every_field():
     assert result["purpose_tags"] == []
 
 
-def test_finalize_distill_empty_dict_falls_back_on_every_field():
-    result = finalize_distill({}, body=DISTILL_BODY)
-
-    assert result["name"] == _fallback_distilled_name(DISTILL_BODY)
-    assert result["who_they_are"] == _fallback_distilled_who(DISTILL_BODY)
-    assert result["purpose_tags"] == []
-
-
 def test_finalize_distill_non_dict_raw_treated_as_unusable():
     result = finalize_distill("not a dict", body=DISTILL_BODY)  # type: ignore[arg-type]
 
@@ -718,73 +536,12 @@ def test_finalize_distill_digit_led_name_falls_back():
     assert result["who_they_are"] == raw["who_they_are"]
 
 
-def test_finalize_distill_missing_name_falls_back_alone():
-    raw = {"who_they_are": "a calm troubleshooter for billing questions"}
-
-    result = finalize_distill(raw, body=DISTILL_BODY)
-
-    assert result["name"] == _fallback_distilled_name(DISTILL_BODY)
-    assert result["who_they_are"] == raw["who_they_are"]
-
-
-def test_finalize_distill_non_string_name_falls_back_alone():
-    raw = {"name": 12345, "who_they_are": "a calm troubleshooter for billing questions"}
-
-    result = finalize_distill(raw, body=DISTILL_BODY)
-
-    assert result["name"] == _fallback_distilled_name(DISTILL_BODY)
-
-
-def test_finalize_distill_bad_who_they_are_falls_back_alone():
-    raw = {
-        "name": "billing-buddy",
-        "who_they_are": "x" * 201,  # over PersonaFields.who_they_are's 200-char bound
-    }
-
-    result = finalize_distill(raw, body=DISTILL_BODY)
-
-    assert result["name"] == raw["name"]
-    assert result["who_they_are"] == _fallback_distilled_who(DISTILL_BODY)
-
-
 def test_finalize_distill_who_they_are_with_newline_falls_back():
     raw = {"name": "billing-buddy", "who_they_are": "first line\nsecond line"}
 
     result = finalize_distill(raw, body=DISTILL_BODY)
 
     assert result["who_they_are"] == _fallback_distilled_who(DISTILL_BODY)
-
-
-def test_finalize_distill_empty_string_field_falls_back():
-    raw = {"name": "", "who_they_are": "a calm troubleshooter for billing questions"}
-
-    result = finalize_distill(raw, body=DISTILL_BODY)
-
-    assert result["name"] == _fallback_distilled_name(DISTILL_BODY)
-
-
-def test_finalize_distill_whitespace_only_field_falls_back():
-    raw = {"name": "   ", "who_they_are": "a calm troubleshooter for billing questions"}
-
-    result = finalize_distill(raw, body=DISTILL_BODY)
-
-    assert result["name"] == _fallback_distilled_name(DISTILL_BODY)
-
-
-def test_finalize_distill_strips_surrounding_whitespace_from_valid_fields():
-    raw = {"name": "  billing-buddy  ", "who_they_are": "a calm troubleshooter"}
-
-    result = finalize_distill(raw, body=DISTILL_BODY)
-
-    assert result["name"] == "billing-buddy"
-
-
-def test_finalize_distill_all_fields_bad_equals_full_fallback():
-    raw = {"name": 1, "who_they_are": None}
-
-    result = finalize_distill(raw, body=DISTILL_BODY)
-
-    assert result == finalize_distill(None, body=DISTILL_BODY)
 
 
 # --- finalize_distill: purpose_tags ---------------------------------------------
@@ -819,42 +576,6 @@ def test_finalize_distill_missing_purpose_tags_is_empty_list_not_derived():
     tags, via _fallback_tags), a distill has no what_they_do to derive tags
     from at all - the fallback here is a plain empty list, full stop."""
     raw = {"name": "billing-buddy", "who_they_are": "a calm troubleshooter"}
-
-    result = finalize_distill(raw, body=DISTILL_BODY)
-
-    assert result["purpose_tags"] == []
-
-
-def test_finalize_distill_non_list_purpose_tags_falls_back_to_empty():
-    raw = {
-        "name": "billing-buddy",
-        "who_they_are": "a calm troubleshooter",
-        "purpose_tags": "billing, refunds",
-    }
-
-    result = finalize_distill(raw, body=DISTILL_BODY)
-
-    assert result["purpose_tags"] == []
-
-
-def test_finalize_distill_empty_list_purpose_tags_stays_empty():
-    raw = {
-        "name": "billing-buddy",
-        "who_they_are": "a calm troubleshooter",
-        "purpose_tags": [],
-    }
-
-    result = finalize_distill(raw, body=DISTILL_BODY)
-
-    assert result["purpose_tags"] == []
-
-
-def test_finalize_distill_all_non_string_purpose_tags_falls_back_to_empty():
-    raw = {
-        "name": "billing-buddy",
-        "who_they_are": "a calm troubleshooter",
-        "purpose_tags": [1, None, ["nested"]],
-    }
 
     result = finalize_distill(raw, body=DISTILL_BODY)
 

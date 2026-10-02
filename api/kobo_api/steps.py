@@ -71,12 +71,13 @@ from kobo_api.kinds import KIND_CONNECTED, RUN_MODE_HEADLESS, is_connected
 from kobo_api.metadata import (
     commit_card_metadata,
     generate_capability,
+    generate_tags,
     skill_descriptions_for_agent,
     tooling_filenames_for,
 )
 from kobo_api.models import INVITE_ACCEPTED, A2AInvite, Agent, AgentStatus
 from kobo_api.pairs import implicitly_paired
-from kobo_api.purpose_tags import decode_tags
+from kobo_api.purpose_tags import decode_tags, encode_tags
 from kobo_api.repo_name import split_repo
 from kobo_api.search import get_entry, read_marketplace_catalog
 from kobo_api.tooling import ToolingError, _validate_content, _validate_filename
@@ -90,6 +91,21 @@ log = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from kobo_api.clients import Clients, GitHubClient
     from kobo_api.provisioner import Ctx
+
+
+class StepWaiting(Exception):
+    """Raise from a `Step.run()` to PARK the pipeline on a person: the step
+    is recorded WAITING with this message (what it waits for, a link
+    included), the agent goes WAITING, the steps after it stay pending, and
+    nothing is retried or aborted. `kobo_api.provisioner.sweep_waiting`
+    resumes the run when the wait is over; Retry does the same by hand.
+
+    One raiser today: `_wait_active`, when the deploy platform reports
+    `awaiting_pr` for a connected agent (Ember's review, 2026-09-29, point
+    2). Before this, the same state was polled to the timeout and then
+    recorded as a failure, which is what a person merging a pull request
+    at their own pace looked like from the agent's page.
+    """
 
 
 class StepSkipped(Exception):
@@ -1180,6 +1196,21 @@ def _wait_active(ctx: Ctx, app_id: int) -> str:
         if status == "active":
             return f"gojira app {app_id} active"
 
+        if status == "awaiting_pr" and is_connected(ctx.agent):
+            # The platform opened the setup pull request and a person on
+            # the team merges it. That is the design for a connected
+            # repository, not a failure, and not something a poll budget
+            # should decide. A composed agent never parks here: the room
+            # merges its own repositories' setup PR, so `awaiting_pr` is a
+            # moment on the way to `active` and the loop keeps polling.
+            url = status_payload.get("setup_pr_url") or ""
+            where = f": {url}" if url else "."
+            raise StepWaiting(
+                "Waiting for someone on your team to review and merge the "
+                f"setup pull request{where} The room resumes on its own once "
+                "it is merged."
+            )
+
         if status == "failed":
             failed_names = [
                 step["name"]
@@ -1249,6 +1280,9 @@ class OnboardStep:
                 cluster=config.gojira_cluster,
                 namespace=agent.name,
                 workload_class=workload_class,
+                # The room merges its own repositories' setup PR without a
+                # person; a team's repository is the team's to merge.
+                auto_merge_setup_pr=not is_connected(agent),
             )
         except GojiraConflict as exc:
             if agent.gojira_app_id is None:
@@ -1327,7 +1361,8 @@ class OnboardStep:
 
 
 class AccessStep:
-    """Grants the agent's GSA workload identity, model-group membership,
+    """Grants the agent's GSA workload identity, model access (group
+    membership, or the Vertex role directly when the room has no group),
     and (resilience arc, Task 14) write access to its own agent-memory
     replica prefix when the room has one configured."""
 
@@ -1342,7 +1377,16 @@ class AccessStep:
         gsa_name = f"agent-{agent.name}"
         email = cloud.ensure_gsa(gsa_name)
         cloud.bind_workload_identity(email, namespace=agent.name, ksa=gsa_name)
-        cloud.add_to_group(email, config.model_group)
+        # Model access: through the org's group where there is one (what a
+        # Workspace org has: one grant on the group, every agent joins it),
+        # or granted on the Vertex project directly where there is not — a
+        # personal GCP project has no Cloud Identity and no groups to join,
+        # and this step used to fail there on the first agent (the tenish
+        # dogfood, 2026-10-01).
+        if config.model_group:
+            cloud.add_to_group(email, config.model_group)
+        else:
+            cloud.grant_model_access(email, config.vertex_project)
         # Connected agents get no memory prefix (design 2026-09-21): the
         # room replicates the memory its OWN runtime keeps, and it has not
         # read a team's code, so it has nothing to say about whether that
@@ -2301,6 +2345,13 @@ def _earn_capability(ctx: Ctx) -> None:
         return
 
     agent.capability = capability
+    # The agent tags itself (2026-09-29): the create form no longer asks
+    # for purpose tags, so the first contact is where they come from. Only
+    # when it has none: tags a person or the persona builder set stand.
+    if not decode_tags(agent.purpose_tags):
+        tags = generate_tags(ctx.clients.name, persona_body, capability, agent.group_name)
+        if tags:
+            agent.purpose_tags = encode_tags(tags)
 
     try:
         # Roster refresh lane (Task 6): the room's regenerated view of this

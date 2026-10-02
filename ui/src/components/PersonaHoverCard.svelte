@@ -8,7 +8,9 @@
   // what they do, the rules they hold to, and who made them.
   //
   // It is a `role="tooltip"`, not a dialog. Nothing in here is focusable
-  // except the one link at the bottom, nothing here takes focus away from
+  // except the one button at the bottom, which opens the whole persona in
+  // place of the list (`onopen`, personas-in-place wave 2026-09-30: the
+  // Personas page it used to link to is gone), nothing here takes focus away from
   // the row, and Escape dismisses it — a dialog role would promise a
   // focus trap and a modal contract this deliberately does not have.
   //
@@ -27,6 +29,7 @@
     id = "persona-hover-card",
     onkeep = () => {},
     onrelease = () => {},
+    onopen = () => {},
   }: {
     /** The persona to show, or null to fetch nothing at all. */
     personaId: string | null;
@@ -40,6 +43,8 @@
     onkeep?: () => void;
     /** ...and left again. */
     onrelease?: () => void;
+    /** Read the whole persona: the caller swaps it in over the list. */
+    onopen?: (personaId: string) => void;
   } = $props();
 
   const persona = createQuery(() => personaQuery(personaId));
@@ -150,7 +155,7 @@
         </span>
         <!-- Set, not the raw list: a repeated tag from the server would
              throw each_key_duplicate and take the whole card down. Same
-             guard the Personas page already keeps. -->
+             guard the persona sheet keeps too. -->
         {#each [...new Set(persona.data.tags)] as tag (tag)}
           <span class="hover-card__tag">{tag}</span>
         {/each}
@@ -166,7 +171,17 @@
         <p class="hover-card__para">{para}</p>
       {/each}
     </div>
-    <a class="hover-card__link" href="#/personas">Open the full persona</a>
+    <button
+      type="button"
+      class="btn--link hover-card__link"
+      onclick={() => {
+        if (personaId !== null) {
+          onopen(personaId);
+        }
+      }}
+    >
+      Read the full persona
+    </button>
 
     {#if shownRules.length > 0}
       <p class="hover-card__heading">Rules</p>

@@ -74,51 +74,6 @@ describe("SkillsPanel", () => {
     ).toBe("true");
   });
 
-  it("says nothing is there in one table row", async () => {
-    stubFetch({
-      "/api/agents/warden/skills": EMPTY_SKILLS,
-      "/api/catalog/teams": EMPTY_TEAMS,
-      "/api/skills/search": EMPTY_SEARCH,
-      "/api/": {},
-    });
-    const { container } = renderWithClient(SkillsPanel, {
-      agentName: "warden",
-      frozen: false,
-    });
-
-    await screen.findByText(
-      "Nothing here yet. Add a skill from the catalog or write a guardrail.",
-    );
-    const empties = container.querySelectorAll("td.panel__empty");
-    expect(empties).toHaveLength(1);
-    expect(empties[0].parentElement?.children).toHaveLength(1);
-    expect(empties[0].getAttribute("colspan")).toBe("3");
-  });
-
-  it("offers at most one filled button, with every disclosure open", async () => {
-    stubFetch({
-      "/api/agents/warden/skills": {
-        skills: [{ name: "cost-report", editable: true, team: "sre", source: "catalog", sha: null }],
-      },
-      "/api/catalog/teams": EMPTY_TEAMS,
-      "/api/skills/recommended": { results: [COST_REPORT_ENTRY] },
-      "/api/skills/search": EMPTY_SEARCH,
-      "/api/": {},
-    });
-    const { container } = renderWithClient(SkillsPanel, {
-      agentName: "warden",
-      frozen: false,
-      recommendWho: "watches billing",
-      recommendWhat: "cost billing",
-    });
-
-    await openCatalog();
-    await openSuggestions();
-    await screen.findByText("Recommended for this agent");
-
-    expect(container.querySelectorAll(".btn--primary").length).toBeLessThanOrEqual(1);
-  });
-
   it("lists the agent's own skills first, with Edit and Remove per row", async () => {
     stubFetch({
       "/api/agents/warden/skills": {

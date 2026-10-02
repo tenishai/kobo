@@ -13,7 +13,7 @@
 - Never write the employer's name (any casing) into any file in this repo or sibling repos. Deploy-config values (projects, cluster, AR paths, group email) appear ONLY in `config.yaml` files that are gitignored (`config.local.yaml` pattern) or in test fixtures as neutral placeholders (`example-project`, `models@example.com`).
 - Sibling-repo work stays on the existing branches: daedalus `feat/runtime-image` (Task 10). Never touch gojira in this plan (its branch is complete).
 - TDD per task; run `make -C api check` (created in Task 1: ruff + pytest) before every commit; one commit per task minimum.
-- The bundle contract is daedalus's published schema — vendored at `api/cortex_api/vendor/bundle.schema.json`, copied verbatim from `~/Documents/GitHub/daedalus/docs/bundle.schema.json`, never hand-edited.
+- The bundle contract is daedalus's published schema — vendored at `api/cortex_api/vendor/bundle.schema.json`, copied verbatim from `../daedalus/docs/bundle.schema.json`, never hand-edited.
 - Every k8s manifest the composer or steps author MUST also be registered in `k8s/base/kustomization.yaml` (P0 finding: gojira preserves kustomization entries, it does not discover files).
 - Transports are always `[{kind: a2a, host: 0.0.0.0, port: 8080}]` (P0 finding: loopback default is unreachable by probes).
 - Fail-closed agent defaults are non-negotiable: `tools: {provider: none, allow: []}`, `approvals: {ceiling: {write: false}, gates: [{match: "*", require: plan_approval}], escalation: {route: cli}}`.
@@ -150,7 +150,7 @@
 ### Task 3: Composer — bundle tree + schema validation
 
 **Files:**
-- Create: `api/cortex_api/composer.py`, `api/cortex_api/vendor/bundle.schema.json` (verbatim copy: `cp ~/Documents/GitHub/daedalus/docs/bundle.schema.json api/cortex_api/vendor/`)
+- Create: `api/cortex_api/composer.py`, `api/cortex_api/vendor/bundle.schema.json` (verbatim copy: `cp ../daedalus/docs/bundle.schema.json api/cortex_api/vendor/`)
 - Test: `api/tests/test_composer.py`
 
 **Interfaces:**

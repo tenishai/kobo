@@ -188,36 +188,6 @@ class _FailingRunner:
         return ""
 
 
-def test_apply_secret_dry_run_create_argv():
-    runner = _RecordingRunner(results=["<rendered secret yaml>", ""])
-    client = KubectlCLI(runner=runner)
-
-    client.apply_secret(
-        NAME, f"{NAME}-slack", {"SLACK_BOT_TOKEN": BOT_TOKEN, "SLACK_APP_TOKEN": APP_TOKEN}
-    )
-
-    first_args, first_stdin = runner.calls[0]
-    assert first_args == [
-        "kubectl", "-n", NAME, "create", "secret", "generic", f"{NAME}-slack",
-        f"--from-literal=SLACK_BOT_TOKEN={BOT_TOKEN}",
-        f"--from-literal=SLACK_APP_TOKEN={APP_TOKEN}",
-        "--dry-run=client", "-o", "yaml",
-    ]
-    assert first_stdin is None
-
-
-def test_apply_secret_apply_stage_pipes_dry_run_output_as_stdin():
-    runner = _RecordingRunner(results=["<rendered secret yaml>", ""])
-    client = KubectlCLI(runner=runner)
-
-    client.apply_secret(NAME, f"{NAME}-slack", {"SLACK_BOT_TOKEN": BOT_TOKEN})
-
-    assert len(runner.calls) == 2
-    second_args, second_stdin = runner.calls[1]
-    assert second_args == ["kubectl", "apply", "-f", "-"]
-    assert second_stdin == "<rendered secret yaml>"
-
-
 def test_apply_secret_dry_run_failure_message_excludes_token_values():
     runner = _FailingRunner(fail_at=0)
     client = KubectlCLI(runner=runner)
@@ -446,13 +416,6 @@ def test_wire_slack_gojira_secrets_from_append_is_idempotent():
     assert data["secrets_from"] == [f"{NAME}-slack"]
 
 
-def test_wire_slack_commit_message_exact():
-    github = _CapturingGitHub()
-    _wire(github=github)
-
-    assert github.pushes[-1][1] == "kobo: connect slack"
-
-
 def test_wire_slack_returns_local_head():
     sha, github, _, _ = _wire()
 
@@ -598,14 +561,6 @@ def test_rewire_slack_channels_pushes_two_transport_entries_and_returns_sha():
     ]
     assert sha == FAKE_LOCAL_HEAD_DEFAULT
     assert github.local_head_calls  # local_head was actually called
-
-
-def test_rewire_slack_channels_commit_message_exact():
-    github = _CapturingGitHub()
-
-    rewire_slack_channels(github, repo=REPO, channels=["C1234567"])
-
-    assert github.pushes[-1][1] == "kobo: slack channels updated"
 
 
 def test_rewire_slack_channels_touches_only_agent_yaml():

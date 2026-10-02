@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: kobo
+resources:
+- ../../base
+labels:
+- pairs:
+    gojira.dev/env: dev
+images:
+- name: gojira-app
+  newName: us-central1-docker.pkg.dev/shaz-learning/apps/kobo
+  newTag: latest
+patches:
+- path: patches/sa-workload-identity.yaml
+- path: drift-kobo.yaml

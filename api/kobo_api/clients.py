@@ -314,7 +314,7 @@ class GitHubClient(Protocol):
         `permissions` on a repository read as a USER's standing and answers
         an App with every field False, `push` and `pull` alike, even on a
         repository the App created and pushes to daily. Reading `push`
-        there refused every repository (example-org, 2026-09-25). Running under
+        there refused every repository (a client org, 2026-09-25). Running under
         an operator's `gh auth` (dev), `push` is that person's real
         standing and is read as before; a response with no `permissions`
         object at all is still no write. A response that does not say the
@@ -1256,6 +1256,7 @@ class GojiraClient(Protocol):
         cluster: str,
         namespace: str,
         workload_class: str = "agent",
+        auto_merge_setup_pr: bool = True,
     ) -> int:
         """POST /api/v1/apps; returns the new app id. Raises GojiraConflict on 409.
 
@@ -1264,6 +1265,14 @@ class GojiraClient(Protocol):
         sent; a connected agent that serves no HTTP port asks for whichever
         class this deployment names for that (connected-agents design
         2026-09-21), since the ordinary class probes a port over HTTP.
+
+        `auto_merge_setup_pr` is the room waiving review of the platform's
+        setup pull request. That waiver belongs only to a repository the
+        room itself authored, where there is no human content to protect;
+        a connected repository is a team's own, and its owner merges the
+        wiring (Ember's review, 2026-09-29). The platform refuses the flag
+        for a repository it recognises as hand-built anyway, but the room
+        should not ask for what it must not have.
         """
         ...
 
@@ -1319,7 +1328,14 @@ class HttpxGojiraClient:
         return {}
 
     def create_app(
-        self, *, name, repo_full_name, cluster, namespace, workload_class="agent"
+        self,
+        *,
+        name,
+        repo_full_name,
+        cluster,
+        namespace,
+        workload_class="agent",
+        auto_merge_setup_pr=True,
     ) -> int:
         resp = self._client.post(
             f"{self._base_url}/api/v1/apps",
@@ -1328,7 +1344,7 @@ class HttpxGojiraClient:
                 "repo_full_name": repo_full_name,
                 "workload_class": workload_class,
                 "environments": [{"name": "dev", "cluster": cluster, "namespace": namespace}],
-                "auto_merge_setup_pr": True,
+                "auto_merge_setup_pr": auto_merge_setup_pr,
             },
             headers=self._headers(),
         )
@@ -1421,6 +1437,16 @@ class CloudClient(Protocol):
         """Remove gsa_email from group. False if it was already absent."""
         ...
 
+    def grant_model_access(self, gsa_email: str, project: str) -> None:
+        """Grant gsa_email the Vertex AI user role on project directly — the
+        road taken when the room has no model group (a project with no
+        Workspace has no groups to join). Idempotent."""
+        ...
+
+    def revoke_model_access(self, gsa_email: str, project: str) -> bool:
+        """Remove that grant. False if it was already absent."""
+        ...
+
     def delete_gsa(self, email: str) -> bool:
         """Delete the GSA at email. False if it was already gone."""
         ...
@@ -1453,6 +1479,11 @@ class CloudClient(Protocol):
         object names.
         """
         ...
+
+
+# What a model group confers at a client org through membership; granted directly on
+# the Vertex project when the room runs with no group (2026-10-01).
+MODEL_ACCESS_ROLE = "roles/aiplatform.user"
 
 
 def gsa_email(name: str, project: str) -> str:
@@ -1559,6 +1590,32 @@ class GcloudClient:
             )
         except ClientError as exc:
             if "there is no such membership" in exc.stderr.lower():
+                return False
+            raise
+        return True
+
+    def grant_model_access(self, gsa_email: str, project: str) -> None:
+        # add-iam-policy-binding is idempotent: a binding already there is
+        # reported, not refused. --condition=None keeps gcloud from asking.
+        self._runner.run(
+            [
+                self._gcloud, "projects", "add-iam-policy-binding", project,
+                "--member", f"serviceAccount:{gsa_email}",
+                "--role", MODEL_ACCESS_ROLE, "--condition=None",
+            ]
+        )
+
+    def revoke_model_access(self, gsa_email: str, project: str) -> bool:
+        try:
+            self._runner.run(
+                [
+                    self._gcloud, "projects", "remove-iam-policy-binding", project,
+                    "--member", f"serviceAccount:{gsa_email}",
+                    "--role", MODEL_ACCESS_ROLE, "--condition=None",
+                ]
+            )
+        except ClientError as exc:
+            if "not found" in exc.stderr.lower():  # gcloud: "Policy binding ... not found!"
                 return False
             raise
         return True
@@ -2098,6 +2155,12 @@ class KubectlClient(Protocol):
         """
         ...
 
+    def pods_json(self, namespace: str) -> list[dict]:
+        """Every pod in the namespace (`kubectl get pods -o json`'s
+        `items`), for the health probe's restart counts and wait reasons
+        (kobo_api.health)."""
+        ...
+
     def restart_deploy(self, namespace: str, deploy: str) -> None:
         """Ask kubectl to roll the Deployment's pods now (`kubectl rollout
         restart`).
@@ -2204,6 +2267,10 @@ class KubectlCLI:
             [self._kubectl, "-n", namespace, "get", "deploy", deploy, "-o", "json"]
         )
         return json.loads(out)
+
+    def pods_json(self, namespace: str) -> list[dict]:
+        out = self._runner.run([self._kubectl, "-n", namespace, "get", "pods", "-o", "json"])
+        return list((json.loads(out) or {}).get("items") or [])
 
     def restart_deploy(self, namespace: str, deploy: str) -> None:
         self._runner.run(
@@ -3197,6 +3264,16 @@ class NameClient(Protocol):
         """
         ...
 
+    def tags(self, persona_body: str, capability: str, group: str | None) -> list[str]:
+        """Ask the generator for a handful of short purpose tags for an agent
+        that has just made first contact (2026-09-29: agents tag themselves;
+        the create form no longer asks). Raise ClientError on a
+        transport/envelope/parse failure. `kobo_api.metadata.generate_tags`
+        normalizes and caps the reply and falls back to no tags on any
+        failure, so nothing here can block readiness.
+        """
+        ...
+
     def distill(self, body: str) -> dict:
         """Ask the generator to read a ready-made persona document (`body`,
         the operator's own upload/paste) and pull out discovery metadata for
@@ -3378,6 +3455,25 @@ def _build_persona_draft_prompt(job: str, rules: list[str]) -> str:
 # at all — kobo_api.metadata.generate_capability always has a deterministic
 # fallback to fall through to, so this string only ever reaches a log line.
 _CAPABILITY_FAILED = "capability generation failed"
+_TAGS_FAILED = "tag generation failed"
+
+
+def _build_tags_prompt(persona_body: str, capability: str, group: str | None) -> str:
+    """The prompt behind `NameClient.tags`. Plain concatenation, never
+    `str.format()` against the persona body (the brace hazard
+    `_build_capability_prompt` documents)."""
+    group_line = f"It works for the {group} team.\n" if group else ""
+    return (
+        "You are labelling a small software agent for a directory, so people "
+        "and other agents can find it by what it is for.\n\n"
+        "Its persona:\n" + persona_body + "\n\n"
+        "What it can do, in one sentence:\n" + capability + "\n"
+        + group_line
+        + "\nRespond with ONLY a JSON array of 2 to 5 short lowercase tags, "
+        "each one or two words joined by a hyphen, naming the work it does "
+        "and the area it works in (for example [\"billing\", \"gcp\", "
+        "\"cost-review\"]). No prose before or after the array."
+    )
 
 
 def _build_capability_prompt(
@@ -3704,6 +3800,37 @@ class VertexNameClient:
         # generate_capability is what clamps to CAPABILITY_MAX_LEN and strips
         # em/en dashes defensively.
         return text.strip()
+
+    def tags(self, persona_body: str, capability: str, group: str | None) -> list[str]:
+        url = (
+            f"https://{self._location}-aiplatform.googleapis.com/v1/projects/"
+            f"{self._project}/locations/{self._location}/publishers/google/"
+            f"models/{self._model}:generateContent"
+        )
+        prompt = _build_tags_prompt(persona_body, capability, group)
+        request_body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
+        try:
+            token = self._token_provider()
+        except ClientError as exc:
+            log.warning("token provider failed for tag generation: %r", exc)
+            raise ClientError(_TAGS_FAILED) from exc
+        try:
+            resp = self._http_client.post(
+                url, json=request_body, headers={"Authorization": f"Bearer {token}"}
+            )
+        except httpx.HTTPError as exc:
+            log.warning("tag generation request failed: %r", exc)
+            raise ClientError(_TAGS_FAILED) from exc
+        if resp.status_code != 200:
+            log.warning("tag generation failed (%s): %s", resp.status_code, resp.text[:200])
+            raise ClientError(_TAGS_FAILED)
+        try:
+            text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            parsed = _extract_json_array(str(text))
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            log.warning("malformed tag generation reply: %r (body: %s)", exc, resp.text[:200])
+            raise ClientError(_TAGS_FAILED) from exc
+        return [item for item in parsed if isinstance(item, str)]
 
     def distill(self, body: str) -> dict:
         url = (

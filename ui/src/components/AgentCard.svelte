@@ -70,7 +70,7 @@
       {/if}
       <span class="agent-card__name" title={agent.name}>{agent.name}</span>
     </span>
-    <StatusBadge status={agent.status} />
+    <StatusBadge status={agent.status} health={agent.health} />
   </div>
 
   <!-- One line, always: a card that says "No description yet." is still the
@@ -108,9 +108,11 @@
         <span class="agent-card__error-tail">Open for details.</span>
       </p>
     {:else}
+      <!-- The model gets a line of its own (2026-10-01): sharing one line
+           with the age, the byline and the Observability link cut every
+           label short. Two rows, always, so every card is the same height. -->
+      <p class="agent-card__model" title={agent.model}>{agent.model_label}</p>
       <p class="agent-card__meta">
-        <span class="agent-card__model" title={agent.model}>{agent.model_label}</span>
-        <span class="agent-card__sep" aria-hidden="true">·</span>
         <span>{relativeTime(agent.created_at)}</span>
         {#if agent.created_by}
           <span class="agent-card__sep" aria-hidden="true">·</span>
@@ -261,8 +263,9 @@
   .agent-card__footer {
     display: flex;
     min-width: 0;
+    flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-xs);
+    gap: var(--space-2xs) var(--space-xs);
     margin-top: auto;
     padding-top: var(--space-2xs);
   }
@@ -286,10 +289,13 @@
      stay whole. A model label long enough to need clipping is capped
      rather than allowed to push them off. */
   .agent-card__model {
-    max-width: 10rem;
-    flex-shrink: 0;
+    flex: 1 0 100%;
+    margin: 0;
     overflow: hidden;
+    color: var(--ink);
+    font-size: 0.8rem;
     text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .agent-card__owner {

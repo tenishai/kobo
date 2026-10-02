@@ -38,8 +38,6 @@
   import {
     ApiError,
     errorMessage,
-    RUN_MODE_HEADLESS,
-    RUN_MODE_HTTP,
     type ConnectRepoOption,
     type ScanFinding,
     type ScanReport,
@@ -61,7 +59,6 @@
   // it as a blocker only when "no HTTP port" was the answer AND the room has
   // no class for one, so seeing it once is enough to know the second option
   // is not available in this room at all.
-  const HEADLESS_UNAVAILABLE = "headless_unavailable";
 
   // The Repository field is a combobox over the repositories the room's
   // GitHub App can already reach. Clicking into it opens a short list of
@@ -81,7 +78,6 @@
   let repo = $state("");
   let name = $state("");
   let groupValue = $state("");
-  let runMode = $state<string>(RUN_MODE_HTTP);
   let confirmOwner = $state(false);
 
   // The scan's answer, plus the exact field values it answered FOR. Connect
@@ -89,11 +85,16 @@
   let report = $state<ScanReport | null>(null);
   let scannedFields = $state<string | null>(null);
   let scanError = $state<string | null>(null);
+  // The name the scanned repository already deploys under, once a scan has
+  // said so. A connected repository keeps its own name: the field is filled
+  // with this and locked while the scan it came from still stands, and a
+  // scan that finds it different from what was typed puts it in the field,
+  // which stales that report so the next Scan answers for the right name.
+  let repoName = $state<string | null>(null);
 
   // Set once a scan says this room has no class for an agent with no HTTP
   // port. Holds the server's own sentence, and disables that option from
   // then on rather than letting someone scan their way into it twice.
-  let headlessMessage = $state<string | null>(null);
 
   // What the server's own re-scan found when Connect was pressed: the form's
   // report was clean, the route's was not (access withdrawn, a Dockerfile
@@ -320,11 +321,16 @@
    * staling a clean report over it would spend a scan (which this room
    * counts) on an answer that would come back identical. */
   const fields = $derived(
-    JSON.stringify([repoValue, name, groupValue, runMode]),
+    JSON.stringify([repoValue, name, groupValue]),
   );
   const scanIsStale = $derived(report !== null && scannedFields !== fields);
   const scanIsClean = $derived(
     report !== null && !scanIsStale && report.blockers.length === 0,
+  );
+  // Locked to the repository's own name only while the report that named
+  // it still describes this form: edit the repository and it opens again.
+  const nameLocked = $derived(
+    repoName !== null && name === repoName && report !== null && !scanIsStale,
   );
 
   /** The blockers to show: the server's own, when a Connect was refused,
@@ -358,12 +364,11 @@
       repo = "";
       name = "";
       groupValue = "";
-      runMode = RUN_MODE_HTTP;
       confirmOwner = false;
       report = null;
       scannedFields = null;
+      repoName = null;
       scanError = null;
-      headlessMessage = null;
       connectBlockers = [];
       submitError = null;
       nameTaken = null;
@@ -379,7 +384,6 @@
     return {
       repo: repoValue,
       name,
-      run_mode: runMode,
       group_name: groupOptionsAvailable ? groupValue : undefined,
     };
   }
@@ -398,21 +402,19 @@
       onSuccess: (result) => {
         report = result;
         scannedFields = scannedFor;
-        const headless = result.blockers.find(
-          (finding) => finding.code === HEADLESS_UNAVAILABLE,
-        );
-        if (headless) {
-          headlessMessage = headless.message;
-          // The option that was just disabled cannot be left checked: a
-          // disabled control holding the answer is a form nobody can
-          // finish. Moving back to the one mode this room has marks the
-          // report stale, which is right, since it answered for the other.
-          runMode = RUN_MODE_HTTP;
+        repoName = result.repo_name ?? null;
+        if (repoName !== null && name !== repoName) {
+          // The repository has a name and it is not the one typed. Put its
+          // own name in the field: that marks this report stale (it
+          // answered for the typed one, and says so among the blockers),
+          // and the next Scan answers for the name the connect will use.
+          name = repoName;
         }
       },
       onError: (error: unknown) => {
         report = null;
         scannedFields = null;
+        repoName = null;
         scanError = errorMessage(error, "Couldn't read that repository.");
       },
     });
@@ -611,11 +613,20 @@
         placeholder="e.g. release-bot"
         autocomplete="off"
         spellcheck="false"
+        readonly={nameLocked}
         aria-invalid={nameError !== null}
       />
-      <p class="field__help">
-        Lowercase letters, numbers, and hyphens. 2-24 characters.
-      </p>
+      {#if nameLocked}
+        <p class="field__help">
+          The name this repository already deploys under, taken from its
+          deployment. A connected repository keeps its own name; rename it in
+          the repository if you want another.
+        </p>
+      {:else}
+        <p class="field__help">
+          Lowercase letters, numbers, and hyphens. 2-24 characters.
+        </p>
+      {/if}
       {#if nameError}
         <p class="field__status field__status--error" role="alert">{nameError}</p>
       {:else if nameTaken !== null && nameTaken === name}
@@ -646,13 +657,7 @@
             (groupValue = (event.currentTarget as HTMLSelectElement).value)}
         >
           <option value="" disabled>Choose a group</option>
-          {#if sharedGroupOptions.length > 0}
-            <optgroup label="Shared">
-              {#each sharedGroupOptions as group (group.name)}
-                <option value={group.name}>{group.name} (everyone in the company)</option>
-              {/each}
-            </optgroup>
-          {/if}
+
           {#if nonEngineeringGroupOptions.length > 0}
             <optgroup label="Non-engineering groups">
               {#each nonEngineeringGroupOptions as group (group.name)}
@@ -672,44 +677,6 @@
       {/if}
     </div>
 
-    <fieldset class="field field--group">
-      <legend class="field__label">How does it run?</legend>
-      <label class="field__choice">
-        <input
-          type="radio"
-          name="connect-run-mode"
-          value={RUN_MODE_HTTP}
-          checked={runMode === RUN_MODE_HTTP}
-          onchange={() => (runMode = RUN_MODE_HTTP)}
-        />
-        It listens on a port (the platform checks its health there)
-      </label>
-      <label
-        class="field__choice"
-        class:field__choice--disabled={headlessMessage !== null}
-      >
-        <!-- The reason this option is off is tied to the control itself,
-             not just printed under it: a screen reader meeting a disabled
-             radio should hear why without hunting for the line below. -->
-        <input
-          type="radio"
-          name="connect-run-mode"
-          value={RUN_MODE_HEADLESS}
-          checked={runMode === RUN_MODE_HEADLESS}
-          disabled={headlessMessage !== null}
-          aria-describedby={headlessMessage ? "connect-headless-reason" : undefined}
-          onchange={() => (runMode = RUN_MODE_HEADLESS)}
-        />
-        It does not listen on a port (a chat bot or a worker)
-      </label>
-      {#if headlessMessage}
-        <p id="connect-headless-reason" class="field__help">{headlessMessage}</p>
-      {/if}
-      <p class="field__help">
-        Either way the agent gets an address inside the cluster only. Nothing
-        here makes it reachable from outside.
-      </p>
-    </fieldset>
 
     {#if scanError}
       <p class="field__status field__status--error" role="alert">{scanError}</p>
@@ -741,6 +708,15 @@
           </div>
         {:else if !scanIsStale}
           <p class="field__label">Nothing is in the way.</p>
+        {/if}
+
+        {#if !scanIsStale && report.run_mode}
+          <p class="field__help">
+            {report.run_mode === "headless"
+              ? "It does not listen on a port, so the room runs it as a worker or a chat bot."
+              : "It listens on a port, so the platform checks its health there."}
+            Either way it gets an address inside the cluster only.
+          </p>
         {/if}
 
         {#if report.warnings.length > 0}

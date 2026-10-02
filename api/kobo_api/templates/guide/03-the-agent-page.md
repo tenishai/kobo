@@ -1,7 +1,7 @@
 # The agent page
 <!-- summary: The header, the build checklist, Retry, the build log, the tabs, and destroy. -->
 
-Every agent has one page. The header names it, shows its status, and under the name prints the model, a **source** link to its repository, its group, who made it, its persona, and an **Observability** link when your room has dashboards wired.
+Every agent has one page. The header names it, shows its status (**Ready** means setup finished; if the room finds it is not actually running, the badge says **Down** instead, with the reason on hover and a banner under the header), and under the name prints the model, a **source** link to its repository, its group, who made it, its persona, and an **Observability** link when your room has dashboards wired. Up to three purpose and skill chips follow; a **+N** chip opens the rest. The **More** menu at the right holds the portrait actions (paint a new one, upload, download), **Edit details**, and **Destroy**.
 
 Below that sits one sentence about what the agent can do. It reads "Not written yet. It arrives after first contact." until the agent has answered its first hello, then the agent writes it.
 
@@ -26,6 +26,10 @@ A connected agent has a shorter list: no directory, no first contact, and its wi
 A failed step shows a red mark and a **Why it failed** line with the reason the room saw. The banner at the top of the page carries the same text and a **Retry** button. Retry picks up from the failed step. If the image build or deploy failed, Retry also redoes the wiring in front of it, so a fix in the platform reaches the agent.
 
 **View build log** in the Settings tab shows the latest build's result and its log, so you can read the pipeline's own words without leaving the room.
+
+## When a step waits on you
+
+A connected agent's wiring arrives as a pull request on your repository, and someone on your team merges it. While that pull request is open the agent shows **Waiting**, not Failed: the **Platform onboarding** step carries a **What it is waiting for** line with the link, and the banner at the top offers **Resume**. You do not have to press it. The room checks once a minute and picks the setup back up on its own when the merge lands. Resume is for when you have just merged and do not want to wait.
 
 ## The tabs
 

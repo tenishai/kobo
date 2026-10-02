@@ -6,6 +6,17 @@
 // some upstream that isn't kobo-api) into an ApiError too, instead of
 // letting a raw SyntaxError leak out of `JSON.parse`.
 
+/** Is the agent running right now, from the cluster (kobo_api.health):
+ * `down` when its Deployment has fewer available pods than it wants, with
+ * the count and the worst container's restarts and wait reason. `null`
+ * until the room has asked, and never sent for an agent that is not
+ * ready. Distinct from `status`, which is about setup, not today. */
+export type AgentHealth = {
+  state: "up" | "down";
+  reason: string | null;
+  checked_at: string;
+};
+
 export type AgentSummary = {
   name: string;
   status: string;
@@ -13,6 +24,7 @@ export type AgentSummary = {
   model_label: string;
   created_at: string;
   has_avatar: boolean;
+  health?: AgentHealth | null;
   /** The verified email that created this agent (access-control Task A2/
    * A3), `null` for a pre-A2 row or one created while IAP was off. Drives
    * the "Made by <email>" line on the card and detail Overview, and is the
@@ -138,6 +150,16 @@ export type AgentDetail = AgentSummary & {
    * the comparison of the two: equal is "Current", different is "Behind".
    * Absent on an older server. */
   room_runtime_image?: string;
+  /** The identity the agent runs as: its Kubernetes service account and
+   * the Google service account bound to it, plus the room's project. What
+   * an access request to another project names. Absent on an older server. */
+  identity?: AgentIdentity;
+};
+
+export type AgentIdentity = {
+  service_account: string;
+  gsa_email: string;
+  project: string;
 };
 
 /** One catalog search result — a skill or a persona, both served by the
@@ -482,7 +504,7 @@ export async function createAgent(body: {
   /** Purpose chips (persona-metadata plan) — normalized/capped (8)
    * server-side; an over-cap list (after de-dupe) 422s with "Eight tags at
    * most." */
-  purpose_tags: string[];
+  purpose_tags?: string[];
   /** The ACL namespace this agent belongs to (access-control Task B2,
    * always includes the commons as of the shared-group + group-requests
    * wave) — omitted (or `null`) only in the defensive case where
@@ -532,6 +554,15 @@ export type ScanReport = {
   adds: string[];
   adds_preamble: string;
   repo: string;
+  /** The name the repository already deploys under (its base Deployment's
+   * own name), or null when it has none. A connected repository keeps its
+   * own name: the form takes this as the Name and locks the field, and the
+   * scan lists any other name among the blockers. */
+  repo_name: string | null;
+  repo_service_account: string | null;
+  /** How the agent runs, decided by the scan from the repository: "http"
+   * when it listens on a port, "headless" when it does not. */
+  run_mode: string;
 };
 
 /** The three fields the scan reads: the repository, the name it checks
@@ -541,7 +572,6 @@ export type ScanReport = {
 export type ScanRepoBody = {
   repo: string;
   name: string;
-  run_mode: string;
   group_name?: string | null;
 };
 
@@ -666,11 +696,14 @@ export async function destroyAgent(name: string): Promise<{ status: string }> {
  * below, but the model list is small and fixed, so it's still fetched
  * whole. */
 export async function fetchModels(): Promise<{
-  models: { id: string; label: string }[];
+  models: { id: string; label: string; family?: string | null; tier?: string | null }[];
   default: string;
 }> {
   const res = await fetch("/api/catalog/models");
-  return parse<{ models: { id: string; label: string }[]; default: string }>(
+  return parse<{
+    models: { id: string; label: string; family?: string | null; tier?: string | null }[];
+    default: string;
+  }>(
     res,
   );
 }
@@ -926,7 +959,7 @@ export async function movePersona(id: string, team: string): Promise<CatalogEntr
 }
 
 /** `GET /api/personas/movable` — the ids of the personas this caller may
- * re-file, worked out server-side so the Personas page never copies the
+ * re-file, worked out server-side so the persona sheet never copies the
  * rule. */
 export async function movablePersonas(): Promise<string[]> {
   const res = await fetch("/api/personas/movable");
@@ -1640,6 +1673,26 @@ export type AgentRuntimeChange = {
  * and answers 422 for anything outside it, 409 for an agent that is not
  * ready, 403 for a caller who may not change it.
  */
+/** `PATCH /api/agents/{name}/model`: move a deployed agent onto another
+ * catalog model. The room writes `AGENT_MODEL` and the model's region into
+ * the agent's deploy contract, commits, and the platform regenerates and
+ * rolls it. `wiring` says how the change landed. */
+export type AgentModelChange = {
+  model: string;
+  model_label: string;
+  previous_model: string;
+  wiring: string;
+};
+
+export async function patchAgentModel(name: string, model: string): Promise<AgentModelChange> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/model`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model }),
+  });
+  return parse<AgentModelChange>(res);
+}
+
 export async function patchAgentRuntime(
   name: string,
   runtimeImage: string,

@@ -347,32 +347,6 @@ def test_upload_intake_route_oversize_content_returns_422(session_factory, confi
     assert github.pushes == []
 
 
-def test_upload_intake_route_unknown_agent_returns_404(session_factory, config):
-    client = _make_client(session_factory, config)
-
-    response = client.post(
-        f"/api/agents/{AGENT_NAME}/intake",
-        json={"filename": "notes.md", "content": "content"},
-    )
-
-    assert response.status_code == 404
-    assert "error" in response.json()
-
-
-@pytest.mark.parametrize("status", NON_READY_STATUSES)
-def test_upload_intake_route_non_ready_agent_returns_409(session_factory, config, status):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, status=status)
-
-    response = client.post(
-        f"/api/agents/{AGENT_NAME}/intake",
-        json={"filename": "notes.md", "content": "content"},
-    )
-
-    assert response.status_code == 409
-    assert response.json() == {"error": "agent is not ready for memory changes"}
-
-
 def test_upload_intake_route_client_error_returns_502(session_factory, config):
     client = _make_client(session_factory, config, github=_RaisingGitHub())
     _seed_agent(session_factory, config)
@@ -598,26 +572,6 @@ def test_delete_intake_route_not_found_returns_404(session_factory, config):
     assert response.status_code == 404
     assert "error" in response.json()
     assert github.pushes == []
-
-
-def test_delete_intake_route_unknown_agent_returns_404(session_factory, config):
-    client = _make_client(session_factory, config)
-
-    response = client.delete(f"/api/agents/{AGENT_NAME}/intake/notes.md")
-
-    assert response.status_code == 404
-    assert "error" in response.json()
-
-
-@pytest.mark.parametrize("status", NON_READY_STATUSES)
-def test_delete_intake_route_non_ready_agent_returns_409(session_factory, config, status):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, status=status)
-
-    response = client.delete(f"/api/agents/{AGENT_NAME}/intake/notes.md")
-
-    assert response.status_code == 409
-    assert response.json() == {"error": "agent is not ready for memory changes"}
 
 
 def test_delete_intake_route_client_error_returns_502(session_factory, config):

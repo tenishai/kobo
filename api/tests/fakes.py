@@ -1122,7 +1122,12 @@ class FakeGojira:
         delete_summary: dict | None = None,
         delete_already_gone: bool = False,
         delete_error: str | None = None,
+        setup_pr_url: str | None = None,
     ):
+        # The link the platform reports once it has opened the setup pull
+        # request; carried in every app_status answer whose status is
+        # `awaiting_pr` (the waiting state's tests read it back).
+        self._setup_pr_url = setup_pr_url
         self._activate_after = activate_after
         self._end_status = end_status
         self._conflict_repos = set(conflict_repos) if conflict_repos else set()
@@ -1145,7 +1150,14 @@ class FakeGojira:
         self.calls: list[str] = []
 
     def create_app(
-        self, *, name, repo_full_name, cluster, namespace, workload_class="agent"
+        self,
+        *,
+        name,
+        repo_full_name,
+        cluster,
+        namespace,
+        workload_class="agent",
+        auto_merge_setup_pr=True,
     ) -> int:
         self.calls.append(f"create_app:{repo_full_name}")
         self.create_app_calls.append(
@@ -1155,6 +1167,7 @@ class FakeGojira:
                 "cluster": cluster,
                 "namespace": namespace,
                 "workload_class": workload_class,
+                "auto_merge_setup_pr": auto_merge_setup_pr,
             }
         )
         if repo_full_name in self._conflict_repos:
@@ -1171,7 +1184,7 @@ class FakeGojira:
             "status": "pending",
             "polls": 0,
             "setup_pr_url": None,
-            "auto_merge_setup_pr": True,
+            "auto_merge_setup_pr": auto_merge_setup_pr,
             "steps": [],
         }
         return app_id
@@ -1189,7 +1202,28 @@ class FakeGojira:
             app["status"] = self._end_status
         if app["status"] == "failed":
             app["steps"] = list(self._failed_steps)
+        if app["status"] == "awaiting_pr" and self._setup_pr_url:
+            app["setup_pr_url"] = self._setup_pr_url
         return dict(app)
+
+    def seed_app(self, app_id: int, *, status: str = "awaiting_pr") -> None:
+        """Register an app the platform already holds, for a test that starts
+        from an agent parked on it (a sweep, a resume) rather than from
+        `create_app`."""
+        self._apps[app_id] = {
+            "id": app_id,
+            "name": f"app-{app_id}",
+            "repo_full_name": "",
+            "cluster": "",
+            "namespace": "",
+            "workload_class": "agent",
+            "status": status,
+            "polls": 0,
+            "setup_pr_url": self._setup_pr_url if status == "awaiting_pr" else None,
+            "auto_merge_setup_pr": False,
+            "steps": [],
+        }
+        self._next_id = max(self._next_id, app_id + 1)
 
     def reprovision(self, app_id: int) -> None:
         self.calls.append(f"reprovision:{app_id}")
@@ -1263,6 +1297,7 @@ class FakeCloud:
         self.gsas: set[str] = set()
         self.bindings: set[tuple[str, str, str]] = set()
         self.group_members: set[tuple[str, str]] = set()
+        self.model_grants: set[tuple[str, str]] = set()  # (gsa_email, project)
         self.calls: list[str] = []
 
     def ensure_gsa(self, name: str) -> str:
@@ -1286,6 +1321,17 @@ class FakeCloud:
         if (gsa_email, group) not in self.group_members:
             return False
         self.group_members.discard((gsa_email, group))
+        return True
+
+    def grant_model_access(self, gsa_email: str, project: str) -> None:
+        self.calls.append(f"grant_model_access:{gsa_email}:{project}")
+        self.model_grants.add((gsa_email, project))
+
+    def revoke_model_access(self, gsa_email: str, project: str) -> bool:
+        self.calls.append(f"revoke_model_access:{gsa_email}:{project}")
+        if (gsa_email, project) not in self.model_grants:
+            return False
+        self.model_grants.discard((gsa_email, project))
         return True
 
     def delete_gsa(self, email: str) -> bool:
@@ -1551,6 +1597,11 @@ class FakeKubectl:
         if self._deployment_status_error is not None:
             raise ClientError(self._deployment_status_error)
         return self._deployment_status.get((namespace, deploy), FAKE_DEPLOYMENT_STATUS_SETTLED)
+
+    def pods_json(self, namespace: str) -> list[dict]:
+        # Set `fake.pods = {namespace: [pod, ...]}` on the instance; the
+        # health probe reads restart counts and wait reasons from them.
+        return list(getattr(self, "pods", {}).get(namespace, []))
 
     def restart_deploy(self, namespace: str, deploy: str) -> None:
         if self._restart_error is not None:
@@ -2031,6 +2082,7 @@ class FakeName:
         draft_error: str | None = None,
         capability: str = "Helps with billing questions and small talk.",
         capability_error: str | None = None,
+        tags: list[str] | None = None,
         distill: dict | None = None,
         distill_error: str | None = None,
     ):
@@ -2060,6 +2112,8 @@ class FakeName:
         self.draft_calls: list[tuple[str, list[str]]] = []
         self._capability = capability
         self._capability_error = capability_error
+        self._tags = list(tags or [])
+        self.tags_calls: list[tuple[str, str, str | None]] = []
         self.capability_calls: list[tuple[str, list[str], list[str]]] = []
         self._distill = (
             dict(distill)
@@ -2108,6 +2162,10 @@ class FakeName:
         if self._capability_error is not None:
             raise ClientError(self._capability_error)
         return self._capability
+
+    def tags(self, persona_body: str, capability: str, group: str | None) -> list[str]:
+        self.tags_calls.append((persona_body, capability, group))
+        return list(self._tags)
 
     def distill(self, body: str) -> dict:
         self.distill_calls.append(body)

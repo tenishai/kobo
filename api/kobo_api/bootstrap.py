@@ -489,10 +489,22 @@ def main(argv: list[str] | None = None) -> int:
     # this module's own import graph for callers that only need
     # `run_bootstrap`/`StepResult` against fakes (same rationale as
     # `kobo_api.main.build_default_app`'s identical local import).
-    from kobo_api.clients import Clients, CommandRunner, GhCLI
+    from kobo_api.clients import (
+        Clients,
+        CommandRunner,
+        GhCLI,
+        installation_token_provider,
+    )
 
     local_config = Config.load(None)
-    github = GhCLI(runner=CommandRunner())
+    # App-authed exactly like `build_default_app`: a bare GhCLI has no token
+    # inside the container (no operator `gh auth` there), so the org-config
+    # clone failed and every step ran on the local file's values alone
+    # (first deployed bootstrap, 2026-10-02).
+    provider = installation_token_provider(local_config)
+    github = GhCLI(
+        runner=CommandRunner(), token_provider=provider.token if provider else None
+    )
     config, _org = load_org_config(local_config, github)
 
     config.workdir.mkdir(parents=True, exist_ok=True)

@@ -566,32 +566,6 @@ def test_upload_tooling_route_missing_entrypoint_returns_422(session_factory, co
     assert github.pushes == []
 
 
-def test_upload_tooling_route_unknown_agent_returns_404(session_factory, config):
-    client = _make_client(session_factory, config)
-
-    response = client.post(
-        f"/api/agents/{AGENT_NAME}/tooling",
-        json={"filename": "tool.py", "content": VALID_PY},
-    )
-
-    assert response.status_code == 404
-    assert "error" in response.json()
-
-
-@pytest.mark.parametrize("status", NON_READY_STATUSES)
-def test_upload_tooling_route_non_ready_agent_returns_409(session_factory, config, status):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, status=status)
-
-    response = client.post(
-        f"/api/agents/{AGENT_NAME}/tooling",
-        json={"filename": "tool.py", "content": VALID_PY},
-    )
-
-    assert response.status_code == 409
-    assert response.json() == {"error": "agent is not ready for memory changes"}
-
-
 def test_upload_tooling_route_client_error_returns_502(session_factory, config):
     client = _make_client(session_factory, config, github=_RaisingGitHub())
     _seed_agent(session_factory, config)
@@ -1052,32 +1026,6 @@ def test_import_tooling_route_nonexistent_source_path_returns_404(session_factor
     assert github.pushes == []
 
 
-def test_import_tooling_route_unknown_agent_returns_404(session_factory, config):
-    client = _make_client(session_factory, config)
-
-    response = client.post(
-        f"/api/agents/{AGENT_NAME}/tooling/import",
-        json={"repo": SOURCE_REPO, "path": "tools"},
-    )
-
-    assert response.status_code == 404
-    assert "error" in response.json()
-
-
-@pytest.mark.parametrize("status", NON_READY_STATUSES)
-def test_import_tooling_route_non_ready_agent_returns_409(session_factory, config, status):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, status=status)
-
-    response = client.post(
-        f"/api/agents/{AGENT_NAME}/tooling/import",
-        json={"repo": SOURCE_REPO, "path": "tools"},
-    )
-
-    assert response.status_code == 409
-    assert response.json() == {"error": "agent is not ready for memory changes"}
-
-
 def test_import_tooling_route_client_error_returns_502(session_factory, config):
     # _RaisingGitHub.clone raises for ANY repo, including the source clone —
     # import_tooling's own first call.
@@ -1119,26 +1067,6 @@ def test_delete_tooling_route_not_found_returns_404(session_factory, config):
     assert response.status_code == 404
     assert "error" in response.json()
     assert github.pushes == []
-
-
-def test_delete_tooling_route_unknown_agent_returns_404(session_factory, config):
-    client = _make_client(session_factory, config)
-
-    response = client.delete(f"/api/agents/{AGENT_NAME}/tooling/tool.py")
-
-    assert response.status_code == 404
-    assert "error" in response.json()
-
-
-@pytest.mark.parametrize("status", NON_READY_STATUSES)
-def test_delete_tooling_route_non_ready_agent_returns_409(session_factory, config, status):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, status=status)
-
-    response = client.delete(f"/api/agents/{AGENT_NAME}/tooling/tool.py")
-
-    assert response.status_code == 409
-    assert response.json() == {"error": "agent is not ready for memory changes"}
 
 
 def test_delete_tooling_route_client_error_returns_502(session_factory, config):

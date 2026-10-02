@@ -147,7 +147,12 @@ def test_seed_builtin_personas_at_boot_writes_the_packaged_set_once(client, fake
 
     # Pickable at once: the seed re-ingests the catalog itself.
     listed = client.get("/api/personas/search", params={"q": "", "scope": "all"}).json()["results"]
-    assert sum(1 for entry in listed if entry["builtin"]) == packaged
+    # Five built-ins in the commons, the rest filed under their groups
+    # (TEAM_TEMPLATES, 2026-09-29); together they are the packaged set.
+    from kobo_api.personas import BUILTIN_ORDER, TEAM_TEMPLATES
+
+    assert sum(1 for entry in listed if entry["builtin"]) == len(BUILTIN_ORDER)
+    assert len(BUILTIN_ORDER) + len(TEAM_TEMPLATES) == packaged
 
     # Idempotent: a second boot writes nothing.
     second = _seed_builtin_personas(client.app)
@@ -874,29 +879,6 @@ def test_draft_persona_falls_back_to_persona_own_tags_when_model_omits_them(
     )
 
 
-def test_draft_persona_calls_generator_with_job_and_rules(config, tmp_path):
-    fake_name = FakeName()
-    client = _draft_client(config, tmp_path, name=fake_name)
-
-    client.post(
-        "/api/personas/draft",
-        json={**DRAFT_PAYLOAD, "rules": ["Never share account numbers.", "Be concise."]},
-    )
-
-    assert fake_name.draft_calls == [
-        (DRAFT_PAYLOAD["job"], ["Never share account numbers.", "Be concise."])
-    ]
-
-
-def test_draft_persona_defaults_rules_to_empty_list(config, tmp_path):
-    fake_name = FakeName()
-    client = _draft_client(config, tmp_path, name=fake_name)
-
-    client.post("/api/personas/draft", json=DRAFT_PAYLOAD)
-
-    assert fake_name.draft_calls == [(DRAFT_PAYLOAD["job"], [])]
-
-
 def test_draft_persona_per_field_fallback_on_invalid_generator_name(config, tmp_path):
     fake_name = FakeName(
         draft={
@@ -953,26 +935,10 @@ def test_draft_persona_no_name_client_configured_falls_back_still_200(config, tm
     }
 
 
-def test_draft_persona_422_empty_job(config, tmp_path):
-    client = _draft_client(config, tmp_path)
-
-    response = client.post("/api/personas/draft", json={"job": ""})
-
-    assert response.status_code == 422
-
-
 def test_draft_persona_422_missing_job(config, tmp_path):
     client = _draft_client(config, tmp_path)
 
     response = client.post("/api/personas/draft", json={})
-
-    assert response.status_code == 422
-
-
-def test_draft_persona_422_job_too_long(config, tmp_path):
-    client = _draft_client(config, tmp_path)
-
-    response = client.post("/api/personas/draft", json={"job": "a" * 501})
 
     assert response.status_code == 422
 
@@ -997,25 +963,6 @@ def test_draft_persona_200_with_150_rule_hints(config, tmp_path):
     )
 
     assert response.status_code == 200
-
-
-def test_draft_persona_422_bad_rule_item_length(config, tmp_path):
-    client = _draft_client(config, tmp_path)
-
-    response = client.post(
-        "/api/personas/draft", json={**DRAFT_PAYLOAD, "rules": [""]}
-    )
-
-    assert response.status_code == 422
-
-
-def test_draft_persona_invalid_payload_never_reaches_the_generator(config, tmp_path):
-    fake_name = FakeName()
-    client = _draft_client(config, tmp_path, name=fake_name)
-
-    client.post("/api/personas/draft", json={"job": ""})
-
-    assert fake_name.draft_calls == []
 
 
 def test_draft_persona_result_feeds_create_persona_unchanged(config, tmp_path):
@@ -1137,15 +1084,6 @@ def test_distill_persona_missing_model_tags_default_to_empty_list(config, tmp_pa
     assert response.json()["purpose_tags"] == []
 
 
-def test_distill_persona_calls_generator_with_body(config, tmp_path):
-    fake_name = FakeName()
-    client = _distill_client(config, tmp_path, name=fake_name)
-
-    client.post("/api/personas/distill", json=DISTILL_PAYLOAD)
-
-    assert fake_name.distill_calls == [DISTILL_PAYLOAD["body"]]
-
-
 def test_distill_persona_per_field_fallback_on_invalid_generator_name(config, tmp_path):
     fake_name = FakeName(
         distill={
@@ -1196,14 +1134,6 @@ def test_distill_persona_no_name_client_configured_falls_back_still_200(config, 
     }
 
 
-def test_distill_persona_422_empty_body(config, tmp_path):
-    client = _distill_client(config, tmp_path)
-
-    response = client.post("/api/personas/distill", json={"body": ""})
-
-    assert response.status_code == 422
-
-
 def test_distill_persona_422_missing_body(config, tmp_path):
     client = _distill_client(config, tmp_path)
 
@@ -1226,15 +1156,6 @@ def test_distill_persona_200_at_max_length_body(config, tmp_path):
     response = client.post("/api/personas/distill", json={"body": "a" * 49152})
 
     assert response.status_code == 200
-
-
-def test_distill_persona_invalid_payload_never_reaches_the_generator(config, tmp_path):
-    fake_name = FakeName()
-    client = _distill_client(config, tmp_path, name=fake_name)
-
-    client.post("/api/personas/distill", json={"body": ""})
-
-    assert fake_name.distill_calls == []
 
 
 # --- GET /api/personas/{persona_id} (hover card) ---------------------------

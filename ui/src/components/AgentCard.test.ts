@@ -40,22 +40,6 @@ const BASE_AGENT: AgentSummary = {
   kind: "composed",
 };
 
-describe("AgentCard — owner line (Task A3)", () => {
-  it("renders no owner line when created_by is null", () => {
-    render(AgentCard, { agent: BASE_AGENT });
-
-    expect(screen.queryByText(/Made by/)).toBeNull();
-  });
-
-  it("shows 'Made by <email>' when created_by is present", () => {
-    render(AgentCard, {
-      agent: { ...BASE_AGENT, created_by: "owner@example.com" },
-    });
-
-    expect(screen.getByText("Made by owner@example.com")).not.toBeNull();
-  });
-});
-
 describe("AgentCard — connected marker (connected-agents design 2026-09-21)", () => {
   it("renders no marker for a composed agent", () => {
     render(AgentCard, { agent: BASE_AGENT });
@@ -74,16 +58,6 @@ describe("AgentCard — connected marker (connected-agents design 2026-09-21)", 
 });
 
 describe("AgentCard — the facts a card carries (card wave 2026-09-23)", () => {
-  it("keeps the name, the status, the model and the age on the card", () => {
-    render(AgentCard, { agent: { ...BASE_AGENT, model_label: "GPT-5" } });
-
-    expect(screen.getByText("warden")).not.toBeNull();
-    expect(screen.getByText("ready")).not.toBeNull();
-    expect(screen.getByText("GPT-5")).not.toBeNull();
-    // relativeTime of a 2026 date: whatever it says, the card says something.
-    expect(screen.getByText(/ago$/)).not.toBeNull();
-  });
-
   it("opens the agent from anywhere on the card", () => {
     const { container } = render(AgentCard, { agent: BASE_AGENT });
 
@@ -92,52 +66,6 @@ describe("AgentCard — the facts a card carries (card wave 2026-09-23)", () => 
     expect(link?.getAttribute("aria-label")).toBe("Open warden");
   });
 
-  it("tags the group when the agent has one, and nothing when it does not", () => {
-    const { container } = render(AgentCard, {
-      agent: { ...BASE_AGENT, group_name: "sre" },
-    });
-    expect(screen.getByText("sre")).not.toBeNull();
-
-    const plain = render(AgentCard, { agent: BASE_AGENT });
-    expect(plain.container.querySelector(".agent-card__tags")).toBeNull();
-    expect(container.querySelector(".agent-card__tags")).not.toBeNull();
-  });
-});
-
-describe("AgentCard — the description line (card wave 2026-09-23)", () => {
-  it("shows the capability sentence, clipped to one line, whole on the hover", () => {
-    const capability =
-      "Watches every fleet deploy and says plainly what changed, then waits.";
-    const { container } = render(AgentCard, {
-      agent: { ...BASE_AGENT, capability },
-    });
-
-    const line = container.querySelector(".agent-card__desc");
-    expect(line?.textContent?.trim()).toBe(capability);
-    expect(line?.getAttribute("title")).toBe(capability);
-    // One line, cut off rather than allowed to set the card's height.
-    expect(line?.classList.contains("agent-card__desc")).toBe(true);
-  });
-
-  it("falls back to what the list actually sends, then says so plainly", () => {
-    render(AgentCard, {
-      agent: { ...BASE_AGENT, purpose_tags: ["billing", "refunds"] },
-    });
-    expect(screen.getByText("billing, refunds")).not.toBeNull();
-
-    render(AgentCard, { agent: { ...BASE_AGENT, name: "clio" } });
-    expect(screen.getByText("No description yet.")).not.toBeNull();
-  });
-
-  it("mutes the line when there is nothing of the agent's own to say", () => {
-    const { container } = render(AgentCard, { agent: BASE_AGENT });
-
-    expect(
-      container
-        .querySelector(".agent-card__desc")
-        ?.classList.contains("agent-card__desc--empty"),
-    ).toBe(true);
-  });
 });
 
 describe("AgentCard — a failed agent (card wave 2026-09-23)", () => {

@@ -1,0 +1,52 @@
+# Cluster-scoped access for the room, applied ONCE by a cluster admin:
+#
+#   kubectl apply -f k8s/cluster/rbac.yaml
+#
+# Not part of the kustomize base on purpose. Gojira's generated CI deploys as
+# the app's own identity (roles/container.developer), which cannot create
+# ClusterRoles or ClusterRoleBindings — and should not be able to, or any
+# tenant could grant itself the cluster. The first deploy on the tenishai
+# dogfood failed twenty apply attempts on exactly that (2026-10-02).
+# What the room does in agents' namespaces with kubectl (clients.py:
+# rollout status/restart, deployments and pods, Secrets it writes, the
+# ExternalSecret status it reads), and the one Secret of its own it
+# rewrites when Slack rotates the app-config tokens.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kobo-room
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, create, patch, update, delete]
+  - apiGroups: [""]
+    resources: [pods, pods/log, namespaces]
+    verbs: [get, list]
+  # Chat reaches an agent over `kubectl port-forward svc/<agent>` from the
+  # room's own pod (KubectlAgentClient): the Service to resolve, the
+  # port-forward to open. Without these the dogfood's chat answers 403.
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/portforward]
+    verbs: [create]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, watch, patch]   # watch: `kubectl rollout status`
+  - apiGroups: [external-secrets.io]
+    resources: [externalsecrets]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kobo-room
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kobo-room
+subjects:
+  - kind: ServiceAccount
+    name: kobo
+    namespace: kobo

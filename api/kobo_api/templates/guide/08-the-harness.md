@@ -1,15 +1,21 @@
 # The harness
 <!-- summary: What runs the agent: model and runtime, persona, skills, tooling, memory, learnings. -->
 
-The **Harness** tab is everything that runs your agent, in six sections down its left side. A connected agent shows only the first, because it brings its own harness.
+The **Harness** tab is everything that runs your agent, in seven sections down its left side. A connected agent shows only the first two, because it brings its own harness.
 
 ## Model and runtime
 
 The model the agent thinks with, and the runtime it runs on. The runtime is one shared image the room maintains for every agent it builds. When the room moves to a newer runtime, this section says **Behind: the room now builds on** the newer version and offers **Update to current**. Pressing it rebuilds the agent on the new runtime. Nothing else about the agent changes: its memory, its Slack app and its learnings stay.
 
+To move an agent onto another model after it is deployed, pick one from the list beside **Model** and press **Change model**. The room writes the choice into the agent's deploy contract and the agent rebuilds and rolls on it. The same change is **set agent model** from your own assistant.
+
+## Identity and access
+
+The service account the agent runs as, the Google service account bound to it, and the room's project. Below them, **Ask for access to another project**: name the project and the roles, one per line, and the room writes the request you hand to the SRE team. Basic roles like owner, editor and viewer are refused; ask for the narrowest role that does the job.
+
 ## Persona
 
-The persona the agent was built from, with its team, purpose tags and capability sentence. **Edit details**, in the menu beside the agent's name, changes the team, purpose and description. The persona itself can be swapped from your own assistant with the set persona tool. See "Personas" for how personas are made.
+The persona the agent was built from, with its team, purpose tags and capability sentence. **Edit details**, in the **More** menu at the right of the agent's name, changes the team, purpose and description. The persona itself can be swapped from your own assistant with the set persona tool. See "Personas" for how personas are made.
 
 ## Skills
 

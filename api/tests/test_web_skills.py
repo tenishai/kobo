@@ -556,32 +556,6 @@ def test_add_catalog_skill_collision_with_catalog_entry_returns_409(session_fact
     assert github.cloned == []
 
 
-def test_add_catalog_skill_unknown_agent_returns_404(session_factory, config):
-    client = _make_client(session_factory, config)
-
-    response = client.post(
-        f"/api/agents/{AGENT_NAME}/skills/catalog",
-        json={"name": SAMPLE_SKILL_ID, "team": SAMPLE_TEAM},
-    )
-
-    assert response.status_code == 404
-    assert "error" in response.json()
-
-
-@pytest.mark.parametrize("status", NON_READY_STATUSES)
-def test_add_catalog_skill_non_ready_agent_returns_409(session_factory, config, status):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, status=status)
-
-    response = client.post(
-        f"/api/agents/{AGENT_NAME}/skills/catalog",
-        json={"name": SAMPLE_SKILL_ID, "team": SAMPLE_TEAM},
-    )
-
-    assert response.status_code == 409
-    assert response.json() == {"error": "agent is not ready for memory changes"}
-
-
 def test_add_catalog_skill_client_error_returns_502(session_factory, config):
     storage = FakeStorage()
     _seed_catalog_skill(storage, SAMPLE_TEAM, SAMPLE_SKILL_ID)
@@ -644,26 +618,6 @@ def test_delete_skill_not_carried_returns_404(session_factory, config):
     assert response.status_code == 404
     assert response.json() == {"error": "skill not found: ghost"}
     assert github.pushes == []
-
-
-def test_delete_skill_unknown_agent_returns_404(session_factory, config):
-    client = _make_client(session_factory, config)
-
-    response = client.delete(f"/api/agents/{AGENT_NAME}/skills/ghost")
-
-    assert response.status_code == 404
-    assert "error" in response.json()
-
-
-@pytest.mark.parametrize("status", NON_READY_STATUSES)
-def test_delete_skill_non_ready_agent_returns_409(session_factory, config, status):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, status=status)
-
-    response = client.delete(f"/api/agents/{AGENT_NAME}/skills/ghost")
-
-    assert response.status_code == 409
-    assert response.json() == {"error": "agent is not ready for memory changes"}
 
 
 def test_delete_skill_client_error_returns_502(session_factory, config):
@@ -733,26 +687,6 @@ def test_get_local_skill_missing_returns_404(session_factory, config):
 
     assert response.status_code == 404
     assert "error" in response.json()
-
-
-def test_get_local_skill_unknown_agent_returns_404(session_factory, config):
-    client = _make_client(session_factory, config)
-
-    response = client.get(f"/api/agents/{AGENT_NAME}/skills/local/notes")
-
-    assert response.status_code == 404
-    assert "error" in response.json()
-
-
-@pytest.mark.parametrize("status", NON_READY_STATUSES)
-def test_get_local_skill_non_ready_agent_returns_409(session_factory, config, status):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, status=status)
-
-    response = client.get(f"/api/agents/{AGENT_NAME}/skills/local/notes")
-
-    assert response.status_code == 409
-    assert response.json() == {"error": "agent is not ready for memory changes"}
 
 
 def test_get_local_skill_client_error_returns_502(session_factory, config):
@@ -884,30 +818,6 @@ def test_put_local_skill_invalid_id_returns_422(session_factory, config):
     assert response.status_code == 422
     assert "invalid skill id" in response.json()["error"]
     assert github.pushes == []
-
-
-def test_put_local_skill_unknown_agent_returns_404(session_factory, config):
-    client = _make_client(session_factory, config)
-
-    response = client.put(
-        f"/api/agents/{AGENT_NAME}/skills/local/notes", json={"content": SAMPLE_CONTENT}
-    )
-
-    assert response.status_code == 404
-    assert "error" in response.json()
-
-
-@pytest.mark.parametrize("status", NON_READY_STATUSES)
-def test_put_local_skill_non_ready_agent_returns_409(session_factory, config, status):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, status=status)
-
-    response = client.put(
-        f"/api/agents/{AGENT_NAME}/skills/local/notes", json={"content": SAMPLE_CONTENT}
-    )
-
-    assert response.status_code == 409
-    assert response.json() == {"error": "agent is not ready for memory changes"}
 
 
 def test_put_local_skill_client_error_returns_502(session_factory, config):

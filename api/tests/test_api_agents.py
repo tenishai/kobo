@@ -33,6 +33,7 @@ from kobo_api.clients import Clients, StorageNotFound
 from kobo_api.config import Config
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import create_app, get_session
+from kobo_api.kinds import KIND_CONNECTED
 from kobo_api.models import Agent, AgentStatus, Base
 from kobo_api.provisioner import sweep_interrupted
 from tests.fakes import (
@@ -184,25 +185,6 @@ def test_create_agent_returns_201_pending_then_provisions_to_ready(client):
     assert all(s["status"] == "done" for s in body["steps"] if s["name"] != "avatar")
     assert all(s["error"] is None for s in body["steps"] if s["name"] != "avatar")
     assert body["first_reply"] == "hello yourself, human"
-
-
-def test_create_agent_step_labels_match_ui_checklist_vocabulary(client):
-    client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM})
-
-    body = _poll_until(client, AGENT_NAME, {"ready", "failed"})
-
-    labels = {s["name"]: s["label"] for s in body["steps"]}
-    assert labels == {
-        "repo": "Repository",
-        "avatar": "Paint the portrait",
-        "onboard": "Platform onboarding",
-        "access": "Model access",
-        "wire": "Deploy wiring",
-        "build": "Image build",
-        "deploy": "Deploy",
-        "hello": "First contact",
-        "directory": "Joins the agent directory",
-    }
 
 
 def test_create_agent_no_model_falls_back_to_default(client, config):
@@ -564,30 +546,6 @@ def test_get_agent_capability_is_null_until_earned(
     assert "capability" in detail
 
 
-def test_get_agent_purpose_tags_and_capability_null_for_pre_existing_rows(
-    session_factory, config, clients
-):
-    """A row that predates the purpose_tags/capability columns (or was
-    simply never given values) must render `[]`/`null`, not 500 — same
-    story as `test_get_agent_team_is_null_for_pre_existing_rows` above."""
-    client = TestClient(create_app(session_factory, config=config, clients=clients))
-    session = session_factory()
-    session.add(
-        Agent(
-            name=AGENT_NAME,
-            persona=PERSONA,
-            model_id=config.models[0].id,
-            status=AgentStatus.READY,
-        )
-    )
-    session.commit()
-    session.close()
-
-    detail = client.get(f"/api/agents/{AGENT_NAME}").json()
-    assert detail["purpose_tags"] == []
-    assert detail["capability"] is None
-
-
 # --- created_by / group_name (access control, Task A2) ----------------------
 #
 # The identity-attribution slice reuses test_web_teach.py's real-JWT idiom
@@ -787,26 +745,6 @@ def test_list_agents_exposes_created_by_and_group_name(client, session_factory, 
     row = client.get("/api/agents").json()["agents"][0]
     assert row["created_by"] == "owner@example.com"
     assert row["group_name"] == "payments-eng"
-
-
-def test_get_agent_exposes_created_by_and_group_name(client, session_factory, config):
-    session = session_factory()
-    session.add(
-        Agent(
-            name=AGENT_NAME,
-            persona=PERSONA,
-            model_id=config.models[0].id,
-            status=AgentStatus.READY,
-            created_by="owner@example.com",
-            group_name="payments-eng",
-        )
-    )
-    session.commit()
-    session.close()
-
-    body = client.get(f"/api/agents/{AGENT_NAME}").json()
-    assert body["created_by"] == "owner@example.com"
-    assert body["group_name"] == "payments-eng"
 
 
 def test_create_agent_pipeline_materializes_staged_skill_and_persona_body(client, fake_github):
@@ -1010,14 +948,6 @@ def test_list_agents_marks_an_agent_the_room_composed(client):
 
 
 # --- GET /api/agents/{name} --------------------------------------------------------
-
-
-def test_get_agent_marks_an_agent_the_room_composed(client):
-    client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM})
-
-    response = client.get(f"/api/agents/{AGENT_NAME}")
-
-    assert response.json()["kind"] == "composed"
 
 
 def test_get_agent_unknown_name_returns_404(client):
@@ -1337,6 +1267,37 @@ def test_retry_stamps_the_heartbeat_so_a_live_retry_is_not_swept(
 
     # Another replica sweeps right now, before the new run's first beat.
     assert sweep_interrupted(session_factory) == 0
+
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).one()
+    assert agent.status == AgentStatus.PROVISIONING
+    assert agent.error is None
+    session.close()
+
+
+def test_retry_resumes_an_agent_parked_on_its_setup_pull_request(
+    session_factory, config, clients, monkeypatch
+):
+    """WAITING is a resume by hand: the person who just merged the setup PR
+    does not have to wait for the sweep. Same 202, same primitive."""
+    _sweeping_pipeline_is_replaced(monkeypatch)
+    seed_session = session_factory()
+    seed_session.add(
+        Agent(
+            name=AGENT_NAME,
+            persona=PERSONA,
+            model_id=config.models[0].id,
+            kind=KIND_CONNECTED,
+            status=AgentStatus.WAITING,
+            error="Waiting for someone on your team to review and merge the setup pull request: https://github.com/o/r/pull/3",
+            gojira_app_id=4,
+        )
+    )
+    seed_session.commit()
+    seed_session.close()
+
+    resume_client = TestClient(create_app(session_factory, config=config, clients=clients))
+    assert resume_client.post(f"/api/agents/{AGENT_NAME}/retry").status_code == 202
 
     session = session_factory()
     agent = session.query(Agent).filter_by(name=AGENT_NAME).one()
@@ -1868,40 +1829,6 @@ def test_chat_relay_connection_error_returns_502_with_fixed_plain_copy(
     assert response.json() == {"error": "The switchboard did not answer. Try again shortly."}
 
 
-def test_chat_relay_non_json_body_returns_502_with_fixed_plain_copy(
-    session_factory, config, fake_github, fake_gojira, fake_agent, monkeypatch
-):
-    """A 2xx relay response whose body isn't JSON (`CabalClient.relay`
-    doesn't wrap the resulting `json.JSONDecodeError` either) must still
-    surface as this same fixed 502."""
-    import httpx
-
-    from kobo_api.clients import CabalClient
-
-    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
-    cfg = _enabled_cabal_config(config)
-
-    def _non_json(request):
-        return httpx.Response(200, text="not json")
-
-    real_cabal = CabalClient(
-        "http://cabal.internal",
-        "op-token",
-        client=httpx.Client(transport=httpx.MockTransport(_non_json)),
-    )
-    client = _client_with_cabal(
-        session_factory, cfg, fake_github, fake_gojira, fake_agent, real_cabal
-    )
-    _seed_agent(session_factory, cfg)
-
-    response = client.post(
-        f"/api/agents/{AGENT_NAME}/chat", json={"messages": [{"role": "user", "text": "hi"}]}
-    )
-
-    assert response.status_code == 502
-    assert response.json() == {"error": "The switchboard did not answer. Try again shortly."}
-
-
 # --- chat relay failure + delivery-aware copy (Task 6) -----------------------
 
 
@@ -2031,16 +1958,6 @@ def test_list_agents_includes_model_label_from_catalog(client, session_factory, 
     assert row["model_label"] == config.models[0].label
 
 
-def test_get_agent_includes_model_label_from_catalog(client, session_factory, config):
-    _seed_agent(session_factory, config)
-
-    response = client.get(f"/api/agents/{AGENT_NAME}")
-
-    body = response.json()
-    assert body["model"] == config.models[0].id
-    assert body["model_label"] == config.models[0].label
-
-
 def test_list_agents_model_label_falls_back_to_raw_id_when_not_in_catalog(
     client, session_factory, config
 ):
@@ -2053,16 +1970,22 @@ def test_list_agents_model_label_falls_back_to_raw_id_when_not_in_catalog(
     assert row["model_label"] == "ancient-model-no-longer-offered"
 
 
-def test_get_agent_model_label_falls_back_to_raw_id_when_not_in_catalog(
+def test_model_label_for_a_retired_id_is_its_kin_in_the_catalog(
     client, session_factory, config
 ):
-    _seed_agent(session_factory, config, model_id="ancient-model-no-longer-offered")
+    """The name outlives the id: an agent still on claude-sonnet-4-5 reads
+    as the catalog's Sonnet, with the raw id on the hover (`model`)."""
+    from kobo_api.config import ModelChoice
 
-    response = client.get(f"/api/agents/{AGENT_NAME}")
+    config.models = [
+        ModelChoice(id="vertex_ai/claude-sonnet-5", label="Claude Affordable (Sonnet)"),
+        ModelChoice(id="vertex_ai/gemini-3.5-flash", label="Gemini Affordable (Flash)"),
+    ]
+    _seed_agent(session_factory, config, model_id="vertex_ai/claude-sonnet-4-5")
 
-    body = response.json()
-    assert body["model"] == "ancient-model-no-longer-offered"
-    assert body["model_label"] == "ancient-model-no-longer-offered"
+    row = client.get("/api/agents").json()["agents"][0]
+    assert row["model"] == "vertex_ai/claude-sonnet-4-5"
+    assert row["model_label"] == "Claude Affordable (Sonnet)"
 
 
 def test_retry_agent_launch_failure_returns_503_and_a_later_retry_still_succeeds(

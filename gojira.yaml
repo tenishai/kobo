@@ -1,0 +1,23 @@
+# Gojira app spec — this file is the contract between your repo and Gojira.
+# Change the class or add overrides here; Gojira regenerates the manifests
+# when this file changes.
+app: kobo
+class: gateway
+environments:
+  - name: dev
+    cluster: gojira-sandbox
+    namespace: kobo
+service_account: kobo
+env:
+  KOBO_CONFIG: "/config/config.yaml"
+data_mount: { pvc: kobo-data, path: /data, fs_group: 1001 }
+secret_mounts:                # Secrets read as files
+  - { name: kobo-config, path: /config/config.yaml, key: config.yaml }
+  - { name: kobo-github, path: /secrets/github/private-key.pem, key: private-key.pem }
+arch: arm64                  # image platform + node arch; amd64 otherwise
+node_selector:                # added to the pod verbatim (how this cluster provides arm64, a pool, …)
+  cloud.google.com/compute-class: "Scale-Out"
+health: /api/healthz
+# overrides:                  # needs a justification — see docs
+#   requests: { cpu: "1", memory: 1Gi }
+#   justification: "measured p99 over 14 days"

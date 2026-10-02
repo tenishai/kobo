@@ -856,6 +856,16 @@ textarea.field__input {
   text-decoration: underline;
 }
 
+/* The link the room wants pressed: the persona builder. Larger and bolder
+   than its neighbours, underlined at rest, so a first-time eye finds it
+   before the list of ready-made personas below it. */
+.btn--link-strong {
+  font-size: 0.95rem;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
 /* A link that adjusts a view rather than starting something: muted until
    it is pointed at, so it never competes with the link beside it. */
 .btn--link-quiet {
@@ -929,13 +939,66 @@ textarea.field__input {
    list, and the dialog body past the edge of the dialog. Every level here
    says min-width:0 instead, so the description cell (which already
    truncates) is what gives way. */
+.list-scroll {
+  /* The shell around a scrolling list. It carries the fade that says
+     "there is more below", because a `::after` on the scrolling box itself
+     would scroll away with the rows. `.list-scroll--more` is set from a
+     measurement of the box (CreateModal.svelte): on while rows remain
+     below the bottom edge, off at the end. */
+  position: relative;
+  min-width: 0;
+}
+
+.list-scroll::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 3.5rem;
+  background: linear-gradient(to bottom, transparent, var(--panel) 85%);
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.list-scroll--more::after {
+  opacity: 1;
+}
+
 .list--scroll {
-  /* Four rows and most of a fifth. Cutting the fifth is deliberate: a box
-     that ends on a clean row edge looks like the end of the list. */
-  max-height: 12rem;
+  /* A group heading plus five rows, and most of a sixth. The cut row is
+     one hint that the box scrolls; the fade above and the always-visible
+     scrollbar below are the other two. The old box was one row shorter,
+     and the heading ate the cut row, so it ended on a clean edge and read
+     as the whole list. */
+  max-height: 15.25rem;
   min-width: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  /* Overlay scrollbars (macOS default) hide until the pointer moves, so a
+     still box gives no sign it scrolls. The `::-webkit-scrollbar` rules
+     below make Chrome and Safari draw a classic, always-visible one.
+     Do NOT add `scrollbar-width` or `scrollbar-color` here: when either is
+     set, Chrome ignores every `::-webkit-scrollbar` rule and goes back to
+     the overlay scrollbar that hides (that is how the first version of this
+     shipped, and the bar vanished again). Firefox has no way to force a
+     visible bar on macOS; there the fade below is the hint. */
+  scrollbar-gutter: stable;
+}
+
+.list--scroll::-webkit-scrollbar {
+  width: 10px;
+}
+
+.list--scroll::-webkit-scrollbar-thumb {
+  border: 2px solid var(--panel);
+  border-radius: 5px;
+  background: var(--muted);
+}
+
+.list--scroll::-webkit-scrollbar-track {
+  background: var(--bg);
 }
 
 .list--scroll .list__row {

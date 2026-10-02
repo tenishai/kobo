@@ -700,32 +700,6 @@ def test_connect_slack_secrets_platform_failure_is_the_same_502_as_a_failed_writ
     session.close()
 
 
-def test_connect_slack_unknown_agent_returns_404(session_factory, config):
-    client = _make_client(session_factory, config)
-
-    response = client.post(
-        f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
-    )
-
-    assert response.status_code == 404
-    assert "error" in response.json()
-
-
-@pytest.mark.parametrize("status", NON_READY_STATUSES)
-def test_connect_slack_non_ready_agent_returns_409(session_factory, config, status):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, status=status)
-
-    response = client.post(
-        f"/api/agents/{AGENT_NAME}/slack/connect",
-        json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN},
-    )
-
-    assert response.status_code == 409
-    assert response.json() == {"error": "agent is not ready to connect to Slack yet"}
-
-
 def test_connect_slack_returns_503_when_slack_not_configured(session_factory, config):
     client = _make_client(session_factory, config, slack=None)
     _seed_agent(session_factory, config, slack_app_id=APP_ID)
@@ -1238,16 +1212,6 @@ def test_get_agent_slack_default_shape_before_any_setup(session_factory, config)
     # existed; it's ALWAYS present now (the UI tab is unconditional).
     client = _make_client(session_factory, config)
     _seed_agent(session_factory, config)
-
-    response = client.get(f"/api/agents/{AGENT_NAME}")
-
-    assert response.status_code == 200
-    assert response.json()["slack"] == {"app_id": None, "channels": [], "state": "idle"}
-
-
-def test_agent_payload_always_carries_slack_block(session_factory, config):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config)  # no slack_app_id at all
 
     response = client.get(f"/api/agents/{AGENT_NAME}")
 

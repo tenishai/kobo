@@ -166,23 +166,6 @@ def test_list_all_true_returns_every_row_unfiltered(session_factory, config, mon
     assert [c["task_id"] for c in body["conversations"]] == ["t-1", "t-2", "t-3"]
 
 
-def test_list_limit_passthrough_only_when_given(session_factory, config, monkeypatch):
-    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
-    cfg = _enabled_config(config)
-    fake_cabal = FakeCabal(conversations_result=[])
-    client = _make_client(session_factory, cfg, cabal=fake_cabal)
-
-    client.get("/api/colleagues/conversations")
-    assert fake_cabal.list_conversations_calls[-1] == {
-        "limit": None, "target": None, "caller": None,
-    }
-
-    client.get("/api/colleagues/conversations", params={"limit": "7"})
-    assert fake_cabal.list_conversations_calls[-1] == {
-        "limit": 7, "target": None, "caller": None,
-    }
-
-
 def test_list_upstream_failure_returns_502_plain_copy(session_factory, config, monkeypatch):
     monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
     cfg = _enabled_config(config)

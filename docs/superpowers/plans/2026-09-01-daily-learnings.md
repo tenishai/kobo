@@ -20,7 +20,7 @@
 - daedalus repo: `ruff check src tests` must pass (wrap long lines); tests run `python -m pytest tests/ -x -q` from the repo root.
 - kobo API tests run from `api/`: `python -m pytest tests/<file> -x -q`. kobo UI tests run from `ui/`: `npx vitest run <file>`.
 - New kobo table follows the `Base.metadata.create_all` convention (no manual ALTER; see `RepoAccess`'s docstring in `api/kobo_api/models.py`).
-- daedalus work happens on branch `feat/learnings` in `~/Documents/GitHub/daedalus`. kobo work happens on branch `feat/daily-learnings` in `~/Documents/GitHub/kobo`.
+- daedalus work happens on branch `feat/learnings` in `../daedalus`. kobo work happens on branch `feat/daily-learnings` in `.`.
 
 ---
 
@@ -28,8 +28,8 @@
 
 | Tasks | Repo | Branch |
 |-------|------|--------|
-| 1-3 | `~/Documents/GitHub/daedalus` | `feat/learnings` |
-| 4-9 | `~/Documents/GitHub/kobo` | `feat/daily-learnings` |
+| 1-3 | `../daedalus` | `feat/learnings` |
+| 4-9 | `.` | `feat/daily-learnings` |
 
 Tasks 1-3 and 4-9 are independent streams; within each stream, tasks are ordered.
 
@@ -48,7 +48,7 @@ Tasks 1-3 and 4-9 are independent streams; within each stream, tasks are ordered
 - [ ] **Step 1: Create the branch**
 
 ```bash
-git -C ~/Documents/GitHub/daedalus checkout -b feat/learnings
+git -C ../daedalus checkout -b feat/learnings
 ```
 
 - [ ] **Step 2: Write the failing tests**
@@ -122,7 +122,7 @@ def test_recent_missing_file_reads_as_empty(tmp_path):
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_memory_journal.py -x -q`
+Run: `cd ../daedalus && python -m pytest tests/test_memory_journal.py -x -q`
 Expected: FAIL with `ModuleNotFoundError: No module named 'daedalus.memory.journal'`
 
 - [ ] **Step 4: Write the implementation**
@@ -240,15 +240,15 @@ def recent(
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_memory_journal.py -x -q`
+Run: `cd ../daedalus && python -m pytest tests/test_memory_journal.py -x -q`
 Expected: 6 passed
 
 - [ ] **Step 6: Lint and commit**
 
 ```bash
-cd ~/Documents/GitHub/daedalus && ruff check src/daedalus/memory/journal.py tests/test_memory_journal.py
-git -C ~/Documents/GitHub/daedalus add src/daedalus/memory/journal.py tests/test_memory_journal.py
-git -C ~/Documents/GitHub/daedalus commit -m "feat(memory): conversation journal, the learnings summarizer's source"
+cd ../daedalus && ruff check src/daedalus/memory/journal.py tests/test_memory_journal.py
+git -C ../daedalus add src/daedalus/memory/journal.py tests/test_memory_journal.py
+git -C ../daedalus commit -m "feat(memory): conversation journal, the learnings summarizer's source"
 ```
 
 ---
@@ -350,7 +350,7 @@ If `tests/test_agent.py` uses a different asyncio test convention (e.g. `anyio` 
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_agent_journal.py -x -q`
+Run: `cd ../daedalus && python -m pytest tests/test_agent_journal.py -x -q`
 Expected: FAIL -- first test's `recent(...)` returns `[]` (no journaling exists yet)
 
 - [ ] **Step 4: Implement the hook**
@@ -411,15 +411,15 @@ Check the imports at the top of `agent.py`: `asyncio` and `Path` are already imp
 
 - [ ] **Step 5: Run the new tests and the full suite**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_agent_journal.py -x -q && python -m pytest tests/ -x -q`
+Run: `cd ../daedalus && python -m pytest tests/test_agent_journal.py -x -q && python -m pytest tests/ -x -q`
 Expected: all pass (the full-suite run proves no existing handle_task test broke)
 
 - [ ] **Step 6: Lint and commit**
 
 ```bash
-cd ~/Documents/GitHub/daedalus && ruff check src/daedalus/agent.py tests/test_agent_journal.py
-git -C ~/Documents/GitHub/daedalus add src/daedalus/agent.py tests/test_agent_journal.py
-git -C ~/Documents/GitHub/daedalus commit -m "feat(agent): journal completed conversations for the learnings summarizer"
+cd ../daedalus && ruff check src/daedalus/agent.py tests/test_agent_journal.py
+git -C ../daedalus add src/daedalus/agent.py tests/test_agent_journal.py
+git -C ../daedalus commit -m "feat(agent): journal completed conversations for the learnings summarizer"
 ```
 
 ---
@@ -554,7 +554,7 @@ def test_parse_candidates_caps_count():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_memory_learnings.py -x -q`
+Run: `cd ../daedalus && python -m pytest tests/test_memory_learnings.py -x -q`
 Expected: FAIL with `ModuleNotFoundError: No module named 'daedalus.memory.learnings'`
 
 - [ ] **Step 3: Write the module**
@@ -701,7 +701,7 @@ def parse_candidates(text: str) -> list[dict]:
 
 - [ ] **Step 4: Run pure-function tests**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_memory_learnings.py -x -q`
+Run: `cd ../daedalus && python -m pytest tests/test_memory_learnings.py -x -q`
 Expected: 8 passed
 
 - [ ] **Step 5: Write the failing dispatch tests**
@@ -808,7 +808,7 @@ Note: `VERIFIED_SUB_KEY` lives in `daedalus.task` (module constant). Confirm the
 
 - [ ] **Step 6: Run to verify failure**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_agent_learnings.py -x -q`
+Run: `cd ../daedalus && python -m pytest tests/test_agent_learnings.py -x -q`
 Expected: FAIL -- unknown system task `'learnings'` is refused (state FAILED where COMPLETED expected)
 
 - [ ] **Step 7: Implement the dispatch and handler**
@@ -889,15 +889,15 @@ from daedalus.memory.learnings import LEARNINGS_MARKER
 
 - [ ] **Step 8: Run the new tests and the full suite**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_agent_learnings.py tests/test_memory_learnings.py -x -q && python -m pytest tests/ -x -q`
+Run: `cd ../daedalus && python -m pytest tests/test_agent_learnings.py tests/test_memory_learnings.py -x -q && python -m pytest tests/ -x -q`
 Expected: all pass
 
 - [ ] **Step 9: Lint and commit**
 
 ```bash
-cd ~/Documents/GitHub/daedalus && ruff check src tests
-git -C ~/Documents/GitHub/daedalus add src/daedalus/memory/learnings.py src/daedalus/agent.py tests/test_memory_learnings.py tests/test_agent_learnings.py
-git -C ~/Documents/GitHub/daedalus commit -m "feat(memory): learnings system task -- summarize the day into candidates"
+cd ../daedalus && ruff check src tests
+git -C ../daedalus add src/daedalus/memory/learnings.py src/daedalus/agent.py tests/test_memory_learnings.py tests/test_agent_learnings.py
+git -C ../daedalus commit -m "feat(memory): learnings system task -- summarize the day into candidates"
 ```
 
 ---
@@ -915,7 +915,7 @@ git -C ~/Documents/GitHub/daedalus commit -m "feat(memory): learnings system tas
 - [ ] **Step 1: Create the branch**
 
 ```bash
-git -C ~/Documents/GitHub/kobo checkout -b feat/daily-learnings
+git -C . checkout -b feat/daily-learnings
 ```
 
 - [ ] **Step 2: Write the failing test**
@@ -985,7 +985,7 @@ def test_same_agent_same_hash_is_rejected(session):
 
 - [ ] **Step 3: Run to verify failure**
 
-Run: `cd ~/Documents/GitHub/kobo/api && python -m pytest tests/test_learnings.py -x -q`
+Run: `cd api && python -m pytest tests/test_learnings.py -x -q`
 Expected: FAIL with `ImportError: cannot import name 'AgentLearning'`
 
 - [ ] **Step 4: Add the model**
@@ -1045,14 +1045,14 @@ LEARNING_STATUSES = (
 
 - [ ] **Step 5: Run to verify pass**
 
-Run: `cd ~/Documents/GitHub/kobo/api && python -m pytest tests/test_learnings.py -x -q`
+Run: `cd api && python -m pytest tests/test_learnings.py -x -q`
 Expected: 2 passed
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C ~/Documents/GitHub/kobo add api/kobo_api/models.py api/tests/test_learnings.py
-git -C ~/Documents/GitHub/kobo commit -m "feat(learnings): agent_learnings table -- the curation queue"
+git -C . add api/kobo_api/models.py api/tests/test_learnings.py
+git -C . commit -m "feat(learnings): agent_learnings table -- the curation queue"
 ```
 
 ---
@@ -1181,7 +1181,7 @@ Note: the envelope test's `parts` path assumes `_to_a2a_message` produces `{"kin
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd ~/Documents/GitHub/kobo/api && python -m pytest tests/test_learnings.py -x -q`
+Run: `cd api && python -m pytest tests/test_learnings.py -x -q`
 Expected: FAIL with `ModuleNotFoundError: No module named 'kobo_api.learnings'`
 
 - [ ] **Step 3: Write the module**
@@ -1375,14 +1375,14 @@ def _build_learnings_envelope(on_date: str) -> dict:
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `cd ~/Documents/GitHub/kobo/api && python -m pytest tests/test_learnings.py -x -q`
+Run: `cd api && python -m pytest tests/test_learnings.py -x -q`
 Expected: all pass (10 tests)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C ~/Documents/GitHub/kobo add api/kobo_api/learnings.py api/kobo_api/clients.py api/tests/test_learnings.py
-git -C ~/Documents/GitHub/kobo commit -m "feat(learnings): room-side validation, storage, lifecycle, envelope"
+git -C . add api/kobo_api/learnings.py api/kobo_api/clients.py api/tests/test_learnings.py
+git -C . commit -m "feat(learnings): room-side validation, storage, lifecycle, envelope"
 ```
 
 ---
@@ -1528,7 +1528,7 @@ Adjust `Config(...)` construction to match how `api/tests/test_web_teach.py`'s `
 
 - [ ] **Step 3: Run to verify failure**
 
-Run: `cd ~/Documents/GitHub/kobo/api && python -m pytest tests/test_learnings.py -x -q`
+Run: `cd api && python -m pytest tests/test_learnings.py -x -q`
 Expected: FAIL with `ImportError: cannot import name 'run_nightly'`
 
 - [ ] **Step 4: Implement the sweep and loop**
@@ -1641,14 +1641,14 @@ from kobo_api.learnings import nightly_loop as learnings_nightly_loop
 
 - [ ] **Step 5: Run new tests, then the whole API suite**
 
-Run: `cd ~/Documents/GitHub/kobo/api && python -m pytest tests/test_learnings.py -x -q && python -m pytest tests/ -x -q`
+Run: `cd api && python -m pytest tests/test_learnings.py -x -q && python -m pytest tests/ -x -q`
 Expected: all pass. The full-suite run is the proof the lifespan swap broke nothing (MCP tests exercise `mcp_lifespan` through `_room_lifespan` now).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C ~/Documents/GitHub/kobo add api/kobo_api/learnings.py api/kobo_api/main.py api/tests/test_learnings.py
-git -C ~/Documents/GitHub/kobo commit -m "feat(learnings): nightly sweep, lifespan-owned"
+git -C . add api/kobo_api/learnings.py api/kobo_api/main.py api/tests/test_learnings.py
+git -C . commit -m "feat(learnings): nightly sweep, lifespan-owned"
 ```
 
 ---
@@ -1680,7 +1680,7 @@ def test_note_filename_prefix_parameter():
     assert len(name) - len(".md") <= 40
 ```
 
-Run: `cd ~/Documents/GitHub/kobo/api && python -m pytest tests/test_teach.py -x -q`
+Run: `cd api && python -m pytest tests/test_teach.py -x -q`
 Expected: FAIL with `TypeError: note_filename() got an unexpected keyword argument 'prefix'`
 
 - [ ] **Step 2: Add the prefix parameter**
@@ -1699,7 +1699,7 @@ and
 
 Add one line to the docstring's first paragraph: `prefix` defaults to `"chat"` (the teach gesture); the learnings approve route passes `"learning"` so its notes read as `intake:learning-...` in techne provenance. Verify the cap comment still holds: "learning-" (9) + 8-digit date + "-" (1) = 18 fixed chars, slug capped at 20 keeps the name at 38 <= 40.
 
-Run: `cd ~/Documents/GitHub/kobo/api && python -m pytest tests/test_teach.py -x -q`
+Run: `cd api && python -m pytest tests/test_teach.py -x -q`
 Expected: PASS
 
 - [ ] **Step 3: Write the failing route tests**
@@ -1841,7 +1841,7 @@ Adapt `github.intake_contents` to `_CapturingGitHub`'s actual attribute name (re
 
 - [ ] **Step 4: Run to verify failure**
 
-Run: `cd ~/Documents/GitHub/kobo/api && python -m pytest tests/test_web_learnings.py -x -q`
+Run: `cd api && python -m pytest tests/test_web_learnings.py -x -q`
 Expected: FAIL with 404s on the learnings routes (routes don't exist yet)
 
 - [ ] **Step 5: Implement the payload model, gate, routes, and detail fields**
@@ -2080,14 +2080,14 @@ def _decider_or_403(
 
 - [ ] **Step 6: Run the new tests, then the whole API suite**
 
-Run: `cd ~/Documents/GitHub/kobo/api && python -m pytest tests/test_web_learnings.py tests/test_teach.py -x -q && python -m pytest tests/ -x -q`
+Run: `cd api && python -m pytest tests/test_web_learnings.py tests/test_teach.py -x -q && python -m pytest tests/ -x -q`
 Expected: all pass
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git -C ~/Documents/GitHub/kobo add api/kobo_api/main.py api/kobo_api/teach.py api/tests/test_web_learnings.py api/tests/test_teach.py
-git -C ~/Documents/GitHub/kobo commit -m "feat(learnings): routes -- list, approve via teach lane, deny, bulk, detail fields"
+git -C . add api/kobo_api/main.py api/kobo_api/teach.py api/tests/test_web_learnings.py api/tests/test_teach.py
+git -C . commit -m "feat(learnings): routes -- list, approve via teach lane, deny, bulk, detail fields"
 ```
 
 ---
@@ -2120,7 +2120,7 @@ In `ui/src/lib/tabs.test.ts`, change the order pin to:
     ]);
 ```
 
-Run: `cd ~/Documents/GitHub/kobo/ui && npx vitest run src/lib/tabs.test.ts`
+Run: `cd ui && npx vitest run src/lib/tabs.test.ts`
 Expected: FAIL (learnings not in the list)
 
 - [ ] **Step 2: Update tabs.ts**
@@ -2156,7 +2156,7 @@ and in `visibleTabs`:
   const base: TabId[] = ["overview", "chat", "memory", "learnings", "skills", "tooling", "slack"];
 ```
 
-Run: `cd ~/Documents/GitHub/kobo/ui && npx vitest run src/lib/tabs.test.ts`
+Run: `cd ui && npx vitest run src/lib/tabs.test.ts`
 Expected: PASS
 
 - [ ] **Step 3: Add api.ts types and functions**
@@ -2275,14 +2275,14 @@ Add `listLearnings`, `decideLearning`, `decideLearningsBulk` to the imports from
 
 - [ ] **Step 5: Type-check and run the UI suite**
 
-Run: `cd ~/Documents/GitHub/kobo/ui && npx svelte-check --threshold error 2>/dev/null || npx tsc --noEmit; npx vitest run`
+Run: `cd ui && npx svelte-check --threshold error 2>/dev/null || npx tsc --noEmit; npx vitest run`
 Expected: no new type errors; existing suite passes. (One expected failure class: any test that pins `AgentDetail` fixtures may now need `pending_learnings: 0, can_decide_learnings: false` added -- fix those fixtures.)
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C ~/Documents/GitHub/kobo add ui/src/lib/api.ts ui/src/lib/queries.ts ui/src/lib/tabs.ts ui/src/lib/tabs.test.ts
-git -C ~/Documents/GitHub/kobo commit -m "feat(ui): learnings api client, query factories, tab"
+git -C . add ui/src/lib/api.ts ui/src/lib/queries.ts ui/src/lib/tabs.ts ui/src/lib/tabs.test.ts
+git -C . commit -m "feat(ui): learnings api client, query factories, tab"
 ```
 
 ---
@@ -2408,7 +2408,7 @@ Adapt `stubFetch`'s value convention (static object vs function) to what `render
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd ~/Documents/GitHub/kobo/ui && npx vitest run src/components/LearningsPanel.test.ts`
+Run: `cd ui && npx vitest run src/components/LearningsPanel.test.ts`
 Expected: FAIL (component does not exist)
 
 - [ ] **Step 3: Write the component**
@@ -2691,14 +2691,14 @@ In `ui/src/pages/AgentDetail.svelte`:
 
 - [ ] **Step 5: Run the panel tests and the whole UI suite**
 
-Run: `cd ~/Documents/GitHub/kobo/ui && npx vitest run src/components/LearningsPanel.test.ts && npx vitest run`
+Run: `cd ui && npx vitest run src/components/LearningsPanel.test.ts && npx vitest run`
 Expected: all pass, including `copy.test.ts` (no em dashes) and any AgentDetail tests (fixtures may need the two new AgentDetail fields from Task 8 Step 5).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C ~/Documents/GitHub/kobo add ui/src/components/LearningsPanel.svelte ui/src/components/LearningsPanel.test.ts ui/src/pages/AgentDetail.svelte
-git -C ~/Documents/GitHub/kobo commit -m "feat(ui): learnings tab -- day-grouped verdict cards with pending badge"
+git -C . add ui/src/components/LearningsPanel.svelte ui/src/components/LearningsPanel.test.ts ui/src/pages/AgentDetail.svelte
+git -C . commit -m "feat(ui): learnings tab -- day-grouped verdict cards with pending badge"
 ```
 
 ---
@@ -2791,7 +2791,7 @@ one (default `[]`) or set the column after seeding.
 
 - [ ] **Step 3: Run to verify failure**
 
-Run: `cd ~/Documents/GitHub/kobo/api && python -m pytest tests/<skills test file> -x -q`
+Run: `cd api && python -m pytest tests/<skills test file> -x -q`
 Expected: the first two tests FAIL (repo-only skill invisible; ghost row survives)
 
 - [ ] **Step 4: Implement**
@@ -2879,7 +2879,7 @@ catches it).
 
 - [ ] **Step 5: Run the new tests, then the whole API suite**
 
-Run: `cd ~/Documents/GitHub/kobo/api && python -m pytest tests/<skills test file> -x -q && python -m pytest tests/ -x -q`
+Run: `cd api && python -m pytest tests/<skills test file> -x -q && python -m pytest tests/ -x -q`
 Expected: all pass. Existing list_skills tests that seeded only the DB
 column may now need their fake repo seeded with matching trees (or the
 failing-clone fake) -- fix them to describe the new truth, not the drift.
@@ -2887,8 +2887,8 @@ failing-clone fake) -- fix them to describe the new truth, not the drift.
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C ~/Documents/GitHub/kobo add api/kobo_api/skills.py api/kobo_api/main.py api/tests/
-git -C ~/Documents/GitHub/kobo commit -m "fix(skills): reconcile the ledger from the bundle on read -- direct-PR skills surface"
+git -C . add api/kobo_api/skills.py api/kobo_api/main.py api/tests/
+git -C . commit -m "fix(skills): reconcile the ledger from the bundle on read -- direct-PR skills surface"
 ```
 
 ---
@@ -2898,7 +2898,7 @@ git -C ~/Documents/GitHub/kobo commit -m "fix(skills): reconcile the ledger from
 1. daedalus branch -> PR -> coworker review -> merge -> build runtime image tagged `<sha>-t<techne_version>`.
 2. kobo branch -> merge -> build kobo image.
 3. Kyle rolls kobo (`kubectl -n kobo set image ...` -- classifier-blocked for the agent, Kyle runs it).
-4. `runtime_image` re-pin in the deployment's kobo-config org.yaml AFTER the new runtime image exists (sequence law).
+4. `runtime_image` re-pin in the deployment's org config org.yaml AFTER the new runtime image exists (sequence law).
 5. Agents pick up the journal + learnings handler on their next natural rebuild/roll.
 6. Wire acceptance: converse with the wren fixture in Slack, wait for (or manually trigger) the nightly sweep, verify a pending card appears, approve it, verify techne provenance reads `intake:learning-...`.
 

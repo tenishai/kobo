@@ -9,12 +9,10 @@
   import NewAgentModal from "./components/NewAgentModal.svelte";
   import type { NewAgentChoice } from "./components/NewAgentModal.svelte";
   import Sidebar from "./components/Sidebar.svelte";
-  import TeamGuideModal from "./components/TeamGuideModal.svelte";
   import Toasts from "./components/Toasts.svelte";
   import AgentDetail from "./pages/AgentDetail.svelte";
   import Dashboard from "./pages/Dashboard.svelte";
   import GettingStarted from "./pages/GettingStarted.svelte";
-  import Personas from "./pages/Personas.svelte";
   import {
     groupsQuery,
     modelsQuery,
@@ -73,7 +71,6 @@
   // (rather than by way of the chooser) goes through.
   let chooserOpen = $state(false);
   let createOpen = $state(false);
-  let guideOpen = $state(false);
   let connectOpen = $state(false);
 
   function onOpenChooser(): void {
@@ -92,10 +89,6 @@
     createOpen = false;
   }
 
-  function onCloseGuide(): void {
-    guideOpen = false;
-  }
-
   function onCloseConnect(): void {
     connectOpen = false;
   }
@@ -108,8 +101,6 @@
     chooserOpen = false;
     if (choice === "build") {
       onOpenCreate();
-    } else if (choice === "guide") {
-      guideOpen = true;
     } else {
       connectOpen = true;
     }
@@ -129,8 +120,6 @@
         <Dashboard />
       {:else if route.page === "getting-started"}
         <GettingStarted />
-      {:else if route.page === "personas"}
-        <Personas />
       {:else}
         <!-- Keyed by name: a direct hash edit from one agent's detail page
              to another's (no trip back through the dashboard in between)
@@ -144,7 +133,6 @@
 
   <NewAgentModal open={chooserOpen} onclose={onCloseChooser} onchoose={onChoose} />
   <CreateModal open={createOpen} onclose={onCloseCreate} />
-  <TeamGuideModal open={guideOpen} onclose={onCloseGuide} />
   <ConnectModal open={connectOpen} onclose={onCloseConnect} />
 </QueryClientProvider>
 

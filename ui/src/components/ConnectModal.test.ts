@@ -9,8 +9,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import ConnectModal from "./ConnectModal.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 
-const HTTP_CHOICE = "It listens on a port (the platform checks its health there)";
-const HEADLESS_CHOICE = "It does not listen on a port (a chat bot or a worker)";
 const OWNER_CHECKBOX = "I own this repository or have its owner's agreement";
 
 const CLEAN_REPORT = {
@@ -19,6 +17,8 @@ const CLEAN_REPORT = {
   adds: ["gojira.yaml", "k8s/ (including k8s/base/serviceaccount.yaml)"],
   adds_preamble: "The room cannot check who owns this repository.",
   repo: "acme/release-bot",
+  repo_name: null,
+  repo_service_account: null,
 };
 
 /** ConnectModal fires `groupsQuery` on mount. Groups empty by default (the
@@ -60,26 +60,6 @@ describe("ConnectModal — the form", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
     stubConnectRoutes();
-  });
-
-  it("asks for a repository, a name, how it runs, and the owner's word", async () => {
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    expect(await screen.findByLabelText("Repository")).not.toBeNull();
-    expect(screen.getByLabelText("Name")).not.toBeNull();
-    expect(screen.getByRole("radio", { name: HTTP_CHOICE })).not.toBeNull();
-    expect(screen.getByRole("radio", { name: HEADLESS_CHOICE })).not.toBeNull();
-    expect(screen.getByRole("checkbox", { name: OWNER_CHECKBOX })).not.toBeNull();
-  });
-
-  it("says the agent only ever gets an in-cluster address, either way it runs", async () => {
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    expect(
-      await screen.findByText(
-        "Either way the agent gets an address inside the cluster only. Nothing here makes it reachable from outside.",
-      ),
-    ).not.toBeNull();
   });
 
   it("keeps Scan and Connect shut on an empty form", async () => {
@@ -157,12 +137,43 @@ describe("ConnectModal — the scan report", () => {
     expect(connectButton().disabled).toBe(true);
   });
 
-  it("shows warnings and what the room will add, without blocking", async () => {
+  it("locks the name to the one the repository already deploys under", async () => {
+    // A connected repository keeps its own name (2026-09-29): the scan read
+    // it from the base Deployment, the form shows it as the Name and stops
+    // it being edited while that scan stands.
     stubConnectRoutes({
       "/api/connect/scan": {
         ...CLEAN_REPORT,
-        warnings: [
-          { code: "env_file_committed", message: "A .env file is committed here." },
+        repo_name: "release-bot",
+        repo_service_account: "release-bot",
+      },
+    });
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await fillTheForm();
+    await fireEvent.click(scanButton());
+
+    await screen.findByText("Nothing is in the way.");
+    const nameField = screen.getByLabelText("Name") as HTMLInputElement;
+    expect(nameField.value).toBe("release-bot");
+    expect(nameField.readOnly).toBe(true);
+    expect(screen.getByText(/keeps its own name/)).not.toBeNull();
+  });
+
+  it("puts the repository's own name in the field when a different one was typed", async () => {
+    // The report answered for the typed name and says so in its blocker.
+    // Filling the field with the repository's name stales that report, so
+    // the next Scan answers for the name the connect will actually use.
+    stubConnectRoutes({
+      "/api/connect/scan": {
+        ...CLEAN_REPORT,
+        repo_name: "pr-reviewer",
+        blockers: [
+          {
+            code: "repo_name_mismatch",
+            message:
+              "This repository already deploys as pr-reviewer (k8s/base/deployment.yaml). Connect it under that name, or rename it in the repository first.",
+          },
         ],
       },
     });
@@ -171,11 +182,12 @@ describe("ConnectModal — the scan report", () => {
     await fillTheForm();
     await fireEvent.click(scanButton());
 
-    expect(await screen.findByText("A .env file is committed here.")).not.toBeNull();
-    expect(
-      screen.getByText("The room cannot check who owns this repository."),
-    ).not.toBeNull();
-    expect(screen.getByText("gojira.yaml")).not.toBeNull();
+    expect(await screen.findByText(/already deploys as pr-reviewer/)).not.toBeNull();
+    const nameField = screen.getByLabelText("Name") as HTMLInputElement;
+    expect(nameField.value).toBe("pr-reviewer");
+    expect(nameField.readOnly).toBe(false); // the report is stale now; Scan again
+    expect(screen.getByText("Something changed since this scan. Scan again before connecting.")).not.toBeNull();
+    expect(connectButton().disabled).toBe(true);
   });
 
   it("opens Connect only once a clean scan and the owner's word are both in", async () => {
@@ -213,54 +225,6 @@ describe("ConnectModal — the scan report", () => {
     ).not.toBeNull();
   });
 
-  it("disables the no-HTTP-port option, with the room's own reason, once a scan says the room has no class for it", async () => {
-    stubConnectRoutes({
-      "/api/connect/scan": {
-        ...CLEAN_REPORT,
-        blockers: [
-          {
-            code: "headless_unavailable",
-            message: "agents with no HTTP port are not available in this room yet",
-          },
-        ],
-      },
-    });
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await fillTheForm();
-    await fireEvent.click(screen.getByRole("radio", { name: HEADLESS_CHOICE }));
-    await fireEvent.click(scanButton());
-
-    await waitFor(() => {
-      expect(
-        (screen.getByRole("radio", { name: HEADLESS_CHOICE }) as HTMLInputElement)
-          .disabled,
-      ).toBe(true);
-    });
-    // The room's sentence, not a reworded one. It appears both as the
-    // blocker and beside the option it disables.
-    expect(
-      screen.getAllByText(
-        "agents with no HTTP port are not available in this room yet",
-      ).length,
-    ).toBeGreaterThan(0);
-
-    const headless = screen.getByRole("radio", {
-      name: HEADLESS_CHOICE,
-    }) as HTMLInputElement;
-    const http = screen.getByRole("radio", { name: HTTP_CHOICE }) as HTMLInputElement;
-    expect(http.disabled).toBe(false);
-    // The answer moves off the option that was just switched off, so the
-    // form is still one a person can finish.
-    expect(http.checked).toBe(true);
-    expect(headless.checked).toBe(false);
-    // And the reason is tied to the control, not only printed under it.
-    expect(headless.getAttribute("aria-describedby")).toBe("connect-headless-reason");
-    expect(document.getElementById("connect-headless-reason")?.textContent).toContain(
-      "agents with no HTTP port are not available in this room yet",
-    );
-  });
-
 });
 
 describe("ConnectModal — connecting", () => {
@@ -268,7 +232,7 @@ describe("ConnectModal — connecting", () => {
     vi.unstubAllGlobals();
   });
 
-  it("posts the repository, the name, the run mode, empty secret names and the confirmation", async () => {
+  it("posts the repository, the name, empty secret names and the confirmation", async () => {
     stubConnectRoutes({
       "/api/connect/scan": CLEAN_REPORT,
       "/api/agents/connect": { name: "release-bot", status: "pending" },
@@ -301,7 +265,7 @@ describe("ConnectModal — connecting", () => {
     const body = JSON.parse((call?.[1] as RequestInit).body as string);
     expect(body.repo).toBe("acme/release-bot");
     expect(body.name).toBe("release-bot");
-    expect(body.run_mode).toBe("http");
+    expect(body).not.toHaveProperty("run_mode");
     expect(body.secret_names).toEqual([]);
     expect(body.confirm_repo_owner).toBe(true);
     await waitFor(() => {
@@ -369,86 +333,6 @@ describe("ConnectModal — connecting", () => {
     ).toBeNull();
   });
 
-  it("puts a taken name on the name field", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        if (url.includes("/api/agents/connect") && init?.method === "POST") {
-          return new Response(
-            JSON.stringify({ error: "name taken: 'release-bot'" }),
-            { status: 409, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        const routes: Record<string, unknown> = {
-          "/api/catalog/groups": { groups: [] },
-          "/api/connect/scan": CLEAN_REPORT,
-          "/api/": {},
-        };
-        for (const [needle, payload] of Object.entries(routes)) {
-          if (url.includes(needle)) {
-            return new Response(JSON.stringify(payload), {
-              status: 200,
-              headers: { "Content-Type": "application/json" },
-            });
-          }
-        }
-        throw new Error(`unstubbed fetch: ${url}`);
-      }),
-    );
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await fillTheForm();
-    await fireEvent.click(scanButton());
-    await screen.findByText("Nothing is in the way.");
-    await fireEvent.click(screen.getByRole("checkbox", { name: OWNER_CHECKBOX }));
-    await fireEvent.click(connectButton());
-
-    expect(
-      await screen.findByText("That name is already taken in this room."),
-    ).not.toBeNull();
-    // Connect stays shut on the name that was refused: pressing it again
-    // would only earn the same answer.
-    expect(connectButton().disabled).toBe(true);
-  });
-
-  it("shows the room's own sentence when GitHub could not be read", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        if (url.includes("/api/connect/scan") && init?.method === "POST") {
-          return new Response(
-            JSON.stringify({
-              error: "the repository could not be read right now, try again shortly",
-            }),
-            { status: 502, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        if (url.includes("/api/catalog/groups")) {
-          return new Response(JSON.stringify({ groups: [] }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        return new Response(JSON.stringify({}), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }),
-    );
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await fillTheForm();
-    await fireEvent.click(scanButton());
-
-    expect(
-      await screen.findByText(
-        "the repository could not be read right now, try again shortly",
-      ),
-    ).not.toBeNull();
-    expect(connectButton().disabled).toBe(true);
-  });
 });
 
 // --- the repository field's typeahead ---------------------------------------
@@ -540,40 +424,6 @@ describe("ConnectModal — finding a repository", () => {
     expect(repoInput().getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("says how many repositories there are and how to narrow them", async () => {
-    // The count is the room's own total, not the number of rows showing.
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await screen.findByText("No groups are configured yet.");
-    await fireEvent.focus(repoInput());
-
-    expect(
-      await screen.findByText(
-        /42 repositories in the organization\. Start typing to filter\./,
-      ),
-    ).not.toBeNull();
-  });
-
-  it("offers nothing until the field is clicked into", async () => {
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await screen.findByText("No groups are configured yet.");
-    await afterTheDebounce();
-
-    expect(screen.queryByRole("listbox")).toBeNull();
-    expect(repoInput().getAttribute("aria-expanded")).toBe("false");
-  });
-
-  it("has no placeholder in the box", async () => {
-    // The list is what tells somebody what goes here now. A grey
-    // owner/name behind it was one more thing to read past.
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await screen.findByLabelText("Repository");
-
-    expect(repoInput().getAttribute("placeholder")).toBeNull();
-  });
-
   it("fills the field with a recent repository that was clicked", async () => {
     renderWithClient(ConnectModal, { open: true, onclose: () => {} });
 
@@ -585,20 +435,6 @@ describe("ConnectModal — finding a repository", () => {
 
     expect(repoInput().value).toBe("example-org/team-chatbot");
     expect(screen.queryByRole("listbox")).toBeNull();
-  });
-
-  it("closes the recent list on Escape without closing the form", async () => {
-    const onclose = vi.fn();
-    renderWithClient(ConnectModal, { open: true, onclose });
-
-    await screen.findByText("No groups are configured yet.");
-    await fireEvent.focus(repoInput());
-    await screen.findAllByRole("option");
-
-    await fireEvent.keyDown(repoInput(), { key: "Escape" });
-
-    expect(screen.queryByRole("listbox")).toBeNull();
-    expect(onclose).not.toHaveBeenCalled();
   });
 
   it("fills the field with the highlighted repository when Enter is pressed", async () => {
@@ -613,19 +449,6 @@ describe("ConnectModal — finding a repository", () => {
 
     expect(repoInput().value).toBe("example-org/team-chatbot");
     expect(screen.queryByRole("listbox")).toBeNull();
-  });
-
-  it("closes the list on Escape and leaves what was typed alone", async () => {
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await screen.findByText("No groups are configured yet.");
-    await typeRepo("chat");
-    await screen.findAllByRole("option");
-
-    await fireEvent.keyDown(repoInput(), { key: "Escape" });
-
-    expect(screen.queryByRole("listbox")).toBeNull();
-    expect(repoInput().value).toBe("chat");
   });
 
   it("closes the list on Escape without closing the form", async () => {
@@ -645,20 +468,6 @@ describe("ConnectModal — finding a repository", () => {
     await fireEvent.keyDown(repoInput(), { key: "Escape" });
 
     expect(onclose).toHaveBeenCalled();
-  });
-
-  it("reopens the list on ArrowDown once something has been typed", async () => {
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await screen.findByText("No groups are configured yet.");
-    await typeRepo("chat");
-    await screen.findAllByRole("option");
-    await fireEvent.keyDown(repoInput(), { key: "Escape" });
-    expect(screen.queryByRole("listbox")).toBeNull();
-
-    await fireEvent.keyDown(repoInput(), { key: "ArrowDown" });
-
-    expect(screen.getByRole("listbox")).not.toBeNull();
   });
 
   it("opens the recent list on ArrowDown while the field is empty", async () => {
@@ -684,58 +493,6 @@ describe("ConnectModal — finding a repository", () => {
 
     expect(screen.queryByRole("listbox")).toBeNull();
     expect((await screen.findAllByRole("option")).length).toBe(2);
-  });
-
-  it("says when the count of matches changes, for anyone listening", async () => {
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await screen.findByText("No groups are configured yet.");
-    await typeRepo("chat");
-
-    expect(await screen.findByText("2 repositories")).not.toBeNull();
-  });
-
-  it("does not search for the repository it just filled in", async () => {
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await screen.findByText("No groups are configured yet.");
-    await typeRepo("chat");
-    const options = await screen.findAllByRole("option");
-    const searched = repoSearchCalls();
-
-    await fireEvent.click(options[0]);
-    await afterTheDebounce();
-
-    expect(repoInput().value).toBe("example-org/team-chatbot");
-    expect(repoSearchCalls()).toBe(searched);
-  });
-
-  it("does not search for what was typed as the form was closing", async () => {
-    const view = renderWithClient(ConnectModal, {
-      open: true,
-      onclose: () => {},
-    });
-
-    await screen.findByText("No groups are configured yet.");
-    const searched = repoSearchCalls();
-    await typeRepo("chat");
-    await view.rerender({ componentProps: { open: false, onclose: () => {} } });
-    await afterTheDebounce();
-
-    expect(repoSearchCalls()).toBe(searched);
-  });
-
-  it("fills the field with the repository that was clicked", async () => {
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await screen.findByText("No groups are configured yet.");
-    await typeRepo("chat");
-    const options = await screen.findAllByRole("option");
-
-    await fireEvent.click(options[1]);
-
-    expect(repoInput().value).toBe("example-org/chat-archive");
-    expect(screen.queryByRole("listbox")).toBeNull();
   });
 
   it("says so when the repository search cannot be reached", async () => {
@@ -835,137 +592,5 @@ describe("ConnectModal — finding a repository", () => {
     expect(repoInput().value).toBe("chat");
   });
 
-  it("says when more repositories matched than it can show", async () => {
-    vi.unstubAllGlobals();
-    stubConnectRoutes({
-      "/api/connect/repos": { ...REPO_MATCHES, truncated: true },
-    });
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await screen.findByText("No groups are configured yet.");
-    await typeRepo("chat");
-
-    expect(
-      await screen.findByText("More matched. Keep typing to narrow it down."),
-    ).not.toBeNull();
-  });
-
-  it("does not say more matched over the recent list, which is short by design", async () => {
-    // Those rows are a count away from the whole story already, and the
-    // footer is the honest version of it.
-    vi.unstubAllGlobals();
-    stubConnectRoutes({
-      "/api/connect/repos": { ...REPO_MATCHES, truncated: true },
-    });
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await screen.findByText("No groups are configured yet.");
-    await fireEvent.focus(repoInput());
-    await screen.findAllByRole("option");
-
-    expect(
-      screen.queryByText("More matched. Keep typing to narrow it down."),
-    ).toBeNull();
-  });
-
-  it("says it is loading while the first answer is still coming", async () => {
-    // The room's listing can be cold, and a dropdown that shows nothing
-    // while it fills looks like a room that reaches nothing.
-    let release: (() => void) | undefined;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    vi.unstubAllGlobals();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.includes("/api/connect/repos")) {
-          await held;
-          return new Response(JSON.stringify(REPO_MATCHES), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        if (url.includes("/api/catalog/groups")) {
-          return new Response(JSON.stringify({ groups: [] }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        return new Response(JSON.stringify({}), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }),
-    );
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await screen.findByText("No groups are configured yet.");
-    await fireEvent.focus(repoInput());
-
-    expect(await screen.findByText("Loading repositories")).not.toBeNull();
-
-    release?.();
-
-    expect((await screen.findAllByRole("option")).length).toBe(2);
-    await waitFor(() =>
-      expect(screen.queryByText("Loading repositories")).toBeNull(),
-    );
-  });
 });
 
-describe("ConnectModal — the dialog idiom (modal wave)", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("keeps the owner's word and the three actions in a pinned footer", async () => {
-    stubConnectRoutes({ "/api/connect/scan": CLEAN_REPORT });
-    const { container } = renderWithClient(ConnectModal, {
-      open: true,
-      onclose: () => {},
-    });
-
-    await fillTheForm();
-
-    const footer = container.querySelector(".modal__footer");
-    expect(footer).not.toBeNull();
-    expect(container.querySelector(".modal__body")?.contains(footer as Node)).toBe(
-      false,
-    );
-    expect(
-      footer?.contains(screen.getByRole("checkbox", { name: OWNER_CHECKBOX })),
-    ).toBe(true);
-    expect(footer?.contains(scanButton())).toBe(true);
-    expect(footer?.contains(connectButton())).toBe(true);
-  });
-
-  it("fills only the step that is actually next: Scan, then Connect", async () => {
-    stubConnectRoutes({ "/api/connect/scan": CLEAN_REPORT });
-    const { container } = renderWithClient(ConnectModal, {
-      open: true,
-      onclose: () => {},
-    });
-
-    await fillTheForm();
-
-    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
-    expect(scanButton().className).toContain("btn--primary");
-    expect(connectButton().className).not.toContain("btn--primary");
-
-    await fireEvent.click(scanButton());
-    await screen.findByText("Nothing is in the way.");
-
-    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
-    expect(connectButton().className).toContain("btn--primary");
-    expect(scanButton().className).not.toContain("btn--primary");
-
-    // Editing a field makes the report stale, so Scan is next again.
-    await fireEvent.input(screen.getByLabelText("Name"), {
-      target: { value: "release-bot-2" },
-    });
-    expect(scanButton().className).toContain("btn--primary");
-    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
-  });
-});

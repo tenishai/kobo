@@ -696,6 +696,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     remove_skill_endpoint = _endpoint(app, "DELETE", "/api/agents/{name}/skills/{skill_id}")
     add_tool_endpoint = _endpoint(app, "POST", "/api/agents/{name}/tooling")
     set_persona_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/persona")
+    set_model_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/model")
     metadata_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/metadata")
     set_runtime_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/runtime")
     request_repo_access_endpoint = _endpoint(app, "POST", "/api/agents/{name}/repo-access")
@@ -1706,6 +1707,43 @@ def register(mcp: FastMCP, app: Any) -> None:
 
         body = _persona_route_result(response)
         return {"agent": agent, "persona": body.get("persona"), "commit": body.get("sha")}
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @audited("kobo_set_agent_model")
+    async def kobo_set_agent_model(ctx: Context, agent: str, model: str) -> dict:
+        """Move a running agent onto another model: `model` is a catalog id
+        from the room's list (the same ids `kobo_create_agent` accepts). The
+        room sets the model and its region in the agent's deploy contract,
+        commits, and the platform regenerates and rolls the agent. Nothing
+        else about the agent moves.
+
+        You must own `agent` or be a room operator, `agent` must be READY,
+        and it must be one the room composed -- a connected agent's model is
+        its own repository's to change. An id not in the room's list is
+        refused.
+        """
+        from kobo_api.main import SetModelBody
+
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            response = await _off_loop(
+                set_model_endpoint,
+                name=agent,
+                body=SetModelBody(model=model),
+                request=req,
+                session=session,
+            )
+        finally:
+            session.close()
+
+        body = _agent_route_result(response)
+        return {
+            "agent": agent,
+            "model": body.get("model"),
+            "model_label": body.get("model_label"),
+            "wiring": body.get("wiring"),
+        }
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     @audited("kobo_move_agent")

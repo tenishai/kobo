@@ -2103,3 +2103,34 @@ def test_destroy_secrets_never_logs_what_the_lane_said(session_factory, config, 
     assert "refused the body" not in caplog.text
     assert "ClientError" in caplog.text
     session.close()
+
+
+# --- _destroy_access without a model group (2026-10-01) -------------------------------
+
+
+def test_destroy_access_without_a_model_group_revokes_the_vertex_role_then_gsa(
+    session_factory, config
+):
+    config.model_group = ""
+    config.vertex_project = "models-project"
+    session, agent = _make_ctx_agent(session_factory)
+    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    cloud = FakeCloud(project=config.gcp_project)
+    cloud.gsas.add(email)
+    cloud.model_grants.add((email, "models-project"))
+    ctx = _ctx(session, agent, config, cloud=cloud)
+
+    detail = _destroy_access(ctx)
+
+    assert detail == "model access removed: True, gsa deleted: True"
+    assert cloud.calls.index(f"revoke_model_access:{email}:models-project") < cloud.calls.index(
+        f"delete_gsa:{email}"
+    )
+    assert not [c for c in cloud.calls if "group" in c]
+
+    # Already revoked (a resumed destroy): proceeds to the GSA, says so.
+    cloud2 = FakeCloud(project=config.gcp_project)
+    cloud2.gsas.add(email)
+    assert _destroy_access(_ctx(session, agent, config, cloud=cloud2)) == (
+        "model access removed: False, gsa deleted: True"
+    )

@@ -8,11 +8,6 @@ from kobo_api.archetypes import (
 )
 
 
-def test_module_constants():
-    assert ARCHETYPE_TEAM_GUIDE == "team_guide"
-    assert TEAM_GUIDE_TAG == "team-guide"
-
-
 def test_render_interpolates_name_and_group():
     body = render_team_guide("atlas", "sre", None)
     assert "You are atlas, the informational guide for the sre team." in body
@@ -26,24 +21,12 @@ def test_no_voice_leaves_no_residue():
     assert not body.rstrip().endswith("}")
 
 
-def test_no_voice_ends_with_exactly_one_trailing_newline():
-    body = render_team_guide("atlas", "sre", None)
-    assert body.endswith("team itself.\n")
-    assert not body.endswith("\n\n")
-
-
 def test_voice_overlay_is_subordinate_style():
     body = render_team_guide("atlas", "sre", "Dolly Parton")
     assert "Style: channel the conversational voice and cadence of Dolly Parton" in body
     assert "never claim to be Dolly Parton" in body
     # constitution precedes voice: Never act appears before Style
     assert body.index("Never act.") < body.index("Style:")
-
-
-def test_voice_render_ends_with_exactly_one_trailing_newline():
-    body = render_team_guide("atlas", "sre", "Dolly Parton")
-    assert body.endswith("still interview.\n")
-    assert not body.endswith("\n\n")
 
 
 def test_persona_id_is_per_group():

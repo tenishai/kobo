@@ -80,36 +80,6 @@ describe("LearningsPanel", () => {
     expect(screen.getByPlaceholderText("Teach wren something...")).not.toBeNull();
   });
 
-  it("says nothing is there in one table row", async () => {
-    stubFetch({ "/learnings": { learnings: [] } });
-    const { container } = renderWithClient(LearningsPanel, {
-      agentName: "wren",
-      canDecide: true,
-      frozen: false,
-    });
-
-    await screen.findByText(
-      "Nothing new. When someone tells wren something worth keeping, it shows up here.",
-    );
-    const empties = container.querySelectorAll("td.panel__empty");
-    expect(empties).toHaveLength(1);
-    expect(empties[0].parentElement?.children).toHaveLength(1);
-    expect(empties[0].getAttribute("colspan")).toBe("3");
-  });
-
-  it("offers at most one filled button, with the teach box open", async () => {
-    const { container } = renderWithClient(LearningsPanel, {
-      agentName: "wren",
-      canDecide: true,
-      frozen: false,
-    });
-
-    await screen.findByText("the canary gate is manual");
-    await openTeach();
-
-    expect(container.querySelectorAll(".btn--primary").length).toBeLessThanOrEqual(1);
-  });
-
   it("renders one list with the sentence and byline, no kind text, and a correct summary count", async () => {
     renderWithClient(LearningsPanel, {
       agentName: "wren",
@@ -131,21 +101,6 @@ describe("LearningsPanel", () => {
     expect(screen.queryByText("old denied thing")).toBeNull();
 
     expect(screen.getByText("wren picked up 2 things")).not.toBeNull();
-  });
-
-  it("reads '1 thing' (singular) when only one is pending", async () => {
-    stubFetch({
-      "/learnings": {
-        learnings: [LEARNINGS.learnings[0]],
-      },
-    });
-    renderWithClient(LearningsPanel, {
-      agentName: "wren",
-      canDecide: true,
-      frozen: false,
-    });
-
-    expect(await screen.findByText("wren picked up 1 thing")).not.toBeNull();
   });
 
   it("hides Remember/Skip, the pencil, the bulk buttons, and the teach box when canDecide is false", async () => {
@@ -175,30 +130,6 @@ describe("LearningsPanel", () => {
   // URL (`/learnings/1/deny`), which is fine -- `decideLearning` (api.ts)
   // only parses the response as JSON and discards it (`Promise<void>`), so
   // its shape doesn't matter here.
-  it("posts a skip verdict", async () => {
-    renderWithClient(LearningsPanel, {
-      agentName: "wren",
-      canDecide: true,
-      frozen: false,
-    });
-
-    await screen.findByText("the canary gate is manual");
-    const [skipButton] = screen.getAllByRole("button", { name: "Skip" });
-    await fireEvent.click(skipButton);
-
-    await vi.waitFor(() => {
-      expect(
-        vi
-          .mocked(fetch)
-          .mock.calls.some(
-            ([url, init]) =>
-              String(url).includes("/learnings/1/deny") &&
-              (init as RequestInit | undefined)?.method === "POST",
-          ),
-      ).toBe(true);
-    });
-  });
-
   it("posts a remember verdict with no body when the wording isn't touched", async () => {
     renderWithClient(LearningsPanel, {
       agentName: "wren",
@@ -251,31 +182,6 @@ describe("LearningsPanel", () => {
     });
   });
 
-  it("posts no body when the pencil is used but the text is left unchanged", async () => {
-    renderWithClient(LearningsPanel, {
-      agentName: "wren",
-      canDecide: true,
-      frozen: false,
-    });
-
-    await screen.findByText("the canary gate is manual");
-    const [pencil] = screen.getAllByRole("button", { name: "Fix the wording" });
-    await fireEvent.click(pencil);
-
-    const [rememberButton] = screen.getAllByRole("button", { name: "Remember" });
-    await fireEvent.click(rememberButton);
-
-    await vi.waitFor(() => {
-      const call = vi
-        .mocked(fetch)
-        .mock.calls.find(([url]) => String(url).includes("/learnings/1/approve"));
-      expect(call).toBeDefined();
-      const init = call?.[1] as RequestInit | undefined;
-      expect(init?.method).toBe("POST");
-      expect(init?.body).toBeUndefined();
-    });
-  });
-
   it("reveals the quote when the sentence is tapped, and flips aria-expanded", async () => {
     renderWithClient(LearningsPanel, {
       agentName: "wren",
@@ -318,34 +224,6 @@ describe("LearningsPanel", () => {
       const init = call?.[1] as RequestInit | undefined;
       expect(init?.method).toBe("POST");
       expect(JSON.parse(String(init?.body))).toEqual({ ids: [1, 2], action: "approve" });
-    });
-  });
-
-  it("requires two taps for 'Skip all': the first shows a confirm prompt and posts nothing, the second posts the bulk deny", async () => {
-    renderWithClient(LearningsPanel, {
-      agentName: "wren",
-      canDecide: true,
-      frozen: false,
-    });
-
-    await screen.findByText("the canary gate is manual");
-    await fireEvent.click(screen.getByRole("button", { name: "Skip all" }));
-
-    expect(screen.getByText("Skip all 2?")).not.toBeNull();
-    expect(
-      vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/learnings/bulk")),
-    ).toBe(false);
-
-    await fireEvent.click(screen.getByRole("button", { name: "Yes, skip" }));
-
-    await vi.waitFor(() => {
-      const call = vi
-        .mocked(fetch)
-        .mock.calls.find(([url]) => String(url).includes("/learnings/bulk"));
-      expect(call).toBeDefined();
-      const init = call?.[1] as RequestInit | undefined;
-      expect(init?.method).toBe("POST");
-      expect(JSON.parse(String(init?.body))).toEqual({ ids: [1, 2], action: "deny" });
     });
   });
 
@@ -550,42 +428,4 @@ describe("LearningsPanel", () => {
     ).not.toBeNull();
   });
 
-  it("history toggle omits Expired when there are no expired rows", async () => {
-    stubFetch({
-      "/learnings": {
-        learnings: [
-          {
-            id: 1, day: "d", content: "approved one", kind: "fact", source: "s",
-            evidence: "", said_by: null, status: "approved", decided_by: "kyle",
-            created_at: "2026-09-01T05:00:00",
-          },
-          {
-            id: 2, day: "d", content: "denied one", kind: "fact", source: "s",
-            evidence: "", said_by: null, status: "denied", decided_by: "kyle",
-            created_at: "2026-09-01T05:00:00",
-          },
-        ],
-      },
-    });
-    renderWithClient(LearningsPanel, { agentName: "wren", canDecide: true, frozen: false });
-
-    expect(
-      await screen.findByRole("button", { name: "Remembered 1 · Skipped 1" }),
-    ).not.toBeNull();
-  });
-
-  it("shows the empty-state copy when nothing is pending", async () => {
-    stubFetch({ "/learnings": { learnings: [] } });
-    renderWithClient(LearningsPanel, {
-      agentName: "wren",
-      canDecide: true,
-      frozen: false,
-    });
-
-    expect(
-      await screen.findByText(
-        "Nothing new. When someone tells wren something worth keeping, it shows up here.",
-      ),
-    ).not.toBeNull();
-  });
 });

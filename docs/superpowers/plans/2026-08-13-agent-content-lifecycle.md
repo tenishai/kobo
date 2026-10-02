@@ -13,7 +13,7 @@
 - Vendor rule: NO client names in any tracked file — client names are treated like secret values. Before staging, plain-grep every file you touched against the name list at `.superpowers/sdd/vendor-names.txt` (untracked by design): `grep -i -f .superpowers/sdd/vendor-names.txt <files>` must return nothing. Plain grep, not git grep — git grep misses untracked files.
 - Stage named files only: `git add <exact paths>` — never `git add -A`/`.`.
 - TDD: write the failing test first, run it RED, implement, run GREEN. Report suite counts.
-- kobo API tests: `cd api && venv/bin/python -m pytest -q` (baseline 723 green). kobo UI: `PATH="~/Documents/google-cloud-sdk/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" make -C ui check` (svelte-check 0 errors + vitest green). daedalus seeder: `cd ~/Documents/GitHub/daedalus && python -m pytest docker/test_seeder.py -v` (stdlib-only, no techne needed).
+- kobo API tests: `cd api && venv/bin/python -m pytest -q` (baseline 723 green). kobo UI: `PATH="~/google-cloud-sdk/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" make -C ui check` (svelte-check 0 errors + vitest green). daedalus seeder: `cd ../daedalus && python -m pytest docker/test_seeder.py -v` (stdlib-only, no techne needed).
 - daedalus work goes on a feature branch; NO PR until Kyle says (standing rule).
 - Error copy is plain language, no argv/stderr leakage; 502 bodies match the knowledge routes' wording family.
 - `Agent.skills` JSON entries: reassign the whole list, never mutate dicts in place (SQLAlchemy JSON change tracking — see `_stage_skills`'s docstring).
@@ -203,8 +203,8 @@ git commit -m "kobo: skills module — catalog materialize/remove + local guardr
 ### Task 4: seeder intake pass (daedalus, feature branch)
 
 **Files:**
-- Modify: `~/Documents/GitHub/daedalus/docker/seeder.py`
-- Test: `~/Documents/GitHub/daedalus/docker/test_seeder.py`
+- Modify: `../daedalus/docker/seeder.py`
+- Test: `../daedalus/docker/test_seeder.py`
 - Branch: create `feat/intake-seeding` from the repo's current main-line HEAD. NO PR (standing rule).
 
 **Interfaces:**

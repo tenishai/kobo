@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { AgentIdentity } from "../lib/api";
   // The Harness tab (harness wave, 2026-09-23): what runs the agent.
   //
   // "People think of Harness as what runs the agent: the tooling, the
@@ -18,14 +19,14 @@
   // Every section stays mounted and is merely hidden, the same rule the
   // page's own tabpanels follow: switching sections must not refetch a
   // panel's query or throw away a half-typed form.
-  import { createMutation, useQueryClient } from "@tanstack/svelte-query";
+  import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import type { Snippet } from "svelte";
   import LearningsPanel from "./LearningsPanel.svelte";
   import MemoryPanel from "./MemoryPanel.svelte";
   import SkillsPanel from "./SkillsPanel.svelte";
   import ToolingPanel from "./ToolingPanel.svelte";
   import { errorMessage, KIND_COMPOSED, KIND_CONNECTED } from "../lib/api";
-  import { updateAgentRuntimeMutation } from "../lib/queries";
+  import { modelsQuery, updateAgentModelMutation, updateAgentRuntimeMutation } from "../lib/queries";
   import {
     DEFAULT_HARNESS_SECTION,
     HARNESS_SECTION_LABELS,
@@ -47,6 +48,7 @@
     canDecideLearnings = false,
     capability = null,
     purposeTags = [],
+    identity = null,
     section = $bindable(DEFAULT_HARNESS_SECTION),
     persona = undefined,
   }: {
@@ -71,6 +73,9 @@
     canDecideLearnings?: boolean;
     capability?: string | null;
     purposeTags?: string[];
+    /** The identity the agent runs as (`AgentDetail.identity`); absent on an
+     * older server, in which case the section says so. */
+    identity?: AgentIdentity | null;
     /** Which section is showing. Bindable so the page can keep it in the
      * URL hash (`#/agents/<name>/harness/skills`) while a click in here
      * still moves it on its own. */
@@ -78,6 +83,57 @@
     /** Persona: `MetadataDetails`, mounted by the page and rendered here. */
     persona?: Snippet;
   } = $props();
+
+  // --- Access request (2026-09-29) ------------------------------------------
+  // Plain text the owner hands to the SRE team: which service account needs
+  // which roles on which project. Basic roles are refused here, not just
+  // discouraged, because a request naming one would be sent back anyway.
+  const BASIC_ROLES = ["roles/owner", "roles/editor", "roles/viewer", "roles/browser"];
+  let accessProject = $state("");
+  let accessRoles = $state("");
+  let accessCopied = $state(false);
+  const accessRoleList = $derived(
+    accessRoles
+      .split(/[\n,]/)
+      .map((r) => r.trim())
+      .filter((r) => r.length > 0),
+  );
+  const accessRefusal = $derived.by(() => {
+    const basic = accessRoleList.filter((r) => BASIC_ROLES.includes(r.toLowerCase()));
+    if (basic.length > 0) {
+      return `Basic roles are not granted to agents: ${basic.join(", ")}. Ask for the narrowest role that does the job.`;
+    }
+    const malformed = accessRoleList.filter((r) => !/^roles\/[A-Za-z0-9_.]+$/.test(r));
+    if (malformed.length > 0) {
+      return `Not a role name: ${malformed.join(", ")}. Roles look like roles/service.role.`;
+    }
+    return null;
+  });
+  const accessRequest = $derived.by(() => {
+    const project = accessProject.trim();
+    if (!identity || !project || accessRoleList.length === 0 || accessRefusal !== null) {
+      return null;
+    }
+    return [
+      `Access request for agent ${agentName}`,
+      `Service account: ${identity.gsa_email}`,
+      `Needs access to GCP project: ${project}`,
+      "Roles:",
+      ...accessRoleList.map((r) => `  - ${r}`),
+    ].join("\n");
+  });
+  async function copyAccessRequest(): Promise<void> {
+    if (accessRequest === null) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(accessRequest);
+      accessCopied = true;
+      setTimeout(() => (accessCopied = false), 1500);
+    } catch {
+      accessCopied = false;
+    }
+  }
 
   const connected = $derived(kind === KIND_CONNECTED);
   const sections = $derived(harnessSections(kind));
@@ -105,6 +161,31 @@
   const updateRuntime = createMutation(() =>
     updateAgentRuntimeMutation(queryClient, agentName),
   );
+
+  // Change the model after deploy (2026-10-01): the room's list, the
+  // current one selected, Change enabled once another is picked. Same
+  // gate as the runtime update: owner or operator, composed, not frozen.
+  const canChangeModel = $derived(canUpdateRuntime && kind !== KIND_CONNECTED);
+  const models = createQuery(() => ({ ...modelsQuery(), enabled: canChangeModel }));
+  let pickedModel = $state<string | null>(null);
+  const modelChoice = $derived(pickedModel ?? model);
+  // svelte-ignore state_referenced_locally
+  const updateModel = createMutation(() => updateAgentModelMutation(queryClient, agentName));
+
+  function handleChangeModel(): void {
+    if (modelChoice === model || updateModel.isPending) {
+      return;
+    }
+    updateModel.mutate(modelChoice, {
+      onSuccess: (change) => {
+        pickedModel = null;
+        toast.success("Model changed", `${agentName} rebuilds on ${change.model_label} now.`);
+      },
+      onError: (err: unknown) => {
+        toast.error("Couldn't change the model", errorMessage(err, "Try again."));
+      },
+    });
+  }
 
   function handleUpdateRuntime(): void {
     if (!roomRuntimeImage) {
@@ -153,7 +234,33 @@
             <h2 class="panel__heading">Model and runtime</h2>
             <dl class="harness__facts">
               <dt>Model</dt>
-              <dd title={model}>{modelLabel}</dd>
+              <dd title={model}>
+                {#if canChangeModel && models.data}
+                  <span class="harness__model-change">
+                    <select
+                      class="field__input harness__model-select"
+                      aria-label="Model"
+                      disabled={frozen || updateModel.isPending}
+                      value={modelChoice}
+                      onchange={(event) => (pickedModel = event.currentTarget.value)}
+                    >
+                      {#each models.data.models as choice (choice.id)}
+                        <option value={choice.id}>{choice.label}</option>
+                      {/each}
+                    </select>
+                    <button
+                      type="button"
+                      class="btn btn--quiet"
+                      disabled={frozen || updateModel.isPending || modelChoice === model}
+                      onclick={handleChangeModel}
+                    >
+                      {updateModel.isPending ? "Changing…" : "Change model"}
+                    </button>
+                  </span>
+                {:else}
+                  {modelLabel}
+                {/if}
+              </dd>
               <dt>Runtime</dt>
               <dd class="harness__ref">{runtimeImage ?? "Not reported."}</dd>
             </dl>
@@ -185,6 +292,66 @@
               </p>
             {/if}
           </section>
+        {:else if id === "identity"}
+          <section class="panel">
+            <h2 class="panel__heading">Identity and access</h2>
+            {#if identity}
+              <dl class="harness__facts">
+                <dt>Service account</dt>
+                <dd class="harness__ref">{identity.service_account}</dd>
+                <dt>Google service account</dt>
+                <dd class="harness__ref">{identity.gsa_email}</dd>
+                <dt>Home project</dt>
+                <dd class="harness__ref">{identity.project}</dd>
+              </dl>
+              <h3 class="panel__subheading">Ask for access to another project</h3>
+              <p class="panel__note">
+                Name the project and the roles the agent needs there, one role per
+                line. The room writes the request you hand to the SRE team. Basic
+                roles (owner, editor, viewer, browser) are refused: ask for the
+                narrowest predefined or custom role that does the job.
+              </p>
+              <div class="field">
+                <label class="field__label" for="access-project">Project</label>
+                <input
+                  id="access-project"
+                  class="field__input"
+                  type="text"
+                  bind:value={accessProject}
+                  placeholder="e.g. example-data-prod"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </div>
+              <div class="field">
+                <label class="field__label" for="access-roles">Roles</label>
+                <textarea
+                  id="access-roles"
+                  class="field__input"
+                  rows="3"
+                  bind:value={accessRoles}
+                  placeholder="roles/bigquery.dataViewer&#10;roles/storage.objectViewer"
+                  spellcheck="false"
+                ></textarea>
+              </div>
+              {#if accessRefusal}
+                <p class="field__status field__status--error" role="alert">{accessRefusal}</p>
+              {/if}
+              <button
+                type="button"
+                class="btn"
+                disabled={accessRequest === null}
+                onclick={copyAccessRequest}
+              >
+                {accessCopied ? "Copied" : "Copy the request"}
+              </button>
+              {#if accessRequest}
+                <pre class="harness__request">{accessRequest}</pre>
+              {/if}
+            {:else}
+              <p class="panel__note">Not reported by this room yet.</p>
+            {/if}
+          </section>
         {:else if id === "persona"}
           {@render persona?.()}
         {:else if id === "skills"}
@@ -207,6 +374,22 @@
 </div>
 
 <style>
+  .harness__request {
+    margin: var(--space-sm) 0 0;
+    padding: var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .panel__subheading {
+    margin: var(--space-md) 0 var(--space-2xs);
+    font-size: 0.95rem;
+  }
+
   /* The list down the left, the section beside it. One column at narrow
      widths, where a 10rem gutter would leave the panels too cramped to
      read. */
@@ -339,5 +522,16 @@
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-sm);
+  }
+  .harness__model-change {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .harness__model-select {
+    width: auto;
+    min-width: 14rem;
   }
 </style>

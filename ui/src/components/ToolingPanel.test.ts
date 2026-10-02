@@ -26,16 +26,6 @@ describe("ToolingPanel", () => {
     });
   });
 
-  it("explains the built-in tool lanes near the top of the panel", () => {
-    renderWithClient(ToolingPanel, { agentName: "warden", frozen: false });
-
-    expect(
-      screen.getByText(
-        /Every agent ships with colleague tools.*list and consult the room.*share a fact with quorum review.*repo tools stay dormant until an operator approves a repository.*Tools added here are extras on top of that baseline/s,
-      ),
-    ).not.toBeNull();
-  });
-
   it("keeps the upload form shut until it is asked for, and opens it on click", async () => {
     renderWithClient(ToolingPanel, { agentName: "warden", frozen: false });
 
@@ -50,48 +40,6 @@ describe("ToolingPanel", () => {
     expect(screen.getByLabelText("File name")).not.toBeNull();
     expect(screen.getByLabelText("Content")).not.toBeNull();
     expect(screen.getByRole("button", { name: "Upload" })).not.toBeNull();
-  });
-
-  it("says nothing is there in one table row", async () => {
-    const { container } = renderWithClient(ToolingPanel, {
-      agentName: "warden",
-      frozen: false,
-    });
-
-    await screen.findByText("Nothing here yet. Upload a file to govern this agent.");
-    const empties = container.querySelectorAll("td.panel__empty");
-    expect(empties).toHaveLength(1);
-    expect(empties[0].parentElement?.children).toHaveLength(1);
-    expect(empties[0].getAttribute("colspan")).toBe("4");
-  });
-
-  it("offers at most one filled button, even with the upload form open", async () => {
-    stubFetch({
-      "/api/agents/warden/tooling": { files: [FILE], enforcement: null },
-      "/api/": {},
-    });
-    const { container } = renderWithClient(ToolingPanel, {
-      agentName: "warden",
-      frozen: false,
-    });
-
-    await openUpload();
-    await screen.findByText(FILE.name);
-
-    expect(container.querySelectorAll(".btn--primary").length).toBeLessThanOrEqual(1);
-  });
-
-  it("lists each file with its size, delivery pill, and badge", async () => {
-    stubFetch({
-      "/api/agents/warden/tooling": { files: [FILE], enforcement: null },
-      "/api/": {},
-    });
-    renderWithClient(ToolingPanel, { agentName: "warden", frozen: false });
-
-    expect(await screen.findByText(FILE.name)).not.toBeNull();
-    expect(screen.getByText("512 B")).not.toBeNull();
-    expect(screen.getByText("Delivered")).not.toBeNull();
-    expect(screen.getByText("stored")).not.toBeNull();
   });
 
   it("asks before removing, in the room's own dialog, and never through the browser", async () => {

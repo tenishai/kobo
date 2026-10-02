@@ -2,16 +2,22 @@
   // Presentation only: a colored dot + the raw status label. The color/pulse
   // mapping itself lives in status.ts (agentTone) so it's one shared,
   // unit-tested source of truth rather than duplicated per-component logic.
+  import type { AgentHealth } from "../lib/api";
   import { agentTone } from "../lib/status";
 
-  let { status }: { status: string } = $props();
+  let { status, health = null }: { status: string; health?: AgentHealth | null } = $props();
 
-  const tone = $derived(agentTone(status));
+  // Ready says the setup finished. If the cluster says the pod is not
+  // running today, that is the fact a person needs, so it wears the badge
+  // instead: Down, in the fail tone, with the reason on the hover.
+  const down = $derived(status === "ready" && health?.state === "down");
+  const tone = $derived(down ? "fail" : agentTone(status));
+  const label = $derived(down ? "down" : status);
 </script>
 
-<span class="status-badge">
+<span class="status-badge" title={down ? (health?.reason ?? undefined) : undefined}>
   <span class="status-badge__dot status-badge__dot--{tone}" class:pulse={tone === "warn"}></span>
-  <span class="status-badge__label">{status}</span>
+  <span class="status-badge__label">{label}</span>
 </span>
 
 <style>
