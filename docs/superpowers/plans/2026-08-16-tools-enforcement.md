@@ -14,8 +14,8 @@
 - **NO EM DASHES in any new user-facing copy** (operator rule, 2026-08-16). Use periods or commas. Code comments and docs are exempt; UI strings and reply text are not.
 - Validate generated/loaded values against the REAL downstream gate, never a lookalike bound (standing house lesson).
 - Stage named files only. TDD RED-first with evidence. Report suite counts.
-- daedalus: branch `feat/enforcement` FROM `feat/intake-seeding` (b330b9a-tip); NO push, NO PR until the operator says. Suite: `cd ~/Documents/GitHub/daedalus && python -m pytest -q` (runtime tests) and `python -m pytest docker/test_seeder.py -q` (28) must both stay green.
-- kobo API suite: `cd api && venv/bin/python -m pytest -q` (baseline 1131). kobo UI: `PATH="~/Documents/google-cloud-sdk/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" make -C ui check` (svelte-check 0 errors, vitest baseline 241).
+- daedalus: branch `feat/enforcement` FROM `feat/intake-seeding` (b330b9a-tip); NO push, NO PR until the operator says. Suite: `cd ../daedalus && python -m pytest -q` (runtime tests) and `python -m pytest docker/test_seeder.py -q` (28) must both stay green.
+- kobo API suite: `cd api && venv/bin/python -m pytest -q` (baseline 1131). kobo UI: `PATH="~/google-cloud-sdk/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" make -C ui check` (svelte-check 0 errors, vitest baseline 241).
 - Hook contract shapes are FROZEN by the spec: `pre_task(message: str) -> dict` (key "notices": list[str], optional), `post_draft(draft: str) -> str`. Any raise or a 2.0s timeout blocks the task. Composition strictly by sorted filename.
 
 ---
@@ -113,7 +113,7 @@ class Enforcement:
 
 - [ ] **Step 5: Vendor scan + commit** (branch `feat/enforcement` created first: `git switch -c feat/enforcement`):
 ```bash
-grep -i -f ~/Documents/GitHub/kobo/.superpowers/sdd/vendor-names.txt src/daedalus/enforcement.py src/daedalus/task.py tests/test_enforcement.py
+grep -i -f .superpowers/sdd/vendor-names.txt src/daedalus/enforcement.py src/daedalus/task.py tests/test_enforcement.py
 git add src/daedalus/enforcement.py src/daedalus/task.py tests/test_enforcement.py
 git commit -m "feat(enforcement): the law layer loads, composes, and fails closed"
 ```

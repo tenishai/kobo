@@ -151,7 +151,7 @@ integration gate.
 With the bootstrap tool alone, wire tenishai as pnyx's first client: one command
 creates `pnyx-config` and the catalog buckets (adopting any that already exist),
 opens the publish-workflow PR against
-`tenishai/skills` (merge it), the existing skills publish and appear in search, and
+the org skills repo (merge it), the existing skills publish and appear in search, and
 the default personas seed. `GET /api/org/status` reports every check green. Then
 create a brand-new agent using a form-built persona and a bucket-searched,
 team-filtered skill — it reaches READY with first words. That is a client onboarding,

@@ -603,7 +603,7 @@ def test_repo_access_read_only_when_github_says_push_is_false():
 
 def test_repo_access_as_an_app_trusts_the_installations_grant_not_push():
     """GitHub answers an App's repository read with `permissions` all False,
-    `push` and `pull` alike, even on a repository the App created (example-org,
+    `push` and `pull` alike, even on a repository the App created (a client org,
     2026-09-25: nine of them). Reading `push` refused every repository. As an
     App the verdict is the installation's own contents grant."""
     runner = RecordingRunner(

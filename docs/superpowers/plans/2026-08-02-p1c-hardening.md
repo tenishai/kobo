@@ -19,7 +19,7 @@
 
 ### Task 1: Deploy platform — serialize generated CI per repo
 
-**Repo:** ~/Documents/GitHub/gojira, branch `feat/agent-deploys`.
+**Repo:** ../gojira, branch `feat/agent-deploys`.
 **Files:** Modify `gojira/generator/templates/workflows/ci.yaml.j2` and `promote.yaml.j2` (if it lacks one); update golden fixtures under `tests/golden/*/.github/workflows/`.
 
 The live incident: the wire-commit run and the regeneration-PR-merge run applied `kubectl` within ~1s of each other and the stale tree landed last. Fix at the root: a workflow-level concurrency group so runs on the same repo queue instead of interleaving:
@@ -95,7 +95,7 @@ Ledgered minors, all in one pass:
 
 ### Task 8: Runtime kit — corrupt-path combination test
 
-**Repo:** ~/Documents/GitHub/daedalus, branch `feat/runtime-image`. **Files:** `docker/test_seeder.py` only.
+**Repo:** ../daedalus, branch `feat/runtime-image`. **Files:** `docker/test_seeder.py` only.
 
 The ledgered gap: `purge_fn` + `list_ids_fn` are always wired together by `main()`, but no test exercises corrupt-state recovery with BOTH present. Add one test: corrupt state db + both fns → quarantine happens, purge called once, per-file `list_ids_fn` path returns empty post-purge (no double-delete, counts correct), full reseed. Suite `uv run --extra dev python -m pytest docker/test_seeder.py -q` → 14 passed; `make check` unchanged.
 - [ ] Commit: `test(docker): corrupt-state recovery with purge + ground-truth convergence combined`

@@ -13,11 +13,11 @@
 - Spec: `docs/superpowers/specs/2026-08-26-cleanup-and-colleague-correctness-design.md`. Its rulings are law.
 - TDD, RED first: every behavior change lands with a test that fails against the old code. Run the failing test BEFORE implementing.
 - Every test must discriminate the branch it claims. This wave's predecessor shipped tests that passed on the wrong code path; for each test, know what would fail if its target were deleted, and where a cheap in-memory mutation proves it, run it and record the verbatim FAIL then the restored PASS.
-- **Two repos.** kobo at `~/Documents/GitHub/kobo`, daedalus at `~/Documents/GitHub/daedalus`. Every task names its repo. Never commit one repo's change from the other.
+- **Two repos.** kobo at `.`, daedalus at `../daedalus`. Every task names its repo. Never commit one repo's change from the other.
 - Vendor scan before EVERY kobo commit: `git diff --cached --name-only | xargs grep -l -f .superpowers/sdd/vendor-names.txt` must print nothing. Never write a GCP project name, the marketplace repo name, or any vendor name into a tracked kobo file. Resolve those from live coordinates at runtime instead.
 - No em dashes in any user-facing copy, docstring, comment, or knowledge text.
-- kobo API suite green before each kobo commit: `cd ~/Documents/GitHub/kobo/api && venv/bin/python -m pytest -q`. This environment is slow (cold imports about 90s, full suite about 1 to 7 minutes). Run focused tests while iterating and the full suite once before committing. Be patient rather than assuming a hang.
-- daedalus suite green before each daedalus commit: `cd ~/Documents/GitHub/daedalus && python -m pytest -q` (confirm the runner from the repo's own README/Makefile before first use; do not invent one).
+- kobo API suite green before each kobo commit: `cd api && venv/bin/python -m pytest -q`. This environment is slow (cold imports about 90s, full suite about 1 to 7 minutes). Run focused tests while iterating and the full suite once before committing. Be patient rather than assuming a hang.
+- daedalus suite green before each daedalus commit: `cd ../daedalus && python -m pytest -q` (confirm the runner from the repo's own README/Makefile before first use; do not invent one).
 - Agents pick up composer changes on their next delivery. No task in this plan rebuilds a live agent.
 
 ## File Structure
@@ -50,7 +50,7 @@
 
 - [ ] **Step 1: Confirm the model name and columns**
 
-Run: `grep -n -A12 "a2a_invites" ~/Documents/GitHub/kobo/api/kobo_api/models.py`
+Run: `grep -n -A12 "a2a_invites" api/kobo_api/models.py`
 Note the class name and confirm the columns are `from_agent` and `to_agent` (both agent NAME strings, per the live rows). Use the real names in every step below.
 
 - [ ] **Step 2: Write the failing test**
@@ -73,7 +73,7 @@ Write it concretely against the file's real fixtures. The surviving-unrelated-in
 
 - [ ] **Step 3: Run to verify it fails**
 
-Run: `cd ~/Documents/GitHub/kobo/api && venv/bin/python -m pytest -q tests/test_destroy.py -k invites`
+Run: `cd api && venv/bin/python -m pytest -q tests/test_destroy.py -k invites`
 Expected: FAIL, because the invite rows still exist after the call.
 
 - [ ] **Step 4: Implement**
@@ -99,8 +99,8 @@ Run the focused test: expect PASS. Then delete the `or_(...)` clause so it match
 - [ ] **Step 6: Full suite and commit**
 
 ```bash
-cd ~/Documents/GitHub/kobo/api && venv/bin/python -m pytest -q
-cd ~/Documents/GitHub/kobo
+cd api && venv/bin/python -m pytest -q
+cd .
 git add api/kobo_api/destroy.py api/tests/test_destroy.py
 git diff --cached --name-only | xargs grep -l -f .superpowers/sdd/vendor-names.txt || git commit -m "fix(destroy): forget step deletes the departing agent's colleague invites"
 ```
@@ -174,7 +174,7 @@ def test_build_task_envelope_omits_context_id_by_default():
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `cd ~/Documents/GitHub/kobo/api && venv/bin/python -m pytest -q tests/test_clients.py -k context_id`
+Run: `cd api && venv/bin/python -m pytest -q tests/test_clients.py -k context_id`
 Expected: FAIL with `TypeError: _build_task_envelope() got an unexpected keyword argument`.
 
 - [ ] **Step 3: Implement**
@@ -258,7 +258,7 @@ def test_compose_writes_self_card_knowledge(tmp_path):
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `cd ~/Documents/GitHub/kobo/api && venv/bin/python -m pytest -q tests/test_composer.py -k self_card`
+Run: `cd api && venv/bin/python -m pytest -q tests/test_composer.py -k self_card`
 Expected: FAIL with `FileNotFoundError` on `knowledge/self.md`.
 
 - [ ] **Step 3: Implement**
@@ -358,7 +358,7 @@ def test_compose_roster_handles_no_colleagues(tmp_path):
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `cd ~/Documents/GitHub/kobo/api && venv/bin/python -m pytest -q tests/test_composer.py -k roster`
+Run: `cd api && venv/bin/python -m pytest -q tests/test_composer.py -k roster`
 Expected: FAIL (no such file / unexpected `colleagues` kwarg).
 
 - [ ] **Step 3: Implement**
@@ -483,7 +483,7 @@ Match the file's existing import convention (module-level if that is the house s
 Focused tests PASS. Then delete the `envelope["task"]["contextId"] = context_id` line, confirm FAIL, restore, confirm PASS.
 
 ```bash
-cd ~/Documents/GitHub/daedalus && python -m pytest -q
+cd ../daedalus && python -m pytest -q
 git add src/daedalus/tools/colleagues.py src/daedalus/agent.py tests/
 git commit -m "fix(colleagues): thread the inbound contextId onto colleague asks so the loop guard sees the chain"
 ```
@@ -516,8 +516,8 @@ def test_relay_envelope_context_id_is_the_key_the_switchboard_reads():
 - [ ] **Step 2: Run, confirm PASS, commit**
 
 ```bash
-cd ~/Documents/GitHub/kobo/api && venv/bin/python -m pytest -q tests/test_clients.py -k context_id
-cd ~/Documents/GitHub/kobo
+cd api && venv/bin/python -m pytest -q tests/test_clients.py -k context_id
+cd .
 git add api/tests/test_clients.py
 git commit -m "test(chat): pin the contextId key the switchboard loop guard reads"
 ```
@@ -571,8 +571,8 @@ Set Status to `Implemented (rollout pending)`. Append an `## Execution amendment
 Append the execution record to `.superpowers/sdd/progress.md`. Then:
 
 ```bash
-cd ~/Documents/GitHub/kobo/api && venv/bin/python -m pytest -q
-cd ~/Documents/GitHub/kobo
+cd api && venv/bin/python -m pytest -q
+cd .
 git add docs/superpowers/specs/2026-08-26-cleanup-and-colleague-correctness-design.md
 git diff --cached --name-only | xargs grep -l -f .superpowers/sdd/vendor-names.txt || git commit -m "docs: cleanup + colleague correctness spec status and amendments"
 ```

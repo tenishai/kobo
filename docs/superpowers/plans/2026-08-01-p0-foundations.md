@@ -21,7 +21,7 @@
 
 ## Part A — daedalus branch `feat/runtime-image`
 
-Work in `~/Documents/GitHub/daedalus`. First step of Task 1 creates the branch.
+Work in `../daedalus`. First step of Task 1 creates the branch.
 
 ### Task 1: Knowledge-file parser + type map (`docker/seeder.py`, pure part)
 
@@ -36,7 +36,7 @@ Work in `~/Documents/GitHub/daedalus`. First step of Task 1 creates the branch.
 - [ ] **Step 1: Create the branch**
 
 ```bash
-cd ~/Documents/GitHub/daedalus
+cd ../daedalus
 git checkout -b feat/runtime-image
 ```
 
@@ -88,7 +88,7 @@ def test_type_for_maps_filename_stems():
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `cd ~/Documents/GitHub/daedalus/docker && python -m pytest test_seeder.py -v`
+Run: `cd ../daedalus/docker && python -m pytest test_seeder.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'seeder'`
 
 - [ ] **Step 4: Write the minimal implementation**
@@ -141,18 +141,18 @@ def parse_knowledge_file(path: Path) -> list[str]:
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cd ~/Documents/GitHub/daedalus/docker && python -m pytest test_seeder.py -v`
+Run: `cd ../daedalus/docker && python -m pytest test_seeder.py -v`
 Expected: 3 passed
 
 - [ ] **Step 6: Verify daedalus's own suite doesn't collect docker/**
 
-Run: `cd ~/Documents/GitHub/daedalus && make check`
+Run: `cd ../daedalus && make check`
 Expected: same pass count as before this task (pyproject `testpaths = ["tests"]` excludes `docker/`). Ruff must pass on the new files; if `make check` lints only `src`/`tests`, run `ruff check docker/` explicitly.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd ~/Documents/GitHub/daedalus
+cd ../daedalus
 git add docker/seeder.py docker/test_seeder.py
 git commit -m "feat(docker): knowledge-file parser + type map for runtime seeder"
 ```
@@ -264,7 +264,7 @@ def test_state_survives_in_sqlite(tmp_path):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/Documents/GitHub/daedalus/docker && python -m pytest test_seeder.py -v`
+Run: `cd ../daedalus/docker && python -m pytest test_seeder.py -v`
 Expected: new tests FAIL with `ImportError: cannot import name 'sync'`
 
 - [ ] **Step 3: Implement sync + main**
@@ -368,13 +368,13 @@ if __name__ == "__main__":
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd ~/Documents/GitHub/daedalus/docker && python -m pytest test_seeder.py -v`
+Run: `cd ../daedalus/docker && python -m pytest test_seeder.py -v`
 Expected: 8 passed
 
 - [ ] **Step 5: Run daedalus's suite + lint, commit**
 
 ```bash
-cd ~/Documents/GitHub/daedalus
+cd ../daedalus
 make check && ruff check docker/
 git add docker/seeder.py docker/test_seeder.py
 git commit -m "feat(docker): convergent seed sync with sqlite state + techne wiring"
@@ -449,7 +449,7 @@ __pycache__
 
 - [ ] **Step 3: Append Makefile targets**
 
-Append to `~/Documents/GitHub/daedalus/Makefile` (match its existing tab-indented style):
+Append to `../daedalus/Makefile` (match its existing tab-indented style):
 
 ```make
 # --- runtime image (docker/) -------------------------------------------------
@@ -472,13 +472,13 @@ image-push: image
 
 - [ ] **Step 4: Build and smoke-test**
 
-Run: `cd ~/Documents/GitHub/daedalus && make image-smoke`
+Run: `cd ../daedalus && make image-smoke`
 Expected: prints the daedalus version (e.g. `0.4.0.dev0`) and `techne ok`. If the build fails on the techne context, verify `../techne` is a clean checkout.
 
 - [ ] **Step 5: Seeder-in-container smoke**
 
 ```bash
-cd ~/Documents/GitHub/daedalus
+cd ../daedalus
 mkdir -p /tmp/p0-bundle/knowledge
 printf '## Rule one\nBe helpful.\n' > /tmp/p0-bundle/knowledge/gotchas.md
 docker run --rm -v /tmp/p0-bundle:/bundle --entrypoint python daedalus-runtime:latest \
@@ -490,7 +490,7 @@ Expected output includes: `seeder: seeded=1 removed=0 unchanged=0`
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/Documents/GitHub/daedalus
+cd ../daedalus
 git add docker/Dockerfile docker/entrypoint.sh Makefile .dockerignore
 git commit -m "feat(docker): daedalus-runtime base image (seed-then-run entrypoint)"
 ```
@@ -499,7 +499,7 @@ git commit -m "feat(docker): daedalus-runtime base image (seed-then-run entrypoi
 
 ## Part B — gojira branch `feat/agent-deploys`
 
-Work in `~/Documents/GitHub/gojira`. First step of Task 4 creates the branch.
+Work in `../gojira`. First step of Task 4 creates the branch.
 
 ### Task 4: `agent` class gets an HTTP readiness probe → Service is generated
 
@@ -512,7 +512,7 @@ Background: `gojira/generator/__init__.py:471-474` — `_has_service(cls)` is tr
 - [ ] **Step 1: Create the branch**
 
 ```bash
-cd ~/Documents/GitHub/gojira
+cd ../gojira
 git checkout -b feat/agent-deploys
 ```
 
@@ -545,7 +545,7 @@ def test_agent_class_renders_service():
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `cd ~/Documents/GitHub/gojira && python -m pytest tests/test_opinions.py tests/test_generator.py -v -k agent`
+Run: `cd ../gojira && python -m pytest tests/test_opinions.py tests/test_generator.py -v -k agent`
 Expected: both new tests FAIL (`KeyError: 'readiness'` / missing `service.yaml`)
 
 - [ ] **Step 4: Edit the opinion**
@@ -569,7 +569,7 @@ to:
 
 - [ ] **Step 5: Run the full gojira suite**
 
-Run: `cd ~/Documents/GitHub/gojira && python -m pytest -q`
+Run: `cd ../gojira && python -m pytest -q`
 Expected: all pass. The golden fixtures (`tests/golden/{web,worker,cron,multiproject}`) don't cover the agent class, so no golden churn; if any golden test fails, stop and inspect — that means the agent class leaked into a shared rendering path.
 
 - [ ] **Step 6: Commit**
@@ -658,7 +658,7 @@ Note: `FakeGitHubClient.file_exists` returns its `dockerfile` flag for `"Dockerf
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/Documents/GitHub/gojira && python -m pytest tests/test_web.py -v -k api_`
+Run: `cd ../gojira && python -m pytest tests/test_web.py -v -k api_`
 Expected: FAIL — 404s from the missing routes.
 
 - [ ] **Step 3: Add the App column**
@@ -760,7 +760,7 @@ Directly above the `@app.post("/api/v1/usage")` route (`web/__init__.py:293`), i
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cd ~/Documents/GitHub/gojira && python -m pytest tests/test_web.py -v -k api_`
+Run: `cd ../gojira && python -m pytest tests/test_web.py -v -k api_`
 Expected: 5 passed. Then the full suite: `python -m pytest -q` — all pass.
 
 - [ ] **Step 6: Commit**
@@ -831,7 +831,7 @@ def test_api_connect_auto_merge_activates(client, session_factory, clients):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/Documents/GitHub/gojira && python -m pytest tests/test_steps.py tests/test_web.py -v -k merge`
+Run: `cd ../gojira && python -m pytest tests/test_steps.py tests/test_web.py -v -k merge`
 Expected: FAIL — `NameError: MergeSetupPr` / fake lacks `merge_pr`.
 
 - [ ] **Step 3: Add `merge_pr` to the client layer**
@@ -913,7 +913,7 @@ def per_app_steps() -> list[Step]:
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cd ~/Documents/GitHub/gojira && python -m pytest -q`
+Run: `cd ../gojira && python -m pytest -q`
 Expected: all pass, including the two prior `awaiting_pr` API tests (flag defaults False → step SKIPPED). If an existing provisioner test asserts the exact per-app step list, update it to include `merge_setup_pr`.
 
 - [ ] **Step 6: Commit**
@@ -1001,7 +1001,7 @@ Note: gojira's generated CI builds with plain `docker build .`, so bake the reso
 - [ ] **Step 2: Validate the bundle locally**
 
 ```bash
-cd ~/Documents/GitHub/daedalus
+cd ../daedalus
 python - <<'EOF'
 from daedalus.bundle import Bundle
 b = Bundle.load("/path/to/agent-hello/bundle")

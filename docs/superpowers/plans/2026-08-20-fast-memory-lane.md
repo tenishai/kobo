@@ -240,7 +240,7 @@ def test_teach_and_seeder_produce_identical_rows(techne_db, tmp_path, note):
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_memory_teach.py -v`
+Run: `cd ../daedalus && python -m pytest tests/test_memory_teach.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'daedalus.memory.teach'`
 
 - [ ] **Step 4: Write the module**
@@ -401,7 +401,7 @@ def apply_teach(note: str, filename: str, db_path: Path) -> TeachResult:
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cd ~/Documents/GitHub/daedalus && python -m pytest tests/test_memory_teach.py -v`
+Run: `cd ../daedalus && python -m pytest tests/test_memory_teach.py -v`
 Expected: PASS (all; skips only if techne is absent locally, in which case install it per the repo README before proceeding)
 
 - [ ] **Step 6: Run the full suite, vendor-scan the diff, commit**

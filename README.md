@@ -122,9 +122,9 @@ concern and compose:
   and records every conversation.
 - **[techne](https://github.com/tenishai/techne)** — agentic memory. Each agent embeds its own
   store on a PVC; the seeder converges knowledge at boot and the teach lane writes it live.
-- **[skills](https://github.com/tenishai/skills)** — the SKILL.md catalog shape. Kobo reads
+- **skills** — the SKILL.md catalog shape. Kobo reads
   marketplace catalogs (including externally published ones) with pinned versions.
-- **[kaminos](https://github.com/tenishai/kaminos)** — Interface Builder for bundles; kobo
+- **kaminos** — Interface Builder for bundles; kobo
   borrows its editor patterns and test console.
 - **[liminal](https://github.com/tenishai/liminal)** — the MCP gateway agents point at for
   real tool capabilities.
@@ -288,5 +288,7 @@ The design record lives in-repo and is the source of truth:
 ## License
 
 [AGPL-3.0-or-later](LICENSE), matching the tenishai family (gojira, techne, liminal, cabal, daedalus, argus).
+
+Copyright (C) 2026 tenishai
 
 Tests: see [TESTING.md](TESTING.md) for what earns a place in the suite and the scaffold rule.

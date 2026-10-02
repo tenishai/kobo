@@ -1042,7 +1042,7 @@ Expected: both exits 0, zero svelte-check errors, leftovers grep exits 1.
 
 ### Task 7: Runtime prompt v2 (daedalus, branch `feat/learnings`)
 
-**Repo:** `~/Documents/GitHub/daedalus`. Start with `git fetch origin && git checkout -B feat/learnings origin/feat/learnings`. Tests: `make test` or the repo's documented pytest invocation (read `Makefile`); never pipe the test command.
+**Repo:** `../daedalus`. Start with `git fetch origin && git checkout -B feat/learnings origin/feat/learnings`. Tests: `make test` or the repo's documented pytest invocation (read `Makefile`); never pipe the test command.
 
 **Files:**
 - Modify: `src/daedalus/memory/learnings.py`

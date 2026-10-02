@@ -21,7 +21,7 @@
 
 ### Task 1: Runtime kit — image gains the slack extra + seeder last-file fix
 
-**Repo:** ~/Documents/GitHub/daedalus, branch `feat/runtime-image`. **Files:** `docker/Dockerfile`, `docker/seeder.py`, `docker/test_seeder.py`.
+**Repo:** ../daedalus, branch `feat/runtime-image`. **Files:** `docker/Dockerfile`, `docker/seeder.py`, `docker/test_seeder.py`.
 
 - Both pip lines pin `daedalus[a2a]` — change both to `daedalus[a2a,slack]` (wheel-build line 25 and install line 32; keep everything else byte-identical).
 - **Seeder last-file fix (P2b final-review gap, confirmed by code reading):** `main()` early-returns when `knowledge/` is absent (`seeder.py:184-186`) — but git drops empty dirs, so deleting the LAST knowledge file removes the dir from the image and the removal loop never runs: the deleted file's seeded rows persist in techne forever. Fix: when `knowledge_dir` is missing, do NOT return early — run the same `sync(...)` with an empty current set (simplest: `knowledge_dir.mkdir()` on a temp path, or teach `sync` to accept a missing dir as "no files") so state-tracked removals still purge. Keep the "nothing to seed" log line for the truly-never-seeded case if state is empty. TDD in `docker/test_seeder.py`: seed two files → re-run with knowledge/ absent → both files' entries deleted, state rows gone, result `removed=2`; and a never-seeded bundle with no knowledge/ stays a clean no-op.

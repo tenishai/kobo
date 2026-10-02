@@ -10,12 +10,12 @@
 
 ## Global Constraints
 
-- Vendor rule: NO client names in tracked files; scan every touched file with `grep -i -f ~/Documents/GitHub/kobo/.superpowers/sdd/vendor-names.txt <files>` as its OWN gating step before commit, never batched with commit/push.
+- Vendor rule: NO client names in tracked files; scan every touched file with `grep -i -f .superpowers/sdd/vendor-names.txt <files>` as its OWN gating step before commit, never batched with commit/push.
 - NO EM DASHES in user-facing copy (UI strings, reply/notice text, API error bodies). Code comments exempt.
 - Validate against the REAL downstream gate, never a lookalike (e.g. teardown role list must be THE constant `grant_iam_roles` uses, not a re-typed copy).
 - Stage named files only. TDD RED-first with evidence. Report suite counts.
 - gojira: `git fetch origin && git switch -c feat/app-teardown origin/main` (main carries the merged #34/#35; the local checkout may sit on an older branch). NO PR until the operator says; push the branch when done. Suite: `venv/bin/python -m pytest -q` from the repo root (mirror how existing runs invoke it; the sizing tests' 8 pre-existing local-env failures are known baseline noise, verify unchanged, do not fix).
-- kobo API baseline 1168 (`cd api && venv/bin/python -m pytest -q`); UI baseline 242 (`PATH="~/Documents/google-cloud-sdk/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" make -C ui check`).
+- kobo API baseline 1168 (`cd api && venv/bin/python -m pytest -q`); UI baseline 242 (`PATH="~/google-cloud-sdk/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" make -C ui check`).
 - Discovery anchors (gojira): delete route `gojira/web/__init__.py:223-236`; `service.delete_app` `gojira/service.py:385-412`; `delete_namespace` `gojira/k8s.py:105-109`; orphan tables `gojira/models.py:171,195,235` (drift_findings, usage_profiles, sizing_recommendations); `gcp.py` has creation/check methods only.
 
 ---

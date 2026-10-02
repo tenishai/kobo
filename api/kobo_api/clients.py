@@ -314,7 +314,7 @@ class GitHubClient(Protocol):
         `permissions` on a repository read as a USER's standing and answers
         an App with every field False, `push` and `pull` alike, even on a
         repository the App created and pushes to daily. Reading `push`
-        there refused every repository (example-org, 2026-09-25). Running under
+        there refused every repository (a client org, 2026-09-25). Running under
         an operator's `gh auth` (dev), `push` is that person's real
         standing and is read as before; a response with no `permissions`
         object at all is still no write. A response that does not say the
@@ -1481,7 +1481,7 @@ class CloudClient(Protocol):
         ...
 
 
-# What a model group confers at Acme through membership; granted directly on
+# What a model group confers at a client org through membership; granted directly on
 # the Vertex project when the room runs with no group (2026-10-01).
 MODEL_ACCESS_ROLE = "roles/aiplatform.user"
 

@@ -35,9 +35,9 @@ Reference anchors (drift expected; locate by content): namegen.py `SUGGESTION_CO
 - [ ] **Step 1: Create the branch**
 
 ```bash
-git -C ~/Documents/GitHub/kobo checkout main
-git -C ~/Documents/GitHub/kobo pull --ff-only
-git -C ~/Documents/GitHub/kobo checkout -b feat/create-identity
+git -C . checkout main
+git -C . pull --ff-only
+git -C . checkout -b feat/create-identity
 ```
 
 - [ ] **Step 2: Read `api/tests/test_namegen.py` and `api/kobo_api/namegen.py` in full.** Existing tests pin count 5 and deterministic ordering -- they will be updated, not weakened: every behavioral pin (validation, taken/reserved dedupe, padding, determinism-within-a-round) survives with the new count/params.
@@ -72,15 +72,15 @@ def test_same_round_stays_deterministic():
     assert a == b
 ```
 
-- [ ] **Step 4: Verify failure** -- `cd ~/Documents/GitHub/kobo/api && uv run python -m pytest tests/test_namegen.py -x -q` -- FAIL (unexpected kwargs / count 5).
+- [ ] **Step 4: Verify failure** -- `cd api && uv run python -m pytest tests/test_namegen.py -x -q` -- FAIL (unexpected kwargs / count 5).
 
 - [ ] **Step 5: Implement** -- `SUGGESTION_COUNT = 3`; thread `exclude` (normalized lowercase) into the same drop-set as taken/reserved; `_deterministic_order(names, persona_seed, round_salt)` with the salted hash; `finalize_suggestions` signature per Interfaces (keyword-only, defaults keep every existing caller working).
 
 - [ ] **Step 6: Verify pass, run the file, commit**
 
 ```bash
-git -C ~/Documents/GitHub/kobo add api/kobo_api/namegen.py api/tests/test_namegen.py
-git -C ~/Documents/GitHub/kobo commit -m "feat(namegen): three suggestions, exclude set, round-salted fallback"
+git -C . add api/kobo_api/namegen.py api/tests/test_namegen.py
+git -C . commit -m "feat(namegen): three suggestions, exclude set, round-salted fallback"
 ```
 
 ---
@@ -121,8 +121,8 @@ def test_empty_tags_and_exclude_render_cleanly():
 - [ ] **Step 4: Run the client test file + commit**
 
 ```bash
-git -C ~/Documents/GitHub/kobo add api/kobo_api/clients.py api/tests/
-git -C ~/Documents/GitHub/kobo commit -m "feat(names): the prompt mines the persona -- three resonant candidates"
+git -C . add api/kobo_api/clients.py api/tests/
+git -C . commit -m "feat(names): the prompt mines the persona -- three resonant candidates"
 ```
 
 ---
@@ -165,8 +165,8 @@ def test_returns_exactly_three():
 - [ ] **Step 3: Verify failure, implement, verify pass** (route file + namegen/client tests all green), **run the full API suite**, commit:
 
 ```bash
-git -C ~/Documents/GitHub/kobo add api/kobo_api/main.py api/tests/
-git -C ~/Documents/GitHub/kobo commit -m "feat(names): persona_id server lookup, exclude + round ride the route"
+git -C . add api/kobo_api/main.py api/tests/
+git -C . commit -m "feat(names): persona_id server lookup, exclude + round ride the route"
 ```
 
 ---
@@ -204,8 +204,8 @@ it("catalog picks send persona_id instead of the label-as-what", async () => {
 - [ ] **Step 4: Run the modal tests, full UI suite, `npm run check`**, commit:
 
 ```bash
-git -C ~/Documents/GitHub/kobo add ui/src
-git -C ~/Documents/GitHub/kobo commit -m "feat(ui): three persona-driven name cards, offer-more that offers more"
+git -C . add ui/src
+git -C . commit -m "feat(ui): three persona-driven name cards, offer-more that offers more"
 ```
 
 ---
@@ -237,8 +237,8 @@ def test_avatar_prompt_without_tags_stays_clean():
 - [ ] **Step 2: Implement** the spec template (omit the `themes:` clause entirely when tags are empty), update the generate route to pass `agent.purpose_tags` (the column already holds the list the detail serves). Verify pass, run the file + route tests, commit:
 
 ```bash
-git -C ~/Documents/GitHub/kobo add api/kobo_api/avatars.py api/kobo_api/main.py api/tests/
-git -C ~/Documents/GitHub/kobo commit -m "feat(avatars): the prompt carries name flavor and purpose tags"
+git -C . add api/kobo_api/avatars.py api/kobo_api/main.py api/tests/
+git -C . commit -m "feat(avatars): the prompt carries name flavor and purpose tags"
 ```
 
 ---
@@ -289,8 +289,8 @@ def test_pipeline_orders_avatar_right_after_repo():
 - [ ] **Step 4: Run the steps tests + the FULL API suite** (provisioner tests must still pass with the longer pipeline -- fix any test that pins the step list or counts steps, honestly), commit:
 
 ```bash
-git -C ~/Documents/GitHub/kobo add api/kobo_api/steps.py api/kobo_api/provisioner.py api/tests/
-git -C ~/Documents/GitHub/kobo commit -m "feat(provisioner): AvatarStep -- every agent gets a face at birth, best-effort"
+git -C . add api/kobo_api/steps.py api/kobo_api/provisioner.py api/tests/
+git -C . commit -m "feat(provisioner): AvatarStep -- every agent gets a face at birth, best-effort"
 ```
 
 ---
@@ -313,8 +313,8 @@ git -C ~/Documents/GitHub/kobo commit -m "feat(provisioner): AvatarStep -- every
 - [ ] **Step 4: Run the MCP test files + commit**
 
 ```bash
-git -C ~/Documents/GitHub/kobo add api/kobo_api/mcp api/tests/
-git -C ~/Documents/GitHub/kobo commit -m "fix(mcp): honest counts, get_agent aligned with the real detail"
+git -C . add api/kobo_api/mcp api/tests/
+git -C . commit -m "fix(mcp): honest counts, get_agent aligned with the real detail"
 ```
 
 ---
@@ -336,8 +336,8 @@ git -C ~/Documents/GitHub/kobo commit -m "fix(mcp): honest counts, get_agent ali
 - [ ] **Step 3: Implement, update counts/intros (read 8, write 16, trio documented), run the MCP tests + FULL API suite**, commit:
 
 ```bash
-git -C ~/Documents/GitHub/kobo add api/kobo_api api/tests/
-git -C ~/Documents/GitHub/kobo commit -m "feat(mcp): learnings trio -- list, decide, bulk ride the room's own gates"
+git -C . add api/kobo_api api/tests/
+git -C . commit -m "feat(mcp): learnings trio -- list, decide, bulk ride the room's own gates"
 ```
 
 ---

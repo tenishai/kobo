@@ -148,7 +148,7 @@ class InstallationTokenProvider:
         repository, and GitHub states it in the body of every minted token.
         That is the only honest source: `GET repos/{repo}` answers an App
         with `permissions` all False, `pull` included, even on a repository
-        the App created and pushes to daily (example-org, 2026-09-25: nine such
+        the App created and pushes to daily (a client org, 2026-09-25: nine such
         repositories, all `push: false`). Reading `push` there made every
         connect scan refuse every repository. Mints a token first if none
         is cached, so the answer is never a stale default.
