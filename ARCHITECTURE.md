@@ -1,8 +1,8 @@
 ---
 card: repo-card:kobo
-updated: 2026-09-28
+updated: 2026-10-02
 anchor: api/pyproject.toml sha=b454f7f18078ea02aa1ac39f3a81c572d0a0d0ed
-anchor: .github/workflows/ci.yml sha=4fd1fe9918922c4520cc3ad24739d4a9bd5304d3
+anchor: .github/workflows/ci.yml sha=4bb7a8fa5d9f0428b15b3c40146dad7f3024272e
 ---
 # kobo — repo card
 
@@ -15,6 +15,7 @@ ENTRY:
 - dev: `make -C api install && make -C api run` (:8100); `make -C ui dev` (:5173, proxies /api)
 - bootstrap CLI: `python -m kobo_api.bootstrap` (api/kobo_api/bootstrap.py; stands up an org's config repo/buckets/personas)
 - MCP server: /mcp + /oauth + /.well-known, mounted only when `config.mcp_enabled` (api/kobo_api/mcp/mount.py)
+- role: `KOBO_ROLE` = `all` (default) | `api` (serves, enqueues) | `worker` (claims and runs pipelines, sweeps, nightly pass); see docs/arch/provisioning.md. health.py probes ready agents' Deployments once a minute and the UI shows Down over Ready when the pods are not running.
 - agent-facing broker lane: /broker/agents/{name}/github-token, /jira/* (api/kobo_api/main.py, api/kobo_api/pr_broker.py; auth = the agent's cabal colleague JWT)
 - config: YAML via `KOBO_CONFIG` or ./config.local.yaml (api/kobo_api/config.py `Config.load`), then org.yaml from the org config repo merged over it at boot (api/kobo_api/org.py `load_org_config`, keys in `ORG_KEYS`). Env secrets: CABAL_OPERATOR_TOKEN, OKTA_API_TOKEN, KOBO_MCP_JWT_KEY, and the OAuth client secret (env name from `oauth_client_secret_env`, default KOBO_MCP_GOOGLE_CLIENT_SECRET). Env switch, not a secret: OTEL_EXPORTER_OTLP_ENDPOINT (tracing is on only when set).
 
@@ -39,7 +40,7 @@ DEPS: no Python imports of sibling repos (daedalus only via `pytest.importorskip
 - ladon: machine-lane secrets, auth = pod's Google ID token (ladon.py).
 - liminal: `liminal_url` baked into each bundle's tools block; techne: each agent's memory store on a PVC (runtime side; kobo never imports techne).
 - GitHub (gh CLI + GitHub App), Okta (groups/people), Vertex (names, persona drafts, avatars), GCS (catalogs), Slack (manifest API).
-HEALTH: API tests live under api/tests (pytest, `-n auto` in CI; each test owns its SQLite file; `make -C api test` locally runs serial). UI: vitest + svelte-check. CI (.github/workflows/ci.yml): `api-tests`, `ui` (build, check, test), `migrations` (alembic to head on real Postgres 16 + scripts/schema_tripwire.py), and `build-push` (main only, only if `vars.KOBO_IMAGE` set; rolling the image is a manual `kubectl set image`). Ruff is NOT in CI. No branch protection: CI reports, never blocks.
+HEALTH: API tests live under api/tests (pytest, `-n auto` in CI; each test owns its SQLite file; `make -C api test` locally runs serial). UI: vitest + svelte-check. CI (.github/workflows/ci.yml): `api-tests`, `ui` (build, check, test), `migrations` (alembic to head on real Postgres 16 + scripts/schema_tripwire.py), and `test-lifecycle` (TESTING.md: scaffold tests must not reach a PR). CI builds and publishes NO image (since 2026-10-02): an operator builds one from a commit and rolls it where it runs. Ruff is NOT in CI. No branch protection: CI reports, never blocks.
 GOTCHAS:
 - CI says "Install (locked)" but `uv.lock` is gitignored (.gitignore last line), so `uv sync` resolves fresh every run, and the Dockerfile's `pip install ./api` is unlocked too. That is how SQLAlchemy 2.1.1 slipped in and crashed boot on 2026-09-25 (comment in api/pyproject.toml). Pin in pyproject, not in a lockfile.
 - Tests run on SQLite; production multi-replica runs Postgres. A model change needs an alembic migration or the pod crashloops; CI's `migrations` job is the only thing that catches it. `init_db` (`create_all`) still runs at boot on both backends.

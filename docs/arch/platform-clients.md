@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-platform-clients
-updated: 2026-09-28
-anchor: api/kobo_api/clients.py sha=9821ad6907c2d2175a1a44d85f8c3da34639418d
-anchor: api/tests/fakes.py sha=66685dc33d8c4ad8ee68e5bf99792ee4db7fa4fe
+updated: 2026-10-02
+anchor: api/kobo_api/clients.py sha=9b3c99729ee92bb5820b4554f544d7f63f8088cf
+anchor: api/tests/fakes.py sha=82928a8e9db008fd266f2a1d699741a0aaa9808b
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
 
@@ -13,7 +13,7 @@ WHAT / SEAM: api/kobo_api/clients.py. The outside systems in the table below are
 | gojira | `GojiraClient` | `HttpxGojiraClient` (`/api/v1/apps...`) | `FakeGojira` |
 | cloud | `CloudClient` | `GcloudClient` (GSA, WI binding, groups, bucket IAM) | `FakeCloud` |
 | agent | `AgentClient` | `KubectlAgentClient` (port-forward a2a, legacy direct path) | `FakeAgent` |
-| kubectl | `KubectlClient` | `KubectlCLI` (rollout, secrets, ExternalSecret status) | `FakeKubectl` |
+| kubectl | `KubectlClient` | `KubectlCLI` (rollout, secrets, ExternalSecret status, `deployment_status_json`/`pods_json` for health.py) | `FakeKubectl` (set `.pods` for pod fixtures) |
 | slack | `SlackClient` + `SlackTokenStore` | `HttpxSlackClient`; `FileSlackTokenStore` / `KubeSlackTokenStore` | `FakeSlack` |
 | image / name | `ImageClient` / `NameClient` | `VertexImageClient` / `VertexNameClient` | `FakeImage` / `FakeName` |
 | storage | `StorageClient` | `HttpxStorageClient` (GCS JSON API) | `FakeStorage` |
@@ -26,5 +26,5 @@ INVARIANTS:
 - Never put a token or secret value in a raised message or log. WHY: raised messages can reach route responses. `CabalClient` and `HttpxStorageClient` go further and keep response bodies out of raised messages (logged truncated, `resp.text[:200]`); `HttpxGojiraClient` does NOT (its `ClientError` includes `resp.text`), so don't copy it for a client whose responses may echo secrets.
 - A new external call gets a Protocol method + a fake method in tests/fakes.py in the same change; the fakes mirror P0-observed backend behavior (e.g. gojira's generated kustomization) so step tests mean something.
 - `GojiraConflict` (409 on create) is distinct from `ClientError` so onboard can decide whether the app is its own.
-CONSUMERS: api/kobo_api/steps.py, provisioner.py, destroy.py, main.py (routes), directory.py, colleagues.py, pairs.py, learnings.py, knowledge.py, slack_setup.py, agent_env.py, mcp/tools/*.py; api/tests/* via tests/fakes.py.
+CONSUMERS: api/kobo_api/steps.py, provisioner.py, health.py (ready agents probed once a minute; verdict kept in memory per replica), destroy.py, main.py (routes), directory.py, colleagues.py, pairs.py, learnings.py, knowledge.py, slack_setup.py, agent_env.py, mcp/tools/*.py; api/tests/* via tests/fakes.py.
 API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provider(config)`; `probe_slack_token_store(clients)` (boot write-probe of the Slack token Secret); `gsa_email(name, project)`; errors `ClientError`, `GojiraConflict`, `SlackApiError`, `StorageNotFound`, `CabalError`.

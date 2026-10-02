@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-switchboard
-updated: 2026-09-28
+updated: 2026-10-02
 anchor: api/kobo_api/pairs.py sha=499b05c5b7bece563072ca45b4905e10c0b13133
-anchor: api/kobo_api/clients.py sha=9821ad6907c2d2175a1a44d85f8c3da34639418d
+anchor: api/kobo_api/clients.py sha=9b3c99729ee92bb5820b4554f544d7f63f8088cf
 ---
 # switchboard — kobo ↔ cabal: directory, relay, colleague passes, dispatch policy
 
@@ -21,6 +21,7 @@ INVARIANTS:
 - Revoke BEFORE mint on every re-wire (2026-09-24). WHY: cabal refuses tokens issued before the cutoff; minting first would let the new pass fall to its own revocation. A revoke failure stops the step before minting.
 - Minted `scope` is always `["colleague"]`, never `operator`. Tokens and response bodies never appear in raised messages.
 - `list_conversations` without `limit` is cabal's default 50 rows, clamped at 200, not unbounded.
+- `GET /api/colleagues/feed` releases its DB session right after the visibility check and shares one fan-out across concurrent callers (`_coalesced` in main.py). WHY: on 2026-10-01 the feed held its connection through up to 400 serial switchboard calls per open tab, exhausted the pool, failed an unrelated agent's build step and got both replicas probe-killed. Keep the DB out of the fan-out.
 - `/broker` accepts the same colleague JWT (aud `cabal-core`) verified against cabal's JWKS (pr_broker.py `verify_agent_token`); confused-deputy tradeoff accepted and documented there.
 CONSUMERS: api/kobo_api/steps.py (WireStep, DirectoryStep, HelloStep, `_deliver_knowledge_refresh`), provisioner.py, destroy.py, learnings.py, main.py (chat, teach, threads, invites, colleagues feed/stream, admin resync), mcp/tools/read.py (conversation feed), composer.py (bakes cabal JWKS/issuer/audience into agent.yaml). Cross-repo: cabal's admin API (the cabal repo) is the other side; daedalus runtime reads `CABAL_COLLEAGUE_TOKEN` via `tools.colleagues.token_env`.
 API: see endpoints above; kobo-side `allowed_pairs(session, config) -> set[tuple[str,str]]`, `sync_dispatch_pairs_best_effort(clients, config, session) -> int | None`, `CabalClient.dispatch_pairs_dirty`.
