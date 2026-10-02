@@ -14,6 +14,7 @@ the one below is a small explicit list: the operating company, the
 product family and its codenames, and the vendors a generic persona
 should never name.
 """
+import os
 import re
 from pathlib import Path
 
@@ -47,8 +48,12 @@ VOICE_PARAGRAPH = (
     "throat-clearing. Say \"I don't know yet\" when it's true."
 )
 
+# Product and vendor names a built-in persona must never carry. Names the
+# room's operator does not want in templates either (their own company,
+# their clients) come from PERSONA_BLOCKLIST_EXTRA, comma-separated, so this
+# public file never has to name them.
 BLOCKLIST = (
-    "acme",
+    *(w.strip().lower() for w in os.environ.get("PERSONA_BLOCKLIST_EXTRA", "").split(",") if w.strip()),
     "tenishai",
     "kobo",
     "gojira",
