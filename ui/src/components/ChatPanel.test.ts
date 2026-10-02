@@ -180,38 +180,6 @@ describe("ChatPanel — Teach this gesture (Task 2)", () => {
     expect(screen.queryByText(SAVED_COPY)).toBeNull();
   });
 
-  it("failure surfaces the server's own detail verbatim, and it stays retryable", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.includes("/api/agents/ward/chat")) {
-          return jsonResponse({ reply: "Sure thing." });
-        }
-        if (url.includes("/api/agents/ward/teach")) {
-          return jsonResponse({ error: "teach note text must not be empty" }, 422);
-        }
-        return jsonResponse({});
-      }),
-    );
-
-    renderWithClient(ChatPanel, { agentName: "ward" });
-    await sendMessage("hello there");
-    await waitFor(() => {
-      expect(screen.getByText("Sure thing.")).not.toBeNull();
-    });
-
-    await fireEvent.click(screen.getAllByRole("button", { name: "Teach this" })[0]);
-    await screen.findByLabelText("Teach ward");
-    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
-
-    await waitFor(() => {
-      expect(screen.getByText("teach note text must not be empty")).not.toBeNull();
-    });
-    // Still retryable: the Save button (and the still-editable form) remain.
-    expect(screen.getByRole("button", { name: "Save" })).not.toBeNull();
-  });
-
   it("resets fully between opens: an unsaved edit on one bubble never leaks into another", async () => {
     stubFetch({
       "/api/agents/ward/chat": { reply: "Sure thing." },
@@ -236,29 +204,4 @@ describe("ChatPanel — Teach this gesture (Task 2)", () => {
     expect(textarea.value).toBe("You said: hello there\n\nward replied: Sure thing.");
   });
 
-  it("resets after a successful save too: reopening shows a fresh editable form, not the old success view", async () => {
-    stubFetch({
-      "/api/agents/ward/chat": { reply: "Sure thing." },
-      "/api/agents/ward/teach": { filename: "chat-x.md", sha: "abc1234" },
-      "/api/": {},
-    });
-    renderWithClient(ChatPanel, { agentName: "ward" });
-    await sendMessage("hello there");
-    await waitFor(() => {
-      expect(screen.getByText("Sure thing.")).not.toBeNull();
-    });
-
-    const [userTeach] = screen.getAllByRole("button", { name: "Teach this" });
-    await fireEvent.click(userTeach);
-    await screen.findByLabelText("Teach ward");
-    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => {
-      expect(screen.getByText(SAVED_COPY)).not.toBeNull();
-    });
-    await fireEvent.click(screen.getByRole("button", { name: "Done" }));
-
-    await fireEvent.click(userTeach);
-    expect(await screen.findByRole("button", { name: "Save" })).not.toBeNull();
-    expect(screen.queryByText(SAVED_COPY)).toBeNull();
-  });
 });

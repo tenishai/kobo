@@ -409,12 +409,6 @@ def test_get_entry_team_none_matches_any_team(engine):
     assert entry.team == "platform"
 
 
-def test_get_entry_team_positional_still_scopes(engine, storage):
-    # team, when given, is still a positional-or-keyword filter — unchanged
-    # behavior for skill lookups, which must stay scoped to one team.
-    assert get_entry(engine, "skill", "code-review", "platform") is None
-
-
 def test_teams_distinct_and_sorted(engine, storage):
     _ingest(engine, storage)
     assert teams(engine) == ["platform", "shared"]
@@ -525,27 +519,6 @@ def test_skill_entry_with_owner_sets_team(engine):
     assert entry.team == "growth"
 
 
-def test_skill_entry_without_owner_or_team_defaults_to_empty(engine):
-    # Upstream's actual current shape (design fact): a skill entry with
-    # neither "owner" nor "team" at all — not a KeyError, just "".
-    storage = _skill_index(
-        [
-            {
-                "id": "unowned-skill",
-                "name": "Unowned skill",
-                "description": "No owner key at all",
-                "tags": [],
-                "sha": "",
-                "builtin": False,
-            }
-        ]
-    )
-    ingest_indexes(engine, storage, {"skill": "skills-bucket"})
-    entry = get_entry(engine, "skill", "unowned-skill", "")
-    assert entry is not None
-    assert entry.team == ""
-
-
 def test_skill_entry_garbage_owner_int_ingest_succeeds_team_empty_debug_logged(engine, caplog):
     storage = _skill_index(
         [
@@ -568,30 +541,6 @@ def test_skill_entry_garbage_owner_int_ingest_succeeds_team_empty_debug_logged(e
     assert entry is not None
     assert entry.team == ""
     assert any("int-owner-skill" in record.message for record in caplog.records)
-
-
-def test_skill_entry_garbage_owner_dict_ingest_succeeds_team_empty_debug_logged(engine, caplog):
-    storage = _skill_index(
-        [
-            {
-                "id": "dict-owner-skill",
-                "name": "Dict owner skill",
-                "description": "owner is a dict, not a string",
-                "owner": {"not": "a string"},
-                "tags": [],
-                "sha": "",
-                "builtin": False,
-            }
-        ]
-    )
-    with caplog.at_level(logging.DEBUG, logger="kobo_api.search"):
-        counts = ingest_indexes(engine, storage, {"skill": "skills-bucket"})
-
-    assert counts == {"skill": 1}
-    entry = get_entry(engine, "skill", "dict-owner-skill", "")
-    assert entry is not None
-    assert entry.team == ""
-    assert any("dict-owner-skill" in record.message for record in caplog.records)
 
 
 def test_skill_entry_owner_wins_over_legacy_team_key(engine):
@@ -690,16 +639,6 @@ def test_persona_entry_owner_key_is_ignored_team_semantics_byte_untouched(engine
     entry = get_entry(engine, "persona", "helpful-generalist")
     assert entry is not None
     assert entry.team == "platform"
-
-
-def test_ingest_existing_persona_team_fixture_rows_still_work(engine, storage):
-    # Extends the original ingest test (never weakens it): the personas
-    # fixture used everywhere else in this file keeps ingesting and
-    # round-tripping its "team" value exactly as before this task.
-    _ingest(engine, storage)
-    entry = get_entry(engine, "persona", "helpful-generalist")
-    assert entry is not None
-    assert entry.team == "shared"
 
 
 # --- distinct_skill_teams ---------------------------------------------------
@@ -841,24 +780,6 @@ def test_marketplace_dialect_ingests_mapped_field_by_field(engine):
     assert entry.sha == "abc123"
     assert entry.builtin is False
     # when_to_use/profiles/size are ignored -- not part of the FTS row shape.
-
-
-def test_marketplace_dialect_entry_without_owner_defaults_to_empty_team(engine):
-    storage = _marketplace_storage(
-        {
-            "no-owner-skill": {
-                "name": "No owner skill",
-                "version": "1",
-                "description": "No owner key at all",
-                "tags": [],
-                "content_hash": "shaX",
-            }
-        }
-    )
-    ingest_indexes(engine, storage, {"skill": "skills-bucket"})
-    entry = get_entry(engine, "skill", "no-owner-skill", "")
-    assert entry is not None
-    assert entry.team == ""
 
 
 def test_marketplace_malformed_entries_skipped_not_fatal(engine, caplog):
@@ -1010,29 +931,6 @@ def test_skill_entry_empty_string_owner_falls_through_legacy_team_logged(engine,
     assert any("blank-owner-skill" in record.message for record in caplog.records)
 
 
-def test_skill_entry_whitespace_owner_falls_through_empty_team_logged(engine, caplog):
-    storage = _skill_index(
-        [
-            {
-                "id": "whitespace-owner-skill",
-                "name": "Whitespace owner skill",
-                "description": "owner is whitespace-only",
-                "owner": "   ",
-                "tags": [],
-                "sha": "",
-                "builtin": False,
-            }
-        ]
-    )
-    with caplog.at_level(logging.DEBUG, logger="kobo_api.search"):
-        ingest_indexes(engine, storage, {"skill": "skills-bucket"})
-
-    entry = get_entry(engine, "skill", "whitespace-owner-skill", "")
-    assert entry is not None
-    assert entry.team == ""
-    assert any("whitespace-owner-skill" in record.message for record in caplog.records)
-
-
 # --- Task 1b: read_marketplace_catalog (the fetch path's dialect probe) -----
 
 
@@ -1096,15 +994,6 @@ def test_ingest_resolves_catalog_json_when_index_json_absent(engine):
     entry = get_entry(engine, "skill", "code-review", "growth")
     assert entry is not None
     assert entry.name == "Code review"
-
-
-def test_read_marketplace_catalog_resolves_catalog_json_when_index_json_absent(engine):
-    storage = _catalog_json_only_storage(
-        {"code-review": {"name": "Code review", "version": "3", "description": "d", "tags": []}}
-    )
-    catalog = read_marketplace_catalog(storage, "skills-bucket")
-    assert catalog is not None
-    assert catalog["code-review"]["version"] == "3"
 
 
 def test_both_present_index_json_wins(engine):

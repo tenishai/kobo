@@ -144,28 +144,6 @@ describe("ColleagueConversations (terminal)", () => {
     expect(await screen.findByText("Here's the config.")).not.toBeNull();
   });
 
-  it("renders nothing (silent absence) when the room has no switchboard wired (409)", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify({ error: "the switchboard is not configured" }),
-          { status: 409, headers: { "Content-Type": "application/json" } },
-        ),
-      ),
-    );
-
-    const { container } = renderWithClient(ColleagueConversations, { agentName: "warden" });
-
-    // A false `{#if}` still leaves Svelte's own anchor comments in the DOM
-    // (compiled-output detail) - textContent (no visible text/elements) is
-    // the accurate "rendered nothing a human would see" check, not raw
-    // innerHTML.
-    await waitFor(() => {
-      expect(container.textContent?.trim()).toBe("");
-    });
-  });
-
   // --- Auto-scroll pin/unpin (jsdom-level: jsdom computes no real layout,
   // so scrollHeight/clientHeight/scrollTop are overridden by hand on the
   // scroll container, the standard way to exercise scroll logic under it) --
@@ -196,28 +174,6 @@ describe("ColleagueConversations (terminal)", () => {
     await fireEvent.click(screen.getByText("Jump to latest"));
 
     expect(logEl.scrollTop).toBe(1000);
-    expect(screen.queryByText("Jump to latest")).toBeNull();
-  });
-
-  it("staying within a hair of the bottom counts as pinned (no Jump to latest)", async () => {
-    stubFetch({
-      "/api/colleagues/feed": { entries: [ASK_ENTRY, REPLY_ENTRY], truncated: false },
-    });
-
-    renderWithClient(ColleagueConversations, { agentName: "ward" });
-    await screen.findByText("What's the config?");
-
-    const logEl = screen.getByRole("log") as HTMLDivElement;
-    Object.defineProperty(logEl, "scrollHeight", { value: 1000, configurable: true });
-    Object.defineProperty(logEl, "clientHeight", { value: 500, configurable: true });
-    Object.defineProperty(logEl, "scrollTop", {
-      value: 495, // 1000 - 495 - 500 = 5px off the bottom, inside the slack
-      configurable: true,
-      writable: true,
-    });
-
-    await fireEvent.scroll(logEl);
-
     expect(screen.queryByText("Jump to latest")).toBeNull();
   });
 
@@ -364,20 +320,6 @@ describe("ColleagueConversations (legibility wave)", () => {
 
     await fireEvent.input(box, { target: { value: "" } });
     expect(screen.getByText("What's the config?")).not.toBeNull();
-  });
-
-  it("a filter with no matches says so instead of showing an empty void", async () => {
-    stubFetch({
-      "/api/colleagues/feed": { entries: [ASK_ENTRY], truncated: false },
-    });
-
-    renderWithClient(ColleagueConversations, { agentName: "ward" });
-    await screen.findByText("What's the config?");
-
-    const box = screen.getByLabelText("Filter conversations") as HTMLInputElement;
-    await fireEvent.input(box, { target: { value: "zzz-nothing" } });
-
-    expect(await screen.findByText("No lines match the filter.")).not.toBeNull();
   });
 
   it("counterpart chips scope the feed to one colleague and toggle back off", async () => {

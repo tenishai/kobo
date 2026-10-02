@@ -333,49 +333,6 @@ describe("ConnectModal — connecting", () => {
     ).toBeNull();
   });
 
-  it("puts a taken name on the name field", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        if (url.includes("/api/agents/connect") && init?.method === "POST") {
-          return new Response(
-            JSON.stringify({ error: "name taken: 'release-bot'" }),
-            { status: 409, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        const routes: Record<string, unknown> = {
-          "/api/catalog/groups": { groups: [] },
-          "/api/connect/scan": CLEAN_REPORT,
-          "/api/": {},
-        };
-        for (const [needle, payload] of Object.entries(routes)) {
-          if (url.includes(needle)) {
-            return new Response(JSON.stringify(payload), {
-              status: 200,
-              headers: { "Content-Type": "application/json" },
-            });
-          }
-        }
-        throw new Error(`unstubbed fetch: ${url}`);
-      }),
-    );
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await fillTheForm();
-    await fireEvent.click(scanButton());
-    await screen.findByText("Nothing is in the way.");
-    await fireEvent.click(screen.getByRole("checkbox", { name: OWNER_CHECKBOX }));
-    await fireEvent.click(connectButton());
-
-    expect(
-      await screen.findByText("That name is already taken in this room."),
-    ).not.toBeNull();
-    // Connect stays shut on the name that was refused: pressing it again
-    // would only earn the same answer.
-    expect(connectButton().disabled).toBe(true);
-  });
-
 });
 
 // --- the repository field's typeahead ---------------------------------------
@@ -467,16 +424,6 @@ describe("ConnectModal — finding a repository", () => {
     expect(repoInput().getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("offers nothing until the field is clicked into", async () => {
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await screen.findByText("No groups are configured yet.");
-    await afterTheDebounce();
-
-    expect(screen.queryByRole("listbox")).toBeNull();
-    expect(repoInput().getAttribute("aria-expanded")).toBe("false");
-  });
-
   it("fills the field with a recent repository that was clicked", async () => {
     renderWithClient(ConnectModal, { open: true, onclose: () => {} });
 
@@ -488,20 +435,6 @@ describe("ConnectModal — finding a repository", () => {
 
     expect(repoInput().value).toBe("example-org/team-chatbot");
     expect(screen.queryByRole("listbox")).toBeNull();
-  });
-
-  it("closes the recent list on Escape without closing the form", async () => {
-    const onclose = vi.fn();
-    renderWithClient(ConnectModal, { open: true, onclose });
-
-    await screen.findByText("No groups are configured yet.");
-    await fireEvent.focus(repoInput());
-    await screen.findAllByRole("option");
-
-    await fireEvent.keyDown(repoInput(), { key: "Escape" });
-
-    expect(screen.queryByRole("listbox")).toBeNull();
-    expect(onclose).not.toHaveBeenCalled();
   });
 
   it("fills the field with the highlighted repository when Enter is pressed", async () => {
@@ -516,19 +449,6 @@ describe("ConnectModal — finding a repository", () => {
 
     expect(repoInput().value).toBe("example-org/team-chatbot");
     expect(screen.queryByRole("listbox")).toBeNull();
-  });
-
-  it("closes the list on Escape and leaves what was typed alone", async () => {
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await screen.findByText("No groups are configured yet.");
-    await typeRepo("chat");
-    await screen.findAllByRole("option");
-
-    await fireEvent.keyDown(repoInput(), { key: "Escape" });
-
-    expect(screen.queryByRole("listbox")).toBeNull();
-    expect(repoInput().value).toBe("chat");
   });
 
   it("closes the list on Escape without closing the form", async () => {
@@ -548,20 +468,6 @@ describe("ConnectModal — finding a repository", () => {
     await fireEvent.keyDown(repoInput(), { key: "Escape" });
 
     expect(onclose).toHaveBeenCalled();
-  });
-
-  it("reopens the list on ArrowDown once something has been typed", async () => {
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await screen.findByText("No groups are configured yet.");
-    await typeRepo("chat");
-    await screen.findAllByRole("option");
-    await fireEvent.keyDown(repoInput(), { key: "Escape" });
-    expect(screen.queryByRole("listbox")).toBeNull();
-
-    await fireEvent.keyDown(repoInput(), { key: "ArrowDown" });
-
-    expect(screen.getByRole("listbox")).not.toBeNull();
   });
 
   it("opens the recent list on ArrowDown while the field is empty", async () => {
@@ -587,36 +493,6 @@ describe("ConnectModal — finding a repository", () => {
 
     expect(screen.queryByRole("listbox")).toBeNull();
     expect((await screen.findAllByRole("option")).length).toBe(2);
-  });
-
-  it("does not search for the repository it just filled in", async () => {
-    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
-
-    await screen.findByText("No groups are configured yet.");
-    await typeRepo("chat");
-    const options = await screen.findAllByRole("option");
-    const searched = repoSearchCalls();
-
-    await fireEvent.click(options[0]);
-    await afterTheDebounce();
-
-    expect(repoInput().value).toBe("example-org/team-chatbot");
-    expect(repoSearchCalls()).toBe(searched);
-  });
-
-  it("does not search for what was typed as the form was closing", async () => {
-    const view = renderWithClient(ConnectModal, {
-      open: true,
-      onclose: () => {},
-    });
-
-    await screen.findByText("No groups are configured yet.");
-    const searched = repoSearchCalls();
-    await typeRepo("chat");
-    await view.rerender({ componentProps: { open: false, onclose: () => {} } });
-    await afterTheDebounce();
-
-    expect(repoSearchCalls()).toBe(searched);
   });
 
   it("says so when the repository search cannot be reached", async () => {

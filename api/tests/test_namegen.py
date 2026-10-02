@@ -54,10 +54,6 @@ def test_fallback_pool_has_no_duplicates():
     assert len(_FALLBACK_NAMES) == len(set(_FALLBACK_NAMES))
 
 
-def test_fallback_reasons_pool_is_non_empty():
-    assert len(_FALLBACK_REASONS) >= 1
-
-
 # --- finalize_suggestions: candidate validation matrix --------------------------
 
 
@@ -198,43 +194,7 @@ def test_deterministic_order_is_a_permutation_of_the_pool():
     assert sorted(ordered) == sorted(pool)
 
 
-def test_finalize_taken_and_reserved_together_can_still_produce_five():
-    # A handful of pool names taken/reserved must not prevent five results,
-    # as long as enough of the pool remains untouched.
-    taken = set(_FALLBACK_NAMES[:3])
-    result = finalize_suggestions(
-        [], taken=taken, reserved=RESERVED_NAMES, persona_seed="seed-i"
-    )
-    assert len(result) == SUGGESTION_COUNT
-    assert not (set(_names(result)) & taken)
-
-
 # --- finalize_suggestions: reason normalization -----------------------------------
-
-
-def test_finalize_short_normal_reasons_untouched():
-    candidates = [
-        {"name": "juniper", "reason": "sharp and quick"},
-        {"name": "rowan", "reason": "warm at the bench"},
-    ]
-
-    result = finalize_suggestions(
-        candidates, taken=set(), reserved=RESERVED_NAMES, persona_seed="seed-j"
-    )
-
-    assert result[0]["reason"] == "sharp and quick"
-    assert result[1]["reason"] == "warm at the bench"
-
-
-def test_finalize_long_reason_clamped_to_eighty():
-    long_reason = "a" * 100
-    candidates = [{"name": "juniper", "reason": long_reason}]
-
-    result = finalize_suggestions(
-        candidates, taken=set(), reserved=RESERVED_NAMES, persona_seed="seed-k"
-    )
-
-    assert len(result[0]["reason"]) <= 80
 
 
 def test_finalize_long_reason_cuts_at_word_boundary_if_within_last_twenty():

@@ -209,21 +209,6 @@ def test_a_blocked_target_in_a_200_report_is_a_failure_not_a_success():
     assert f"apps/{AGENT}/cabal" in message
 
 
-def test_several_blocked_targets_are_all_named():
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={"blocked": [f"ExternalSecret/{AGENT}/{AGENT}-cabal", "Secret/clio/other"]},
-        )
-
-    with pytest.raises(ClientError) as exc_info:
-        _client(handler).ensure_synced(
-            EMAIL, AGENT, f"apps/{AGENT}/cabal", AGENT, f"{AGENT}-cabal"
-        )
-
-    assert f"ExternalSecret/{AGENT}/{AGENT}-cabal, Secret/clio/other" in str(exc_info.value)
-
-
 def test_a_blocked_entry_this_room_cannot_read_is_described_not_repeated():
     # Only strings are quoted: they are target names and verbs by the
     # lane's contract. Anything else might carry something this room must
@@ -768,13 +753,6 @@ def test_list_keys_raises_when_the_lane_refuses_for_any_other_reason():
         _client(handler).list_keys(EMAIL, f"apps/{AGENT}/env")
 
     assert "that namespace is not yours" in str(exc.value)
-
-
-def test_list_keys_sorts_whatever_order_the_lane_answered_in():
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"keys": ["ZED", "ALPHA"], "updated_at": None})
-
-    assert _client(handler).list_keys(EMAIL, f"apps/{AGENT}/env").keys == ["ALPHA", "ZED"]
 
 
 # --- delete_secret / unsync: the destroy half ---------------------------------

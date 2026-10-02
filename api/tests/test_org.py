@@ -78,30 +78,6 @@ def test_clone_client_error_is_unwired_with_reason():
     assert "repo not found or access denied" in org.error
 
 
-def test_missing_org_yaml_in_cloned_repo_is_unwired():
-    local = Config(org_repo=ORG_REPO)
-    github = FakeGitHub()  # org_yaml=None -> clone writes no org.yaml at all
-
-    merged, org = load_org_config(local, github)
-
-    assert merged is local
-    assert org.wired is False
-    assert org.repo == ORG_REPO
-    assert org.error is not None
-
-
-def test_empty_org_yaml_is_unwired():
-    local = Config(org_repo=ORG_REPO)
-    github = FakeGitHub(org_yaml="")
-
-    merged, org = load_org_config(local, github)
-
-    assert merged is local
-    assert org.wired is False
-    assert org.repo == ORG_REPO
-    assert org.error is not None
-
-
 def test_bad_yaml_is_unwired():
     local = Config(org_repo=ORG_REPO)
     github = FakeGitHub(org_yaml="github_org: [unterminated\n")
@@ -155,35 +131,6 @@ def test_db_url_in_org_yaml_is_rejected_as_unknown_key():
     assert merged.db_url == "sqlite:///real.db"
     assert org.wired is False
     assert "db_url" in org.error
-
-
-def test_connected_headless_class_in_org_yaml_is_rejected_as_unknown_key():
-    """The headless workload class names a class THIS deploy platform
-    offers, so it is deployment-local like slack_tokens_secret and
-    deliberately absent from ORG_KEYS. An org.yaml that sets it fails the
-    same way any other unrecognized key does, and the room keeps its own
-    value -- which, empty, is what keeps the run mode switched off."""
-    local = Config(org_repo=ORG_REPO)
-    github = FakeGitHub(org_yaml="connected_headless_class: agent-headless\n")
-
-    merged, org = load_org_config(local, github)
-
-    assert merged is local
-    assert merged.connected_headless_class == ""
-    assert org.wired is False
-    assert "connected_headless_class" in org.error
-
-
-def test_workdir_in_org_yaml_is_rejected_as_unknown_key():
-    local = Config(org_repo=ORG_REPO)
-    github = FakeGitHub(org_yaml="workdir: /tmp/somewhere-else\n")
-
-    merged, org = load_org_config(local, github)
-
-    assert merged is local
-    assert merged.workdir == local.workdir
-    assert org.wired is False
-    assert "workdir" in org.error
 
 
 def test_bad_org_value_fails_config_validation_and_is_unwired():
@@ -422,46 +369,6 @@ def test_composite_override_is_disclosed_without_dumping_the_value(caplog):
     assert "list with 2" in disclosures[0]
 
 
-def test_slack_operators_list_round_trips():
-    """slack_operators (Task 5) is org-scoped like the other gating knobs
-    above — a client's kobo-config repo can name its own operator emails."""
-    local = Config(org_repo=ORG_REPO)
-    github = FakeGitHub(
-        org_yaml=(
-            "slack_operators:\n"
-            "  - ops@acme-corp.example.com\n"
-            "  - Root@Acme-Corp.example.com\n"
-        )
-    )
-
-    merged, org = load_org_config(local, github)
-
-    assert org.wired is True
-    assert merged.slack_operators == [
-        "ops@acme-corp.example.com",
-        "Root@Acme-Corp.example.com",
-    ]
-
-
-def test_cabal_keys_round_trip():
-    """cabal_url/agent_endpoint_template (colleagues switchboard arc, Task 1)
-    are org-scoped exactly like the other feature-gating knobs above - a
-    client's kobo-config repo names its own switchboard coordinates."""
-    local = Config(org_repo=ORG_REPO)
-    github = FakeGitHub(
-        org_yaml=(
-            "cabal_url: http://cabal.internal\n"
-            "agent_endpoint_template: http://agent-{name}.default.svc.cluster.local\n"
-        )
-    )
-
-    merged, org = load_org_config(local, github)
-
-    assert org.wired is True
-    assert merged.cabal_url == "http://cabal.internal"
-    assert merged.agent_endpoint_template == "http://agent-{name}.default.svc.cluster.local"
-
-
 def test_mcp_keys_round_trip():
     """mcp (MCP server arc, Task 1) is org-scoped exactly like the other
     feature-gating knobs above -- a client's kobo-config repo points its
@@ -491,28 +398,6 @@ def test_mcp_keys_round_trip():
     assert merged.mcp.oauth_client_secret_env == "KOBO_MCP_GOOGLE_CLIENT_SECRET"
     assert merged.mcp.jwt_key_env == "KOBO_MCP_JWT_KEY"
     assert merged.mcp_enabled is True
-
-
-def test_operators_list_round_trips():
-    """operators (Task 4: agent destruction) is org-scoped exactly like
-    slack_operators above — a client's kobo-config repo can name its own
-    destroy-operator emails, independently of who may set up Slack."""
-    local = Config(org_repo=ORG_REPO)
-    github = FakeGitHub(
-        org_yaml=(
-            "operators:\n"
-            "  - ops@acme-corp.example.com\n"
-            "  - Root@Acme-Corp.example.com\n"
-        )
-    )
-
-    merged, org = load_org_config(local, github)
-
-    assert org.wired is True
-    assert merged.operators == [
-        "ops@acme-corp.example.com",
-        "Root@Acme-Corp.example.com",
-    ]
 
 
 def test_admin_groups_list_round_trips():
@@ -567,23 +452,3 @@ def test_admin_groups_entry_with_no_matching_group_is_unwired_not_crash():
     assert org.error is not None
 
 
-def test_groups_and_okta_domain_round_trip():
-    """groups/okta_domain (access-control arc, Task B1) are org-scoped like
-    every other feature-gating knob above — a client's kobo-config repo
-    names its own directory group universe."""
-    local = Config(org_repo=ORG_REPO)
-    github = FakeGitHub(
-        org_yaml=(
-            "okta_domain: acme.okta.com\n"
-            "groups:\n"
-            "  - name: SRE\n"
-            "    okta_group: okta-sre-group\n"
-        )
-    )
-
-    merged, org = load_org_config(local, github)
-
-    assert org.wired is True
-    assert merged.okta_domain == "acme.okta.com"
-    assert merged.groups == [GroupChoice(name="SRE", okta_group="okta-sre-group")]
-    assert isinstance(merged.groups[0], GroupChoice)

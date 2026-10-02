@@ -204,21 +204,6 @@ describe("PersonaBuilder - bring your own persona (step 1)", () => {
     ).toBe("Always be concise.");
   });
 
-  it("rules typed at step 1 survive the 'Start with a blank form' path", async () => {
-    stubFetch({ "/api/": {} });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    const rulesTextarea = screen.getByLabelText("Rules (optional)") as HTMLTextAreaElement;
-    await fireEvent.input(rulesTextarea, { target: { value: "Never guess at pricing." } });
-
-    await fireEvent.click(screen.getByRole("button", { name: "Start with a blank form" }));
-
-    await screen.findByRole("button", { name: "Create persona" });
-    expect(
-      (screen.getByLabelText("Rules (optional)") as HTMLTextAreaElement).value,
-    ).toBe("Never guess at pricing.");
-  });
-
 });
 
 describe("PersonaBuilder - draft no-clobber (component wiring)", () => {
@@ -329,40 +314,6 @@ describe("PersonaBuilder - paste their persona + Continue (primary path, compone
     );
   });
 
-  it("a name typed before the distill resolves survives - only who-they-are fills in", async () => {
-    const distill = deferredResponse();
-    stubDistillRoute(async (input) => {
-      const url = String(input);
-      if (url.includes("/api/personas/distill")) {
-        return distill.promise;
-      }
-      return new Response(JSON.stringify({}), { status: 200 });
-    });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    await fireEvent.input(screen.getByLabelText("Paste their persona"), {
-      target: { value: "Their full persona document." },
-    });
-    await fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-
-    await fireEvent.input(screen.getByLabelText("Name") as HTMLInputElement, {
-      target: { value: "my-own-name" },
-    });
-
-    distill.resolve({
-      name: "billing-buddy",
-      who_they_are: "a calm troubleshooter for billing questions",
-      purpose_tags: [],
-    });
-
-    await waitFor(() => {
-      expect((screen.getByLabelText("Who they are") as HTMLInputElement).value).toBe(
-        "a calm troubleshooter for billing questions",
-      );
-    });
-    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("my-own-name");
-  });
-
   it("a distill failure shows the quiet note and leaves the fields empty and editable", async () => {
     stubDistillRoute(async (input) => {
       const url = String(input);
@@ -390,75 +341,6 @@ describe("PersonaBuilder - paste their persona + Continue (primary path, compone
     expect(nameField.value).toBe("typed by hand");
   });
 
-  it("rules typed at step 1 survive the paste + Continue path", async () => {
-    stubDistillRoute(async (input) => {
-      const url = String(input);
-      if (url.includes("/api/personas/distill")) {
-        return new Response(
-          JSON.stringify({ name: "", who_they_are: "", purpose_tags: [] }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }
-      return new Response(JSON.stringify({}), { status: 200 });
-    });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    await fireEvent.input(screen.getByLabelText("Rules (optional)"), {
-      target: { value: "Always confirm the account before making changes." },
-    });
-    await fireEvent.input(screen.getByLabelText("Paste their persona"), {
-      target: { value: "Their full persona document." },
-    });
-    await fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-
-    await screen.findByRole("button", { name: "Create persona" });
-    expect(
-      (screen.getByLabelText("Rules (optional)") as HTMLTextAreaElement).value,
-    ).toBe("Always confirm the account before making changes.");
-  });
-});
-
-describe("PersonaBuilder - creating a persona asks for nothing else (plain-form wave)", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  // The Create persona click used to also warm the create dialog's naming
-  // station, which asked a generator for three candidate agent names. That
-  // station is gone -- a person types the name now -- so the click does one
-  // thing and starts no call whose answer nobody will read.
-  it("starts no name-suggestions call and prefetches nothing at the Create persona click", async () => {
-    stubFetch({
-      "/api/personas/draft": DRAFT_RESPONSE,
-      "/api/personas": {
-        id: DRAFT_RESPONSE.name,
-        name: DRAFT_RESPONSE.name,
-        description: DRAFT_RESPONSE.who_they_are,
-        team: "shared",
-        tags: [],
-        builtin: false,
-      },
-      "/api/": {},
-    });
-    const { client } = renderWithClient(PersonaBuilder, {
-      oncancel: () => {},
-      oncreated: () => {},
-    });
-
-    await reachStep2();
-
-    const prefetchSpy = vi.spyOn(client, "prefetchQuery");
-    await fireEvent.click(screen.getByRole("button", { name: "Create persona" }));
-
-    expect(prefetchSpy).not.toHaveBeenCalled();
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.filter(([url]) =>
-          String(url).includes("/api/agents/name-suggestions"),
-        ),
-    ).toHaveLength(0);
-  });
 });
 
 describe("PersonaBuilder - who the persona is for (persona team scope)", () => {

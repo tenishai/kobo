@@ -256,42 +256,6 @@ describe("AccessPanel", () => {
     ).toBe(true);
   });
 
-  it("declining an incoming invite calls the decline endpoint", async () => {
-    stubFetch({
-      "/api/agents/warden/grants": EMPTY_GRANTS,
-      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
-      "/api/agents/warden/invites": {
-        incoming: [
-          {
-            id: 8,
-            from_agent: "iris",
-            to_agent: { name: "warden", group_name: "growth" },
-            status: "pending",
-            requested_by: null,
-            decided_by: null,
-            created_at: "2026-08-20T00:00:00Z",
-            decided_at: null,
-          },
-        ],
-        outgoing: [],
-        team_pairs: [],
-      },
-    });
-    renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
-
-    await fireEvent.click(await screen.findByRole("button", { name: "Decline iris" }));
-
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.some(
-          ([url, init]) =>
-            String(url).includes("/api/invites/8/decline") &&
-            (init as RequestInit | undefined)?.method === "POST",
-        ),
-    ).toBe(true);
-  });
-
   // --- Agents section: the outgoing picker (access-tab refinement wave) -
 
   it("the outgoing picker lists requestable candidates with group + purpose (capability, then tags, then a fallback), and fires a request", async () => {

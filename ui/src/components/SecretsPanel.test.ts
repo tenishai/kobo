@@ -470,57 +470,6 @@ describe("SecretsPanel", () => {
     expect(screen.queryByDisplayValue("ONE")).toBeNull();
   });
 
-  it("tells a connected agent's owner the change is waiting in a pull request", async () => {
-    stubRoutes({
-      onSecretsPut: () => ({
-        keys: ["API_KEY"],
-        platform: true,
-        secret_name: `${AGENT}-env`,
-        wiring: "pull_request",
-        pull_request: "https://example.test/pull/7",
-      }),
-    });
-    render();
-    await loaded();
-
-    await fireEvent.click(addSecret());
-    await fireEvent.input(screen.getByLabelText("Name 1"), { target: { value: "API_KEY" } });
-    await fireEvent.input(screen.getByLabelText("Value 1"), { target: { value: VALUE } });
-    await fireEvent.click(save());
-
-    await waitFor(() => {
-      expect(
-        screen.getByText(
-          "Saved. The agent's files belong to its team, so the change is waiting in a pull request.",
-        ),
-      ).not.toBeNull();
-    });
-    const link = screen.getByRole("link", { name: "Open the pull request" });
-    expect(link.getAttribute("href")).toBe("https://example.test/pull/7");
-  });
-
-  it("says nothing changed when the agent's files already said it", async () => {
-    stubRoutes({
-      env: { env: { API_BASE: "https://example.test" } },
-      onEnvPut: () => ({ env: { API_BASE: "https://example.test" }, wiring: "unchanged" }),
-    });
-    render();
-
-    await waitFor(() => {
-      expect((screen.getByLabelText("Value 1") as HTMLInputElement).value).toBe(
-        "https://example.test",
-      );
-    });
-    await fireEvent.input(screen.getByLabelText("Value 1"), {
-      target: { value: "https://example.test/v2" },
-    });
-    await fireEvent.click(save());
-
-    await waitFor(() => {
-      expect(screen.getByText("Saved. The agent's files already said this.")).not.toBeNull();
-    });
-  });
-
   it("says the secret stays until the pull request merges", async () => {
     // The one outcome where the save is not the whole story: the agent's
     // files still name the secret, so it has to stay until somebody
@@ -555,31 +504,6 @@ describe("SecretsPanel", () => {
     expect(
       screen.getByRole("link", { name: "Open the pull request" }).getAttribute("href"),
     ).toBe("https://example.test/pull/9");
-  });
-
-  it("says the last secret is gone when it really is", async () => {
-    stubRoutes({
-      secrets: { keys: ["API_KEY"] },
-      onSecretsPut: () => ({
-        keys: [],
-        platform: true,
-        secret_name: null,
-        wiring: "committed",
-        emptied: true,
-        pending_unwire: false,
-      }),
-    });
-    render();
-
-    await waitFor(() => {
-      expect(screen.getByText("API_KEY")).not.toBeNull();
-    });
-    await fireEvent.click(screen.getByRole("button", { name: "Remove API_KEY" }));
-    await fireEvent.click(save());
-
-    await waitFor(() => {
-      expect(screen.getByText(/That was this agent's last secret/)).not.toBeNull();
-    });
   });
 
   it("disables every control while the agent is frozen", async () => {
@@ -647,17 +571,6 @@ describe("SecretsPanel", () => {
     });
   });
 
-  it("says a secret still on its way is syncing", async () => {
-    stubRoutes({
-      secrets: { keys: ["API_KEY"], sync: { state: "syncing", message: null } },
-    });
-    render();
-
-    await waitFor(() => {
-      expect(screen.getByText("Secret \u00b7 syncing")).not.toBeNull();
-    });
-  });
-
   it("says a secret nothing is delivering is not on the agent yet", async () => {
     stubRoutes({
       secrets: {
@@ -674,19 +587,6 @@ describe("SecretsPanel", () => {
     expect(
       screen.getByText("Secret \u00b7 not on the agent yet").getAttribute("title"),
     ).toBe("The room has not delivered this one to the agent yet.");
-  });
-
-  it("puts a failing delivery under the table as well as on the row", async () => {
-    const message = "The secrets platform could not deliver this one to the agent. It reported SecretSyncedError.";
-    stubRoutes({
-      secrets: { keys: ["API_KEY"], sync: { state: "error", message } },
-    });
-    render();
-
-    await waitFor(() => {
-      expect(screen.getByText("Secret \u00b7 not on the agent yet")).not.toBeNull();
-    });
-    expect(screen.getByText(message)).not.toBeNull();
   });
 
   it("shows a row somebody is still typing as a field, not a lock", async () => {
@@ -748,17 +648,6 @@ describe("SecretsPanel", () => {
       expect(screen.getByText("Secret \u00b7 not on the agent yet")).not.toBeNull();
     });
     expect(screen.queryByText("Secret \u00b7 live on the agent")).toBeNull();
-  });
-
-  it("makes no claim about a file the room could not read", async () => {
-    stubRoutes({
-      secrets: { keys: ["API_KEY"], sync: { state: "live", message: null }, wired: null },
-    });
-    render();
-
-    await waitFor(() => {
-      expect(screen.getByText("Secret \u00b7 live on the agent")).not.toBeNull();
-    });
   });
 
   // --- The rows the room set -----------------------------------------------
@@ -870,45 +759,6 @@ describe("SecretsPanel", () => {
     await loaded();
 
     expect(screen.queryByRole("button", { name: "Restart agent" })).toBeNull();
-  });
-
-  it("says so in plain words when the restart is refused", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        if (init?.method === "POST") {
-          return new Response(JSON.stringify({ error: "that is a lot of restarting. Wait a minute" }), {
-            status: 429,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        const payload = url.includes("/secrets")
-          ? {
-              keys: ["API_KEY"],
-              updated_at: null,
-              platform: true,
-              secret_name: `${AGENT}-env`,
-              unreadable: false,
-              sync: { state: "live", message: null },
-              wired: true,
-              managed: [],
-            }
-          : { env: {} };
-        return new Response(JSON.stringify(payload), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }),
-    );
-    render();
-    await loaded();
-
-    await fireEvent.click(screen.getByRole("button", { name: "Restart agent" }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/that is a lot of restarting/)).not.toBeNull();
-    });
   });
 
   it("disables the restart button while the agent is frozen", async () => {

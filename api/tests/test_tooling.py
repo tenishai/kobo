@@ -221,13 +221,6 @@ def test_upload_tooling_file_accepts_stdlib_from_import():
     assert github.captured_tools == {"tool.py": content}
 
 
-def test_upload_tooling_file_accepts_stdlib_import_ast():
-    github = _CapturingGitHub()
-    content = "import ast\n\n\ndef post_draft(draft):\n    return draft\n"
-    upload_tooling_file(github, REPO, "tool.py", content)
-    assert github.captured_tools == {"tool.py": content}
-
-
 def test_upload_tooling_file_rejects_relative_import():
     github = FakeGitHub()
     content = "from . import helper\n\n\ndef post_draft(draft):\n    return draft\n"

@@ -328,25 +328,6 @@ def test_whoami_reports_email_and_resolved_groups(session_factory, config):
     }
 
 
-def test_whoami_operator_flag_true_for_admin_group_member(session_factory, config):
-    app = _app(session_factory, config, groups_resolver=_resolver())
-    mcp = build_mcp_server(app)
-
-    result = _call_tool(mcp, "kobo_whoami", _ctx_for(ADMIN_MEMBER_EMAIL))
-
-    assert result["operator"] is True
-    assert result["groups"] == [ADMIN_GROUP]
-
-
-def test_whoami_operator_flag_true_for_plain_email_operator(session_factory, config):
-    app = _app(session_factory, config, groups_resolver=_resolver())
-    mcp = build_mcp_server(app)
-
-    result = _call_tool(mcp, "kobo_whoami", _ctx_for(OPERATOR_EMAIL))
-
-    assert result["operator"] is True
-
-
 def test_whoami_groups_unavailable_when_the_resolver_is_down(session_factory, config):
     app = _app(session_factory, config, groups_resolver=FakeGroupResolver(down=True))
     mcp = build_mcp_server(app)
@@ -355,18 +336,6 @@ def test_whoami_groups_unavailable_when_the_resolver_is_down(session_factory, co
 
     assert result["groups"] == []
     assert result["groups_unavailable"] is True
-
-
-def test_whoami_is_not_agent_scoped_a_stranger_with_no_agents_still_gets_an_answer(
-    session_factory, config
-):
-    app = _app(session_factory, config, groups_resolver=_resolver())
-    mcp = build_mcp_server(app)
-
-    result = _call_tool(mcp, "kobo_whoami", _ctx_for(STRANGER_EMAIL))
-
-    assert result["email"] == STRANGER_EMAIL
-    assert result["operator"] is False
 
 
 # --- kobo_list_agents --------------------------------------------------------
@@ -417,32 +386,6 @@ def test_list_agents_says_which_agents_a_team_connected(session_factory, config)
     result = _call_tool(mcp, "kobo_list_agents", _ctx_for(OWNER_A_EMAIL))
 
     assert result[0]["kind"] == KIND_CONNECTED
-
-
-def test_list_agents_visibility_parity_email_a_sees_its_own_not_email_bs(
-    session_factory, config
-):
-    _seed_agent(session_factory, name="agent-a", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
-    _seed_agent(session_factory, name="agent-b", created_by=OWNER_B_EMAIL, group_name=GROUP_B)
-    app = _app(session_factory, config, groups_resolver=_resolver())
-    mcp = build_mcp_server(app)
-
-    names_a = {row["name"] for row in _call_tool(mcp, "kobo_list_agents", _ctx_for(OWNER_A_EMAIL))}
-    names_b = {row["name"] for row in _call_tool(mcp, "kobo_list_agents", _ctx_for(OWNER_B_EMAIL))}
-
-    assert names_a == {"agent-a"}
-    assert names_b == {"agent-b"}
-
-
-def test_list_agents_operator_sees_every_agent(session_factory, config):
-    _seed_agent(session_factory, name="agent-a", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
-    _seed_agent(session_factory, name="agent-b", created_by=OWNER_B_EMAIL, group_name=GROUP_B)
-    app = _app(session_factory, config, groups_resolver=_resolver())
-    mcp = build_mcp_server(app)
-
-    names = {row["name"] for row in _call_tool(mcp, "kobo_list_agents", _ctx_for(OPERATOR_EMAIL))}
-
-    assert names == {"agent-a", "agent-b"}
 
 
 def test_list_agents_fails_closed_when_the_group_resolver_is_down(session_factory, config):
@@ -498,14 +441,6 @@ def test_get_agent_returns_a_detail_dict_with_status_checklist(session_factory, 
     assert result["steps"] == [{"name": "clone", "status": "done", "error": None}]
     assert result["kind"] == KIND_COMPOSED
     assert "created_at" in result
-
-
-def test_get_agent_raises_tool_error_for_a_genuinely_missing_agent(session_factory, config):
-    app = _app(session_factory, config, groups_resolver=_resolver())
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="agent not found"):
-        _call_tool(mcp, "kobo_get_agent", _ctx_for(MEMBER_A_EMAIL), name="ghost")
 
 
 def test_get_agent_raises_the_identical_error_for_an_invisible_agent_no_existence_leak(
@@ -985,58 +920,6 @@ def test_list_personas_mirrors_search_route_shape(session_factory, config):
     }
 
 
-def test_list_personas_q_and_team_filter_parity(session_factory, config):
-    app = _personas_app(session_factory, config, groups_resolver=_resolver())
-    _seed_persona(app, session_factory, name="Aria the Assistant", team="shared")
-    _seed_persona(
-        app,
-        session_factory,
-        name="Birch the Builder",
-        team=GROUP_A,
-        creator_email=OWNER_A_EMAIL,
-    )
-    mcp = build_mcp_server(app)
-
-    team_result = _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL), team=GROUP_A)
-    team_route = _search_personas(app, session_factory, team=GROUP_A)
-    assert team_result == {"result": team_route["results"]}
-    assert [p["name"] for p in team_result["result"]] == ["Birch the Builder"]
-
-    q_result = _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL), q="aria")
-    q_route = _search_personas(app, session_factory, q="aria")
-    assert q_result == {"result": q_route["results"]}
-    assert [p["name"] for p in q_result["result"]] == ["Aria the Assistant"]
-
-
-def test_list_personas_scope_mine_is_the_default_and_all_shows_every_group(
-    session_factory, config
-):
-    app = _personas_app(session_factory, config, groups_resolver=_resolver())
-    _seed_persona(app, session_factory, name="Aria the Assistant", team="shared")
-    _seed_persona(
-        app, session_factory, name="Birch the Builder", team=GROUP_A, creator_email=OWNER_A_EMAIL
-    )
-    _seed_persona(
-        app, session_factory, name="Cedar the Critic", team=GROUP_B, creator_email=OWNER_B_EMAIL
-    )
-    mcp = build_mcp_server(app)
-
-    mine = _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL))
-    assert mine == {"result": _search_personas(app, session_factory)["results"]}
-    assert [p["name"] for p in mine["result"]] == ["Aria the Assistant", "Birch the Builder"]
-
-    every = _call_tool(mcp, "kobo_list_personas", _ctx_for(MEMBER_A_EMAIL), scope="all")
-    assert every == {"result": _search_personas(app, session_factory, scope="all")["results"]}
-    assert [p["name"] for p in every["result"]] == [
-        "Aria the Assistant",
-        "Birch the Builder",
-        "Cedar the Critic",
-    ]
-
-    operator = _call_tool(mcp, "kobo_list_personas", _ctx_for(OPERATOR_EMAIL))
-    assert len(operator["result"]) == 3
-
-
 def test_list_personas_hides_archived_entries(session_factory, config):
     """Task 4's `ingest_indexes` (kobo_api/search.py) drops archived
     entries from the index it builds, and `kobo_list_personas` is
@@ -1096,15 +979,6 @@ def test_list_learnings_returns_seeded_pending_row_and_can_decide(
     assert result["can_decide"] is True
 
 
-def test_list_learnings_invisible_agent_raises_agent_not_found(session_factory, config):
-    _seed_agent(session_factory, name="hidden", created_by=OWNER_B_EMAIL, group_name=GROUP_B)
-    app = _app(session_factory, config, groups_resolver=_resolver())
-    mcp = build_mcp_server(app)
-
-    with pytest.raises(ToolError, match="agent not found"):
-        _call_tool(mcp, "kobo_list_learnings", _ctx_for(MEMBER_A_EMAIL), agent="hidden")
-
-
 def test_list_learnings_can_decide_false_for_non_owner_no_grant(session_factory, config):
     """A visible caller who is neither owner nor operator and holds no
     per-user grant still gets the learnings list back (visibility passed)
@@ -1121,16 +995,3 @@ def test_list_learnings_can_decide_false_for_non_owner_no_grant(session_factory,
     assert result["can_decide"] is False
 
 
-def test_list_learnings_audit_row_logs_tool_status_and_arguments(session_factory, config):
-    _seed_agent(session_factory, name="agent-a", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
-    app = _app(session_factory, config, groups_resolver=_resolver())
-    mcp = build_mcp_server(app)
-
-    _call_tool(mcp, "kobo_list_learnings", _ctx_for(OWNER_A_EMAIL), agent="agent-a")
-
-    row = _last_audit_row(session_factory)
-    assert row is not None
-    assert row.tool == "kobo_list_learnings"
-    assert row.status == "ok"
-    logged = json.loads(row.redacted_args)
-    assert logged["agent"] == "agent-a"

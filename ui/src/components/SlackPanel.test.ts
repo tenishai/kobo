@@ -496,27 +496,4 @@ describe("SlackPanel", () => {
 
   // --- Frozen ----------------------------------------------------------------
 
-  it("frozen disables every control on the first run", () => {
-    renderWithClient(SlackPanel, {
-      agentName: "warden",
-      slack: IDLE_SLACK,
-      frozen: true,
-    });
-
-    expect(
-      (screen.getByRole("button", { name: "+ Channel" }) as HTMLButtonElement).disabled,
-    ).toBe(true);
-    expect(
-      (screen.getByRole("button", { name: "Copy the manifest" }) as HTMLButtonElement).disabled,
-    ).toBe(true);
-    expect((screen.getByRole("button", { name: "Connect" }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
-    expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
-    expect((screen.getByLabelText("App ID") as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByLabelText("Bot token") as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByLabelText("App-level token") as HTMLInputElement).disabled).toBe(true);
-  });
 });

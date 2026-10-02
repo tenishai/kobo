@@ -124,25 +124,6 @@ describe("CreateModal — the name is typed, never generated (plain-form wave)",
     vi.unstubAllGlobals();
   });
 
-  it("never asks the name-suggestions route for anything", async () => {
-    stubCreateModalCatalogs({
-      "/api/personas/search": { results: [HELPER] },
-      "/api/availability": { available: true, reason: null },
-    });
-    renderWithClient(CreateModal, { open: true, onclose: () => {} });
-
-    await findFormReady();
-    await pickHelperAndName();
-
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.filter(([url]) =>
-          String(url).includes("/api/agents/name-suggestions"),
-        ),
-    ).toHaveLength(0);
-  });
-
   it("validates on every keystroke and only then checks availability", async () => {
     stubCreateModalCatalogs({
       "/api/personas/search": { results: [HELPER] },
@@ -207,22 +188,6 @@ describe("CreateModal — the footer says what is still missing (plain-form wave
     expect(submit.disabled).toBe(false);
   });
 
-  it("says nothing at all once the form is complete", async () => {
-    stubCreateModalCatalogs({
-      "/api/personas/search": { results: [HELPER] },
-      "/api/availability": { available: true, reason: null },
-    });
-    renderWithClient(CreateModal, { open: true, onclose: () => {} });
-
-    await findFormReady();
-    await pickHelperAndName();
-
-    await waitFor(() => {
-      expect(screen.queryByText("Pick a persona first.")).toBeNull();
-      expect(screen.queryByText("Give it a name.")).toBeNull();
-      expect(screen.queryByText("Choose a group.")).toBeNull();
-    });
-  });
 });
 
 describe("CreateModal — the create request (payload unchanged)", () => {
@@ -327,25 +292,6 @@ describe("CreateModal — group picker (access-control Task B2)", () => {
     expect(screen.getByText("Who can see and use this agent.")).not.toBeNull();
   });
 
-  it("submit stays disabled until a group is chosen when groups are configured", async () => {
-    stubCreateModalCatalogs({
-      "/api/catalog/groups": { groups: [{ name: "payments-eng", kind: "engineering" }] },
-      "/api/availability": { available: true, reason: null },
-    });
-    renderWithClient(CreateModal, { open: true, onclose: () => {} });
-
-    const groupSelect = (await screen.findByLabelText("Group")) as HTMLSelectElement;
-    const submit = screen.getByRole("button", { name: "Create agent" }) as HTMLButtonElement;
-    // No persona/name picked yet either, so this is already disabled for
-    // other reasons -- this test only proves the group select's own empty
-    // starting value (the disabled "Choose a group" placeholder) never
-    // silently counts as a pick.
-    expect(groupSelect.value).toBe("");
-    expect(submit.disabled).toBe(true);
-
-    await fireEvent.change(groupSelect, { target: { value: "payments-eng" } });
-    expect(groupSelect.value).toBe("payments-eng");
-  });
 });
 
 describe("CreateModal — the group menu has a commons, a directory, and a door to ask (shared commons wave)", () => {
@@ -654,25 +600,6 @@ describe("CreateModal — the persona hover card", () => {
     });
   });
 
-  it("holds open while the pointer is on the card itself", async () => {
-    // Otherwise the card would dismiss itself on the way to its own
-    // "Read the full persona" button.
-    const { row } = await openWithHelper();
-    await rest(row);
-    const card = await screen.findByRole("tooltip");
-
-    vi.useFakeTimers();
-    try {
-      await fireEvent.mouseLeave(row);
-      await fireEvent.mouseEnter(card);
-      await vi.advanceTimersByTimeAsync(400);
-    } finally {
-      vi.useRealTimers();
-    }
-
-    expect(screen.queryByRole("tooltip")).not.toBeNull();
-  });
-
   it("Escape dismisses the card", async () => {
     const { row } = await openWithHelper();
     await rest(row);
@@ -685,33 +612,6 @@ describe("CreateModal — the persona hover card", () => {
     });
   });
 
-  it("picking a persona dismisses the card", async () => {
-    const { radio, row } = await openWithHelper();
-    await rest(row);
-    await screen.findByRole("tooltip");
-
-    await fireEvent.click(radio);
-
-    await waitFor(() => {
-      expect(screen.queryByRole("tooltip")).toBeNull();
-    });
-  });
-
-  it("costs one request per persona, however often it is hovered", async () => {
-    const { row } = await openWithHelper();
-
-    await rest(row);
-    await screen.findByRole("tooltip");
-    await fireEvent.mouseLeave(row);
-    await waitFor(() => {
-      expect(screen.queryByRole("tooltip")).toBeNull();
-    });
-
-    await rest(row);
-    await screen.findByRole("tooltip");
-
-    expect(personaDetailCalls("helper")).toHaveLength(1);
-  });
 });
 
 

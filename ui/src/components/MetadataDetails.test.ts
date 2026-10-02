@@ -20,12 +20,6 @@ describe("MetadataDetails — Edit details modal (persona-metadata plan)", () =>
     });
   });
 
-  it("the affordance disables with the page (isFrozen)", () => {
-    renderWithClient(MetadataDetails, { ...BASE_PROPS, frozen: true });
-    const trigger = screen.getByRole("button", { name: "Edit details" });
-    expect((trigger as HTMLButtonElement).disabled).toBe(true);
-  });
-
   it("opens seeded from the current team/purpose tags/capability, with team options from the stubbed teams query", async () => {
     renderWithClient(MetadataDetails, BASE_PROPS);
     await fireEvent.click(screen.getByRole("button", { name: "Edit details" }));

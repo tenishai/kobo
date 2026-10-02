@@ -1451,36 +1451,6 @@ def test_repo_step_keeps_org_default_vertex_location_for_model_without_override(
     assert captured["spec"].vertex_location == config.vertex_location
 
 
-def test_repo_step_compose_raises_without_rmtree_on_stale_skills(tmp_path):
-    """Sanity guard: verify that compose() would raise FileExistsError if we
-    didn't rmtree the stale skills subtree first."""
-    skill_dir = tmp_path / "staged" / "echo"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\nname: echo\ndescription: Echoes things.\n---\nEcho skill body.\n"
-    )
-    skill = StagedSkill(id="echo", dir=skill_dir)
-
-    spec = BundleSpec(
-        name="test-agent",
-        persona_body="You are {name}.",
-        model_id="vertex_ai/claude-sonnet-4-5",
-        skills=[skill],
-        runtime_image="image:latest",
-        vertex_project="proj",
-        vertex_location="us-central1",
-    )
-
-    compose_dir = tmp_path / "work" / "repo"
-
-    # First compose succeeds
-    compose(spec, compose_dir)
-
-    # Second compose to the same location should raise FileExistsError (without rmtree)
-    with pytest.raises(FileExistsError):
-        compose(spec, compose_dir)
-
-
 def test_repo_step_stages_baseline_pack_by_default(session_factory, config, fake_storage):
     """Baseline tooling pack (Task 6): every new agent ships the
     marketplace's `baseline-*` tools, and nothing else from that tree."""

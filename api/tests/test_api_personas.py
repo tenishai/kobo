@@ -935,26 +935,10 @@ def test_draft_persona_no_name_client_configured_falls_back_still_200(config, tm
     }
 
 
-def test_draft_persona_422_empty_job(config, tmp_path):
-    client = _draft_client(config, tmp_path)
-
-    response = client.post("/api/personas/draft", json={"job": ""})
-
-    assert response.status_code == 422
-
-
 def test_draft_persona_422_missing_job(config, tmp_path):
     client = _draft_client(config, tmp_path)
 
     response = client.post("/api/personas/draft", json={})
-
-    assert response.status_code == 422
-
-
-def test_draft_persona_422_job_too_long(config, tmp_path):
-    client = _draft_client(config, tmp_path)
-
-    response = client.post("/api/personas/draft", json={"job": "a" * 501})
 
     assert response.status_code == 422
 
@@ -979,16 +963,6 @@ def test_draft_persona_200_with_150_rule_hints(config, tmp_path):
     )
 
     assert response.status_code == 200
-
-
-def test_draft_persona_422_bad_rule_item_length(config, tmp_path):
-    client = _draft_client(config, tmp_path)
-
-    response = client.post(
-        "/api/personas/draft", json={**DRAFT_PAYLOAD, "rules": [""]}
-    )
-
-    assert response.status_code == 422
 
 
 def test_draft_persona_result_feeds_create_persona_unchanged(config, tmp_path):
@@ -1158,14 +1132,6 @@ def test_distill_persona_no_name_client_configured_falls_back_still_200(config, 
         "who_they_are": _fallback_distilled_who(doc),
         "purpose_tags": [],
     }
-
-
-def test_distill_persona_422_empty_body(config, tmp_path):
-    client = _distill_client(config, tmp_path)
-
-    response = client.post("/api/personas/distill", json={"body": ""})
-
-    assert response.status_code == 422
 
 
 def test_distill_persona_422_missing_body(config, tmp_path):

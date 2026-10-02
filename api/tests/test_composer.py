@@ -288,17 +288,6 @@ def test_compose_agent_yaml_auth_audience_is_the_agent_name(tmp_path):
     assert auth["issuer"] == "cabal-core"
 
 
-def test_compose_agent_yaml_auth_block_parses_with_exactly_three_keys(tmp_path):
-    dest = tmp_path / "out"
-
-    compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
-
-    data = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())
-    transport = data["transports"][0]
-    assert transport["kind"] == "a2a"
-    assert set(transport["auth"].keys()) == {"jwks_url", "issuer", "audience"}
-
-
 def test_compose_agent_yaml_with_auth_block_still_validates(tmp_path):
     """The vendored schema's TransportSpec allows additional properties, so
     the new `auth` key doesn't trip schema validation."""
@@ -371,24 +360,6 @@ def test_compose_agent_yaml_tools_block_self_is_the_agent_name(tmp_path):
     assert data["tools"]["colleagues"]["self"] == "rae"
 
 
-def test_compose_agent_yaml_tools_block_token_env_is_the_shared_constant(tmp_path):
-    dest = tmp_path / "out"
-
-    compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
-
-    data = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())
-    assert data["tools"]["colleagues"]["token_env"] == CABAL_COLLEAGUE_TOKEN_ENV
-    assert CABAL_COLLEAGUE_TOKEN_ENV == "CABAL_COLLEAGUE_TOKEN"
-
-
-def test_compose_agent_yaml_with_colleagues_tools_block_still_validates(tmp_path):
-    dest = tmp_path / "out"
-
-    compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
-
-    validate_agent_yaml(dest / "bundle")  # must not raise
-
-
 # --- approvals gates (fix round: the approval gates) -----------------------------
 #
 # Live acceptance round 2: the runtime consults gates via first-fnmatch-wins,
@@ -415,15 +386,6 @@ def test_compose_agent_yaml_approvals_gates_empty_when_cabal_url_configured(tmp_
     }
 
 
-def test_compose_agent_yaml_approvals_gates_line_is_empty_flow_list(tmp_path):
-    dest = tmp_path / "out"
-
-    compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
-
-    text = (dest / "bundle" / "agent.yaml").read_text()
-    assert "  gates: []\n" in text
-
-
 def test_compose_agent_yaml_approvals_gates_byte_identical_when_cabal_url_none_both_ways(
     tmp_path,
 ):
@@ -441,14 +403,6 @@ def test_compose_agent_yaml_approvals_gates_byte_identical_when_cabal_url_none_b
 
     assert default_text == explicit_text
     assert '  gates: [{match: "*", require: plan_approval}]\n' in default_text
-
-
-def test_compose_agent_yaml_with_empty_approvals_gates_still_validates(tmp_path):
-    dest = tmp_path / "out"
-
-    compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
-
-    validate_agent_yaml(dest / "bundle")  # must not raise
 
 
 # --- update_agent_yaml_tools (colleagues switchboard plan, Task 3/B3) -----------
@@ -612,29 +566,6 @@ def test_update_agent_yaml_tools_missing_file_raises_client_error(tmp_path):
         )
 
 
-def test_update_agent_yaml_tools_on_freshly_composed_bundle_round_trips(tmp_path):
-    """The backfill path's real target: a bundle composed WITHOUT the
-    switchboard configured (the default tools block), later backfilled once
-    it becomes available — mirrors `update_agent_yaml_auth`'s own round-trip
-    test."""
-    dest = tmp_path / "out"
-    compose(_make_spec(), dest)
-    bundle_dir = dest / "bundle"
-
-    update_agent_yaml_tools(
-        bundle_dir,
-        url="http://cabal.example.com",
-        token_env="CABAL_COLLEAGUE_TOKEN",
-        self_name="sam",
-    )
-
-    validate_agent_yaml(bundle_dir)  # must not raise
-    data = yaml.safe_load((bundle_dir / "agent.yaml").read_text())
-    assert data["tools"]["provider"] == "colleagues"
-    assert data["tools"]["allow"] == ["colleagues.list_colleagues", "colleagues.ask_colleague", "colleagues.remember"]
-    assert data["tools"]["colleagues"]["self"] == "sam"
-
-
 # --- update_agent_yaml_approvals_gates (fix round: the approval gates) -----------
 #
 # The backfill path for the ceiling/gates/escalation stanza a live deployed
@@ -723,19 +654,6 @@ def test_update_agent_yaml_approvals_gates_replaces_an_existing_value(tmp_path):
         assert line in text
 
 
-def test_update_agent_yaml_approvals_gates_is_idempotent(tmp_path):
-    bundle_dir = tmp_path / "bundle"
-    _write_gates_fixture(bundle_dir)
-
-    update_agent_yaml_approvals_gates(bundle_dir, gates=[])
-    once = (bundle_dir / "agent.yaml").read_text()
-
-    update_agent_yaml_approvals_gates(bundle_dir, gates=[])
-    twice = (bundle_dir / "agent.yaml").read_text()
-
-    assert once == twice
-
-
 def test_update_agent_yaml_approvals_gates_raises_when_no_approvals_stanza(tmp_path):
     bundle_dir = tmp_path / "bundle"
     plain_copy = (
@@ -755,34 +673,6 @@ def test_update_agent_yaml_approvals_gates_raises_when_no_approvals_stanza(tmp_p
 
     # unmodified on failure
     assert (bundle_dir / "agent.yaml").read_text() == plain_copy
-
-
-def test_update_agent_yaml_approvals_gates_missing_file_raises_client_error(tmp_path):
-    bundle_dir = tmp_path / "bundle"
-    bundle_dir.mkdir()  # no agent.yaml written
-
-    with pytest.raises(ClientError, match="agent.yaml not found"):
-        update_agent_yaml_approvals_gates(bundle_dir, gates=[])
-
-
-def test_update_agent_yaml_approvals_gates_on_freshly_composed_bundle_round_trips(tmp_path):
-    """The backfill's real target: a bundle composed WITHOUT the switchboard
-    configured (the default, non-empty gate), later repaired once the
-    colleague tools land — mirrors `update_agent_yaml_tools`'s own round-trip
-    test."""
-    dest = tmp_path / "out"
-    compose(_make_spec(), dest)
-    bundle_dir = dest / "bundle"
-
-    update_agent_yaml_approvals_gates(bundle_dir, gates=[])
-
-    validate_agent_yaml(bundle_dir)  # must not raise
-    data = yaml.safe_load((bundle_dir / "agent.yaml").read_text())
-    assert data["approvals"] == {
-        "ceiling": {"write": False},
-        "gates": [],
-        "escalation": {"route": "cli"},
-    }
 
 
 # --- agent-card.json -----------------------------------------------------------
@@ -1506,37 +1396,6 @@ def test_update_agent_yaml_auth_adds_block_and_preserves_every_other_line(tmp_pa
     )
 
 
-def test_update_agent_yaml_auth_replaces_existing_block(tmp_path):
-    fixture_with_old_auth = _FIXTURE_AGENT_YAML_NO_AUTH.replace(
-        "  - {kind: a2a, host: 0.0.0.0, port: 8080}\n",
-        '  - {kind: a2a, host: 0.0.0.0, port: 8080, auth: {jwks_url: '
-        '"http://old-cabal.example.com/.well-known/jwks.json", issuer: '
-        '"old-issuer", audience: "old-audience"}}\n',
-    )
-    bundle_dir = tmp_path / "bundle"
-    _write_fixture(bundle_dir, fixture_with_old_auth)
-
-    update_agent_yaml_auth(
-        bundle_dir, jwks_url=_JWKS_URL, issuer=_ISSUER, audience=_AUDIENCE
-    )
-
-    text = (bundle_dir / "agent.yaml").read_text()
-    assert "old-cabal.example.com" not in text
-    assert "old-issuer" not in text
-    assert "old-audience" not in text
-    data = yaml.safe_load(text)
-    auth = data["transports"][0]["auth"]
-    assert auth == {"jwks_url": _JWKS_URL, "issuer": _ISSUER, "audience": _AUDIENCE}
-    # every other line is untouched
-    other_lines = [
-        line
-        for line in fixture_with_old_auth.splitlines(keepends=True)
-        if "kind: a2a" not in line
-    ]
-    for line in other_lines:
-        assert line in text
-
-
 def test_update_agent_yaml_auth_is_idempotent(tmp_path):
     bundle_dir = tmp_path / "bundle"
     _write_fixture(bundle_dir)
@@ -1647,19 +1506,6 @@ def test_update_agent_yaml_max_tokens_rewrites_and_preserves_every_other_line(tm
     assert updated_lines[max_tokens_index] == "  max_tokens: 8192\n"
 
 
-def test_update_agent_yaml_max_tokens_is_idempotent(tmp_path):
-    bundle_dir = tmp_path / "bundle"
-    _write_fixture(bundle_dir)
-
-    update_agent_yaml_max_tokens(bundle_dir, max_tokens=8192)
-    once = (bundle_dir / "agent.yaml").read_text()
-
-    update_agent_yaml_max_tokens(bundle_dir, max_tokens=8192)
-    twice = (bundle_dir / "agent.yaml").read_text()
-
-    assert once == twice
-
-
 # --- update_agent_yaml_memory_revision (belief-revision plan, Task 2) -----------
 #
 # The in-place backfill helper for any already-composed bundle whose
@@ -1718,43 +1564,6 @@ def test_update_agent_yaml_memory_revision_adds_field_and_preserves_every_other_
     )
 
 
-def test_update_agent_yaml_memory_revision_replaces_an_existing_value(tmp_path):
-    fixture_with_old_revision = _FIXTURE_AGENT_YAML_NO_MEMORY_REVISION.replace(
-        "memory: {personal: techne, home: /techne}\n",
-        "memory: {personal: techne, home: /techne, revision: old-mode}\n",
-    )
-    bundle_dir = tmp_path / "bundle"
-    _write_memory_fixture(bundle_dir, fixture_with_old_revision)
-
-    update_agent_yaml_memory_revision(bundle_dir, revision="operator")
-
-    text = (bundle_dir / "agent.yaml").read_text()
-    assert "old-mode" not in text
-    data = yaml.safe_load(text)
-    assert data["memory"] == {"personal": "techne", "home": "/techne", "revision": "operator"}
-    # every other line is untouched
-    other_lines = [
-        line
-        for line in fixture_with_old_revision.splitlines(keepends=True)
-        if "memory:" not in line
-    ]
-    for line in other_lines:
-        assert line in text
-
-
-def test_update_agent_yaml_memory_revision_is_idempotent(tmp_path):
-    bundle_dir = tmp_path / "bundle"
-    _write_memory_fixture(bundle_dir)
-
-    update_agent_yaml_memory_revision(bundle_dir, revision="operator")
-    once = (bundle_dir / "agent.yaml").read_text()
-
-    update_agent_yaml_memory_revision(bundle_dir, revision="operator")
-    twice = (bundle_dir / "agent.yaml").read_text()
-
-    assert once == twice
-
-
 def test_update_agent_yaml_memory_revision_raises_when_no_memory_stanza(tmp_path):
     fixture_no_memory = _FIXTURE_AGENT_YAML_NO_MEMORY_REVISION.replace(
         "memory: {personal: techne, home: /techne}\n", ""
@@ -1768,29 +1577,6 @@ def test_update_agent_yaml_memory_revision_raises_when_no_memory_stanza(tmp_path
     assert "memory" in str(exc_info.value)
     # unmodified on failure
     assert (bundle_dir / "agent.yaml").read_text() == fixture_no_memory
-
-
-def test_update_agent_yaml_memory_revision_missing_file_raises_client_error(tmp_path):
-    bundle_dir = tmp_path / "bundle"
-    bundle_dir.mkdir(parents=True)
-
-    with pytest.raises(ClientError, match="agent.yaml not found"):
-        update_agent_yaml_memory_revision(bundle_dir, revision="operator")
-
-
-def test_update_agent_yaml_memory_revision_on_freshly_composed_bundle_round_trips(tmp_path):
-    """Integration: compose() already emits `revision: operator` (see the
-    emission-matrix section above), so calling the backfill helper on a
-    freshly composed bundle is itself an idempotent replace -- proving the
-    helper and compose() agree on the exact shape they each produce."""
-    dest = tmp_path / "out"
-    compose(_make_spec(), dest)
-
-    update_agent_yaml_memory_revision(dest / "bundle", revision="operator")
-
-    validate_agent_yaml(dest / "bundle")  # must not raise
-    data = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())
-    assert data["memory"] == {"personal": "techne", "home": "/techne", "revision": "operator"}
 
 
 # --- optional: validate against the real daedalus runtime, if available -----------

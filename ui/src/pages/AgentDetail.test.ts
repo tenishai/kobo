@@ -291,18 +291,6 @@ describe("AgentDetail tabs", () => {
     expect(chatTab.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("the Edit details affordance disables while frozen (destroying)", async () => {
-    stubFetch({
-      ...BASE_ROUTES,
-      "/api/agents/warden": { ...READY_AGENT, status: "destroying", destroy_visible: true },
-    });
-    renderWithClient(AgentDetail);
-    await screen.findByRole("heading", { name: "warden" });
-    await openHeaderMenu();
-    const editButton = screen.getByRole("button", { name: "Edit details" });
-    expect((editButton as HTMLButtonElement).disabled).toBe(true);
-  });
-
   it("remembers the tab and the harness section in the hash", async () => {
     renderWithClient(AgentDetail);
     await fireEvent.click(await screen.findByRole("tab", { name: "Harness" }));

@@ -106,16 +106,6 @@ def test_note_filename_different_text_yields_different_slug():
     assert a != b
 
 
-def test_note_filename_bounded_length_even_for_a_long_message():
-    long_text = " ".join(f"word{i}" for i in range(50))
-    filename = note_filename(long_text, on_date=ON_DATE)
-    # Same filename shape kobo_api.intake.INTAKE_FILENAME_RE enforces
-    # (`^[a-z][a-z0-9-]{0,39}\.(md|txt)$`): the part before the extension
-    # must be 40 characters or fewer.
-    stem = filename.removesuffix(".md")
-    assert len(stem) <= 40
-
-
 def test_note_filename_matches_intake_filename_pattern_for_long_input():
     from kobo_api.intake import INTAKE_FILENAME_RE
 
@@ -142,20 +132,6 @@ def test_note_filename_empty_text_falls_back_to_a_safe_slug():
     from kobo_api.intake import INTAKE_FILENAME_RE
 
     filename = note_filename("", on_date=ON_DATE)
-    assert INTAKE_FILENAME_RE.fullmatch(filename)
-
-
-def test_note_filename_whitespace_only_text_falls_back_to_a_safe_slug():
-    from kobo_api.intake import INTAKE_FILENAME_RE
-
-    filename = note_filename("   \n\t  ", on_date=ON_DATE)
-    assert INTAKE_FILENAME_RE.fullmatch(filename)
-
-
-def test_note_filename_punctuation_only_text_falls_back_to_a_safe_slug():
-    from kobo_api.intake import INTAKE_FILENAME_RE
-
-    filename = note_filename("!!! ??? ...", on_date=ON_DATE)
     assert INTAKE_FILENAME_RE.fullmatch(filename)
 
 

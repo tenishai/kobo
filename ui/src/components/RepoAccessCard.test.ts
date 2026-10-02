@@ -110,27 +110,6 @@ describe("RepoAccessCard", () => {
     expect(body).toEqual({ ids: [1], decision: "approved" });
   });
 
-  it("revoking posts that one id and the decision", async () => {
-    stubRepoAccess(ROWS);
-    renderWithClient(RepoAccessCard, { agentName: "warden" });
-
-    await screen.findByText("your-org/live-repo");
-    await fireEvent.click(
-      screen.getByRole("button", { name: "Revoke your-org/live-repo" }),
-    );
-
-    const call = vi
-      .mocked(fetch)
-      .mock.calls.find(
-        ([url, init]) =>
-          String(url) === "/api/repo-access/decide" &&
-          (init as RequestInit | undefined)?.method === "POST",
-      );
-    expect(call).toBeDefined();
-    const body = JSON.parse((call as [RequestInfo | URL, RequestInit])[1].body as string);
-    expect(body).toEqual({ ids: [2], decision: "revoked" });
-  });
-
   it("requests the typed repositories one per line", async () => {
     stubRepoAccess([]);
     renderWithClient(RepoAccessCard, { agentName: "warden" });

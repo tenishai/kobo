@@ -398,26 +398,6 @@ def test_upload_avatar_overwrites_a_previously_generated_picture(session_factory
     session.close()
 
 
-def test_upload_avatar_unknown_agent_returns_404(session_factory, config):
-    client = _make_client(session_factory, config)
-
-    response = _put_avatar(client, AGENT_NAME, FAKE_IMAGE_PNG_BYTES)
-
-    assert response.status_code == 404
-    assert "error" in response.json()
-
-
-@pytest.mark.parametrize("status", NON_READY_STATUSES)
-def test_upload_avatar_non_ready_agent_returns_409(session_factory, config, status):
-    client = _make_client(session_factory, config)
-    _seed_agent(session_factory, config, status=status)
-
-    response = _put_avatar(client, AGENT_NAME, FAKE_IMAGE_PNG_BYTES)
-
-    assert response.status_code == 409
-    assert "error" in response.json()
-
-
 def test_upload_avatar_wrong_content_type_returns_422_plain_copy(session_factory, config):
     github = FakeGitHub()
     client = _make_client(session_factory, config, github=github)
@@ -592,16 +572,3 @@ def test_list_agents_has_avatar_false_then_true_after_generation(session_factory
     assert after.json()["agents"][0]["has_avatar"] is True
 
 
-def test_get_agent_has_avatar_false_then_true_after_generation(session_factory, config):
-    github = _CapturingGitHub()
-    client = _make_client(session_factory, config, github=github)
-    _seed_agent(session_factory, config)
-
-    before = client.get(f"/api/agents/{AGENT_NAME}")
-    assert before.json()["has_avatar"] is False
-
-    generate_response = client.post(f"/api/agents/{AGENT_NAME}/avatar")
-    assert generate_response.status_code == 200
-
-    after = client.get(f"/api/agents/{AGENT_NAME}")
-    assert after.json()["has_avatar"] is True

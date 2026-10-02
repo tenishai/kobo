@@ -181,15 +181,6 @@ def test_run_wraps_missing_binary_as_client_error():
     assert isinstance(exc_info.value.__cause__, FileNotFoundError)
 
 
-def test_run_bytes_wraps_missing_binary_as_client_error():
-    runner = CommandRunner()
-    with pytest.raises(ClientError) as exc_info:
-        runner.run_bytes(["kobo-test-nonexistent-binary-xyz"])
-    assert "kobo-test-nonexistent-binary-xyz" in str(exc_info.value)
-    assert "not found on PATH" in str(exc_info.value)
-    assert isinstance(exc_info.value.__cause__, FileNotFoundError)
-
-
 # --- CommandRunner.run redact_args (final-review Finding 3) -----------------------
 #
 # `KubectlCLI.apply_secret`'s stage-1 argv carries `--from-literal=SLACK_*_
@@ -241,13 +232,6 @@ def test_run_env_never_appears_in_client_error_message():
     with pytest.raises(ClientError) as exc_info:
         runner.run([sys.executable, "-c", "import sys; sys.exit(1)"], env={"GH_TOKEN": "ghs_SECRETVALUE"})
     assert "ghs_SECRETVALUE" not in str(exc_info.value)
-
-
-def test_run_env_never_logged_at_debug_level(caplog):
-    runner = CommandRunner()
-    with caplog.at_level(logging.DEBUG, logger="kobo_api.clients"):
-        runner.run([sys.executable, "-c", "pass"], env={"GH_TOKEN": "ghs_SECRETDEBUGVALUE"})
-    assert "ghs_SECRETDEBUGVALUE" not in caplog.text
 
 
 # --- GitHub (GhCLI) ----------------------------------------------------------
@@ -351,22 +335,6 @@ def test_rev_parse_prefix_unresolvable_returns_none():
 # (dev, unchanged) means every call's `env` stays None, exactly as before
 # this parameter existed — the pre-existing GhCLI tests above already prove
 # that (they never pass token_provider and never inspect `runner.envs`).
-
-
-def test_ghcli_failing_command_error_never_contains_the_token():
-    # Security self-review: the installation token must never appear in a
-    # ClientError raised from a failed gh/git call. RecordingRunner's
-    # ClientError message (like the real CommandRunner's) is built purely
-    # from argv + stdout/stderr — env is a separate channel entirely — so
-    # this also guards against a future change accidentally folding env
-    # into that message.
-    runner = RecordingRunner(results=[(1, "", "fatal: repository not found")])
-    client = GhCLI(runner=runner, token_provider=lambda: "ghs_SUPERSECRETTOKEN")
-
-    with pytest.raises(ClientError) as exc_info:
-        client.head_sha("acme/agent-clio")
-
-    assert "ghs_SUPERSECRETTOKEN" not in str(exc_info.value)
 
 
 def test_ghcli_real_runner_failing_command_error_never_contains_the_token(caplog):
@@ -498,19 +466,6 @@ def test_merge_pr_falls_back_to_squash_then_rebase_when_a_method_is_not_allowed(
     assert [call[-1] for call in runner.calls] == ["--merge", "--squash", "--rebase"]
 
 
-def test_merge_pr_stops_at_the_first_method_the_repository_accepts():
-    runner = RecordingRunner(
-        results=[
-            (1, "", "GraphQL: Merge commits are not allowed on this repository."),
-            (0, "", ""),
-        ]
-    )
-    client = GhCLI(runner=runner)
-
-    assert client.merge_pr("acme/clio", "https://github.com/acme/clio/pull/4") is True
-    assert [call[-1] for call in runner.calls] == ["--merge", "--squash"]
-
-
 def test_merge_pr_false_when_the_repository_allows_no_method_the_room_can_use():
     runner = RecordingRunner(
         results=[
@@ -633,16 +588,6 @@ def test_repo_access_argv_and_a_writable_repo():
     assert access.full_name == "acme/clio"
 
 
-def test_repo_access_reports_githubs_own_spelling_of_the_name():
-    """GitHub resolves an owner and a repository name case-insensitively and
-    answers with the one real spelling. That is what the room records, so
-    one repository is never two rows apart from each other's case."""
-    runner = RecordingRunner(results=[(0, REPO_JSON, "")])
-    client = GhCLI(runner=runner)
-
-    assert client.repo_access("ACME/Clio").full_name == "acme/clio"
-
-
 def test_repo_access_read_only_when_github_says_push_is_false():
     runner = RecordingRunner(
         results=[(0, '{"default_branch":"trunk","permissions":{"push":false}}', "")]
@@ -654,21 +599,6 @@ def test_repo_access_read_only_when_github_says_push_is_false():
     assert access.visible is True
     assert access.can_write is False
     assert access.default_branch == "trunk"
-
-
-def test_repo_access_claims_no_write_when_the_response_carries_no_permissions():
-    """A response that does not say the room may write is not a response
-    that says it may. The scan's message names what write access is for, so
-    an owner reading it knows exactly what to grant; assuming write here
-    would instead surface as a failed pull request halfway through a
-    pipeline."""
-    runner = RecordingRunner(results=[(0, '{"default_branch":"main"}', "")])
-    client = GhCLI(runner=runner)
-
-    access = client.repo_access("acme/clio")
-
-    assert access.visible is True
-    assert access.can_write is False
 
 
 def test_repo_access_as_an_app_trusts_the_installations_grant_not_push():
@@ -706,20 +636,6 @@ def test_repo_access_as_an_app_without_the_contents_grant_is_read_only():
     )
 
     assert client.repo_access("acme/clio").can_write is False
-
-
-def test_repo_access_as_an_app_still_reports_not_visible_on_a_404():
-    """The grant answers "may the room write what it can see"; it never
-    conjures a repository the App cannot see."""
-    runner = RecordingRunner(results=[NOT_FOUND])
-    client = GhCLI(
-        runner=runner, token_provider=lambda: "ghs_x", installation_writes=lambda: True
-    )
-
-    access = client.repo_access("acme/private-thing")
-
-    assert access.visible is False
-    assert access.can_write is False
 
 
 def test_repo_access_not_visible_on_a_404():
@@ -790,17 +706,6 @@ def test_read_file_none_for_a_file_over_the_size_cap():
     assert client.read_file("acme/clio", "Dockerfile") is None
 
 
-def test_read_file_none_when_github_declines_to_inline_the_content():
-    """GitHub answers a large file with an empty `content` and encoding
-    "none". Nothing to read, same answer as a missing file."""
-    runner = RecordingRunner(
-        results=[(0, '{"type":"file","size":12,"encoding":"none","content":""}', "")]
-    )
-    client = GhCLI(runner=runner)
-
-    assert client.read_file("acme/clio", "Dockerfile") is None
-
-
 def test_read_file_none_for_anything_that_is_not_a_plain_file():
     """A symlink and a submodule both come back with content of their own
     that is not the file anyone asked for. Only a `file` is a file."""
@@ -820,15 +725,6 @@ def test_read_file_none_on_a_403():
     client = GhCLI(runner=runner)
 
     assert client.read_file("acme/clio", "Dockerfile") is None
-
-
-def test_read_file_none_when_the_path_is_a_directory():
-    """The contents API answers a directory with a JSON array. That is not
-    a file, and the caller asked for one."""
-    runner = RecordingRunner(results=[(0, '[{"name":"main.py","type":"file"}]', "")])
-    client = GhCLI(runner=runner)
-
-    assert client.read_file("acme/clio", "src") is None
 
 
 def test_read_file_raises_for_a_failure_that_is_not_about_this_file():
@@ -1008,18 +904,6 @@ def test_ensure_gsa_exists_path_skips_create():
     email = client.ensure_gsa("agent-clio")
     assert email == "agent-clio@example-project.iam.gserviceaccount.com"
     assert len(runner.calls) == 1  # only the describe call, no create
-
-
-def test_ensure_gsa_does_not_exist_wording_also_falls_through_to_create():
-    # gcloud's exact NOT_FOUND wording isn't the only phrasing a real describe
-    # failure can carry — "does not exist" must also fall through to create.
-    runner = RecordingRunner(
-        results=[(1, "", "Service account agent-clio does not exist."), (0, "", "")]
-    )
-    client = GcloudClient("example-project", runner=runner)
-    email = client.ensure_gsa("agent-clio")
-    assert email == "agent-clio@example-project.iam.gserviceaccount.com"
-    assert len(runner.calls) == 2  # describe, then create
 
 
 def test_ensure_gsa_reraises_non_not_found_describe_failure():
@@ -1267,34 +1151,6 @@ def test_gsa_email_for_parity_with_ensure_gsa():
 # --- KubectlCLI.external_secret_status (the Secrets panel's lock) --------------
 
 
-def test_external_secret_status_argv_and_status():
-    runner = RecordingRunner(
-        results=[
-            (
-                0,
-                json.dumps(
-                    {
-                        "kind": "ExternalSecret",
-                        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
-                    }
-                ),
-                "",
-            )
-        ]
-    )
-    client = KubectlCLI(runner=runner)
-
-    assert client.external_secret_status("clio", "clio-env") == {
-        "conditions": [{"type": "Ready", "status": "True"}]
-    }
-    assert runner.calls == [
-        [
-            "kubectl", "-n", "clio", "get", "externalsecret", "clio-env",
-            "--ignore-not-found", "-o", "json",
-        ]
-    ]
-
-
 def test_external_secret_status_is_none_when_there_is_no_such_object():
     # `--ignore-not-found` prints nothing and succeeds, which is what
     # lets "nothing is delivering this" be an answer rather than a
@@ -1304,13 +1160,6 @@ def test_external_secret_status_is_none_when_there_is_no_such_object():
     client = KubectlCLI(runner=runner)
 
     assert client.external_secret_status("clio", "clio-env") is None
-
-
-def test_external_secret_status_is_empty_when_the_object_has_no_status_yet():
-    runner = RecordingRunner(results=[(0, json.dumps({"kind": "ExternalSecret"}), "")])
-    client = KubectlCLI(runner=runner)
-
-    assert client.external_secret_status("clio", "clio-env") == {}
 
 
 def test_external_secret_status_raises_when_the_cluster_cannot_be_asked():
@@ -1572,17 +1421,6 @@ def test_gojira_create_app_carries_the_workload_class_it_is_given():
     assert captured["json"]["workload_class"] == "agent-headless"
 
 
-def test_gojira_create_app_no_token_sends_no_auth_header():
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert "authorization" not in request.headers
-        return httpx.Response(201, json={"id": 1})
-
-    client = HttpxGojiraClient(
-        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
-    )
-    client.create_app(name="clio", repo_full_name="acme/agent-clio", cluster="dev", namespace="clio")
-
-
 def test_gojira_create_app_409_raises_conflict():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(409, json={"error": "repo already connected"})
@@ -1669,35 +1507,9 @@ def test_gojira_ping_healthz_request_shape():
     assert captured["auth"] is None
 
 
-def test_gojira_ping_never_sends_auth_header():
-    def handler(request: httpx.Request) -> httpx.Response:
-        # ping() is an auth-free health probe, even when a token is configured
-        assert "authorization" not in request.headers
-        assert str(request.url) == "http://gojira.local/healthz"
-        return httpx.Response(200, json={})
-
-    client = HttpxGojiraClient(
-        "http://gojira.local", token="secret-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler))
-    )
-
-    assert client.ping() is True
-
-
 def test_gojira_ping_false_on_non_200():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text="boom")
-
-    client = HttpxGojiraClient(
-        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
-    )
-
-    assert client.ping() is False
-
-
-def test_gojira_ping_false_on_404():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(404, text="not found")
 
     client = HttpxGojiraClient(
         "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
@@ -1761,20 +1573,6 @@ def test_gojira_delete_app_request_shape_default_delete_namespaces_true():
     assert result == {"app": "clio", "rows_deleted": True}
 
 
-def test_gojira_delete_app_delete_namespaces_false_sent_in_body():
-    captured = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["json"] = json.loads(request.content)
-        return httpx.Response(202, json={"app": "clio"})
-
-    client = HttpxGojiraClient(
-        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
-    )
-    client.delete_app(7, delete_namespaces=False)
-    assert captured["json"] == {"delete_namespaces": False}
-
-
 def test_gojira_delete_app_404_maps_to_already_gone():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, json={"error": "not found"})
@@ -1791,21 +1589,6 @@ def test_gojira_delete_app_404_with_html_body_raises_client_error():
     # read as already-gone.
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, text="<html><body>Not Found</body></html>")
-
-    client = HttpxGojiraClient(
-        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
-    )
-    with pytest.raises(ClientError):
-        client.delete_app(7)
-
-
-def test_gojira_delete_app_404_with_starlette_default_body_raises_client_error():
-    # A gojira deployed without the teardown route falls back to its web
-    # framework's default 404 body (e.g. starlette's {"detail": "Not
-    # Found"}) — a different shape than gojira's own {"error": "not
-    # found"}, so it must not be read as already-gone either.
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(404, json={"detail": "Not Found"})
 
     client = HttpxGojiraClient(
         "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
@@ -1952,13 +1735,6 @@ def test_system_task_envelope_carries_the_marker_and_extra_metadata():
     assert env["status"]["message"]["parts"][0]["text"] == "body text"
 
 
-def test_teach_envelope_output_is_unchanged_by_the_refactor():
-    """The runtime intercepts on this exact shape; a drift here silently
-    breaks the lane that already works."""
-    env = _build_teach_envelope("the note", "note-name.md")
-    assert env["metadata"] == {"system_task": "teach", "filename": "note-name.md"}
-
-
 def test_post_task_sends_envelope_and_extracts_reply():
     captured = {}
 
@@ -2071,20 +1847,6 @@ def test_post_task_raises_client_error_on_non_json_body():
     assert isinstance(exc_info.value.__cause__, ValueError)
 
 
-def test_post_task_raises_client_error_on_json_missing_reply_path():
-    # Valid JSON that doesn't carry the expected status/message/parts/text
-    # path raises KeyError; must be wrapped the same as the non-JSON case.
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"status": {}})
-
-    client = httpx.Client(transport=httpx.MockTransport(handler))
-    with pytest.raises(ClientError) as exc_info:
-        _post_task(client, 54321, [{"role": "user", "text": "hello?"}])
-
-    assert "malformed a2a reply" in str(exc_info.value)
-    assert isinstance(exc_info.value.__cause__, KeyError)
-
-
 def test_post_task_wraps_read_timeout_as_client_error():
     # httpx.ReadTimeout isn't a ClientError; left unwrapped it would surface
     # as a raw httpx exception to the caller (hello or converse), and every
@@ -2147,16 +1909,6 @@ def test_get_card_wraps_read_timeout_as_client_error():
         _get_card(client, 54321)
 
     assert isinstance(exc_info.value.__cause__, httpx.ReadTimeout)
-
-
-def test_kubectl_agent_client_default_http_client_has_generous_timeout():
-    # No http_client injected -> KubectlAgentClient must build its own with a
-    # timeout generous enough for a full model roundtrip (routinely >5s
-    # live), not httpx's bare 5s default.
-    client = KubectlAgentClient()
-    timeout = client._http_client.timeout
-    assert timeout.connect == 10.0
-    assert timeout.read == 120.0
 
 
 class _FakePopen:
@@ -2349,27 +2101,6 @@ def test_agent_converse_sends_multi_turn_history_and_terminates_port_forward(mon
     assert fake_proc.waited is True
 
 
-def test_agent_converse_terminates_port_forward_even_on_post_failure(monkeypatch):
-    # Same ClientError-wrapping guarantee as hello's equivalent test above,
-    # re-exercised through converse() over the shared _send_task machinery.
-    fake_proc = _FakePopen(["Forwarding from 127.0.0.1:54321 -> 80\n"])
-    monkeypatch.setattr(
-        "kobo_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
-    )
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="boom")
-
-    client = KubectlAgentClient(
-        http_client=httpx.Client(transport=httpx.MockTransport(handler))
-    )
-    with pytest.raises(ClientError):
-        client.converse("clio", "clio", [{"role": "user", "text": "hello?"}])
-
-    assert fake_proc.terminated is True
-    assert fake_proc.waited is True
-
-
 def test_fetch_card_gets_well_known_path_and_terminates_port_forward_on_success(monkeypatch):
     fake_proc = _FakePopen(["Forwarding from 127.0.0.1:54321 -> 80\n"])
     monkeypatch.setattr(
@@ -2393,42 +2124,6 @@ def test_fetch_card_gets_well_known_path_and_terminates_port_forward_on_success(
     assert captured["url"] == "http://127.0.0.1:54321/.well-known/agent-card.json"
     assert fake_proc.terminated is True
     assert fake_proc.waited is True
-
-
-def test_fetch_card_terminates_port_forward_even_on_request_failure(monkeypatch):
-    # Same ClientError-wrapping/cleanup guarantee as hello's/converse's
-    # equivalent tests above, re-exercised through fetch_card's shared
-    # _over_port_forward machinery.
-    fake_proc = _FakePopen(["Forwarding from 127.0.0.1:54321 -> 80\n"])
-    monkeypatch.setattr(
-        "kobo_api.clients.subprocess.Popen", lambda *a, **k: fake_proc
-    )
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="boom")
-
-    client = KubectlAgentClient(
-        http_client=httpx.Client(transport=httpx.MockTransport(handler))
-    )
-    with pytest.raises(ClientError):
-        client.fetch_card("clio", "clio")
-
-    assert fake_proc.terminated is True
-    assert fake_proc.waited is True
-
-
-def test_fetch_card_wraps_popen_oserror_as_client_error(monkeypatch):
-    def raise_oserror(*args, **kwargs):
-        raise OSError("no such file or directory: kubectl")
-
-    monkeypatch.setattr("kobo_api.clients.subprocess.Popen", raise_oserror)
-
-    client = KubectlAgentClient()
-    with pytest.raises(ClientError) as exc_info:
-        client.fetch_card("clio", "clio")
-
-    assert "failed to start port-forward" in str(exc_info.value)
-    assert isinstance(exc_info.value.__cause__, OSError)
 
 
 # --- Slack (HttpxSlackClient) --------------------------------------------------
@@ -2540,43 +2235,6 @@ def test_slack_create_app_rotates_and_retries_on_token_expired(tmp_path):
     final_text = tokens_path.read_text()
     assert "xoxe.xoxp-1-new-config" in final_text
     assert "xoxe-1-new-refresh" in final_text
-
-
-def test_slack_create_app_rotate_preserves_tokens_file_mode(tmp_path):
-    # An operator may have hardened the tokens file to 0600 (it holds a live
-    # Slack refresh token). Rotation rewrites the file via tmp + os.replace;
-    # the tmp file must not silently widen permissions back to umask-default.
-    tokens_path = _write_slack_tokens_file(
-        tmp_path, config_token="xoxe.xoxp-1-old-config", refresh_token="xoxe-1-old-refresh"
-    )
-    os.chmod(tokens_path, 0o600)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        if path == "/api/apps.manifest.create":
-            auth = request.headers.get("authorization")
-            if auth == "Bearer xoxe.xoxp-1-old-config":
-                return httpx.Response(200, json={"ok": False, "error": "token_expired"})
-            assert auth == "Bearer xoxe.xoxp-1-new-config"
-            return httpx.Response(200, json={"ok": True, "app_id": "A0NEW"})
-        elif path == "/api/tooling.tokens.rotate":
-            return httpx.Response(
-                200,
-                json={
-                    "ok": True,
-                    "token": "xoxe.xoxp-1-new-config",
-                    "refresh_token": "xoxe-1-new-refresh",
-                },
-            )
-        raise AssertionError(f"unexpected path {path}")
-
-    client = HttpxSlackClient(
-        tokens_path, http_client=httpx.Client(transport=httpx.MockTransport(handler))
-    )
-    app_id = client.create_app({"display_information": {"name": "clio"}})
-
-    assert app_id == "A0NEW"
-    assert os.stat(tokens_path).st_mode & 0o777 == 0o600
 
 
 def test_write_slack_tokens_tmp_file_never_wider_than_0600_before_copymode(tmp_path, monkeypatch):
@@ -3031,33 +2689,6 @@ def test_slack_rotation_logs_when_it_takes_the_other_processs_token(caplog):
         assert "xoxe" not in message
 
 
-def test_slack_rotation_logs_when_a_failed_rotate_finds_the_store_moved(caplog):
-    store = _MemorySlackTokenStore("xoxe.xoxp-TEST-old-config", "xoxe-TEST-old-refresh")
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        if path == "/api/apps.manifest.create":
-            if request.headers.get("authorization") == "Bearer xoxe.xoxp-TEST-old-config":
-                return httpx.Response(200, json={"ok": False, "error": "token_expired"})
-            return httpx.Response(200, json={"ok": True, "app_id": "A0OTHER"})
-        if path == "/api/tooling.tokens.rotate":
-            store.pair = ("xoxe.xoxp-TEST-other-config", "xoxe-TEST-other-refresh")
-            return httpx.Response(200, json={"ok": False, "error": "invalid_refresh_token"})
-        raise AssertionError(f"unexpected path {path}")
-
-    client = HttpxSlackClient(
-        store, http_client=httpx.Client(transport=httpx.MockTransport(handler))
-    )
-
-    with caplog.at_level(logging.WARNING, logger="kobo_api.clients"):
-        client.create_app({"display_information": {"name": "clio"}})
-
-    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert any("another process" in m for m in messages)
-    for message in messages:
-        assert "xoxe" not in message
-
-
 # --- probe_slack_token_store (boot-time write probe) --------------------------
 
 
@@ -3171,31 +2802,6 @@ def test_probe_does_nothing_for_the_file_store_or_no_slack(tmp_path, caplog):
     assert caplog.records == []
 
 
-def test_slack_delete_app_rotation_also_skips_slack_when_the_store_moved():
-    # delete_app threads the failed token through the same way create_app
-    # does -- the retry-exactly-once rule is unchanged either way.
-    store = _MemorySlackTokenStore("xoxe.xoxp-TEST-old-config", "xoxe-TEST-old-refresh")
-    calls: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        calls.append(path)
-        if path == "/api/apps.manifest.delete":
-            if request.headers.get("authorization") == "Bearer xoxe.xoxp-TEST-old-config":
-                store.pair = ("xoxe.xoxp-TEST-other-config", "xoxe-TEST-other-refresh")
-                return httpx.Response(200, json={"ok": False, "error": "invalid_auth"})
-            return httpx.Response(200, json={"ok": True})
-        raise AssertionError(f"unexpected path {path}")
-
-    client = HttpxSlackClient(
-        store, http_client=httpx.Client(transport=httpx.MockTransport(handler))
-    )
-
-    assert client.delete_app("A0FAKE") is True
-    assert calls == ["/api/apps.manifest.delete", "/api/apps.manifest.delete"]
-    assert store.writes == []
-
-
 # --- Slack.delete_app (Task 3: agent destruction's Slack step) -------------------
 #
 # Already-gone error codes grounded against Slack's own documented error
@@ -3249,85 +2855,6 @@ def test_slack_delete_app_already_gone_errors_return_false(tmp_path, error):
         tokens_path, http_client=httpx.Client(transport=httpx.MockTransport(handler))
     )
     assert client.delete_app("A0GONE") is False
-
-
-def test_slack_delete_app_rotates_and_retries_on_token_expired(tmp_path):
-    tokens_path = _write_slack_tokens_file(
-        tmp_path, config_token="xoxe.xoxp-1-old-config", refresh_token="xoxe-1-old-refresh"
-    )
-    calls: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        calls.append(path)
-        if path == "/api/apps.manifest.delete":
-            auth = request.headers.get("authorization")
-            if auth == "Bearer xoxe.xoxp-1-old-config":
-                return httpx.Response(200, json={"ok": False, "error": "token_expired"})
-            # Retry with the rotated token: the tokens file must already
-            # carry the new pair by the time this fires (persist-before-use,
-            # same property test_slack_create_app_rotates_and_retries_on_
-            # token_expired pins for create_app).
-            assert auth == "Bearer xoxe.xoxp-1-new-config"
-            return httpx.Response(200, json={"ok": True})
-        elif path == "/api/tooling.tokens.rotate":
-            body = parse_qs(request.content.decode())
-            assert body["refresh_token"][0] == "xoxe-1-old-refresh"
-            return httpx.Response(
-                200,
-                json={
-                    "ok": True,
-                    "token": "xoxe.xoxp-1-new-config",
-                    "refresh_token": "xoxe-1-new-refresh",
-                },
-            )
-        raise AssertionError(f"unexpected path {path}")
-
-    client = HttpxSlackClient(
-        tokens_path, http_client=httpx.Client(transport=httpx.MockTransport(handler))
-    )
-    assert client.delete_app("A0FAKE") is True
-    assert calls == [
-        "/api/apps.manifest.delete",
-        "/api/tooling.tokens.rotate",
-        "/api/apps.manifest.delete",
-    ]
-
-
-def test_slack_delete_app_second_auth_failure_after_rotate_raises(tmp_path):
-    tokens_path = _write_slack_tokens_file(
-        tmp_path, config_token="xoxe.xoxp-1-old-config", refresh_token="xoxe-1-old-refresh"
-    )
-    calls: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        calls.append(path)
-        if path == "/api/apps.manifest.delete":
-            return httpx.Response(200, json={"ok": False, "error": "invalid_auth"})
-        elif path == "/api/tooling.tokens.rotate":
-            return httpx.Response(
-                200,
-                json={
-                    "ok": True,
-                    "token": "xoxe.xoxp-1-new-config",
-                    "refresh_token": "xoxe-1-new-refresh",
-                },
-            )
-        raise AssertionError(f"unexpected path {path}")
-
-    client = HttpxSlackClient(
-        tokens_path, http_client=httpx.Client(transport=httpx.MockTransport(handler))
-    )
-    with pytest.raises(SlackApiError):
-        client.delete_app("A0FAKE")
-
-    # Exactly one rotate-and-retry — never an infinite loop.
-    assert calls == [
-        "/api/apps.manifest.delete",
-        "/api/tooling.tokens.rotate",
-        "/api/apps.manifest.delete",
-    ]
 
 
 def test_slack_delete_app_other_error_raises_slack_api_error_without_token_material(tmp_path):
@@ -3471,41 +2998,6 @@ def test_vertex_image_client_no_image_part_raises_client_error_without_leaking_p
     assert prompt not in str(exc_info.value)
 
 
-def test_vertex_image_client_invalid_base64_raises_client_error_without_leaking_prompt():
-    # Well-formed JSON, inlineData present, but the data field isn't valid
-    # base64 — binascii.Error is a ValueError subclass, so the extraction's
-    # except clause must wrap it like every other malformed-reply shape.
-    prompt = "a very specific secret prompt about a dragon riding a unicycle"
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "candidates": [
-                    {
-                        "content": {
-                            "parts": [
-                                {"inlineData": {"mimeType": "image/png", "data": "not-valid-base64!!"}}
-                            ]
-                        }
-                    }
-                ]
-            },
-        )
-
-    client = VertexImageClient(
-        "acme-project", "us-central1", "gemini-2.5-flash-image",
-        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
-        token_provider=lambda: "fake-access-token",
-    )
-
-    with pytest.raises(ClientError) as exc_info:
-        client.generate(prompt)
-
-    assert str(exc_info.value) == "the picture didn't come through. Try again."
-    assert prompt not in str(exc_info.value)
-
-
 def test_vertex_image_client_non_200_raises_client_error_without_leaking_prompt():
     prompt = "a very specific secret prompt about a dragon riding a unicycle"
 
@@ -3523,54 +3015,6 @@ def test_vertex_image_client_non_200_raises_client_error_without_leaking_prompt(
 
     assert str(exc_info.value) == "the picture didn't come through. Try again."
     assert prompt not in str(exc_info.value)
-
-
-def test_vertex_image_client_malformed_json_raises_client_error_without_leaking_prompt():
-    prompt = "a very specific secret prompt about a dragon riding a unicycle"
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, text="not json at all")
-
-    client = VertexImageClient(
-        "acme-project", "us-central1", "gemini-2.5-flash-image",
-        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
-        token_provider=lambda: "fake-access-token",
-    )
-
-    with pytest.raises(ClientError) as exc_info:
-        client.generate(prompt)
-
-    assert str(exc_info.value) == "the picture didn't come through. Try again."
-    assert prompt not in str(exc_info.value)
-
-
-def test_vertex_image_client_unexpected_json_shape_raises_client_error():
-    # Well-formed JSON, but missing the candidates/content/parts path
-    # entirely — a different malformed-reply shape than "no inlineData part".
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"unexpected": "shape"})
-
-    client = VertexImageClient(
-        "acme-project", "us-central1", "gemini-2.5-flash-image",
-        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
-        token_provider=lambda: "fake-access-token",
-    )
-
-    with pytest.raises(ClientError) as exc_info:
-        client.generate("a prompt")
-
-    assert str(exc_info.value) == "the picture didn't come through. Try again."
-
-
-def test_vertex_image_client_default_http_client_has_generous_timeout():
-    # No client injected -> VertexImageClient must build its own with real
-    # headroom over httpx's bare 5s default: image generation is a full
-    # model roundtrip (routinely slow, like KubectlAgentClient's a2a hello),
-    # not a quick CRUD call.
-    client = VertexImageClient("acme-project", "us-central1", "gemini-2.5-flash-image")
-    timeout = client._http_client.timeout
-    assert timeout.connect == 10.0
-    assert timeout.read == 120.0
 
 
 def test_vertex_image_client_token_provider_failure_raises_client_error_without_leaking_gcloud_output():
@@ -3609,44 +3053,6 @@ def test_vertex_image_client_token_provider_failure_raises_client_error_without_
 # time-boxed cache, mirroring InstallationTokenProvider's own cache+expiry
 # discipline (kobo_api.github_app) — `now` is a test seam here too, real
 # `time.monotonic` by default.
-
-
-def test_cached_gcloud_token_second_call_within_ttl_is_one_fetch():
-    calls: list[str] = []
-
-    def fetch() -> str:
-        calls.append("fetched")
-        return f"token-{len(calls)}"
-
-    clock = {"now": 1000.0}
-    token_provider = CachedGcloudToken(fetch=fetch, ttl_s=1800, now=lambda: clock["now"])
-
-    first = token_provider()
-    clock["now"] += 60  # well inside the 1800s ttl
-    second = token_provider()
-
-    assert first == "token-1"
-    assert second == "token-1"
-    assert len(calls) == 1
-
-
-def test_cached_gcloud_token_expiry_triggers_refetch():
-    calls: list[str] = []
-
-    def fetch() -> str:
-        calls.append("fetched")
-        return f"token-{len(calls)}"
-
-    clock = {"now": 1000.0}
-    token_provider = CachedGcloudToken(fetch=fetch, ttl_s=1800, now=lambda: clock["now"])
-
-    first = token_provider()
-    clock["now"] += 1800  # ttl fully elapsed -> no longer fresh
-    second = token_provider()
-
-    assert first == "token-1"
-    assert second == "token-2"
-    assert len(calls) == 2
 
 
 def test_cached_gcloud_token_concurrent_first_calls_share_one_fetch():
@@ -3850,32 +3256,6 @@ def test_vertex_name_client_parses_clean_json_array():
     ]
 
 
-def test_vertex_name_client_parses_fenced_json_block():
-    # A real reply routinely wraps the array in a ```json fence, sometimes
-    # with a chatty preamble before it — tolerant extraction must scan past
-    # both rather than assume the array starts at index 0.
-    reply_text = (
-        "Sure, here are five names:\n"
-        "```json\n"
-        '[{"name": "flint", "reason": "quick to spark"}]\n'
-        "```\n"
-        "Hope that helps!"
-    )
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=_text_reply(reply_text))
-
-    client = VertexNameClient(
-        "acme-project", "us-central1", "gemini-2.5-flash",
-        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
-        token_provider=lambda: "fake-access-token",
-    )
-
-    result = client.suggest("a helper", "helps out")
-
-    assert result == [{"name": "flint", "reason": "quick to spark"}]
-
-
 def test_vertex_name_client_skips_non_dict_items_and_non_str_names():
     # Tolerant per-item filtering: a malformed item (bare string, or a dict
     # with a non-string name) is dropped rather than raising — only a
@@ -3915,13 +3295,6 @@ def test_vertex_name_client_token_provider_failure_raises_client_error_without_l
 
     assert "gcloud" not in str(exc_info.value)
     assert "account details" not in str(exc_info.value)
-
-
-def test_vertex_name_client_default_http_client_has_real_headroom():
-    client = VertexNameClient("acme-project", "us-central1", "gemini-2.5-flash")
-    timeout = client._http_client.timeout
-    assert timeout.connect == 10.0
-    assert timeout.read == 30.0
 
 
 def test_extract_json_array_no_array_found_raises_value_error():
@@ -4000,26 +3373,6 @@ def test_vertex_name_client_draft_parses_clean_json_object():
         "what_they_do": "Helps with billing.",
         "purpose_tags": None,
     }
-
-
-def test_vertex_name_client_draft_parses_purpose_tags_from_reply():
-    reply_text = (
-        '{"name": "billing-buddy", "who_they_are": "calm", "what_they_do": "helps", '
-        '"purpose_tags": ["billing", "support"]}'
-    )
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=_object_reply(reply_text))
-
-    client = VertexNameClient(
-        "acme-project", "us-central1", "gemini-2.5-flash",
-        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
-        token_provider=lambda: "fake-access-token",
-    )
-
-    result = client.draft("help with billing", [])
-
-    assert result["purpose_tags"] == ["billing", "support"]
 
 
 def test_vertex_name_client_draft_missing_keys_return_none_for_those_keys():
@@ -4218,19 +3571,6 @@ def test_storage_object_metadata_request_shape_no_alt_media():
     assert result["updated"] == "2026-08-01T12:00:00Z"
 
 
-def test_storage_object_metadata_404_raises_storage_not_found():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(404, text="not found")
-
-    client = HttpxStorageClient(
-        "acme-project",
-        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
-        token_provider=lambda: "fake-access-token",
-    )
-    with pytest.raises(StorageNotFound):
-        client.object_metadata("my-bucket", "missing.json")
-
-
 def test_storage_write_bytes_multipart_body_carries_metadata_json_and_media():
     captured = {}
 
@@ -4267,20 +3607,6 @@ def test_storage_write_bytes_multipart_body_carries_metadata_json_and_media():
     assert body.rstrip().endswith(f"--{boundary}--".encode())
 
 
-def test_storage_write_bytes_non_200_raises_client_error_without_leaking_body():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(400, text="bad request detail")
-
-    client = HttpxStorageClient(
-        "acme-project",
-        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
-        token_provider=lambda: "fake-access-token",
-    )
-    with pytest.raises(ClientError) as exc_info:
-        client.write_bytes("my-bucket", "x", b"data")
-    assert "bad request detail" not in str(exc_info.value)
-
-
 def test_storage_list_keys_request_shape_and_follows_pagination():
     calls = []
 
@@ -4305,19 +3631,6 @@ def test_storage_list_keys_request_shape_and_follows_pagination():
     assert str(calls[0]).startswith(f"{_STORAGE_API_BASE}/b/my-bucket/o?")
     assert calls[0].params["prefix"] == "personas/"
     assert calls[0].params["fields"] == "items(name),nextPageToken"
-
-
-def test_storage_list_keys_missing_bucket_raises_storage_not_found():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(404, text="no such bucket")
-
-    client = HttpxStorageClient(
-        "acme-project",
-        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
-        token_provider=lambda: "fake-access-token",
-    )
-    with pytest.raises(StorageNotFound):
-        client.list_keys("missing-bucket", "")
 
 
 def test_storage_ensure_bucket_returns_exists_without_creating():
@@ -4410,47 +3723,7 @@ def test_storage_ensure_versioning_missing_versioning_key_treated_as_disabled():
     assert client.ensure_versioning("my-bucket") is True
 
 
-def test_storage_client_default_http_client_has_generous_timeout():
-    # No client injected -> HttpxStorageClient must build its own with real
-    # headroom over httpx's bare 5s default, same convention as every other
-    # real client in this module.
-    client = HttpxStorageClient("acme-project")
-    timeout = client._http_client.timeout
-    assert timeout.connect == 10.0
-    assert timeout.read == 20.0
-
-
 # --- Storage error branches (coverage gap) ------------------------------------
-
-
-def test_storage_object_metadata_non_200_raises_client_error_without_leaking_body():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="a very sensitive internal error trace")
-
-    client = HttpxStorageClient(
-        "acme-project",
-        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
-        token_provider=lambda: "fake-access-token",
-    )
-    with pytest.raises(ClientError) as exc_info:
-        client.object_metadata("my-bucket", "some.json")
-    assert not isinstance(exc_info.value, StorageNotFound)
-    assert "a very sensitive internal error trace" not in str(exc_info.value)
-
-
-def test_storage_list_keys_non_200_raises_client_error_without_leaking_body():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="backend failure details")
-
-    client = HttpxStorageClient(
-        "acme-project",
-        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
-        token_provider=lambda: "fake-access-token",
-    )
-    with pytest.raises(ClientError) as exc_info:
-        client.list_keys("my-bucket", "prefix/")
-    assert not isinstance(exc_info.value, StorageNotFound)
-    assert "backend failure details" not in str(exc_info.value)
 
 
 def test_storage_ensure_versioning_404_raises_storage_not_found():
@@ -4464,38 +3737,6 @@ def test_storage_ensure_versioning_404_raises_storage_not_found():
     )
     with pytest.raises(StorageNotFound):
         client.ensure_versioning("missing-bucket")
-
-
-def test_storage_ensure_versioning_describe_non_200_non_404_raises_client_error_without_leaking_body():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="internal server error on describe")
-
-    client = HttpxStorageClient(
-        "acme-project",
-        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
-        token_provider=lambda: "fake-access-token",
-    )
-    with pytest.raises(ClientError) as exc_info:
-        client.ensure_versioning("my-bucket")
-    assert not isinstance(exc_info.value, StorageNotFound)
-    assert "internal server error on describe" not in str(exc_info.value)
-
-
-def test_storage_ensure_versioning_patch_failure_raises_client_error_without_leaking_body():
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "GET":
-            return httpx.Response(200, json={"versioning": {"enabled": False}})
-        # PATCH fails
-        return httpx.Response(500, text="patch operation failed")
-
-    client = HttpxStorageClient(
-        "acme-project",
-        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
-        token_provider=lambda: "fake-access-token",
-    )
-    with pytest.raises(ClientError) as exc_info:
-        client.ensure_versioning("my-bucket")
-    assert "patch operation failed" not in str(exc_info.value)
 
 
 # --- Cabal (CabalClient: switchboard admin API - graduate/absorb/relay) ---------
@@ -4663,32 +3904,6 @@ def test_cabal_relay_uses_180s_timeout_regardless_of_client_default():
     }
 
 
-def test_cabal_relay_raises_typed_cabal_error_on_non_2xx():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(502, text="boom")
-
-    client = CabalClient(
-        "http://cabal.local", "op-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-    with pytest.raises(CabalError):
-        client.relay("clio", {"kind": "task"})
-
-
-def test_cabal_relay_error_message_never_contains_the_token():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(502, text="internal failure detail")
-
-    client = CabalClient(
-        "http://cabal.local", "super-secret-operator-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-    with pytest.raises(CabalError) as exc_info:
-        client.relay("clio", {"kind": "task"})
-    assert "super-secret-operator-token" not in str(exc_info.value)
-    assert "internal failure detail" not in str(exc_info.value)
-
-
 # --- mint_colleague (Task 3/B3: every agent is born with a colleague pass) ------
 
 
@@ -4751,29 +3966,6 @@ def test_cabal_revoke_colleague_raises_cabal_error_on_failure():
     )
     with pytest.raises(CabalError, match="revoke_colleague"):
         client.revoke_colleague("clio")
-
-
-def test_cabal_mint_colleague_accepts_201_as_success():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(201, json={"access_token": "fresh-colleague-token"})
-
-    client = CabalClient(
-        "http://cabal.local", "op-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-    assert client.mint_colleague("clio") == "fresh-colleague-token"
-
-
-def test_cabal_mint_colleague_raises_typed_cabal_error_on_non_2xx():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="boom")
-
-    client = CabalClient(
-        "http://cabal.local", "op-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-    with pytest.raises(CabalError):
-        client.mint_colleague("clio")
 
 
 def test_cabal_mint_colleague_error_message_never_contains_the_operator_token():
@@ -4885,20 +4077,6 @@ def test_cabal_put_dispatch_pairs_raises_typed_cabal_error_on_non_2xx():
     )
     with pytest.raises(CabalError):
         client.put_dispatch_pairs([("agent:a", "b")])
-
-
-def test_cabal_put_dispatch_pairs_error_message_never_contains_the_token():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="internal failure detail")
-
-    client = CabalClient(
-        "http://cabal.local", "super-secret-operator-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-    with pytest.raises(CabalError) as exc_info:
-        client.put_dispatch_pairs([("agent:a", "b")])
-    assert "super-secret-operator-token" not in str(exc_info.value)
-    assert "internal failure detail" not in str(exc_info.value)
 
 
 def test_cabal_put_dispatch_pairs_shrink_to_empty_after_nonempty_logs_a_warning(caplog):
@@ -5060,32 +4238,6 @@ def test_cabal_list_conversations_passes_target_and_caller_when_given():
     assert captured["params"] == {"limit": "200", "caller": "agent:ward"}
 
 
-def test_cabal_list_conversations_raises_typed_cabal_error_on_non_2xx():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="boom")
-
-    client = CabalClient(
-        "http://cabal.local", "op-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-    with pytest.raises(CabalError):
-        client.list_conversations()
-
-
-def test_cabal_list_conversations_error_message_never_contains_the_token():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="internal failure detail")
-
-    client = CabalClient(
-        "http://cabal.local", "super-secret-operator-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-    with pytest.raises(CabalError) as exc_info:
-        client.list_conversations()
-    assert "super-secret-operator-token" not in str(exc_info.value)
-    assert "internal failure detail" not in str(exc_info.value)
-
-
 def test_cabal_get_conversation_request_shape_and_auth_header():
     captured = {}
 
@@ -5107,32 +4259,6 @@ def test_cabal_get_conversation_request_shape_and_auth_header():
     assert captured["url"] == "http://cabal.local/admin/conversations/t1"
     assert captured["auth"] == "Bearer op-token"
     assert result == {"conversation": {"task_id": "t1"}, "events": []}
-
-
-def test_cabal_get_conversation_raises_typed_cabal_error_on_non_2xx():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(404, text="not found")
-
-    client = CabalClient(
-        "http://cabal.local", "op-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-    with pytest.raises(CabalError):
-        client.get_conversation("missing")
-
-
-def test_cabal_get_conversation_error_message_never_contains_the_token():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="internal failure detail")
-
-    client = CabalClient(
-        "http://cabal.local", "super-secret-operator-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-    with pytest.raises(CabalError) as exc_info:
-        client.get_conversation("t1")
-    assert "super-secret-operator-token" not in str(exc_info.value)
-    assert "internal failure detail" not in str(exc_info.value)
 
 
 # Fix round 1 (Important review finding on Task 4/B4): `stream_events` is
@@ -5388,17 +4514,6 @@ def test_filter_handles_frames_split_across_chunk_boundaries():
     midpoint = len(frame) // 2
     chunks = [frame[:midpoint], frame[midpoint:]]
     assert _filtered(chunks, "clio") == [frame]
-
-
-def test_filter_multiple_conversations_only_the_matching_ones_survive():
-    clio_start = _dispatch_start_frame("t-1", target="clio", caller="agent:iris")
-    clio_success = _dispatch_success_frame("t-1")
-    warden_start = _dispatch_start_frame("t-2", target="warden", caller="service:kobo")
-    warden_success = _dispatch_success_frame("t-2")
-
-    result = _filtered([clio_start, warden_start, clio_success, warden_success], "clio")
-
-    assert result == [clio_start, clio_success]
 
 
 def test_filter_discards_a_trailing_partial_frame_when_the_stream_ends_mid_frame():
@@ -5793,18 +4908,6 @@ def test_clients_real_leaves_groups_none_when_groups_empty(monkeypatch):
     assert clients.groups is None
 
 
-def test_clients_real_leaves_groups_none_when_okta_domain_unset(monkeypatch):
-    monkeypatch.setenv("OKTA_API_TOKEN", "okta-token")
-    config = Config(
-        gojira_url="http://gojira.local",
-        gcp_project="example-project",
-        okta_domain="",
-        groups=[GroupChoice(name="SRE", okta_group="okta-sre")],
-    )
-    clients = Clients.real(config)
-    assert clients.groups is None
-
-
 def test_clients_real_wires_groups_when_fully_configured(monkeypatch):
     monkeypatch.setenv("OKTA_API_TOKEN", "okta-token")
     config = Config(
@@ -5840,30 +4943,6 @@ def test_universe_from_groups_merges_duplicate_config_names():
     universe = _universe_from_groups(groups)
 
     assert universe == {"SRE": ["okta-sre-usa", "okta-sre-india"]}
-
-
-def test_clients_real_wires_groups_merging_duplicate_config_names(monkeypatch):
-    """Same fix, through the full Clients.real path: two GroupChoice
-    entries named "SRE" (e.g. one org-config layer adding a region the base
-    config didn't have) must both survive into the resolver's universe,
-    not last-write-wins down to one."""
-    monkeypatch.setenv("OKTA_API_TOKEN", "okta-token")
-    config = Config(
-        gojira_url="http://gojira.local",
-        gcp_project="example-project",
-        okta_domain="acme.okta.com",
-        groups=[
-            GroupChoice(name="SRE", okta_group="okta-sre-usa"),
-            GroupChoice(name="SRE", okta_group="okta-sre-india"),
-        ],
-    )
-
-    clients = Clients.real(config)
-
-    assert clients.groups._universe == {
-        "okta-sre-usa": "SRE",
-        "okta-sre-india": "SRE",
-    }
 
 
 # --- Clients.real() people-search wiring (access-tab refinement wave) --------

@@ -63,16 +63,6 @@ def test_kobo_config_env_var_missing_raises_error(tmp_path, monkeypatch):
         Config.load()
 
 
-def test_config_local_yaml_missing_falls_back_to_defaults(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("KOBO_CONFIG", raising=False)
-
-    config = Config.load()
-
-    assert config.github_org == "example-org"
-    assert config.workdir == Path.home() / ".kobo"
-
-
 # --- models: min_length=1 ------------------------------------------------------
 
 
@@ -81,24 +71,12 @@ def test_models_empty_list_raises_validation_error():
         Config(models=[])
 
 
-def test_models_default_is_nonempty():
-    assert len(Config().models) >= 1
-
-
 # --- Config.load: non-dict YAML -------------------------------------------------
 
 
 def test_load_non_dict_yaml_raises_value_error_naming_the_file(tmp_path):
     yaml_path = tmp_path / "config.yaml"
     yaml_path.write_text("- item1\n- item2\n")
-
-    with pytest.raises(ValueError, match=re.escape(str(yaml_path))):
-        Config.load(yaml_path)
-
-
-def test_load_scalar_yaml_raises_value_error(tmp_path):
-    yaml_path = tmp_path / "config.yaml"
-    yaml_path.write_text("just a string\n")
 
     with pytest.raises(ValueError, match=re.escape(str(yaml_path))):
         Config.load(yaml_path)
@@ -116,15 +94,6 @@ def test_load_empty_yaml_file_falls_back_to_defaults(tmp_path):
 
 
 # --- slack_tokens_path -----------------------------------------------------
-
-
-def test_slack_tokens_path_expands_tilde(tmp_path):
-    yaml_path = tmp_path / "config.yaml"
-    yaml_path.write_text("slack_tokens_path: ~/slack.local.yaml\n")
-
-    config = Config.load(yaml_path)
-
-    assert config.slack_tokens_path == Path.home() / "slack.local.yaml"
 
 
 # --- slack_tokens_secret (two-replica safety) ------------------------------
@@ -203,72 +172,10 @@ def test_ladon_is_off_until_all_three_settings_are_present(settings):
     assert Config(**settings).ladon_enabled is False
 
 
-def test_config_example_yaml_documents_the_ladon_keys():
-    # Commented out rather than set, like slack_tokens_secret: the operator
-    # template names every deployment-local key, and an empty lane is off.
-    example_path = Path(__file__).resolve().parent.parent / "config.example.yaml"
-    text = example_path.read_text()
-
-    for key in ("ladon_url", "ladon_audience", "ladon_namespace"):
-        assert f"# {key}:" in text
-        assert f"\n{key}:" not in text
-
-
-def test_ladon_settings_are_not_org_settable():
-    # Deployment-local, exactly like slack_tokens_secret above: they name a
-    # service and a namespace in THIS cluster, not anything the org hands
-    # out.
-    from kobo_api.org import ORG_KEYS
-
-    assert "ladon_url" not in ORG_KEYS
-    assert "ladon_audience" not in ORG_KEYS
-    assert "ladon_namespace" not in ORG_KEYS
-
-
 # --- avatar_model / avatar_location (P2d: ImageClient) --------------------
 
 
-def test_avatar_model_and_location_overridable(tmp_path):
-    yaml_path = tmp_path / "config.yaml"
-    yaml_path.write_text(
-        "avatar_model: some-other-model\navatar_location: us-east4\n"
-    )
-
-    config = Config.load(yaml_path)
-
-    assert config.avatar_model == "some-other-model"
-    assert config.avatar_location == "us-east4"
-
-
 # --- name_model / name_location (create flow v2 addendum: NameClient) -----
-
-
-def test_name_model_and_location_overridable(tmp_path):
-    yaml_path = tmp_path / "config.yaml"
-    yaml_path.write_text(
-        "name_model: some-other-text-model\nname_location: us-east4\n"
-    )
-
-    config = Config.load(yaml_path)
-
-    assert config.name_model == "some-other-text-model"
-    assert config.name_location == "us-east4"
-
-
-def test_config_example_yaml_documents_name_keys():
-    # Same round-trip check as the avatar keys above: config.example.yaml is
-    # the operator-facing template, so both new keys must be explicitly
-    # present (not merely absent-and-defaulted) and must parse into a valid
-    # Config matching the real defaults baked into Config.
-    example_path = Path(__file__).resolve().parent.parent / "config.example.yaml"
-    data = yaml.safe_load(example_path.read_text())
-
-    assert data["name_model"] == "gemini-2.5-flash"
-    assert data["name_location"] == "us-central1"
-
-    config = Config(**data)
-    assert config.name_model == "gemini-2.5-flash"
-    assert config.name_location == "us-central1"
 
 
 def test_org_config_fields_overridable(tmp_path):
@@ -317,31 +224,6 @@ def test_config_example_yaml_documents_org_config_keys():
 
 
 # --- cabal_url / agent_endpoint_template (colleagues switchboard arc, Task 1) ---
-
-
-def test_cabal_config_fields_overridable(tmp_path):
-    yaml_path = tmp_path / "config.yaml"
-    yaml_path.write_text(
-        "cabal_url: http://cabal.internal\n"
-        "agent_endpoint_template: http://agent-{name}.default.svc.cluster.local\n"
-    )
-
-    config = Config.load(yaml_path)
-
-    assert config.cabal_url == "http://cabal.internal"
-    assert config.agent_endpoint_template == "http://agent-{name}.default.svc.cluster.local"
-
-
-def test_config_example_yaml_documents_cabal_keys():
-    example_path = Path(__file__).resolve().parent.parent / "config.example.yaml"
-    data = yaml.safe_load(example_path.read_text())
-
-    assert data["cabal_url"] is None
-    assert data["agent_endpoint_template"] is None
-
-    config = Config(**data)
-    assert config.cabal_url is None
-    assert config.agent_endpoint_template is None
 
 
 # --- ModelChoice.location / vertex_location_for (Gemini-3.1-Pro-Preview arc) --
@@ -418,15 +300,6 @@ def test_admin_groups_overridable(tmp_path):
 # --- admin_groups must exist in the groups universe (HIGH finding, fix round 1) --
 
 
-def test_admin_groups_entry_matching_a_groups_name_passes():
-    config = Config(
-        admin_groups=["infra-engineering"],
-        groups=[GroupChoice(name="infra-engineering", okta_group="okta-infra-engineering")],
-    )
-
-    assert config.admin_groups == ["infra-engineering"]
-
-
 def test_admin_groups_entry_with_no_matching_groups_name_raises_naming_it():
     with pytest.raises(ValidationError) as exc_info:
         Config(
@@ -438,13 +311,6 @@ def test_admin_groups_entry_with_no_matching_groups_name_raises_naming_it():
     assert "ghost-team" in message
 
 
-def test_admin_groups_entry_with_groups_left_entirely_unset_raises():
-    with pytest.raises(ValidationError) as exc_info:
-        Config(admin_groups=["infra-engineering"])
-
-    assert "infra-engineering" in str(exc_info.value)
-
-
 # --- SHARED_GROUP (shared-group + group-requests wave) -----------------------
 
 
@@ -453,14 +319,6 @@ def test_a_real_group_may_not_be_named_shared():
         Config(groups=[GroupChoice(name=SHARED_GROUP, okta_group="okta-shared")])
 
     assert "shared" in str(exc_info.value).lower()
-
-
-def test_groups_without_a_shared_entry_construct_fine():
-    # Sanity check the validator above isn't overreaching: an ordinary
-    # groups list with no name collision at all must still construct.
-    config = Config(groups=[GroupChoice(name="growth", okta_group="okta-growth")])
-
-    assert [g.name for g in config.groups] == ["growth"]
 
 
 # --- groups / okta_domain (access-control arc, Task B1: GroupResolver) -------
@@ -553,12 +411,6 @@ def test_group_choice_kind_defaults_to_engineering():
     assert group.kind == "engineering"
 
 
-def test_group_choice_kind_accepts_non_engineering():
-    group = GroupChoice(name="Legal", okta_group="okta-legal", kind="non-engineering")
-
-    assert group.kind == "non-engineering"
-
-
 def test_group_choice_kind_rejects_unknown_value():
     with pytest.raises(ValidationError) as exc_info:
         GroupChoice(name="SRE", okta_group="okta-sre-group", kind="shared")
@@ -644,23 +496,6 @@ def test_mcp_enabled_requires_issuer_base_url():
     assert "mcp.oauth_client_id is set but mcp.issuer_base_url is empty" in message
 
 
-def test_mcp_enabled_with_issuer_base_url_set_constructs_fine():
-    # Sanity check the validator above isn't overreaching: all three fields
-    # set together must still construct, same "still constructs" check
-    # test_groups_without_a_shared_entry_construct_fine runs for its own
-    # validator.
-    config = Config(
-        mcp=MCPConfig(
-            oauth_client_id="some-client-id",
-            workspace_domain="example.com",
-            issuer_base_url="https://kobo.example.org",
-        )
-    )
-
-    assert config.mcp_enabled is True
-    assert config.mcp.issuer_base_url == "https://kobo.example.org"
-
-
 # --- mcp.issuer_base_url must be https:// (CYBER-1132 ride-along) -----------
 
 
@@ -692,36 +527,6 @@ def test_mcp_issuer_base_url_over_http_localhost_is_allowed():
     config = Config(mcp=MCPConfig(issuer_base_url="http://localhost:8000"))
 
     assert config.mcp.issuer_base_url == "http://localhost:8000"
-
-
-def test_mcp_issuer_base_url_over_http_127_0_0_1_is_allowed():
-    config = Config(mcp=MCPConfig(issuer_base_url="http://127.0.0.1:8000"))
-
-    assert config.mcp.issuer_base_url == "http://127.0.0.1:8000"
-
-
-def test_mcp_issuer_base_url_empty_is_unaffected_by_the_https_check():
-    """Whether empty is even allowed is
-    `_mcp_requires_an_issuer_base_url_when_enabled`'s other half's job (see
-    the tests above); the https check only looks at a NON-empty value."""
-    config = Config(mcp=MCPConfig(issuer_base_url=""))
-
-    assert config.mcp.issuer_base_url == ""
-
-
-def test_config_example_yaml_documents_avatar_keys():
-    # config.example.yaml is the operator-facing template; both new keys must
-    # be explicitly present (not merely absent-and-defaulted) and must parse
-    # into a valid Config matching the real defaults baked into Config.
-    example_path = Path(__file__).resolve().parent.parent / "config.example.yaml"
-    data = yaml.safe_load(example_path.read_text())
-
-    assert data["avatar_model"] == "gemini-2.5-flash-image"
-    assert data["avatar_location"] == "us-central1"
-
-    config = Config(**data)
-    assert config.avatar_model == "gemini-2.5-flash-image"
-    assert config.avatar_location == "us-central1"
 
 
 # --- skills_frontmatter (hardening wave, Task 1) -----

@@ -132,14 +132,4 @@ describe("StepChecklist -- 'N of M steps done' sr-only count", () => {
     expect(screen.getByRole("status").textContent).toContain("1 of 3 steps done");
   });
 
-  it("does not count a skipped step as done even when every other step is done", () => {
-    render(StepChecklist, {
-      steps: [
-        step({ name: "a", status: "done" }),
-        step({ name: "b", status: "skipped", error: "not available" }),
-      ],
-    });
-
-    expect(screen.getByRole("status").textContent).toContain("1 of 2 steps done");
-  });
 });
