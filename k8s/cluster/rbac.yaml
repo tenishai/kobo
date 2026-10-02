@@ -1,3 +1,12 @@
+# Cluster-scoped access for the room, applied ONCE by a cluster admin:
+#
+#   kubectl apply -f k8s/cluster/rbac.yaml
+#
+# Not part of the kustomize base on purpose. Gojira's generated CI deploys as
+# the app's own identity (roles/container.developer), which cannot create
+# ClusterRoles or ClusterRoleBindings — and should not be able to, or any
+# tenant could grant itself the cluster. The first deploy on the tenishai
+# dogfood failed twenty apply attempts on exactly that (2026-10-02).
 # What the room does in agents' namespaces with kubectl (clients.py:
 # rollout status/restart, deployments and pods, Secrets it writes, the
 # ExternalSecret status it reads), and the one Secret of its own it
@@ -24,7 +33,7 @@ rules:
     verbs: [create]
   - apiGroups: [apps]
     resources: [deployments]
-    verbs: [get, list, patch]
+    verbs: [get, list, watch, patch]   # watch: `kubectl rollout status`
   - apiGroups: [external-secrets.io]
     resources: [externalsecrets]
     verbs: [get, list]

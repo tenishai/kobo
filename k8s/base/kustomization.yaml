@@ -9,4 +9,3 @@ resources:
   # app-authored resources, preserved by Gojira:
   - serviceaccount.yaml
   - pvc.yaml
-  - rbac.yaml
