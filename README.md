@@ -289,6 +289,6 @@ The design record lives in-repo and is the source of truth:
 
 [AGPL-3.0-or-later](LICENSE), matching the tenishai family (gojira, techne, liminal, cabal, daedalus, argus).
 
-Copyright (C) 2026 tenishai
+Copyright (C) 2026 tenish and the kobo contributors
 
 Tests: see [TESTING.md](TESTING.md) for what earns a place in the suite and the scaffold rule.

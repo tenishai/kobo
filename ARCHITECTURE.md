@@ -1,7 +1,7 @@
 ---
 card: repo-card:kobo
 updated: 2026-10-02
-anchor: api/pyproject.toml sha=b454f7f18078ea02aa1ac39f3a81c572d0a0d0ed
+anchor: api/pyproject.toml sha=cdbc0f999a9167c13fe3e94522ac66c6342741c4
 anchor: .github/workflows/ci.yml sha=4bb7a8fa5d9f0428b15b3c40146dad7f3024272e
 ---
 # kobo — repo card
