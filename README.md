@@ -160,6 +160,36 @@ agent's store directly and ledgers the content hash so the next natural rebuild 
 | Deploy | gojira → GitHub Actions (WIF) → Artifact Registry → GKE |
 | Models | Vertex AI (partner + first-party, per-model serving locations) |
 
+## Quickstart
+
+Run the room on your laptop in about two minutes. You need [uv](https://docs.astral.sh/uv/) and
+Node 22 (uv fetches Python 3.12 for you).
+
+```
+git clone https://github.com/tenishai/kobo && cd kobo
+cd api && uv sync --locked --extra dev --python 3.12
+uv run uvicorn --factory kobo_api.main:build_default_app --port 8100
+```
+
+In a second terminal:
+
+```
+cd ui && npm ci && npm run dev
+```
+
+Open <http://localhost:5173>. With no config file the API runs on a SQLite database in `api/`,
+unauthenticated, for localhost only. The room opens with no agents and the full in-app guide
+(Getting started, in the sidebar), and every optional integration (Slack, the switchboard, the
+secrets platform, the MCP connector) stays off until configured.
+
+Creating an agent needs somewhere to put it: a [gojira](https://github.com/tenishai/gojira) and a
+Kubernetes cluster it deploys to, plus a GitHub login (`gh auth login`) for the repositories the
+room writes. Copy `api/config.example.yaml` to `api/config.local.yaml`, fill in `gojira_url` and
+the cluster, and restart; the rest of this section and the file's comments cover every key.
+
+Tests: `make -C api check` (ruff + pytest) and `make -C ui check` (svelte-check + vitest), the
+same gates CI runs.
+
 ## Running it
 
 **API (dev)**: `make -C api install`, copy `api/config.example.yaml` to `api/config.local.yaml`
