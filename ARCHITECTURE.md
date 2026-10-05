@@ -43,7 +43,9 @@ DEPS: no Python imports of sibling repos (daedalus only via `pytest.importorskip
 HEALTH: API tests live under api/tests (pytest, `-n auto` in CI; each test owns its SQLite file; `make -C api test` locally runs serial). UI: vitest + svelte-check. CI (.github/workflows/ci.yml): `api-tests`, `ui` (build, check, test), `migrations` (alembic to head on real Postgres 16 + scripts/schema_tripwire.py), and `test-lifecycle` (TESTING.md: scaffold tests must not reach a PR). CI builds and publishes NO image (since 2026-10-02): an operator builds one from a commit and rolls it where it runs. Ruff is NOT in CI. No branch protection: CI reports, never blocks.
 GOTCHAS:
 - CI installs with `uv sync --locked` against the committed `api/uv.lock` (2026-10-05); a
-  drifted lock fails the job instead of silently resolving.
+  drifted lock fails the job instead of silently resolving. The Dockerfile's `pip install ./api`
+  is still unlocked, which is how SQLAlchemy 2.1.1 slipped in and crashed boot on 2026-09-25, so
+  runtime floors and ceilings are still pinned in pyproject (comment there).
 - Tests run on SQLite; production multi-replica runs Postgres. A model change needs an alembic migration or the pod crashloops; CI's `migrations` job is the only thing that catches it. `init_db` (`create_all`) still runs at boot on both backends.
 - main.py is very large and every route is a closure inside `create_app`; helpers you need (`_visible_agents`, `_is_admin`, gates) are module-level above it. Don't add a second visibility check per route.
 - "team" ≠ "group": `Agent.team` is the skills-catalog axis, `Agent.group_name` is the ACL namespace (composer.py `BundleSpec` comment). `SHARED_GROUP = "shared"` is the commons: visible to all, but NOT implicitly paired.
