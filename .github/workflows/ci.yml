@@ -37,7 +37,7 @@ jobs:
           cache-dependency-glob: api/uv.lock
       - name: Install (locked, py3.12)
         working-directory: api
-        run: uv sync --extra dev --python 3.12
+        run: uv sync --locked --extra dev --python 3.12
       - name: pytest
         working-directory: api
         # One worker per available core: the suite is CPU-bound and each test
@@ -101,7 +101,7 @@ jobs:
           cache-dependency-glob: api/uv.lock
       - name: Install (locked, py3.12)
         working-directory: api
-        run: uv sync --python 3.12
+        run: uv sync --locked --python 3.12
       - name: Migration chain to head on real Postgres
         working-directory: api
         run: KOBO_DB_URL="$DB_URL" .venv/bin/alembic upgrade head

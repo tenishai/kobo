@@ -1,8 +1,8 @@
 ---
 card: repo-card:kobo
-updated: 2026-10-02
+updated: 2026-10-05
 anchor: api/pyproject.toml sha=cdbc0f999a9167c13fe3e94522ac66c6342741c4
-anchor: .github/workflows/ci.yml sha=4bb7a8fa5d9f0428b15b3c40146dad7f3024272e
+anchor: .github/workflows/ci.yml sha=cf693cb189a241d60bd1ce52006e4ec013be1dac
 ---
 # kobo — repo card
 
@@ -42,7 +42,8 @@ DEPS: no Python imports of sibling repos (daedalus only via `pytest.importorskip
 - GitHub (gh CLI + GitHub App), Okta (groups/people), Vertex (names, persona drafts, avatars), GCS (catalogs), Slack (manifest API).
 HEALTH: API tests live under api/tests (pytest, `-n auto` in CI; each test owns its SQLite file; `make -C api test` locally runs serial). UI: vitest + svelte-check. CI (.github/workflows/ci.yml): `api-tests`, `ui` (build, check, test), `migrations` (alembic to head on real Postgres 16 + scripts/schema_tripwire.py), and `test-lifecycle` (TESTING.md: scaffold tests must not reach a PR). CI builds and publishes NO image (since 2026-10-02): an operator builds one from a commit and rolls it where it runs. Ruff is NOT in CI. No branch protection: CI reports, never blocks.
 GOTCHAS:
-- CI says "Install (locked)" but `uv.lock` is gitignored (.gitignore last line), so `uv sync` resolves fresh every run, and the Dockerfile's `pip install ./api` is unlocked too. That is how SQLAlchemy 2.1.1 slipped in and crashed boot on 2026-09-25 (comment in api/pyproject.toml). Pin in pyproject, not in a lockfile.
+- CI installs with `uv sync --locked` against the committed `api/uv.lock` (2026-10-05); a
+  drifted lock fails the job instead of silently resolving.
 - Tests run on SQLite; production multi-replica runs Postgres. A model change needs an alembic migration or the pod crashloops; CI's `migrations` job is the only thing that catches it. `init_db` (`create_all`) still runs at boot on both backends.
 - main.py is very large and every route is a closure inside `create_app`; helpers you need (`_visible_agents`, `_is_admin`, gates) are module-level above it. Don't add a second visibility check per route.
 - "team" ≠ "group": `Agent.team` is the skills-catalog axis, `Agent.group_name` is the ACL namespace (composer.py `BundleSpec` comment). `SHARED_GROUP = "shared"` is the commons: visible to all, but NOT implicitly paired.
