@@ -219,6 +219,8 @@ import {
   saveKnowledgeFile,
   saveLocalSkill,
   saveSlackChannels,
+  setSlackWake,
+  type SlackWake,
   scanRepo,
   searchConnectRepos,
   searchPeople,
@@ -1162,6 +1164,20 @@ export function saveSlackChannelsMutation(
 ) {
   return {
     mutationFn: (channels: string[]) => saveSlackChannels(name, channels),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+    },
+  };
+}
+
+/**
+ * Saves how Slack wakes the agent in a channel; invalidates the agent
+ * detail (so `slack.wake` follows) AND the rendered manifest, whose event
+ * list depends on the mode.
+ */
+export function setSlackWakeMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (wake: SlackWake) => setSlackWake(name, wake),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name] });
     },

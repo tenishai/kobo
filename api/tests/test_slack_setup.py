@@ -703,3 +703,29 @@ def test_wire_slack_tokens_absent_from_dockerfile():
 
     assert BOT_TOKEN not in github.captured_dockerfile
     assert APP_TOKEN not in github.captured_dockerfile
+
+
+# --- render_manifest, by wake mode (2026-10-06) --------------------------------
+
+
+def test_render_manifest_default_is_mention_only():
+    from kobo_api.slack_setup import WAKE_MENTION
+
+    assert render_manifest("echo", "x") == render_manifest("echo", "x", wake=WAKE_MENTION)
+
+
+def test_render_manifest_thread_and_channel_modes_subscribe_channel_messages():
+    for mode in ("thread", "channel"):
+        events = render_manifest("echo", "x", wake=mode)["settings"]["event_subscriptions"]["bot_events"]
+        assert events == [
+            "app_mention",
+            "message.channels",
+            "message.groups",
+            "message.im",
+            "message.mpim",
+        ]
+    # Scopes never move with the mode: no reinstall, only a re-applied manifest.
+    assert (
+        render_manifest("echo", "x", wake="channel")["oauth_config"]
+        == render_manifest("echo", "x")["oauth_config"]
+    )

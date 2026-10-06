@@ -697,6 +697,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     add_tool_endpoint = _endpoint(app, "POST", "/api/agents/{name}/tooling")
     set_persona_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/persona")
     set_model_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/model")
+    set_slack_wake_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/slack/wake")
     metadata_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/metadata")
     set_runtime_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/runtime")
     request_repo_access_endpoint = _endpoint(app, "POST", "/api/agents/{name}/repo-access")
@@ -976,6 +977,47 @@ def register(mcp: FastMCP, app: Any) -> None:
             session.close()
 
         return {"agent": agent, "connected": True, "sha": body.get("sha")}
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True))
+    @audited("kobo_set_slack_wake")
+    async def kobo_set_slack_wake(ctx: Context, agent: str, wake: str) -> dict:
+        """How Slack wakes `agent` in a channel. `wake` is one of `mention`
+        (only an @-mention reaches it), `thread` (a mention, then every reply
+        in a thread it was asked in at the top, so a conversation continues
+        without re-tagging) or `channel` (every message in the channel). New
+        agents start on `thread`. The room sets it in the agent's deploy
+        contract and the agent picks it up on its next roll.
+
+        When the answer says `manifest_changed` is true, the Slack app's own
+        event list changed: the owner must copy the agent's manifest again
+        (the Slack tab, or `GET .../slack/manifest`) and paste it over the old
+        one at api.slack.com/apps, under App Manifest. No reinstall is needed.
+        You must own `agent` or be a room operator, and `agent` must be READY.
+        """
+        from kobo_api.main import SlackWakeRequest
+
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            response = await _off_loop(
+                set_slack_wake_endpoint,
+                name=agent,
+                payload=SlackWakeRequest(wake=wake),
+                request=req,
+                session=session,
+            )
+        finally:
+            session.close()
+        if response.status_code == 422:
+            raise ToolError(str(_parse(response).get("error", "that mode is not one of the three")))
+        body = _agent_route_result(response)
+        return {
+            "agent": agent,
+            "wake": body.get("wake"),
+            "previous_wake": body.get("previous_wake"),
+            "manifest_changed": body.get("manifest_changed"),
+            "wiring": body.get("wiring"),
+        }
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     @audited("kobo_set_runtime_image")

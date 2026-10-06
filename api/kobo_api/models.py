@@ -170,6 +170,13 @@ class Agent(Base):
     slack_app_self_service: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    # How Slack wakes this agent in a channel (2026-10-06): "mention" (only an
+    # @-mention), "thread" (a mention, then every reply in a thread it was
+    # asked in at the top) or "channel" (every message). NULL reads as
+    # "mention", which is what every agent did before the choice existed; new
+    # agents are born "thread". The runtime enforces it from SLACK_WAKE_MODE
+    # in the agent's deploy contract, written at birth and on every change.
+    slack_wake: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # Avatar (P2d): a base64-encoded copy of bundle/avatar.png (the repo is
     # the source of truth, same as first_reply's relationship to the a2a
     # endpoint) — cached here purely so list/detail views can render an

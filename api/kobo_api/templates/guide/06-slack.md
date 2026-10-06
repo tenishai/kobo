@@ -21,7 +21,17 @@ Press **Connect**. The room delivers the tokens straight to the agent as secrets
 
 Add the ID of each channel the agent may answer in, then invite the agent to that channel in Slack with `/invite @agent-name`. Both are needed: the channel list is an allowlist the agent enforces, and the invite is Slack's own permission. Up to eight channels.
 
-In a channel the agent answers only when you @-mention it, so it does not join every thread. A direct message always reaches it. Messaging the agent directly is the ask.
+## How it wakes up
+
+**Wakes on** decides which channel messages reach the agent. Pick one:
+
+- **Mentions only.** Only a message that @-mentions the agent reaches it. A reply in a thread that does not mention it is never delivered, so each question needs the mention.
+- **Mentions, then the thread.** Mention it once at the top of a thread and every reply in that thread reaches it. A mention buried in someone else's thread gets an answer and nothing more. New agents start here.
+- **Every message in the channel.** For an agent whose job is the channel. It hears everything, mentioned or not.
+
+A direct message always reaches the agent, whichever you pick. The agent is told its own setting, so if someone asks whether they must keep mentioning it, it answers truthfully.
+
+The choice saves as soon as you pick it. Moving between **Mentions only** and either of the other two changes which events the Slack app receives, so copy the manifest again and paste it over the old one at api.slack.com/apps under App Manifest. The room tells you when that is needed. No reinstall, and no new tokens.
 
 ## After it is connected
 

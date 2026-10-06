@@ -50,11 +50,12 @@
   // needs a *new* query per sha, and only a real Svelte store makes
   // createQuery re-derive its options after the first one).
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import { errorMessage, type AgentSlack } from "../lib/api";
+  import { errorMessage, type AgentSlack, type SlackWake } from "../lib/api";
   import {
     connectSlackMutation,
     deliveryQuery,
     saveSlackChannelsMutation,
+    setSlackWakeMutation,
     slackManifestQuery,
   } from "../lib/queries";
 
@@ -77,6 +78,61 @@
   const connect = createMutation(() => (connectSlackMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
   const saveChannels = createMutation(() => (saveSlackChannelsMutation(queryClient, agentName)));
+  // svelte-ignore state_referenced_locally
+  const saveWake = createMutation(() => (setSlackWakeMutation(queryClient, agentName)));
+
+  // --- How it wakes up (2026-10-06) ------------------------------------------
+  //
+  // Saved the moment it is picked, not on the panel's Save: on the first run
+  // the manifest in step 1 has to carry whatever step 3 chose, and a choice
+  // that waits behind a button is a manifest copied with the wrong events.
+  // The server says whether the Slack app's event list changed, which only
+  // a re-applied manifest can carry out; the note under the choices says so.
+  const WAKE_OPTIONS: { value: SlackWake; label: string; help: string }[] = [
+    {
+      value: "mention",
+      label: "Mentions only",
+      help: "Only a message that @-mentions the agent reaches it.",
+    },
+    {
+      value: "thread",
+      label: "Mentions, then the thread",
+      help: "Mention it once at the top of a thread and every reply there reaches it.",
+    },
+    {
+      value: "channel",
+      label: "Every message in the channel",
+      help: "For an agent whose job is the channel. It hears everything.",
+    },
+  ];
+
+  // svelte-ignore state_referenced_locally
+  let wake = $state<SlackWake>(slack.wake);
+  let wakeNote = $state<string | null>(null);
+  let wakeError = $state<string | null>(null);
+
+  async function handleWake(next: SlackWake): Promise<void> {
+    if (frozen || next === wake) {
+      return;
+    }
+    const previous = wake;
+    wake = next;
+    wakeNote = null;
+    wakeError = null;
+    try {
+      const result = await saveWake.mutateAsync(next);
+      if (result.manifest_changed && slack.state !== "idle") {
+        wakeNote =
+          "Saved. The Slack app's event list changed: copy the manifest again and paste it " +
+          "over the old one at api.slack.com/apps, under App Manifest. No reinstall needed.";
+      } else {
+        wakeNote = "Saved.";
+      }
+    } catch (err: unknown) {
+      wake = previous;
+      wakeError = errorMessage(err, "Couldn't save how it wakes up. Try again.");
+    }
+  }
 
   // --- Which layout ---------------------------------------------------------
 
@@ -599,6 +655,34 @@
   </li>
 {/snippet}
 
+{#snippet wakeChoice()}
+  <fieldset class="slack-panel__wake" disabled={frozen || saveWake.isPending}>
+    <legend class="field__label">Wakes on</legend>
+    {#each WAKE_OPTIONS as option (option.value)}
+      <label class="slack-panel__wake-option">
+        <input
+          type="radio"
+          name="slack-panel-wake"
+          value={option.value}
+          checked={wake === option.value}
+          onchange={() => handleWake(option.value)}
+        />
+        <span class="slack-panel__wake-text">
+          <span class="slack-panel__wake-label">{option.label}</span>
+          <span class="field__help">{option.help}</span>
+        </span>
+      </label>
+    {/each}
+    {#if wakeError}
+      <p class="panel__note panel__note--fail" role="alert">{wakeError}</p>
+    {:else if wakeNote}
+      <p class="panel__note" role="status">{wakeNote}</p>
+    {:else}
+      <p class="field__help">A direct message always reaches the agent.</p>
+    {/if}
+  </fieldset>
+{/snippet}
+
 {#snippet channels()}
   <div class="slack-panel__channels">
     <p class="panel__note">{channelsNote}</p>
@@ -682,11 +766,13 @@
         <h3 class="slack-panel__step-title">Where it answers</h3>
         <div class="slack-panel__step-body">
           {@render channels()}
+          {@render wakeChoice()}
         </div>
       </li>
     </ol>
   {:else}
     {@render channels()}
+    {@render wakeChoice()}
 
     <div class="slack-panel__reconnect">
       <button
@@ -766,6 +852,31 @@
 </section>
 
 <style>
+  .slack-panel__wake {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    margin: 0;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+  }
+  .slack-panel__wake-option {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: baseline;
+    column-gap: var(--space-xs);
+    cursor: pointer;
+  }
+  .slack-panel__wake-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .slack-panel__wake-label {
+    color: var(--ink);
+    font-size: 0.9rem;
+  }
   .slack-panel__title {
     display: flex;
     flex-wrap: wrap;

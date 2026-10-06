@@ -1549,6 +1549,14 @@ def _set_service_account_and_model_env(data: dict, agent, config) -> None:
         "VERTEXAI_LOCATION": vertex_location_for(config, agent.model_id),
     }
 
+    # How Slack wakes the agent (2026-10-06): the row is the source of truth
+    # and this key wins on its own name, like the model keys, so a reprovision
+    # never undoes a change made on the Slack tab. A row from before the
+    # choice (NULL) writes nothing, and the runtime defaults to `mention`.
+    wake = getattr(agent, "slack_wake", None)
+    if wake:
+        model_env["SLACK_WAKE_MODE"] = wake
+
     existing = data.get("env")
     if existing is not None and not isinstance(existing, dict):
         log.warning(

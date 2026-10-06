@@ -106,6 +106,8 @@ RESERVED_KEYS = frozenset(
         # The model the room picked for the agent (PATCH /api/agents/{name}/model):
         # the composed agent.yaml reads `${AGENT_MODEL:-<birth model>}`.
         "AGENT_MODEL",
+        # How Slack wakes the agent; set from the Slack tab, written by the room.
+        "SLACK_WAKE_MODE",
         *MODEL_ENV_KEYS,
     }
 )
