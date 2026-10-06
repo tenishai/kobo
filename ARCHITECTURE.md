@@ -2,7 +2,7 @@
 card: repo-card:kobo
 updated: 2026-10-05
 anchor: api/pyproject.toml sha=cdbc0f999a9167c13fe3e94522ac66c6342741c4
-anchor: .github/workflows/ci.yml sha=cf693cb189a241d60bd1ce52006e4ec013be1dac
+anchor: .github/workflows/ci.yml sha=c1671335ba55f8061df0983d49195ecd93e97e59
 ---
 # kobo — repo card
 
@@ -43,7 +43,8 @@ DEPS: no Python imports of sibling repos (daedalus only via `pytest.importorskip
 HEALTH: API tests live under api/tests (pytest, `-n auto` in CI; each test owns its SQLite file; `make -C api test` locally runs serial). UI: vitest + svelte-check. CI (.github/workflows/ci.yml): `api-tests`, `ui` (build, check, test), `migrations` (alembic to head on real Postgres 16 + scripts/schema_tripwire.py), and `test-lifecycle` (TESTING.md: scaffold tests must not reach a PR). CI builds and publishes NO image (since 2026-10-02): an operator builds one from a commit and rolls it where it runs. Ruff is NOT in CI. No branch protection: CI reports, never blocks.
 GOTCHAS:
 - CI installs with `uv sync --locked` against the committed `api/uv.lock` (2026-10-05); a
-  drifted lock fails the job instead of silently resolving. The Dockerfile's `pip install ./api`
+  drifted lock fails the job instead of silently resolving. The same job runs
+  `scripts/check_arch_cards.py`, so a seam changed without its card fails CI (2026-10-05). The Dockerfile's `pip install ./api`
   is still unlocked, which is how SQLAlchemy 2.1.1 slipped in and crashed boot on 2026-09-25, so
   runtime floors and ceilings are still pinned in pyproject (comment there).
 - Tests run on SQLite; production multi-replica runs Postgres. A model change needs an alembic migration or the pod crashloops; CI's `migrations` job is the only thing that catches it. `init_db` (`create_all`) still runs at boot on both backends.
