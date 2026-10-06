@@ -38,6 +38,11 @@ jobs:
       - name: Install (locked, py3.12)
         working-directory: api
         run: uv sync --locked --extra dev --python 3.12
+      - name: Architecture cards are current
+        # Each card pins the file it describes by blob sha; a seam that changed
+        # without its card fails here (see AGENTS.md).
+        working-directory: .
+        run: uv run --project api --locked python scripts/check_arch_cards.py
       - name: pytest
         working-directory: api
         # One worker per available core: the suite is CPU-bound and each test
