@@ -1217,7 +1217,12 @@ def test_get_agent_slack_default_shape_before_any_setup(session_factory, config)
     response = client.get(f"/api/agents/{AGENT_NAME}")
 
     assert response.status_code == 200
-    assert response.json()["slack"] == {"app_id": None, "channels": [], "state": "idle"}
+    assert response.json()["slack"] == {
+        "app_id": None,
+        "channels": [],
+        "state": "idle",
+        "wake": "mention",
+    }
 
 
 def test_get_agent_slack_carries_app_id_and_channels_after_connect(session_factory, config):
