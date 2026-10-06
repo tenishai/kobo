@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "kobo-api"
+name = "tenish-kobo"
 version = "0.1.0"
 description = "Kobo API — the agent assembly room backend"
 requires-python = ">=3.12"
