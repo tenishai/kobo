@@ -1,13 +1,13 @@
 ---
 card: repo-card:kobo
 updated: 2026-10-05
-anchor: api/pyproject.toml sha=cdbc0f999a9167c13fe3e94522ac66c6342741c4
+anchor: api/pyproject.toml sha=a1f6f41f5d81f1798e04342dcd249cea816d8d06
 anchor: .github/workflows/ci.yml sha=c1671335ba55f8061df0983d49195ecd93e97e59
 ---
 # kobo — repo card
 
 WHAT: the agent assembly room. A web UI + API where a signed-in person composes an agent (persona, skills, group), clicks Create, and the room provisions a running daedalus agent on gojira; then chat/teach it, wire Slack, and govern who (people and other agents) may reach it.
-STATE: main; kobo-api 0.1.0 and kobo-ui 0.1.0 (neither version is bumped per release); alpha, deployed, very active (recent: connected agents = a team's own repo deployed by the room, per-agent secrets/env via ladon, operator group moves, re-wire revokes old colleague passes, Postgres driver pin). Design record per arc in docs/superpowers/.
+STATE: main; tenish-kobo (the API package) 0.1.0 and kobo-ui 0.1.0 (neither version is bumped per release); alpha, deployed, very active (recent: connected agents = a team's own repo deployed by the room, per-agent secrets/env via ladon, operator group moves, re-wire revokes old colleague passes, Postgres driver pin). Design record per arc in docs/superpowers/.
 STACK: Python >=3.12, FastAPI + uvicorn, SQLAlchemy >=2,<2.1 (SQLite default, Postgres for multi-replica), alembic, pydantic v2, httpx, PyJWT, `mcp>=1.15,<2` (FastMCP 1.x surface), prometheus-client, OpenTelemetry (env-gated). UI: Svelte 5 + Vite + TanStack Query, hand-rolled router (ui/src/lib/router.svelte.ts), NOT SvelteKit. Shells out to `git`, `gh`, `kubectl`, `gcloud` (baked into the image, Dockerfile).
 ENTRY:
 - API app factory: api/kobo_api/main.py `build_default_app()` (real wiring: config → org.yaml merge → engine → `sweep_interrupted` → `Clients.real` → Slack-store probe → boot dispatch-pairs sync) and `create_app()` (all routes are closures inside this one function; tests call it with fakes)
