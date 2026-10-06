@@ -20,7 +20,7 @@ dependencies = [
     # stayed green. `kobo_api.db.driver_qualified` also names the driver
     # explicitly; the pin keeps the rest of 2.1's surface out until it is
     # adopted on purpose, as its own change.
-    "sqlalchemy>=2,<2.1",
+    "sqlalchemy>=2,<2.2",
     "pydantic>=2",
     "pyyaml",
     "httpx",
@@ -46,7 +46,7 @@ dependencies = [
     # streamable_http_app, the 308/lifespan gotchas). 1.29.0 carries that
     # surface intact; adopting 2.0's rename would discard every verified
     # gotcha for an unproven API. Revisit as its own arc if 2.x is wanted.
-    "mcp>=1.15,<2",
+    "mcp>=1.15,<3",
     # Resilience arc (Task 11): the schema used to evolve by `create_all`
     # plus a hand-written `ALTER TABLE` run by an operator -- alembic is the
     # migration path a real Postgres deployment needs; SQLite stays on
