@@ -665,6 +665,7 @@
           name="slack-panel-wake"
           value={option.value}
           checked={wake === option.value}
+          disabled={frozen || saveWake.isPending}
           onchange={() => handleWake(option.value)}
         />
         <span class="slack-panel__wake-text">
