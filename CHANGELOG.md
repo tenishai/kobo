@@ -18,6 +18,8 @@ MCP surface. Everything before the tag is in the git history and in the design r
 
 ### Changed
 
+- `docs/superpowers/` carries a README saying the specs and plans are a historical record,
+  not a description of the room today.
 - CI installs from the committed `api/uv.lock` with `uv sync --locked`.
 - The README is a two-screen read; the operator's material moved to `docs/operating.md` and the
   long feature list to `docs/what-the-room-does.md`, both verbatim.
