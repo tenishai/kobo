@@ -20,7 +20,7 @@ dependencies = [
     # stayed green. `kobo_api.db.driver_qualified` also names the driver
     # explicitly; the pin keeps the rest of 2.1's surface out until it is
     # adopted on purpose, as its own change.
-    "sqlalchemy>=2,<2.1",
+    "sqlalchemy>=2,<2.2",
     "pydantic>=2",
     "pyyaml",
     "httpx",
