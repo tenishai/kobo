@@ -19,6 +19,11 @@ updates:
       # Majors by hand, with a changelog entry; the weekly group stays mergeable.
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # SQLAlchemy 2.1 changed the default Postgres driver and crashed boot on
+      # 2026-09-25; api/pyproject.toml pins <2.1 and says why. 2.0 -> 2.1 is a
+      # minor by semver, so the major-only rule above does not cover it.
+      - dependency-name: "sqlalchemy"
+        versions: [">=2.1"]
   - package-ecosystem: "npm"
     directory: "/ui"
     schedule:
