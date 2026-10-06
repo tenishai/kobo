@@ -95,10 +95,15 @@ export type StepView = {
  * server's `derive_state`: `"idle"` (no channels, not wired), `"waiting"`
  * (channels saved but not yet wired, or wired with no channels left),
  * `"connected"` (channels saved AND wired). */
+/** How Slack wakes the agent in a channel (2026-10-06): only an @-mention,
+ * a mention and then the thread it started, or every message. */
+export type SlackWake = "mention" | "thread" | "channel";
+
 export type AgentSlack = {
   app_id: string | null;
   channels: string[];
   state: "idle" | "waiting" | "connected";
+  wake: SlackWake;
 };
 
 export type AgentDetail = AgentSummary & {
@@ -1604,6 +1609,29 @@ export async function saveSlackChannels(
     channels: string[];
     state: "idle" | "waiting" | "connected";
     sha?: string;
+  }>(res);
+}
+
+/**
+ * `PUT /api/agents/{name}/slack/wake`: how Slack wakes the agent in a
+ * channel. `manifest_changed` is true when the Slack app's own event list
+ * changed with it (crossing between `mention` and the other two), which only
+ * a re-applied manifest at Slack can carry out; the panel says so.
+ */
+export async function setSlackWake(
+  name: string,
+  wake: SlackWake,
+): Promise<{ wake: SlackWake; previous_wake: SlackWake; manifest_changed: boolean; wiring: string }> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/slack/wake`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wake }),
+  });
+  return parse<{
+    wake: SlackWake;
+    previous_wake: SlackWake;
+    manifest_changed: boolean;
+    wiring: string;
   }>(res);
 }
 

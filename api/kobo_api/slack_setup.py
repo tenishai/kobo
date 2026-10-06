@@ -107,9 +107,55 @@ _BOT_EVENTS = [
     "message.mpim",
 ]
 
+# How Slack wakes an agent in a channel (2026-10-06). The runtime (daedalus
+# transports/slack.py) enforces the mode from SLACK_WAKE_MODE and tells the
+# model which messages reach it; the manifest has to deliver them in the
+# first place, which is the one thing only the Slack app can decide.
+WAKE_MENTION = "mention"  # only an @-mention; the 2026-08-31 rule and the default
+WAKE_THREAD = "thread"  # a mention, then every reply in a thread it was asked in at the top
+WAKE_CHANNEL = "channel"  # every message in the channel
+WAKE_MODES = (WAKE_MENTION, WAKE_THREAD, WAKE_CHANNEL)
+# New agents are born following their threads: that is what people expect
+# of a Slack bot, and what the first user to ask was told (wrongly) it did.
+WAKE_DEFAULT_NEW = WAKE_THREAD
+# The env var the runtime reads; the room writes it at birth and on change.
+WAKE_ENV = "SLACK_WAKE_MODE"
+# Delivery of unmentioned channel messages, which `thread` and `channel`
+# need and `mention` must not have (or the app hears every reply again).
+_CHANNEL_MESSAGE_EVENTS = ["message.channels", "message.groups"]
 
-def render_manifest(agent_name: str, persona_first_line: str) -> dict:
+
+def effective_wake(agent) -> str:
+    """The agent's mode, with NULL (every row from before the choice) read
+    as `mention`: the behaviour those agents have always had."""
+    mode = getattr(agent, "slack_wake", None)
+    return mode if mode in WAKE_MODES else WAKE_MENTION
+
+
+def wake_subscribes_channel_messages(mode: str) -> bool:
+    """Whether a mode's manifest carries the two channel-message events.
+    Moving across this line is the one change that needs the manifest
+    re-applied in Slack; moving between `thread` and `channel` does not."""
+    return mode != WAKE_MENTION
+
+
+def wake_events(mode: str) -> list[str]:
+    events = list(_BOT_EVENTS)
+    if wake_subscribes_channel_messages(mode):
+        # After app_mention, before the DM events: the order Slack lists them.
+        events[1:1] = _CHANNEL_MESSAGE_EVENTS
+    return events
+
+
+def render_manifest(agent_name: str, persona_first_line: str, *, wake: str = WAKE_MENTION) -> dict:
     """Render a Slack app-manifest dict for `agent_name`.
+
+    `wake` picks the event list: `mention` subscribes to app_mention and the
+    DM events only; `thread` and `channel` add message.channels and
+    message.groups, because the runtime cannot follow a thread Slack never
+    delivers. Scopes are the same in every mode (channel history was always
+    granted), so changing mode never needs a reinstall, only a re-applied
+    manifest.
 
     Display name and bot display name are both `agent_name`. `description`
     is `persona_first_line`, stripped and truncated to Slack's 100-char
@@ -138,7 +184,7 @@ def render_manifest(agent_name: str, persona_first_line: str) -> dict:
         },
         "settings": {
             "event_subscriptions": {
-                "bot_events": list(_BOT_EVENTS),
+                "bot_events": wake_events(wake),
             },
             "interactivity": {"is_enabled": False},
             "org_deploy_enabled": False,

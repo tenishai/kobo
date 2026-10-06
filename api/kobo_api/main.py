@@ -218,7 +218,16 @@ from kobo_api.skills import (
     remove_skill,
     save_local_skill,
 )
-from kobo_api.slack_setup import render_manifest, rewire_slack_channels, wire_slack
+from kobo_api.slack_setup import (
+    WAKE_DEFAULT_NEW,
+    WAKE_ENV,
+    WAKE_MODES,
+    effective_wake,
+    render_manifest,
+    rewire_slack_channels,
+    wake_subscribes_channel_messages,
+    wire_slack,
+)
 from kobo_api.slack_state import (
     SLACK_APP_ID_RE,
     clean_channels,
@@ -608,6 +617,26 @@ class ToolingImportPayload(BaseModel):
 
     repo: str
     path: str
+
+
+def _set_env_key(data: dict, key: str, value: str) -> bool:
+    """Write one of the room's own environment keys into a parsed deploy
+    contract (`apply_env` refuses reserved keys by design, since that wall is
+    the owner's panel's; the room writes them here). True when it changed."""
+    env = data.get("env")
+    if not isinstance(env, dict):
+        env = {}
+        data["env"] = env
+    if env.get(key) == value:
+        return False
+    env[key] = value
+    return True
+
+
+class SlackWakeRequest(BaseModel):
+    """PUT .../slack/wake body: one of `mention`, `thread`, `channel`."""
+
+    wake: str
 
 
 class SlackConnectRequest(BaseModel):
@@ -4416,6 +4445,8 @@ def create_app(
             created_by=created_by,
             group_name=payload.group_name,
             skip_baseline=payload.skip_baseline,
+            # Born following its threads (2026-10-06); the Slack tab moves it.
+            slack_wake=WAKE_DEFAULT_NEW,
             # Born in flight, so born with a heartbeat: PENDING is a swept
             # status (kobo_api.provisioner.sweep_interrupted), and leaning
             # on the NULL-heartbeat branch's created_at grace would make a
@@ -5019,6 +5050,7 @@ def create_app(
             "app_id": agent.slack_app_id,
             "channels": channels,
             "state": derive_state(channels, wired=agent.slack_wired),
+            "wake": effective_wake(agent),
         }
 
         return JSONResponse(
@@ -7124,7 +7156,7 @@ def create_app(
             log.warning("persona %r not in the catalog, using generic text for slack manifest", agent.persona)
             persona_first_line = f"A {agent.persona} agent, reachable in Slack."
 
-        manifest = render_manifest(agent.name, persona_first_line)
+        manifest = render_manifest(agent.name, persona_first_line, wake=effective_wake(agent))
         return JSONResponse({"manifest": manifest})
 
     @app.post("/api/agents/{name}/slack/connect")
@@ -7298,6 +7330,72 @@ def create_app(
             body["sha"] = sha
         session.commit()
         return JSONResponse(body)
+
+    @app.put("/api/agents/{name}/slack/wake")
+    def set_slack_wake(
+        name: str,
+        payload: SlackWakeRequest,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """How Slack wakes this agent in a channel (2026-10-06): `mention`,
+        `thread` or `channel`. One environment variable in the agent's deploy
+        contract (`SLACK_WAKE_MODE`, the same lane the model change uses), so
+        the running agent picks it up on its next roll, plus the row, so the
+        manifest route and every later reprovision agree.
+
+        The answer says whether the Slack app's own event list changed
+        (`manifest_changed`): crossing between `mention` and the other two
+        adds or removes the channel-message events, and only Slack can apply
+        that, so the owner copies the manifest again and pastes it over the
+        old one. Scopes never change, so a reinstall is never needed.
+        """
+        agent = _ready_agent_or_error(
+            session, request, name, not_ready_message="agent is not ready for Slack changes yet"
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+        mode = payload.wake.strip().lower()
+        if mode not in WAKE_MODES:
+            return JSONResponse(
+                {"error": "choose one of: mention, thread, channel"}, status_code=422
+            )
+        previous = effective_wake(agent)
+        clients = app.state.clients
+        try:
+            result = edit_gojira_yaml(
+                clients.github,
+                clients.gojira,
+                repo=agent.repo_full_name,
+                connected=False,
+                gojira_app_id=agent.gojira_app_id,
+                edit=lambda data: _set_env_key(data, WAKE_ENV, mode),
+                message=f"kobo: in Slack, wake on {mode}",
+            )
+        except DeployTriggerFailed as exc:
+            return _deploy_trigger_failed(agent, exc)
+        except RepoBusy as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except ClientError as exc:
+            return _lane_failed("file write", agent, exc, AGENT_FILES_UNREACHABLE)
+        agent.slack_wake = mode
+        session.commit()
+        log.info("agent %s wakes in Slack on %s (was %s)", agent.name, mode, previous)
+        return JSONResponse(
+            {
+                "wake": mode,
+                "previous_wake": previous,
+                "manifest_changed": wake_subscribes_channel_messages(mode)
+                != wake_subscribes_channel_messages(previous),
+                "wiring": result.how,
+            }
+        )
 
     # --- Secrets and environment (design 2026-09-22) --------------------------
     #

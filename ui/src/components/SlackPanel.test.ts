@@ -4,10 +4,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SlackPanel from "./SlackPanel.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 
-const IDLE_SLACK = { app_id: null, channels: [], state: "idle" as const };
-const ONE_CHANNEL = { app_id: null, channels: ["C123456"], state: "idle" as const };
-const CONNECTED = { app_id: "A123", channels: ["C123456"], state: "connected" as const };
-const WAITING = { app_id: "A123", channels: ["C123456"], state: "waiting" as const };
+const IDLE_SLACK = { app_id: null, channels: [], state: "idle" as const, wake: "thread" as const };
+const ONE_CHANNEL = {
+  app_id: null,
+  channels: ["C123456"],
+  state: "idle" as const,
+  wake: "thread" as const,
+};
+const CONNECTED = {
+  app_id: "A123",
+  channels: ["C123456"],
+  state: "connected" as const,
+  wake: "mention" as const,
+};
+const WAITING = {
+  app_id: "A123",
+  channels: ["C123456"],
+  state: "waiting" as const,
+  wake: "mention" as const,
+};
 
 const MANIFEST_FIXTURE = {
   display_information: { name: "warden", description: "A keeper agent, reachable in Slack." },
@@ -392,6 +407,28 @@ describe("SlackPanel", () => {
   });
 
   // --- Connected -------------------------------------------------------------
+
+  it("picking how it wakes up saves at once and says when the manifest must be re-applied", async () => {
+    stubFetch({
+      "/slack/wake": { wake: "thread", previous_wake: "mention", manifest_changed: true, wiring: "env" },
+      "/api/agents/warden/slack/manifest": { manifest: MANIFEST_FIXTURE },
+      "/api/": {},
+    });
+    renderWithClient(SlackPanel, { agentName: "warden", slack: CONNECTED, frozen: false });
+
+    const mention = screen.getByLabelText(/Mentions only/) as HTMLInputElement;
+    expect(mention.checked).toBe(true);
+    await fireEvent.click(screen.getByLabelText(/Mentions, then the thread/));
+
+    await waitFor(() => {
+      expect(bodyOf("/slack/wake")).toEqual({ wake: "thread" });
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toContain("copy the manifest again");
+    });
+    // Not a draft: the panel's Save stays off, the choice already landed.
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  });
 
   it("a connected agent gets the channels table, not the stepper", () => {
     renderWithClient(SlackPanel, {

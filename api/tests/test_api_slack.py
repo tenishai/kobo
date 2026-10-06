@@ -474,7 +474,8 @@ def test_connect_slack_wires_secret_transport_and_secrets_from_returns_sha(
     # persisted: slack_wired flips True, state derives to "connected"
     detail = client.get(f"/api/agents/{AGENT_NAME}").json()
     assert detail["slack"] == {
-        "app_id": APP_ID, "channels": [CHANNEL], "state": "connected"
+        "app_id": APP_ID, "channels": [CHANNEL], "state": "connected",
+        "wake": "mention",
     }
 
 
@@ -1216,7 +1217,12 @@ def test_get_agent_slack_default_shape_before_any_setup(session_factory, config)
     response = client.get(f"/api/agents/{AGENT_NAME}")
 
     assert response.status_code == 200
-    assert response.json()["slack"] == {"app_id": None, "channels": [], "state": "idle"}
+    assert response.json()["slack"] == {
+        "app_id": None,
+        "channels": [],
+        "state": "idle",
+        "wake": "mention",
+    }
 
 
 def test_get_agent_slack_carries_app_id_and_channels_after_connect(session_factory, config):
@@ -1234,7 +1240,8 @@ def test_get_agent_slack_carries_app_id_and_channels_after_connect(session_facto
 
     detail = client.get(f"/api/agents/{AGENT_NAME}").json()
     assert detail["slack"] == {
-        "app_id": APP_ID, "channels": [CHANNEL], "state": "connected"
+        "app_id": APP_ID, "channels": [CHANNEL], "state": "connected",
+        "wake": "mention",
     }
 
 
@@ -1250,3 +1257,60 @@ def test_agent_payload_no_longer_carries_slack_admin_visible(session_factory, co
 
     assert response.status_code == 200
     assert "slack_admin_visible" not in response.json()
+
+
+# --- PUT .../slack/wake (2026-10-06) --------------------------------------------
+
+
+class _GojiraCapturingGitHub(FakeGitHub):
+    """Snapshots gojira.yaml at commit_push: the wake route edits only that file."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.captured_gojira: dict | None = None
+
+    def commit_push(self, workdir: Path, message: str) -> bool:
+        target = workdir / "gojira.yaml"
+        if target.is_file():
+            self.captured_gojira = yaml.safe_load(target.read_text())
+        return super().commit_push(workdir, message)
+
+
+def test_put_wake_writes_the_env_key_and_says_when_the_manifest_changed(session_factory, config):
+    gojira, app_id = _onboarded_gojira()
+    github = _GojiraCapturingGitHub()
+    client = _make_client(session_factory, config, github=github, gojira=gojira)
+    _seed_agent(session_factory, config, gojira_app_id=app_id)
+
+    # A row from before the choice reads as mention, and the manifest says so.
+    assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["wake"] == "mention"
+    events = client.get(f"/api/agents/{AGENT_NAME}/slack/manifest").json()["manifest"]["settings"][
+        "event_subscriptions"
+    ]["bot_events"]
+    assert "message.channels" not in events
+
+    response = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"wake": "channel"})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["wake"], body["previous_wake"], body["manifest_changed"]) == ("channel", "mention", True)
+    assert github.captured_gojira is not None
+    assert github.captured_gojira["env"]["SLACK_WAKE_MODE"] == "channel"
+
+    assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["wake"] == "channel"
+    events = client.get(f"/api/agents/{AGENT_NAME}/slack/manifest").json()["manifest"]["settings"][
+        "event_subscriptions"
+    ]["bot_events"]
+    assert "message.channels" in events and "message.groups" in events
+
+    # thread <-> channel keeps the same events: nothing to re-apply in Slack.
+    again = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"wake": "thread"}).json()
+    assert (again["previous_wake"], again["manifest_changed"]) == ("channel", False)
+
+
+def test_put_wake_refuses_a_word_that_is_not_a_mode(session_factory, config):
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config)
+    response = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"wake": "sometimes"})
+    assert response.status_code == 422
+    assert response.json() == {"error": "choose one of: mention, thread, channel"}
+    assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["wake"] == "mention"

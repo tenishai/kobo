@@ -2088,3 +2088,40 @@ def test_move_agent_is_an_operators_call(session_factory, config, fake_storage):
         )
 
 
+
+
+# --- kobo_set_slack_wake ----------------------------------------------------------
+
+
+def test_set_slack_wake_sets_the_mode_and_reports_the_manifest_change(
+    session_factory, config, fake_storage
+):
+    fake_gojira, app_id = _onboarded_gojira("ward", REPO_TEMPLATE.format(name="ward"))
+    _seed_agent(
+        session_factory,
+        name="ward",
+        created_by=OWNER_A_EMAIL,
+        group_name=GROUP_A,
+        gojira_app_id=app_id,
+    )
+    mcp = build_mcp_server(
+        _app(
+            session_factory,
+            config,
+            groups_resolver=_resolver(),
+            storage=fake_storage,
+            github=FakeGitHub(),
+            gojira=fake_gojira,
+        )
+    )
+
+    result = _call_tool(mcp, "kobo_set_slack_wake", _ctx_for(OWNER_A_EMAIL), agent="ward", wake="thread")
+
+    assert result["wake"] == "thread"
+    assert result["previous_wake"] == "mention"
+    assert result["manifest_changed"] is True
+    session = session_factory()
+    try:
+        assert session.query(Agent).filter_by(name="ward").one().slack_wake == "thread"
+    finally:
+        session.close()
