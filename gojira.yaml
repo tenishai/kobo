@@ -14,7 +14,7 @@ data_mount: { pvc: kobo-data, path: /data, fs_group: 1001 }
 secret_mounts:                # Secrets read as files
   - { name: kobo-config, path: /config/config.yaml, key: config.yaml }
   - { name: kobo-github, path: /secrets/github/private-key.pem, key: private-key.pem }
-arch: arm64                  # image platform + node arch; amd64 otherwise
+arch: arm64                  # image platform + node arch; unset: the platform's default
 node_selector:                # added to the pod verbatim (how this cluster provides arm64, a pool, …)
   cloud.google.com/compute-class: "Scale-Out"
 health: /api/healthz
