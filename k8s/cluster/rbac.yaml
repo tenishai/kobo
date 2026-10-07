@@ -1,4 +1,6 @@
-# Cluster-scoped access for the room, applied ONCE by a cluster admin:
+# Cluster-scoped access for the room: the ClusterRole, applied ONCE by a
+# cluster admin and named in gojira.yaml `cluster_roles:`; Gojira makes the
+# binding to the room's ServiceAccount (tenishai/gojira#99):
 #
 #   kubectl apply -f k8s/cluster/rbac.yaml
 #
@@ -37,16 +39,3 @@ rules:
   - apiGroups: [external-secrets.io]
     resources: [externalsecrets]
     verbs: [get, list]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: kobo-room
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: kobo-room
-subjects:
-  - kind: ServiceAccount
-    name: kobo
-    namespace: kobo

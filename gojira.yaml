@@ -8,6 +8,10 @@ environments:
     cluster: gojira-sandbox
     namespace: kobo
 service_account: kobo
+# The room reads pods, secrets and deployments in every agent namespace:
+# the ClusterRole is the operator's (k8s/cluster/rbac.yaml, applied once),
+# the binding is Gojira's (tenishai/gojira#99).
+cluster_roles: [kobo-room]
 env:
   KOBO_CONFIG: "/config/config.yaml"
 data_mount: { pvc: kobo-data, path: /data, fs_group: 1001 }
