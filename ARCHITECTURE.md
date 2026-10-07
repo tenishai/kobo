@@ -1,9 +1,11 @@
 ---
 card: repo-card:kobo
 updated: 2026-10-05
-anchor: api/pyproject.toml sha=a1f6f41f5d81f1798e04342dcd249cea816d8d06
 anchor: .github/workflows/ci.yml sha=c1671335ba55f8061df0983d49195ecd93e97e59
 ---
+<!-- pyproject.toml is deliberately not anchored: Dependabot moves its pins weekly and the
+     CI card check would fail every one of those PRs. The version named under STATE is kept
+     by hand; the entry points and seams the card describes are anchored by their own files. -->
 # kobo — repo card
 
 WHAT: the agent assembly room. A web UI + API where a signed-in person composes an agent (persona, skills, group), clicks Create, and the room provisions a running daedalus agent on gojira; then chat/teach it, wire Slack, and govern who (people and other agents) may reach it.
