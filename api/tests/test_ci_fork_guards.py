@@ -23,7 +23,8 @@ def _triggers(doc: dict) -> set[str]:
 
 
 def test_every_self_hosted_pull_request_job_keeps_its_fork_guard():
-    guarded, missing = [], []
+    guarded: list[str] = []
+    missing: list[str] = []
     for workflow in sorted((ROOT / ".github" / "workflows").glob("*.y*ml")):
         doc = yaml.safe_load(workflow.read_text())
         if not ({"pull_request", "pull_request_target"} & _triggers(doc)):
@@ -31,6 +32,7 @@ def test_every_self_hosted_pull_request_job_keeps_its_fork_guard():
         for name, job in (doc.get("jobs") or {}).items():
             if "vars." not in str(job.get("runs-on", "")):
                 continue  # a hosted runner: the fork gets GitHub's sandbox, not ours
-            (guarded if GUARD in str(job.get("if", "")) else missing).append(f"{workflow.name}:{name}")
+            bucket = guarded if GUARD in str(job.get("if", "")) else missing
+            bucket.append(f"{workflow.name}:{name}")
     assert not missing, f"self-hosted jobs a fork PR could reach without a guard: {missing}"
     assert guarded, "no guarded job found: the workflow layout changed, update this test"
