@@ -8,19 +8,11 @@ environments:
     cluster: gojira-sandbox
     namespace: kobo
 service_account: kobo
-# The room reads pods, secrets and deployments in every agent namespace:
-# the ClusterRole is the operator's (k8s/cluster/rbac.yaml, applied once),
-# the binding is Gojira's (tenishai/gojira#99).
-cluster_roles: [kobo-room]
+cluster_roles:                # ClusterRoles the operator defined and allows; Gojira binds the pod to them
+  - kobo-room
+secrets_from: [kobo-cabal]
 env:
   KOBO_CONFIG: "/config/config.yaml"
-# The switchboard's operator token (CABAL_OPERATOR_TOKEN), minted by the
-# cabal operator (`cbl token mint-service --sub service:kobo --scope operator
-# --aud cabal-core`) and created as a Secret in the room's namespace. With it
-# and the two org keys (cabal_url, agent_endpoint_template) the shared thread
-# relays through cabal; without it the room answers "the switchboard is not
-# configured".
-secrets_from: [kobo-cabal]
 data_mount: { pvc: kobo-data, path: /data, fs_group: 1001 }
 secret_mounts:                # Secrets read as files
   - { name: kobo-config, path: /config/config.yaml, key: config.yaml }
