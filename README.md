@@ -28,12 +28,14 @@ agents and people may reach it.
 
 Kobo is opinionated by design:
 
-- **One click** — after Create there is no human step between the user and a running agent.
+- **One click** — for an agent the room composes, there is no human step between Create and a
+  running agent (the deploy platform's setup pull request auto-merges, `api/kobo_api/steps.py`).
+  A repository you connect keeps its own setup pull request for your team to merge.
 - **Composed, not coded** — an agent is assembled from catalogs; the generated repo carries
   only the bespoke parts. Everything else is the platform's.
 - **Memory is instant, rebuilds are for code** — teaching an agent a fact lands in its memory
-  in seconds through the switchboard; the repo archives in the background. Images rebuild only
-  for code-shaped changes (skills, tooling, runtime pins).
+  through the switchboard without a rebuild; the repo archives in the background. Images rebuild
+  for changes to the bundle's files (skills, tooling, persona, runtime pins).
 - **Consent at the wire** — agents in the same group talk freely; cross-group talk requires an
   invite the receiving agent's owner accepts, enforced at the switchboard's token re-mint, not
   by UI politeness.
@@ -45,8 +47,8 @@ Kobo is opinionated by design:
 
 ## What the room does today
 
-- **Create**: describe the job, pick a name, skills and a group, click Create. Minutes later the
-  agent answers its first hello.
+- **Create**: describe the job, pick a name, skills and a group, click Create. When the build and
+  deploy finish, the agent answers its first hello.
 - **Connect your own**: point the room at a repository your team already owns and it proposes
   the deploy setup by pull request.
 - **Chat and teach**: talk to any agent you can see. *Teach this* puts a fact in its memory in
@@ -57,12 +59,13 @@ Kobo is opinionated by design:
   mid-conversation, and share a thread with more than one agent in it.
 - **Access**: verified identity, owners on every card, group-scoped visibility, per-agent
   grants, invite handshakes between agents, an admin team rather than an admin list.
-- **Slack**: self-service wiring; the agent answers mentions in threads.
+- **Slack**: self-service wiring; per agent, it wakes on mentions, on a thread it was mentioned
+  in, or on every message in a channel.
 - **The agent page**: Chat, Slack, Access, Settings (secrets, environment, the build log) and
   Harness (model, runtime, persona, skills, tooling, memory, what it has learned).
 - **Personas**: the soul an agent is built from, owned by a group, archived rather than deleted.
-- **MCP**: every room tool reachable from MCP clients as the signed-in user, over the room's
-  own OAuth, with the same visibility and ownership rules as the UI.
+- **MCP**: the room's tools reachable from MCP clients as the signed-in user, over the room's
+  own OAuth, with the same visibility and ownership rules as the UI (`api/kobo_api/mcp/tools/`).
 
 The long form, with every rule the room enforces, is in
 [docs/what-the-room-does.md](docs/what-the-room-does.md).
@@ -73,13 +76,14 @@ Kobo is one piece of a shared, opinionated agent platform — sibling projects t
 concern and compose:
 
 - **[gojira](https://github.com/tenishai/gojira)** — the deploy platform (identity, CI/CD,
-  manifests, teardown). Every assembled agent deploys and dies through it.
+  manifests, teardown). An agent the room composes deploys and is torn down through it
+  (`api/kobo_api/steps.py`, `api/kobo_api/destroy.py`).
 - **[daedalus](https://github.com/tenishai/daedalus)** — agent construction kit and runtime.
   The bundle is kobo's unit of assembly; the runtime carries the teach lane, the colleague
   tools, and the belief-revision pass.
 - **[cabal](https://github.com/tenishai/cabal)** — the switchboard. Chat, teach, and every
   agent-to-agent consult relay through it; it enforces the room-synced dispatch allow-pairs
-  and records every conversation.
+  and keeps the conversation log.
 - **[techne](https://github.com/tenishai/techne)** — agentic memory. Each agent embeds its own
   store on a PVC; the seeder converges knowledge at boot and the teach lane writes it live.
 - **skills** — the SKILL.md catalog shape. Kobo reads
@@ -122,8 +126,8 @@ agent's store directly and ledgers the content hash so the next natural rebuild 
 
 ## Quickstart
 
-Run the room on your laptop in about two minutes. You need [uv](https://docs.astral.sh/uv/) and
-Node 22 (uv fetches Python 3.12 for you).
+Run the room on your laptop. You need [uv](https://docs.astral.sh/uv/) and Node 22 (uv fetches
+Python 3.12 for you).
 
 ```
 git clone https://github.com/tenishai/kobo && cd kobo
@@ -145,10 +149,11 @@ secrets platform, the MCP connector) stays off until configured.
 Creating an agent needs somewhere to put it: a [gojira](https://github.com/tenishai/gojira) and a
 Kubernetes cluster it deploys to, plus a GitHub login (`gh auth login`) for the repositories the
 room writes. Copy `api/config.example.yaml` to `api/config.local.yaml`, fill in `gojira_url` and
-the cluster, and restart; the rest of this section and the file's comments cover every key.
+the cluster, and restart; the file's comments describe its keys.
 
-Tests: `make -C api check` (ruff + pytest) and `make -C ui check` (svelte-check + vitest), the
-same gates CI runs.
+Tests: `make -C api check` (ruff + pytest) and `make -C ui check` (svelte-check + vitest). CI
+runs pytest, the UI build and checks, and the architecture-card checker
+(`.github/workflows/ci.yml`).
 
 ## Deploying it
 
