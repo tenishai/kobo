@@ -79,3 +79,21 @@ describe("DangerZone arming", () => {
   });
 });
 
+describe("DangerZone after the room accepts", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    stubFetch({ "/api/agents/warden": { status: "destroying" } });
+  });
+
+  it("closes the confirm once the destruction is accepted", async () => {
+    renderWithClient(DangerZone, { agentName: "warden", status: "ready", error: null });
+    await openConfirm();
+    await fireEvent.input(screen.getByRole("textbox"), { target: { value: "warden" } });
+    await fireEvent.click(screen.getByRole("button", { name: /destroy this agent/i }));
+
+    await vi.waitFor(() => {
+      expect(screen.queryByRole("textbox")).toBeNull();
+      expect(screen.queryByRole("button", { name: /destroy this agent/i })).toBeNull();
+    });
+  });
+});

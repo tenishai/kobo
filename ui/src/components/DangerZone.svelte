@@ -89,6 +89,14 @@
     }
     destroyError = null;
     destroy.mutate(undefined, {
+      // The room accepted the destruction: the confirm has done its job and
+      // closes. Left open (2026-10-12), it sat over the page with the name
+      // still typed while the status read "Destroying", and a second click
+      // was accepted as a second destroy (tenishai/kobo#123, item 6).
+      onSuccess: () => {
+        confirming = false;
+        typedName = "";
+      },
       onError: (err: unknown) => {
         destroyError = errorMessage(err, "Couldn't destroy this agent. Try again.");
       },
