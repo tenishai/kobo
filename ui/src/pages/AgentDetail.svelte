@@ -842,6 +842,7 @@
               runtimeImage={data.runtime_image}
               roomRuntimeImage={data.room_runtime_image}
               canUpdateRuntime={data.destroy_visible}
+              colleagueMode={data.colleague_mode}
               pendingLearnings={data.pending_learnings}
               canDecideLearnings={data.can_decide_learnings}
               capability={data.capability}

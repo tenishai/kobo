@@ -155,6 +155,9 @@ export type AgentDetail = AgentSummary & {
    * the comparison of the two: equal is "Current", different is "Behind".
    * Absent on an older server. */
   room_runtime_image?: string;
+  /** Whether the agent may consult its colleagues (issue #131): `default`,
+   * `roster-only` or `none`. Absent on an older server. */
+  colleague_mode?: ColleagueMode;
   /** The identity the agent runs as: its Kubernetes service account and
    * the Google service account bound to it, plus the room's project. What
    * an access request to another project names. Absent on an older server. */
@@ -1719,6 +1722,31 @@ export async function patchAgentModel(name: string, model: string): Promise<Agen
     body: JSON.stringify({ model }),
   });
   return parse<AgentModelChange>(res);
+}
+
+/** The owner's colleague mode (issue #131). `default` is every colleague
+ * tool and the consult-first doctrine; `roster-only` keeps the roster but
+ * not the ask tool; `none` drops both. */
+export type ColleagueMode = "default" | "roster-only" | "none";
+
+export type ColleagueModeChange = {
+  colleague_mode: ColleagueMode;
+  previous_colleague_mode: ColleagueMode;
+  sha: string;
+};
+
+/** `PUT /api/agents/{name}/colleague-mode`: one commit to the agent's
+ * bundle (its allow list and colleague document); the CI rebuild rolls it. */
+export async function putColleagueMode(
+  name: string,
+  mode: ColleagueMode,
+): Promise<ColleagueModeChange> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/colleague-mode`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+  return parse<ColleagueModeChange>(res);
 }
 
 export async function patchAgentRuntime(
