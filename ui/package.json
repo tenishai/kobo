@@ -20,10 +20,10 @@
     "@types/node": "^26.6.4",
     "jsdom": "^27.4.0",
     "playwright": "^1.63.0",
-    "svelte": "^5.57.1",
+    "svelte": "^5.57.2",
     "svelte-check": "^4.7.6",
     "typescript": "^5.9.3",
-    "vite": "^6.4.3",
+    "vite": "^6.4.4",
     "vitest": "^3.2.4"
   }
 }
