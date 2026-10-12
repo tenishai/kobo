@@ -765,11 +765,29 @@ class GhCLI:
         return {"GH_TOKEN": self._token_provider()}
 
     def repo_exists(self, repo: str) -> bool:
+        """Whether a repository is at `repo` itself.
+
+        Read as `gh api repos/{repo}` and compared on the `full_name` GitHub
+        answers with: a repository that was RENAMED away from this name
+        still answers at the old name through GitHub's redirect, and `gh
+        repo view` followed that redirect and said "exists". Destroy renames
+        an agent's repo to `archived-agent-<name>-<id>`, so every destroyed
+        agent's old name answered that way, and re-creating an agent by the
+        same name refused to adopt a repo that was not there (2026-10-12,
+        `thegeneral`). GitHub allows a new repository at a redirected name,
+        and creating it retires the redirect. Every failure still collapses
+        to False, as before.
+        """
         try:
-            self._runner.run([self._gh, "repo", "view", repo], env=self._env())
-            return True
+            out = self._runner.run([self._gh, "api", f"repos/{repo}"], env=self._env())
         except ClientError:
             return False
+        try:
+            data = json.loads(out) if out else {}
+        except ValueError:
+            return False
+        full_name = data.get("full_name") if isinstance(data, dict) else None
+        return isinstance(full_name, str) and full_name.lower() == repo.lower()
 
     def create_repo_from_dir(self, repo: str, src: Path) -> None:
         self._runner.run([self._git, "-C", str(src), "init"], env=self._env())

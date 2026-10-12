@@ -1,7 +1,7 @@
 ---
 card: arch-card:kobo-platform-clients
-updated: 2026-10-02
-anchor: api/kobo_api/clients.py sha=651ada92b8a05dc2ae15856d5821378fab71c719
+updated: 2026-10-12
+anchor: api/kobo_api/clients.py sha=86098ee0a0709db1e591f1a1d6a7a68d5fc37ef3
 anchor: api/tests/fakes.py sha=2253cf4aade8620acb73fc54b2a04774e1cdc67b
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
@@ -28,3 +28,5 @@ INVARIANTS:
 - `GojiraConflict` (409 on create) is distinct from `ClientError` so onboard can decide whether the app is its own.
 CONSUMERS: api/kobo_api/steps.py, provisioner.py, health.py (ready agents probed once a minute; verdict kept in memory per replica), destroy.py, main.py (routes), directory.py, colleagues.py, pairs.py, learnings.py, knowledge.py, slack_setup.py, agent_env.py, mcp/tools/*.py; api/tests/* via tests/fakes.py.
 API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provider(config)`; `probe_slack_token_store(clients)` (boot write-probe of the Slack token Secret); `gsa_email(name, project)`; errors `ClientError`, `GojiraConflict`, `SlackApiError`, `StorageNotFound`, `CabalError`.
+
+2026-10-12: `GhCLI.repo_exists` reads `gh api repos/{repo}` and compares the `full_name` GitHub answers with; a name GitHub only redirects (a destroyed agent's repo, renamed to `archived-agent-<name>-<id>`) counts as free.

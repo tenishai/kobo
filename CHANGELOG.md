@@ -6,6 +6,15 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **An agent can be created again under a destroyed agent's name.** Destroy renames the
+  repository to `archived-agent-<name>-<id>`, and GitHub keeps answering at the old name
+  through a redirect; the room read that as "a repository already exists and is not
+  recorded for this agent" and refused. The existence check now compares the name GitHub
+  answers with, so a redirected name counts as free, which GitHub allows a new repository
+  to take.
+
 ## [0.1.0] - 2026-10-12
 
 ### Changed
