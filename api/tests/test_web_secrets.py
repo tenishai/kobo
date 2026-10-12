@@ -66,7 +66,7 @@ from tests.fakes import (
     FakeGojira,
     FakeImage,
     FakeKubectl,
-    FakeLadon,
+    FakeSero,
     FakeSlack,
 )
 
@@ -148,7 +148,7 @@ def _client(
     key,
     *,
     kind: str = KIND_COMPOSED,
-    ladon: FakeLadon | None = None,
+    sero: FakeSero | None = None,
     github: FakeGitHub | None = None,
     kubectl: FakeKubectl | None = None,
     created_by: str | None = OWNER,
@@ -169,7 +169,7 @@ def _client(
         slack=FakeSlack(),
         cabal=FakeCabal(),
         image=FakeImage(),
-        ladon=ladon,
+        sero=sero,
     )
 
     session = session_factory()
@@ -223,9 +223,9 @@ def _as(key, email: str = OWNER) -> dict[str, str]:
 def test_the_secrets_list_answers_key_names_and_nothing_else(
     session_factory, config, fake_storage, _key
 ):
-    ladon = FakeLadon()
-    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE, "DB_URL": VALUE}
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+    sero = FakeSero()
+    sero.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE, "DB_URL": VALUE}
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=sero)
 
     resp = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key))
 
@@ -240,7 +240,7 @@ def test_the_secrets_list_answers_key_names_and_nothing_else(
 def test_an_agent_with_no_secrets_yet_reads_as_an_empty_list(
     session_factory, config, fake_storage, _key
 ):
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=FakeLadon())
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=FakeSero())
 
     body = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()
 
@@ -252,7 +252,7 @@ def test_an_agent_with_no_secrets_yet_reads_as_an_empty_list(
 def test_a_room_with_no_secrets_platform_says_so_rather_than_failing(
     session_factory, config, fake_storage, _key
 ):
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=None)
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=None)
 
     resp = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key))
 
@@ -274,7 +274,7 @@ def test_a_room_with_no_secrets_platform_says_so_rather_than_failing(
 def test_a_stranger_cannot_read_which_secrets_an_agent_holds(
     session_factory, config, fake_storage, _key
 ):
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=FakeLadon())
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=FakeSero())
 
     resp = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key, STRANGER))
 
@@ -289,7 +289,7 @@ def test_the_secrets_list_is_not_offered_before_the_agent_is_ready(
         config,
         fake_storage,
         _key,
-        ladon=FakeLadon(),
+        sero=FakeSero(),
         status=AgentStatus.PROVISIONING,
     )
 
@@ -304,9 +304,9 @@ def test_the_secrets_list_is_not_offered_before_the_agent_is_ready(
 def test_the_first_secret_is_stored_synced_and_wired_into_the_agents_files(
     session_factory, config, fake_storage, _key
 ):
-    ladon = FakeLadon()
+    sero = FakeSero()
     github = _github()
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon, github=github)
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=sero, github=github)
 
     resp = client.put(
         f"/api/agents/{AGENT}/secrets",
@@ -319,8 +319,8 @@ def test_the_first_secret_is_stored_synced_and_wired_into_the_agents_files(
     assert body["keys"] == ["API_KEY"]
     assert body["wiring"] == "committed"
     # The value went to the lane, once, and nowhere else.
-    assert ladon.puts == [(OWNER, f"apps/{AGENT}/env", {"API_KEY": VALUE})]
-    assert ladon.syncs == [
+    assert sero.puts == [(OWNER, f"apps/{AGENT}/env", {"API_KEY": VALUE})]
+    assert sero.syncs == [
         (OWNER, AGENT, f"apps/{AGENT}/env", AGENT, f"{AGENT}-env")
     ]
     assert VALUE not in resp.text
@@ -332,14 +332,14 @@ def test_the_first_secret_is_stored_synced_and_wired_into_the_agents_files(
 def test_a_second_secret_stores_but_does_not_wire_a_second_time(
     session_factory, config, fake_storage, _key
 ):
-    ladon = FakeLadon()
+    sero = FakeSero()
     github = _github(
         repo_files={
             "gojira.yaml": BASE_GOJIRA_YAML + f"secrets_from:\n  - {AGENT}-env\n"
         }
     )
-    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon, github=github)
+    sero.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=sero, github=github)
 
     body = client.put(
         f"/api/agents/{AGENT}/secrets",
@@ -355,14 +355,14 @@ def test_a_second_secret_stores_but_does_not_wire_a_second_time(
 def test_removing_a_secret_names_it_to_the_lane_and_leaves_the_rest(
     session_factory, config, fake_storage, _key
 ):
-    ladon = FakeLadon()
-    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE, "DB_URL": VALUE}
+    sero = FakeSero()
+    sero.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE, "DB_URL": VALUE}
     github = _github(
         repo_files={
             "gojira.yaml": BASE_GOJIRA_YAML + f"secrets_from:\n  - {AGENT}-env\n"
         }
     )
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon, github=github)
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=sero, github=github)
 
     body = client.put(
         f"/api/agents/{AGENT}/secrets",
@@ -371,7 +371,7 @@ def test_removing_a_secret_names_it_to_the_lane_and_leaves_the_rest(
     ).json()
 
     assert body["keys"] == ["API_KEY"]
-    assert ladon.removes == [(OWNER, f"apps/{AGENT}/env", ["DB_URL"])]
+    assert sero.removes == [(OWNER, f"apps/{AGENT}/env", ["DB_URL"])]
 
 
 def test_removing_the_last_secret_takes_the_path_the_object_and_the_line(
@@ -382,15 +382,15 @@ def test_removing_the_last_secret_takes_the_path_the_object_and_the_line(
     # Kubernetes Secret with it), and the line naming that Secret comes
     # out of gojira.yaml in the same call. A pod whose envFrom names a
     # Secret that no longer exists does not start.
-    ladon = FakeLadon()
-    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    sero = FakeSero()
+    sero.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
     github = _github(
         repo_files={
             "gojira.yaml": BASE_GOJIRA_YAML + f"secrets_from:\n  - {AGENT}-env\n"
         }
     )
     client, clients = _client(
-        session_factory, config, fake_storage, _key, ladon=ladon, github=github
+        session_factory, config, fake_storage, _key, sero=sero, github=github
     )
 
     body = client.put(
@@ -403,9 +403,9 @@ def test_removing_the_last_secret_takes_the_path_the_object_and_the_line(
     assert body["emptied"] is True
     assert body["wiring"] == "committed"
     assert body["secret_name"] is None
-    assert ladon.deletes == [(OWNER, f"apps/{AGENT}/env")]
-    assert ladon.unsyncs == [(OWNER, AGENT, AGENT, f"{AGENT}-env")]
-    assert ladon.puts == []
+    assert sero.deletes == [(OWNER, f"apps/{AGENT}/env")]
+    assert sero.unsyncs == [(OWNER, AGENT, AGENT, f"{AGENT}-env")]
+    assert sero.puts == []
     pushed = yaml.safe_load(github.pushed_file("gojira.yaml"))
     assert pushed["secrets_from"] == []
     assert clients.gojira.reprovision_calls
@@ -414,11 +414,11 @@ def test_removing_the_last_secret_takes_the_path_the_object_and_the_line(
 def test_emptying_an_agent_that_was_never_wired_touches_no_repository(
     session_factory, config, fake_storage, _key
 ):
-    ladon = FakeLadon()
-    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    sero = FakeSero()
+    sero.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
     github = _github()
     client, _ = _client(
-        session_factory, config, fake_storage, _key, ladon=ladon, github=github
+        session_factory, config, fake_storage, _key, sero=sero, github=github
     )
 
     body = client.put(
@@ -443,8 +443,8 @@ def test_emptying_an_agent_that_was_never_wired_touches_no_repository(
 def test_a_key_the_rule_refuses_never_reaches_the_lane(
     session_factory, config, fake_storage, _key, key, expected
 ):
-    ladon = FakeLadon()
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+    sero = FakeSero()
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=sero)
 
     resp = client.put(
         f"/api/agents/{AGENT}/secrets", json={"set": {key: VALUE}}, headers=_as(_key)
@@ -452,13 +452,13 @@ def test_a_key_the_rule_refuses_never_reaches_the_lane(
 
     assert resp.status_code == 422
     assert expected in resp.json()["error"]
-    assert ladon.puts == []
+    assert sero.puts == []
 
 
 def test_a_write_to_a_room_with_no_secrets_platform_says_so(
     session_factory, config, fake_storage, _key
 ):
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=None)
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=None)
 
     resp = client.put(
         f"/api/agents/{AGENT}/secrets",
@@ -482,9 +482,9 @@ def test_an_agent_with_nobody_on_record_is_refused_rather_than_written_anonymous
         skills_bucket="skills-bucket",
         personas_bucket="personas-bucket",
     )
-    ladon = FakeLadon()
+    sero = FakeSero()
     client, _ = _client(
-        session_factory, config, fake_storage, _key, ladon=ladon, created_by=None
+        session_factory, config, fake_storage, _key, sero=sero, created_by=None
     )
 
     resp = client.put(
@@ -492,7 +492,7 @@ def test_an_agent_with_nobody_on_record_is_refused_rather_than_written_anonymous
     )
 
     assert resp.status_code == 409
-    assert ladon.puts == []
+    assert sero.puts == []
 
 
 def test_a_lane_failure_never_repeats_the_platforms_own_text_or_the_value(
@@ -502,8 +502,8 @@ def test_a_lane_failure_never_repeats_the_platforms_own_text_or_the_value(
     # that request carried a value. So neither the response NOR the log
     # gets it: what is logged is the exception's class and the agent's
     # name, which is what an operator acts on.
-    ladon = FakeLadon(put_error=f"refused the body {VALUE}")
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+    sero = FakeSero(put_error=f"refused the body {VALUE}")
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=sero)
 
     with caplog.at_level("WARNING"):
         resp = client.put(
@@ -525,8 +525,8 @@ def test_a_lane_failure_never_repeats_the_platforms_own_text_or_the_value(
 def test_a_stranger_cannot_write_an_agents_secrets(
     session_factory, config, fake_storage, _key
 ):
-    ladon = FakeLadon()
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+    sero = FakeSero()
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=sero)
 
     resp = client.put(
         f"/api/agents/{AGENT}/secrets",
@@ -535,7 +535,7 @@ def test_a_stranger_cannot_write_an_agents_secrets(
     )
 
     assert resp.status_code == 403
-    assert ladon.puts == []
+    assert sero.puts == []
 
 
 # --- Writing secrets on an agent the room does not own ------------------------
@@ -544,7 +544,7 @@ def test_a_stranger_cannot_write_an_agents_secrets(
 def test_a_connected_agents_first_secret_is_proposed_not_pushed(
     session_factory, config, fake_storage, _key
 ):
-    ladon = FakeLadon()
+    sero = FakeSero()
     github = _github()
     client, _ = _client(
         session_factory,
@@ -552,7 +552,7 @@ def test_a_connected_agents_first_secret_is_proposed_not_pushed(
         fake_storage,
         _key,
         kind=KIND_CONNECTED,
-        ladon=ladon,
+        sero=sero,
         github=github,
     )
 
@@ -571,13 +571,13 @@ def test_a_connected_agents_first_secret_is_proposed_not_pushed(
     assert github.open_pr_calls[0]["branch"] == SECRETS_WIRING_BRANCH
     # Stored all the same: the value is on the platform whether or not
     # anybody has merged the one line that names it yet.
-    assert ladon.puts[0][2] == {"API_KEY": VALUE}
+    assert sero.puts[0][2] == {"API_KEY": VALUE}
 
 
 def test_a_connected_agents_later_secret_reuses_a_request_that_carries_the_line(
     session_factory, config, fake_storage, _key
 ):
-    ladon = FakeLadon()
+    sero = FakeSero()
     github = _github(
         open_prs={f"{REPO}#{SECRETS_WIRING_BRANCH}": PR_URL},
         branch_files={
@@ -592,7 +592,7 @@ def test_a_connected_agents_later_secret_reuses_a_request_that_carries_the_line(
         fake_storage,
         _key,
         kind=KIND_CONNECTED,
-        ladon=ladon,
+        sero=sero,
         github=github,
     )
 
@@ -614,7 +614,7 @@ def test_an_open_environment_request_does_not_block_a_connected_agents_first_sec
     # environment variable, the request is still open, and now they add a
     # secret. The wiring is a SECOND pull request, on its own branch,
     # carrying its own line.
-    ladon = FakeLadon()
+    sero = FakeSero()
     github = _github(
         open_prs={f"{REPO}#{ENV_BRANCH}": "https://example.test/pull/env"},
         # So the pull request's own content can be read back below: the
@@ -628,7 +628,7 @@ def test_an_open_environment_request_does_not_block_a_connected_agents_first_sec
         fake_storage,
         _key,
         kind=KIND_CONNECTED,
-        ladon=ladon,
+        sero=sero,
         github=github,
     )
 
@@ -659,7 +659,7 @@ def test_a_stale_unwire_request_is_closed_before_a_secret_is_added_back(
     # the line from an agent that needs it, so it is closed with a word
     # about why and its branch removed, and a fresh request proposes the
     # line again.
-    ladon = FakeLadon()
+    sero = FakeSero()
     github = _github(
         open_prs={f"{REPO}#{SECRETS_WIRING_BRANCH}": "https://example.test/pull/stale"},
         # The branch head does NOT carry the line: this request proposes
@@ -673,7 +673,7 @@ def test_a_stale_unwire_request_is_closed_before_a_secret_is_added_back(
         fake_storage,
         _key,
         kind=KIND_CONNECTED,
-        ladon=ladon,
+        sero=sero,
         github=github,
     )
 
@@ -703,8 +703,8 @@ def test_a_stale_wire_request_is_closed_before_the_last_secret_is_removed(
     # The mirror. The room proposed adding the line, nobody merged it, and
     # the last secret is going away: merged later, that request would name
     # a Secret that no longer exists, and the agent would not start.
-    ladon = FakeLadon()
-    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    sero = FakeSero()
+    sero.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
     github = _github(
         open_prs={f"{REPO}#{SECRETS_WIRING_BRANCH}": "https://example.test/pull/stale"},
         # The branch head DOES carry the line: this request proposes
@@ -721,7 +721,7 @@ def test_a_stale_wire_request_is_closed_before_the_last_secret_is_removed(
         fake_storage,
         _key,
         kind=KIND_CONNECTED,
-        ladon=ladon,
+        sero=sero,
         github=github,
     )
 
@@ -738,13 +738,13 @@ def test_a_stale_wire_request_is_closed_before_the_last_secret_is_removed(
     # The default branch never had the line, so there is nothing to
     # propose removing and the deletes can happen now.
     assert body["emptied"] is True
-    assert ladon.deletes == [(OWNER, f"apps/{AGENT}/env")]
+    assert sero.deletes == [(OWNER, f"apps/{AGENT}/env")]
 
 
 def test_an_open_request_that_already_proposes_this_is_reused_not_reopened(
     session_factory, config, fake_storage, _key
 ):
-    ladon = FakeLadon()
+    sero = FakeSero()
     github = _github(
         open_prs={f"{REPO}#{SECRETS_WIRING_BRANCH}": PR_URL},
         branch_files={
@@ -759,7 +759,7 @@ def test_an_open_request_that_already_proposes_this_is_reused_not_reopened(
         fake_storage,
         _key,
         kind=KIND_CONNECTED,
-        ladon=ladon,
+        sero=sero,
         github=github,
     )
 
@@ -800,7 +800,7 @@ def test_the_environment_list_works_without_a_secrets_platform(
 ):
     # The panel's Secrets half goes away in a room with no platform; this
     # half does not, and this is the route that has to prove it.
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=None)
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=None)
 
     assert client.get(f"/api/agents/{AGENT}/env", headers=_as(_key)).status_code == 200
     resp = client.put(
@@ -948,7 +948,7 @@ def test_a_stranger_cannot_read_or_write_the_environment(
 def test_an_agent_nobody_can_see_is_a_404_on_every_one_of_the_four(
     session_factory, config, fake_storage, _key
 ):
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=FakeLadon())
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=FakeSero())
 
     for method, path in [
         ("get", "secrets"),
@@ -971,10 +971,10 @@ def test_an_unparseable_gojira_yaml_stops_a_secret_before_it_is_stored(
     # The wiring line could never be added to a file nobody can parse, so
     # finding that out first costs one read. Finding it out afterwards
     # would leave a value stored that the agent can never read.
-    ladon = FakeLadon()
+    sero = FakeSero()
     github = _github(repo_files={"gojira.yaml": "env: [unclosed\n"})
     client, _ = _client(
-        session_factory, config, fake_storage, _key, ladon=ladon, github=github
+        session_factory, config, fake_storage, _key, sero=sero, github=github
     )
 
     resp = client.put(
@@ -985,8 +985,8 @@ def test_an_unparseable_gojira_yaml_stops_a_secret_before_it_is_stored(
 
     assert resp.status_code == 409
     assert resp.json()["error"] == UNREADABLE_GOJIRA_YAML
-    assert ladon.puts == []
-    assert ladon.syncs == []
+    assert sero.puts == []
+    assert sero.syncs == []
 
 
 def test_an_unparseable_gojira_yaml_is_named_on_the_environment_read_too(
@@ -1016,8 +1016,8 @@ def test_a_repository_the_room_cannot_read_says_so_rather_than_no_file(
 def test_a_secrets_read_that_the_lane_refuses_is_a_plain_failure(
     session_factory, config, fake_storage, _key, caplog
 ):
-    ladon = FakeLadon(read_error="that namespace is not yours")
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+    sero = FakeSero(read_error="that namespace is not yours")
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=sero)
 
     with caplog.at_level("WARNING"):
         resp = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key))
@@ -1063,19 +1063,19 @@ def test_a_read_names_the_caller_not_the_creator(
     # The platform's audit answers "who asked about this path", and the
     # person who opened the panel is the honest answer. An operator
     # reading somebody else's agent is recorded as themselves.
-    ladon = FakeLadon()
-    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    sero = FakeSero()
+    sero.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
     operator = "ops@example.com"
     operator_config = config.model_copy(update={"operators": [operator]})
     client, _ = _client(
-        session_factory, operator_config, fake_storage, _key, ladon=ladon
+        session_factory, operator_config, fake_storage, _key, sero=sero
     )
 
     client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key, operator))
 
     # The agent's own path first, then the two the room sets itself --
     # every one of them on the caller's behalf, never the creator's.
-    assert ladon.reads == [
+    assert sero.reads == [
         (operator, f"apps/{AGENT}/env"),
         (operator, f"apps/{AGENT}/cabal"),
         (operator, f"apps/{AGENT}/slack"),
@@ -1088,8 +1088,8 @@ def test_a_read_of_an_agent_with_no_creator_still_answers(
     # A write refuses when there is nobody to record it against; a read
     # never does, because the caller IS that person. An agent whose
     # creator has left is still one its operator can open the panel on.
-    ladon = FakeLadon()
-    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    sero = FakeSero()
+    sero.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
     operator = "ops@example.com"
     operator_config = config.model_copy(update={"operators": [operator]})
     client, _ = _client(
@@ -1097,7 +1097,7 @@ def test_a_read_of_an_agent_with_no_creator_still_answers(
         operator_config,
         fake_storage,
         _key,
-        ladon=ladon,
+        sero=sero,
         created_by=None,
     )
 
@@ -1113,8 +1113,8 @@ def test_a_read_of_an_agent_with_no_creator_still_answers(
 def test_more_keys_than_a_list_may_hold_is_refused(
     session_factory, config, fake_storage, _key
 ):
-    ladon = FakeLadon()
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+    sero = FakeSero()
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=sero)
 
     resp = client.put(
         f"/api/agents/{AGENT}/secrets",
@@ -1123,14 +1123,14 @@ def test_more_keys_than_a_list_may_hold_is_refused(
     )
 
     assert resp.status_code == 422
-    assert ladon.puts == []
+    assert sero.puts == []
 
 
 def test_a_value_longer_than_the_ceiling_is_refused(
     session_factory, config, fake_storage, _key
 ):
-    ladon = FakeLadon()
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+    sero = FakeSero()
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=sero)
 
     resp = client.put(
         f"/api/agents/{AGENT}/secrets",
@@ -1139,7 +1139,7 @@ def test_a_value_longer_than_the_ceiling_is_refused(
     )
 
     assert resp.status_code == 422
-    assert ladon.puts == []
+    assert sero.puts == []
     # And the oversized value is not echoed back in the refusal.
     assert "x" * 100 not in resp.text
 
@@ -1147,8 +1147,8 @@ def test_a_value_longer_than_the_ceiling_is_refused(
 def test_a_write_that_fills_a_list_exactly_to_the_cap_is_allowed(
     session_factory, config, fake_storage, _key
 ):
-    ladon = FakeLadon()
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+    sero = FakeSero()
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=sero)
 
     resp = client.put(
         f"/api/agents/{AGENT}/secrets",
@@ -1182,7 +1182,7 @@ def test_a_composed_agent_commits_the_line_away_before_deleting_the_secret(
 ):
     order: list[str] = []
 
-    class _Ordered(FakeLadon):
+    class _Ordered(FakeSero):
         def unsync(self, acting_email, app, k8s_namespace, name):
             order.append("unsync")
             super().unsync(acting_email, app, k8s_namespace, name)
@@ -1196,8 +1196,8 @@ def test_a_composed_agent_commits_the_line_away_before_deleting_the_secret(
             order.append("push")
             return super().commit_push(workdir, message)
 
-    ladon = _Ordered()
-    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    sero = _Ordered()
+    sero.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
     github = _OrderedGitHub(
         existing_repos={REPO},
         repo_files={
@@ -1209,7 +1209,7 @@ def test_a_composed_agent_commits_the_line_away_before_deleting_the_secret(
         pr_url=PR_URL,
     )
     client, clients = _client(
-        session_factory, config, fake_storage, _key, ladon=ladon, github=github
+        session_factory, config, fake_storage, _key, sero=sero, github=github
     )
 
     body = client.put(
@@ -1230,8 +1230,8 @@ def test_a_composed_agent_commits_the_line_away_before_deleting_the_secret(
 def test_a_connected_agent_proposes_the_removal_and_deletes_nothing(
     session_factory, config, fake_storage, _key
 ):
-    ladon = FakeLadon()
-    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    sero = FakeSero()
+    sero.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
     github = _wired_github()
     client, clients = _client(
         session_factory,
@@ -1239,7 +1239,7 @@ def test_a_connected_agent_proposes_the_removal_and_deletes_nothing(
         fake_storage,
         _key,
         kind=KIND_CONNECTED,
-        ladon=ladon,
+        sero=sero,
         github=github,
     )
 
@@ -1254,9 +1254,9 @@ def test_a_connected_agent_proposes_the_removal_and_deletes_nothing(
     assert body["wiring"] == "pull_request"
     assert body["pull_request"] == PR_URL
     # Nothing was taken away: the file still names the Secret.
-    assert ladon.deletes == []
-    assert ladon.unsyncs == []
-    assert ladon.stored[f"apps/{AGENT}/env"] == {"API_KEY": VALUE}
+    assert sero.deletes == []
+    assert sero.unsyncs == []
+    assert sero.stored[f"apps/{AGENT}/env"] == {"API_KEY": VALUE}
     assert clients.gojira.reprovision_calls == []
 
 
@@ -1265,8 +1265,8 @@ def test_the_save_after_that_pull_request_merges_finishes_the_removal(
 ):
     # The default branch no longer names the Secret, so there is nothing
     # left to propose and the deletes can happen.
-    ladon = FakeLadon()
-    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    sero = FakeSero()
+    sero.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
     github = _github()
     client, _ = _client(
         session_factory,
@@ -1274,7 +1274,7 @@ def test_the_save_after_that_pull_request_merges_finishes_the_removal(
         fake_storage,
         _key,
         kind=KIND_CONNECTED,
-        ladon=ladon,
+        sero=sero,
         github=github,
     )
 
@@ -1286,7 +1286,7 @@ def test_the_save_after_that_pull_request_merges_finishes_the_removal(
 
     assert body["emptied"] is True
     assert body["pending_unwire"] is False
-    assert ladon.deletes == [(OWNER, f"apps/{AGENT}/env")]
+    assert sero.deletes == [(OWNER, f"apps/{AGENT}/env")]
     assert github.open_pr_calls == []
 
 
@@ -1296,11 +1296,11 @@ def test_a_removal_that_fails_halfway_leaves_the_line_gone_and_retries_cleanly(
     # The commit lands, the lane refuses the delete. The agent is left
     # with a file that names nothing and a stored Secret nobody reads,
     # which is the safe half to be stuck on: a retry finishes it.
-    ladon = FakeLadon(delete_error="the platform is having a moment")
-    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    sero = FakeSero(delete_error="the platform is having a moment")
+    sero.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
     github = _wired_github(track_pushed_content=True)
     client, _ = _client(
-        session_factory, config, fake_storage, _key, ladon=ladon, github=github
+        session_factory, config, fake_storage, _key, sero=sero, github=github
     )
 
     resp = client.put(
@@ -1323,10 +1323,10 @@ def test_retrying_a_finished_removal_never_recreates_the_path(
     # The dangerous retry: keys gone, line gone. An empty `put_secret`
     # here would create the path again, and the sync behind it would put
     # an ExternalSecret back over a Secret nothing wants.
-    ladon = FakeLadon()
+    sero = FakeSero()
     github = _github()
     client, _ = _client(
-        session_factory, config, fake_storage, _key, ladon=ladon, github=github
+        session_factory, config, fake_storage, _key, sero=sero, github=github
     )
 
     body = client.put(
@@ -1337,9 +1337,9 @@ def test_retrying_a_finished_removal_never_recreates_the_path(
 
     assert body["emptied"] is True
     assert body["keys"] == []
-    assert ladon.puts == []
-    assert ladon.syncs == []
-    assert ladon.stored == {}
+    assert sero.puts == []
+    assert sero.syncs == []
+    assert sero.stored == {}
 
 
 def test_a_repository_the_room_cannot_read_never_reads_as_not_wired(
@@ -1349,10 +1349,10 @@ def test_a_repository_the_room_cannot_read_never_reads_as_not_wired(
     # environment read does. Answering "not wired" for an unreadable
     # repository would have the room propose a line already sitting on
     # the default branch.
-    ladon = FakeLadon()
+    sero = FakeSero()
     github = FakeGitHub(existing_repos=set(), repo_files={})
     client, _ = _client(
-        session_factory, config, fake_storage, _key, ladon=ladon, github=github
+        session_factory, config, fake_storage, _key, sero=sero, github=github
     )
 
     resp = client.put(
@@ -1363,7 +1363,7 @@ def test_a_repository_the_room_cannot_read_never_reads_as_not_wired(
 
     assert resp.status_code == 409
     assert resp.json()["error"] == UNREADABLE_REPOSITORY
-    assert ladon.puts == []
+    assert sero.puts == []
 
 
 # --- a branch that carries the room's name and not its work -------------------
@@ -1408,11 +1408,11 @@ def test_a_read_with_nobody_to_act_as_says_so_rather_than_an_empty_list(
 ):
     # An empty list and "the room cannot ask" look the same to a person
     # and mean opposite things. The panel shows one line for the second.
-    ladon = FakeLadon()
-    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    sero = FakeSero()
+    sero.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
     plain = config.model_copy(update={"iap_audience": ""})
     client, _ = _client(
-        session_factory, plain, fake_storage, _key, ladon=ladon, created_by=None
+        session_factory, plain, fake_storage, _key, sero=sero, created_by=None
     )
 
     body = client.get(f"/api/agents/{AGENT}/secrets").json()
@@ -1420,14 +1420,14 @@ def test_a_read_with_nobody_to_act_as_says_so_rather_than_an_empty_list(
     assert body["platform"] is True
     assert body["unreadable"] is True
     assert body["keys"] == []
-    assert ladon.reads == []
+    assert sero.reads == []
 
 
 def test_an_ordinary_read_is_not_marked_unreadable(
     session_factory, config, fake_storage, _key
 ):
-    ladon = FakeLadon()
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+    sero = FakeSero()
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=sero)
 
     assert (
         client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()["unreadable"]
@@ -1497,16 +1497,16 @@ def _ready(status: str, reason: str | None = None, message: str | None = None) -
     return {"conditions": [condition]}
 
 
-def _with_secret(ladon: FakeLadon | None = None) -> FakeLadon:
-    ladon = ladon or FakeLadon()
-    ladon.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
-    return ladon
+def _with_secret(sero: FakeSero | None = None) -> FakeSero:
+    sero = sero or FakeSero()
+    sero.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    return sero
 
 
 def test_a_delivered_secret_reads_as_live(session_factory, config, fake_storage, _key):
     kubectl = FakeKubectl(external_secrets={(AGENT, f"{AGENT}-env"): _ready("True")})
     client, _ = _client(
-        session_factory, config, fake_storage, _key, ladon=_with_secret(), kubectl=kubectl
+        session_factory, config, fake_storage, _key, sero=_with_secret(), kubectl=kubectl
     )
 
     body = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()
@@ -1520,7 +1520,7 @@ def test_a_secret_the_cluster_has_not_settled_yet_reads_as_syncing(
 ):
     kubectl = FakeKubectl(external_secrets={(AGENT, f"{AGENT}-env"): {}})
     client, _ = _client(
-        session_factory, config, fake_storage, _key, ladon=_with_secret(), kubectl=kubectl
+        session_factory, config, fake_storage, _key, sero=_with_secret(), kubectl=kubectl
     )
 
     body = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()
@@ -1532,7 +1532,7 @@ def test_a_stored_secret_with_nothing_delivering_it_reads_as_unwired(
     session_factory, config, fake_storage, _key
 ):
     # Nothing seeded: the namespace holds no such object at all.
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=_with_secret())
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=_with_secret())
 
     body = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()
 
@@ -1552,7 +1552,7 @@ def test_a_failing_delivery_reads_as_an_error_and_never_quotes_the_platform(
         }
     )
     client, _ = _client(
-        session_factory, config, fake_storage, _key, ladon=_with_secret(), kubectl=kubectl
+        session_factory, config, fake_storage, _key, sero=_with_secret(), kubectl=kubectl
     )
 
     resp = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key))
@@ -1569,7 +1569,7 @@ def test_a_cluster_the_room_could_not_ask_does_not_take_the_list_away(
 ):
     kubectl = FakeKubectl(external_secret_error="Unable to connect to the server")
     client, _ = _client(
-        session_factory, config, fake_storage, _key, ladon=_with_secret(), kubectl=kubectl
+        session_factory, config, fake_storage, _key, sero=_with_secret(), kubectl=kubectl
     )
 
     resp = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key))
@@ -1585,7 +1585,7 @@ def test_the_read_never_asks_for_the_kubernetes_secret_itself(
     # The one thing this feature must not do to answer "is it set".
     kubectl = FakeKubectl(external_secrets={(AGENT, f"{AGENT}-env"): _ready("True")})
     client, _ = _client(
-        session_factory, config, fake_storage, _key, ladon=_with_secret(), kubectl=kubectl
+        session_factory, config, fake_storage, _key, sero=_with_secret(), kubectl=kubectl
     )
 
     client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key))
@@ -1603,7 +1603,7 @@ def test_the_read_says_whether_the_agents_own_files_name_the_secret(
         }
     )
     client, _ = _client(
-        session_factory, config, fake_storage, _key, ladon=_with_secret(), github=wired
+        session_factory, config, fake_storage, _key, sero=_with_secret(), github=wired
     )
 
     assert client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()["wired"] is True
@@ -1612,7 +1612,7 @@ def test_the_read_says_whether_the_agents_own_files_name_the_secret(
 def test_a_file_with_no_line_reads_as_not_wired(
     session_factory, config, fake_storage, _key
 ):
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=_with_secret())
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=_with_secret())
 
     assert client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()["wired"] is False
 
@@ -1627,7 +1627,7 @@ def test_a_repository_the_room_cannot_read_makes_no_claim_about_the_file(
         config,
         fake_storage,
         _key,
-        ladon=_with_secret(),
+        sero=_with_secret(),
         github=FakeGitHub(existing_repos=set(), repo_files={}),
     )
 
@@ -1643,9 +1643,9 @@ def test_a_repository_the_room_cannot_read_makes_no_claim_about_the_file(
 def test_the_rooms_own_secrets_come_back_as_locked_rows(
     session_factory, config, fake_storage, _key
 ):
-    ladon = _with_secret()
-    ladon.stored[f"apps/{AGENT}/cabal"] = {"CABAL_COLLEAGUE_TOKEN": VALUE}
-    ladon.stored[f"apps/{AGENT}/slack"] = {"SLACK_BOT_TOKEN": VALUE, "SLACK_APP_TOKEN": VALUE}
+    sero = _with_secret()
+    sero.stored[f"apps/{AGENT}/cabal"] = {"CABAL_COLLEAGUE_TOKEN": VALUE}
+    sero.stored[f"apps/{AGENT}/slack"] = {"SLACK_BOT_TOKEN": VALUE, "SLACK_APP_TOKEN": VALUE}
     kubectl = FakeKubectl(
         external_secrets={
             (AGENT, f"{AGENT}-cabal"): _ready("True"),
@@ -1653,7 +1653,7 @@ def test_the_rooms_own_secrets_come_back_as_locked_rows(
         }
     )
     client, _ = _client(
-        session_factory, config, fake_storage, _key, ladon=ladon, kubectl=kubectl
+        session_factory, config, fake_storage, _key, sero=sero, kubectl=kubectl
     )
 
     resp = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key))
@@ -1684,9 +1684,9 @@ def test_the_rooms_own_secrets_come_back_as_locked_rows(
 def test_a_purpose_the_room_never_set_is_simply_not_a_row(
     session_factory, config, fake_storage, _key
 ):
-    ladon = _with_secret()
-    ladon.stored[f"apps/{AGENT}/cabal"] = {"CABAL_COLLEAGUE_TOKEN": VALUE}
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+    sero = _with_secret()
+    sero.stored[f"apps/{AGENT}/cabal"] = {"CABAL_COLLEAGUE_TOKEN": VALUE}
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=sero)
 
     managed = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()["managed"]
 
@@ -1696,7 +1696,7 @@ def test_a_purpose_the_room_never_set_is_simply_not_a_row(
 def test_an_agent_the_room_has_set_nothing_on_has_no_locked_rows(
     session_factory, config, fake_storage, _key
 ):
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=_with_secret())
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=_with_secret())
 
     assert client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()["managed"] == []
 
@@ -1706,9 +1706,9 @@ def test_a_room_managed_name_still_cannot_be_written_or_removed(
 ):
     # Showing these rows changes nothing about who may set them: the same
     # refusal the key rules have always given, on both sides of a write.
-    ladon = _with_secret()
-    ladon.stored[f"apps/{AGENT}/slack"] = {"SLACK_BOT_TOKEN": VALUE}
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=ladon)
+    sero = _with_secret()
+    sero.stored[f"apps/{AGENT}/slack"] = {"SLACK_BOT_TOKEN": VALUE}
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=sero)
 
     written = client.put(
         f"/api/agents/{AGENT}/secrets",
@@ -1726,13 +1726,13 @@ def test_a_room_managed_name_still_cannot_be_written_or_removed(
     assert removed.status_code == 422
     assert ROOM_SETS_THIS_ONE in removed.json()["error"]
     # And the stored value is untouched: nothing reached the platform.
-    assert ladon.puts == []
+    assert sero.puts == []
 
 
 def test_a_room_with_no_secrets_platform_makes_no_claim_about_the_cluster(
     session_factory, config, fake_storage, _key
 ):
-    client, _ = _client(session_factory, config, fake_storage, _key, ladon=None)
+    client, _ = _client(session_factory, config, fake_storage, _key, sero=None)
 
     body = client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()
 

@@ -128,48 +128,48 @@ def test_slack_tokens_secret_is_not_org_settable():
     assert "slack_tokens_path" not in ORG_KEYS
 
 
-# --- ladon_* (the secrets platform's machine lane) -------------------------
+# --- sero_* (the secrets platform's machine lane) -------------------------
 
 
-def test_ladon_settings_default_empty_and_the_lane_is_off():
+def test_sero_settings_default_empty_and_the_lane_is_off():
     config = Config()
 
-    assert config.ladon_url == ""
-    assert config.ladon_audience == ""
-    assert config.ladon_namespace == ""
-    assert config.ladon_enabled is False
+    assert config.sero_url == ""
+    assert config.sero_audience == ""
+    assert config.sero_namespace == ""
+    assert config.sero_enabled is False
 
 
-def test_ladon_settings_load_from_yaml(tmp_path):
+def test_sero_settings_load_from_yaml(tmp_path):
     yaml_path = tmp_path / "config.yaml"
     yaml_path.write_text(
-        "ladon_url: http://secrets.example\n"
-        "ladon_audience: http://secrets.example\n"
-        "ladon_namespace: platform\n"
+        "sero_url: http://secrets.example\n"
+        "sero_audience: http://secrets.example\n"
+        "sero_namespace: platform\n"
     )
 
     config = Config.load(yaml_path)
 
-    assert config.ladon_url == "http://secrets.example"
-    assert config.ladon_audience == "http://secrets.example"
-    assert config.ladon_namespace == "platform"
-    assert config.ladon_enabled is True
+    assert config.sero_url == "http://secrets.example"
+    assert config.sero_audience == "http://secrets.example"
+    assert config.sero_namespace == "platform"
+    assert config.sero_enabled is True
 
 
 @pytest.mark.parametrize(
     "settings",
     [
-        {"ladon_url": "http://secrets.example"},
-        {"ladon_url": "http://secrets.example", "ladon_audience": "aud"},
-        {"ladon_url": "http://secrets.example", "ladon_namespace": "platform"},
-        {"ladon_audience": "aud", "ladon_namespace": "platform"},
+        {"sero_url": "http://secrets.example"},
+        {"sero_url": "http://secrets.example", "sero_audience": "aud"},
+        {"sero_url": "http://secrets.example", "sero_namespace": "platform"},
+        {"sero_audience": "aud", "sero_namespace": "platform"},
     ],
 )
-def test_ladon_is_off_until_all_three_settings_are_present(settings):
+def test_sero_is_off_until_all_three_settings_are_present(settings):
     # A half-configured lane reads as off, never as half-on: a URL with no
     # audience could never authenticate, and one with no namespace has
     # nowhere to write.
-    assert Config(**settings).ladon_enabled is False
+    assert Config(**settings).sero_enabled is False
 
 
 # --- avatar_model / avatar_location (P2d: ImageClient) --------------------
@@ -541,3 +541,23 @@ def test_skills_frontmatter_accepts_vocabularies():
     )
     assert cfg.skills_frontmatter.allowed_profiles == ["agent-sdk"]
     assert "agent-ops" in cfg.skills_frontmatter.allowed_tags
+
+
+def test_old_key_names_still_configure_the_renamed_lanes():
+    """sero was ladon and noto was argus until 2026-10-12: a deployment config
+    written before that keeps working, and the new name wins over the old."""
+    from kobo_api.config import Config
+
+    cfg = Config(
+        ladon_url="http://secrets",
+        ladon_audience="http://secrets",
+        ladon_namespace="platform",
+        argus_url="https://obs.example",
+        argus_project="p",
+        noto_project="newer",
+    )
+    assert cfg.sero_enabled
+    assert cfg.sero_url == "http://secrets"
+    assert cfg.noto_url == "https://obs.example"
+    assert cfg.noto_project == "newer"
+    assert not hasattr(cfg, "ladon_url")

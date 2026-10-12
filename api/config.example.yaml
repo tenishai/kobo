@@ -147,9 +147,9 @@ slack_tokens_path: null
 # leaves the direct writes in place, unchanged. Local rooms leave all three
 # empty -- the credential is the pod's own identity, which no developer
 # machine has.
-# ladon_url: http://secrets.internal
-# ladon_audience: http://secrets.internal
-# ladon_namespace: platform
+# sero_url: http://secrets.internal
+# sero_audience: http://secrets.internal
+# sero_namespace: platform
 
 # Emails allowed to use the Slack connect routes once IAP is enabled (see
 # iap_audience below) — everyone else gets a 403. Empty (the default) leaves

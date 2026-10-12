@@ -94,7 +94,7 @@ describe("AgentCard — the observability link (card wave 2026-09-23)", () => {
     vi.unstubAllGlobals();
     stubFetch({
       "/api/catalog/observability": {
-        url: "https://argus.example.com",
+        url: "https://noto.example.com",
         project: "agents",
       },
       "/api/": {},
@@ -103,7 +103,7 @@ describe("AgentCard — the observability link (card wave 2026-09-23)", () => {
 
     const link = await screen.findByTitle("Observability");
     expect(link.getAttribute("href")).toBe(
-      "https://argus.example.com/projects/agents/dashboards/warden-agent-health",
+      "https://noto.example.com/projects/agents/dashboards/warden-agent-health",
     );
     expect(link.querySelector("svg")).not.toBeNull();
     // The label is visible text, not screen-reader-only: an icon alone did

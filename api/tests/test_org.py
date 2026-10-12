@@ -231,8 +231,8 @@ def test_org_keys_is_exactly_the_brief_set():
             "memory_replica_bucket",
         "broker_url",
         "liminal_url",
-        "argus_url",
-        "argus_project",
+        "noto_url",
+        "noto_project",
         "reader_groups",
             "gcp_project",
             "vertex_project",
@@ -452,3 +452,12 @@ def test_admin_groups_entry_with_no_matching_group_is_unwired_not_crash():
     assert org.error is not None
 
 
+
+
+def test_renamed_org_keys_are_honoured_under_their_old_names():
+    """argus_url/argus_project were renamed noto_*; an org.yaml that still
+    says argus_* is not an unknown key and lands on the new fields."""
+    from kobo_api.org import _translate_renamed
+
+    out = _translate_renamed({"argus_url": "https://obs", "argus_project": "p", "noto_project": "q"})
+    assert out == {"noto_url": "https://obs", "noto_project": "q"}

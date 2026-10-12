@@ -6,6 +6,15 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Two platform names.** The secrets platform the room hands per-agent Secrets to is
+  **sero** (named ladon until 2026-10-12) and the observability platform it links to is
+  **noto** (named argus). The deployment config keys are `sero_url`, `sero_audience`,
+  `sero_namespace`; the org keys are `noto_url`, `noto_project`; the module is
+  `kobo_api.sero`. The old key names are still honoured, each with a boot WARNING,
+  so no running room changes behaviour before its config files catch up.
+
 The first tagged release, `0.1.0`, is the room as the README describes it: create, connect,
 chat and teach, memory, colleagues and threads, access, Slack, the agent page, personas and the
 MCP surface. Everything before the tag is in the git history and in the design record under

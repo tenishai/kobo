@@ -61,7 +61,7 @@ from tests.fakes import (
     FakeGitHub,
     FakeGojira,
     FakeKubectl,
-    FakeLadon,
+    FakeSero,
     FakeSlack,
     FakeStorage,
 )
@@ -199,7 +199,7 @@ def _make_client(
     gojira=None,
     slack=_SLACK_UNSET,
     storage=None,
-    ladon=None,
+    sero=None,
     iap_jwks_fetcher=None,
 ):
     if storage is None:
@@ -223,7 +223,7 @@ def _make_client(
                 storage=storage,
                 # None (the default) is a room with no secrets platform
                 # configured: token delivery stays the direct Secret write.
-                ladon=ladon,
+                sero=sero,
             ),
             iap_jwks_fetcher=iap_jwks_fetcher,
         )
@@ -552,12 +552,12 @@ def test_connect_slack_through_the_secrets_platform_records_the_caller(
     # doing the wiring -- not the agent's creator, who is someone else here.
     private_key, jwk = _generate_jwk()
     iap_config = config.model_copy(update={"iap_audience": IAP_AUDIENCE})
-    ladon = FakeLadon()
+    sero = FakeSero()
     kubectl = FakeKubectl()
     gojira, app_id = _onboarded_gojira()
     client = _make_client(
         session_factory, iap_config, github=_CapturingGitHub(), kubectl=kubectl,
-        gojira=gojira, ladon=ladon, iap_jwks_fetcher=_fetcher(jwk),
+        gojira=gojira, sero=sero, iap_jwks_fetcher=_fetcher(jwk),
     )
     _seed_agent(
         session_factory, iap_config, gojira_app_id=app_id, slack_app_id=APP_ID,
@@ -571,14 +571,14 @@ def test_connect_slack_through_the_secrets_platform_records_the_caller(
     )
 
     assert response.status_code == 200
-    assert ladon.puts == [
+    assert sero.puts == [
         (
             OPERATOR_EMAIL,
             f"apps/{AGENT_NAME}/slack",
             {"SLACK_BOT_TOKEN": BOT_TOKEN, "SLACK_APP_TOKEN": APP_TOKEN},
         )
     ]
-    assert ladon.syncs == [
+    assert sero.syncs == [
         (
             OPERATOR_EMAIL,
             AGENT_NAME,
@@ -597,10 +597,10 @@ def test_connect_slack_through_the_secrets_platform_falls_back_to_the_creator(
     # No identity perimeter in front of the room (IAP off): the agent's
     # creator is the only person there is to name, same as the background
     # pipeline's colleague-pass delivery.
-    ladon = FakeLadon()
+    sero = FakeSero()
     gojira, app_id = _onboarded_gojira()
     client = _make_client(
-        session_factory, config, github=_CapturingGitHub(), gojira=gojira, ladon=ladon
+        session_factory, config, github=_CapturingGitHub(), gojira=gojira, sero=sero
     )
     _seed_agent(
         session_factory, config, gojira_app_id=app_id, slack_app_id=APP_ID,
@@ -613,7 +613,7 @@ def test_connect_slack_through_the_secrets_platform_falls_back_to_the_creator(
     )
 
     assert response.status_code == 200
-    assert ladon.puts[0][0] == OPERATOR_EMAIL
+    assert sero.puts[0][0] == OPERATOR_EMAIL
 
 
 def test_connect_slack_with_nobody_to_record_the_write_against_is_a_409(
@@ -623,11 +623,11 @@ def test_connect_slack_with_nobody_to_record_the_write_against_is_a_409(
     # verified caller and the agent has no creator on record either. The
     # refusal says so in one sentence naming only the agent.
     github = _CapturingGitHub()
-    ladon = FakeLadon()
+    sero = FakeSero()
     kubectl = FakeKubectl()
     gojira, app_id = _onboarded_gojira()
     client = _make_client(
-        session_factory, config, github=github, kubectl=kubectl, gojira=gojira, ladon=ladon
+        session_factory, config, github=github, kubectl=kubectl, gojira=gojira, sero=sero
     )
     _seed_agent(
         session_factory, config, gojira_app_id=app_id, slack_app_id=APP_ID,
@@ -645,7 +645,7 @@ def test_connect_slack_with_nobody_to_record_the_write_against_is_a_409(
     assert BOT_TOKEN not in error
     assert APP_TOKEN not in error
     # Nothing was attempted: no delivery, no direct write, no push.
-    assert ladon.puts == []
+    assert sero.puts == []
     assert kubectl.secrets_applied == []
     assert github.pushes == []
 
@@ -680,7 +680,7 @@ def test_connect_slack_secrets_platform_failure_is_the_same_502_as_a_failed_writ
     gojira, app_id = _onboarded_gojira()
     client = _make_client(
         session_factory, config, github=github, gojira=gojira,
-        ladon=FakeLadon(put_error="the secrets platform is unavailable right now"),
+        sero=FakeSero(put_error="the secrets platform is unavailable right now"),
     )
     _seed_agent(
         session_factory, config, gojira_app_id=app_id, slack_app_id=APP_ID,

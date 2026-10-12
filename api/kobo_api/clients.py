@@ -42,13 +42,13 @@ from kobo_api.config import Config, GroupChoice
 from kobo_api.groups import GroupResolver, OktaGroupResolver, OktaPeopleSearch
 
 if TYPE_CHECKING:
-    # kobo_api.ladon and kobo_api.github_app import ClientError from this
-    # module, so these imports exist only for annotations (`Clients.ladon`,
+    # kobo_api.sero and kobo_api.github_app import ClientError from this
+    # module, so these imports exist only for annotations (`Clients.sero`,
     # `installation_token_provider`) -- `from __future__ import annotations`
     # keeps them from being evaluated at runtime, and the implementations
     # are imported at call time.
     from kobo_api.github_app import InstallationTokenProvider
-    from kobo_api.ladon import LadonClient
+    from kobo_api.sero import SeroClient
 
 log = logging.getLogger(__name__)
 
@@ -4964,21 +4964,21 @@ class Clients:
     # true}`, never a 5xx.
     people_search: OktaPeopleSearch | None = None
     # None whenever the secrets platform's machine lane isn't configured
-    # (`Config.ladon_enabled` false -- the same "absent = feature off"
+    # (`Config.sero_enabled` false -- the same "absent = feature off"
     # convention as cabal above). Set, it REPLACES the direct
     # `kubectl.apply_secret` write at the room's two per-agent secret
     # deliveries (the colleague pass and the Slack tokens); there is
     # deliberately no fallback between the two, since an agent whose Secret
-    # has two writers has two sources of truth. See kobo_api.ladon.
-    ladon: LadonClient | None = None
+    # has two writers has two sources of truth. See kobo_api.sero.
+    sero: SeroClient | None = None
 
     @classmethod
     def real(cls, config: Config) -> Clients:
         """Wire the real, subprocess/network-backed implementations."""
         # Local import for the same circularity reason as
-        # `installation_token_provider`'s: kobo_api.ladon imports
+        # `installation_token_provider`'s: kobo_api.sero imports
         # ClientError from this module.
-        from kobo_api.ladon import HttpxLadonClient
+        from kobo_api.sero import HttpxSeroClient
 
         runner = CommandRunner()
         provider = installation_token_provider(config)
@@ -5049,13 +5049,13 @@ class Clients:
             )
             if os.environ.get("OKTA_API_TOKEN") and config.okta_domain
             else None,
-            # All three coordinates or nothing (`Config.ladon_enabled`),
+            # All three coordinates or nothing (`Config.sero_enabled`),
             # same gate shape as cabal above. The client's credential is
             # this workload's own identity, minted per call from the
             # metadata server — nothing configured, nothing stored.
-            ladon=HttpxLadonClient(
-                config.ladon_url, config.ladon_audience, config.ladon_namespace
+            sero=HttpxSeroClient(
+                config.sero_url, config.sero_audience, config.sero_namespace
             )
-            if config.ladon_enabled
+            if config.sero_enabled
             else None,
         )

@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 from kobo_api.clients import CabalClient, KubectlClient
 from kobo_api.composer import CABAL_COLLEAGUE_TOKEN_ENV
-from kobo_api.ladon import LadonClient, deliver_secret
+from kobo_api.sero import SeroClient, deliver_secret
 
 if TYPE_CHECKING:
     from kobo_api.models import Agent
@@ -29,7 +29,7 @@ def deliver_pass(
     kubectl: KubectlClient,
     cabal: CabalClient,
     agent: Agent,
-    ladon: LadonClient | None = None,
+    sero: SeroClient | None = None,
 ) -> None:
     """Mint a colleague-scoped switchboard token for `agent` and deliver it
     to the agent's own namespace as a Secret named `{agent.name}-cabal`
@@ -64,8 +64,8 @@ def deliver_pass(
     argv/stdin, redacted at debug level, never embedded in a raised
     exception).
 
-    `ladon`, when the secrets platform's machine lane is configured
-    (`Clients.ladon`, gated on `Config.ladon_enabled`), REPLACES that direct
+    `sero`, when the secrets platform's machine lane is configured
+    (`Clients.sero`, gated on `Config.sero_enabled`), REPLACES that direct
     Secret write: the token goes to the platform under `apps/<agent>/cabal`,
     recorded against the human who created the agent, and the platform
     delivers it into the agent's namespace as the SAME `{agent.name}-cabal`
@@ -88,9 +88,9 @@ def deliver_pass(
     # stops the step here, before a pass is minted over it.
     cabal.revoke_colleague(agent.name)
     token = cabal.mint_colleague(agent.name)
-    if ladon is not None:
+    if sero is not None:
         deliver_secret(
-            ladon,
+            sero,
             # The creating human: the pipeline runs in the background with
             # no request behind it, so the email captured at create time on
             # the agent row is the only person there is to name.

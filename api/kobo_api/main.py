@@ -109,7 +109,7 @@ from kobo_api.knowledge import (
     rollout_in_progress,
     save_knowledge_file,
 )
-from kobo_api.ladon import acting_email_refusal
+from kobo_api.sero import acting_email_refusal
 from kobo_api.learnings import clean_edited_statement
 from kobo_api.learnings import nightly_loop as learnings_nightly_loop
 from kobo_api.marketplace import BASELINE_TOOL_PREFIX
@@ -3046,14 +3046,14 @@ def create_app(
 
     @app.get("/api/catalog/observability")
     def observability_catalog() -> dict:
-        """The Argus deep-link config (Task 4). Both-or-nothing: url and
+        """The Noto deep-link config (Task 4). Both-or-nothing: url and
         project only ever surface together -- a half-configured pair reads
         as fully unset, since a link built from just one half is broken."""
         cfg: Config = app.state.config
-        both = bool(cfg.argus_url and cfg.argus_project)
+        both = bool(cfg.noto_url and cfg.noto_project)
         return {
-            "url": cfg.argus_url.rstrip("/") if both else None,
-            "project": cfg.argus_project if both else None,
+            "url": cfg.noto_url.rstrip("/") if both else None,
+            "project": cfg.noto_project if both else None,
         }
 
     # Access control (Task B2): the create modal's group dropdown reads this
@@ -7217,7 +7217,7 @@ def create_app(
         # for a room with no identity perimeter in front of it, matching
         # what the background pipeline can name.
         acting_email = getattr(request.state, "iap_email", None) or agent.created_by
-        if clients.ladon is not None:
+        if clients.sero is not None:
             # Checked BEFORE any work: the secrets platform records every
             # write against a person, and having nobody to name is a
             # standing state rather than a blip -- so it reads as a 409
@@ -7242,8 +7242,8 @@ def create_app(
                 runtime_image=agent.runtime_image or cfg.runtime_image,
                 # None unless the secrets platform's machine lane is
                 # configured, in which case the token delivery rides it
-                # instead of a direct Secret write (kobo_api.ladon).
-                ladon=clients.ladon,
+                # instead of a direct Secret write (kobo_api.sero).
+                sero=clients.sero,
                 acting_email=acting_email,
             )
         except ClientError as exc:
@@ -7465,14 +7465,14 @@ def create_app(
         retried: a room with no secrets platform configured at all, and an
         agent with nobody on record to write on behalf of.
         """
-        ladon = app.state.clients.ladon
-        if ladon is None:
+        sero = app.state.clients.sero
+        if sero is None:
             return JSONResponse({"error": NO_SECRETS_PLATFORM}, status_code=503)
         email = _secrets_acting_email(agent, request)
         refusal = acting_email_refusal(agent.name, email)
         if refusal is not None:
             return JSONResponse({"error": refusal}, status_code=409)
-        return ladon, email
+        return sero, email
 
     def _lane_failed(what: str, agent: Agent, exc: Exception, message: str) -> JSONResponse:
         """Log that a lane call failed, and answer the house sentence.
@@ -7517,7 +7517,7 @@ def create_app(
             return sync_unknown()
         return sync_state(status)
 
-    def _managed_secret_rows(agent: Agent, ladon, email: str) -> list[dict]:
+    def _managed_secret_rows(agent: Agent, sero, email: str) -> list[dict]:
         """The secrets the ROOM set on this agent, as locked rows.
 
         The colleague pass and the Slack values, only where they exist.
@@ -7534,7 +7534,7 @@ def create_app(
         rows: list[dict] = []
         for purpose in MANAGED_PURPOSES:
             try:
-                held = ladon.list_keys(email, managed_secret_path(agent.name, purpose))
+                held = sero.list_keys(email, managed_secret_path(agent.name, purpose))
             except ClientError as exc:
                 log.warning(
                     "secrets %s read failed for agent %s (%s)",
@@ -7608,9 +7608,9 @@ def create_app(
         if isinstance(agent, JSONResponse):
             return agent
 
-        ladon = app.state.clients.ladon
+        sero = app.state.clients.sero
         email = _secrets_acting_email(agent, request)
-        if ladon is None or not (email or "").strip():
+        if sero is None or not (email or "").strip():
             # No platform at all, or a platform and nobody it would accept
             # as the asker. Neither is a refusal -- a person looking at
             # their own agent can act on neither -- but they are DIFFERENT
@@ -7623,9 +7623,9 @@ def create_app(
                 {
                     "keys": [],
                     "updated_at": None,
-                    "platform": ladon is not None,
+                    "platform": sero is not None,
                     "secret_name": None,
-                    "unreadable": ladon is not None,
+                    "unreadable": sero is not None,
                     # Nothing to ask the cluster about, and nothing to
                     # show: an empty list of locked rows, and no claim
                     # about a file nobody read.
@@ -7636,7 +7636,7 @@ def create_app(
             )
 
         try:
-            held = ladon.list_keys(email, secret_path(agent.name))
+            held = sero.list_keys(email, secret_path(agent.name))
         except ClientError as exc:
             return _lane_failed("read", agent, exc, SECRETS_PLATFORM_UNREACHABLE)
 
@@ -7653,7 +7653,7 @@ def create_app(
                 # room does not invent one.
                 "sync": _sync_for(agent, env_secret_name(agent.name)),
                 "wired": _wired_on_default(agent),
-                "managed": _managed_secret_rows(agent, ladon, email),
+                "managed": _managed_secret_rows(agent, sero, email),
             }
         )
 
@@ -7696,7 +7696,7 @@ def create_app(
         lane = _lane_or_error(agent, request)
         if isinstance(lane, JSONResponse):
             return lane
-        ladon, email = lane
+        sero, email = lane
 
         clients = app.state.clients
         try:
@@ -7714,7 +7714,7 @@ def create_app(
 
         path = secret_path(agent.name)
         try:
-            held = ladon.list_keys(email, path)
+            held = sero.list_keys(email, path)
         except ClientError as exc:
             return _lane_failed("read", agent, exc, SECRETS_PLATFORM_UNREACHABLE)
 
@@ -7736,7 +7736,7 @@ def create_app(
         if not remaining:
             return _empty_the_secrets(
                 agent,
-                ladon=ladon,
+                sero=sero,
                 email=email,
                 path=path,
                 exists=held.exists,
@@ -7746,8 +7746,8 @@ def create_app(
 
         try:
             if payload.set or payload.remove:
-                ladon.put_secret(email, path, dict(payload.set), remove=list(payload.remove))
-                ladon.ensure_synced(
+                sero.put_secret(email, path, dict(payload.set), remove=list(payload.remove))
+                sero.ensure_synced(
                     email, agent.name, path, agent.name, env_secret_name(agent.name)
                 )
         except ClientError as exc:
@@ -7774,7 +7774,7 @@ def create_app(
     def _empty_the_secrets(
         agent: Agent,
         *,
-        ladon,
+        sero,
         email: str,
         path: str,
         exists: bool,
@@ -7833,8 +7833,8 @@ def create_app(
 
         if exists:
             try:
-                ladon.unsync(email, agent.name, agent.name, env_secret_name(agent.name))
-                ladon.delete_secret(email, path)
+                sero.unsync(email, agent.name, agent.name, env_secret_name(agent.name))
+                sero.delete_secret(email, path)
             except ClientError as exc:
                 # Never "couldn't store that": nothing was being stored.
                 return _lane_failed("removal", agent, exc, SECRETS_REMOVE_FAILED)

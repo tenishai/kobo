@@ -2,14 +2,14 @@
 card: arch-card:kobo-switchboard
 updated: 2026-10-02
 anchor: api/kobo_api/pairs.py sha=499b05c5b7bece563072ca45b4905e10c0b13133
-anchor: api/kobo_api/clients.py sha=9b3c99729ee92bb5820b4554f544d7f63f8088cf
+anchor: api/kobo_api/clients.py sha=651ada92b8a05dc2ae15856d5821378fab71c719
 ---
 # switchboard — kobo ↔ cabal: directory, relay, colleague passes, dispatch policy
 
 WHAT / SEAM: `CabalClient` (clients.py, l.~4052) speaks cabal's admin API with the operator bearer `CABAL_OPERATOR_TOKEN` (env, read live, never an org.yaml key). kobo is the POLICY OWNER; cabal stores and enforces a flat set. Policy computation: pairs.py `implicitly_paired`, `allowed_pairs`, `sync_dispatch_pairs`, `sync_dispatch_pairs_best_effort`. Wrappers: directory.py `sync_directory`/`retire_directory`, colleagues.py `deliver_pass`. On/off: `cabal_enabled(config)` = `cabal_url` AND `agent_endpoint_template` AND the env token; also check `clients.cabal is not None`.
 OPS / FLOW (cabal endpoints):
 - `POST /admin/persona/{name}/graduate` {endpoint, audience=name, agent_card_json} — DirectoryStep; the card is read verbatim from the agent repo clone, never recomposed. `POST .../absorb` on destroy (404 tolerated).
-- `POST /admin/token/revoke` {sub: agent:<name>} THEN `POST /admin/token/mint-service` {sub: agent:<name>, scope:["colleague"], aud:"cabal-core", ttl_days:365} — `deliver_pass` in WireStep; token lands as Secret `<name>-cabal`, key `CABAL_COLLEAGUE_TOKEN` (via ladon when configured, else `kubectl.apply_secret`).
+- `POST /admin/token/revoke` {sub: agent:<name>} THEN `POST /admin/token/mint-service` {sub: agent:<name>, scope:["colleague"], aud:"cabal-core", ttl_days:365} — `deliver_pass` in WireStep; token lands as Secret `<name>-cabal`, key `CABAL_COLLEAGUE_TOKEN` (via sero when configured, else `kubectl.apply_secret`).
 - `POST /a2a/tasks` {target, task} (180s timeout): every room chat, teach (`_build_teach_envelope`), learnings sweep, hello, roster refresh, threads. When the switchboard is off, hello and chat fall back to the direct path (`clients.agent`) and DirectoryStep is a no-op.
 - `PUT /admin/dispatch-pairs` {pairs:[[caller,target],...]} → {count}.
 - `GET /admin/conversations[?limit,target,caller]`, `GET /admin/conversations/{task_id}`, `GET /admin/events/stream` (SSE, async client) — the colleagues feed.

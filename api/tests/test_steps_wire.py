@@ -37,7 +37,7 @@ from tests.fakes import (
     FakeGitHub,
     FakeGojira,
     FakeKubectl,
-    FakeLadon,
+    FakeSero,
 )
 
 AGENT_NAME = "clio"
@@ -91,10 +91,10 @@ def _make_ctx(session, agent, config, clients) -> Ctx:
     return Ctx(agent=agent, session=session, config=config, clients=clients, workdir=workdir)
 
 
-def _clients(*, github=None, gojira=None, kubectl=None, cabal=None, ladon=None) -> Clients:
+def _clients(*, github=None, gojira=None, kubectl=None, cabal=None, sero=None) -> Clients:
     return Clients(
         github=github, gojira=gojira, cloud=None, agent=None, kubectl=kubectl,
-        cabal=cabal, ladon=ladon,
+        cabal=cabal, sero=sero,
     )
 
 
@@ -544,7 +544,7 @@ def test_wire_step_mint_failure_propagates_before_the_push(session_factory, conf
 def test_wire_step_delivers_the_colleague_pass_through_the_secrets_platform(
     session_factory, config, monkeypatch
 ):
-    """With the secrets platform's machine lane wired (`clients.ladon`), the
+    """With the secrets platform's machine lane wired (`clients.sero`), the
     colleague pass goes to the platform under the agent's own path and comes
     back as the SAME `{name}-cabal` Secret -- so this step's gojira.yaml
     edit and the pod behind it are unchanged, and nothing is written into
@@ -561,22 +561,22 @@ def test_wire_step_delivers_the_colleague_pass_through_the_secrets_platform(
     gojira.create_app(name=AGENT_NAME, repo_full_name=repo, cluster=cfg.gojira_cluster, namespace=AGENT_NAME)
     kubectl = FakeKubectl()
     cabal = FakeCabal(mint_colleague_result="minted-token-value")
-    ladon = FakeLadon()
+    sero = FakeSero()
     ctx = _make_ctx(
         session, agent, cfg,
-        _clients(github=github, gojira=gojira, kubectl=kubectl, cabal=cabal, ladon=ladon),
+        _clients(github=github, gojira=gojira, kubectl=kubectl, cabal=cabal, sero=sero),
     )
 
     WireStep().run(ctx)
 
-    assert ladon.puts == [
+    assert sero.puts == [
         (
             "someone@example.com",
             f"apps/{AGENT_NAME}/cabal",
             {"CABAL_COLLEAGUE_TOKEN": "minted-token-value"},
         )
     ]
-    assert ladon.syncs == [
+    assert sero.syncs == [
         (
             "someone@example.com",
             AGENT_NAME,
@@ -613,7 +613,7 @@ def test_wire_step_secrets_platform_failure_propagates_before_the_push(
         session, agent, cfg,
         _clients(
             github=github, gojira=gojira, kubectl=kubectl, cabal=FakeCabal(),
-            ladon=FakeLadon(put_error="the secrets platform is unavailable right now"),
+            sero=FakeSero(put_error="the secrets platform is unavailable right now"),
         ),
     )
 

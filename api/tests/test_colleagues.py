@@ -12,7 +12,7 @@ from kobo_api.clients import CabalError, ClientError
 from kobo_api.colleagues import deliver_pass
 from kobo_api.composer import CABAL_COLLEAGUE_TOKEN_ENV
 from kobo_api.models import Agent
-from tests.fakes import FakeCabal, FakeKubectl, FakeLadon
+from tests.fakes import FakeCabal, FakeKubectl, FakeSero
 
 AGENT_NAME = "clio"
 PERSONA = "helpful-generalist"
@@ -118,19 +118,19 @@ def test_deliver_pass_never_leaks_the_minted_token_in_a_raised_message():
     assert "ultra-secret-value" not in str(exc_info.value)
 
 
-# --- through the secrets platform's machine lane (kobo_api.ladon) -------------
+# --- through the secrets platform's machine lane (kobo_api.sero) -------------
 
 
 def test_deliver_pass_through_the_lane_stores_the_token_and_syncs_the_same_secret():
     cabal = FakeCabal(mint_colleague_result="minted-token-value")
     kubectl = FakeKubectl()
-    ladon = FakeLadon()
+    sero = FakeSero()
 
-    deliver_pass(kubectl, cabal, _agent(created_by=CREATOR), ladon)
+    deliver_pass(kubectl, cabal, _agent(created_by=CREATOR), sero)
 
     # Stored under the agent's own path, recorded against the human who
     # created it.
-    assert ladon.puts == [
+    assert sero.puts == [
         (
             CREATOR,
             f"apps/{AGENT_NAME}/cabal",
@@ -139,7 +139,7 @@ def test_deliver_pass_through_the_lane_stores_the_token_and_syncs_the_same_secre
     ]
     # Synced back as the SAME Secret name and namespace the direct write
     # used, so gojira.yaml's secrets_from entry and the pod are untouched.
-    assert ladon.syncs == [
+    assert sero.syncs == [
         (
             CREATOR,
             AGENT_NAME,
@@ -156,7 +156,7 @@ def test_deliver_pass_through_the_lane_writes_no_secret_directly():
     cabal = FakeCabal()
     kubectl = FakeKubectl()
 
-    deliver_pass(kubectl, cabal, _agent(created_by=CREATOR), FakeLadon())
+    deliver_pass(kubectl, cabal, _agent(created_by=CREATOR), FakeSero())
 
     assert kubectl.secrets_applied == []
 
@@ -164,7 +164,7 @@ def test_deliver_pass_through_the_lane_writes_no_secret_directly():
 def test_deliver_pass_still_mints_exactly_once_through_the_lane():
     cabal = FakeCabal()
 
-    deliver_pass(FakeKubectl(), cabal, _agent(created_by=CREATOR), FakeLadon())
+    deliver_pass(FakeKubectl(), cabal, _agent(created_by=CREATOR), FakeSero())
 
     assert cabal.mint_colleague_calls == [AGENT_NAME]
 
@@ -172,10 +172,10 @@ def test_deliver_pass_still_mints_exactly_once_through_the_lane():
 def test_deliver_pass_lane_failure_fails_the_step_with_no_fallback_write():
     cabal = FakeCabal()
     kubectl = FakeKubectl()
-    ladon = FakeLadon(put_error="the secrets platform is unavailable right now")
+    sero = FakeSero(put_error="the secrets platform is unavailable right now")
 
     with pytest.raises(ClientError) as exc_info:
-        deliver_pass(kubectl, cabal, _agent(created_by=CREATOR), ladon)
+        deliver_pass(kubectl, cabal, _agent(created_by=CREATOR), sero)
 
     assert "unavailable" in str(exc_info.value)
     assert kubectl.secrets_applied == []
@@ -184,20 +184,20 @@ def test_deliver_pass_lane_failure_fails_the_step_with_no_fallback_write():
 def test_deliver_pass_lane_sync_failure_also_fails_with_no_fallback_write():
     cabal = FakeCabal()
     kubectl = FakeKubectl()
-    ladon = FakeLadon(sync_error="the cluster refused the delivery")
+    sero = FakeSero(sync_error="the cluster refused the delivery")
 
     with pytest.raises(ClientError):
-        deliver_pass(kubectl, cabal, _agent(created_by=CREATOR), ladon)
+        deliver_pass(kubectl, cabal, _agent(created_by=CREATOR), sero)
 
     assert kubectl.secrets_applied == []
 
 
 def test_deliver_pass_lane_failure_never_leaks_the_minted_token():
     cabal = FakeCabal(mint_colleague_result="ultra-secret-value")
-    ladon = FakeLadon(put_error="denied")
+    sero = FakeSero(put_error="denied")
 
     with pytest.raises(ClientError) as exc_info:
-        deliver_pass(FakeKubectl(), cabal, _agent(created_by=CREATOR), ladon)
+        deliver_pass(FakeKubectl(), cabal, _agent(created_by=CREATOR), sero)
 
     assert "ultra-secret-value" not in str(exc_info.value)
 
@@ -207,13 +207,13 @@ def test_deliver_pass_through_the_lane_refuses_an_agent_with_no_creator():
     # lane exists so every stored secret has a person's name on it.
     cabal = FakeCabal()
     kubectl = FakeKubectl()
-    ladon = FakeLadon()
+    sero = FakeSero()
 
     with pytest.raises(ClientError) as exc_info:
-        deliver_pass(kubectl, cabal, _agent(created_by=None), ladon)
+        deliver_pass(kubectl, cabal, _agent(created_by=None), sero)
 
     assert AGENT_NAME in str(exc_info.value)
-    assert ladon.puts == []
+    assert sero.puts == []
     assert kubectl.secrets_applied == []
 
 

@@ -25,7 +25,7 @@ dependencies = [
     "pyyaml",
     "httpx",
     "jsonschema",
-    "prometheus-client",  # RED metrics at /metrics (argus web profile contract)
+    "prometheus-client",  # RED metrics at /metrics (noto web profile contract)
     # OTLP tracing, env-gated by OTEL_EXPORTER_OTLP_ENDPOINT (kobo_api.tracing)
     "opentelemetry-sdk",
     "opentelemetry-exporter-otlp-proto-http",

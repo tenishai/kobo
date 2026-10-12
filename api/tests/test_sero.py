@@ -1,4 +1,4 @@
-"""Tests for kobo_api.ladon: the secrets platform's machine lane -- the
+"""Tests for kobo_api.sero: the secrets platform's machine lane -- the
 request shapes the room sends, the identity token it authenticates with, and
 the two properties the module exists to keep (a secret value never reaches a
 log or an exception, and a lane failure never falls back to writing the
@@ -19,13 +19,13 @@ import httpx
 import pytest
 
 from kobo_api.clients import ClientError
-from kobo_api.ladon import (
+from kobo_api.sero import (
     _TOKEN_MAX_AGE_S,
-    HttpxLadonClient,
+    HttpxSeroClient,
     MetadataIdentityTokenProvider,
     deliver_secret,
 )
-from tests.fakes import FakeLadon
+from tests.fakes import FakeSero
 
 URL = "http://secrets.example"
 AUDIENCE = "http://secrets.example"
@@ -37,8 +37,8 @@ AGENT = "clio"
 SECRET_VALUE = "not-a-real-token-value"
 
 
-def _client(handler, *, token: str = "id-token") -> HttpxLadonClient:
-    return HttpxLadonClient(
+def _client(handler, *, token: str = "id-token") -> HttpxSeroClient:
+    return HttpxSeroClient(
         URL,
         AUDIENCE,
         NAMESPACE,
@@ -101,7 +101,7 @@ def test_put_secret_sends_the_rooms_own_namespace_never_one_from_a_caller():
         captured["json"] = json.loads(request.content)
         return _ok(request)
 
-    HttpxLadonClient(
+    HttpxSeroClient(
         URL, AUDIENCE, "another-namespace",
         token_provider=lambda: "t",
         http_client=httpx.Client(transport=httpx.MockTransport(handler)),
@@ -117,7 +117,7 @@ def test_put_secret_trailing_slash_in_the_url_does_not_double_up():
         captured["url"] = str(request.url)
         return _ok(request)
 
-    HttpxLadonClient(
+    HttpxSeroClient(
         f"{URL}/", AUDIENCE, NAMESPACE,
         token_provider=lambda: "t",
         http_client=httpx.Client(transport=httpx.MockTransport(handler)),
@@ -356,10 +356,10 @@ def test_a_platform_that_does_not_answer_raises_without_the_request_body():
     ],
 )
 def test_an_address_httpx_cannot_parse_is_a_plain_error_not_a_crash(bad_url):
-    # A misconfigured `ladon_url` must read as a failed delivery with a
+    # A misconfigured `sero_url` must read as a failed delivery with a
     # plain sentence, not an unhandled exception surfacing as a 500 on
     # whichever route happened to trigger the write.
-    client = HttpxLadonClient(
+    client = HttpxSeroClient(
         bad_url, AUDIENCE, NAMESPACE,
         token_provider=lambda: "t",
         http_client=httpx.Client(transport=httpx.MockTransport(_ok)),
@@ -392,7 +392,7 @@ def test_a_token_that_cannot_be_minted_fails_the_call_before_anything_is_sent():
     def no_token() -> str:
         raise ClientError("this room could not mint an identity token")
 
-    client = HttpxLadonClient(
+    client = HttpxSeroClient(
         URL, AUDIENCE, NAMESPACE,
         token_provider=no_token,
         http_client=httpx.Client(transport=httpx.MockTransport(handler)),
@@ -409,7 +409,7 @@ def test_a_token_that_cannot_be_minted_fails_the_call_before_anything_is_sent():
 
 def _jwt(exp: int, iat: int | None = None) -> str:
     """A JWT-shaped string with `exp` (and `iat` when given) in its payload --
-    unsigned and never verified here or in kobo_api.ladon (the platform
+    unsigned and never verified here or in kobo_api.sero (the platform
     verifies; this room only reads the two to know how long to cache)."""
 
     def segment(payload: dict) -> str:
@@ -588,10 +588,10 @@ def test_an_empty_identity_token_is_refused():
 
 
 def test_deliver_secret_stores_then_syncs_under_the_agents_own_path():
-    ladon = FakeLadon()
+    sero = FakeSero()
 
     deliver_secret(
-        ladon,
+        sero,
         acting_email=EMAIL,
         agent_name=AGENT,
         purpose="cabal",
@@ -599,10 +599,10 @@ def test_deliver_secret_stores_then_syncs_under_the_agents_own_path():
         secret_name=f"{AGENT}-cabal",
     )
 
-    assert ladon.puts == [
+    assert sero.puts == [
         (EMAIL, f"apps/{AGENT}/cabal", {"CABAL_COLLEAGUE_TOKEN": SECRET_VALUE})
     ]
-    assert ladon.syncs == [
+    assert sero.syncs == [
         (EMAIL, AGENT, f"apps/{AGENT}/cabal", AGENT, f"{AGENT}-cabal")
     ]
 
@@ -610,11 +610,11 @@ def test_deliver_secret_stores_then_syncs_under_the_agents_own_path():
 def test_deliver_secret_does_not_sync_a_path_whose_write_failed():
     # A sync for a path with nothing at it would deliver an empty Secret
     # over a good one.
-    ladon = FakeLadon(put_error="the namespace is not yours")
+    sero = FakeSero(put_error="the namespace is not yours")
 
     with pytest.raises(ClientError):
         deliver_secret(
-            ladon,
+            sero,
             acting_email=EMAIL,
             agent_name=AGENT,
             purpose="cabal",
@@ -622,16 +622,16 @@ def test_deliver_secret_does_not_sync_a_path_whose_write_failed():
             secret_name=f"{AGENT}-cabal",
         )
 
-    assert ladon.syncs == []
+    assert sero.syncs == []
 
 
 @pytest.mark.parametrize("email", [None, "", "   "])
 def test_deliver_secret_refuses_a_write_with_nobody_to_record_it_against(email):
-    ladon = FakeLadon()
+    sero = FakeSero()
 
     with pytest.raises(ClientError) as exc_info:
         deliver_secret(
-            ladon,
+            sero,
             acting_email=email,
             agent_name=AGENT,
             purpose="cabal",
@@ -641,16 +641,16 @@ def test_deliver_secret_refuses_a_write_with_nobody_to_record_it_against(email):
 
     assert AGENT in str(exc_info.value)
     assert SECRET_VALUE not in str(exc_info.value)
-    assert ladon.puts == []
-    assert ladon.syncs == []
+    assert sero.puts == []
+    assert sero.syncs == []
 
 
 def test_deliver_secret_logs_one_line_naming_the_agent_and_purpose_only(caplog):
-    ladon = FakeLadon()
+    sero = FakeSero()
 
-    with caplog.at_level("INFO", logger="kobo_api.ladon"):
+    with caplog.at_level("INFO", logger="kobo_api.sero"):
         deliver_secret(
-            ladon,
+            sero,
             acting_email=EMAIL,
             agent_name=AGENT,
             purpose="cabal",
@@ -667,11 +667,11 @@ def test_deliver_secret_logs_one_line_naming_the_agent_and_purpose_only(caplog):
 
 
 def test_deliver_secret_says_nothing_when_the_delivery_failed(caplog):
-    ladon = FakeLadon(sync_error="the cluster refused it")
+    sero = FakeSero(sync_error="the cluster refused it")
 
-    with caplog.at_level("INFO", logger="kobo_api.ladon"), pytest.raises(ClientError):
+    with caplog.at_level("INFO", logger="kobo_api.sero"), pytest.raises(ClientError):
         deliver_secret(
-            ladon,
+            sero,
             acting_email=EMAIL,
             agent_name=AGENT,
             purpose="cabal",
@@ -683,10 +683,10 @@ def test_deliver_secret_says_nothing_when_the_delivery_failed(caplog):
 
 
 def test_deliver_secret_trims_the_acting_email():
-    ladon = FakeLadon()
+    sero = FakeSero()
 
     deliver_secret(
-        ladon,
+        sero,
         acting_email=f"  {EMAIL} ",
         agent_name=AGENT,
         purpose="slack",
@@ -694,8 +694,8 @@ def test_deliver_secret_trims_the_acting_email():
         secret_name=f"{AGENT}-slack",
     )
 
-    assert ladon.puts[0][0] == EMAIL
-    assert ladon.syncs[0][0] == EMAIL
+    assert sero.puts[0][0] == EMAIL
+    assert sero.syncs[0][0] == EMAIL
 
 
 # --- list_keys: the one read, names only --------------------------------------
@@ -871,10 +871,10 @@ def test_offboard_raises_when_a_cluster_object_was_blocked():
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json={"applied": True, "report": ["ServiceAccount/ladon/x: blocked"], "blocked": ["ServiceAccount/ladon/x"]},
+            json={"applied": True, "report": ["ServiceAccount/sero/x: blocked"], "blocked": ["ServiceAccount/sero/x"]},
         )
 
-    with pytest.raises(ClientError, match="ServiceAccount/ladon/x"):
+    with pytest.raises(ClientError, match="ServiceAccount/sero/x"):
         _client(handler).offboard(EMAIL, AGENT, AGENT)
 
 
