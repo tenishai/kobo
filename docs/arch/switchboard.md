@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-switchboard
-updated: 2026-10-02
+updated: 2026-10-12
 anchor: api/kobo_api/pairs.py sha=499b05c5b7bece563072ca45b4905e10c0b13133
-anchor: api/kobo_api/clients.py sha=651ada92b8a05dc2ae15856d5821378fab71c719
+anchor: api/kobo_api/clients.py sha=86098ee0a0709db1e591f1a1d6a7a68d5fc37ef3
 ---
 # switchboard — kobo ↔ cabal: directory, relay, colleague passes, dispatch policy
 
@@ -25,3 +25,5 @@ INVARIANTS:
 - `/broker` accepts the same colleague JWT (aud `cabal-core`) verified against cabal's JWKS (pr_broker.py `verify_agent_token`); confused-deputy tradeoff accepted and documented there.
 CONSUMERS: api/kobo_api/steps.py (WireStep, DirectoryStep, HelloStep, `_deliver_knowledge_refresh`), provisioner.py, destroy.py, learnings.py, main.py (chat, teach, threads, invites, colleagues feed/stream, admin resync), mcp/tools/read.py (conversation feed), composer.py (bakes cabal JWKS/issuer/audience into agent.yaml). Cross-repo: cabal's admin API (the cabal repo) is the other side; daedalus runtime reads `CABAL_COLLEAGUE_TOKEN` via `tools.colleagues.token_env`.
 API: see endpoints above; kobo-side `allowed_pairs(session, config) -> set[tuple[str,str]]`, `sync_dispatch_pairs_best_effort(clients, config, session) -> int | None`, `CabalClient.dispatch_pairs_dirty`.
+
+2026-10-12: `GhCLI.repo_exists` now compares the `full_name` GitHub answers with, so a rename redirect does not read as an existing repository (see platform-clients).
