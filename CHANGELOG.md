@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-12
+
 ### Changed
 
 - **Two platform names.** The secrets platform the room hands per-agent Secrets to is
