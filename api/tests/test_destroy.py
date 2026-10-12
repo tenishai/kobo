@@ -43,7 +43,7 @@ from tests.fakes import (
     FakeCloud,
     FakeGitHub,
     FakeGojira,
-    FakeLadon,
+    FakeSero,
     FakeSlack,
 )
 
@@ -103,7 +103,7 @@ def _ctx(
     slack=None,
     cloud=None,
     cabal=None,
-    ladon=None,
+    sero=None,
     acting_email=None,
 ) -> DestroyCtx:
     # `cloud` defaults to a fresh, unseeded FakeCloud rather than None: since
@@ -120,7 +120,7 @@ def _ctx(
         kubectl=None,
         slack=slack,
         cabal=cabal,
-        ladon=ladon,
+        sero=sero,
     )
     return DestroyCtx(
         agent=agent,
@@ -144,7 +144,7 @@ def _seed_agent(session_factory, *, name: str = AGENT_NAME, **kwargs) -> int:
 
 
 def _clients(
-    *, github=None, gojira=None, slack=None, cloud=None, cabal=None, ladon=None
+    *, github=None, gojira=None, slack=None, cloud=None, cabal=None, sero=None
 ) -> Clients:
     # Same default-to-a-working-FakeCloud rationale as `_ctx` above, for the
     # engine-level (run_destroy) tests.
@@ -156,7 +156,7 @@ def _clients(
         kubectl=None,
         slack=slack,
         cabal=cabal,
-        ladon=ladon,
+        sero=sero,
     )
 
 
@@ -1611,11 +1611,11 @@ def test_run_destroy_releases_the_registry_slot_when_the_thread_fails_to_launch(
 # was destroyed, which is a live credential at a path nobody is watching.
 
 
-def _ladon_holding_everything(name: str = AGENT_NAME) -> FakeLadon:
-    ladon = FakeLadon()
+def _sero_holding_everything(name: str = AGENT_NAME) -> FakeSero:
+    sero = FakeSero()
     for purpose in ("cabal", "slack", "env"):
-        ladon.stored[f"apps/{name}/{purpose}"] = {"A_KEY": "not-a-real-value"}
-    return ladon
+        sero.stored[f"apps/{name}/{purpose}"] = {"A_KEY": "not-a-real-value"}
+    return sero
 
 
 def test_destroy_secrets_removes_all_three_paths_and_their_cluster_objects(
@@ -1623,21 +1623,21 @@ def test_destroy_secrets_removes_all_three_paths_and_their_cluster_objects(
 ):
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = OWNER_EMAIL
-    ladon = _ladon_holding_everything()
+    sero = _sero_holding_everything()
 
-    detail = _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+    detail = _destroy_secrets(_ctx(session, agent, config, sero=sero))
 
-    assert [path for _, path in ladon.deletes] == [
+    assert [path for _, path in sero.deletes] == [
         f"apps/{AGENT_NAME}/cabal",
         f"apps/{AGENT_NAME}/slack",
         f"apps/{AGENT_NAME}/env",
     ]
-    assert [name for *_, name in ladon.unsyncs] == [
+    assert [name for *_, name in sero.unsyncs] == [
         f"{AGENT_NAME}-cabal",
         f"{AGENT_NAME}-slack",
         f"{AGENT_NAME}-env",
     ]
-    assert ladon.stored == {}
+    assert sero.stored == {}
     assert "removed" in detail
     session.close()
 
@@ -1653,7 +1653,7 @@ def test_destroy_secrets_takes_the_identity_down_after_the_three_paths(
     agent.created_by = OWNER_EMAIL
     order: list[str] = []
 
-    class _Ordered(FakeLadon):
+    class _Ordered(FakeSero):
         def unsync(self, acting_email, app, k8s_namespace, name):
             order.append(f"unsync:{name}")
             super().unsync(acting_email, app, k8s_namespace, name)
@@ -1666,13 +1666,13 @@ def test_destroy_secrets_takes_the_identity_down_after_the_three_paths(
             order.append("offboard")
             super().offboard(acting_email, app, k8s_namespace)
 
-    ladon = _Ordered()
+    sero = _Ordered()
     for purpose in ("cabal", "slack", "env"):
-        ladon.stored[f"apps/{AGENT_NAME}/{purpose}"] = {"A_KEY": "not-a-real-value"}
+        sero.stored[f"apps/{AGENT_NAME}/{purpose}"] = {"A_KEY": "not-a-real-value"}
 
-    detail = _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+    detail = _destroy_secrets(_ctx(session, agent, config, sero=sero))
 
-    assert ladon.offboards == [(OWNER_EMAIL, AGENT_NAME, AGENT_NAME)]
+    assert sero.offboards == [(OWNER_EMAIL, AGENT_NAME, AGENT_NAME)]
     assert order[-1] == "offboard"
     assert all(step != "offboard" for step in order[:-1])
     assert detail == "removed: cabal, slack, env, identity"
@@ -1687,12 +1687,12 @@ def test_destroy_secrets_leaves_the_identity_when_a_path_could_not_go(
     does not ask for it, and the raised message says how far it got."""
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = OWNER_EMAIL
-    ladon = FakeLadon(unsync_error="the platform refused")
+    sero = FakeSero(unsync_error="the platform refused")
 
     with pytest.raises(RuntimeError, match="could not remove cabal, slack, env"):
-        _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+        _destroy_secrets(_ctx(session, agent, config, sero=sero))
 
-    assert ladon.offboards == []
+    assert sero.offboards == []
     session.close()
 
 
@@ -1701,16 +1701,16 @@ def test_destroy_secrets_that_cannot_take_the_identity_down_fails_the_step(
 ):
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = OWNER_EMAIL
-    ladon = _ladon_holding_everything()
-    ladon._offboard_error = "the platform refused"
+    sero = _sero_holding_everything()
+    sero._offboard_error = "the platform refused"
 
     with pytest.raises(RuntimeError) as excinfo:
-        _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+        _destroy_secrets(_ctx(session, agent, config, sero=sero))
 
     message = str(excinfo.value)
     assert "could not remove identity" in message
     assert "removed: cabal, slack, env" in message
-    assert ladon.stored == {}
+    assert sero.stored == {}
     session.close()
 
 
@@ -1727,7 +1727,7 @@ def test_destroy_secrets_revokes_the_agents_colleague_passes(
     agent.created_by = OWNER_EMAIL
     cabal = FakeCabal()
 
-    detail = _destroy_secrets(_ctx(session, agent, cfg, ladon=_ladon_holding_everything(), cabal=cabal))
+    detail = _destroy_secrets(_ctx(session, agent, cfg, sero=_sero_holding_everything(), cabal=cabal))
 
     assert cabal.revoke_colleague_calls == [AGENT_NAME]
     assert detail == "removed: cabal, slack, env, identity, passes"
@@ -1759,14 +1759,14 @@ def test_destroy_secrets_that_cannot_revoke_the_passes_fails_the_step(
     cabal = FakeCabal(revoke_colleague_error="switchboard down")
 
     with pytest.raises(RuntimeError, match="could not remove passes"):
-        _destroy_secrets(_ctx(session, agent, cfg, ladon=_ladon_holding_everything(), cabal=cabal))
+        _destroy_secrets(_ctx(session, agent, cfg, sero=_sero_holding_everything(), cabal=cabal))
     session.close()
 
 
 def test_destroy_secrets_without_a_switchboard_revokes_nothing(session_factory, config):
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = OWNER_EMAIL
-    detail = _destroy_secrets(_ctx(session, agent, config, ladon=_ladon_holding_everything()))
+    detail = _destroy_secrets(_ctx(session, agent, config, sero=_sero_holding_everything()))
     assert detail == "removed: cabal, slack, env, identity"
     session.close()
 
@@ -1782,7 +1782,7 @@ def test_destroy_secrets_takes_the_cluster_object_away_before_the_path(
 
     order: list[str] = []
 
-    class _Ordered(FakeLadon):
+    class _Ordered(FakeSero):
         def unsync(self, acting_email, app, k8s_namespace, name):
             order.append(f"unsync:{name}")
             super().unsync(acting_email, app, k8s_namespace, name)
@@ -1791,7 +1791,7 @@ def test_destroy_secrets_takes_the_cluster_object_away_before_the_path(
             order.append(f"delete:{path}")
             super().delete_secret(acting_email, path)
 
-    _destroy_secrets(_ctx(session, agent, config, ladon=_Ordered()))
+    _destroy_secrets(_ctx(session, agent, config, sero=_Ordered()))
 
     assert order[0] == f"unsync:{AGENT_NAME}-cabal"
     assert order[1] == f"delete:apps/{AGENT_NAME}/cabal"
@@ -1803,34 +1803,34 @@ def test_destroy_secrets_records_the_removal_against_the_agents_creator(
 ):
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = f"  {OWNER_EMAIL} "
-    ladon = _ladon_holding_everything()
+    sero = _sero_holding_everything()
 
-    _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+    _destroy_secrets(_ctx(session, agent, config, sero=sero))
 
-    assert {email for email, _ in ladon.deletes} == {OWNER_EMAIL}
-    assert {call[0] for call in ladon.unsyncs} == {OWNER_EMAIL}
+    assert {email for email, _ in sero.deletes} == {OWNER_EMAIL}
+    assert {call[0] for call in sero.unsyncs} == {OWNER_EMAIL}
     session.close()
 
 
 def test_destroy_secrets_run_twice_is_the_same_answer(session_factory, config):
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = OWNER_EMAIL
-    ladon = _ladon_holding_everything()
+    sero = _sero_holding_everything()
 
-    first = _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
-    second = _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+    first = _destroy_secrets(_ctx(session, agent, config, sero=sero))
+    second = _destroy_secrets(_ctx(session, agent, config, sero=sero))
 
     assert first == second
     # The second run really did run: the lane's already-gone answer is a
     # success, so every call is made again and the step reports the same
     # three purposes rather than short-circuiting on state it kept.
-    assert [path for _, path in ladon.deletes] == [
+    assert [path for _, path in sero.deletes] == [
         f"apps/{AGENT_NAME}/cabal",
         f"apps/{AGENT_NAME}/slack",
         f"apps/{AGENT_NAME}/env",
     ] * 2
-    assert len(ladon.unsyncs) == 6
-    assert ladon.stored == {}
+    assert len(sero.unsyncs) == 6
+    assert sero.stored == {}
     session.close()
 
 
@@ -1838,7 +1838,7 @@ def test_destroy_secrets_skips_a_room_with_no_secrets_platform(session_factory, 
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = OWNER_EMAIL
 
-    detail = _destroy_secrets(_ctx(session, agent, config, ladon=None))
+    detail = _destroy_secrets(_ctx(session, agent, config, sero=None))
 
     assert "no secrets platform" in detail
     session.close()
@@ -1853,13 +1853,13 @@ def test_destroy_secrets_leaves_the_paths_when_nobody_is_on_record(
     # clean destroy is not held hostage to it.
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = None
-    ladon = _ladon_holding_everything()
+    sero = _sero_holding_everything()
 
-    detail = _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+    detail = _destroy_secrets(_ctx(session, agent, config, sero=sero))
 
     assert "no person on record" in detail
-    assert ladon.deletes == []
-    assert ladon.unsyncs == []
+    assert sero.deletes == []
+    assert sero.unsyncs == []
     session.close()
 
 
@@ -1867,9 +1867,9 @@ def test_destroy_secrets_note_never_carries_an_em_dash(session_factory, config):
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = None
 
-    assert "—" not in _destroy_secrets(_ctx(session, agent, config, ladon=None))
+    assert "—" not in _destroy_secrets(_ctx(session, agent, config, sero=None))
     assert "—" not in _destroy_secrets(
-        _ctx(session, agent, config, ladon=FakeLadon())
+        _ctx(session, agent, config, sero=FakeSero())
     )
     session.close()
 
@@ -1880,17 +1880,17 @@ def test_destroy_secrets_that_the_lane_refuses_fails_the_step(session_factory, c
     # removed that is still live. The run resumes here.
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = OWNER_EMAIL
-    ladon = FakeLadon(delete_error="that namespace is not yours")
+    sero = FakeSero(delete_error="that namespace is not yours")
 
     with pytest.raises(RuntimeError) as exc:
-        _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+        _destroy_secrets(_ctx(session, agent, config, sero=sero))
 
     assert "could not remove cabal, slack, env" in str(exc.value)
     session.close()
 
 
 def test_a_full_destroy_run_removes_the_stored_secrets_too(session_factory, config):
-    ladon = _ladon_holding_everything()
+    sero = _sero_holding_everything()
     agent_id = _seed_agent(
         session_factory,
         status=AgentStatus.READY,
@@ -1899,12 +1899,12 @@ def test_a_full_destroy_run_removes_the_stored_secrets_too(session_factory, conf
         created_by=OWNER_EMAIL,
     )
 
-    thread = run_destroy(session_factory, agent_id, _clients(ladon=ladon), config)
+    thread = run_destroy(session_factory, agent_id, _clients(sero=sero), config)
     assert thread is not None
     thread.join(timeout=JOIN_TIMEOUT)
 
-    assert ladon.stored == {}
-    assert len(ladon.unsyncs) == 3
+    assert sero.stored == {}
+    assert len(sero.unsyncs) == 3
 
 
 def test_destroy_secrets_records_the_removal_against_the_operator_who_asked(
@@ -1915,14 +1915,14 @@ def test_destroy_secrets_records_the_removal_against_the_operator_who_asked(
     # company; the operator doing this is here.
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = OWNER_EMAIL
-    ladon = _ladon_holding_everything()
+    sero = _sero_holding_everything()
 
     _destroy_secrets(
-        _ctx(session, agent, config, ladon=ladon, acting_email="ops@example.com")
+        _ctx(session, agent, config, sero=sero, acting_email="ops@example.com")
     )
 
-    assert {email for email, _ in ladon.deletes} == {"ops@example.com"}
-    assert {call[0] for call in ladon.unsyncs} == {"ops@example.com"}
+    assert {email for email, _ in sero.deletes} == {"ops@example.com"}
+    assert {call[0] for call in sero.unsyncs} == {"ops@example.com"}
     session.close()
 
 
@@ -1934,11 +1934,11 @@ def test_destroy_secrets_falls_back_to_the_creator_when_no_caller_is_named(
     # the honest fallback.
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = OWNER_EMAIL
-    ladon = _ladon_holding_everything()
+    sero = _sero_holding_everything()
 
-    _destroy_secrets(_ctx(session, agent, config, ladon=ladon, acting_email=None))
+    _destroy_secrets(_ctx(session, agent, config, sero=sero, acting_email=None))
 
-    assert {email for email, _ in ladon.deletes} == {OWNER_EMAIL}
+    assert {email for email, _ in sero.deletes} == {OWNER_EMAIL}
     session.close()
 
 
@@ -1951,25 +1951,25 @@ def test_destroy_secrets_attempts_all_three_even_when_one_refuses(
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = OWNER_EMAIL
 
-    class _RefusesSlack(FakeLadon):
+    class _RefusesSlack(FakeSero):
         def delete_secret(self, acting_email, path):
             if path.endswith("/slack"):
                 raise ClientError("that namespace is not yours")
             super().delete_secret(acting_email, path)
 
-    ladon = _RefusesSlack()
+    sero = _RefusesSlack()
     for purpose in ("cabal", "slack", "env"):
-        ladon.stored[f"apps/{AGENT_NAME}/{purpose}"] = {"A_KEY": "not-a-real-value"}
+        sero.stored[f"apps/{AGENT_NAME}/{purpose}"] = {"A_KEY": "not-a-real-value"}
 
     with pytest.raises(RuntimeError) as exc:
-        _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+        _destroy_secrets(_ctx(session, agent, config, sero=sero))
 
     assert "slack" in str(exc.value)
     assert "cabal" in str(exc.value)
     assert "env" in str(exc.value)
     # The two that could go, went.
-    assert f"apps/{AGENT_NAME}/cabal" not in ladon.stored
-    assert f"apps/{AGENT_NAME}/env" not in ladon.stored
+    assert f"apps/{AGENT_NAME}/cabal" not in sero.stored
+    assert f"apps/{AGENT_NAME}/env" not in sero.stored
     session.close()
 
 
@@ -1982,18 +1982,18 @@ def test_destroy_secrets_does_not_wedge_on_a_namespace_that_is_already_gone(
     # namespace with "there is nothing here", which is a success.
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = OWNER_EMAIL
-    ladon = FakeLadon(missing_k8s_namespaces={AGENT_NAME})
+    sero = FakeSero(missing_k8s_namespaces={AGENT_NAME})
     for purpose in ("cabal", "slack", "env"):
-        ladon.stored[f"apps/{AGENT_NAME}/{purpose}"] = {"A_KEY": "not-a-real-value"}
+        sero.stored[f"apps/{AGENT_NAME}/{purpose}"] = {"A_KEY": "not-a-real-value"}
 
-    detail = _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+    detail = _destroy_secrets(_ctx(session, agent, config, sero=sero))
 
     assert "removed" in detail
-    assert ladon.unsyncs == []
-    assert len(ladon.absent_unsyncs) == 3
+    assert sero.unsyncs == []
+    assert len(sero.absent_unsyncs) == 3
     # The KV paths still go: the namespace being gone says nothing about
     # what the platform is holding.
-    assert ladon.stored == {}
+    assert sero.stored == {}
     session.close()
 
 
@@ -2009,7 +2009,7 @@ def test_the_secrets_step_runs_before_the_platform_takes_the_namespace_away(
 
 
 def test_a_full_destroy_run_names_the_operator_who_asked(session_factory, config):
-    ladon = _ladon_holding_everything()
+    sero = _sero_holding_everything()
     agent_id = _seed_agent(
         session_factory,
         status=AgentStatus.READY,
@@ -2021,14 +2021,14 @@ def test_a_full_destroy_run_names_the_operator_who_asked(session_factory, config
     thread = run_destroy(
         session_factory,
         agent_id,
-        _clients(ladon=ladon),
+        _clients(sero=sero),
         config,
         acting_email="ops@example.com",
     )
     assert thread is not None
     thread.join(timeout=JOIN_TIMEOUT)
 
-    assert {email for email, _ in ladon.deletes} == {"ops@example.com"}
+    assert {email for email, _ in sero.deletes} == {"ops@example.com"}
 
 
 def test_destroy_secrets_counts_an_unexpected_failure_and_keeps_going(
@@ -2040,23 +2040,23 @@ def test_destroy_secrets_counts_an_unexpected_failure_and_keeps_going(
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = OWNER_EMAIL
 
-    class _SurprisesOnCabal(FakeLadon):
+    class _SurprisesOnCabal(FakeSero):
         def unsync(self, acting_email, app, k8s_namespace, name):
             if name.endswith("-cabal"):
                 raise RuntimeError("something nobody wrapped")
             super().unsync(acting_email, app, k8s_namespace, name)
 
-    ladon = _SurprisesOnCabal()
+    sero = _SurprisesOnCabal()
     for purpose in ("cabal", "slack", "env"):
-        ladon.stored[f"apps/{AGENT_NAME}/{purpose}"] = {"A_KEY": "not-a-real-value"}
+        sero.stored[f"apps/{AGENT_NAME}/{purpose}"] = {"A_KEY": "not-a-real-value"}
 
     with pytest.raises(RuntimeError) as exc:
-        _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+        _destroy_secrets(_ctx(session, agent, config, sero=sero))
 
     assert "cabal" in str(exc.value)
     assert "slack, env" in str(exc.value)
-    assert f"apps/{AGENT_NAME}/slack" not in ladon.stored
-    assert f"apps/{AGENT_NAME}/env" not in ladon.stored
+    assert f"apps/{AGENT_NAME}/slack" not in sero.stored
+    assert f"apps/{AGENT_NAME}/env" not in sero.stored
     session.close()
 
 
@@ -2070,18 +2070,18 @@ def test_an_object_recreated_under_the_same_name_fails_only_that_purpose(
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = OWNER_EMAIL
 
-    class _Recreates(FakeLadon):
+    class _Recreates(FakeSero):
         def unsync(self, acting_email, app, k8s_namespace, name):
             if name.endswith("-slack"):
                 raise ClientError(f"something else now stands at {name}")
             super().unsync(acting_email, app, k8s_namespace, name)
 
-    ladon = _Recreates()
+    sero = _Recreates()
     for purpose in ("cabal", "slack", "env"):
-        ladon.stored[f"apps/{AGENT_NAME}/{purpose}"] = {"A_KEY": "not-a-real-value"}
+        sero.stored[f"apps/{AGENT_NAME}/{purpose}"] = {"A_KEY": "not-a-real-value"}
 
     with pytest.raises(RuntimeError) as exc:
-        _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+        _destroy_secrets(_ctx(session, agent, config, sero=sero))
 
     assert "could not remove slack" in str(exc.value)
     assert "removed: cabal, env" in str(exc.value)
@@ -2094,10 +2094,10 @@ def test_destroy_secrets_never_logs_what_the_lane_said(session_factory, config, 
     # request it refused.
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = OWNER_EMAIL
-    ladon = FakeLadon(delete_error="refused the body not-a-real-value")
+    sero = FakeSero(delete_error="refused the body not-a-real-value")
 
     with caplog.at_level("WARNING"), pytest.raises(RuntimeError):
-        _destroy_secrets(_ctx(session, agent, config, ladon=ladon))
+        _destroy_secrets(_ctx(session, agent, config, sero=sero))
 
     assert "not-a-real-value" not in caplog.text
     assert "refused the body" not in caplog.text

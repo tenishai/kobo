@@ -15,8 +15,8 @@ Secret, same keys, same `secrets_from` entry in `gojira.yaml`.
 
 Two halves live here:
 
-- `LadonClient` (the Protocol every caller depends on) and `HttpxLadonClient`
-  (its one real implementation), with `FakeLadon` in tests/fakes.py standing
+- `SeroClient` (the Protocol every caller depends on) and `HttpxSeroClient`
+  (its one real implementation), with `FakeSero` in tests/fakes.py standing
   in for it the way every other client in this room is faked.
 - `MetadataIdentityTokenProvider`, the lane's credential: a Google OIDC ID
   token for THIS workload's own identity, minted by the metadata server for
@@ -103,7 +103,7 @@ _REFRESH_INTERVAL = "1m"
 class SecretKeys:
     """What one application path holds, by NAME. Never a value, masked or
     otherwise -- the lane's read route does not return one and this room
-    does not ask for one (see `LadonClient.list_keys`).
+    does not ask for one (see `SeroClient.list_keys`).
 
     `exists` is false for a path with nothing at it, which is the ordinary
     state of an agent whose owner has never added a secret. `updated_at` is
@@ -117,7 +117,7 @@ class SecretKeys:
     exists: bool
 
 
-class LadonClient(Protocol):
+class SeroClient(Protocol):
     """What the room needs from the secrets platform, and nothing more.
 
     Five calls, not a general-purpose secrets API. The room writes a secret
@@ -280,7 +280,7 @@ class MetadataIdentityTokenProvider:
     There is no local mode. On a developer machine the metadata server does
     not answer, so this raises -- which is correct and never reached: the
     lane's three settings are deployment-local, so a local room never has
-    `Config.ladon_enabled` true and never builds a client that holds one of
+    `Config.sero_enabled` true and never builds a client that holds one of
     these. `time.time` (not `monotonic`) is deliberate: the window is
     compared against the token's own absolute `exp`.
     """
@@ -350,8 +350,8 @@ class MetadataIdentityTokenProvider:
         return token
 
 
-class HttpxLadonClient:
-    """`LadonClient` over httpx, authenticated as this workload's own
+class HttpxSeroClient:
+    """`SeroClient` over httpx, authenticated as this workload's own
     identity (see `MetadataIdentityTokenProvider`, its default credential).
 
     `namespace` is the room's own team namespace on the platform -- fixed
@@ -574,7 +574,7 @@ class HttpxLadonClient:
             # InvalidURL is NOT an HTTPError, and an address with no host at
             # all (`http://`) never reaches httpx's own URL validation --
             # it surfaces as a plain ValueError from the proxy lookup. A
-            # misconfigured `ladon_url` is a failed delivery either way;
+            # misconfigured `sero_url` is a failed delivery either way;
             # uncaught, it would surface as a 500 on whichever route
             # happened to trigger the write.
             raise ClientError(f"{what}: the secrets platform did not answer ({exc})") from None
@@ -648,7 +648,7 @@ def _server_sentence(resp: httpx.Response) -> str:
 
 
 def deliver_secret(
-    ladon: LadonClient,
+    sero: SeroClient,
     *,
     acting_email: str | None,
     agent_name: str,
@@ -685,10 +685,10 @@ def deliver_secret(
         raise ClientError(refusal)
     email = acting_email.strip()
     path = f"apps/{agent_name}/{purpose}"
-    ladon.put_secret(email, path, values)
+    sero.put_secret(email, path, values)
     # Only after the value is stored: a sync for a path with nothing at it
     # would deliver an empty Secret over a good one.
-    ladon.ensure_synced(email, agent_name, path, agent_name, secret_name)
+    sero.ensure_synced(email, agent_name, path, agent_name, secret_name)
     # One line per delivery, and only once it actually happened: which lane
     # wrote an agent's secret is the first thing an operator asks when a pod
     # comes up without one. Names only -- never a value, and not the

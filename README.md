@@ -88,7 +88,7 @@ concern and compose:
   borrows its editor patterns and test console.
 - **[liminal](https://github.com/tenishai/liminal)** — the MCP gateway agents point at for
   real tool capabilities.
-- **[ladon](https://github.com/tenishai/ladon)** — secrets on OpenBao via External Secrets.
+- **[sero](https://github.com/tenishai/sero)** — secrets on OpenBao via External Secrets.
 
 ## How it works
 

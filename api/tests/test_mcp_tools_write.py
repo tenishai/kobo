@@ -62,7 +62,7 @@ from tests.fakes import (
     FakeGitHub,
     FakeGojira,
     FakeKubectl,
-    FakeLadon,
+    FakeSero,
     FakeName,
     FakeSlack,
     FakeStorage,
@@ -214,7 +214,7 @@ def _app(
     slack=None,
     cabal=None,
     name=None,
-    ladon=None,
+    sero=None,
     kubectl=None,
 ):
     clients = Clients(
@@ -228,7 +228,7 @@ def _app(
         slack=slack,
         cabal=cabal,
         name=name,
-        ladon=ladon,
+        sero=sero,
     )
     return create_app(session_factory, config=config, clients=clients)
 
@@ -1810,14 +1810,14 @@ SECRETS_GOJIRA_YAML = "name: clio\nservice_account: agent-clio\n"
 
 
 def _secrets_app(
-    session_factory, config, fake_storage, *, ladon=None, github=None, kubectl=None
+    session_factory, config, fake_storage, *, sero=None, github=None, kubectl=None
 ):
     return _app(
         session_factory,
         config,
         groups_resolver=_resolver(),
         storage=fake_storage,
-        ladon=ladon,
+        sero=sero,
         kubectl=kubectl,
         github=github
         or FakeGitHub(
@@ -1841,10 +1841,10 @@ def _seed_secrets_agent(session_factory, *, created_by=MEMBER_A_EMAIL):
 def test_list_agent_secrets_answers_names_and_never_a_value(
     session_factory, config, fake_storage
 ):
-    ladon = FakeLadon()
-    ladon.stored[f"apps/{SECRETS_AGENT}/env"] = {"API_KEY": SECRET_VALUE}
+    sero = FakeSero()
+    sero.stored[f"apps/{SECRETS_AGENT}/env"] = {"API_KEY": SECRET_VALUE}
     _seed_secrets_agent(session_factory)
-    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage, ladon=ladon))
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage, sero=sero))
 
     result = _call_tool(
         mcp, "kobo_list_agent_secrets", _ctx_for(MEMBER_A_EMAIL), agent=SECRETS_AGENT
@@ -1859,9 +1859,9 @@ def test_list_agent_secrets_answers_names_and_never_a_value(
 def test_set_agent_secrets_stores_the_value_and_reports_the_wiring(
     session_factory, config, fake_storage
 ):
-    ladon = FakeLadon()
+    sero = FakeSero()
     _seed_secrets_agent(session_factory)
-    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage, ladon=ladon))
+    mcp = build_mcp_server(_secrets_app(session_factory, config, fake_storage, sero=sero))
 
     result = _call_tool(
         mcp,
@@ -1873,7 +1873,7 @@ def test_set_agent_secrets_stores_the_value_and_reports_the_wiring(
 
     assert result["secrets"] == ["API_KEY"]
     assert result["wiring"] == "committed"
-    assert ladon.puts[0][2] == {"API_KEY": SECRET_VALUE}
+    assert sero.puts[0][2] == {"API_KEY": SECRET_VALUE}
     assert SECRET_VALUE not in json.dumps(result)
 
 
@@ -1882,7 +1882,7 @@ def test_set_agent_secrets_never_puts_a_value_in_the_audit_row(
 ):
     _seed_secrets_agent(session_factory)
     mcp = build_mcp_server(
-        _secrets_app(session_factory, config, fake_storage, ladon=FakeLadon())
+        _secrets_app(session_factory, config, fake_storage, sero=FakeSero())
     )
 
     _call_tool(
@@ -1928,7 +1928,7 @@ def test_a_bad_secret_value_is_refused_by_field_name_and_never_echoed(
     # else -- in the answer AND in the audit row.
     _seed_secrets_agent(session_factory)
     mcp = build_mcp_server(
-        _secrets_app(session_factory, config, fake_storage, ladon=FakeLadon())
+        _secrets_app(session_factory, config, fake_storage, sero=FakeSero())
     )
 
     with pytest.raises(ToolError) as exc:
@@ -1956,7 +1956,7 @@ def test_an_over_long_secret_value_is_refused_without_repeating_it(
     oversized = "z" * (MAX_ENV_VALUE_LENGTH + 1)
     _seed_secrets_agent(session_factory)
     mcp = build_mcp_server(
-        _secrets_app(session_factory, config, fake_storage, ladon=FakeLadon())
+        _secrets_app(session_factory, config, fake_storage, sero=FakeSero())
     )
 
     with pytest.raises(ToolError) as exc:

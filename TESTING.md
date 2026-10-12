@@ -8,8 +8,8 @@ Two kinds of test, and the directory says which.
 person or another product depends on:
 
 - an authentication, authorization, ownership or visibility gate
-- the shape of a wire payload another product reads (gojira, cabal, ladon,
-  GitHub, argus, an assistant over MCP)
+- the shape of a wire payload another product reads (gojira, cabal, sero,
+  GitHub, noto, an assistant over MCP)
 - data integrity: a claim that must never run twice, idempotent re-runs,
   migrations, concurrency
 - destruction safety and secrets handling (never logged, never echoed)

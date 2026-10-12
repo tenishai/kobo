@@ -60,8 +60,8 @@ replica, so two pods allow twice the configured rate overall.
 **Secrets platform**: a room can hand the two secrets it creates for an agent — the pass that
 lets agents talk to each other, and the Slack tokens an operator pastes in — to a secrets
 platform instead of writing them into the agent's namespace itself. Set all three of
-`ladon_url` (the platform's base URL), `ladon_audience` (the audience its machine lane expects
-in an identity token) and `ladon_namespace` (the team namespace this room's secrets live in
+`sero_url` (the platform's base URL), `sero_audience` (the audience its machine lane expects
+in an identity token) and `sero_namespace` (the team namespace this room's secrets live in
 over there). With any of the three missing the room writes those Secrets directly, exactly as
 it always has.
 

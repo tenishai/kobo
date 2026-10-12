@@ -2236,15 +2236,15 @@ def test_observability_catalog_empty_without_config(client):
 
 def test_observability_catalog_returns_configured_values(client):
     cfg = client.app.state.config
-    old = (cfg.argus_url, cfg.argus_project)
-    cfg.argus_url, cfg.argus_project = "https://argus.example", "ai-agents-dev"
+    old = (cfg.noto_url, cfg.noto_project)
+    cfg.noto_url, cfg.noto_project = "https://noto.example", "ai-agents-dev"
     try:
         assert client.get("/api/catalog/observability").json() == {
-            "url": "https://argus.example",
+            "url": "https://noto.example",
             "project": "ai-agents-dev",
         }
     finally:
-        cfg.argus_url, cfg.argus_project = old
+        cfg.noto_url, cfg.noto_project = old
 
 
 def test_observability_catalog_strips_trailing_slash_from_url(client):
@@ -2252,15 +2252,15 @@ def test_observability_catalog_strips_trailing_slash_from_url(client):
     `/projects/...` path the UI appends, producing a broken `//projects`
     link -- the route normalizes it away."""
     cfg = client.app.state.config
-    old = (cfg.argus_url, cfg.argus_project)
-    cfg.argus_url, cfg.argus_project = "https://argus.example/", "ai-agents-dev"
+    old = (cfg.noto_url, cfg.noto_project)
+    cfg.noto_url, cfg.noto_project = "https://noto.example/", "ai-agents-dev"
     try:
         assert client.get("/api/catalog/observability").json() == {
-            "url": "https://argus.example",
+            "url": "https://noto.example",
             "project": "ai-agents-dev",
         }
     finally:
-        cfg.argus_url, cfg.argus_project = old
+        cfg.noto_url, cfg.noto_project = old
 
 
 def test_observability_catalog_both_or_nothing_url_only(client):
@@ -2268,15 +2268,15 @@ def test_observability_catalog_both_or_nothing_url_only(client):
     fully absent, same as the composer's other both-or-nothing config pairs
     (e.g. broker_url's github block) -- a partial value is not actionable."""
     cfg = client.app.state.config
-    old = (cfg.argus_url, cfg.argus_project)
-    cfg.argus_url, cfg.argus_project = "https://argus.example", None
+    old = (cfg.noto_url, cfg.noto_project)
+    cfg.noto_url, cfg.noto_project = "https://noto.example", None
     try:
         assert client.get("/api/catalog/observability").json() == {
             "url": None,
             "project": None,
         }
     finally:
-        cfg.argus_url, cfg.argus_project = old
+        cfg.noto_url, cfg.noto_project = old
 
 
 # --- team-guide archetype (spec 2026-09-14) ---------------------------------

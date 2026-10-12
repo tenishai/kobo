@@ -249,14 +249,14 @@ def test_mint_pins_repositories_and_pr_permissions(tmp_path):
         app_id="1",
         installation_id="2",
         private_key_path=_rsa_key_pem(tmp_path),
-        repositories=["acme/services-clip", "acme/ladon"],
+        repositories=["acme/services-clip", "acme/sero"],
         http_client=fake,
         now=lambda: 1_000_000,
     )
-    assert fake.sent["json"]["repositories"] == ["services-clip", "ladon"]  # bare names
+    assert fake.sent["json"]["repositories"] == ["services-clip", "sero"]  # bare names
     assert fake.sent["json"]["permissions"] == PR_PERMISSIONS
     assert out["token"] == "ghs_scoped"
-    assert out["repositories"] == ["acme/services-clip", "acme/ladon"]
+    assert out["repositories"] == ["acme/services-clip", "acme/sero"]
 
 
 def test_mint_refuses_an_empty_scope(tmp_path):

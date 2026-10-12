@@ -30,7 +30,7 @@ from kobo_api.clients import (
     StorageNotFound,
     gsa_email,
 )
-from kobo_api.ladon import SecretKeys
+from kobo_api.sero import SecretKeys
 
 # --- Generated-scaffolding fixture for FakeGitHub.clone ------------------------
 #
@@ -1847,11 +1847,11 @@ class FakeCabal:
             yield chunk
 
 
-class FakeLadon:
+class FakeSero:
     """Records every call the secrets platform's machine lane would have
     received (`.puts`/`.syncs`/`.reads`/`.deletes`/`.unsyncs`, each in call
     order) -- no real platform, no metadata server, no cluster involved
-    (kobo_api.ladon).
+    (kobo_api.sero).
 
     `.puts` entries are `(acting_email, path, values)` and `.syncs` entries
     are `(acting_email, app, path, k8s_namespace, name)`. The VALUES are

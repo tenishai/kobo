@@ -45,7 +45,7 @@ import yaml
 
 from kobo_api.clients import ClientError, GitHubClient, GojiraClient, KubectlClient
 from kobo_api.composer import update_dockerfile_runtime_image
-from kobo_api.ladon import LadonClient, deliver_secret
+from kobo_api.sero import SeroClient, deliver_secret
 
 # --- render_manifest -----------------------------------------------------------
 
@@ -313,7 +313,7 @@ def wire_slack(
     bot_token: str,
     app_token: str,
     runtime_image: str,
-    ladon: LadonClient | None = None,
+    sero: SeroClient | None = None,
     acting_email: str | None = None,
 ) -> str:
     """Deliver `bot_token`/`app_token` to the agent's namespace and wire its
@@ -322,8 +322,8 @@ def wire_slack(
     1. `kubectl.apply_secret` upserts `{name}-slack` in namespace `name` with
        `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN` — the only place either token
        value is ever used; neither is written to a repo file or returned.
-       When the secrets platform's machine lane is configured (`ladon`,
-       `Clients.ladon`), that write goes THROUGH the platform instead:
+       When the secrets platform's machine lane is configured (`sero`,
+       `Clients.sero`), that write goes THROUGH the platform instead:
        stored at `apps/{name}/slack` against `acting_email` (the person
        wiring Slack right now, else the agent's creator) and delivered into
        the agent's namespace as the same `{name}-slack` Secret, so step 2's
@@ -368,9 +368,9 @@ def wire_slack(
     report.
     """
     tokens = {"SLACK_BOT_TOKEN": bot_token, "SLACK_APP_TOKEN": app_token}
-    if ladon is not None:
+    if sero is not None:
         deliver_secret(
-            ladon,
+            sero,
             acting_email=acting_email,
             agent_name=name,
             purpose="slack",

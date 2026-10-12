@@ -43,4 +43,4 @@ never overwritten.
 ## Later
 
 - Reaction-based mutation approvals over Slack · Archive/Library extraction
-- Observability wiring (argus) · multi-environment promote flows · ladon-backed secrets
+- Observability wiring (noto) · multi-environment promote flows · sero-backed secrets

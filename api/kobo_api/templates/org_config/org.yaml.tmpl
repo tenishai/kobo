@@ -28,12 +28,12 @@ memory_replica_bucket: __KOBO_MEMORY_REPLICA_BUCKET__
 broker_url: __KOBO_BROKER_URL__
 liminal_url: __KOBO_LIMINAL_URL__
 
-# Argus dashboard link for this room's agents (Task 4). Both null (the
+# Noto dashboard link for this room's agents (Task 4). Both null (the
 # default) means the observability catalog is off -- the UI shows no
-# Argus link. A half-configured pair (only one set) is treated the same
+# Noto link. A half-configured pair (only one set) is treated the same
 # as both unset; see kobo_api.main's /api/catalog/observability route.
-argus_url: __KOBO_ARGUS_URL__
-argus_project: __KOBO_ARGUS_PROJECT__
+noto_url: __KOBO_NOTO_URL__
+noto_project: __KOBO_NOTO_PROJECT__
 
 # Raw Okta group names whose members can SEE every agent (visibility only,
 # never any mutation power). Empty list = nobody holds the reader role.

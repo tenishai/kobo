@@ -10,6 +10,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import yaml
+import logging
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
@@ -187,7 +189,39 @@ def vertex_location_for(config: Config, model_id: str) -> str:
     return config.vertex_location
 
 
+# Config fields that changed name and still mean the same thing. sero was
+# named ladon and noto was named argus until 2026-10-12; a deployment config
+# written before that keeps working, with one WARNING per old key. The new
+# name wins when both are present.
+RENAMED_CONFIG_KEYS = {
+    "ladon_url": "sero_url",
+    "ladon_audience": "sero_audience",
+    "ladon_namespace": "sero_namespace",
+    "argus_url": "noto_url",
+    "argus_project": "noto_project",
+}
+
+_log = logging.getLogger(__name__)
+
+
 class Config(BaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_old_key_names(cls, data):
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        for old, new in sorted(RENAMED_CONFIG_KEYS.items()):
+            if old not in out:
+                continue
+            value = out.pop(old)
+            if new in out:
+                _log.warning("config sets both %r and %r; %r wins", old, new, new)
+                continue
+            _log.warning("config key %r was renamed %r; honoured, rename it in the file", old, new)
+            out[new] = value
+        return out
+
     github_org: str = "example-org"
     # Full name (owner/repo) of the client's org config repo — cloned at
     # boot and merged over this file's own values (kobo_api.org.load_org_
@@ -300,15 +334,15 @@ class Config(BaseModel):
     # the three empty (the default) means the room keeps writing those
     # Secrets directly, exactly as before: "absent = feature off", the same
     # convention slack_tokens_secret above and skills_bucket hold. See
-    # `ladon_enabled` below for the one place that check lives, and
-    # kobo_api.ladon for the lane itself.
+    # `sero_enabled` below for the one place that check lives, and
+    # kobo_api.sero for the lane itself.
     #
     # Deployment-local, deliberately absent from org.py's ORG_KEYS: these
     # name a service and a namespace in THIS cluster, not anything the org
     # hands out.
-    ladon_url: str = ""
-    ladon_audience: str = ""
-    ladon_namespace: str = ""
+    sero_url: str = ""
+    sero_audience: str = ""
+    sero_namespace: str = ""
     # The deploy platform's workload class for a connected agent that has
     # no HTTP port (connected-agents design 2026-09-21): a single-replica
     # workload with no network probes. Empty (the default) means this
@@ -395,15 +429,15 @@ class Config(BaseModel):
     # (an infra coordinate like cabal_url); empty = the composer emits no
     # github block at all.
     broker_url: str = ""
-    # The observability catalog's Argus link (Task 4): the dashboard base
+    # The observability catalog's Noto link (Task 4): the dashboard base
     # URL and this room's project slug within it, surfaced at
     # GET /api/catalog/observability for the UI to build a deep link from.
     # Org-settable like broker_url/liminal_url above. Both-or-nothing, same
     # convention as cabal_url/agent_endpoint_template: a half-configured
     # pair (only one of the two set) is not actionable, so the route
     # treats it as fully unset rather than emitting a broken link.
-    argus_url: str | None = None
-    argus_project: str | None = None
+    noto_url: str | None = None
+    noto_project: str | None = None
     # The MCP gateway's in-cluster base URL, as deployed AGENTS reach its
     # data plane (external-MCP arc). Org-settable like broker_url; empty =
     # the composer emits no liminal block. The token exchange lives at
@@ -485,7 +519,7 @@ class Config(BaseModel):
         return bool(self.mcp.oauth_client_id)
 
     @property
-    def ladon_enabled(self) -> bool:
+    def sero_enabled(self) -> bool:
         """Whether the secrets platform's machine lane is wired -- ALL
         three coordinates, never a subset: a URL with no audience could
         never authenticate, and a URL with no namespace has nowhere to
@@ -493,7 +527,7 @@ class Config(BaseModel):
         reading is "off", so it reads as off here rather than failing every
         secret delivery at the first agent that needs one. Same "presence is
         the switch" posture as `mcp_enabled` just above."""
-        return bool(self.ladon_url and self.ladon_audience and self.ladon_namespace)
+        return bool(self.sero_url and self.sero_audience and self.sero_namespace)
 
     @field_validator(
         "workdir", "slack_tokens_path", "ui_dist", "github_app_private_key_path",

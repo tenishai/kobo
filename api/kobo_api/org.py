@@ -52,8 +52,8 @@ ORG_KEYS = frozenset(
         "memory_replica_bucket",
         "broker_url",
         "liminal_url",
-        "argus_url",
-        "argus_project",
+        "noto_url",
+        "noto_project",
         "reader_groups",
         "gcp_project",
         "vertex_project",
@@ -88,6 +88,16 @@ ORG_KEYS = frozenset(
 # both. `_disclose_retired` says so once per boot rather than letting the
 # key look honored.
 RETIRED_ORG_KEYS = frozenset({"runtimes"})
+
+# Keys that changed name and still mean the same thing: an org.yaml written
+# before the rename keeps working, with one WARNING per old key so the file
+# catches up. Applied before the unknown-key check, since an unknown key
+# unwires ALL org config. The new name wins when both are present.
+RENAMED_ORG_KEYS = {
+    # noto was named argus until 2026-10-12.
+    "argus_url": "noto_url",
+    "argus_project": "noto_project",
+}
 
 # What each retired key's WARNING says, so an operator reading pod logs
 # learns what replaced it rather than only that the key did nothing.
@@ -164,6 +174,22 @@ def _disclose_overrides(local: Config, merged: Config, org_keys: set[str]) -> No
             )
 
 
+def _translate_renamed(data: dict) -> dict:
+    """Move each old-named key to its current name, warning once per key; a
+    file that sets both keeps the current one."""
+    out = dict(data)
+    for old, new in sorted(RENAMED_ORG_KEYS.items()):
+        if old not in out:
+            continue
+        value = out.pop(old)
+        if new in out:
+            log.warning("org.yaml sets both %r and %r; %r wins", old, new, new)
+            continue
+        log.warning("org.yaml key %r was renamed %r; honoured, rename it in the file", old, new)
+        out[new] = value
+    return out
+
+
 def _disclose_retired(present: set[str]) -> None:
     """Say which retired keys org.yaml still carries, one WARNING each.
     Same level and reasoning as `_disclose_overrides` above: the app
@@ -227,6 +253,7 @@ def load_org_config(local: Config, github: GitHubClient) -> tuple[Config, OrgSta
                 f"org.yaml must be a mapping, got {type(data).__name__}",
             )
 
+        data = _translate_renamed(data)
         unknown_keys = sorted(set(data) - ORG_KEYS - RETIRED_ORG_KEYS)
         if unknown_keys:
             return local, OrgState(

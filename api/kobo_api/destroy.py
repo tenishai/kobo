@@ -191,7 +191,7 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
     Three purposes, because the room writes three: `cabal` (the colleague
     pass), `slack` (the tokens an owner pasted) and `env` (whatever they
     added in the panel). Then, once all three are gone, the agent's
-    identity on the platform (`LadonClient.offboard`): its store, service
+    identity on the platform (`SeroClient.offboard`): its store, service
     account, role and policy. Named as a fixed list rather than discovered,
     for the reason `destroy-access` gives about the GSA: nothing on the
     agent's row records which of them were ever written, and asking about
@@ -233,7 +233,7 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
     teardown-able agent stuck.
     """
     agent = ctx.agent
-    ladon = ctx.clients.ladon
+    sero = ctx.clients.sero
     removed: list[str] = []
     failures: list[str] = []
     note: str | None = None
@@ -244,7 +244,7 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
     # fallback for a resume with no request behind it (the ledger retries
     # itself) and for a room with no identity perimeter.
     acting_email = (ctx.acting_email or agent.created_by or "").strip()
-    if ladon is None:
+    if sero is None:
         note = "no secrets platform configured; nothing was stored through one"
     elif not acting_email:
         note = (
@@ -252,7 +252,7 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
             "secrets stay until an operator removes them"
         )
     else:
-        removed, failures = _remove_stored_secrets(ctx, ladon, acting_email)
+        removed, failures = _remove_stored_secrets(ctx, sero, acting_email)
 
     # The colleague pass, whatever the secrets platform's state: it is the
     # one credential a destroy could not take back (destroy-orphans audit,
@@ -290,7 +290,7 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
     return f"removed: {', '.join(removed)}"
 
 
-def _remove_stored_secrets(ctx: DestroyCtx, ladon, acting_email: str) -> tuple[list[str], list[str]]:
+def _remove_stored_secrets(ctx: DestroyCtx, sero, acting_email: str) -> tuple[list[str], list[str]]:
     """The secrets-platform half of `_destroy_secrets`: the three purposes,
     then the identity. Returns what went and what did not."""
     agent = ctx.agent
@@ -299,8 +299,8 @@ def _remove_stored_secrets(ctx: DestroyCtx, ladon, acting_email: str) -> tuple[l
     for purpose in SECRET_PURPOSES:
         path = f"apps/{agent.name}/{purpose}"
         try:
-            ladon.unsync(acting_email, agent.name, agent.name, f"{agent.name}-{purpose}")
-            ladon.delete_secret(acting_email, path)
+            sero.unsync(acting_email, agent.name, agent.name, f"{agent.name}-{purpose}")
+            sero.delete_secret(acting_email, path)
         except Exception as exc:  # noqa: BLE001 - one purpose failing is not three
             # The exception's CLASS and nothing else, the same rule the
             # secrets routes hold: the platform's own sentence can quote
@@ -328,7 +328,7 @@ def _remove_stored_secrets(ctx: DestroyCtx, ladon, acting_email: str) -> tuple[l
         # sync onboarded the agent -- the four objects a destroy used to
         # leave behind (registered 2026-09-24, closed here).
         try:
-            ladon.offboard(acting_email, agent.name, agent.name)
+            sero.offboard(acting_email, agent.name, agent.name)
         except Exception as exc:  # noqa: BLE001 - same collection rule as the purposes above
             log.warning(
                 "destroy-secrets: could not remove the identity of agent %s (%s)",

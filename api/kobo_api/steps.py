@@ -1626,7 +1626,7 @@ class WireStep:
     step's behavior is byte-identical to before this feature existed.
 
     One qualification on that ordering when the secrets platform's machine
-    lane is configured (`ctx.clients.ladon`, kobo_api.ladon): delivery
+    lane is configured (`ctx.clients.sero`, kobo_api.sero): delivery
     through the platform is eventually consistent. The token is stored
     before the push, same as before, but the agent's namespace only carries
     the Secret once the platform re-reads the path — within the refresh
@@ -1665,12 +1665,12 @@ class WireStep:
         # time that push lands and any reprovision it triggers regenerates
         # the Deployment's envFrom.
         if cabal_enabled(config) and ctx.clients.cabal is not None:
-            # `ctx.clients.ladon` is None unless the secrets platform's
+            # `ctx.clients.sero` is None unless the secrets platform's
             # machine lane is configured, in which case it replaces the
             # direct Secret write inside `deliver_pass` -- same Secret
             # name either way, so nothing else in this step changes.
             deliver_pass(
-                ctx.clients.kubectl, ctx.clients.cabal, agent, ctx.clients.ladon
+                ctx.clients.kubectl, ctx.clients.cabal, agent, ctx.clients.sero
             )
 
         changed = github.commit_push(clone_dir, "kobo: wire service account, PVC, model env")
