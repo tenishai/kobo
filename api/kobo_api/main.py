@@ -198,6 +198,12 @@ from kobo_api.purpose_tags import (
     normalize_tags,
 )
 from kobo_api.repo_search import MAX_QUERY_CHARS, RepoIndex, RepoWarmer
+from kobo_api.colleague_mode import commit_colleague_mode
+from kobo_api.composer import (
+    COLLEAGUE_MODE_NONE,
+    COLLEAGUE_MODES,
+    effective_colleague_mode,
+)
 from kobo_api.runtime import commit_runtime_image, validate_runtime_image
 from kobo_api.search import (
     CATALOG_TTL_S,
@@ -237,6 +243,8 @@ from kobo_api.slack_state import (
 )
 from kobo_api.static_ui import mount_ui
 from kobo_api.steps import (
+    _colleague_roster,
+    _render_colleagues_md,
     _resolve_persona_body,
     refresh_after_capability_distill,
     refresh_colleague_rosters,
@@ -637,6 +645,12 @@ class SlackWakeRequest(BaseModel):
     """PUT .../slack/wake body: one of `mention`, `thread`, `channel`."""
 
     wake: str
+
+
+class ColleagueModeRequest(BaseModel):
+    """PUT .../colleague-mode body: one of `default`, `roster-only`, `none`."""
+
+    mode: str
 
 
 class SlackConnectRequest(BaseModel):
@@ -5107,6 +5121,9 @@ def create_app(
                 # card and no card says what an agent runs on.
                 "runtime_image": agent.runtime_image or cfg.runtime_image,
                 "room_runtime_image": cfg.runtime_image,
+                # The owner's colleague mode (issue #131), NULL read as
+                # `default` for the same reason as the runtime fallback above.
+                "colleague_mode": effective_colleague_mode(agent.colleague_mode),
                 "pending_learnings": session.query(AgentLearning)
                 .filter_by(agent_name=agent.name, status=LEARNING_PENDING)
                 .count(),
@@ -8349,6 +8366,84 @@ def create_app(
         return JSONResponse(
             {"runtime_image": runtime_image, "previous_runtime_image": previous, "sha": sha}
         )
+
+    # --- Colleague mode (issue #131): may this agent consult its colleagues --
+
+    @app.put("/api/agents/{name}/colleague-mode")
+    def set_colleague_mode(
+        name: str,
+        payload: ColleagueModeRequest,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Set whether this agent may delegate to its colleagues (issue #131).
+
+        `default` is the room's standing ruling: every colleague tool and the
+        consult-first doctrine. `roster-only` keeps the roster as knowledge,
+        takes `colleagues.ask_colleague` out of the allow list and tells the
+        agent to say it doesn't know and ask its human. `none` removes every
+        colleague tool and the colleague document.
+
+        One commit to the agent's repository (`commit_colleague_mode`), then
+        the row. Same ordering as the runtime route: the row moves in memory
+        first so the rendered document reads the new mode, and is committed
+        only once the push lands, so a failed push leaves both stores on the
+        mode they already agreed on. No short-circuit on an unchanged mode:
+        asking again repairs a repository that drifted from the row.
+
+        Owner or operator, READY, composed only.
+        """
+        agent = _ready_agent_or_error(
+            session, request, name, not_ready_message="agent is not ready for a colleague mode change yet"
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+        mode = payload.mode.strip().lower()
+        if mode not in COLLEAGUE_MODES:
+            return JSONResponse(
+                {"error": "choose one of: default, roster-only, none"}, status_code=422
+            )
+
+        previous = effective_colleague_mode(agent.colleague_mode)
+        agent.colleague_mode = mode
+        colleagues_md = (
+            None
+            if mode == COLLEAGUE_MODE_NONE
+            else _render_colleagues_md(agent, _colleague_roster(session, agent))
+        )
+        try:
+            sha = commit_colleague_mode(
+                app.state.clients.github,
+                agent.repo_full_name,
+                mode=mode,
+                colleagues_md=colleagues_md,
+            )
+        except ClientError as exc:
+            log.warning(
+                "colleague mode commit failed for agent %s (%s)", agent.name, type(exc).__name__
+            )
+            return JSONResponse(
+                {"error": "couldn't change the colleague mode. Try again."}, status_code=502
+            )
+
+        session.commit()
+        # The panel's half of the audit record; the MCP tool writes its own
+        # row for the same call (`kobo_api.mcp.audit`), as restart does.
+        caller = getattr(request.state, "iap_email", None) or "nobody"
+        log.info(
+            "agent %s colleague mode is now %s (was %s), set by %s",
+            agent.name,
+            mode,
+            previous,
+            caller,
+        )
+        return JSONResponse({"colleague_mode": mode, "previous_colleague_mode": previous, "sha": sha})
 
     # --- Metadata (persona-metadata plan, Task 3): capability earned + card lockstep --
 

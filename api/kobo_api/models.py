@@ -177,6 +177,12 @@ class Agent(Base):
     # agents are born "thread". The runtime enforces it from SLACK_WAKE_MODE
     # in the agent's deploy contract, written at birth and on every change.
     slack_wake: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Colleague mode (issue #131), set by the owner: "default", "roster-only"
+    # or "none" (`kobo_api.composer.COLLEAGUE_MODES`). NULL reads as
+    # "default", which is what every agent had before the setting existed.
+    # The composer reads it at birth; a change rewrites the bundle's allow
+    # list and colleagues.md in the agent's repo.
+    colleague_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # Avatar (P2d): a base64-encoded copy of bundle/avatar.png (the repo is
     # the source of truth, same as first_reply's relationship to the a2a
     # endpoint) — cached here purely so list/detail views can render an

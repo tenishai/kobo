@@ -25,8 +25,13 @@
   import MemoryPanel from "./MemoryPanel.svelte";
   import SkillsPanel from "./SkillsPanel.svelte";
   import ToolingPanel from "./ToolingPanel.svelte";
-  import { errorMessage, KIND_COMPOSED, KIND_CONNECTED } from "../lib/api";
-  import { modelsQuery, updateAgentModelMutation, updateAgentRuntimeMutation } from "../lib/queries";
+  import { errorMessage, KIND_COMPOSED, KIND_CONNECTED, type ColleagueMode } from "../lib/api";
+  import {
+    colleagueModeMutation,
+    modelsQuery,
+    updateAgentModelMutation,
+    updateAgentRuntimeMutation,
+  } from "../lib/queries";
   import {
     DEFAULT_HARNESS_SECTION,
     HARNESS_SECTION_LABELS,
@@ -44,6 +49,7 @@
     runtimeImage = undefined,
     roomRuntimeImage = undefined,
     canUpdateRuntime = false,
+    colleagueMode = undefined,
     pendingLearnings = 0,
     canDecideLearnings = false,
     capability = null,
@@ -69,6 +75,9 @@
      * same flag the Convert row reads. The route's own owner-or-operator
      * gate stays the real enforcement. */
     canUpdateRuntime?: boolean;
+    /** Whether the agent may consult its colleagues (issue #131). `undefined`
+     * on a room whose API predates the field: the row is then not shown. */
+    colleagueMode?: ColleagueMode;
     pendingLearnings?: number;
     canDecideLearnings?: boolean;
     capability?: string | null;
@@ -187,6 +196,33 @@
     });
   }
 
+  // Colleague mode (issue #131): the same select-then-Change shape and the
+  // same gate as the model row.
+  const COLLEAGUE_MODE_LABELS: Record<ColleagueMode, string> = {
+    default: "Consult colleagues",
+    "roster-only": "Know the roster, ask a human",
+    none: "No colleagues",
+  };
+  let pickedColleagueMode = $state<ColleagueMode | null>(null);
+  const colleagueModeChoice = $derived(pickedColleagueMode ?? colleagueMode);
+  // svelte-ignore state_referenced_locally
+  const updateColleagueMode = createMutation(() => colleagueModeMutation(queryClient, agentName));
+
+  function handleChangeColleagueMode(): void {
+    if (!colleagueModeChoice || colleagueModeChoice === colleagueMode || updateColleagueMode.isPending) {
+      return;
+    }
+    updateColleagueMode.mutate(colleagueModeChoice, {
+      onSuccess: () => {
+        pickedColleagueMode = null;
+        toast.success("Colleague mode changed", `${agentName} rebuilds with it now.`);
+      },
+      onError: (err: unknown) => {
+        toast.error("Couldn't change the colleague mode", errorMessage(err, "Try again."));
+      },
+    });
+  }
+
   function handleUpdateRuntime(): void {
     if (!roomRuntimeImage) {
       return;
@@ -263,6 +299,39 @@
               </dd>
               <dt>Runtime</dt>
               <dd class="harness__ref">{runtimeImage ?? "Not reported."}</dd>
+              {#if colleagueMode && !connected}
+                <dt>Colleagues</dt>
+                <dd>
+                  {#if canChangeModel}
+                    <span class="harness__model-change">
+                      <select
+                        class="field__input harness__model-select"
+                        aria-label="Colleague mode"
+                        disabled={frozen || updateColleagueMode.isPending}
+                        value={colleagueModeChoice}
+                        onchange={(event) =>
+                          (pickedColleagueMode = event.currentTarget.value as ColleagueMode)}
+                      >
+                        {#each Object.entries(COLLEAGUE_MODE_LABELS) as [value, label] (value)}
+                          <option {value}>{label}</option>
+                        {/each}
+                      </select>
+                      <button
+                        type="button"
+                        class="btn btn--quiet"
+                        disabled={frozen ||
+                          updateColleagueMode.isPending ||
+                          colleagueModeChoice === colleagueMode}
+                        onclick={handleChangeColleagueMode}
+                      >
+                        {updateColleagueMode.isPending ? "Changing…" : "Change"}
+                      </button>
+                    </span>
+                  {:else}
+                    {COLLEAGUE_MODE_LABELS[colleagueMode]}
+                  {/if}
+                </dd>
+              {/if}
             </dl>
             {#if runtimeKnown && roomRuntimeImage}
               {#if behind}

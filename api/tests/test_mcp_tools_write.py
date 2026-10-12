@@ -2125,3 +2125,52 @@ def test_set_slack_wake_sets_the_mode_and_reports_the_manifest_change(
         assert session.query(Agent).filter_by(name="ward").one().slack_wake == "thread"
     finally:
         session.close()
+
+
+# --- kobo_set_colleague_mode (issue #131) -------------------------------------------
+
+
+def test_set_colleague_mode_moves_the_agent_and_lands_in_the_audit_trail(
+    session_factory, config, fake_storage, tmp_path
+):
+    from kobo_api.composer import BundleSpec, compose
+
+    dest = tmp_path / "composed"
+    compose(
+        BundleSpec(
+            name="ward",
+            persona_body="You are ward.\n",
+            model_id="vertex_ai/claude-sonnet-4-5",
+            skills=[],
+            runtime_image="registry.example/agents/daedalus-runtime:v1",
+            vertex_project="p",
+            vertex_location="us-east5",
+            cabal_url="https://cabal.example",
+        ),
+        dest,
+    )
+    tree = {p.relative_to(dest).as_posix(): p.read_text() for p in dest.rglob("*") if p.is_file()}
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    mcp = build_mcp_server(
+        _app(
+            session_factory,
+            config,
+            groups_resolver=_resolver(),
+            storage=fake_storage,
+            github=FakeGitHub(clone_tree=tree),
+        )
+    )
+
+    result = _call_tool(
+        mcp, "kobo_set_colleague_mode", _ctx_for(OWNER_A_EMAIL), agent="ward", mode="none"
+    )
+
+    assert result["colleague_mode"] == "none"
+    session = session_factory()
+    try:
+        assert session.query(Agent).filter_by(name="ward").one().colleague_mode == "none"
+    finally:
+        session.close()
+    row = _last_audit_row(session_factory)
+    assert row.tool == "kobo_set_colleague_mode" and row.status == "ok"
+    assert json.loads(row.redacted_args)["mode"] == "none"

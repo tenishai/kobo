@@ -59,10 +59,12 @@ from kobo_api.clients import (
 )
 from kobo_api.colleagues import deliver_pass
 from kobo_api.composer import (
+    COLLEAGUE_MODE_NONE,
     BundleSpec,
     _colleagues_md,
     _self_md,
     compose,
+    effective_colleague_mode,
     validate_agent_yaml,
 )
 from kobo_api.config import Config, vertex_location_for
@@ -699,6 +701,7 @@ def _render_colleagues_md(viewer: Agent, roster: list[dict]) -> str:
         vertex_project="",
         vertex_location="",
         colleagues=roster,
+        colleague_mode=effective_colleague_mode(viewer.colleague_mode),
     )
     return _colleagues_md(spec)
 
@@ -798,6 +801,10 @@ def refresh_colleague_rosters(
     if not (cabal_enabled(config) and clients.cabal is not None):
         return
     for viewer in _agents_who_can_see(session, name=name, group_name=group_name):
+        # A `none` agent has no colleagues.md (issue #131); a delivery would
+        # store the doctrine its owner turned off.
+        if effective_colleague_mode(viewer.colleague_mode) == COLLEAGUE_MODE_NONE:
+            continue
         content = _render_colleagues_md(viewer, _colleague_roster(session, viewer))
         _deliver_knowledge_refresh(clients, viewer.name, "colleagues.md", content)
 
@@ -914,6 +921,9 @@ class RepoStep:
             # coordinates are handed over unchanged either way -- the
             # composer, not this step, decides what they compose into.
             archetype=agent.archetype,
+            # Colleague mode (issue #131): NULL, the row of every agent born
+            # without one, composes as `default`.
+            colleague_mode=effective_colleague_mode(agent.colleague_mode),
         )
 
         compose_dir = ctx.workdir / "repo"

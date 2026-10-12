@@ -2734,3 +2734,49 @@ def test_access_step_without_a_model_group_grants_the_vertex_role_directly(
     ]
     assert (email, "models-project") in cloud.model_grants
     assert cloud.group_members == set()
+
+
+# --- Colleague mode (issue #131) ----------------------------------------------
+
+
+def test_repo_step_composes_the_rows_colleague_mode(session_factory, fake_storage, tmp_path):
+    """The owner's mode on the row reaches the bundle at birth."""
+    config = _archetype_config(tmp_path)
+    session, agent = _make_agent(session_factory)
+    agent.colleague_mode = "none"
+    session.commit()
+    ctx = _make_ctx(session, agent, config, _clients(github=FakeGitHub(), storage=fake_storage))
+
+    RepoStep().run(ctx)
+
+    bundle = ctx.workdir / "repo" / "bundle"
+    allow = yaml.safe_load((bundle / "agent.yaml").read_text())["tools"]["allow"]
+    assert not [t for t in allow if t.startswith("colleagues.")]
+    assert not (bundle / "knowledge" / "colleagues.md").exists()
+
+
+def test_refresh_colleague_rosters_skips_an_agent_with_no_colleague_document(
+    session_factory, config, monkeypatch
+):
+    """A `none` agent's owner removed its colleague document; the refresh
+    lane must not deliver one back. A roster-only viewer gets its own
+    doctrine, not the consult-first one."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _hello_cabal_enabled_config(config)
+    session, target = _make_agent(session_factory, name="target", group_name="acme-acl")
+    target.status = AgentStatus.READY
+    session.commit()
+    _ready_agent(session, "silent", group_name="acme-acl").colleague_mode = "none"
+    _ready_agent(session, "narrow", group_name="acme-acl").colleague_mode = "roster-only"
+    session.commit()
+    fake_cabal = FakeCabal(
+        relay_result={"status": {"state": "completed", "message": {"parts": [{"text": "ok"}]}}}
+    )
+
+    refresh_colleague_rosters(
+        _clients(cabal=fake_cabal), cfg, session, name=target.name, group_name=target.group_name
+    )
+
+    assert [call["name"] for call in fake_cabal.relay_calls] == ["narrow"]
+    text = fake_cabal.relay_calls[0]["task_envelope"]["status"]["message"]["parts"][0]["text"]
+    assert "ask_colleague FIRST" not in text

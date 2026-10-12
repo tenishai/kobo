@@ -698,6 +698,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     set_persona_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/persona")
     set_model_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/model")
     set_slack_wake_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/slack/wake")
+    set_colleague_mode_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/colleague-mode")
     metadata_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/metadata")
     set_runtime_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/runtime")
     request_repo_access_endpoint = _endpoint(app, "POST", "/api/agents/{name}/repo-access")
@@ -1018,6 +1019,40 @@ def register(mcp: FastMCP, app: Any) -> None:
             "manifest_changed": body.get("manifest_changed"),
             "wiring": body.get("wiring"),
         }
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True))
+    @audited("kobo_set_colleague_mode")
+    async def kobo_set_colleague_mode(ctx: Context, agent: str, mode: str) -> dict:
+        """Set whether `agent` may delegate to its colleagues. `mode` is one
+        of `default` (every colleague tool, and the standing instruction to
+        consult a colleague first on questions in their field), `roster-only`
+        (it keeps the roster as knowledge but has no ask_colleague tool, and
+        is told to say it doesn't know and ask its human instead) or `none`
+        (no colleague tools and no colleague document). Other agents can
+        still ask it questions in every mode.
+
+        The room commits the change to the agent's repository, and the agent
+        picks it up when its CI rebuilds and rolls the pod. You must own
+        `agent` or be a room operator, and `agent` must be READY and composed.
+        """
+        from kobo_api.main import ColleagueModeRequest
+
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            response = await _off_loop(
+                set_colleague_mode_endpoint,
+                name=agent,
+                payload=ColleagueModeRequest(mode=mode),
+                request=req,
+                session=session,
+            )
+        finally:
+            session.close()
+        if response.status_code == 422:
+            raise ToolError(str(_parse(response).get("error", "that mode is not one of the three")))
+        body = _agent_route_result(response)
+        return {"agent": agent, **body}
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     @audited("kobo_set_runtime_image")

@@ -109,6 +109,7 @@ import {
   type AgentSkill,
   type AgentSecrets,
   type AgentSecretsWrite,
+  type ColleagueMode,
   type AgentSlack,
   type AgentSummary,
   type AlreadyRequested,
@@ -207,6 +208,7 @@ import {
   patchAgentMetadata,
   patchAgentModel,
   patchAgentRuntime,
+  putColleagueMode,
   postThreadTurn,
   regenerateAgentMetadata,
   removeGrant,
@@ -749,6 +751,15 @@ export function updateAgentModelMutation(queryClient: QueryClient, name: string)
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name] });
       queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+  };
+}
+
+export function colleagueModeMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (mode: ColleagueMode) => putColleagueMode(name, mode),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name] });
     },
   };
 }

@@ -145,6 +145,43 @@ describe("HarnessPanel model and runtime", () => {
 
 });
 
+describe("HarnessPanel colleague mode (issue #131)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden/colleague-mode": {
+        colleague_mode: "roster-only",
+        previous_colleague_mode: "default",
+        sha: "abc123",
+      },
+    });
+  });
+
+  it("sends the picked mode to the agent's colleague-mode route", async () => {
+    renderWithClient(HarnessPanel, {
+      ...BASE_PROPS,
+      canUpdateRuntime: true,
+      colleagueMode: "default",
+    });
+
+    await fireEvent.change(screen.getByRole("combobox", { name: "Colleague mode" }), {
+      target: { value: "roster-only" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Change" }));
+
+    await vi.waitFor(() => {
+      const call = vi
+        .mocked(fetch)
+        .mock.calls.find(([url]) => String(url).includes("/api/agents/warden/colleague-mode"));
+      expect(call).toBeDefined();
+      const init = (call as [RequestInfo | URL, RequestInit])[1];
+      expect(init.method).toBe("PUT");
+      expect(JSON.parse(String(init.body))).toEqual({ mode: "roster-only" });
+    });
+  });
+});
+
 describe("HarnessPanel for a connected agent", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();

@@ -133,6 +133,13 @@ class BundleSpec:
     # against the named archetype constant, never truth-tested, so a future
     # archetype composes the ordinary surface until it asks for its own.
     archetype: str | None = None
+    # The owner's colleague mode (issue #131), one of `COLLEAGUE_MODES`
+    # below, already resolved from the row by `effective_colleague_mode`.
+    # Read by `_tools_block` (which colleague tools reach the allow list),
+    # `_colleagues_md` (which doctrine the roster carries) and `compose`
+    # (whether colleagues.md is written at all). The default composes
+    # byte-identical output to every bundle before the setting existed.
+    colleague_mode: str = "default"
 
 
 # --- agent.yaml rendering ----------------------------------------------------
@@ -241,6 +248,39 @@ CABAL_COLLEAGUE_TOKEN_ENV = "CABAL_COLLEAGUE_TOKEN"
 # the compose-time emission (`_tools_block`) and the backfill helper
 # (`update_agent_yaml_tools`) so they stay synchronized.
 _COLLEAGUES_TOOLS_ALLOW = ["colleagues.list_colleagues", "colleagues.ask_colleague", "colleagues.remember"]
+_COLLEAGUES_ASK_TOOL = "colleagues.ask_colleague"
+
+# Per-agent colleague mode (issue #131), set by the agent's owner:
+# - default: every colleague tool and the consult-first doctrine, the
+#   standing operator ruling for every agent.
+# - roster-only: the roster stays as knowledge, ask_colleague leaves the
+#   allow list, and the doctrine becomes "say you don't know, ask your
+#   human". For an agent whose job is a narrow evidence chain.
+# - none: no colleague tools and no colleagues.md.
+# Only the agent's OUTBOUND reach changes. Its a2a transport, its colleague
+# pass and the provider block stay, because the github and liminal
+# sidecars authenticate with that same pass, and other agents may still
+# ask it questions.
+COLLEAGUE_MODE_DEFAULT = "default"
+COLLEAGUE_MODE_ROSTER_ONLY = "roster-only"
+COLLEAGUE_MODE_NONE = "none"
+COLLEAGUE_MODES = (COLLEAGUE_MODE_DEFAULT, COLLEAGUE_MODE_ROSTER_ONLY, COLLEAGUE_MODE_NONE)
+
+
+def effective_colleague_mode(value: str | None) -> str:
+    """The row's stored mode, with NULL (every agent from before the
+    setting) and anything unrecognised read as `default`."""
+    return value if value in COLLEAGUE_MODES else COLLEAGUE_MODE_DEFAULT
+
+
+def colleague_tools_allow(mode: str) -> list[str]:
+    """The colleague tools `mode` puts in the allow list, in the order the
+    composer has always written them."""
+    if mode == COLLEAGUE_MODE_NONE:
+        return []
+    if mode == COLLEAGUE_MODE_ROSTER_ONLY:
+        return [t for t in _COLLEAGUES_TOOLS_ALLOW if t != _COLLEAGUES_ASK_TOOL]
+    return list(_COLLEAGUES_TOOLS_ALLOW)
 
 
 def _tools_block(spec: BundleSpec) -> _FlowDict:
@@ -258,7 +298,7 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
     """
     if not spec.cabal_url:
         return _FlowDict(provider="none", allow=[])
-    allow = list(_COLLEAGUES_TOOLS_ALLOW)
+    allow = colleague_tools_allow(spec.colleague_mode)
     block = _FlowDict(
         provider="colleagues",
         allow=None,  # placed below, once the github arm has decided
@@ -523,7 +563,16 @@ def _colleagues_md(spec: BundleSpec) -> str:
     zero colleagues today may gain one after the refresh lane delivers a
     fresh roster, and the instruction should already be standing when that
     happens.
+
+    `roster-only` (issue #131) keeps the snapshot and the roster, but the
+    roster is introduced as who is in the room rather than who to ask, and
+    the three closing paragraphs become `_ROSTER_ONLY_DOCTRINE`: the agent
+    has no ask_colleague tool, so a doctrine telling it to consult first
+    would only compete with that. `none` never reaches here (`compose`
+    writes no colleagues.md for it).
     """
+    if spec.colleague_mode == COLLEAGUE_MODE_ROSTER_ONLY:
+        return _colleagues_md_roster_only(spec)
     others = [c for c in spec.colleagues if c["name"] != spec.name]
     lines = ["## Your colleagues", ""]
     lines.append(
@@ -545,13 +594,7 @@ def _colleagues_md(spec: BundleSpec) -> str:
             "for, not on whose name you happen to remember."
         )
         lines.append("")
-        for c in others:
-            tags = ", ".join(c.get("purpose_tags") or []) or "none"
-            lines.append(
-                f"- {c['name']} (team: {c.get('team') or 'unspecified'}), "
-                f"purpose tags: {tags}. "
-                f"What they are for: {_colleague_capability_line(c)}"
-            )
+        lines.extend(_colleague_roster_lines(others))
     lines.append("")
     lines.append(
         "You are one specialist in a room of specialists, deployed for one "
@@ -584,6 +627,55 @@ def _colleagues_md(spec: BundleSpec) -> str:
         "in your reply is the only record you get: without it you will "
         "later misremember their work as your own knowledge."
     )
+    return "\n".join(lines) + "\n"
+
+
+# The paragraph that replaces the consult-first doctrine for a roster-only
+# agent (issue #131). Its owner turned delegation off because the agent's
+# job is a narrow evidence chain: an answer from a colleague, or from
+# general knowledge, is not evidence.
+_ROSTER_ONLY_DOCTRINE = (
+    "Your owner has set you to answer only from your own tools and memory. "
+    "When they can't answer a question, say you don't know, and name what "
+    "you would need to answer it (the data, the access, or the tool). Ask "
+    "your human for that. Don't ask another agent, even one whose field it "
+    "is, and don't fill the gap from general knowledge."
+)
+
+
+def _colleague_roster_lines(others: list[dict]) -> list[str]:
+    return [
+        f"- {c['name']} (team: {c.get('team') or 'unspecified'}), "
+        f"purpose tags: {', '.join(c.get('purpose_tags') or []) or 'none'}. "
+        f"What they are for: {_colleague_capability_line(c)}"
+        for c in others
+    ]
+
+
+def _colleagues_md_roster_only(spec: BundleSpec) -> str:
+    """`_colleagues_md` for a roster-only agent: the same snapshot and
+    roster, read as knowledge of who is in the room, and the replacement
+    doctrine in place of the consult-first paragraphs."""
+    others = [c for c in spec.colleagues if c["name"] != spec.name]
+    lines = ["## Your colleagues", ""]
+    lines.append(
+        "This roster is a snapshot from when you were assembled; colleagues "
+        "may have joined or left the room since. When it matters, confirm "
+        "with the list_colleagues tool, which always answers live."
+    )
+    lines.append("")
+    if not others:
+        lines.append("You have no colleagues in the room yet.")
+    else:
+        lines.append(
+            "These are the other agents in the room, and what each is for. "
+            "This is so you know who is here and can tell your human who "
+            "owns a subject; it is not a list of agents to consult."
+        )
+        lines.append("")
+        lines.extend(_colleague_roster_lines(others))
+    lines.append("")
+    lines.append(_ROSTER_ONLY_DOCTRINE)
     return "\n".join(lines) + "\n"
 
 
@@ -926,7 +1018,12 @@ _TOOLS_SECTION_RE = re.compile(r"^tools:[^\n]*(?:\n[ \t]+[^\n]*)*", re.MULTILINE
 
 
 def update_agent_yaml_tools(
-    bundle_dir: Path, *, url: str, token_env: str, self_name: str
+    bundle_dir: Path,
+    *,
+    url: str,
+    token_env: str,
+    self_name: str,
+    colleague_mode: str = COLLEAGUE_MODE_DEFAULT,
 ) -> None:
     """Re-point an already-composed `bundle_dir/agent.yaml` at a (new) set
     of switchboard coordinates -- PRESERVING everything in the `tools`
@@ -942,7 +1039,10 @@ def update_agent_yaml_tools(
 
     - `provider` and `colleagues` are set to the given coordinates.
     - `allow` becomes the colleague allows UNIONED with every existing
-      entry, original order preserved -- a rewire never revokes.
+      entry, original order preserved -- a rewire never revokes, with one
+      exception: a colleague tool the agent's `colleague_mode` (issue #131)
+      leaves out is dropped, so a rewire cannot hand a roster-only agent
+      its ask tool back.
     - Every other key (`github`, `cloudtrail`, `slack_read`, `jira`,
       `liminal`, `builtin`, `max_steps`, anything future) rides through
       untouched.
@@ -972,14 +1072,19 @@ def update_agent_yaml_tools(
         if key in ("provider", "colleagues", "allow"):
             continue
         merged[key] = value
-    allow = list(_COLLEAGUES_TOOLS_ALLOW)
+    allow = colleague_tools_allow(colleague_mode)
     for entry in existing.get("allow") or []:
-        if entry not in allow:
+        if entry not in allow and entry not in _COLLEAGUES_TOOLS_ALLOW:
             allow.append(entry)
     merged["allow"] = allow
+    _splice_tools_section(agent_yaml_path, text, merged)
 
+
+def _splice_tools_section(agent_yaml_path: Path, text: str, tools: dict) -> None:
+    """Write `tools` back over the file's tools section as one flow-style
+    line, leaving every other line byte-identical."""
     rendered = yaml.dump(
-        merged, default_flow_style=True, sort_keys=False, width=10**9
+        tools, default_flow_style=True, sort_keys=False, width=10**9
     ).strip()
     replacement = f"tools: {rendered}"
 
@@ -987,6 +1092,45 @@ def update_agent_yaml_tools(
     if count == 0:
         raise ClientError(f"agent.yaml has no tools section to update: {agent_yaml_path}")
     agent_yaml_path.write_text(updated)
+
+
+def update_agent_yaml_colleague_mode(bundle_dir: Path, *, mode: str) -> bool:
+    """Make an already-composed `bundle_dir/agent.yaml`'s allow list carry
+    exactly the colleague tools `mode` grants (issue #131), first and in
+    composer order, followed by every other entry as it was. Nothing else
+    in the tools block moves: the provider, the colleague coordinates and
+    every sidecar ride through.
+
+    Returns whether the file changed. An allow list that already matches
+    is left untouched byte for byte, so a default-mode agent's composed
+    file is never rewritten. A bundle with no colleagues provider (the
+    switchboard was off when it was composed) has no colleague tools to
+    add or remove and is also left alone. Raises `ClientError` when the
+    file is missing, does not parse, or has no tools section.
+    """
+    agent_yaml_path = bundle_dir / "agent.yaml"
+    try:
+        text = agent_yaml_path.read_text()
+    except OSError as exc:
+        raise ClientError(f"agent.yaml not found: {agent_yaml_path}") from exc
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ClientError(f"agent.yaml does not parse: {agent_yaml_path}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("tools"), dict):
+        raise ClientError(f"agent.yaml has no tools section to update: {agent_yaml_path}")
+    tools = data["tools"]
+    if tools.get("provider") != "colleagues":
+        return False
+    existing = list(tools.get("allow") or [])
+    allow = colleague_tools_allow(mode) + [
+        entry for entry in existing if entry not in _COLLEAGUES_TOOLS_ALLOW
+    ]
+    if allow == existing:
+        return False
+    tools["allow"] = allow
+    _splice_tools_section(agent_yaml_path, text, tools)
+    return True
 
 
 # Matches the `approvals:` stanza's `gates:` line anywhere in an already-
@@ -1291,7 +1435,7 @@ def compose(spec: BundleSpec, dest: Path) -> None:
         dest/bundle/agent-card.json
         dest/bundle/persona.md
         dest/bundle/knowledge/self.md
-        dest/bundle/knowledge/colleagues.md
+        dest/bundle/knowledge/colleagues.md (not when colleague_mode is none)
         dest/bundle/skills/<id>/**   (one materialized tree per spec.skills
                                       entry — see `_materialize_skill`)
         dest/litestream.yml          (only when spec.memory_replica_bucket)
@@ -1307,7 +1451,8 @@ def compose(spec: BundleSpec, dest: Path) -> None:
     knowledge_dir = bundle_dir / "knowledge"
     knowledge_dir.mkdir(parents=True, exist_ok=True)
     (knowledge_dir / "self.md").write_text(_self_md(spec))
-    (knowledge_dir / "colleagues.md").write_text(_colleagues_md(spec))
+    if spec.colleague_mode != COLLEAGUE_MODE_NONE:
+        (knowledge_dir / "colleagues.md").write_text(_colleagues_md(spec))
 
     if spec.skills:
         skills_dir = bundle_dir / "skills"
