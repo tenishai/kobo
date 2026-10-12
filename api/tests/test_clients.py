@@ -5188,3 +5188,30 @@ def test_revoke_model_access_reraises_other_errors():
     client = GcloudClient("example-project", runner=runner)
     with pytest.raises(ClientError):
         client.revoke_model_access("e@example-project.iam.gserviceaccount.com", "models-project")
+
+
+
+def test_repo_exists_is_false_for_a_name_github_only_redirects():
+    """Destroy renames an agent's repo to archived-agent-<name>-<id>; GitHub
+    keeps answering at the old name through a redirect. That name is free."""
+    runner = RecordingRunner(
+        results=[(0, '{"full_name":"acme/archived-agent-clio-5","archived":true}', "")]
+    )
+    client = GhCLI(runner=runner)
+
+    assert client.repo_exists("acme/agent-clio") is False
+    assert runner.calls == [["gh", "api", "repos/acme/agent-clio"]]
+
+
+def test_repo_exists_is_true_for_the_repo_itself_whatever_the_case():
+    runner = RecordingRunner(results=[(0, '{"full_name":"Acme/Agent-Clio"}', "")])
+    client = GhCLI(runner=runner)
+
+    assert client.repo_exists("acme/agent-clio") is True
+
+
+def test_repo_exists_is_false_on_a_404():
+    runner = RecordingRunner(results=[(1, "", "gh: Not Found (HTTP 404)")])
+    client = GhCLI(runner=runner)
+
+    assert client.repo_exists("acme/agent-clio") is False
