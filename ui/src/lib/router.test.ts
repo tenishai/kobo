@@ -176,3 +176,15 @@ it("falls back to dashboard for the retired personas page", () => {
   // bookmark lands on the dashboard rather than a blank main.
   expect(parseHash("#/personas")).toEqual({ page: "dashboard" });
 });
+
+describe("admin panel routes", () => {
+  it("maps #/admin and a pane with an item", () => {
+    expect(parseHash("#/admin")).toEqual({ page: "admin" });
+    expect(parseHash("#/admin/roles/new")).toEqual({ page: "admin", pane: "roles", item: "new" });
+  });
+
+  it("round-trips through formatHash", () => {
+    expect(formatHash({ page: "admin", pane: "connections", item: "janus" })).toBe("#/admin/connections/janus");
+    expect(formatHash({ page: "admin" })).toBe("#/admin");
+  });
+});

@@ -12,8 +12,10 @@
   import { formatHash } from "../lib/router.svelte";
   import { agentsQuery, whoamiQuery } from "../lib/queries";
 
-  let { active, onnewagent, onprefetch }: {
-    active: "dashboard" | "agent" | "getting-started";
+  let { active, onnewagent, onprefetch, showAdmin = false }: {
+    active: "dashboard" | "agent" | "getting-started" | "admin";
+    /** Show the Admin link regardless of whoami (the standalone demo). */
+    showAdmin?: boolean;
     onnewagent: () => void;
     onprefetch: () => void;
   } = $props();
@@ -84,6 +86,23 @@
         <span class="sidebar__label">Getting started</span>
       </a>
     </li>
+    <!-- Admin panel (admin-panel demo, 2026-10-12). `operator` is a hint
+         from whoami, never a gate: the server decides what the panel may
+         read and write. -->
+    {#if showAdmin || whoami.data?.operator}
+      <li>
+        <a
+          class="sidebar__link"
+          href={formatHash({ page: "admin", pane: "overview" })}
+          aria-current={active === "admin" ? "page" : undefined}
+          aria-label="Admin"
+          title="Admin"
+        >
+          <span class="sidebar__icon" aria-hidden="true">⚙</span>
+          <span class="sidebar__label">Admin</span>
+        </a>
+      </li>
+    {/if}
   </ul>
 
   <button
