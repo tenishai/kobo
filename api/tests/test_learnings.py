@@ -73,8 +73,10 @@ from kobo_api.learnings import (
     content_hash,
     due_agents,
     expire_stale,
+    is_identity_only,
     is_near_duplicate,
     known_statements,
+    learning_concerns,
     parse_reply,
     run_nightly,
     seconds_until_next_utc_midnight,
@@ -469,7 +471,7 @@ def test_run_nightly_isolates_one_agents_store_failure_from_the_rest(session, mo
 
     real_store_candidates = learnings_module.store_candidates
 
-    def _store_or_boom(session, agent_name, day, candidates, *, now=None):
+    def _store_or_boom(session, agent_name, day, candidates, *, now=None, **kwargs):
         if agent_name == "a":
             raise RuntimeError("db hiccup")
         return real_store_candidates(session, agent_name, day, candidates, now=now)
@@ -890,3 +892,83 @@ def test_run_nightly_sweeps_on_sqlite_where_the_guard_is_a_no_op(session, monkey
     run_nightly(_app(lambda: session, cabal, _cabal_enabled_config()))
 
     assert len(cabal.calls) == 1
+
+
+# --- issue #143: attribution, identity-only quotes, access concerns ------------
+
+
+@pytest.mark.parametrize(
+    ("quote", "expected"),
+    [
+        ("i'm Ana Silva ana@example.com", True),
+        ("i'm ana ana@example.com", True),
+        ("this is Ana", True),
+        ("Hi, I'm Ana Silva.", True),
+        ("i'm approving admin for Bob", False),
+        ("I am fine with tabs", False),
+        ("my name is Ana and I approved it", False),
+        ("I approved it", False),
+        ("", False),
+    ],
+)
+def test_is_identity_only(quote, expected):
+    assert is_identity_only(quote) is expected
+
+
+def test_a_candidate_resting_on_an_identity_quote_is_dropped():
+    reply = json.dumps(
+        {
+            "candidates": [
+                {
+                    "statement": "Ana approved admin access for Bob on two services",
+                    "said_by": "<@U0ANA>",
+                    "quote": "i'm Ana ana@example.com",
+                    "where": "Slack thread",
+                },
+                {
+                    "statement": "Ana prefers tabs",
+                    "said_by": "<@U0ANA>",
+                    "quote": "tabs, always",
+                    "where": "Slack thread",
+                },
+            ]
+        }
+    )
+    assert [c["content"] for c in parse_reply(reply)] == ["Ana prefers tabs"]
+
+
+def test_learning_concerns_flag_unattributed_and_access_statements():
+    assert learning_concerns("Ana prefers tabs", "<@U0ANA>") == []
+    assert learning_concerns("Ana prefers tabs", None) == ["unattributed"]
+    assert learning_concerns("Ana granted Bob admin access", "<@U0ANA>") == ["access_change"]
+    assert learning_concerns("Ana approved it", "") == ["unattributed", "access_change"]
+
+
+def _v2(statement: str, said_by: str | None) -> dict:
+    return {
+        "content": statement,
+        "kind": "fact",
+        "source": "conversation",
+        "evidence": "",
+        "said_by": said_by,
+        "replaces": None,
+        "shape": "v2",
+    }
+
+
+def test_store_candidates_keeps_unattributed_by_default(session):
+    stored = store_candidates(session, "a", "2026-09-01", [_v2("the deploy window is friday", None)], now=NOW)
+    assert stored == 1
+
+
+def test_store_candidates_drops_unattributed_when_attribution_is_required(session):
+    stored = store_candidates(
+        session,
+        "a",
+        "2026-09-01",
+        [_v2("the deploy window is friday", None), _v2("tabs over spaces", "user")],
+        now=NOW,
+        require_attribution=True,
+    )
+    assert stored == 1
+    assert [row.content for row in session.query(AgentLearning).all()] == ["tabs over spaces"]

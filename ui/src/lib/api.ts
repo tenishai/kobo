@@ -1245,6 +1245,10 @@ export type Learning = {
   source: string;
   evidence: string;
   said_by: string | null;
+  /** Why remembering this needs a second yes (issue #143): "unattributed"
+   * (nobody it can be traced to) and/or "access_change" (it is about who
+   * may access what). Older rooms omit it. */
+  concerns?: string[];
   status: "pending" | "approved" | "denied" | "expired";
   decided_by: string | null;
   created_at: string | null;
@@ -1264,15 +1268,18 @@ export async function decideLearning(
   id: number,
   action: "approve" | "deny",
   content?: string,
+  confirm = false,
 ): Promise<void> {
-  const edited = action === "approve" && content !== undefined;
+  const body: { content?: string; confirm?: boolean } = {};
+  if (action === "approve" && content !== undefined) body.content = content;
+  if (action === "approve" && confirm) body.confirm = true;
   const res = await fetch(
     `/api/agents/${encodeURIComponent(name)}/learnings/${id}/${action}`,
-    edited
+    Object.keys(body).length > 0
       ? {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify(body),
         }
       : { method: "POST" },
   );

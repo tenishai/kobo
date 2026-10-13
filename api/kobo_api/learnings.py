@@ -63,6 +63,27 @@ _KNOWN_LABELS = {
 }
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
+
+# A quote that only says who the speaker is ("i'm Ana ana@example.com",
+# "this is Ana") supports no statement about what they did or decided. A
+# candidate resting on one is dropped (issue #143).
+_IDENTITY_QUOTE_RE = re.compile(
+    r"^\s*(?:(?:hi|hey|hello)[\s,!.]+)?(?:i'?m|i am|this is|my name is)\s+(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+IDENTITY_NAME_MAX_WORDS = 4
+
+# Statements about who may access what are events, not standing facts, and an
+# approved one becomes something the agent can cite as authority to grant
+# access. Such a candidate is flagged and needs a second confirmation
+# (issue #143).
+_ACCESS_CHANGE_RE = re.compile(
+    r"\b(?:approv\w*|grant\w*|revok\w*|permission\w*|access|admin|authori[sz]\w*)\b",
+    re.IGNORECASE,
+)
+CONCERN_UNATTRIBUTED = "unattributed"
+CONCERN_ACCESS_CHANGE = "access_change"
 _STOPWORDS = frozenset(
     "a an and are as at be but by for from has have if in into is it its not of on "
     "only or so that the their them then there these they this to was when which "
@@ -155,6 +176,36 @@ def _parse_v1(item: dict) -> dict | None:
     }
 
 
+def is_identity_only(quote: str) -> bool:
+    """True when `quote` only introduces the speaker: "i'm", "this is" or
+    "my name is", then nothing but a name, with or without an email. A name
+    is up to IDENTITY_NAME_MAX_WORDS words, capitalised unless an email
+    vouches for it, so "i'm approving admin for Bob" is not an introduction."""
+    match = _IDENTITY_QUOTE_RE.match(quote or "")
+    if match is None:
+        return False
+    rest = match.group("rest")
+    has_email = _EMAIL_RE.search(rest) is not None
+    words = re.sub(r"[^\w\s'-]", " ", _EMAIL_RE.sub(" ", rest)).split()
+    if not words:
+        return has_email
+    if len(words) > IDENTITY_NAME_MAX_WORDS:
+        return False
+    return has_email or all(word[0].isupper() for word in words)
+
+
+def learning_concerns(content: str, said_by: str | None) -> list[str]:
+    """Why approving this candidate needs a second, explicit confirmation:
+    nobody it can be attributed to, or a statement about access. Computed
+    from the row, so rows stored before this existed are judged the same."""
+    concerns = []
+    if not said_by:
+        concerns.append(CONCERN_UNATTRIBUTED)
+    if _ACCESS_CHANGE_RE.search(content):
+        concerns.append(CONCERN_ACCESS_CHANGE)
+    return concerns
+
+
 def _parse_v2(item: dict) -> dict | None:
     """One human-attributed sentence (learnings rethink). An over-long
     statement is DROPPED, never truncated: a clipped sentence teaches half
@@ -162,6 +213,9 @@ def _parse_v2(item: dict) -> dict | None:
     `True` must not become learning id 1)."""
     statement = _one_line(_clean_str_field(item.get("statement")))
     if not statement or len(statement) > STATEMENT_MAX_CHARS:
+        return None
+    quote = _one_line(_clean_str_field(item.get("quote")))
+    if is_identity_only(quote):
         return None
     replaces = item.get("replaces")
     if isinstance(replaces, bool) or not isinstance(replaces, int):
@@ -229,17 +283,26 @@ def store_candidates(
     candidates: list[dict],
     *,
     now: datetime | None = None,
+    require_attribution: bool = False,
 ) -> int:
     """Park candidates as pending rows. Per candidate, in order: the exact
     hash tombstone (any status, forever); `replaces` naming one of THIS
     agent's PENDING rows updates that row in place (anything else in
     `replaces` is ignored and the candidate is new); the near-duplicate
     guard against this agent's pending/approved/denied statements from the
-    last KNOWN_WINDOW_DAYS; insert. Returns rows stored or updated."""
+    last KNOWN_WINDOW_DAYS; insert. Returns rows stored or updated.
+
+    `require_attribution` (`Config.learnings_require_attribution`) drops a
+    candidate with no `said_by` before any of that. It is off by default
+    because a runtime that predates daedalus issue #165 sends an owner's
+    own chat turns unattributed too (issue #143)."""
     cutoff = _naive_utc(now or datetime.now(UTC)) - timedelta(days=KNOWN_WINDOW_DAYS)
     stored = 0
     for candidate in candidates[:CANDIDATE_CAP]:
         content = candidate["content"]
+        if require_attribution and not candidate.get("said_by"):
+            log.info("learnings: %s dropped an unattributed candidate: %r", agent_name, content[:80])
+            continue
         digest = content_hash(content)
         exact = (
             session.query(AgentLearning)
@@ -579,7 +642,14 @@ def _sweep(session, config, clients, now: datetime) -> None:
                 )
                 continue
             candidates = parse_reply(reply)
-            stored = store_candidates(session, name, day, candidates, now=now)
+            stored = store_candidates(
+                session,
+                name,
+                day,
+                candidates,
+                now=now,
+                require_attribution=config.learnings_require_attribution,
+            )
             log.info(
                 "learnings: %s proposed %d, stored %d new",
                 name,

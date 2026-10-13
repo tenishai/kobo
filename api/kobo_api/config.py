@@ -471,6 +471,12 @@ class Config(BaseModel):
     # honest interim gate. Absent from this list reads as 404, the
     # anti-enumeration answer the github-token route already gives.
     jira_read_agents: list[str] = []
+    # Drop a nightly learnings candidate that names nobody (`said_by` empty)
+    # instead of queueing it flagged (issue #143). Leave off until every
+    # agent runs a daedalus that marks an owner's chat turns as "user"
+    # (daedalus issue #165); before that, owner-taught candidates arrive
+    # unattributed too and would be dropped.
+    learnings_require_attribution: bool = False
     # Global READERS (reader-role wave, 2026-08-28): RAW Okta group names
     # whose members see EVERY agent in the room -- visibility only, no
     # mutation power of any kind. Raw directory names, deliberately NOT

@@ -110,7 +110,7 @@ from kobo_api.knowledge import (
     save_knowledge_file,
 )
 from kobo_api.sero import acting_email_refusal
-from kobo_api.learnings import clean_edited_statement
+from kobo_api.learnings import clean_edited_statement, learning_concerns
 from kobo_api.learnings import nightly_loop as learnings_nightly_loop
 from kobo_api.marketplace import BASELINE_TOOL_PREFIX
 from kobo_api.mcp import rate_limit
@@ -606,6 +606,9 @@ class LearningApprovePayload(BaseModel):
     enforced by `clean_edited_statement`."""
 
     content: str | None = Field(default=None, max_length=2000)
+    # A second, explicit yes for a row with concerns (unattributed, or about
+    # access); without it such an approve answers 409 (issue #143).
+    confirm: bool = False
 
 
 class ToolingUploadPayload(BaseModel):
@@ -2762,6 +2765,7 @@ def _decide_learning(
     background_tasks: BackgroundTasks,
     session: Session,
     content: str | None = None,
+    confirm: bool = False,
 ) -> JSONResponse:
     """Shared verdict path for approve/deny/bulk (daily-learnings spec,
     Task 7). Approve rides the teach lane byte-for-byte (instant relay
@@ -2777,6 +2781,12 @@ def _decide_learning(
     the ORIGINAL `content_hash` is kept even when the text changes -- the
     rejected-by-rewriting phrasing stays tombstoned against re-proposal.
     `deny` and the bulk route never pass `content`.
+
+    `confirm`, approve only (issue #143): a row with concerns
+    (`kobo_api.learnings.learning_concerns`: nobody it can be attributed
+    to, or a statement about access) is approved only with `confirm=True`;
+    otherwise this answers 409 naming the concerns and teaches nothing. The
+    bulk route never passes it, so bulk approve leaves such rows pending.
 
     Module-level (MCP learnings trio, Task 8) rather than a closure inside
     `create_app`: both `approve_learning`/`deny_learning`/
@@ -2815,6 +2825,16 @@ def _decide_learning(
             {"error": f"learning is already {row.status}"}, status_code=409
         )
     email = getattr(request.state, "iap_email", None)
+    if action == "approve" and not confirm:
+        concerns = learning_concerns(row.content, row.said_by)
+        if concerns:
+            return JSONResponse(
+                {
+                    "error": "this learning needs a second confirmation to approve",
+                    "concerns": concerns,
+                },
+                status_code=409,
+            )
     if action == "deny":
         row.status = LEARNING_DENIED
         row.decided_by = email
@@ -6776,6 +6796,7 @@ def create_app(
                         "source": row.source,
                         "evidence": row.evidence,
                         "said_by": row.said_by,
+                        "concerns": learning_concerns(row.content, row.said_by),
                         "status": row.status,
                         "decided_by": row.decided_by,
                         "created_at": (
@@ -6810,6 +6831,7 @@ def create_app(
             background_tasks,
             session,
             content=payload.content if payload else None,
+            confirm=payload.confirm if payload else False,
         )
 
     @app.post("/api/agents/{name}/learnings/{learning_id}/deny")

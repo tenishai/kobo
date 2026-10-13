@@ -1532,6 +1532,7 @@ def _seed_learning(session_factory, agent_name, **overrides):
             "kind": "fact",
             "source": "Slack, Sep 1",
             "evidence": "quote",
+            "said_by": "<@U0OWNER>",
             "content_hash": "a" * 64,
         }
         defaults.update(overrides)
@@ -1564,6 +1565,35 @@ def test_decide_learning_deny_flips_status(session_factory, config, fake_storage
         row = session.query(AgentLearning).filter_by(id=learning_id).one()
         assert row.status == LEARNING_DENIED
         assert row.decided_by == OWNER_A_EMAIL
+    finally:
+        session.close()
+
+
+def test_decide_learning_approve_of_a_flagged_row_needs_confirm(
+    session_factory, config, fake_storage
+):
+    # Issue #143: an unattributed or access-related row is approved only with
+    # an explicit confirm; without it the tool refuses and the row stays pending.
+    _seed_agent(session_factory, name="ward", created_by=OWNER_A_EMAIL, group_name=GROUP_A)
+    learning_id = _seed_learning(
+        session_factory, "ward", content="Ana approved admin access for Bob", said_by=None
+    )
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError, match="second confirmation"):
+        _call_tool(
+            mcp,
+            "kobo_decide_learning",
+            _ctx_for(OWNER_A_EMAIL),
+            agent="ward",
+            learning_id=learning_id,
+            action="approve",
+        )
+
+    session = session_factory()
+    try:
+        assert session.query(AgentLearning).filter_by(id=learning_id).one().status == "pending"
     finally:
         session.close()
 
