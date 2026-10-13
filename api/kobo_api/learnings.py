@@ -295,8 +295,9 @@ def store_candidates(
 
     `require_attribution` (`Config.learnings_require_attribution`) drops a
     candidate with no `said_by` before any of that. It is off by default
-    because a runtime that predates daedalus issue #165 sends an owner's
-    own chat turns unattributed too (issue #143)."""
+    because a runtime that predates daedalus issue #165 also sends turns
+    from the room's chat (anyone who can see the agent may chat with it)
+    unattributed (issue #143)."""
     cutoff = _naive_utc(now or datetime.now(UTC)) - timedelta(days=KNOWN_WINDOW_DAYS)
     stored = 0
     for candidate in candidates[:CANDIDATE_CAP]:

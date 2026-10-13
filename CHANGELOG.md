@@ -28,8 +28,9 @@ All notable changes to kobo are documented here. The format follows
   access, is marked on the Learnings tab and is remembered only on a second click (API:
   `confirm: true`; `kobo_decide_learning` takes `confirm`). Remember all leaves those rows
   pending (issue #143). `learnings_require_attribution` drops unattributed candidates
-  outright; leave it off until every agent runs a daedalus with issue #165, which marks an
-  owner's own chat turns, or owner-taught candidates are dropped too.
+  outright. Leave it off until every agent runs a daedalus with issue #165, which marks
+  turns from the room's chat as `user`; before that, everything taught through the room's
+  chat arrives unattributed and would be dropped too.
 - **A connected agent no longer waits forever on an install with no Gojira webhook.** The
   waiting sweep read the platform's status, which moves only when the webhook reports the
   setup PR's merge, so the agent stayed at "waiting" after the merge (issue #118). The sweep

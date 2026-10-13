@@ -473,9 +473,9 @@ class Config(BaseModel):
     jira_read_agents: list[str] = []
     # Drop a nightly learnings candidate that names nobody (`said_by` empty)
     # instead of queueing it flagged (issue #143). Leave off until every
-    # agent runs a daedalus that marks an owner's chat turns as "user"
-    # (daedalus issue #165); before that, owner-taught candidates arrive
-    # unattributed too and would be dropped.
+    # agent runs a daedalus that marks turns from the room's chat as "user"
+    # (daedalus issue #165); before that, whatever anyone taught through the
+    # room's chat arrives unattributed too and would be dropped.
     learnings_require_attribution: bool = False
     # How many runs in a row a system task (the nightly learnings pass) may
     # fail for an agent before its card says so (issue #142).
