@@ -35,7 +35,7 @@ import tempfile
 from pathlib import Path
 
 from kobo_api.clients import ClientError, GitHubClient, KubectlClient, image_tag
-from kobo_api.composer import update_dockerfile_runtime_image
+from kobo_api.composer import repin_commit_note, update_dockerfile_runtime_image
 
 # 1-40 chars: a lowercase letter, then lowercase/digit/hyphen, then ".md" or
 # ".txt" — same no-path-separator, no-leading-dot/digit/hyphen shape as
@@ -150,19 +150,21 @@ def upload_intake_file(
         (intake_dir / filename).write_text(content, encoding="utf-8")
 
         pin_changed = False
+        note = ""
         if runtime_image is not None:
             dockerfile_path = workdir / "Dockerfile"
             try:
                 before = dockerfile_path.read_text()
             except OSError as exc:
                 raise ClientError(f"Dockerfile not found: {dockerfile_path}") from exc
-            update_dockerfile_runtime_image(dockerfile_path, runtime_image)
+            previous = update_dockerfile_runtime_image(dockerfile_path, runtime_image)
             pin_changed = dockerfile_path.read_text() != before
+            note = repin_commit_note(repo, previous, runtime_image)
 
         if archive_only and not pin_changed:
             message = f"kobo: archive intake/{filename} [skip ci]"
         else:
-            message = f"kobo: add intake/{filename}"
+            message = f"kobo: add intake/{filename}{note}"
 
         github.commit_push(workdir, message)
         return github.local_head(workdir)

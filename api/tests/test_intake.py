@@ -292,7 +292,11 @@ def test_upload_intake_file_archive_only_with_stale_dockerfile_pin_keeps_ci():
         runtime_image=RUNTIME_IMAGE,
         archive_only=True,
     )
-    assert github.pushes[-1][1] == "kobo: add intake/notes.md"
+    subject, _, note = github.pushes[-1][1].partition("\n\n")
+    assert subject == "kobo: add intake/notes.md"
+    # The fake clone's Dockerfile is on an old image, so the commit re-pins
+    # it and says so (issue #140).
+    assert note.startswith("Also re-pins the Dockerfile FROM from ")
 
 
 # --- delete_intake_file -----------------------------------------------------

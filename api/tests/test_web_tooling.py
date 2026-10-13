@@ -394,7 +394,11 @@ def test_upload_tooling_route_creates_commits_and_returns_sha(session_factory, c
     assert response.status_code == 200
     assert response.json() == {"sha": SHA, "mode": "archive"}
     assert github.captured_tools == {"orchestrator.py": VALID_PY}
-    assert github.pushes[-1][1] == "kobo: add tools/orchestrator.py"
+    subject, _, note = github.pushes[-1][1].partition("\n\n")
+    assert subject == "kobo: add tools/orchestrator.py"
+    # The fake clone's Dockerfile is on an old image, so the commit re-pins
+    # it and says so (issue #140).
+    assert note.startswith("Also re-pins the Dockerfile FROM from ")
 
 
 def test_upload_tooling_route_rewrites_dockerfile_to_configured_runtime_image(
@@ -619,7 +623,11 @@ def test_upload_tooling_route_instant_lane_relays_archives_and_restarts_once(
     # BackgroundTasks run after the response completes but before
     # TestClient.post() returns control here.
     assert github.captured_tools == {"orchestrator.py": VALID_PY}
-    assert github.pushes[-1][1] == "kobo: add tools/orchestrator.py"
+    subject, _, note = github.pushes[-1][1].partition("\n\n")
+    assert subject == "kobo: add tools/orchestrator.py"
+    # The fake clone's Dockerfile is on an old image, so the commit re-pins
+    # it and says so (issue #140).
+    assert note.startswith("Also re-pins the Dockerfile FROM from ")
 
     assert len(fake_cabal.relay_calls) == 1
     envelope = fake_cabal.relay_calls[0]["task_envelope"]
@@ -901,7 +909,11 @@ def test_import_tooling_route_all_pass_returns_sha_and_imported(session_factory,
     assert response.status_code == 200
     assert response.json() == {"sha": SHA, "imported": ["good.py"], "rejected": []}
     assert github.captured_tools == {"good.py": VALID_PY}
-    assert github.pushes[-1][1] == f"kobo: import tools from {SOURCE_REPO}/tools"
+    subject, _, note = github.pushes[-1][1].partition("\n\n")
+    assert subject == f"kobo: import tools from {SOURCE_REPO}/tools"
+    # The fake clone's Dockerfile is on an old image, so the commit re-pins
+    # it and says so (issue #140).
+    assert note.startswith("Also re-pins the Dockerfile FROM from ")
 
 
 def test_import_tooling_route_partial_pass_returns_both_lists(session_factory, config):

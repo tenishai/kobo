@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 from kobo_api.clients import ClientError, KubectlCLI
-from kobo_api.composer import update_dockerfile_runtime_image
+from kobo_api.composer import repin_commit_note, update_dockerfile_runtime_image
 from kobo_api.slack_setup import (
     _update_agent_yaml_transports,
     render_manifest,
@@ -626,6 +626,36 @@ def test_update_dockerfile_runtime_image_idempotent_when_already_current(tmp_pat
     update_dockerfile_runtime_image(dockerfile, RUNTIME_IMAGE)
 
     assert dockerfile.read_text() == text
+
+
+def test_update_dockerfile_runtime_image_returns_the_image_it_replaced(tmp_path):
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(_DOCKERFILE_TEXT.format(image=FAKE_DOCKERFILE_OLD_IMAGE))
+
+    assert update_dockerfile_runtime_image(dockerfile, RUNTIME_IMAGE) == FAKE_DOCKERFILE_OLD_IMAGE
+    assert update_dockerfile_runtime_image(dockerfile, RUNTIME_IMAGE) is None
+
+
+def test_repin_commit_note_is_empty_when_nothing_was_repinned(caplog):
+    with caplog.at_level("WARNING", logger="kobo_api.composer"):
+        assert repin_commit_note("acme/agent-x", None, RUNTIME_IMAGE) == ""
+    assert caplog.records == []
+
+
+def test_repin_commit_note_names_both_images_and_logs_the_repo(caplog):
+    # Issue #140: a hand-pinned FROM was put back by an unrelated commit and
+    # nothing said so. The re-pin stays (the agents row is the authority);
+    # it is named in the commit and the log.
+    with caplog.at_level("WARNING", logger="kobo_api.composer"):
+        note = repin_commit_note("acme/agent-x", FAKE_DOCKERFILE_OLD_IMAGE, RUNTIME_IMAGE)
+
+    assert note.startswith("\n\n")
+    assert f"from {FAKE_DOCKERFILE_OLD_IMAGE} to {RUNTIME_IMAGE}" in note
+    assert "kobo_set_runtime_image" in note
+    [record] = caplog.records
+    message = record.getMessage()
+    assert "acme/agent-x" in message
+    assert FAKE_DOCKERFILE_OLD_IMAGE in message and RUNTIME_IMAGE in message
 
 
 def test_update_dockerfile_runtime_image_only_touches_from_line(tmp_path):

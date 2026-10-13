@@ -44,7 +44,7 @@ from pathlib import Path
 import yaml
 
 from kobo_api.clients import ClientError, GitHubClient, GojiraClient, KubectlClient
-from kobo_api.composer import update_dockerfile_runtime_image
+from kobo_api.composer import repin_commit_note, update_dockerfile_runtime_image
 from kobo_api.sero import SeroClient, deliver_secret
 
 # --- render_manifest -----------------------------------------------------------
@@ -386,9 +386,10 @@ def wire_slack(
 
         _update_agent_yaml_transports(workdir / "bundle" / "agent.yaml", channels)
         _update_gojira_secrets_from(workdir / "gojira.yaml", name)
-        update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
+        previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
+        note = repin_commit_note(repo, previous, runtime_image)
 
-        changed = github.commit_push(workdir, "kobo: connect slack")
+        changed = github.commit_push(workdir, f"kobo: connect slack{note}")
         if changed:
             gojira.reprovision(gojira_app_id)
         # Always confirm active, even on the no-change path — see the

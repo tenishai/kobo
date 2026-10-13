@@ -460,7 +460,11 @@ def test_connect_slack_wires_secret_transport_and_secrets_from_returns_sha(
     assert {"kind": "slack", "channel": CHANNEL} in agent_yaml["transports"]
     gojira_yaml = yaml.safe_load(github.captured_gojira_yaml)
     assert gojira_yaml["secrets_from"] == [f"{AGENT_NAME}-slack"]
-    assert github.pushes[-1][1] == "kobo: connect slack"
+    subject, _, note = github.pushes[-1][1].partition("\n\n")
+    assert subject == "kobo: connect slack"
+    # The fake clone's Dockerfile is on an old image, so the commit re-pins
+    # it and says so (issue #140).
+    assert note.startswith("Also re-pins the Dockerfile FROM from ")
 
     # a changed push (the default) triggers a reprovision
     assert gojira.reprovision_calls == [app_id]
