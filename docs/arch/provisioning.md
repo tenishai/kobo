@@ -1,12 +1,12 @@
 ---
 card: arch-card:kobo-provisioning
 updated: 2026-10-12
-anchor: api/kobo_api/provisioner.py sha=2c576e43a245aff3eee2c26ac15fc14b8491187f
+anchor: api/kobo_api/provisioner.py sha=bb9acf289b6c460b6d2eec1eefd258e8dee8625e
 anchor: api/kobo_api/steps.py sha=e7aac295744b034bbda3d0836f319ccfe8108f2f
 ---
 # provisioning — the Create → running-agent step engine
 
-WHAT / SEAM: `Step` Protocol (provisioner.py: `name`, `label`, `run(ctx: Ctx) -> str`); `Ctx(agent, session, config, clients, workdir)`. Engine: `run_pipeline` (daemon thread + `_Heartbeat` ticker), `_run_pipeline_body`, `_claim_step`, `reset_failed_steps`, `sweep_interrupted`, `pipeline_for(agent)`, `STEP_LABELS`. Steps live in steps.py; `StepSkipped` marks a best-effort step SKIPPED; `StepWaiting` parks a connected agent on its setup PR (status WAITING, resumed by `sweep_waiting`). Since 2026-10-01 the process has a ROLE (roles.py, `KOBO_ROLE`): `all` (default, every test) launches pipelines inline from the routes; `api` only leaves the row PENDING with no heartbeat; `worker` runs `queue_loop` (`claim_queued`: one conditional UPDATE marks the first heartbeat, so two workers never run one agent; `queue_tick` launches up to 4), the sweeps and the nightly learnings pass, and `drain_pipelines` waits up to 25 minutes on shutdown so a roll never fails a build.
+WHAT / SEAM: `Step` Protocol (provisioner.py: `name`, `label`, `run(ctx: Ctx) -> str`); `Ctx(agent, session, config, clients, workdir)`. Engine: `run_pipeline` (daemon thread + `_Heartbeat` ticker), `_run_pipeline_body`, `_claim_step`, `reset_failed_steps`, `sweep_interrupted`, `pipeline_for(agent)`, `STEP_LABELS`. Steps live in steps.py; `StepSkipped` marks a best-effort step SKIPPED; `StepWaiting` parks a connected agent on its setup PR (status WAITING, resumed by `sweep_waiting`, which calls gojira's `sync_app` before `app_status` because without a GitHub webhook the platform's row never leaves `awaiting_pr`, issue #118). Since 2026-10-01 the process has a ROLE (roles.py, `KOBO_ROLE`): `all` (default, every test) launches pipelines inline from the routes; `api` only leaves the row PENDING with no heartbeat; `worker` runs `queue_loop` (`claim_queued`: one conditional UPDATE marks the first heartbeat, so two workers never run one agent; `queue_tick` launches up to 4), the sweeps and the nightly learnings pass, and `drain_pipelines` waits up to 25 minutes on shutdown so a roll never fails a build.
 OPS / FLOW:
 - composed `PIPELINE`: repo → avatar → onboard → access → wire → build → deploy → directory → hello.
 - connected `CONNECTED_PIPELINE`: connect → avatar → onboard → access → wire(`ConnectedWireStep`, proposes a PR on branch `kobo/wire`) → build → deploy. No directory/hello: a connected agent has no switchboard identity.
