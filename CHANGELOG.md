@@ -8,6 +8,13 @@ All notable changes to kobo are documented here. The format follows
 
 ### Fixed
 
+- **Composed agents with skills now get `skills.load`.** daedalus 0.5.0 shows assigned
+  skills as an index in the system prompt plus a `skills.load(name)` tool, but only when
+  `tools.allow` admits the tool, and the composer never added it, so every composed agent
+  with skills logged a warning at boot and lost the index (issue #137). The composer adds it
+  for any agent with skills, and the self-card names it. Agents composed before this keep
+  their allow list: add `skills.load` to `tools.allow` in the agent's `bundle/agent.yaml`.
+  Older runtimes ignore the entry.
 - **An agent can be created again under a destroyed agent's name.** Destroy renames the
   repository to `archived-agent-<name>-<id>`, and GitHub keeps answering at the old name
   through a redirect; the room read that as "a repository already exists and is not
