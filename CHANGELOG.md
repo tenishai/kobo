@@ -17,6 +17,17 @@ All notable changes to kobo are documented here. The format follows
   the allow list doesn't already admit it. An agent that already has skills and gets none
   added keeps its allow list: add `skills.load` to `tools.allow` in its `bundle/agent.yaml`.
   Older runtimes ignore the entry.
+- **Changing an agent's colleague mode no longer locks its row across a GitHub push.** The
+  route set `colleague_mode` before rendering the colleague document, so the roster query
+  flushed the UPDATE and Postgres held the agent's row lock through the clone and push. The
+  document now renders for the new mode without touching the row, and the row is written
+  after the push lands (issue #133).
+- **Colleague mode is documented.** The guide, glossary, README and `docs/what-the-room-does.md`
+  said every agent asks its colleagues; they now describe `roster-only` and `none`, and the
+  guide says where an owner sets the mode. The route and MCP tool docstrings, and a note under
+  the Harness tab's Colleagues row, now say that `roster-only` also stops the agent answering
+  from general knowledge. A stranger-gets-403 test now covers the colleague-mode, runtime,
+  model and Slack wake routes.
 - **An agent can be created again under a destroyed agent's name.** Destroy renames the
   repository to `archived-agent-<name>-<id>`, and GitHub keeps answering at the old name
   through a redirect; the room read that as "a repository already exists and is not

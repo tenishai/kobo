@@ -203,6 +203,14 @@
     "roster-only": "Know the roster, ask a human",
     none: "No colleagues",
   };
+  // What each mode does, under the row (issue #133): roster-only also turns
+  // off general knowledge, which the label alone doesn't say.
+  const COLLEAGUE_MODE_NOTES: Record<ColleagueMode, string> = {
+    default: "Asks the colleague whose field a question is in before answering from general knowledge.",
+    "roster-only":
+      "Knows who is in the room but can't ask them. Answers only from its own tools and memory, not general knowledge; otherwise says it doesn't know and asks you.",
+    none: "No colleague tools and no roster. Other agents can still ask it.",
+  };
   let pickedColleagueMode = $state<ColleagueMode | null>(null);
   const colleagueModeChoice = $derived(pickedColleagueMode ?? colleagueMode);
   // svelte-ignore state_referenced_locally
@@ -329,6 +337,9 @@
                     </span>
                   {:else}
                     {COLLEAGUE_MODE_LABELS[colleagueMode]}
+                  {/if}
+                  {#if colleagueModeChoice}
+                    <p class="panel__note">{COLLEAGUE_MODE_NOTES[colleagueModeChoice]}</p>
                   {/if}
                 </dd>
               {/if}

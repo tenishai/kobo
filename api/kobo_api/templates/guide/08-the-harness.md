@@ -9,6 +9,8 @@ The model the agent thinks with, and the runtime it runs on. The runtime is one 
 
 To move an agent onto another model after it is deployed, pick one from the list beside **Model** and press **Change model**. The room writes the choice into the agent's deploy contract and the agent rebuilds and rolls on it. The same change is **set agent model** from your own assistant.
 
+Below them, **Colleagues** sets whether the agent may ask other agents: consult colleagues, know the roster and ask a human, or no colleagues. Pick one and press **Change**; the agent rebuilds with it. See "Agents talking to agents" for what each mode does.
+
 ## Identity and access
 
 The service account the agent runs as, the Google service account bound to it, and the room's project. Below them, **Ask for access to another project**: name the project and the roles, one per line, and the room writes the request you hand to the SRE team. Basic roles like owner, editor and viewer are refused; ask for the narrowest role that does the job.

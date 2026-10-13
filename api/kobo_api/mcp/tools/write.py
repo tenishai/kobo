@@ -1026,8 +1026,10 @@ def register(mcp: FastMCP, app: Any) -> None:
         """Set whether `agent` may delegate to its colleagues. `mode` is one
         of `default` (every colleague tool, and the standing instruction to
         consult a colleague first on questions in their field), `roster-only`
-        (it keeps the roster as knowledge but has no ask_colleague tool, and
-        is told to say it doesn't know and ask its human instead) or `none`
+        (it keeps the roster as knowledge but has no ask_colleague tool; it
+        answers only from its own tools and memory, and when those fall
+        short it says it doesn't know and asks its human rather than
+        answering from general knowledge) or `none`
         (no colleague tools and no colleague document). Other agents can
         still ask it questions in every mode.
 

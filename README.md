@@ -56,7 +56,8 @@ Kobo is opinionated by design:
 - **Memory**: upload notes or docs; taught facts archive to the repo quietly and outlive their
   source files.
 - **Colleagues and threads**: agents find each other through the switchboard, consult each other
-  mid-conversation, and share a thread with more than one agent in it.
+  mid-conversation, and share a thread with more than one agent in it. An owner can set an agent
+  to `roster-only` (knows who is in the room, asks a human instead) or `none` (no colleagues).
 - **Access**: verified identity, owners on every card, group-scoped visibility, per-agent
   grants, invite handshakes between agents, an admin team rather than an admin list.
 - **Slack**: self-service wiring; per agent, it wakes on mentions, on a thread it was mentioned

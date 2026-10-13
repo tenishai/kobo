@@ -8,6 +8,7 @@ from pathlib import Path
 
 import yaml
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 
 from kobo_api.clients import Clients
 from kobo_api.composer import BundleSpec, compose
@@ -157,6 +158,40 @@ def test_a_failed_push_leaves_the_row_where_it_was(session_factory, config):
 
     assert _put(client, "none").status_code == 502
     assert _mode_on_row(session_factory) is None
+
+
+def test_the_row_is_written_only_after_the_push(session_factory, config, tmp_path):
+    """Issue #133: no UPDATE on the agents row may reach the database before
+    the push, or Postgres holds the row lock across the clone and push."""
+    agent_updates: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("UPDATE AGENTS"):
+            agent_updates.append(statement)
+
+    engine = session_factory.kw["bind"]
+    event.listen(engine, "before_cursor_execute", _record)
+
+    class _CountingGitHub(_CapturingGitHub):
+        updates_at_push: int | None = None
+
+        def commit_push(self, workdir: Path, message: str) -> bool:
+            self.updates_at_push = len(agent_updates)
+            return super().commit_push(workdir, message)
+
+    github = _CountingGitHub(clone_tree=_composed_tree(tmp_path))
+    client = _client(session_factory, config, github)
+    _seed(session_factory)
+    try:
+        assert _put(client, "roster-only").status_code == 200
+    finally:
+        event.remove(engine, "before_cursor_execute", _record)
+
+    assert github.updates_at_push == 0
+    assert agent_updates, "the mode never reached the row"
+    assert _mode_on_row(session_factory) == "roster-only"
+    # Rendered for the new mode even though the row still said default.
+    assert "ask_colleague FIRST" not in github.pushed[DOC]
 
 
 def test_a_connected_agent_is_refused(session_factory, config, tmp_path):

@@ -180,6 +180,20 @@ describe("HarnessPanel colleague mode (issue #131)", () => {
       expect(JSON.parse(String(init.body))).toEqual({ mode: "roster-only" });
     });
   });
+
+  it("says under the row that roster-only also drops general knowledge", async () => {
+    renderWithClient(HarnessPanel, {
+      ...BASE_PROPS,
+      canUpdateRuntime: true,
+      colleagueMode: "default",
+    });
+
+    await fireEvent.change(screen.getByRole("combobox", { name: "Colleague mode" }), {
+      target: { value: "roster-only" },
+    });
+
+    expect(screen.getByText(/not general knowledge/)).toBeTruthy();
+  });
 });
 
 describe("HarnessPanel for a connected agent", () => {
