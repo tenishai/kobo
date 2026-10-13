@@ -1,3 +1,4 @@
+import dataclasses
 import json
 from dataclasses import fields
 from pathlib import Path
@@ -1870,3 +1871,64 @@ def test_bundle_spec_dockerfile_uses_the_given_runtime(tmp_path):
     compose(spec, tmp_path / "out")
     text = (tmp_path / "out" / "Dockerfile").read_text()
     assert "FROM us-east4-docker.pkg.dev/p/apps/org-agent-sdk:1.2" in text
+
+
+# --- skills.load in the allow list (issue #137) --------------------------------
+
+
+def _allow(dest: Path) -> list:
+    return yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())["tools"]["allow"]
+
+
+def test_skills_load_allowed_when_agent_has_skills_without_switchboard(tmp_path):
+    dest = tmp_path / "out"
+    compose(_make_spec(skills=[_make_skill(tmp_path)]), dest)
+    assert "tools: {provider: none, allow: [skills.load]}\n" in (
+        dest / "bundle" / "agent.yaml"
+    ).read_text()
+
+
+def test_skills_load_follows_colleague_tools_when_switchboard_configured(tmp_path):
+    dest = tmp_path / "out"
+    compose(
+        _make_spec(skills=[_make_skill(tmp_path)], cabal_url="http://cabal.example.com"),
+        dest,
+    )
+    assert _allow(dest) == [
+        "colleagues.list_colleagues",
+        "colleagues.ask_colleague",
+        "colleagues.remember",
+        "skills.load",
+    ]
+
+
+def test_skills_load_reaches_team_guide_kiosk_and_none_mode(tmp_path):
+    kiosk = tmp_path / "kiosk"
+    compose(
+        _make_spec(
+            skills=[_make_skill(tmp_path)],
+            cabal_url="http://cabal.example.com",
+            archetype="team_guide",
+        ),
+        kiosk,
+    )
+    assert "skills.load" in _allow(kiosk)
+    quiet = tmp_path / "quiet"
+    spec = _make_spec(skills=[_make_skill(tmp_path, "other")], cabal_url="http://cabal.example.com")
+    compose(dataclasses.replace(spec, colleague_mode="none"), quiet)
+    assert _allow(quiet) == ["skills.load"]
+
+
+def test_no_skills_means_no_skills_load(tmp_path):
+    dest = tmp_path / "out"
+    compose(_make_spec(cabal_url="http://cabal.example.com"), dest)
+    assert "skills.load" not in (dest / "bundle" / "agent.yaml").read_text()
+    assert "skills.load" not in (dest / "bundle" / "knowledge" / "self.md").read_text()
+
+
+def test_self_md_names_skills_load_only_when_agent_has_skills(tmp_path):
+    dest = tmp_path / "out"
+    compose(_make_spec(skills=[_make_skill(tmp_path)]), dest)
+    text = (dest / "bundle" / "knowledge" / "self.md").read_text()
+    assert "`skills.load(name)` reads one in full" in text
+    assert "Your skills are PROCEDURES seeded into your memory, never tools" in text

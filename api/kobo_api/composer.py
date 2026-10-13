@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -250,6 +251,12 @@ CABAL_COLLEAGUE_TOKEN_ENV = "CABAL_COLLEAGUE_TOKEN"
 _COLLEAGUES_TOOLS_ALLOW = ["colleagues.list_colleagues", "colleagues.ask_colleague", "colleagues.remember"]
 _COLLEAGUES_ASK_TOOL = "colleagues.ask_colleague"
 
+# daedalus 0.5.0 delivers assigned skills as an index in the system prompt
+# plus this tool, and only when the allow list admits it (issue #137).
+# Older runtimes only filter offered tools by the allow list, so a name no
+# provider offers there matches nothing: no runtime version gate needed.
+_SKILLS_LOAD_TOOL = "skills.load"
+
 # Per-agent colleague mode (issue #131), set by the agent's owner:
 # - default: every colleague tool and the consult-first doctrine, the
 #   standing operator ruling for every agent.
@@ -296,9 +303,10 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
     keeps the on-path rendered on one line — the shape
     `update_agent_yaml_tools` below depends on to find and edit this entry.
     """
+    skills_allow = [_SKILLS_LOAD_TOOL] if spec.skills else []
     if not spec.cabal_url:
-        return _FlowDict(provider="none", allow=[])
-    allow = colleague_tools_allow(spec.colleague_mode)
+        return _FlowDict(provider="none", allow=_FlowList(skills_allow))
+    allow = colleague_tools_allow(spec.colleague_mode) + skills_allow
     block = _FlowDict(
         provider="colleagues",
         allow=None,  # placed below, once the github arm has decided
@@ -323,7 +331,7 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
     # still remembers).
     never_act = spec.archetype == ARCHETYPE_TEAM_GUIDE
     if never_act:
-        block["allow"] = _FlowList(allow)   # colleagues trio only
+        block["allow"] = _FlowList(allow)   # colleagues trio (+ skills.load) only
         return block
     # The github sidecar (agent PR broker spec): rides ALONGSIDE the
     # colleagues provider (daedalus composes the two), gated on BOTH
@@ -454,6 +462,12 @@ def _render_agent_yaml(spec: BundleSpec) -> str:
     )
 
 
+_SKILLS_LOAD_SENTENCE = (
+    "The Skills list in your instructions names them, and `skills.load(name)` "
+    "reads one in full. "
+)
+
+
 def _self_md(spec: BundleSpec) -> str:
     """Standing self-knowledge, same lane `_GOTCHAS_MD` used to occupy (the
     wire shows agents quote that lane verbatim). Issue #5: asked which
@@ -490,7 +504,8 @@ def _self_md(spec: BundleSpec) -> str:
         "asking someone else to answer it for you.\n"
         "\n"
         "Your skills are PROCEDURES seeded into your memory, never tools: "
-        "each one lives as a '## Skill: <name>' entry you can recall. When "
+        "each one lives as a '## Skill: <name>' entry you can recall. "
+        f"{_SKILLS_LOAD_SENTENCE if spec.skills else ''}When "
         "someone asks you to use a skill, recall that procedure and follow "
         "its steps with the tools you actually have -- there is no function "
         "named after it to invoke, and saying a skill is 'not loaded' when "
@@ -1129,6 +1144,41 @@ def update_agent_yaml_colleague_mode(bundle_dir: Path, *, mode: str) -> bool:
     if allow == existing:
         return False
     tools["allow"] = allow
+    _splice_tools_section(agent_yaml_path, text, tools)
+    return True
+
+
+def update_agent_yaml_skills_load(bundle_dir: Path) -> bool:
+    """Make an already-composed `bundle_dir/agent.yaml`'s allow list admit
+    `skills.load`, appending it when no entry matches (issue #137).
+
+    For a skill added after birth (`kobo_api.skills`): compose() adds the
+    tool only for skills the agent was born with, so without this an agent
+    that gets its first skill later boots on daedalus 0.5.0 with the
+    "tools.allow does not admit 'skills.load'" warning and no skills index.
+    Entries are matched as daedalus matches them (fnmatch), so an allow list
+    that already admits it through a pattern is left alone.
+
+    Returns whether the file changed; an allow list that already admits the
+    tool is left untouched byte for byte. Raises `ClientError` when the file
+    is missing, does not parse, or has no tools section.
+    """
+    agent_yaml_path = bundle_dir / "agent.yaml"
+    try:
+        text = agent_yaml_path.read_text()
+    except OSError as exc:
+        raise ClientError(f"agent.yaml not found: {agent_yaml_path}") from exc
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ClientError(f"agent.yaml does not parse: {agent_yaml_path}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("tools"), dict):
+        raise ClientError(f"agent.yaml has no tools section to update: {agent_yaml_path}")
+    tools = data["tools"]
+    allow = list(tools.get("allow") or [])
+    if any(fnmatch(_SKILLS_LOAD_TOOL, str(pattern)) for pattern in allow):
+        return False
+    tools["allow"] = [*allow, _SKILLS_LOAD_TOOL]
     _splice_tools_section(agent_yaml_path, text, tools)
     return True
 

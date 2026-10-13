@@ -23,16 +23,20 @@ always falling through to the legacy team-prefixed path.
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 import tempfile
 import time
 from pathlib import Path
 
-from kobo_api.clients import GitHubClient, StorageClient
+from kobo_api.clients import ClientError, GitHubClient, StorageClient
+from kobo_api.composer import update_agent_yaml_skills_load
 from kobo_api.config import Config
 from kobo_api.search import read_marketplace_catalog
 from kobo_api.steps import _materialize_catalog_skill
+
+log = logging.getLogger(__name__)
 
 # 1-40 chars: a lowercase letter, then lowercase/digit/hyphen — no path
 # separators, no leading digit/hyphen. Unlike KNOWLEDGE_FILENAME_RE
@@ -77,6 +81,18 @@ def _validate_frontmatter(content: str) -> None:
     for field in ("name", "description"):
         if not re.search(rf"^{field}\s*:\s*\S", block, re.MULTILINE):
             raise SkillsError(f"skill frontmatter needs a {field}: line")
+
+
+def _admit_skills_load(workdir: Path, repo: str) -> None:
+    """Add `skills.load` to the agent's allow list in the same commit as the
+    skill (issue #137), so a skill added after birth is reachable on daedalus
+    0.5.0 the way a skill composed at birth is. A bundle whose agent.yaml
+    can't be edited still gets its skill; the warning names why the tool
+    wasn't added."""
+    try:
+        update_agent_yaml_skills_load(workdir / "bundle")
+    except ClientError as exc:
+        log.warning("skills: %s: skills.load not added to tools.allow: %s", repo, exc)
 
 
 def add_catalog_skill(
@@ -126,6 +142,7 @@ def add_catalog_skill(
             )
         except RuntimeError as exc:
             raise SkillsError(str(exc)) from exc
+        _admit_skills_load(workdir, repo)
         github.commit_push(workdir, f"kobo: add skill {skill_id}")
         return github.local_head(workdir), source_sha
 
@@ -253,5 +270,6 @@ def save_local_skill(github: GitHubClient, repo: str, skill_id: str, content: st
         skill_dir = workdir / "bundle" / "skills" / skill_id
         skill_dir.mkdir(parents=True, exist_ok=True)
         (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+        _admit_skills_load(workdir, repo)
         github.commit_push(workdir, f"kobo: update skill {skill_id}")
         return github.local_head(workdir)
