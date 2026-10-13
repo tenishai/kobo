@@ -2,7 +2,7 @@
 card: arch-card:kobo-provisioning
 updated: 2026-10-12
 anchor: api/kobo_api/provisioner.py sha=2c576e43a245aff3eee2c26ac15fc14b8491187f
-anchor: api/kobo_api/steps.py sha=a8ea2c35fe828f3dba3e6b118af33931eb18ed6c
+anchor: api/kobo_api/steps.py sha=e7aac295744b034bbda3d0836f319ccfe8108f2f
 ---
 # provisioning — the Create → running-agent step engine
 
@@ -12,7 +12,7 @@ OPS / FLOW:
 - connected `CONNECTED_PIPELINE`: connect → avatar → onboard → access → wire(`ConnectedWireStep`, proposes a PR on branch `kobo/wire`) → build → deploy. No directory/hello: a connected agent has no switchboard identity.
 - repo: compose bundle (composer.py) + create repo. onboard: gojira `create_app`, wait active. access: GSA `agent-<name>`, workload identity, `config.model_group` membership. wire: KSA + techne PVC manifests, register in kustomization.yaml, edit gojira.yaml, deliver colleague pass BEFORE push, reprovision, wait active. build: watch GH Actions run for the CURRENT head sha. deploy: rollout. directory: cabal graduate (a no-op when the switchboard is off). hello: first contact via switchboard relay, or the direct path (`clients.agent.hello`) when the switchboard is off, then earns the capability line.
 - Each step's row (`AgentStep`, unique (agent_id, name)) is persisted before the next runs. Route polls rows for the UI checklist; the request returns immediately.
-- On READY (composed only): `sync_dispatch_pairs_best_effort` + `refresh_colleague_rosters` (provisioner.py ~l.380-410), both fail-soft. The roster refresh skips a viewer whose `colleague_mode` is `none` (it has no colleagues.md) and renders a `roster-only` viewer's doc with that mode's doctrine.
+- On READY (composed only): `sync_dispatch_pairs_best_effort` + `refresh_colleague_rosters` (provisioner.py ~l.380-410), both fail-soft. The roster refresh skips a viewer whose `colleague_mode` is `none` (it has no colleagues.md) and renders a `roster-only` viewer's doc with that mode's doctrine. `_render_colleagues_md(viewer, roster, mode=...)` renders for a mode other than the row's: the colleague-mode route (main.py `set_colleague_mode`) uses it so it writes the row only after the push, never holding the agent's row lock across the clone and push (issue #133).
 INVARIANTS:
 - Order is load-bearing: each step reads state an earlier one recorded on `Agent` (`repo_full_name`, `gojira_app_id`, ...). directory must precede hello because agents compose LOCKED (only switchboard-signed calls accepted).
 - `_claim_step` flips PENDING→RUNNING with one conditional UPDATE and checks rowcount. WHY: two replicas (or a retry racing a live run) must never execute the same step twice. Plain SQL, valid on SQLite and Postgres; do not replace with an in-process lock.

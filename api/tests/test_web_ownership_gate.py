@@ -483,6 +483,30 @@ def _generate_avatar(client, headers):
     return client.post(f"/api/agents/{AGENT_NAME}/avatar", headers=headers)
 
 
+def _set_runtime(client, headers):
+    return client.patch(
+        f"/api/agents/{AGENT_NAME}/runtime",
+        json={"runtime_image": "registry.example/agents/daedalus-runtime:v2"},
+        headers=headers,
+    )
+
+
+def _set_model(client, headers):
+    return client.patch(
+        f"/api/agents/{AGENT_NAME}/model", json={"model": "vertex_ai/claude-sonnet-4-5"}, headers=headers
+    )
+
+
+def _set_slack_wake(client, headers):
+    return client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"wake": "thread"}, headers=headers)
+
+
+def _set_colleague_mode(client, headers):
+    return client.put(
+        f"/api/agents/{AGENT_NAME}/colleague-mode", json={"mode": "roster-only"}, headers=headers
+    )
+
+
 SMOKE_ROUTES = [
     ("slack-connect", _connect_slack),
     ("tooling-import", _import_tooling),
@@ -492,6 +516,10 @@ SMOKE_ROUTES = [
     ("metadata-regenerate", _regenerate_metadata),
     ("intake-delete", _delete_intake),
     ("avatar-generate", _generate_avatar),
+    ("runtime", _set_runtime),
+    ("model", _set_model),
+    ("slack-wake", _set_slack_wake),
+    ("colleague-mode", _set_colleague_mode),
 ]
 
 

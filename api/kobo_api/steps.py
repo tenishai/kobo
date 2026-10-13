@@ -683,7 +683,7 @@ def _relay_reply_not_completed(raw: object) -> bool:
     return status.get("state") != "completed"
 
 
-def _render_colleagues_md(viewer: Agent, roster: list[dict]) -> str:
+def _render_colleagues_md(viewer: Agent, roster: list[dict], *, mode: str | None = None) -> str:
     """Render `colleagues.md` for `viewer` from `roster` (its own freshly
     computed `_colleague_roster`), via the identical composer function that
     renders it at birth (`kobo_api.composer._colleagues_md`) -- so a
@@ -691,7 +691,11 @@ def _render_colleagues_md(viewer: Agent, roster: list[dict]) -> str:
     for the same roster. Every `BundleSpec` field below other than `name`/
     `colleagues` is unused by `_colleagues_md` (confirmed by reading it) and
     filled with a throwaway placeholder purely to satisfy the dataclass's
-    required fields; none of it is ever rendered."""
+    required fields; none of it is ever rendered.
+
+    `mode` renders for a colleague mode other than the row's, so the
+    colleague-mode route can write the new document before it touches the
+    row (issue #133). None reads the row."""
     spec = BundleSpec(
         name=viewer.name,
         persona_body="",
@@ -701,7 +705,7 @@ def _render_colleagues_md(viewer: Agent, roster: list[dict]) -> str:
         vertex_project="",
         vertex_location="",
         colleagues=roster,
-        colleague_mode=effective_colleague_mode(viewer.colleague_mode),
+        colleague_mode=effective_colleague_mode(mode if mode is not None else viewer.colleague_mode),
     )
     return _colleagues_md(spec)
 

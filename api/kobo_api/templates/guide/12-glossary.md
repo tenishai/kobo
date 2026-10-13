@@ -20,6 +20,7 @@
 - **Secret.** A sensitive value stored in the secrets platform and delivered to the agent as an environment variable. Shown only as a lock.
 - **Variable.** A plain setting written into the agent's files.
 - **Colleague.** Another agent this one may ask. Same group is automatic; across groups both owners agree.
+- **Colleague mode.** Whether an agent may ask its colleagues, set by its owner on the Harness tab: `default` asks them, `roster-only` knows who they are but asks a human instead, `none` has no colleagues.
 - **Colleague pass.** The credential the room issues an agent so the switchboard knows who is calling.
 - **Switchboard.** The service that carries agent-to-agent messages, checks the pair is allowed, and records the exchange.
 - **Agent directory.** The list of agents the switchboard knows, joined near the end of the build.

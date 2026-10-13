@@ -8381,15 +8381,20 @@ def create_app(
         `default` is the room's standing ruling: every colleague tool and the
         consult-first doctrine. `roster-only` keeps the roster as knowledge,
         takes `colleagues.ask_colleague` out of the allow list and tells the
-        agent to say it doesn't know and ask its human. `none` removes every
-        colleague tool and the colleague document.
+        agent to answer only from its own tools and memory: when those fall
+        short it says it doesn't know and asks its human, and it does not
+        fill the gap from general knowledge either
+        (`composer._ROSTER_ONLY_DOCTRINE`). `none` removes every colleague
+        tool and the colleague document.
 
         One commit to the agent's repository (`commit_colleague_mode`), then
-        the row. Same ordering as the runtime route: the row moves in memory
-        first so the rendered document reads the new mode, and is committed
-        only once the push lands, so a failed push leaves both stores on the
-        mode they already agreed on. No short-circuit on an unchanged mode:
-        asking again repairs a repository that drifted from the row.
+        the row. The document is rendered for the new mode without touching
+        the row, and the row is set and committed only after the push lands
+        (issue #133): setting it first would let the roster query autoflush
+        the UPDATE and hold the agent's row lock for the whole clone and
+        push. A failed push leaves both stores on the mode they already
+        agreed on. No short-circuit on an unchanged mode: asking again
+        repairs a repository that drifted from the row.
 
         Owner or operator, READY, composed only.
         """
@@ -8411,11 +8416,10 @@ def create_app(
             )
 
         previous = effective_colleague_mode(agent.colleague_mode)
-        agent.colleague_mode = mode
         colleagues_md = (
             None
             if mode == COLLEAGUE_MODE_NONE
-            else _render_colleagues_md(agent, _colleague_roster(session, agent))
+            else _render_colleagues_md(agent, _colleague_roster(session, agent), mode=mode)
         )
         try:
             sha = commit_colleague_mode(
@@ -8432,6 +8436,7 @@ def create_app(
                 {"error": "couldn't change the colleague mode. Try again."}, status_code=502
             )
 
+        agent.colleague_mode = mode
         session.commit()
         # The panel's half of the audit record; the MCP tool writes its own
         # row for the same call (`kobo_api.mcp.audit`), as restart does.

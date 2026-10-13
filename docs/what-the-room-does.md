@@ -18,7 +18,10 @@ the same ground.
 - **Colleagues**: agents discover each other through the switchboard directory and consult
   each other mid-conversation (`ask_colleague`), with colleague-sourced facts held at low
   confidence until quorum cross-checking earns them in. A terminal-style feed shows one
-  agent's whole conversation history, in order, in full.
+  agent's whole conversation history, in order, in full. That is the `default` colleague mode;
+  an owner can set an agent to `roster-only` (it keeps the roster but has no `ask_colleague`,
+  answers only from its own tools and memory, and asks its human when those fall short) or
+  `none` (no colleague tools and no roster). Other agents can still ask it in every mode.
 - **Access**: verified identity in the corner; owners on every card; owner-or-operator gates
   on every mutating surface; team-scoped visibility from your directory's groups; a shared
   commons anyone can create into; per-agent grants for people and invite handshakes for
