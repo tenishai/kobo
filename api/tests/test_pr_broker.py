@@ -146,8 +146,9 @@ def test_token_route_401s_without_a_bearer(broker_client, session_factory):
 def test_token_route_404s_with_zero_approvals(
     broker_client, session_factory, monkeypatch
 ):
-    """An agent with no grants is indistinguishable from one that does not
-    exist -- the same anti-enumeration answer every agent route gives."""
+    """Still a 404, but after the token verifies the message says why: the
+    caller is proven to be the agent, so "no such agent" would be false
+    (issue #11)."""
     import kobo_api.main as main_mod
 
     name = _agent(session_factory)
@@ -156,6 +157,49 @@ def test_token_route_404s_with_zero_approvals(
         f"/broker/agents/{name}/github-token", headers={"Authorization": "Bearer x"}
     )
     assert r.status_code == 404
+    error = r.json()["error"]
+    assert "no such agent" not in error
+    assert "none has been requested" in error
+    assert f"POST /api/agents/{name}/repo-access" in error
+
+
+def test_token_route_404_names_requests_still_waiting_for_approval(
+    broker_client, session_factory, monkeypatch
+):
+    import kobo_api.main as main_mod
+
+    name = _agent(session_factory)
+    broker_client.post(
+        f"/api/agents/{name}/repo-access", json={"repositories": ["acme/b", "acme/a"]}
+    )
+    monkeypatch.setattr(main_mod, "verify_agent_token", lambda *a, **k: None)
+    r = broker_client.post(
+        f"/broker/agents/{name}/github-token", headers={"Authorization": "Bearer x"}
+    )
+    assert r.status_code == 404
+    error = r.json()["error"]
+    assert "acme/a, acme/b requested, waiting for an operator to approve" in error
+    assert "POST /api/repo-access/decide" in error
+
+
+def test_token_route_404_says_when_access_was_revoked(
+    broker_client, session_factory, monkeypatch
+):
+    import kobo_api.main as main_mod
+
+    name = _agent(session_factory)
+    rows = broker_client.post(
+        f"/api/agents/{name}/repo-access", json={"repositories": ["acme/a"]}
+    ).json()["requested"]
+    broker_client.post(
+        "/api/repo-access/decide", json={"ids": [rows[0]["id"]], "decision": "revoked"}
+    )
+    monkeypatch.setattr(main_mod, "verify_agent_token", lambda *a, **k: None)
+    r = broker_client.post(
+        f"/broker/agents/{name}/github-token", headers={"Authorization": "Bearer x"}
+    )
+    assert r.status_code == 404
+    assert "acme/a revoked" in r.json()["error"]
 
 
 def test_token_route_mints_scoped_to_approved_rows_only(

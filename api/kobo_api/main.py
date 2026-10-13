@@ -2338,6 +2338,29 @@ def _visible_agents(session: Session, request: Request) -> tuple[list[Agent], bo
     return visible, False
 
 
+def _no_approved_repo_access(name: str, rows: list[RepoAccess]) -> str:
+    """Why the GitHub token broker has nothing to mint for `name`, and the
+    remedy, from its repo-access rows (none approved)."""
+    pending = [r.repository for r in rows if r.status == REPO_ACCESS_REQUESTED]
+    if pending:
+        return (
+            f"agent {name!r} has no approved repository access: "
+            f"{', '.join(pending)} requested, waiting for an operator to approve "
+            "(POST /api/repo-access/decide)."
+        )
+    if rows:
+        return (
+            f"agent {name!r} has no approved repository access: "
+            f"{', '.join(r.repository for r in rows)} revoked. An owner can request "
+            f"it again with POST /api/agents/{name}/repo-access."
+        )
+    return (
+        f"agent {name!r} has no repository access: none has been requested. An "
+        f"owner requests it with POST /api/agents/{name}/repo-access, and an "
+        "operator approves it with POST /api/repo-access/decide."
+    )
+
+
 def _visible_agent_or_404(session: Session, request: Request, name: str) -> Agent | JSONResponse:
     """Fetch the agent named `name`, collapsing "doesn't exist" and "exists
     but this caller can't see it" into the identical 404 (access-control
@@ -5562,10 +5585,12 @@ def create_app(
         """THE BROKER (2026-08-27 spec): the caller is the AGENT itself,
         authenticated by its cabal-issued colleague JWT -- never a human
         session. Wall 2: the minted token's `repositories` is pinned to
-        exactly this agent's APPROVED rows. 404 for an unknown agent AND
-        for one with zero approvals -- an agent with no grants must not be
-        distinguishable from one that does not exist, the same
-        anti-enumeration answer every agent route gives."""
+        exactly this agent's APPROVED rows. 404 when it has none, the
+        status every agent route gives. The message is the truth, though:
+        once `verify_agent_token` passes, the caller is proven to be `name`,
+        so telling it which of its own requests are pending (or that none
+        were made) leaks nothing, where "no such agent" sent a responder
+        hunting a mapping fault that wasn't there (issue #11)."""
         config: Config = app.state.config
         off = _pr_broker_off(config)
         if off is not None:
@@ -5594,7 +5619,15 @@ def create_app(
             .all()
         )
         if not approved:
-            return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
+            rows = (
+                session.query(RepoAccess)
+                .filter(RepoAccess.agent_name == name)
+                .order_by(RepoAccess.repository)
+                .all()
+            )
+            return JSONResponse(
+                {"error": _no_approved_repo_access(name, rows)}, status_code=404
+            )
 
         try:
             minted = mint_scoped_token(
