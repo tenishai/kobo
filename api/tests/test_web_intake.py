@@ -244,7 +244,11 @@ def test_upload_intake_route_creates_commits_and_returns_sha(session_factory, co
     assert response.status_code == 200
     assert response.json() == {"sha": SHA, "mode": "archive"}
     assert github.captured_intake == {"notes.md": "new content"}
-    assert github.pushes[-1][1] == "kobo: add intake/notes.md"
+    subject, _, note = github.pushes[-1][1].partition("\n\n")
+    assert subject == "kobo: add intake/notes.md"
+    # The fake clone's Dockerfile is on an old image, so the commit re-pins
+    # it and says so (issue #140).
+    assert note.startswith("Also re-pins the Dockerfile FROM from ")
 
 
 def test_upload_intake_route_rewrites_dockerfile_to_configured_runtime_image(

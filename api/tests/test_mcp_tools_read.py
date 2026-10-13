@@ -590,6 +590,24 @@ def test_feed_visibility_gate_fires_before_the_switchboard_is_ever_asked(
     assert fake_cabal.list_conversations_calls == []
 
 
+def test_feed_names_the_missing_settings_when_the_switchboard_is_off(
+    session_factory, config, monkeypatch
+):
+    # Same text as the HTTP routes' 409 (issue #123): the MCP caller meets
+    # the same gate and needs the same remedy.
+    monkeypatch.delenv("CABAL_OPERATOR_TOKEN", raising=False)
+    _seed_agent(session_factory, name="ward")
+    app = _app(session_factory, config, groups_resolver=_resolver(), cabal=FakeCabal())
+    mcp = build_mcp_server(app)
+
+    with pytest.raises(ToolError) as exc:
+        _call_tool(mcp, "kobo_feed", _ctx_for(OPERATOR_EMAIL), agent="ward")
+
+    message = str(exc.value)
+    for setting in ("cabal_url", "agent_endpoint_template", "CABAL_OPERATOR_TOKEN"):
+        assert setting in message
+
+
 def test_feed_flattens_reusing_the_exact_route_helpers(session_factory, config, monkeypatch):
     monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
     _seed_agent(session_factory, name="ward")

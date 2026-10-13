@@ -2,11 +2,11 @@
 card: arch-card:kobo-switchboard
 updated: 2026-10-12
 anchor: api/kobo_api/pairs.py sha=499b05c5b7bece563072ca45b4905e10c0b13133
-anchor: api/kobo_api/clients.py sha=86098ee0a0709db1e591f1a1d6a7a68d5fc37ef3
+anchor: api/kobo_api/clients.py sha=9f7bc03ef3c6b9ea0df11ca42012f134ca4c898c
 ---
 # switchboard — kobo ↔ cabal: directory, relay, colleague passes, dispatch policy
 
-WHAT / SEAM: `CabalClient` (clients.py, l.~4052) speaks cabal's admin API with the operator bearer `CABAL_OPERATOR_TOKEN` (env, read live, never an org.yaml key). kobo is the POLICY OWNER; cabal stores and enforces a flat set. Policy computation: pairs.py `implicitly_paired`, `allowed_pairs`, `sync_dispatch_pairs`, `sync_dispatch_pairs_best_effort`. Wrappers: directory.py `sync_directory`/`retire_directory`, colleagues.py `deliver_pass`. On/off: `cabal_enabled(config)` = `cabal_url` AND `agent_endpoint_template` AND the env token; also check `clients.cabal is not None`.
+WHAT / SEAM: `CabalClient` (clients.py, l.~4052) speaks cabal's admin API with the operator bearer `CABAL_OPERATOR_TOKEN` (env, read live, never an org.yaml key). kobo is the POLICY OWNER; cabal stores and enforces a flat set. Policy computation: pairs.py `implicitly_paired`, `allowed_pairs`, `sync_dispatch_pairs`, `sync_dispatch_pairs_best_effort`. Wrappers: directory.py `sync_directory`/`retire_directory`, colleagues.py `deliver_pass`. On/off: `cabal_enabled(config)` = `cabal_url` AND `agent_endpoint_template` AND the env token; also check `clients.cabal is not None`. Off, the gated routes answer 409 `_SWITCHBOARD_NOT_CONFIGURED` (main.py), which names those three settings (issue #123).
 OPS / FLOW (cabal endpoints):
 - `POST /admin/persona/{name}/graduate` {endpoint, audience=name, agent_card_json} — DirectoryStep; the card is read verbatim from the agent repo clone, never recomposed. `POST .../absorb` on destroy (404 tolerated).
 - `POST /admin/token/revoke` {sub: agent:<name>} THEN `POST /admin/token/mint-service` {sub: agent:<name>, scope:["colleague"], aud:"cabal-core", ttl_days:365} — `deliver_pass` in WireStep; token lands as Secret `<name>-cabal`, key `CABAL_COLLEAGUE_TOKEN` (via sero when configured, else `kubectl.apply_secret`).

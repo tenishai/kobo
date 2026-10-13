@@ -1474,6 +1474,32 @@ def test_gojira_reprovision_raises_on_unexpected_status():
         client.reprovision(7)
 
 
+def test_gojira_sync_app_posts_api_route_with_bearer_and_returns_body():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert str(request.url) == "http://gojira.local/api/v1/apps/7/sync"
+        assert request.headers["Authorization"] == "Bearer tok"
+        return httpx.Response(200, json={"id": 7, "status": "active", "changed": True})
+
+    client = HttpxGojiraClient(
+        "http://gojira.local",
+        token="tok",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert client.sync_app(7) == {"id": 7, "status": "active", "changed": True}
+
+
+def test_gojira_sync_app_raises_on_unexpected_status():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": "not found"})
+
+    client = HttpxGojiraClient(
+        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    with pytest.raises(ClientError):
+        client.sync_app(7)
+
+
 def test_gojira_client_default_http_client_has_generous_timeout():
     # No client injected -> HttpxGojiraClient must build its own with real
     # headroom over httpx's bare 5s default (gojira calls were fast in P0;

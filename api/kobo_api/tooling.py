@@ -74,7 +74,7 @@ from kobo_api.clients import (
     KubectlClient,
     image_tag,
 )
-from kobo_api.composer import update_dockerfile_runtime_image
+from kobo_api.composer import repin_commit_note, update_dockerfile_runtime_image
 
 # 1-64 chars: a lowercase letter, then lowercase/digit/underscore/hyphen, then
 # ".py" or ".go" — same no-path-separator, no-leading-dot/digit/hyphen/
@@ -301,9 +301,11 @@ def upload_tooling_file(
         tools_dir = workdir / "bundle" / "tools"
         tools_dir.mkdir(parents=True, exist_ok=True)
         (tools_dir / filename).write_text(content, encoding="utf-8")
+        note = ""
         if runtime_image is not None:
-            update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
-        github.commit_push(workdir, f"kobo: add tools/{filename}")
+            previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
+            note = repin_commit_note(repo, previous, runtime_image)
+        github.commit_push(workdir, f"kobo: add tools/{filename}{note}")
         return github.local_head(workdir)
 
 
@@ -412,9 +414,13 @@ def import_tooling(
         tools_dir.mkdir(parents=True, exist_ok=True)
         for name, raw in passed:
             (tools_dir / name).write_bytes(raw)
+        note = ""
         if runtime_image is not None:
-            update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
-        github.commit_push(workdir, f"kobo: import tools from {source_repo}/{source_path}")
+            previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
+            note = repin_commit_note(repo, previous, runtime_image)
+        github.commit_push(
+            workdir, f"kobo: import tools from {source_repo}/{source_path}{note}"
+        )
         sha = github.local_head(workdir)
 
     return {

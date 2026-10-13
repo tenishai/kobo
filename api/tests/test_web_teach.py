@@ -203,7 +203,11 @@ def test_teach_route_calls_intake_seam_with_formatted_artifacts_verbatim(
     assert filename in candidate_filenames
     assert list(github.captured_intake.keys()) == [filename]
     assert github.captured_intake[filename] in candidate_notes
-    assert github.pushes[-1][1] == f"kobo: add intake/{filename}"
+    subject, _, note = github.pushes[-1][1].partition("\n\n")
+    assert subject == f"kobo: add intake/{filename}"
+    # The fake clone's Dockerfile is on an old image, so the commit re-pins
+    # it and says so (issue #140).
+    assert note.startswith("Also re-pins the Dockerfile FROM from ")
 
 
 def test_teach_route_rewrites_dockerfile_to_configured_runtime_image(session_factory, config):
@@ -500,7 +504,11 @@ def test_teach_instant_lane_background_archive_keeps_ci_when_pin_is_stale(
 
     assert response.status_code == 200
     filename = response.json()["filename"]
-    assert github.pushes[-1][1] == f"kobo: add intake/{filename}"
+    subject, _, note = github.pushes[-1][1].partition("\n\n")
+    assert subject == f"kobo: add intake/{filename}"
+    # The fake clone's Dockerfile is on an old image, so the commit re-pins
+    # it and says so (issue #140).
+    assert note.startswith("Also re-pins the Dockerfile FROM from ")
 
 
 def test_teach_archive_lane_fallback_never_skips_ci_even_when_pin_current(

@@ -34,8 +34,8 @@ import re
 import tempfile
 from pathlib import Path
 
-from kobo_api.clients import ClientError, GitHubClient, KubectlClient, image_tag
-from kobo_api.composer import update_dockerfile_runtime_image
+from kobo_api.clients import GitHubClient, KubectlClient, image_tag
+from kobo_api.composer import repin_commit_note, update_dockerfile_runtime_image
 
 # 1-40 chars: a lowercase letter, then lowercase/digit/hyphen, then ".md" or
 # ".txt" — same no-path-separator, no-leading-dot/digit/hyphen shape as
@@ -124,11 +124,9 @@ def upload_intake_file(
     `archive_only=True` marks that commit with a trailing `[skip ci]`,
     which GitHub Actions honors natively on push events (no workflow-side
     change needed) — UNLESS a real Dockerfile re-pin rides along in the
-    same push. A pin change is read directly off the clone (compare the
-    Dockerfile's bytes before and after `update_dockerfile_runtime_image`
-    runs — that edit is idempotent by construction, so "before == after"
-    means nothing on disk actually changed), not inferred from
-    `runtime_image is not None`, because the false-ingested-window fix
+    same push. A pin change is what `update_dockerfile_runtime_image`
+    reports (the image it replaced, or `None` when the FROM line already
+    named `runtime_image`), not inferred from `runtime_image is not None`, because the false-ingested-window fix
     means an already-current repo passes a non-None `runtime_image` on
     every call without ever changing a byte. A pin that DID change is a
     delivery no lane gets to suppress: the old image predates the runtime's
@@ -150,19 +148,16 @@ def upload_intake_file(
         (intake_dir / filename).write_text(content, encoding="utf-8")
 
         pin_changed = False
+        note = ""
         if runtime_image is not None:
-            dockerfile_path = workdir / "Dockerfile"
-            try:
-                before = dockerfile_path.read_text()
-            except OSError as exc:
-                raise ClientError(f"Dockerfile not found: {dockerfile_path}") from exc
-            update_dockerfile_runtime_image(dockerfile_path, runtime_image)
-            pin_changed = dockerfile_path.read_text() != before
+            previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
+            pin_changed = previous is not None
+            note = repin_commit_note(repo, previous, runtime_image)
 
         if archive_only and not pin_changed:
             message = f"kobo: archive intake/{filename} [skip ci]"
         else:
-            message = f"kobo: add intake/{filename}"
+            message = f"kobo: add intake/{filename}{note}"
 
         github.commit_push(workdir, message)
         return github.local_head(workdir)

@@ -35,6 +35,14 @@ PERSONA = "helpful-generalist"
 REPO = "acme/agent-clio"
 ENDPOINT_TEMPLATE = "http://agent-{name}.default.svc.cluster.local"
 
+SWITCHBOARD_NOT_CONFIGURED = {
+    "error": (
+        "the switchboard is not configured: set cabal_url and agent_endpoint_template "
+        "in the org config, and CABAL_OPERATOR_TOKEN in the room's environment "
+        "(a cabal operator token: cbl token mint-service --scope operator)"
+    )
+}
+
 
 class _RaisingGitHub(FakeGitHub):
     """Every clone raises `ClientError` — models a transient GitHub outage
@@ -122,7 +130,7 @@ def test_sync_directory_disabled_switchboard_409s(session_factory, config):
     response = client.post(f"/api/agents/{AGENT_NAME}/directory/sync")
 
     assert response.status_code == 409
-    assert response.json() == {"error": "the switchboard is not configured"}
+    assert response.json() == SWITCHBOARD_NOT_CONFIGURED
 
 
 def test_sync_directory_success_registers_and_returns_registered_true(

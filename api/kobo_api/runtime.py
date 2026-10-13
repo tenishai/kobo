@@ -21,9 +21,11 @@ commits:
 So a change that rewrote only the Dockerfile would be reverted by the next
 teach note, tool upload or Slack re-wire — and because the generated CI
 rebuilds and hard-rotates the pod (Recreate strategy) on every push, the
-revert would take effect rather than sit inert. The row is the authority;
-the file is a projection of it. `commit_runtime_image` below moves the
-file, and the caller moves the row in the same request.
+revert would take effect rather than sit inert. That revert is named in the
+commit that makes it and logged (`kobo_api.composer.repin_commit_note`,
+issue #140). The row is the authority; the file is a projection of it.
+`commit_runtime_image` below moves the file, and the caller moves the row
+in the same request.
 """
 
 from __future__ import annotations

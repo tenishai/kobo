@@ -1298,6 +1298,16 @@ class GojiraClient(Protocol):
         """GET /api/v1/apps/{id}."""
         ...
 
+    def sync_app(self, app_id: int) -> dict:
+        """POST /api/v1/apps/{id}/sync: ask the platform to check now whether
+        the app's setup pull request merged, and return `{id, status,
+        changed}`. `app_status` only reads the platform's row, which a
+        merge moves only through the GitHub webhook; on an install without
+        one, this call is the only thing that moves it (issue #118). One
+        GitHub read on the platform's side, and a no-op when the row is
+        already current."""
+        ...
+
     def reprovision(self, app_id: int) -> None:
         """POST /apps/{id}/provision to re-run the provisioner."""
         ...
@@ -1378,6 +1388,14 @@ class HttpxGojiraClient:
         )
         if resp.status_code != 200:
             raise ClientError(f"app_status({app_id}) failed ({resp.status_code}): {resp.text}")
+        return resp.json()
+
+    def sync_app(self, app_id: int) -> dict:
+        resp = self._client.post(
+            f"{self._base_url}/api/v1/apps/{app_id}/sync", headers=self._headers()
+        )
+        if resp.status_code != 200:
+            raise ClientError(f"sync_app({app_id}) failed ({resp.status_code}): {resp.text}")
         return resp.json()
 
     def reprovision(self, app_id: int) -> None:

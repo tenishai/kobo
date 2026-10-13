@@ -8,6 +8,26 @@ All notable changes to kobo are documented here. The format follows
 
 ### Fixed
 
+- **A connected agent no longer waits forever on an install with no Gojira webhook.** The
+  waiting sweep read the platform's status, which moves only when the webhook reports the
+  setup PR's merge, so the agent stayed at "waiting" after the merge (issue #118). The sweep
+  now asks Gojira to check the pull request (`POST /api/v1/apps/{id}/sync`) before it reads
+  the status. With a webhook the call is a no-op.
+- **A re-pinned runtime image is named, not silent.** Intake, teach, tooling and Slack
+  commits put the Dockerfile `FROM` back to the image the room has recorded for the agent,
+  which reverted a hand-pinned `FROM` with nothing said (issue #140). The re-pin stays,
+  because the recorded image is the authority, but the commit message and a warning log now
+  name both images. Change an agent's image with `kobo_set_runtime_image`.
+- **The GitHub token broker says why it has nothing to mint.** After the agent's own token
+  verified, its 404 said "no such agent" (issue #11). The status is still 404, but the
+  message now says whether repository access was never requested, is waiting for an
+  operator, or was revoked, and names the route that fixes each.
+- **"The switchboard is not configured" names the fix.** The 409, and the `kobo_feed` MCP
+  tool's error for the same gate, now list the three settings it checks: `cabal_url` and `agent_endpoint_template` in the org config, and
+  `CABAL_OPERATOR_TOKEN` in the room's environment (issue #123, item 1).
+- **A waiting agent's card says what it waits on.** The agents list showed a bare
+  `waiting` chip; the card now reads "Waiting on a pull request. Open for details."
+  (issue #123, item 7).
 - **Composed agents with skills now get `skills.load`.** daedalus 0.5.0 shows assigned
   skills as an index in the system prompt plus a `skills.load(name)` tool, but only when
   `tools.allow` admits the tool, and the composer never added it, so every composed agent

@@ -1673,11 +1673,17 @@ def _sync_directory_best_effort(clients: Clients, config: Config, agent: Agent) 
         )
 
 
-# Same plain 409 detail `sync_directory_route` already uses (below) — kept
-# as a literal here too rather than a shared constant, so the two call
-# sites can't accidentally drift apart from a shared-string refactor no one
-# asked for.
-_SWITCHBOARD_NOT_CONFIGURED = {"error": "the switchboard is not configured"}
+# The plain 409 detail every switchboard-gated route returns, including
+# `sync_directory_route` (below).
+# It names the three settings `clients.cabal_enabled` checks, because a
+# stranger who meets it has no other way to learn them (issue #123).
+_SWITCHBOARD_NOT_CONFIGURED = {
+    "error": (
+        "the switchboard is not configured: set cabal_url and agent_endpoint_template "
+        "in the org config, and CABAL_OPERATOR_TOKEN in the room's environment "
+        "(a cabal operator token: cbl token mint-service --scope operator)"
+    )
+}
 
 
 def _colleagues_gate(config: Config, clients: Clients) -> JSONResponse | None:
@@ -2336,6 +2342,29 @@ def _visible_agents(session: Session, request: Request) -> tuple[list[Agent], bo
         or (agent.group_name is not None and agent.group_name in group_set)
     ]
     return visible, False
+
+
+def _no_approved_repo_access(name: str, rows: list[RepoAccess]) -> str:
+    """Why the GitHub token broker has nothing to mint for `name`, and the
+    remedy, from its repo-access rows (none approved)."""
+    pending = [r.repository for r in rows if r.status == REPO_ACCESS_REQUESTED]
+    if pending:
+        return (
+            f"agent {name!r} has no approved repository access: "
+            f"{', '.join(pending)} requested, waiting for an operator to approve "
+            "(POST /api/repo-access/decide)."
+        )
+    if rows:
+        return (
+            f"agent {name!r} has no approved repository access: "
+            f"{', '.join(r.repository for r in rows)} revoked. An owner can request "
+            f"it again with POST /api/agents/{name}/repo-access."
+        )
+    return (
+        f"agent {name!r} has no repository access: none has been requested. An "
+        f"owner requests it with POST /api/agents/{name}/repo-access, and an "
+        "operator approves it with POST /api/repo-access/decide."
+    )
 
 
 def _visible_agent_or_404(session: Session, request: Request, name: str) -> Agent | JSONResponse:
@@ -5562,10 +5591,12 @@ def create_app(
         """THE BROKER (2026-08-27 spec): the caller is the AGENT itself,
         authenticated by its cabal-issued colleague JWT -- never a human
         session. Wall 2: the minted token's `repositories` is pinned to
-        exactly this agent's APPROVED rows. 404 for an unknown agent AND
-        for one with zero approvals -- an agent with no grants must not be
-        distinguishable from one that does not exist, the same
-        anti-enumeration answer every agent route gives."""
+        exactly this agent's APPROVED rows. 404 when it has none, the
+        status every agent route gives. The message is the truth, though:
+        once `verify_agent_token` passes, the caller is proven to be `name`,
+        so telling it which of its own requests are pending (or that none
+        were made) leaks nothing, where "no such agent" sent a responder
+        hunting a mapping fault that wasn't there (issue #11)."""
         config: Config = app.state.config
         off = _pr_broker_off(config)
         if off is not None:
@@ -5594,7 +5625,15 @@ def create_app(
             .all()
         )
         if not approved:
-            return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
+            rows = (
+                session.query(RepoAccess)
+                .filter(RepoAccess.agent_name == name)
+                .order_by(RepoAccess.repository)
+                .all()
+            )
+            return JSONResponse(
+                {"error": _no_approved_repo_access(name, rows)}, status_code=404
+            )
 
         try:
             minted = mint_scoped_token(
@@ -8708,9 +8747,7 @@ def create_app(
 
         cfg: Config = app.state.config
         if not cabal_enabled(cfg):
-            return JSONResponse(
-                {"error": "the switchboard is not configured"}, status_code=409
-            )
+            return JSONResponse(_SWITCHBOARD_NOT_CONFIGURED, status_code=409)
 
         clients = app.state.clients
         try:

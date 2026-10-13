@@ -1,7 +1,7 @@
 ---
 card: arch-card:kobo-bundle
 updated: 2026-10-13
-anchor: api/kobo_api/composer.py sha=f81b2ed3eef8069fa53ea21d963e3074665a3843
+anchor: api/kobo_api/composer.py sha=80a0fc791945a04a65003c6056d7f9b53f8f644d
 anchor: api/kobo_api/vendor/bundle.schema.json sha=51b6e2ef218fb98df539b39783b3628ecc0ce0db
 ---
 # bundle — the daedalus agent bundle kobo writes into each agent repo
@@ -19,7 +19,7 @@ INVARIANTS:
 - Unconfigured cabal ⇒ byte-identical output to the pre-switchboard shape. WHY: existing repos must not churn on recompose.
 - `colleague_mode` `default` ⇒ byte-identical agent.yaml and colleagues.md to the pre-#131 shape, pinned by digest in tests/test_colleague_mode.py; `update_agent_yaml_colleague_mode` never rewrites a file whose allow list already matches.
 - Custom dumper forces flow style on the transport, tools and gates entries so each renders on ONE line; the `update_agent_yaml_*` editors (auth, tools, approvals_gates, memory_revision, max_tokens) edit by regex against that one-line shape and raise if not found. Never switch to a generic YAML re-dump here.
-- Exactly one `FROM` line in the Dockerfile, even with litestream. WHY: `update_dockerfile_runtime_image` (runtime re-pin, used by runtime.py, tooling.py, intake.py, slack_setup.py) rewrites only the first `FROM` match (`count=1`), so with a second `FROM` the re-pin could hit the wrong stage.
+- Exactly one `FROM` line in the Dockerfile, even with litestream. WHY: `update_dockerfile_runtime_image` (runtime re-pin, used by runtime.py, tooling.py, intake.py, slack_setup.py) rewrites only the first `FROM` match, so with a second `FROM` the re-pin could hit the wrong stage. It returns the image it replaced (`None` when already current), and the incidental callers (tooling, intake, Slack) name such a re-pin in their commit message and the log via `repin_commit_note` (issue #140): the agents row is the authority, so a hand-edited `FROM` is put back, but never silently.
 - `team` ≠ `group`: `team` is the skills-catalog axis (card `metadata.team`), `group` the ACL namespace (self.md only). Never conflate.
 - agent-card.json `metadata.capability` starts `""`; HelloStep earns it and `commit_card_metadata` (metadata.py) writes it. The switchboard directory reads the card from the repo, so the repo is the source of truth for it.
 - Skill materialization rejects symlinks and paths escaping `dest` (`_materialize_skill` raises `ComposeError`).

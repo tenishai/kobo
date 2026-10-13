@@ -57,7 +57,6 @@ from kobo_api.slack_state import decode_channels, derive_state
 # never drift apart on the wording.
 _AGENT_NOT_FOUND = "agent not found"
 
-_SWITCHBOARD_NOT_CONFIGURED = "the switchboard is not configured"
 _SWITCHBOARD_DID_NOT_ANSWER = "The switchboard did not answer. Try again shortly."
 
 # `read_marketplace_catalog` answers "not the marketplace dialect" with a
@@ -273,6 +272,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         from kobo_api.clients import CabalError
         from kobo_api.main import (
             _FEED_SCROLLBACK_CAP,
+            _SWITCHBOARD_NOT_CONFIGURED,
             _colleagues_gate,
             _conversation_has_participant,
             _flatten_conversation_entries,
@@ -291,7 +291,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         cfg = app.state.config
         clients = app.state.clients
         if _colleagues_gate(cfg, clients) is not None:
-            raise ToolError(_SWITCHBOARD_NOT_CONFIGURED)
+            raise ToolError(_SWITCHBOARD_NOT_CONFIGURED["error"])
 
         # Two server-side-scoped queries, merged and deduped by task_id --
         # the EXACT same fetch `kobo_api.main.colleague_feed` runs (see

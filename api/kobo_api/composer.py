@@ -8,6 +8,7 @@ from the daedalus repo — never hand-edited.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
@@ -28,6 +29,8 @@ from kobo_api.clients import ClientError
 # only ever accesses `.id`/`.dir` on it, duck-typed, no isinstance check.
 if TYPE_CHECKING:
     from kobo_api.steps import StagedSkill
+
+log = logging.getLogger(__name__)
 
 _VENDOR_SCHEMA_PATH = Path(__file__).parent / "vendor" / "bundle.schema.json"
 
@@ -832,7 +835,7 @@ def _dockerfile(spec: BundleSpec) -> str:
 _DOCKERFILE_FROM_RE = re.compile(r"^(FROM[ \t]+)\S+", re.MULTILINE)
 
 
-def update_dockerfile_runtime_image(dockerfile_path: Path, runtime_image: str) -> None:
+def update_dockerfile_runtime_image(dockerfile_path: Path, runtime_image: str) -> str | None:
     """Rewrite an already-cloned repo's `Dockerfile` so its `FROM` line's
     image ref is exactly `runtime_image`, leaving every other line (and any
     trailing content on the FROM line itself) byte-identical.
@@ -875,20 +878,54 @@ def update_dockerfile_runtime_image(dockerfile_path: Path, runtime_image: str) -
       reports the match count) lets this catch that here and raise instead,
       so the failure surfaces immediately as the caller's own 502, not as a
       crashloop discovered later with no trail back to its cause.
+
+    Returns the image ref the FROM line named before, when this changed it,
+    and `None` when it already named `runtime_image`. A change means the
+    repo had drifted from the agent's recorded image, most often a hand edit
+    to `FROM` (issue #140); callers that commit pass it to
+    `repin_commit_note` so the re-pin is never silent.
     """
     try:
         text = dockerfile_path.read_text()
     except OSError as exc:
         raise ClientError(f"Dockerfile not found: {dockerfile_path}") from exc
 
-    updated, count = _DOCKERFILE_FROM_RE.subn(
-        lambda match: match.group(1) + runtime_image, text, count=1
-    )
-    if count == 0:
+    match = _DOCKERFILE_FROM_RE.search(text)
+    if match is None:
         raise ClientError(
             f"Dockerfile has no recognizable FROM line to re-pin: {dockerfile_path}"
         )
+    previous = match.group(0)[len(match.group(1)) :]
+    updated = text[: match.start()] + match.group(1) + runtime_image + text[match.end() :]
     dockerfile_path.write_text(updated)
+    return None if previous == runtime_image else previous
+
+
+def repin_commit_note(repo: str, previous: str | None, runtime_image: str) -> str:
+    """The commit-message paragraph for a write path that re-pinned `FROM`
+    on its own commit, or "" when it didn't (issue #140).
+
+    The agents row is the authority for an agent's image and the Dockerfile
+    is its projection (`kobo_api.runtime`), so an unrelated room commit puts
+    a drifted `FROM` back. That stays, because the re-pin is what keeps an
+    old base from crashlooping a new transport, but it is said: once in the
+    commit that does it and once in the log, both naming the two images.
+    """
+    if previous is None:
+        return ""
+    log.warning(
+        "runtime image re-pinned on an unrelated commit: repo=%s from=%s to=%s "
+        "(the repo's FROM differed from the agent's recorded image)",
+        repo,
+        previous,
+        runtime_image,
+    )
+    return (
+        f"\n\nAlso re-pins the Dockerfile FROM from {previous} to {runtime_image}, "
+        "the runtime image the room has recorded for this agent. A FROM edited "
+        "by hand is put back by the room's next commit; change an agent's image "
+        "with kobo_set_runtime_image instead."
+    )
 
 
 def update_agent_card_metadata(
