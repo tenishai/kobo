@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-13
+
 ### Upgrading
 
 - **This release migrates the database: back it up first.** Alembic revision
@@ -13,6 +15,8 @@ All notable changes to kobo are documented here. The format follows
   head` at boot. A version from before this one won't start on a database that has the
   revision, because its own upgrade can't locate it. To roll back, restore the backup or run
   `alembic downgrade e5a9c3f17b20` first.
+- Leave `learnings_require_attribution` off until every agent runs daedalus 0.5.1 or later.
+  Older runtimes send turns from the room's chat unattributed, and the switch would drop them.
 
 ### Fixed
 
