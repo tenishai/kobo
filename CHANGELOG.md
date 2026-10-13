@@ -22,8 +22,8 @@ All notable changes to kobo are documented here. The format follows
   verified, its 404 said "no such agent" (issue #11). The status is still 404, but the
   message now says whether repository access was never requested, is waiting for an
   operator, or was revoked, and names the route that fixes each.
-- **"The switchboard is not configured" names the fix.** The 409 now lists the three
-  settings it checks: `cabal_url` and `agent_endpoint_template` in the org config, and
+- **"The switchboard is not configured" names the fix.** The 409, and the `kobo_feed` MCP
+  tool's error for the same gate, now list the three settings it checks: `cabal_url` and `agent_endpoint_template` in the org config, and
   `CABAL_OPERATOR_TOKEN` in the room's environment (issue #123, item 1).
 - **A waiting agent's card says what it waits on.** The agents list showed a bare
   `waiting` chip; the card now reads "Waiting on a pull request. Open for details."
