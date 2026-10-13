@@ -52,7 +52,13 @@ AUDIENCE = "test-audience"
 KID = "test-key-1"
 
 VERBATIM_403 = {"error": "Syncing the switchboard is operator-only on this room"}
-SWITCHBOARD_NOT_CONFIGURED = {"error": "the switchboard is not configured"}
+SWITCHBOARD_NOT_CONFIGURED = {
+    "error": (
+        "the switchboard is not configured: set cabal_url and agent_endpoint_template "
+        "in the org config, and CABAL_OPERATOR_TOKEN in the room's environment "
+        "(a cabal operator token: cbl token mint-service --scope operator)"
+    )
+}
 
 
 def _req(email: str | None, config: Config):

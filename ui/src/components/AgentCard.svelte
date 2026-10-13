@@ -49,6 +49,10 @@
   let description = $derived(agentDescription(agent));
   let connected = $derived(agent.kind === KIND_CONNECTED);
   let failed = $derived(agentTone(agent.status) === "fail");
+  // Only one thing parks an agent: its setup pull request waiting on a
+  // person (`StepWaiting`). A bare "waiting" chip didn't say on what
+  // (issue #123).
+  let waiting = $derived(agent.status === "waiting");
 </script>
 
 <div class="agent-card">
@@ -105,6 +109,11 @@
            true thing it knows and points at the page that has the rest. -->
       <p class="agent-card__error">
         <span class="agent-card__error-line">Something went wrong.</span>
+        <span class="agent-card__error-tail">Open for details.</span>
+      </p>
+    {:else if waiting}
+      <p class="agent-card__waiting">
+        <span class="agent-card__error-line">Waiting on a pull request.</span>
         <span class="agent-card__error-tail">Open for details.</span>
       </p>
     {:else}
@@ -271,7 +280,8 @@
   }
 
   .agent-card__meta,
-  .agent-card__error {
+  .agent-card__error,
+  .agent-card__waiting {
     display: flex;
     min-width: 0;
     flex: 1;

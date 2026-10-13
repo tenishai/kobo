@@ -81,6 +81,18 @@ describe("AgentCard — a failed agent (card wave 2026-09-23)", () => {
     expect(screen.queryByText("Made by owner@example.com")).toBeNull();
   });
 
+  it("says what a waiting agent waits on, not just that it waits", () => {
+    const { container } = render(AgentCard, {
+      agent: { ...BASE_AGENT, status: "waiting", created_by: "owner@example.com" },
+    });
+
+    expect(container.querySelector(".agent-card__waiting")).not.toBeNull();
+    expect(screen.getByText("Waiting on a pull request.")).not.toBeNull();
+    expect(screen.getByText(/Open for details/)).not.toBeNull();
+    expect(container.querySelector(".agent-card__error")).toBeNull();
+    expect(container.querySelector(".agent-card__meta")).toBeNull();
+  });
+
   it("keeps the footer facts for an agent that is fine", () => {
     const { container } = render(AgentCard, { agent: BASE_AGENT });
 

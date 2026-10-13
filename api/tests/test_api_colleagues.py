@@ -87,6 +87,14 @@ CONVERSATIONS_FIXTURE = [
     },
 ]
 
+SWITCHBOARD_NOT_CONFIGURED = {
+    "error": (
+        "the switchboard is not configured: set cabal_url and agent_endpoint_template "
+        "in the org config, and CABAL_OPERATOR_TOKEN in the room's environment "
+        "(a cabal operator token: cbl token mint-service --scope operator)"
+    )
+}
+
 
 @pytest.fixture
 def session_factory(tmp_path):
@@ -137,7 +145,7 @@ def test_list_disabled_switchboard_409s(session_factory, config):
     response = client.get("/api/colleagues/conversations")
 
     assert response.status_code == 409
-    assert response.json() == {"error": "the switchboard is not configured"}
+    assert response.json() == SWITCHBOARD_NOT_CONFIGURED
 
 
 def test_list_default_filters_to_agent_callers_only(session_factory, config, monkeypatch):
@@ -373,7 +381,7 @@ def test_detail_disabled_switchboard_409s(session_factory, config):
     response = client.get("/api/colleagues/conversations/t-1")
 
     assert response.status_code == 409
-    assert response.json() == {"error": "the switchboard is not configured"}
+    assert response.json() == SWITCHBOARD_NOT_CONFIGURED
 
 
 def test_detail_success_passthrough(session_factory, config, monkeypatch):
@@ -528,7 +536,7 @@ def test_stream_disabled_switchboard_409s(session_factory, config):
     response = client.get("/api/colleagues/stream")
 
     assert response.status_code == 409
-    assert response.json() == {"error": "the switchboard is not configured"}
+    assert response.json() == SWITCHBOARD_NOT_CONFIGURED
 
 
 def test_stream_content_type_and_frame_passthrough(session_factory, config, monkeypatch):
@@ -835,7 +843,7 @@ def test_feed_409s_when_switchboard_not_configured(session_factory, config):
     response = client.get("/api/colleagues/feed", params={"agent": "ward"})
 
     assert response.status_code == 409
-    assert response.json() == {"error": "the switchboard is not configured"}
+    assert response.json() == SWITCHBOARD_NOT_CONFIGURED
 
 
 def test_feed_flattens_one_conversation_into_ask_then_reply(

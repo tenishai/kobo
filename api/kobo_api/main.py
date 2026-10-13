@@ -1673,11 +1673,17 @@ def _sync_directory_best_effort(clients: Clients, config: Config, agent: Agent) 
         )
 
 
-# Same plain 409 detail `sync_directory_route` already uses (below) — kept
-# as a literal here too rather than a shared constant, so the two call
-# sites can't accidentally drift apart from a shared-string refactor no one
-# asked for.
-_SWITCHBOARD_NOT_CONFIGURED = {"error": "the switchboard is not configured"}
+# The plain 409 detail every switchboard-gated route returns, including
+# `sync_directory_route` (below).
+# It names the three settings `clients.cabal_enabled` checks, because a
+# stranger who meets it has no other way to learn them (issue #123).
+_SWITCHBOARD_NOT_CONFIGURED = {
+    "error": (
+        "the switchboard is not configured: set cabal_url and agent_endpoint_template "
+        "in the org config, and CABAL_OPERATOR_TOKEN in the room's environment "
+        "(a cabal operator token: cbl token mint-service --scope operator)"
+    )
+}
 
 
 def _colleagues_gate(config: Config, clients: Clients) -> JSONResponse | None:
@@ -8741,9 +8747,7 @@ def create_app(
 
         cfg: Config = app.state.config
         if not cabal_enabled(cfg):
-            return JSONResponse(
-                {"error": "the switchboard is not configured"}, status_code=409
-            )
+            return JSONResponse(_SWITCHBOARD_NOT_CONFIGURED, status_code=409)
 
         clients = app.state.clients
         try:
