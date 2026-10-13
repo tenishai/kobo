@@ -916,7 +916,7 @@ def sweep_waiting(
                 continue
             try:
                 clients.gojira.sync_app(agent.gojira_app_id)
-            except Exception:  # noqa: BLE001 - the status read below still answers on a webhook install
+            except Exception:  # the status read below still answers on a webhook install
                 log.warning(
                     "sweep_waiting: could not ask the platform to sync app %s for agent %s",
                     agent.gojira_app_id, agent.name, exc_info=True,
