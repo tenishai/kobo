@@ -21,6 +21,9 @@ All notable changes to kobo are documented here. The format follows
 
 ### Fixed
 
+- **The destroy confirm closes once the room accepts.** After the 202 the dialog stayed
+  open with the name still typed, and a second click started a second destroy (issue #123,
+  item 6).
 - **A failing nightly learnings pass shows on the agent's card.** An agent whose runtime
   refused the task ("Unknown system task 'learnings'") failed every night and still looked
   healthy; the failure was only a log line (issue #142). The room now records each run per
