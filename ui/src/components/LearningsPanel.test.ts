@@ -206,7 +206,7 @@ describe("LearningsPanel", () => {
     });
     renderWithClient(LearningsPanel, { agentName: "wren", canDecide: true, frozen: false });
 
-    expect(await screen.findByText(/The nightly pass has failed 4 times in a row/)).not.toBeNull();
+    expect(await screen.findByText(/The nightly pass has failed 4 runs in a row/)).not.toBeNull();
     expect(screen.getByText(/Unknown system task/)).not.toBeNull();
   });
 

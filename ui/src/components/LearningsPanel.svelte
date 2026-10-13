@@ -253,7 +253,7 @@
   {:else}
     {#if nightly}
       <p class="panel__note panel__note--fail" role="status">
-        The nightly pass has failed {nightly.consecutive_failures} times in a row, so
+        The nightly pass has failed {nightly.consecutive_failures} runs in a row, so
         {agentName} hasn't proposed anything new.{nightly.last_error
           ? ` Last error: ${nightly.last_error}`
           : ""}

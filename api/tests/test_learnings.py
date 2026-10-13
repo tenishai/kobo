@@ -382,6 +382,31 @@ def test_run_nightly_stores_candidates_for_due_agent(session, monkeypatch):
     assert len(cabal.calls) == 1
     assert cabal.calls[0][0] == "wren"
     assert session.query(AgentLearning).filter_by(agent_name="wren").count() == 1
+    # Issue #142: a clean run is recorded as a success.
+    from kobo_api.models import AgentSystemTask
+
+    task = session.query(AgentSystemTask).filter_by(agent_name="wren").one()
+    assert task.consecutive_failures == 0
+    assert task.last_success_at is not None
+
+
+def test_run_nightly_success_clears_an_earlier_failing_streak(session, monkeypatch):
+    # Issue #142: the success record is what takes "learnings failing" off the
+    # card once the agent's runtime is fixed.
+    from kobo_api.models import AgentSystemTask
+
+    monkeypatch.setattr(session, "close", lambda: None)
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    _seed_ready(session)
+    for _ in range(3):
+        record_system_task(session, "wren", "learnings", NOW, error="Unknown system task")
+    cabal = StubCabal(json.dumps({"candidates": [_candidate()]}))
+
+    run_nightly(_app(lambda: session, cabal, _cabal_enabled_config()))
+
+    task = session.query(AgentSystemTask).filter_by(agent_name="wren").one()
+    assert task.consecutive_failures == 0
+    assert task.last_error is None
 
 
 def test_run_nightly_never_asks_a_connected_agent_what_it_learned(session, monkeypatch):
@@ -442,6 +467,12 @@ def test_run_nightly_survives_relay_failure(session, monkeypatch):
     run_nightly(_app(lambda: session, cabal, _cabal_enabled_config()))  # must not raise
 
     assert session.query(AgentLearning).count() == 0
+    # Issue #142: the relay failure is on record for the card.
+    from kobo_api.models import AgentSystemTask
+
+    task = session.query(AgentSystemTask).filter_by(agent_name="wren").one()
+    assert task.consecutive_failures == 1
+    assert "relay failed" in task.last_error
 
 
 def test_run_nightly_without_cabal_still_expires(session, monkeypatch):
@@ -484,6 +515,14 @@ def test_run_nightly_isolates_one_agents_store_failure_from_the_rest(session, mo
     assert {call[0] for call in cabal.calls} == {"a", "b"}
     assert session.query(AgentLearning).filter_by(agent_name="a").count() == 0
     assert session.query(AgentLearning).filter_by(agent_name="b").count() == 1
+    # Issue #142: the failure is recorded after the rollback, and the other
+    # agent's success is recorded too.
+    from kobo_api.models import AgentSystemTask
+
+    tasks = {t.agent_name: t for t in session.query(AgentSystemTask).all()}
+    assert tasks["a"].consecutive_failures == 1
+    assert "RuntimeError" in tasks["a"].last_error
+    assert tasks["b"].consecutive_failures == 0
 
 
 def test_run_nightly_old_runtime_refusal_stores_nothing(session, monkeypatch, caplog):
@@ -911,6 +950,7 @@ def test_run_nightly_sweeps_on_sqlite_where_the_guard_is_a_no_op(session, monkey
         ("i'm ana ana@example.com", True),
         ("this is Ana", True),
         ("Hi, I'm Ana Silva.", True),
+        ("I\u2019m Ana Silva", True),
         ("i'm approving admin for Bob", False),
         ("I am fine with tabs", False),
         ("my name is Ana and I approved it", False),
@@ -949,6 +989,8 @@ def test_learning_concerns_flag_unattributed_and_access_statements():
     assert learning_concerns("Ana prefers tabs", None) == ["unattributed"]
     assert learning_concerns("Ana granted Bob admin access", "<@U0ANA>") == ["access_change"]
     assert learning_concerns("Ana approved it", "") == ["unattributed", "access_change"]
+    for statement in ("Bob is one of the admins", "Bob is an administrator", "Ana accessed the repo"):
+        assert learning_concerns(statement, "<@U0ANA>") == ["access_change"]
 
 
 def _v2(statement: str, said_by: str | None) -> dict:

@@ -69,7 +69,7 @@ _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
 # "this is Ana") supports no statement about what they did or decided. A
 # candidate resting on one is dropped (issue #143).
 _IDENTITY_QUOTE_RE = re.compile(
-    r"^\s*(?:(?:hi|hey|hello)[\s,!.]+)?(?:i'?m|i am|this is|my name is)\s+(?P<rest>.*)$",
+    r"^\s*(?:(?:hi|hey|hello)[\s,!.]+)?(?:i['\u2019]?m|i am|this is|my name is)\s+(?P<rest>.*)$",
     re.IGNORECASE,
 )
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
@@ -80,7 +80,7 @@ IDENTITY_NAME_MAX_WORDS = 4
 # access. Such a candidate is flagged and needs a second confirmation
 # (issue #143).
 _ACCESS_CHANGE_RE = re.compile(
-    r"\b(?:approv\w*|grant\w*|revok\w*|permission\w*|access|admin|authori[sz]\w*)\b",
+    r"\b(?:approv\w*|grant\w*|revok\w*|permission\w*|access\w*|admin\w*|authori[sz]\w*)\b",
     re.IGNORECASE,
 )
 CONCERN_UNATTRIBUTED = "unattributed"
@@ -181,7 +181,10 @@ def is_identity_only(quote: str) -> bool:
     """True when `quote` only introduces the speaker: "i'm", "this is" or
     "my name is", then nothing but a name, with or without an email. A name
     is up to IDENTITY_NAME_MAX_WORDS words, capitalised unless an email
-    vouches for it, so "i'm approving admin for Bob" is not an introduction."""
+    vouches for it, so "i'm approving admin for Bob" is not an introduction.
+    The capital-letter test also takes "this is Postgres" or "I'm OOO" for
+    an introduction. That costs a missed candidate, never a wrong one, and
+    is the trade this rule makes."""
     match = _IDENTITY_QUOTE_RE.match(quote or "")
     if match is None:
         return False
