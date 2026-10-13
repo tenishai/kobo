@@ -19,6 +19,7 @@ to allowed, so those tests exercise nothing about the gate itself.
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import jwt
@@ -171,6 +172,7 @@ def _seed_learning(session_factory, agent_name=AGENT_NAME, **overrides):
             "kind": "fact",
             "source": "Slack, Sep 1",
             "evidence": "quote",
+            "said_by": "<@U0OWNER>",
             "content_hash": "a" * 64,
         }
         defaults.update(overrides)
@@ -189,7 +191,7 @@ def test_list_learnings_empty(session_factory, config):
     response = client.get(f"/api/agents/{AGENT_NAME}/learnings")
 
     assert response.status_code == 200
-    assert response.json() == {"learnings": []}
+    assert response.json() == {"system_tasks": [], "learnings": []}
 
 
 def test_list_learnings_returns_rows_and_validates_status(session_factory, config):
@@ -523,3 +525,100 @@ def test_agent_detail_can_decide_learnings_false_for_non_owner_no_grant(
 
     assert response.status_code == 200
     assert response.json()["can_decide_learnings"] is False
+
+
+# --- issue #143: a second confirmation for unattributed or access rows ---------
+
+
+def test_list_reports_concerns(session_factory, config):
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config)
+    _seed_learning(session_factory, content="Ana approved admin access for Bob", said_by=None)
+
+    [row] = client.get(f"/api/agents/{AGENT_NAME}/learnings").json()["learnings"]
+
+    assert row["concerns"] == ["unattributed", "access_change"]
+
+
+def test_approve_of_a_flagged_row_needs_confirm(session_factory, config):
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config)
+    learning_id = _seed_learning(
+        session_factory, content="Ana approved admin access for Bob", said_by=None
+    )
+
+    refused = client.post(f"/api/agents/{AGENT_NAME}/learnings/{learning_id}/approve")
+
+    assert refused.status_code == 409
+    assert refused.json()["concerns"] == ["unattributed", "access_change"]
+    session = session_factory()
+    assert session.query(AgentLearning).filter_by(id=learning_id).one().status == "pending"
+    session.close()
+
+    confirmed = client.post(
+        f"/api/agents/{AGENT_NAME}/learnings/{learning_id}/approve", json={"confirm": True}
+    )
+
+    assert confirmed.status_code == 200
+    session = session_factory()
+    assert session.query(AgentLearning).filter_by(id=learning_id).one().status == LEARNING_APPROVED
+    session.close()
+
+
+def test_bulk_approve_leaves_flagged_rows_pending(session_factory, config):
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config)
+    plain = _seed_learning(session_factory)
+    flagged = _seed_learning(
+        session_factory, content="Bob has admin on billing", said_by=None, content_hash="b" * 64
+    )
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/learnings/bulk",
+        json={"ids": [plain, flagged], "action": "approve"},
+    )
+
+    codes = {r["id"]: r["status_code"] for r in response.json()["results"]}
+    assert codes == {plain: 200, flagged: 409}
+    session = session_factory()
+    assert session.query(AgentLearning).filter_by(id=flagged).one().status == "pending"
+    session.close()
+
+
+# --- issue #142: a failing nightly pass shows in the list and on the tab -------
+
+
+def test_a_failing_nightly_pass_is_reported(session_factory, config):
+    from kobo_api.learnings import record_system_task
+
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config)
+    session = session_factory()
+    now = datetime(2026, 10, 13, tzinfo=UTC)
+    for _ in range(config.system_task_flag_after):
+        record_system_task(session, AGENT_NAME, "learnings", now, error="Unknown system task")
+    session.close()
+
+    [task] = client.get(f"/api/agents/{AGENT_NAME}/learnings").json()["system_tasks"]
+    assert task["failing"] is True
+    assert task["consecutive_failures"] == config.system_task_flag_after
+    assert task["last_error"] == "Unknown system task"
+    [summary] = [a for a in client.get("/api/agents").json()["agents"] if a["name"] == AGENT_NAME]
+    assert summary["system_tasks_failing"] == ["learnings"]
+
+
+def test_a_pass_that_failed_fewer_times_than_the_threshold_is_not_flagged(session_factory, config):
+    from kobo_api.learnings import record_system_task
+
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config)
+    session = session_factory()
+    record_system_task(
+        session, AGENT_NAME, "learnings", datetime(2026, 10, 13, tzinfo=UTC), error="boom"
+    )
+    session.close()
+
+    [task] = client.get(f"/api/agents/{AGENT_NAME}/learnings").json()["system_tasks"]
+    assert task["failing"] is False
+    [summary] = [a for a in client.get("/api/agents").json()["agents"] if a["name"] == AGENT_NAME]
+    assert summary["system_tasks_failing"] == []

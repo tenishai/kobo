@@ -110,7 +110,7 @@ from kobo_api.knowledge import (
     save_knowledge_file,
 )
 from kobo_api.sero import acting_email_refusal
-from kobo_api.learnings import clean_edited_statement
+from kobo_api.learnings import clean_edited_statement, learning_concerns, system_task_status
 from kobo_api.learnings import nightly_loop as learnings_nightly_loop
 from kobo_api.marketplace import BASELINE_TOOL_PREFIX
 from kobo_api.mcp import rate_limit
@@ -142,6 +142,7 @@ from kobo_api.models import (
     A2AInvite,
     Agent,
     AgentLearning,
+    AgentSystemTask,
     AgentStatus,
     AgentUserGrant,
     GroupRequest,
@@ -606,6 +607,9 @@ class LearningApprovePayload(BaseModel):
     enforced by `clean_edited_statement`."""
 
     content: str | None = Field(default=None, max_length=2000)
+    # A second, explicit yes for a row with concerns (unattributed, or about
+    # access); without it such an approve answers 409 (issue #143).
+    confirm: bool = False
 
 
 class ToolingUploadPayload(BaseModel):
@@ -2762,6 +2766,7 @@ def _decide_learning(
     background_tasks: BackgroundTasks,
     session: Session,
     content: str | None = None,
+    confirm: bool = False,
 ) -> JSONResponse:
     """Shared verdict path for approve/deny/bulk (daily-learnings spec,
     Task 7). Approve rides the teach lane byte-for-byte (instant relay
@@ -2777,6 +2782,12 @@ def _decide_learning(
     the ORIGINAL `content_hash` is kept even when the text changes -- the
     rejected-by-rewriting phrasing stays tombstoned against re-proposal.
     `deny` and the bulk route never pass `content`.
+
+    `confirm`, approve only (issue #143): a row with concerns
+    (`kobo_api.learnings.learning_concerns`: nobody it can be attributed
+    to, or a statement about access) is approved only with `confirm=True`;
+    otherwise this answers 409 naming the concerns and teaches nothing. The
+    bulk route never passes it, so bulk approve leaves such rows pending.
 
     Module-level (MCP learnings trio, Task 8) rather than a closure inside
     `create_app`: both `approve_learning`/`deny_learning`/
@@ -2815,6 +2826,16 @@ def _decide_learning(
             {"error": f"learning is already {row.status}"}, status_code=409
         )
     email = getattr(request.state, "iap_email", None)
+    if action == "approve" and not confirm:
+        concerns = learning_concerns(row.content, row.said_by)
+        if concerns:
+            return JSONResponse(
+                {
+                    "error": "this learning needs a second confirmation to approve",
+                    "concerns": concerns,
+                },
+                status_code=409,
+            )
     if action == "deny":
         row.status = LEARNING_DENIED
         row.decided_by = email
@@ -5018,6 +5039,15 @@ def create_app(
         # itself so the UI can render the room's honest banner copy without
         # a second round trip.
         agents, groups_unavailable = _visible_agents(session, request)
+        # Issue #142: tasks failing `system_task_flag_after` runs in a row, so
+        # the card can say so. One query for the page, not one per agent.
+        failing_tasks: dict[str, list[str]] = {}
+        for task_row in (
+            session.query(AgentSystemTask)
+            .filter(AgentSystemTask.consecutive_failures >= cfg.system_task_flag_after)
+            .all()
+        ):
+            failing_tasks.setdefault(task_row.agent_name, []).append(task_row.task)
         return {
             "agents": [
                 {
@@ -5029,6 +5059,7 @@ def create_app(
                     "created_at": a.created_at.isoformat(),
                     "has_avatar": a.avatar_png is not None,
                     "health": _health_body(a.name),
+                    "system_tasks_failing": sorted(failing_tasks.get(a.name, [])),
                     # Owner-or-operator gate + "Made by <email>" (access-
                     # control Task A3): both columns are nullable (Task A2)
                     # and simply pass through as `None` for a pre-A2 or
@@ -6765,8 +6796,17 @@ def create_app(
         if status != "all":
             query = query.filter_by(status=status)
         rows = query.order_by(AgentLearning.created_at.desc()).all()
+        flag_after = app.state.config.system_task_flag_after
+        system_tasks = [
+            system_task_status(task_row, flag_after)
+            for task_row in session.query(AgentSystemTask)
+            .filter_by(agent_name=agent.name)
+            .order_by(AgentSystemTask.task)
+            .all()
+        ]
         return JSONResponse(
             {
+                "system_tasks": system_tasks,
                 "learnings": [
                     {
                         "id": row.id,
@@ -6776,6 +6816,7 @@ def create_app(
                         "source": row.source,
                         "evidence": row.evidence,
                         "said_by": row.said_by,
+                        "concerns": learning_concerns(row.content, row.said_by),
                         "status": row.status,
                         "decided_by": row.decided_by,
                         "created_at": (
@@ -6810,6 +6851,7 @@ def create_app(
             background_tasks,
             session,
             content=payload.content if payload else None,
+            confirm=payload.confirm if payload else False,
         )
 
     @app.post("/api/agents/{name}/learnings/{learning_id}/deny")

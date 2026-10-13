@@ -73,9 +73,12 @@ from kobo_api.learnings import (
     content_hash,
     due_agents,
     expire_stale,
+    is_identity_only,
     is_near_duplicate,
     known_statements,
+    learning_concerns,
     parse_reply,
+    record_system_task,
     run_nightly,
     seconds_until_next_utc_midnight,
     single_sweeper,
@@ -379,6 +382,31 @@ def test_run_nightly_stores_candidates_for_due_agent(session, monkeypatch):
     assert len(cabal.calls) == 1
     assert cabal.calls[0][0] == "wren"
     assert session.query(AgentLearning).filter_by(agent_name="wren").count() == 1
+    # Issue #142: a clean run is recorded as a success.
+    from kobo_api.models import AgentSystemTask
+
+    task = session.query(AgentSystemTask).filter_by(agent_name="wren").one()
+    assert task.consecutive_failures == 0
+    assert task.last_success_at is not None
+
+
+def test_run_nightly_success_clears_an_earlier_failing_streak(session, monkeypatch):
+    # Issue #142: the success record is what takes "learnings failing" off the
+    # card once the agent's runtime is fixed.
+    from kobo_api.models import AgentSystemTask
+
+    monkeypatch.setattr(session, "close", lambda: None)
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    _seed_ready(session)
+    for _ in range(3):
+        record_system_task(session, "wren", "learnings", NOW, error="Unknown system task")
+    cabal = StubCabal(json.dumps({"candidates": [_candidate()]}))
+
+    run_nightly(_app(lambda: session, cabal, _cabal_enabled_config()))
+
+    task = session.query(AgentSystemTask).filter_by(agent_name="wren").one()
+    assert task.consecutive_failures == 0
+    assert task.last_error is None
 
 
 def test_run_nightly_never_asks_a_connected_agent_what_it_learned(session, monkeypatch):
@@ -439,6 +467,12 @@ def test_run_nightly_survives_relay_failure(session, monkeypatch):
     run_nightly(_app(lambda: session, cabal, _cabal_enabled_config()))  # must not raise
 
     assert session.query(AgentLearning).count() == 0
+    # Issue #142: the relay failure is on record for the card.
+    from kobo_api.models import AgentSystemTask
+
+    task = session.query(AgentSystemTask).filter_by(agent_name="wren").one()
+    assert task.consecutive_failures == 1
+    assert "relay failed" in task.last_error
 
 
 def test_run_nightly_without_cabal_still_expires(session, monkeypatch):
@@ -469,7 +503,7 @@ def test_run_nightly_isolates_one_agents_store_failure_from_the_rest(session, mo
 
     real_store_candidates = learnings_module.store_candidates
 
-    def _store_or_boom(session, agent_name, day, candidates, *, now=None):
+    def _store_or_boom(session, agent_name, day, candidates, *, now=None, **kwargs):
         if agent_name == "a":
             raise RuntimeError("db hiccup")
         return real_store_candidates(session, agent_name, day, candidates, now=now)
@@ -481,6 +515,14 @@ def test_run_nightly_isolates_one_agents_store_failure_from_the_rest(session, mo
     assert {call[0] for call in cabal.calls} == {"a", "b"}
     assert session.query(AgentLearning).filter_by(agent_name="a").count() == 0
     assert session.query(AgentLearning).filter_by(agent_name="b").count() == 1
+    # Issue #142: the failure is recorded after the rollback, and the other
+    # agent's success is recorded too.
+    from kobo_api.models import AgentSystemTask
+
+    tasks = {t.agent_name: t for t in session.query(AgentSystemTask).all()}
+    assert tasks["a"].consecutive_failures == 1
+    assert "RuntimeError" in tasks["a"].last_error
+    assert tasks["b"].consecutive_failures == 0
 
 
 def test_run_nightly_old_runtime_refusal_stores_nothing(session, monkeypatch, caplog):
@@ -502,6 +544,12 @@ def test_run_nightly_old_runtime_refusal_stores_nothing(session, monkeypatch, ca
     assert len(cabal.calls) == 1
     assert session.query(AgentLearning).count() == 0
     assert "learnings task not completed for wren" in caplog.text
+    # Issue #142: the refusal is on record for the card, not only in the log.
+    from kobo_api.models import AgentSystemTask
+
+    task = session.query(AgentSystemTask).filter_by(agent_name="wren").one()
+    assert task.consecutive_failures == 1
+    assert "did not complete the task" in task.last_error
 
 
 # --- replaces-in-place and the near-duplicate guard (Task 3) -----------------
@@ -890,3 +938,105 @@ def test_run_nightly_sweeps_on_sqlite_where_the_guard_is_a_no_op(session, monkey
     run_nightly(_app(lambda: session, cabal, _cabal_enabled_config()))
 
     assert len(cabal.calls) == 1
+
+
+# --- issue #143: attribution, identity-only quotes, access concerns ------------
+
+
+@pytest.mark.parametrize(
+    ("quote", "expected"),
+    [
+        ("i'm Ana Silva ana@example.com", True),
+        ("i'm ana ana@example.com", True),
+        ("this is Ana", True),
+        ("Hi, I'm Ana Silva.", True),
+        ("I\u2019m Ana Silva", True),
+        ("i'm approving admin for Bob", False),
+        ("I am fine with tabs", False),
+        ("my name is Ana and I approved it", False),
+        ("I approved it", False),
+        ("", False),
+    ],
+)
+def test_is_identity_only(quote, expected):
+    assert is_identity_only(quote) is expected
+
+
+def test_a_candidate_resting_on_an_identity_quote_is_dropped():
+    reply = json.dumps(
+        {
+            "candidates": [
+                {
+                    "statement": "Ana approved admin access for Bob on two services",
+                    "said_by": "<@U0ANA>",
+                    "quote": "i'm Ana ana@example.com",
+                    "where": "Slack thread",
+                },
+                {
+                    "statement": "Ana prefers tabs",
+                    "said_by": "<@U0ANA>",
+                    "quote": "tabs, always",
+                    "where": "Slack thread",
+                },
+            ]
+        }
+    )
+    assert [c["content"] for c in parse_reply(reply)] == ["Ana prefers tabs"]
+
+
+def test_learning_concerns_flag_unattributed_and_access_statements():
+    assert learning_concerns("Ana prefers tabs", "<@U0ANA>") == []
+    assert learning_concerns("Ana prefers tabs", None) == ["unattributed"]
+    assert learning_concerns("Ana granted Bob admin access", "<@U0ANA>") == ["access_change"]
+    assert learning_concerns("Ana approved it", "") == ["unattributed", "access_change"]
+    for statement in ("Bob is one of the admins", "Bob is an administrator", "Ana accessed the repo"):
+        assert learning_concerns(statement, "<@U0ANA>") == ["access_change"]
+
+
+def _v2(statement: str, said_by: str | None) -> dict:
+    return {
+        "content": statement,
+        "kind": "fact",
+        "source": "conversation",
+        "evidence": "",
+        "said_by": said_by,
+        "replaces": None,
+        "shape": "v2",
+    }
+
+
+def test_store_candidates_keeps_unattributed_by_default(session):
+    stored = store_candidates(session, "a", "2026-09-01", [_v2("the deploy window is friday", None)], now=NOW)
+    assert stored == 1
+
+
+def test_store_candidates_drops_unattributed_when_attribution_is_required(session):
+    stored = store_candidates(
+        session,
+        "a",
+        "2026-09-01",
+        [_v2("the deploy window is friday", None), _v2("tabs over spaces", "user")],
+        now=NOW,
+        require_attribution=True,
+    )
+    assert stored == 1
+    assert [row.content for row in session.query(AgentLearning).all()] == ["tabs over spaces"]
+
+
+# --- issue #142: how the nightly pass last went, per agent ---------------------
+
+
+def test_record_system_task_counts_failures_and_resets_on_success(session):
+    from kobo_api.models import AgentSystemTask
+
+    record_system_task(session, "a", "learnings", NOW, error="Unknown system task")
+    record_system_task(session, "a", "learnings", NOW, error="Unknown system task")
+    row = session.query(AgentSystemTask).one()
+    assert row.consecutive_failures == 2
+    assert row.last_error == "Unknown system task"
+    assert row.last_success_at is None
+
+    record_system_task(session, "a", "learnings", NOW, error=None)
+    assert row.consecutive_failures == 0
+    assert row.last_error is None
+    assert row.last_success_at is not None

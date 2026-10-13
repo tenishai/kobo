@@ -25,6 +25,9 @@ export type AgentSummary = {
   created_at: string;
   has_avatar: boolean;
   health?: AgentHealth | null;
+  /** System tasks (the nightly learnings pass) that have failed several
+   * runs in a row for this agent (issue #142). Older rooms omit it. */
+  system_tasks_failing?: string[];
   /** The verified email that created this agent (access-control Task A2/
    * A3), `null` for a pre-A2 row or one created while IAP was off. Drives
    * the "Made by <email>" line on the card and detail Overview, and is the
@@ -1245,12 +1248,26 @@ export type Learning = {
   source: string;
   evidence: string;
   said_by: string | null;
+  /** Why remembering this needs a second yes (issue #143): "unattributed"
+   * (nobody it can be traced to) and/or "access_change" (it is about who
+   * may access what). Older rooms omit it. */
+  concerns?: string[];
   status: "pending" | "approved" | "denied" | "expired";
   decided_by: string | null;
   created_at: string | null;
 };
 
-export type LearningsList = { learnings: Learning[] };
+/** How a system task the room sends this agent last went (issue #142). */
+export type SystemTaskStatus = {
+  task: string;
+  last_run_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+  consecutive_failures: number;
+  failing: boolean;
+};
+
+export type LearningsList = { learnings: Learning[]; system_tasks?: SystemTaskStatus[] };
 
 export async function listLearnings(name: string): Promise<LearningsList> {
   const res = await fetch(
@@ -1264,15 +1281,18 @@ export async function decideLearning(
   id: number,
   action: "approve" | "deny",
   content?: string,
+  confirm = false,
 ): Promise<void> {
-  const edited = action === "approve" && content !== undefined;
+  const body: { content?: string; confirm?: boolean } = {};
+  if (action === "approve" && content !== undefined) body.content = content;
+  if (action === "approve" && confirm) body.confirm = true;
   const res = await fetch(
     `/api/agents/${encodeURIComponent(name)}/learnings/${id}/${action}`,
-    edited
+    Object.keys(body).length > 0
       ? {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify(body),
         }
       : { method: "POST" },
   );

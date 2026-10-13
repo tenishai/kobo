@@ -1546,7 +1546,12 @@ def register(mcp: FastMCP, app: Any) -> None:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
     @audited("kobo_decide_learning")
     async def kobo_decide_learning(
-        ctx: Context, agent: str, learning_id: int, action: str, content: str | None = None
+        ctx: Context,
+        agent: str,
+        learning_id: int,
+        action: str,
+        content: str | None = None,
+        confirm: bool = False,
     ) -> dict:
         """Approve or deny one pending learning for `agent` -- the same
         verdict the room's own Learnings tab records for a single row.
@@ -1558,7 +1563,11 @@ def register(mcp: FastMCP, app: Any) -> None:
         only see the agent gets "agent not found", never a distinguishable
         forbidden. `content`, approve only: fixed wording to teach instead
         of the proposed sentence, one line, 200 characters or fewer -- bad
-        wording raises a `ToolError` and leaves the row untouched. Returns
+        wording raises a `ToolError` and leaves the row untouched.
+        `confirm`, approve only: required for a row whose `concerns`
+        (kobo_list_learnings) are not empty, i.e. one nobody can be
+        attributed with, or one about access; without it the approve is
+        refused and the row stays pending. Returns
         the decided row's id and status, plus mode and filename on an
         approve.
         """
@@ -1581,6 +1590,7 @@ def register(mcp: FastMCP, app: Any) -> None:
                 background_tasks=background_tasks,
                 session=session,
                 content=content if action == "approve" else None,
+                confirm=confirm and action == "approve",
             )
             body = _learning_route_result(response)
             # Mirrors kobo_teach above: runs whatever the approve+instant
@@ -1611,7 +1621,9 @@ def register(mcp: FastMCP, app: Any) -> None:
         not decide for `agent` right now (not its owner, not an operator,
         no per-user grant); 404 means either that learning_id does not
         exist or `agent` itself is unknown or not visible to you; 409
-        means that learning was already decided, or `agent` is not ready.
+        means that learning was already decided, or `agent` is not ready,
+        or (approve only) the row has concerns and is still pending: approve
+        it on its own with kobo_decide_learning(..., confirm=true).
         Inspect each entry rather than assuming the call as a whole
         succeeded or failed.
         """

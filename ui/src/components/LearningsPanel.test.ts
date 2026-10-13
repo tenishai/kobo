@@ -152,6 +152,64 @@ describe("LearningsPanel", () => {
     });
   });
 
+  // Issue #143: a row with concerns names them and is remembered only on a
+  // second click, which sends confirm: true.
+  it("labels a flagged row and needs a second click, which posts confirm", async () => {
+    vi.unstubAllGlobals();
+    stubFetch({
+      "/learnings": {
+        learnings: [
+          {
+            ...LEARNINGS.learnings[1],
+            id: 7,
+            content: "Ana approved admin access for Bob",
+            concerns: ["unattributed", "access_change"],
+          },
+        ],
+      },
+    });
+    renderWithClient(LearningsPanel, { agentName: "wren", canDecide: true, frozen: false });
+
+    await screen.findByText("Ana approved admin access for Bob");
+    expect(screen.getByText("Nobody to attribute this to")).not.toBeNull();
+    expect(screen.getByText("About access")).not.toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Remember" }));
+    const approvals = () =>
+      vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/learnings/7/approve"));
+    expect(approvals()).toHaveLength(0);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Yes, remember it" }));
+    await vi.waitFor(() => {
+      expect(approvals()).toHaveLength(1);
+      const init = approvals()[0][1] as RequestInit;
+      expect(JSON.parse(String(init.body))).toEqual({ confirm: true });
+    });
+  });
+
+  it("says so when the nightly pass keeps failing", async () => {
+    vi.unstubAllGlobals();
+    stubFetch({
+      "/learnings": {
+        ...LEARNINGS,
+        system_tasks: [
+          {
+            task: "learnings",
+            last_run_at: "2026-10-13T00:00:00",
+            last_success_at: null,
+            last_error: "the agent did not complete the task: Unknown system task",
+            consecutive_failures: 4,
+            failing: true,
+          },
+        ],
+      },
+    });
+    renderWithClient(LearningsPanel, { agentName: "wren", canDecide: true, frozen: false });
+
+    expect(await screen.findByText(/The nightly pass has failed 4 runs in a row/)).not.toBeNull();
+    expect(screen.getByText(/Unknown system task/)).not.toBeNull();
+  });
+
   it("posts a JSON body with the edited content after the pencil changes the wording", async () => {
     renderWithClient(LearningsPanel, {
       agentName: "wren",

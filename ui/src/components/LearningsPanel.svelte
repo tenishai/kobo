@@ -53,6 +53,7 @@
   let openId = $state<number | null>(null);      // row whose quote is showing
   let editingId = $state<number | null>(null);   // row being reworded
   let draft = $state("");
+  let confirmId = $state<number | null>(null);   // flagged row asking for a second yes
   let teachText = $state("");
   let teachNote = $state("");
   let confirming = $state<"approve" | "deny" | null>(null);
@@ -63,6 +64,11 @@
   const BULK_MAX = 50;
 
   const all = $derived(learnings.data?.learnings ?? []);
+  // Issue #142: a nightly pass that keeps failing (an old runtime refusing
+  // the task, say) would otherwise look like a quiet week.
+  const nightly = $derived(
+    (learnings.data?.system_tasks ?? []).find((t) => t.task === "learnings" && t.failing),
+  );
   const pending = $derived(all.filter((l: Learning) => l.status === "pending"));
   const bulkIds = $derived(pending.slice(0, BULK_MAX).map((l: Learning) => l.id));
   const history = $derived(all.filter((l: Learning) => l.status !== "pending"));
@@ -99,6 +105,22 @@
     return [l.said_by, l.source].filter(Boolean).join(" · ");
   }
 
+  // Issue #143: a row nobody can be traced to, or one about access, is
+  // remembered only on a second, explicit yes. Bulk "Remember all" leaves
+  // such rows here for one-by-one review (the room refuses them in bulk).
+  const CONCERN_LABELS: Record<string, string> = {
+    unattributed: "Nobody to attribute this to",
+    access_change: "About access",
+  };
+
+  function concernsOf(l: Learning): string[] {
+    return l.concerns ?? [];
+  }
+
+  const flaggedCount = $derived(
+    pending.slice(0, BULK_MAX).filter((l: Learning) => concernsOf(l).length > 0).length,
+  );
+
   function startEdit(l: Learning): void {
     editingId = l.id;
     draft = l.content;
@@ -106,14 +128,25 @@
 
   function remember(l: Learning): void {
     errorText = "";
+    const flagged = concernsOf(l).length > 0;
+    if (flagged && confirmId !== l.id) {
+      confirmId = l.id;
+      return;
+    }
     const edited = editingId === l.id && draft.trim() !== l.content;
     decide.mutate(
-      { id: l.id, action: "approve", ...(edited ? { content: draft.trim() } : {}) },
+      {
+        id: l.id,
+        action: "approve",
+        ...(edited ? { content: draft.trim() } : {}),
+        ...(flagged ? { confirm: true } : {}),
+      },
       {
         // Guarded: deciding row B while row A is mid-edit must not clear
         // row A's own edit state out from under it.
         onSuccess: () => {
           if (editingId === l.id) editingId = null;
+          if (confirmId === l.id) confirmId = null;
         },
         onError: (e: unknown) =>
           (errorText = errorMessage(e, "Couldn't save that. Try again.")),
@@ -139,8 +172,12 @@
 
   function bulkConfirmText(action: "approve" | "deny"): string {
     const verb = action === "approve" ? "Remember" : "Skip";
-    if (pending.length <= BULK_MAX) return `${verb} all ${pending.length}?`;
-    return `${verb} the first ${BULK_MAX} of ${pending.length}?`;
+    const question =
+      pending.length <= BULK_MAX
+        ? `${verb} all ${pending.length}?`
+        : `${verb} the first ${BULK_MAX} of ${pending.length}?`;
+    if (action !== "approve" || flaggedCount === 0) return question;
+    return `${question} ${flaggedCount} flagged ${flaggedCount === 1 ? "stays" : "stay"} for you to check one by one.`;
   }
 
   function submitTeach(event: SubmitEvent): void {
@@ -214,6 +251,14 @@
       onretry={() => learnings.refetch()}
     />
   {:else}
+    {#if nightly}
+      <p class="panel__note panel__note--fail" role="status">
+        The nightly pass has failed {nightly.consecutive_failures} runs in a row, so
+        {agentName} hasn't proposed anything new.{nightly.last_error
+          ? ` Last error: ${nightly.last_error}`
+          : ""}
+      </p>
+    {/if}
     <table class="panel__table">
       <thead>
         <tr>
@@ -254,7 +299,12 @@
                 >{l.content}</button>
               {/if}
             </td>
-            <td><span class="learning-row__byline">{byline(l)}</span></td>
+            <td>
+              <span class="learning-row__byline">{byline(l)}</span>
+              {#each concernsOf(l) as concern (concern)}
+                <span class="learning-row__concern">{CONCERN_LABELS[concern] ?? concern}</span>
+              {/each}
+            </td>
             <td class="panel__cell--right">
               {#if canDecide}
                 <span class="learning-row__actions">
@@ -270,7 +320,8 @@
                   {/if}
                   <button class="btn learnings-panel__emphasis" type="button"
                     disabled={frozen || deciding || (editingId === l.id && !draft.trim())}
-                    onclick={() => remember(l)}>Remember</button>
+                    onclick={() => remember(l)}
+                  >{confirmId === l.id ? "Yes, remember it" : "Remember"}</button>
                 </span>
               {/if}
             </td>
@@ -392,6 +443,12 @@
   .learning-row__statement--open { display: block; overflow: visible; white-space: pre-wrap; }
   .learning-row__statement-text { margin: 0; color: var(--ink); line-height: 1.4; }
   .learning-row__byline { color: var(--muted); font-size: 0.8rem; }
+  .learning-row__concern {
+    display: inline-block;
+    margin-left: var(--space-2xs);
+    color: var(--warn);
+    font-size: 0.75rem;
+  }
   .learning-row__actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2xs); }
   .learning-row__quote-cell { padding-bottom: var(--space-xs); }
   .learning-row__quote {

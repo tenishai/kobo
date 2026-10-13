@@ -873,11 +873,13 @@ export function decideLearningMutation(queryClient: QueryClient, name: string) {
       id,
       action,
       content,
+      confirm,
     }: {
       id: number;
       action: "approve" | "deny";
       content?: string;
-    }) => decideLearning(name, id, action, content),
+      confirm?: boolean;
+    }) => decideLearning(name, id, action, content, confirm),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name] });
     },

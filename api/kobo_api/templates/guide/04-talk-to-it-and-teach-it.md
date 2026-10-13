@@ -18,9 +18,13 @@ An agent's memory is the set of notes you have taught it and the files you have 
 
 ## Learnings
 
-Once a day the room asks each agent what it picked up from its conversations. The agent proposes a handful of one-line statements, each attributed to the person who said it. Nothing is kept until you decide.
+Once a day the room asks each agent what it picked up from its conversations. The agent proposes a handful of one-line statements, each attributed to the person who said it where it can be. Nothing is kept until you decide.
 
 The **Learnings** section in the Harness tab lists what is pending, with **Remember** and **Skip** on each row, a pencil to fix the wording first, and **Remember all** or **Skip all** for a batch. Remembering rides the same lane as Teach this. Skipped rows are kept in the history. Anything left undecided for two weeks expires.
+
+Two kinds of row are marked and need a second click on **Remember**, and **Remember all** leaves them for you to check one by one: a statement nobody can be attributed with, and one about access (who approved, granted or revoked what). An approval is an event, not a standing fact, and once remembered the agent could cite it as authority.
+
+If the nightly pass keeps failing for an agent (for example, its runtime is too old to run it), the section says so with the last error, and the agent's card on the dashboard shows **learnings failing**.
 
 The same section has a **Teach something** box for a one-line note when you are not in a chat.
 

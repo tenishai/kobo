@@ -30,6 +30,7 @@ from kobo_api.models import (
     LEARNING_EXPIRED,
     LEARNING_PENDING,
     AgentLearning,
+    AgentSystemTask,
 )
 
 log = logging.getLogger("kobo.learnings")
@@ -63,6 +64,27 @@ _KNOWN_LABELS = {
 }
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
+
+# A quote that only says who the speaker is ("i'm Ana ana@example.com",
+# "this is Ana") supports no statement about what they did or decided. A
+# candidate resting on one is dropped (issue #143).
+_IDENTITY_QUOTE_RE = re.compile(
+    r"^\s*(?:(?:hi|hey|hello)[\s,!.]+)?(?:i['\u2019]?m|i am|this is|my name is)\s+(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+IDENTITY_NAME_MAX_WORDS = 4
+
+# Statements about who may access what are events, not standing facts, and an
+# approved one becomes something the agent can cite as authority to grant
+# access. Such a candidate is flagged and needs a second confirmation
+# (issue #143).
+_ACCESS_CHANGE_RE = re.compile(
+    r"\b(?:approv\w*|grant\w*|revok\w*|permission\w*|access\w*|admin\w*|authori[sz]\w*)\b",
+    re.IGNORECASE,
+)
+CONCERN_UNATTRIBUTED = "unattributed"
+CONCERN_ACCESS_CHANGE = "access_change"
 _STOPWORDS = frozenset(
     "a an and are as at be but by for from has have if in into is it its not of on "
     "only or so that the their them then there these they this to was when which "
@@ -155,6 +177,39 @@ def _parse_v1(item: dict) -> dict | None:
     }
 
 
+def is_identity_only(quote: str) -> bool:
+    """True when `quote` only introduces the speaker: "i'm", "this is" or
+    "my name is", then nothing but a name, with or without an email. A name
+    is up to IDENTITY_NAME_MAX_WORDS words, capitalised unless an email
+    vouches for it, so "i'm approving admin for Bob" is not an introduction.
+    The capital-letter test also takes "this is Postgres" or "I'm OOO" for
+    an introduction. That costs a missed candidate, never a wrong one, and
+    is the trade this rule makes."""
+    match = _IDENTITY_QUOTE_RE.match(quote or "")
+    if match is None:
+        return False
+    rest = match.group("rest")
+    has_email = _EMAIL_RE.search(rest) is not None
+    words = re.sub(r"[^\w\s'-]", " ", _EMAIL_RE.sub(" ", rest)).split()
+    if not words:
+        return has_email
+    if len(words) > IDENTITY_NAME_MAX_WORDS:
+        return False
+    return has_email or all(word[0].isupper() for word in words)
+
+
+def learning_concerns(content: str, said_by: str | None) -> list[str]:
+    """Why approving this candidate needs a second, explicit confirmation:
+    nobody it can be attributed to, or a statement about access. Computed
+    from the row, so rows stored before this existed are judged the same."""
+    concerns = []
+    if not said_by:
+        concerns.append(CONCERN_UNATTRIBUTED)
+    if _ACCESS_CHANGE_RE.search(content):
+        concerns.append(CONCERN_ACCESS_CHANGE)
+    return concerns
+
+
 def _parse_v2(item: dict) -> dict | None:
     """One human-attributed sentence (learnings rethink). An over-long
     statement is DROPPED, never truncated: a clipped sentence teaches half
@@ -162,6 +217,9 @@ def _parse_v2(item: dict) -> dict | None:
     `True` must not become learning id 1)."""
     statement = _one_line(_clean_str_field(item.get("statement")))
     if not statement or len(statement) > STATEMENT_MAX_CHARS:
+        return None
+    quote = _one_line(_clean_str_field(item.get("quote")))
+    if is_identity_only(quote):
         return None
     replaces = item.get("replaces")
     if isinstance(replaces, bool) or not isinstance(replaces, int):
@@ -229,17 +287,27 @@ def store_candidates(
     candidates: list[dict],
     *,
     now: datetime | None = None,
+    require_attribution: bool = False,
 ) -> int:
     """Park candidates as pending rows. Per candidate, in order: the exact
     hash tombstone (any status, forever); `replaces` naming one of THIS
     agent's PENDING rows updates that row in place (anything else in
     `replaces` is ignored and the candidate is new); the near-duplicate
     guard against this agent's pending/approved/denied statements from the
-    last KNOWN_WINDOW_DAYS; insert. Returns rows stored or updated."""
+    last KNOWN_WINDOW_DAYS; insert. Returns rows stored or updated.
+
+    `require_attribution` (`Config.learnings_require_attribution`) drops a
+    candidate with no `said_by` before any of that. It is off by default
+    because a runtime that predates daedalus issue #165 also sends turns
+    from the room's chat (anyone who can see the agent may chat with it)
+    unattributed (issue #143)."""
     cutoff = _naive_utc(now or datetime.now(UTC)) - timedelta(days=KNOWN_WINDOW_DAYS)
     stored = 0
     for candidate in candidates[:CANDIDATE_CAP]:
         content = candidate["content"]
+        if require_attribution and not candidate.get("said_by"):
+            log.info("learnings: %s dropped an unattributed candidate: %r", agent_name, content[:80])
+            continue
         digest = content_hash(content)
         exact = (
             session.query(AgentLearning)
@@ -323,6 +391,45 @@ def store_candidates(
         stored += 1
     session.commit()
     return stored
+
+
+SYSTEM_TASK_LEARNINGS = "learnings"
+SYSTEM_TASK_ERROR_MAX_CHARS = 300
+
+
+def record_system_task(
+    session: Session, agent_name: str, task: str, now: datetime, *, error: str | None
+) -> None:
+    """Record one run of `task` for `agent_name` (issue #142): a success
+    when `error` is None, else a failure with its message. Commits, so a
+    failure is on record even when nothing else in the sweep is."""
+    row = session.query(AgentSystemTask).filter_by(agent_name=agent_name, task=task).first()
+    if row is None:
+        row = AgentSystemTask(agent_name=agent_name, task=task, consecutive_failures=0)
+        session.add(row)
+    stamp = _naive_utc(now)
+    row.last_run_at = stamp
+    if error is None:
+        row.last_success_at = stamp
+        row.last_error = None
+        row.consecutive_failures = 0
+    else:
+        row.last_error = error[:SYSTEM_TASK_ERROR_MAX_CHARS]
+        row.consecutive_failures = (row.consecutive_failures or 0) + 1
+    session.commit()
+
+
+def system_task_status(row: AgentSystemTask, flag_after: int) -> dict:
+    """One task's record as the API reports it; `failing` once it has failed
+    `flag_after` runs in a row (`Config.system_task_flag_after`)."""
+    return {
+        "task": row.task,
+        "last_run_at": row.last_run_at.isoformat() if row.last_run_at else None,
+        "last_success_at": row.last_success_at.isoformat() if row.last_success_at else None,
+        "last_error": row.last_error,
+        "consecutive_failures": row.consecutive_failures,
+        "failing": row.consecutive_failures >= flag_after,
+    }
 
 
 def known_statements(session: Session, agent_name: str, now: datetime) -> list[dict]:
@@ -569,6 +676,10 @@ def _sweep(session, config, clients, now: datetime) -> None:
                 reply = _extract_relay_reply(raw)
             except (CabalError, httpx.HTTPError, ValueError) as exc:
                 log.warning("learnings relay failed for %s: %s", name, exc)
+                record_system_task(
+                    session, name, SYSTEM_TASK_LEARNINGS, now,
+                    error=f"the switchboard relay failed: {exc}",
+                )
                 continue
             if _relay_reply_not_completed(raw):
                 log.warning(
@@ -577,17 +688,37 @@ def _sweep(session, config, clients, now: datetime) -> None:
                     name,
                     reply[:200],
                 )
+                record_system_task(
+                    session, name, SYSTEM_TASK_LEARNINGS, now,
+                    error=f"the agent did not complete the task: {reply[:200]}",
+                )
                 continue
             candidates = parse_reply(reply)
-            stored = store_candidates(session, name, day, candidates, now=now)
+            stored = store_candidates(
+                session,
+                name,
+                day,
+                candidates,
+                now=now,
+                require_attribution=config.learnings_require_attribution,
+            )
+            record_system_task(session, name, SYSTEM_TASK_LEARNINGS, now, error=None)
             log.info(
                 "learnings: %s proposed %d, stored %d new",
                 name,
                 len(candidates),
                 stored,
             )
-        except Exception:
+        except Exception as exc:
             log.exception("learnings sweep failed for %s", name)
+            try:
+                session.rollback()
+                record_system_task(
+                    session, name, SYSTEM_TASK_LEARNINGS, now,
+                    error=f"the room failed to process the reply: {type(exc).__name__}",
+                )
+            except Exception:
+                log.exception("learnings: could not record the failure for %s", name)
             continue
 
 
