@@ -187,6 +187,29 @@ describe("LearningsPanel", () => {
     });
   });
 
+  it("says so when the nightly pass keeps failing", async () => {
+    vi.unstubAllGlobals();
+    stubFetch({
+      "/learnings": {
+        ...LEARNINGS,
+        system_tasks: [
+          {
+            task: "learnings",
+            last_run_at: "2026-10-13T00:00:00",
+            last_success_at: null,
+            last_error: "the agent did not complete the task: Unknown system task",
+            consecutive_failures: 4,
+            failing: true,
+          },
+        ],
+      },
+    });
+    renderWithClient(LearningsPanel, { agentName: "wren", canDecide: true, frozen: false });
+
+    expect(await screen.findByText(/The nightly pass has failed 4 times in a row/)).not.toBeNull();
+    expect(screen.getByText(/Unknown system task/)).not.toBeNull();
+  });
+
   it("posts a JSON body with the edited content after the pencil changes the wording", async () => {
     renderWithClient(LearningsPanel, {
       agentName: "wren",

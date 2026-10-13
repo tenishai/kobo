@@ -25,6 +25,9 @@ export type AgentSummary = {
   created_at: string;
   has_avatar: boolean;
   health?: AgentHealth | null;
+  /** System tasks (the nightly learnings pass) that have failed several
+   * runs in a row for this agent (issue #142). Older rooms omit it. */
+  system_tasks_failing?: string[];
   /** The verified email that created this agent (access-control Task A2/
    * A3), `null` for a pre-A2 row or one created while IAP was off. Drives
    * the "Made by <email>" line on the card and detail Overview, and is the
@@ -1254,7 +1257,17 @@ export type Learning = {
   created_at: string | null;
 };
 
-export type LearningsList = { learnings: Learning[] };
+/** How a system task the room sends this agent last went (issue #142). */
+export type SystemTaskStatus = {
+  task: string;
+  last_run_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+  consecutive_failures: number;
+  failing: boolean;
+};
+
+export type LearningsList = { learnings: Learning[]; system_tasks?: SystemTaskStatus[] };
 
 export async function listLearnings(name: string): Promise<LearningsList> {
   const res = await fetch(

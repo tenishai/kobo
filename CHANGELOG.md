@@ -6,8 +6,30 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Upgrading
+
+- **This release migrates the database: back it up first.** Alembic revision
+  `a8e2c4f6d913` adds one table, `agent_system_tasks`, and the room runs `alembic upgrade
+  head` at boot. A version from before this one won't start on a database that has the
+  revision, because its own upgrade can't locate it. To roll back, restore the backup or run
+  `alembic downgrade e5a9c3f17b20` first.
+
 ### Fixed
 
+- **A failing nightly learnings pass shows on the agent's card.** An agent whose runtime
+  refused the task ("Unknown system task 'learnings'") failed every night and still looked
+  healthy; the failure was only a log line (issue #142). The room now records each run per
+  agent in the new `agent_system_tasks` table. After `system_task_flag_after` failures in a
+  row (default 3), the card shows "learnings failing" and the Learnings section shows the
+  last error.
+- **Unattributed and access-related learnings need a second confirmation.** A nightly
+  candidate whose quote only introduces the speaker ("i'm Ana ana@example.com") is dropped.
+  A candidate nobody can be attributed with, or one about approving, granting or revoking
+  access, is marked on the Learnings tab and is remembered only on a second click (API:
+  `confirm: true`; `kobo_decide_learning` takes `confirm`). Remember all leaves those rows
+  pending (issue #143). `learnings_require_attribution` drops unattributed candidates
+  outright; leave it off until every agent runs a daedalus with issue #165, which marks an
+  owner's own chat turns, or owner-taught candidates are dropped too.
 - **A connected agent no longer waits forever on an install with no Gojira webhook.** The
   waiting sweep read the platform's status, which moves only when the webhook reports the
   setup PR's merge, so the agent stayed at "waiting" after the merge (issue #118). The sweep

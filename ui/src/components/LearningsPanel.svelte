@@ -64,6 +64,11 @@
   const BULK_MAX = 50;
 
   const all = $derived(learnings.data?.learnings ?? []);
+  // Issue #142: a nightly pass that keeps failing (an old runtime refusing
+  // the task, say) would otherwise look like a quiet week.
+  const nightly = $derived(
+    (learnings.data?.system_tasks ?? []).find((t) => t.task === "learnings" && t.failing),
+  );
   const pending = $derived(all.filter((l: Learning) => l.status === "pending"));
   const bulkIds = $derived(pending.slice(0, BULK_MAX).map((l: Learning) => l.id));
   const history = $derived(all.filter((l: Learning) => l.status !== "pending"));
@@ -246,6 +251,14 @@
       onretry={() => learnings.refetch()}
     />
   {:else}
+    {#if nightly}
+      <p class="panel__note panel__note--fail" role="status">
+        The nightly pass has failed {nightly.consecutive_failures} times in a row, so
+        {agentName} hasn't proposed anything new.{nightly.last_error
+          ? ` Last error: ${nightly.last_error}`
+          : ""}
+      </p>
+    {/if}
     <table class="panel__table">
       <thead>
         <tr>

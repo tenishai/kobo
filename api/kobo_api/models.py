@@ -656,6 +656,26 @@ class AgentLearning(Base):
     )
 
 
+class AgentSystemTask(Base):
+    """How a system task the room sends an agent (the nightly learnings pass
+    today) last went for that agent (issue #142). Without it a task the
+    runtime refuses every night ("Unknown system task") left nothing but a
+    log line, and the agent looked healthy. One row per (agent, task),
+    updated in place by the sweep; `consecutive_failures` resets on success.
+    `agent_name` is a plain string, same as `AgentLearning.agent_name`."""
+
+    __tablename__ = "agent_system_tasks"
+    __table_args__ = (UniqueConstraint("agent_name", "task"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    task: Mapped[str] = mapped_column(String(32), nullable=False)
+    last_run_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 LEARNING_PENDING = "pending"
 LEARNING_APPROVED = "approved"
 LEARNING_DENIED = "denied"

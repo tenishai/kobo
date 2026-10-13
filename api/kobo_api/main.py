@@ -110,7 +110,7 @@ from kobo_api.knowledge import (
     save_knowledge_file,
 )
 from kobo_api.sero import acting_email_refusal
-from kobo_api.learnings import clean_edited_statement, learning_concerns
+from kobo_api.learnings import clean_edited_statement, learning_concerns, system_task_status
 from kobo_api.learnings import nightly_loop as learnings_nightly_loop
 from kobo_api.marketplace import BASELINE_TOOL_PREFIX
 from kobo_api.mcp import rate_limit
@@ -142,6 +142,7 @@ from kobo_api.models import (
     A2AInvite,
     Agent,
     AgentLearning,
+    AgentSystemTask,
     AgentStatus,
     AgentUserGrant,
     GroupRequest,
@@ -5038,6 +5039,15 @@ def create_app(
         # itself so the UI can render the room's honest banner copy without
         # a second round trip.
         agents, groups_unavailable = _visible_agents(session, request)
+        # Issue #142: tasks failing `system_task_flag_after` runs in a row, so
+        # the card can say so. One query for the page, not one per agent.
+        failing_tasks: dict[str, list[str]] = {}
+        for task_row in (
+            session.query(AgentSystemTask)
+            .filter(AgentSystemTask.consecutive_failures >= cfg.system_task_flag_after)
+            .all()
+        ):
+            failing_tasks.setdefault(task_row.agent_name, []).append(task_row.task)
         return {
             "agents": [
                 {
@@ -5049,6 +5059,7 @@ def create_app(
                     "created_at": a.created_at.isoformat(),
                     "has_avatar": a.avatar_png is not None,
                     "health": _health_body(a.name),
+                    "system_tasks_failing": sorted(failing_tasks.get(a.name, [])),
                     # Owner-or-operator gate + "Made by <email>" (access-
                     # control Task A3): both columns are nullable (Task A2)
                     # and simply pass through as `None` for a pre-A2 or
@@ -6785,8 +6796,17 @@ def create_app(
         if status != "all":
             query = query.filter_by(status=status)
         rows = query.order_by(AgentLearning.created_at.desc()).all()
+        flag_after = app.state.config.system_task_flag_after
+        system_tasks = [
+            system_task_status(task_row, flag_after)
+            for task_row in session.query(AgentSystemTask)
+            .filter_by(agent_name=agent.name)
+            .order_by(AgentSystemTask.task)
+            .all()
+        ]
         return JSONResponse(
             {
+                "system_tasks": system_tasks,
                 "learnings": [
                     {
                         "id": row.id,

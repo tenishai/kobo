@@ -477,6 +477,9 @@ class Config(BaseModel):
     # (daedalus issue #165); before that, owner-taught candidates arrive
     # unattributed too and would be dropped.
     learnings_require_attribution: bool = False
+    # How many runs in a row a system task (the nightly learnings pass) may
+    # fail for an agent before its card says so (issue #142).
+    system_task_flag_after: int = 3
     # Global READERS (reader-role wave, 2026-08-28): RAW Okta group names
     # whose members see EVERY agent in the room -- visibility only, no
     # mutation power of any kind. Raw directory names, deliberately NOT

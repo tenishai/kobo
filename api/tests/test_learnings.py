@@ -78,6 +78,7 @@ from kobo_api.learnings import (
     known_statements,
     learning_concerns,
     parse_reply,
+    record_system_task,
     run_nightly,
     seconds_until_next_utc_midnight,
     single_sweeper,
@@ -504,6 +505,12 @@ def test_run_nightly_old_runtime_refusal_stores_nothing(session, monkeypatch, ca
     assert len(cabal.calls) == 1
     assert session.query(AgentLearning).count() == 0
     assert "learnings task not completed for wren" in caplog.text
+    # Issue #142: the refusal is on record for the card, not only in the log.
+    from kobo_api.models import AgentSystemTask
+
+    task = session.query(AgentSystemTask).filter_by(agent_name="wren").one()
+    assert task.consecutive_failures == 1
+    assert "did not complete the task" in task.last_error
 
 
 # --- replaces-in-place and the near-duplicate guard (Task 3) -----------------
@@ -972,3 +979,22 @@ def test_store_candidates_drops_unattributed_when_attribution_is_required(sessio
     )
     assert stored == 1
     assert [row.content for row in session.query(AgentLearning).all()] == ["tabs over spaces"]
+
+
+# --- issue #142: how the nightly pass last went, per agent ---------------------
+
+
+def test_record_system_task_counts_failures_and_resets_on_success(session):
+    from kobo_api.models import AgentSystemTask
+
+    record_system_task(session, "a", "learnings", NOW, error="Unknown system task")
+    record_system_task(session, "a", "learnings", NOW, error="Unknown system task")
+    row = session.query(AgentSystemTask).one()
+    assert row.consecutive_failures == 2
+    assert row.last_error == "Unknown system task"
+    assert row.last_success_at is None
+
+    record_system_task(session, "a", "learnings", NOW, error=None)
+    assert row.consecutive_failures == 0
+    assert row.last_error is None
+    assert row.last_success_at is not None

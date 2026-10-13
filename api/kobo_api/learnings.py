@@ -30,6 +30,7 @@ from kobo_api.models import (
     LEARNING_EXPIRED,
     LEARNING_PENDING,
     AgentLearning,
+    AgentSystemTask,
 )
 
 log = logging.getLogger("kobo.learnings")
@@ -388,6 +389,45 @@ def store_candidates(
     return stored
 
 
+SYSTEM_TASK_LEARNINGS = "learnings"
+SYSTEM_TASK_ERROR_MAX_CHARS = 300
+
+
+def record_system_task(
+    session: Session, agent_name: str, task: str, now: datetime, *, error: str | None
+) -> None:
+    """Record one run of `task` for `agent_name` (issue #142): a success
+    when `error` is None, else a failure with its message. Commits, so a
+    failure is on record even when nothing else in the sweep is."""
+    row = session.query(AgentSystemTask).filter_by(agent_name=agent_name, task=task).first()
+    if row is None:
+        row = AgentSystemTask(agent_name=agent_name, task=task, consecutive_failures=0)
+        session.add(row)
+    stamp = _naive_utc(now)
+    row.last_run_at = stamp
+    if error is None:
+        row.last_success_at = stamp
+        row.last_error = None
+        row.consecutive_failures = 0
+    else:
+        row.last_error = error[:SYSTEM_TASK_ERROR_MAX_CHARS]
+        row.consecutive_failures = (row.consecutive_failures or 0) + 1
+    session.commit()
+
+
+def system_task_status(row: AgentSystemTask, flag_after: int) -> dict:
+    """One task's record as the API reports it; `failing` once it has failed
+    `flag_after` runs in a row (`Config.system_task_flag_after`)."""
+    return {
+        "task": row.task,
+        "last_run_at": row.last_run_at.isoformat() if row.last_run_at else None,
+        "last_success_at": row.last_success_at.isoformat() if row.last_success_at else None,
+        "last_error": row.last_error,
+        "consecutive_failures": row.consecutive_failures,
+        "failing": row.consecutive_failures >= flag_after,
+    }
+
+
 def known_statements(session: Session, agent_name: str, now: datetime) -> list[dict]:
     """What the agent must not re-propose: its pending, remembered, and
     skipped statements from the last KNOWN_WINDOW_DAYS, newest first,
@@ -632,6 +672,10 @@ def _sweep(session, config, clients, now: datetime) -> None:
                 reply = _extract_relay_reply(raw)
             except (CabalError, httpx.HTTPError, ValueError) as exc:
                 log.warning("learnings relay failed for %s: %s", name, exc)
+                record_system_task(
+                    session, name, SYSTEM_TASK_LEARNINGS, now,
+                    error=f"the switchboard relay failed: {exc}",
+                )
                 continue
             if _relay_reply_not_completed(raw):
                 log.warning(
@@ -639,6 +683,10 @@ def _sweep(session, config, clients, now: datetime) -> None:
                     "refusal): %s",
                     name,
                     reply[:200],
+                )
+                record_system_task(
+                    session, name, SYSTEM_TASK_LEARNINGS, now,
+                    error=f"the agent did not complete the task: {reply[:200]}",
                 )
                 continue
             candidates = parse_reply(reply)
@@ -650,14 +698,23 @@ def _sweep(session, config, clients, now: datetime) -> None:
                 now=now,
                 require_attribution=config.learnings_require_attribution,
             )
+            record_system_task(session, name, SYSTEM_TASK_LEARNINGS, now, error=None)
             log.info(
                 "learnings: %s proposed %d, stored %d new",
                 name,
                 len(candidates),
                 stored,
             )
-        except Exception:
+        except Exception as exc:
             log.exception("learnings sweep failed for %s", name)
+            try:
+                session.rollback()
+                record_system_task(
+                    session, name, SYSTEM_TASK_LEARNINGS, now,
+                    error=f"the room failed to process the reply: {type(exc).__name__}",
+                )
+            except Exception:
+                log.exception("learnings: could not record the failure for %s", name)
             continue
 
 

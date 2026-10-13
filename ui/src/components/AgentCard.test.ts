@@ -93,6 +93,11 @@ describe("AgentCard — a failed agent (card wave 2026-09-23)", () => {
     expect(container.querySelector(".agent-card__meta")).toBeNull();
   });
 
+  it("tags an agent whose nightly learnings pass keeps failing", () => {
+    render(AgentCard, { agent: { ...BASE_AGENT, system_tasks_failing: ["learnings"] } });
+    expect(screen.getByText("learnings failing")).not.toBeNull();
+  });
+
   it("keeps the footer facts for an agent that is fine", () => {
     const { container } = render(AgentCard, { agent: BASE_AGENT });
 

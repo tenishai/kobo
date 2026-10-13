@@ -19,6 +19,7 @@ to allowed, so those tests exercise nothing about the gate itself.
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import jwt
@@ -190,7 +191,7 @@ def test_list_learnings_empty(session_factory, config):
     response = client.get(f"/api/agents/{AGENT_NAME}/learnings")
 
     assert response.status_code == 200
-    assert response.json() == {"learnings": []}
+    assert response.json() == {"system_tasks": [], "learnings": []}
 
 
 def test_list_learnings_returns_rows_and_validates_status(session_factory, config):
@@ -582,3 +583,42 @@ def test_bulk_approve_leaves_flagged_rows_pending(session_factory, config):
     session = session_factory()
     assert session.query(AgentLearning).filter_by(id=flagged).one().status == "pending"
     session.close()
+
+
+# --- issue #142: a failing nightly pass shows in the list and on the tab -------
+
+
+def test_a_failing_nightly_pass_is_reported(session_factory, config):
+    from kobo_api.learnings import record_system_task
+
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config)
+    session = session_factory()
+    now = datetime(2026, 10, 13, tzinfo=UTC)
+    for _ in range(config.system_task_flag_after):
+        record_system_task(session, AGENT_NAME, "learnings", now, error="Unknown system task")
+    session.close()
+
+    [task] = client.get(f"/api/agents/{AGENT_NAME}/learnings").json()["system_tasks"]
+    assert task["failing"] is True
+    assert task["consecutive_failures"] == config.system_task_flag_after
+    assert task["last_error"] == "Unknown system task"
+    [summary] = [a for a in client.get("/api/agents").json()["agents"] if a["name"] == AGENT_NAME]
+    assert summary["system_tasks_failing"] == ["learnings"]
+
+
+def test_a_pass_that_failed_fewer_times_than_the_threshold_is_not_flagged(session_factory, config):
+    from kobo_api.learnings import record_system_task
+
+    client = _make_client(session_factory, config)
+    _seed_agent(session_factory, config)
+    session = session_factory()
+    record_system_task(
+        session, AGENT_NAME, "learnings", datetime(2026, 10, 13, tzinfo=UTC), error="boom"
+    )
+    session.close()
+
+    [task] = client.get(f"/api/agents/{AGENT_NAME}/learnings").json()["system_tasks"]
+    assert task["failing"] is False
+    [summary] = [a for a in client.get("/api/agents").json()["agents"] if a["name"] == AGENT_NAME]
+    assert summary["system_tasks_failing"] == []

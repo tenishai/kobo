@@ -53,6 +53,8 @@
   // person (`StepWaiting`). A bare "waiting" chip didn't say on what
   // (issue #123).
   let waiting = $derived(agent.status === "waiting");
+  // Issue #142: the nightly learnings pass failing night after night.
+  let nightlyFailing = $derived((agent.system_tasks_failing ?? []).includes("learnings"));
 </script>
 
 <div class="agent-card">
@@ -88,7 +90,7 @@
     {description}
   </p>
 
-  {#if agent.group_name || connected}
+  {#if agent.group_name || connected || nightlyFailing}
     <div class="agent-card__tags">
       {#if agent.group_name}
         <span class="agent-card__tag">{agent.group_name}</span>
@@ -99,6 +101,9 @@
            marker until it asks for one. -->
       {#if connected}
         <span class="agent-card__tag agent-card__kind">connected</span>
+      {/if}
+      {#if nightlyFailing}
+        <span class="agent-card__tag agent-card__warn" title="The nightly learnings pass keeps failing. Open the Learnings tab for the error.">learnings failing</span>
       {/if}
     </div>
   {/if}
@@ -265,6 +270,10 @@
     color: var(--muted);
     font-size: 0.7rem;
     white-space: nowrap;
+  }
+
+  .agent-card__warn {
+    color: var(--warn);
   }
 
   /* Pushed to the bottom, so two cards with different amounts to say still
