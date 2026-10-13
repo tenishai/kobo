@@ -393,3 +393,64 @@ def test_list_repo_skills_does_not_cache_a_client_error():
         list_repo_skills(github, REPO, now=1000.0)
 
     assert len(github.cloned) == 2
+
+
+# --- skills.load reaches an agent whose first skill arrives after birth (issue #137) --
+
+
+class _AgentYamlGitHub(_CapturingGitHub):
+    """Clones a repo whose bundle/agent.yaml carries `tools_line`, and
+    captures that file at push time."""
+
+    def __init__(self, tools_line: str | None, **kwargs):
+        super().__init__(**kwargs)
+        self._tools_line = tools_line
+        self.captured_agent_yaml: str | None = None
+
+    def clone(self, repo: str, dest: Path) -> None:
+        super().clone(repo, dest)
+        if self._tools_line is not None:
+            (dest / "bundle").mkdir(parents=True, exist_ok=True)
+            (dest / "bundle" / "agent.yaml").write_text(
+                f"name: agent-x\n{self._tools_line}\nmemory: {{backend: techne}}\n"
+            )
+
+    def commit_push(self, workdir: Path, message: str) -> bool:
+        path = workdir / "bundle" / "agent.yaml"
+        self.captured_agent_yaml = path.read_text() if path.is_file() else None
+        return super().commit_push(workdir, message)
+
+
+def test_save_local_skill_admits_skills_load_in_the_same_commit():
+    github = _AgentYamlGitHub("tools: {provider: none, allow: []}")
+    save_local_skill(github, REPO, "survey-field", SAMPLE_CONTENT)
+    assert github.captured_agent_yaml == (
+        "name: agent-x\ntools: {provider: none, allow: [skills.load]}\nmemory: {backend: techne}\n"
+    )
+    assert len(github.pushes) == 1
+
+
+def test_add_catalog_skill_admits_skills_load():
+    storage = FakeStorage()
+    _seed_catalog_skill(storage, "shared", "survey-field")
+    github = _AgentYamlGitHub(
+        "tools: {provider: colleagues, allow: [colleagues.list_colleagues]}"
+    )
+    add_catalog_skill(github, storage, _config(), REPO, "survey-field", "shared")
+    assert "allow: [colleagues.list_colleagues, skills.load]" in github.captured_agent_yaml
+
+
+@pytest.mark.parametrize("allow", ["[skills.load]", "[\"skills.*\"]", "[\"*\"]"])
+def test_an_allow_list_that_already_admits_it_is_left_byte_identical(allow):
+    line = f"tools: {{provider: none, allow: {allow}}}"
+    github = _AgentYamlGitHub(line)
+    save_local_skill(github, REPO, "survey-field", SAMPLE_CONTENT)
+    assert github.captured_agent_yaml == f"name: agent-x\n{line}\nmemory: {{backend: techne}}\n"
+
+
+def test_a_bundle_without_agent_yaml_still_gets_its_skill(caplog):
+    github = _AgentYamlGitHub(None)
+    with caplog.at_level("WARNING", logger="kobo_api.skills"):
+        save_local_skill(github, REPO, "survey-field", SAMPLE_CONTENT)
+    assert github.captured_skills == {"survey-field/SKILL.md": SAMPLE_CONTENT}
+    assert "skills.load not added" in caplog.text

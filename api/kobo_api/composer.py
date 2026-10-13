@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -1143,6 +1144,41 @@ def update_agent_yaml_colleague_mode(bundle_dir: Path, *, mode: str) -> bool:
     if allow == existing:
         return False
     tools["allow"] = allow
+    _splice_tools_section(agent_yaml_path, text, tools)
+    return True
+
+
+def update_agent_yaml_skills_load(bundle_dir: Path) -> bool:
+    """Make an already-composed `bundle_dir/agent.yaml`'s allow list admit
+    `skills.load`, appending it when no entry matches (issue #137).
+
+    For a skill added after birth (`kobo_api.skills`): compose() adds the
+    tool only for skills the agent was born with, so without this an agent
+    that gets its first skill later boots on daedalus 0.5.0 with the
+    "tools.allow does not admit 'skills.load'" warning and no skills index.
+    Entries are matched as daedalus matches them (fnmatch), so an allow list
+    that already admits it through a pattern is left alone.
+
+    Returns whether the file changed; an allow list that already admits the
+    tool is left untouched byte for byte. Raises `ClientError` when the file
+    is missing, does not parse, or has no tools section.
+    """
+    agent_yaml_path = bundle_dir / "agent.yaml"
+    try:
+        text = agent_yaml_path.read_text()
+    except OSError as exc:
+        raise ClientError(f"agent.yaml not found: {agent_yaml_path}") from exc
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ClientError(f"agent.yaml does not parse: {agent_yaml_path}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("tools"), dict):
+        raise ClientError(f"agent.yaml has no tools section to update: {agent_yaml_path}")
+    tools = data["tools"]
+    allow = list(tools.get("allow") or [])
+    if any(fnmatch(_SKILLS_LOAD_TOOL, str(pattern)) for pattern in allow):
+        return False
+    tools["allow"] = [*allow, _SKILLS_LOAD_TOOL]
     _splice_tools_section(agent_yaml_path, text, tools)
     return True
 

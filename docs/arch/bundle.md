@@ -1,7 +1,7 @@
 ---
 card: arch-card:kobo-bundle
 updated: 2026-10-13
-anchor: api/kobo_api/composer.py sha=4cecb40b77e8e3bf9c4dcd7b5c976175e0bca2d2
+anchor: api/kobo_api/composer.py sha=f81b2ed3eef8069fa53ea21d963e3074665a3843
 anchor: api/kobo_api/vendor/bundle.schema.json sha=51b6e2ef218fb98df539b39783b3628ecc0ce0db
 ---
 # bundle — the daedalus agent bundle kobo writes into each agent repo
@@ -12,7 +12,7 @@ agent.yaml shape (`_agent_yaml_data`): `model.id: ${AGENT_MODEL:-<id>}` (env ove
 Switchboard-dependent parts (all gated on `spec.cabal_url` presence):
 - a2a `auth`: `jwks_url = <cabal_url>/.well-known/jwks.json`, `issuer "cabal-core"`, `audience = <agent name>`. The agent accepts only switchboard-signed calls.
 - `tools.provider: colleagues`, allow `colleagues.{list_colleagues,ask_colleague,remember}`, `token_env: CABAL_COLLEAGUE_TOKEN`; plus five explicit `github.` names via `broker_url` (`open_pr`, the one write, and the reads `list_prs`, `get_pr`, `list_releases`, `read_file`; never a `github.*` glob) and a `liminal` block via `liminal_url` when set. Team-guide archetype gets the colleague trio only.
-- `skills.load` is appended to the allow list of every agent with skills, on every arm (no switchboard, team guide, any colleague mode; issue #137): daedalus 0.5.0 shows the skills index and offers the tool only when the allow list admits it, and older runtimes ignore a name no provider offers. self.md names the tool only for an agent with skills.
+- `skills.load` is appended to the allow list of every agent with skills, on every arm (no switchboard, team guide, any colleague mode; issue #137): daedalus 0.5.0 shows the skills index and offers the tool only when the allow list admits it, and older runtimes ignore a name no provider offers. self.md names the tool only for an agent with skills. A skill added after birth (skills.py `add_catalog_skill`, `save_local_skill`) runs `update_agent_yaml_skills_load` in the same commit, which appends `skills.load` unless an allow entry already matches it by fnmatch; a bundle whose agent.yaml can't be edited still gets the skill, with a warning.
 - Colleague mode (`spec.colleague_mode`, the owner's per-agent setting, issue #131; row `Agent.colleague_mode`, NULL = `default`): `default` is the trio above and the consult-first doctrine in colleagues.md; `roster-only` drops `colleagues.ask_colleague` from the allow list and swaps the three doctrine paragraphs for `_ROSTER_ONLY_DOCTRINE` (say you don't know, name what you'd need, ask your human); `none` drops all three colleague tools and writes no colleagues.md. The provider block, a2a auth and sidecars stay in every mode: github/liminal ride the same colleague pass, and other agents may still ask this one. A change after birth goes through `update_agent_yaml_colleague_mode` (colleague_mode.py `commit_colleague_mode`, route `PUT /api/agents/{name}/colleague-mode`).
 - `approvals.gates: []` when cabal is on; otherwise one `match "*" → plan_approval` gate.
 INVARIANTS:
