@@ -1278,6 +1278,39 @@ def test_sweep_waiting_fails_an_agent_whose_platform_run_failed_while_parked(
     assert "generate_artifacts" in rows["onboard"].error
 
 
+def test_sweep_waiting_syncs_so_a_merge_without_a_webhook_resumes(session_factory, config):
+    # Issue #118: with no webhook the platform's row says awaiting_pr until
+    # someone asks it to look. The sweep asks before it reads.
+    gojira = FakeGojira()
+    gojira.seed_app(7, status="awaiting_pr")
+    gojira.merged_setup_prs = {7}
+    agent_id = _park(session_factory, "agent-no-webhook", 7)
+    launched: list[int] = []
+
+    touched = sweep_waiting(
+        session_factory, config=config, clients=_gojira_clients(gojira),
+        runner=lambda sf, aid, **k: launched.append(aid),
+    )
+
+    assert touched == 1 and launched == [agent_id]
+    assert gojira.calls.index("sync_app:7") < gojira.calls.index("app_status:7")
+
+
+def test_sweep_waiting_reads_status_when_the_sync_call_fails(session_factory, config):
+    gojira = FakeGojira()
+    gojira.seed_app(7, status="active")
+    gojira.sync_error = "sync_app(7) failed (500): boom"
+    agent_id = _park(session_factory, "agent-sync-fails", 7)
+    launched: list[int] = []
+
+    touched = sweep_waiting(
+        session_factory, config=config, clients=_gojira_clients(gojira),
+        runner=lambda sf, aid, **k: launched.append(aid),
+    )
+
+    assert touched == 1 and launched == [agent_id]
+
+
 def test_sweep_waiting_is_a_noop_without_a_platform_client(session_factory, config):
     _park(session_factory, "agent-no-platform", 7)
     assert sweep_waiting(session_factory, config=config, clients=None) == 0

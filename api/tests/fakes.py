@@ -1225,6 +1225,23 @@ class FakeGojira:
         }
         self._next_id = max(self._next_id, app_id + 1)
 
+    def sync_app(self, app_id: int) -> dict:
+        """The platform checking the setup PR itself. An app id in
+        `merged_setup_prs` (set by a test) is one whose PR merged without a
+        webhook telling the platform: its `awaiting_pr` row moves to
+        `active` only here, never on a plain `app_status` read.
+        `sync_error`, when set, raises instead."""
+        self.calls.append(f"sync_app:{app_id}")
+        if getattr(self, "sync_error", None):
+            raise ClientError(self.sync_error)
+        app = self._apps[app_id]
+        changed = app["status"] == "awaiting_pr" and app_id in getattr(
+            self, "merged_setup_prs", set()
+        )
+        if changed:
+            app["status"] = "active"
+        return {"id": app_id, "status": app["status"], "changed": changed}
+
     def reprovision(self, app_id: int) -> None:
         self.calls.append(f"reprovision:{app_id}")
         # Set by a test to model a platform that took the push but will

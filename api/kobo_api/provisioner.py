@@ -887,7 +887,11 @@ def sweep_waiting(
     """Resume every WAITING agent whose setup pull request the platform now
     reports merged; fail the ones whose platform run failed while parked.
 
-    The one question is the platform's: `app_status` for the agent's app.
+    The one question is the platform's: `app_status` for the agent's app,
+    asked after `sync_app` so the platform looks at the pull request itself.
+    Without that, an install with no GitHub webhook never learns of the
+    merge and the agent waits forever (issue #118); with one, the sync is a
+    no-op. A failed sync is logged and the status is read anyway.
     `active` means the merge landed and deploys flow, so the parked step is
     reset and the pipeline runs again from it (`runner`, `run_pipeline` by
     default; a test passes a recorder). `failed` means the platform gave up
@@ -910,6 +914,13 @@ def sweep_waiting(
         for agent in parked:
             if agent.gojira_app_id is None:
                 continue
+            try:
+                clients.gojira.sync_app(agent.gojira_app_id)
+            except Exception:  # noqa: BLE001 - the status read below still answers on a webhook install
+                log.warning(
+                    "sweep_waiting: could not ask the platform to sync app %s for agent %s",
+                    agent.gojira_app_id, agent.name, exc_info=True,
+                )
             try:
                 status_payload = clients.gojira.app_status(agent.gojira_app_id)
             except Exception:  # noqa: BLE001 - one unreachable platform read must not stop the sweep
