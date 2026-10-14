@@ -733,11 +733,17 @@ def fallback_capability(persona_body: str) -> str:
 
 
 def runtime_version(runtime_image: str) -> str:
-    """The card's `version`: the runtime image's tag (`...:0.5.1` -> `0.5.1`),
-    or `sha256:<12 hex>` for a digest-only ref, or `latest` for a bare
-    repository (what a registry resolves it to). The agent's repository has
-    no version of its own, and the runtime build is what changes what an
-    agent can do, so the card names that (issue #147)."""
+    """The card's `version`: the runtime image's tag (`...:0.5.1` -> `0.5.1`,
+    also for `...:0.5.1@sha256:...`), or `sha256:<12 hex>` for a digest-only
+    ref, or `latest` for a bare repository (what a registry resolves it to).
+    The agent's repository has no version of its own, and the runtime build
+    is what changes what an agent can do, so the card names that (issue
+    #147).
+
+    A digest-only ref names no version, and the runtime images set no
+    `org.opencontainers.image.version` label, so the digest prefix is the
+    only honest identifier kobo has without asking the registry (issue
+    #156). Pin `tag@digest` to keep both the exact build and a version."""
     name, _, digest = runtime_image.partition("@")
     last = name.rsplit("/", 1)[-1]
     if ":" in last:

@@ -1071,7 +1071,9 @@ def register(mcp: FastMCP, app: Any) -> None:
         changes the runtime and leaves all three alone.
 
         `runtime_image` must live under the room's own registry root; an
-        image from anywhere else is refused. There is no read tool listing
+        image from anywhere else is refused. Prefer `repo:tag@sha256:...`
+        to a bare digest: the agent's card takes its `version` from the tag,
+        and a bare digest leaves it showing the digest's first 12 hex. There is no read tool listing
         what the room runs, so pass an image you already know and read the
         rejection copy if it is refused. You must own `agent` (or be a room
         operator), and `agent` must be READY.

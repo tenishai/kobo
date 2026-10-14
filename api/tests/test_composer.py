@@ -2083,3 +2083,32 @@ def test_dockerfile_repin_moves_the_cards_runtime_in_the_same_tree(tmp_path):
     card = json.loads((dest / "bundle" / "agent-card.json").read_text())
     assert card["version"] == "0.5.1"
     assert card["metadata"]["runtime_image"] == new_image
+
+
+_DIGEST = "sha256:" + "a0b09334649d" + "0" * 52
+
+
+@pytest.mark.parametrize(
+    ("new_image", "version"),
+    [
+        ("registry.example/agents/daedalus-runtime:0.5.3", "0.5.3"),
+        (f"registry.example/agents/daedalus-runtime@{_DIGEST}", "sha256:a0b09334649d"),
+        (f"registry.example/agents/daedalus-runtime:0.5.3@{_DIGEST}", "0.5.3"),
+    ],
+    ids=["tag", "digest", "tag-and-digest"],
+)
+def test_repinned_card_version_for_each_pin_shape(tmp_path, new_image, version):
+    """Issue #156: what each way of pinning a runtime puts in the card's
+    `version`, end to end through the Dockerfile `FROM` line. A digest-only
+    pin has no name to read, so it gives the digest's prefix; pinning
+    `tag@digest` keeps the exact build and a readable version. The full ref
+    is in `metadata.runtime_image` whichever shape is used."""
+    dest = tmp_path / "out"
+    compose(_make_spec(), dest)
+
+    update_dockerfile_runtime_image(dest / "Dockerfile", new_image)
+
+    card = json.loads((dest / "bundle" / "agent-card.json").read_text())
+    assert card["version"] == version
+    assert card["metadata"]["runtime_image"] == new_image
+    assert f"FROM {new_image}" in (dest / "Dockerfile").read_text()

@@ -34,7 +34,9 @@ github_org: example-org
 # configured, and kobo runs on this file's values alone.
 org_repo: null
 
-# OCI image URI for the daedalus runtime executor
+# OCI image URI for the daedalus runtime executor. To pin an exact build, use
+# repo:tag@sha256:... rather than a bare digest: agent cards take their
+# `version` from the tag.
 runtime_image: registry.example/agents/daedalus-runtime:latest
 
 # Base URL of the Gojira agent orchestrator service
