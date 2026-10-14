@@ -6,8 +6,22 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-14
+
+### Upgrading
+
+- No database migration. The alembic head is still `a8e2c4f6d913` from 0.2.0.
+- Nothing to change. To give a digest-pinned agent's card a readable `version`, re-pin its
+  runtime as `repo:tag@sha256:...` (see Fixed).
+
 ### Fixed
 
+- **A connected agent no longer loops on reformatting pull requests.** `ConnectedWireStep`
+  decided whether there was wiring to propose by rewriting its files and comparing bytes, so
+  a file that already carried the wiring in Gojira's own formatting came back changed. The
+  step opened a pull request of pure reformatting, and Gojira reformatted it back. Both
+  writers now leave a file alone when its parsed content is unchanged (PR #151, issue #123
+  item 11).
 - **The 0.2.1 note on the card's `version` was only true for a tag pin.** `version` is the
   runtime image's tag when the reference has one, including `repo:tag@sha256:...`. A
   digest-only reference names no version, and the runtime images carry no version label, so
