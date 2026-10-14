@@ -1470,10 +1470,16 @@ def _register_resources(kustomization_path, resource_names: list[str]) -> None:
     duplicate entries.
     """
     data = yaml.safe_load(kustomization_path.read_text()) or {}
-    resources = data.get("resources", [])
+    resources = list(data.get("resources", []))
     for resource_name in resource_names:
         if resource_name not in resources:
             resources.append(resource_name)
+    if resources == data.get("resources", []):
+        # Already registered: leave the bytes alone. Re-dumping would strip
+        # the generator's comments and re-indent its lists, and
+        # ConnectedWireStep reads any byte change as wiring to propose
+        # (tenishai/kobo#123 item 11, the wire loop).
+        return
     data["resources"] = resources
     kustomization_path.write_text(yaml.safe_dump(data, sort_keys=False))
 
@@ -1927,10 +1933,17 @@ def _update_connected_gojira_yaml(gojira_yaml_path: Path, agent, config) -> None
     start until the owner creates them, which the connect report says
     plainly.
     """
-    data = yaml.safe_load(gojira_yaml_path.read_text()) or {}
+    text = gojira_yaml_path.read_text()
+    data = yaml.safe_load(text) or {}
     _set_service_account_and_model_env(data, agent, config)
     for secret_name in agent.secret_names or []:
         _append_secrets_from(data, secret_name)
+    if data == (yaml.safe_load(text) or {}):
+        # The file already means this. Keep the owner's bytes (comments,
+        # key order, indentation): a re-dump is a change ConnectedWireStep
+        # would propose, and the deploy platform would then regenerate
+        # against — the loop of tenishai/kobo#123 item 11.
+        return
     gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
