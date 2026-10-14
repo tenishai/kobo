@@ -6,6 +6,18 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-14
+
+### Upgrading
+
+- No database migration. The alembic head is still `a8e2c4f6d913` from 0.2.0.
+- Agent cards change shape. `capabilities` becomes an object (`{}`), not a list, and
+  `version` becomes the runtime image's tag, not `0.1.0`. Anything that reads the card from
+  an agent's repository or from the switchboard and expects a list there needs updating.
+- Existing cards are corrected one at a time, on each agent's next skill change, runtime
+  change, **Edit details** save or other kobo commit that moves `FROM`. The room doesn't
+  rewrite them at boot, because each rewrite is a push and each push redeploys the agent.
+
 ### Fixed
 
 - **An agent's directory card lists its current skills and says what the agent is.** The
