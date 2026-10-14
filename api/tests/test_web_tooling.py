@@ -1089,3 +1089,54 @@ def test_delete_tooling_route_client_error_returns_502(session_factory, config):
 
     assert response.status_code == 502
     assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
+
+
+# --- a fast-lane re-pin re-registers the card (issue #147) ---------------------
+
+
+def _instant_client(session_factory, config, monkeypatch, *, dockerfile_image):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config(config)
+    github = _CapturingGitHub(dockerfile_image=dockerfile_image)
+    fake_cabal = FakeCabal(relay_result={"status": {"state": "completed"}})
+    client = _make_client(
+        session_factory, cfg, github=github, kubectl=FakeKubectl(), cabal=fake_cabal
+    )
+    _seed_agent(session_factory, cfg)
+    return client, fake_cabal
+
+
+def test_tool_upload_that_repins_from_reregisters_the_card(
+    session_factory, config, monkeypatch
+):
+    """The agent row has no runtime of its own (most agents), the clone is on
+    an older image, so the archive commit moves FROM to the room's runtime.
+    The card in that commit names the new runtime, so the switchboard is
+    sent it."""
+    client, fake_cabal = _instant_client(
+        session_factory, config, monkeypatch, dockerfile_image=FAKE_DOCKERFILE_OLD_IMAGE
+    )
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/tooling",
+        json={"filename": "orchestrator.py", "content": VALID_PY},
+    )
+
+    assert response.status_code == 200
+    assert [call["name"] for call in fake_cabal.graduate_calls] == [AGENT_NAME]
+
+
+def test_tool_upload_without_a_repin_leaves_the_directory_alone(
+    session_factory, config, monkeypatch
+):
+    client, fake_cabal = _instant_client(
+        session_factory, config, monkeypatch, dockerfile_image=config.runtime_image
+    )
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/tooling",
+        json={"filename": "orchestrator.py", "content": VALID_PY},
+    )
+
+    assert response.status_code == 200
+    assert fake_cabal.graduate_calls == []

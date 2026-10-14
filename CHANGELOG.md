@@ -13,14 +13,16 @@ All notable changes to kobo are documented here. The format follows
   reached it or the switchboard's copy; every card also said "Assembled by kobo." at version
   0.1.0 (issue #147). The card's skills, description, version and runtime are now derived
   from the repository in the same commit as any skill change, runtime change or **Edit
-  details** save, and the skill and runtime routes re-register the card with the
-  switchboard. Their responses carry `directory` (`synced`, `failed` or `off`); the
-  dashboard doesn't show it yet. The description is the capability sentence, or the persona's
-  first sentence until there is one; `version` is the runtime image's tag; the card's
-  `metadata.runtime_image` names the full image; `capabilities` is `{}`, the object A2A
-  defines, instead of a list. An existing card is corrected by its next
-  such change. A ready agent with no purpose tags shows **no purpose tags** on its
-  dashboard card.
+  details** save, and the switchboard is sent the new card. That includes any kobo commit
+  that moves the Dockerfile's `FROM` (a teach note, intake upload, tool upload or import, or
+  Slack wiring after a room runtime upgrade). The skill and runtime routes' responses carry
+  `directory` (`synced`, `failed` or `off`); the dashboard doesn't show it yet.
+  - The description is the capability sentence, or the persona's first sentence until there
+    is one.
+  - `version` is the runtime image's tag, and `metadata.runtime_image` names the full image.
+  - `capabilities` is `{}`, the object A2A defines, instead of a list.
+  - An existing card is corrected by its next such change.
+  - A ready agent with no purpose tags shows **no purpose tags** on its dashboard card.
 
 ## [0.2.0] - 2026-10-13
 

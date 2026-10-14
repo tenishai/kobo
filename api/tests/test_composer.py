@@ -1963,6 +1963,7 @@ def test_self_md_names_skills_load_only_when_agent_has_skills(tmp_path):
         ("registry.example/agents/daedalus-runtime:0.5.1", "0.5.1"),
         ("registry.example:5000/agents/daedalus-runtime:0b2b44c-t0140", "0b2b44c-t0140"),
         ("registry.example:5000/agents/daedalus-runtime", "latest"),
+        ("localhost:5000/rt", "latest"),
         ("registry.example/agents/daedalus-runtime@sha256:" + "ab" * 32, "sha256:abababababab"),
         ("registry.example/agents/daedalus-runtime:0.5.1@sha256:" + "ab" * 32, "0.5.1"),
     ],

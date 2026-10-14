@@ -1336,16 +1336,24 @@ export async function listSkills(name: string): Promise<AgentSkill[]> {
   return data.skills;
 }
 
+/** Whether a skill or runtime change re-registered the agent's card with
+ * the switchboard (issue #147): `off` when the room has no switchboard. */
+export type DirectorySync = "synced" | "failed" | "off";
+
+/** What the three skill mutations answer with: the pushed commit's sha and
+ * the card's re-registration (issue #147). */
+export type SkillChange = { sha: string; directory: DirectorySync };
+
 /**
  * Picks a skill from the org catalog for this agent (`team`/`skillName`
- * identify it there). Returns the pushed commit's sha, same
- * delivery-tracking shape every other mutation here returns.
+ * identify it there). Returns the pushed commit's sha and whether the
+ * switchboard got the updated card.
  */
 export async function addCatalogSkill(
   name: string,
   skillName: string,
   team: string,
-): Promise<{ sha: string }> {
+): Promise<SkillChange> {
   const res = await fetch(
     `/api/agents/${encodeURIComponent(name)}/skills/catalog`,
     {
@@ -1354,7 +1362,7 @@ export async function addCatalogSkill(
       body: JSON.stringify({ name: skillName, team }),
     },
   );
-  return parse<{ sha: string }>(res);
+  return parse<SkillChange>(res);
 }
 
 /** Removes a skill — catalog pick or local guardrail alike, the server's
@@ -1362,12 +1370,12 @@ export async function addCatalogSkill(
 export async function deleteSkill(
   name: string,
   skillId: string,
-): Promise<{ sha: string }> {
+): Promise<SkillChange> {
   const res = await fetch(
     `/api/agents/${encodeURIComponent(name)}/skills/${encodeURIComponent(skillId)}`,
     { method: "DELETE" },
   );
-  return parse<{ sha: string }>(res);
+  return parse<SkillChange>(res);
 }
 
 /** The current content of one local (guardrail-authored) skill. Never
@@ -1387,7 +1395,7 @@ export async function saveLocalSkill(
   name: string,
   skillId: string,
   content: string,
-): Promise<{ sha: string }> {
+): Promise<SkillChange> {
   const res = await fetch(
     `/api/agents/${encodeURIComponent(name)}/skills/local/${encodeURIComponent(skillId)}`,
     {
@@ -1396,7 +1404,7 @@ export async function saveLocalSkill(
       body: JSON.stringify({ content }),
     },
   );
-  return parse<{ sha: string }>(res);
+  return parse<SkillChange>(res);
 }
 
 /** One `bundle/intake/*` file — a one-shot upload meant to be ingested into
@@ -1707,13 +1715,15 @@ export async function regenerateAgentMetadata(
 }
 
 /** What `PATCH /api/agents/{name}/runtime` answers with: the image the
- * agent runs on now, the one it left, and the commit that re-pinned its
- * Dockerfile. The push IS the deploy -- the agent's own CI rebuilds and
+ * agent runs on now, the one it left, the commit that re-pinned its
+ * Dockerfile, and whether the switchboard got the card naming the new
+ * runtime (issue #147). The push IS the deploy -- the agent's own CI rebuilds and
  * rotates the pod on it -- so there is no second call after this one. */
 export type AgentRuntimeChange = {
   runtime_image: string;
   previous_runtime_image: string | null;
   sha: string;
+  directory: DirectorySync;
 };
 
 /**

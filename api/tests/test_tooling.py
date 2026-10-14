@@ -831,3 +831,46 @@ def test_list_tooling_probes_card_even_when_no_tools_dir():
     )
     assert files == []
     assert enforcement == {"attested": True, "locked": False, "locked_file": None}
+
+
+# --- on_repin (issue #147) -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("clone_image", "expected_calls"), [(FAKE_DOCKERFILE_OLD_IMAGE, 1), (RUNTIME_IMAGE, 0)]
+)
+def test_import_tooling_calls_on_repin_only_when_from_moved(clone_image, expected_calls):
+    calls = []
+    github = FakeGitHub(
+        dockerfile_image=clone_image,
+        tooling_source_files={SOURCE_REPO: {"tools/good_one.py": VALID_PY}},
+    )
+
+    import_tooling(
+        github,
+        REPO,
+        source_repo=SOURCE_REPO,
+        source_path="tools",
+        runtime_image=RUNTIME_IMAGE,
+        on_repin=lambda: calls.append(1),
+    )
+
+    assert len(calls) == expected_calls
+
+
+@pytest.mark.parametrize(
+    ("clone_image", "expected_calls"), [(FAKE_DOCKERFILE_OLD_IMAGE, 1), (RUNTIME_IMAGE, 0)]
+)
+def test_upload_tooling_file_calls_on_repin_only_when_from_moved(clone_image, expected_calls):
+    calls = []
+
+    upload_tooling_file(
+        FakeGitHub(dockerfile_image=clone_image),
+        REPO,
+        "orchestrator.py",
+        VALID_PY,
+        runtime_image=RUNTIME_IMAGE,
+        on_repin=lambda: calls.append(1),
+    )
+
+    assert len(calls) == expected_calls

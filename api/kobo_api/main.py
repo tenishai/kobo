@@ -2724,6 +2724,26 @@ def _runtime_image_for_repo(app, repo: str) -> str:
 
 
 
+def _directory_resync(app, repo: str) -> Callable[[], None]:
+    """The `on_repin` hook every fast-lane commit passes (issue #147): when
+    the commit moved `FROM`, the repo card now names the new runtime, so
+    send it to the switchboard. Nearly every agent follows the org default
+    (`_runtime_image_for_repo`), so after a room runtime upgrade this is the
+    path that carries most agents' cards. Never raises: the commit already
+    landed."""
+
+    def resync() -> None:
+        try:
+            with app.state.session_factory() as session:
+                agent = session.query(Agent).filter_by(repo_full_name=repo).first()
+                if agent is not None:
+                    _sync_directory_best_effort(app.state.clients, app.state.config, agent)
+        except Exception:
+            log.warning("directory resync after re-pin failed for %s", repo, exc_info=True)
+
+    return resync
+
+
 def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> None:
     """The background archive lane. Failure is logged, never surfaced: the
     memory is already stored in the agent; only the repo copy is missing,
@@ -2758,6 +2778,7 @@ def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> No
             note,
             runtime_image=_runtime_image_for_repo(app, repo),
             archive_only=True,
+            on_repin=_directory_resync(app, repo),
         )
     except Exception as exc:
         log.warning(
@@ -2893,6 +2914,7 @@ def _decide_learning(
                 filename,
                 note,
                 runtime_image=agent.runtime_image or cfg.runtime_image,
+                on_repin=_directory_resync(request.app, agent.repo_full_name),
             )
         except (IntakeError, ClientError) as exc:
             log.warning("learning approve archive failed for %s: %s", name, exc)
@@ -6610,6 +6632,7 @@ def create_app(
                 payload.filename,
                 payload.content,
                 runtime_image=agent.runtime_image or cfg.runtime_image,
+                on_repin=_directory_resync(app, agent.repo_full_name),
             )
         except IntakeError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
@@ -6770,6 +6793,7 @@ def create_app(
                 filename,
                 note,
                 runtime_image=agent.runtime_image or cfg.runtime_image,
+                on_repin=_directory_resync(app, agent.repo_full_name),
             )
         except IntakeError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
@@ -6959,6 +6983,7 @@ def create_app(
                 filename,
                 content,
                 runtime_image=_runtime_image_for_repo(app, repo),
+                on_repin=_directory_resync(app, repo),
             )
         except Exception as exc:
             log.warning(
@@ -7132,6 +7157,7 @@ def create_app(
                 payload.filename,
                 payload.content,
                 runtime_image=agent.runtime_image or cfg.runtime_image,
+                on_repin=_directory_resync(app, agent.repo_full_name),
             )
         except ToolingError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
@@ -7168,6 +7194,7 @@ def create_app(
                 source_repo=payload.repo,
                 source_path=payload.path,
                 runtime_image=agent.runtime_image or cfg.runtime_image,
+                on_repin=_directory_resync(app, agent.repo_full_name),
             )
         except ToolingError as exc:
             # Request-shape failures (a malformed owner/repo, a traversal
@@ -7350,6 +7377,7 @@ def create_app(
                 bot_token=payload.bot_token,
                 app_token=payload.app_token,
                 runtime_image=agent.runtime_image or cfg.runtime_image,
+                on_repin=_directory_resync(app, agent.repo_full_name),
                 # None unless the secrets platform's machine lane is
                 # configured, in which case the token delivery rides it
                 # instead of a direct Secret write (kobo_api.sero).

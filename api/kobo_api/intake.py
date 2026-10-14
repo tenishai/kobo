@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import re
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from kobo_api.clients import GitHubClient, KubectlClient, image_tag
@@ -80,6 +81,7 @@ def upload_intake_file(
     *,
     runtime_image: str | None = None,
     archive_only: bool = False,
+    on_repin: Callable[[], None] | None = None,
 ) -> str:
     """Write (or overwrite) `bundle/intake/<filename>` and push it.
 
@@ -160,7 +162,11 @@ def upload_intake_file(
             message = f"kobo: add intake/{filename}{note}"
 
         github.commit_push(workdir, message)
-        return github.local_head(workdir)
+        head = github.local_head(workdir)
+    # The card now names a new runtime (issue #147); the caller re-registers it.
+    if pin_changed and on_repin is not None:
+        on_repin()
+    return head
 
 
 def delete_intake_file(github: GitHubClient, repo: str, filename: str) -> str:
