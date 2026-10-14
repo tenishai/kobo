@@ -105,6 +105,26 @@ MCP tools `kobo_list_agent_secrets`, `kobo_set_agent_secrets`, `kobo_set_agent_e
 now removes its stored secrets too, both the cluster objects and the paths, which closes the gap
 this section used to name.
 
+**Upgrading**: the room runs `alembic upgrade head` at boot. Read the release's Upgrading
+section in `CHANGELOG.md` first, and back up the database before any release that adds a
+migration (0.2.0 was the first to add one after the 0.1.0 tag). A version from before a migration won't start on the migrated
+database; restore the backup, or run the `alembic downgrade` the Upgrading section names.
+
+**Switchboard**: the room relays chat, teach, threads and the learnings sweep through the
+switchboard (cabal) when three things are set: `cabal_url` and `agent_endpoint_template` in
+`org.yaml`, and `CABAL_OPERATOR_TOKEN` in the room's environment. Mint the token with
+`cbl token mint-service --sub service:kobo --scope operator --aud cabal-core` and put it in a
+Secret the room's deployment reads with `envFrom` (the deploy contract names it `kobo-cabal`).
+With any of the three missing, the colleagues feed and directory sync routes, and the `kobo_feed` MCP tool, refuse with a message that names all three.
+
+**Learnings**: the nightly learnings pass (one replica per round, under its advisory lock)
+records each run in `agent_system_tasks`. `system_task_flag_after` (default 3) failures in a row
+mark the agent **learnings failing** on its card; a success clears it. By default a candidate
+that names nobody is held for a second confirmation; set `learnings_require_attribution: true` to
+drop it instead. Do that only once every agent runs daedalus 0.5.1 or later (the release with
+daedalus issue #165, which marks turns from the room's chat as `user`), or everything taught
+through the room's chat is dropped too.
+
 **Org wiring**: a room serves one org. The org's config repo carries `org.yaml` — catalogs,
 models, groups, admin groups, the runtime pin — cloned at boot and merged over local defaults.
 The bootstrap CLI stands up a new org (config repo, buckets, seeded personas) idempotently.

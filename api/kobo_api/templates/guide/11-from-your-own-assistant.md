@@ -36,7 +36,7 @@ Run it:
 - **request colleague**, **accept invite**: the cross-group handshake.
 - **request repo access**, **list repo access**: pull request permissions, decided by an operator.
 
-Operators only: **move agent** between groups, **decide repo access**, and **set runtime image**.
+Operators only: **move agent** between groups and **decide repo access**. An agent's owner or an operator can **set runtime image**.
 
 ## What it will not do
 

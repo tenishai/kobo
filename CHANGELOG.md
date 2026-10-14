@@ -116,7 +116,37 @@ All notable changes to kobo are documented here. The format follows
   answers with, so a redirected name counts as free, which GitHub allows a new repository
   to take.
 
+### Changed
+
+- The generated deploy workflow passes `AR_TOKEN` to the image build as a BuildKit secret
+  instead of a build argument, which the build log printed (PR #145).
+
 ## [0.1.0] - 2026-10-12
+
+The first tagged release, `0.1.0`, is the room as the README describes it: create, connect,
+chat and teach, memory, colleagues and threads, access, Slack, the agent page, personas and the
+MCP surface. Everything before the tag is in the git history and in the design record under
+[docs/superpowers/](docs/superpowers/). The entries below cover the changes after this
+changelog started (PR #103).
+
+### Added
+
+- **Colleague mode, set per agent by its owner** (PR #132). `default` is unchanged: the agent
+  has the colleague tools and is told to consult colleagues first. `roster-only` keeps the
+  roster as knowledge but drops `ask_colleague`, and the agent answers from its own tools and
+  memory and asks its human when those fall short. `none` removes the colleague tools and the
+  roster. Other agents can still ask the agent in every mode. An owner sets it on the Harness
+  tab, through the API or with `kobo_set_colleague_mode`; each change is logged with who
+  made it and what it was before.
+- **Slack wake modes** (PR #111). Each agent wakes on mentions only, on a mention and then the
+  rest of that thread (the default for new agents), or on every message in the channel. A
+  direct message always reaches it, and the agent is told its own setting.
+- **DCO sign-off is checked on every pull request** (PRs #106 and #112). Authors with write
+  access to the repository are exempt; CONTRIBUTING.md says how to sign off.
+- **How this was built and the AI-tools policy** in the README and CONTRIBUTING.md, and a test
+  that fails if a CI job on a self-hosted runner loses its fork guard (PR #120).
+- A quickstart that runs from a clean clone, community files (code of conduct, support,
+  issue and pull request templates, CODEOWNERS) and this changelog, ahead of going public.
 
 ### Changed
 
@@ -126,19 +156,15 @@ All notable changes to kobo are documented here. The format follows
   `sero_namespace`; the org keys are `noto_url`, `noto_project`; the module is
   `kobo_api.sero`. The old key names are still honoured, each with a boot WARNING,
   so no running room changes behaviour before its config files catch up.
-
-The first tagged release, `0.1.0`, is the room as the README describes it: create, connect,
-chat and teach, memory, colleagues and threads, access, Slack, the agent page, personas and the
-MCP surface. Everything before the tag is in the git history and in the design record under
-[docs/superpowers/](docs/superpowers/).
-
-### Added
-
-- A quickstart that runs from a clean clone, community files (code of conduct, support,
-  issue and pull request templates, CODEOWNERS) and this changelog, ahead of going public.
-
-### Changed
-
+- **The API package is published as `tenish-kobo`** (PR #113). The import package
+  (`kobo_api`) and the deployment name are unchanged.
+- **The deploy contract names the switchboard token.** The room reads `CABAL_OPERATOR_TOKEN`
+  from a Secret named `kobo-cabal` (PR #122), and Gojira now binds the room's ServiceAccount to
+  the `kobo-room` ClusterRole through `cluster_roles` (PR #116); `k8s/cluster/rbac.yaml` keeps
+  only the ClusterRole.
+- The README's claims are narrowed to what the code does (PR #128).
+- CI runs the architecture-card check, Dependabot leaves semver-major bumps to a person, and
+  SQLAlchemy is held below 2.1 (PRs #108 and #114).
 - `docs/superpowers/` carries a README saying the specs and plans are a historical record,
   not a description of the room today.
 - CI installs from the committed `api/uv.lock` with `uv sync --locked`.

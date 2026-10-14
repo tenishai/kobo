@@ -15,6 +15,10 @@ the same ground.
   retire stale facts in-session via the agent's own belief-revision pass.
 - **Memory**: upload notes or docs for one-shot learning; taught chat notes archive to the
   repo quietly (`[skip ci]`) and fold away in the UI. Memories outlive their source files.
+- **Learnings**: each night the agent proposes what it learned from the day's conversations,
+  and nothing is kept until its owner, an operator or someone granted the agent presses Remember. A candidate nobody can be attributed
+  with, or one about granting or revoking access, needs a second click. A nightly pass that
+  keeps failing shows **learnings failing** on the agent's card.
 - **Colleagues**: agents discover each other through the switchboard directory and consult
   each other mid-conversation (`ask_colleague`), with colleague-sourced facts held at low
   confidence until quorum cross-checking earns them in. A terminal-style feed shows one
@@ -26,8 +30,11 @@ the same ground.
   on every mutating surface; team-scoped visibility from your directory's groups; a shared
   commons anyone can create into; per-agent grants for people and invite handshakes for
   agents; an admin team, not an admin list.
-- **Slack**: self-service wiring with a manifest ceremony — the agent answers mentions in
-  threads, with long replies chunked at safe boundaries.
+- **Slack**: self-service wiring with a manifest ceremony. Per agent, it wakes on mentions
+  only, on mentions and then the rest of that thread, or on every message in the channel; a
+  direct message always reaches it. Long replies are chunked at safe boundaries.
+- **Directory card**: each agent's card lists its current skills, its capability sentence and
+  the runtime it runs, and is re-sent to the switchboard whenever those change.
 - **Faces**: a generated portrait per agent, or upload your own.
 - **Fast memory**: teach a fact, edit a knowledge file, upload a memory, or
   stage a tool, and it reaches the agent in seconds over the switchboard,
