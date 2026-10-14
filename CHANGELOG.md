@@ -14,10 +14,11 @@ All notable changes to kobo are documented here. The format follows
   0.1.0 (issue #147). The card's skills, description, version and runtime are now derived
   from the repository in the same commit as any skill change, runtime change or **Edit
   details** save, and the skill and runtime routes re-register the card with the
-  switchboard. They return `directory` (`synced`, `failed` or `off`), so a failed
-  re-registration is visible. The description is the capability sentence, or the persona's
+  switchboard. Their responses carry `directory` (`synced`, `failed` or `off`); the
+  dashboard doesn't show it yet. The description is the capability sentence, or the persona's
   first sentence until there is one; `version` is the runtime image's tag; the card's
-  `metadata.runtime_image` names the full image. An existing card is corrected by its next
+  `metadata.runtime_image` names the full image; `capabilities` is `{}`, the object A2A
+  defines, instead of a list. An existing card is corrected by its next
   such change. A ready agent with no purpose tags shows **no purpose tags** on its
   dashboard card.
 

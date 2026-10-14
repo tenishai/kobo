@@ -757,7 +757,10 @@ def _agent_card(spec: BundleSpec) -> dict:
         "name": spec.name,
         "description": spec.capability or fallback_capability(spec.persona_body),
         "version": runtime_version(spec.runtime_image),
-        "capabilities": [],
+        # A2A's AgentCapabilities is an object of protocol feature flags
+        # (streaming, push_notifications, state_transition_history); these
+        # agents declare none, so it is empty, never a list (issue #147).
+        "capabilities": {},
         "skills": _card_skills([skill.id for skill in spec.skills]),
         # Persona metadata (Task 3): baked in at compose time so every agent
         # card carries this block from birth — `capability` starts empty
@@ -1048,6 +1051,8 @@ def refresh_agent_card(bundle_dir: Path) -> bool:
       of `bundle/persona.md`. A card with neither keeps its description.
     - `version` and `metadata.runtime_image`: from the Dockerfile's FROM line
       (`runtime_version`). A repo without a readable FROM keeps both.
+    - `capabilities`: an empty list (the pre-#147 bake) becomes `{}`, the
+      object shape A2A defines.
 
     Every other field survives byte-faithfully. Returns whether the card
     changed. Callers run it in the same clone as the change that moves one
@@ -1061,6 +1066,8 @@ def refresh_agent_card(bundle_dir: Path) -> bool:
         return False
     card = json.loads(before)
     card["skills"] = _card_skills(_bundle_skill_ids(bundle_dir))
+    if card.get("capabilities") == []:
+        card["capabilities"] = {}
     metadata = dict(card.get("metadata") or {})
     capability = metadata.get("capability") or ""
     if capability:

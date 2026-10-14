@@ -694,7 +694,7 @@ def test_compose_agent_card_lists_picked_skills(tmp_path):
         "name": "sam",
         "description": "You are sam, a helpful assistant",
         "version": "latest",
-        "capabilities": [],
+        "capabilities": {},
         "skills": [{"id": "echo"}],
         "metadata": {
             "team": "shared",
@@ -2042,6 +2042,7 @@ def test_refresh_agent_card_repairs_an_old_placeholder_card(tmp_path):
     assert card["description"] == "You are sam, a helpful assistant"
     assert card["version"] == "latest"
     assert card["skills"] == []
+    assert card["capabilities"] == {}
     assert card["metadata"]["runtime_image"] == _RUNTIME_IMAGE
     assert card["extra"] == 1
 

@@ -406,9 +406,11 @@ class FakeGitHub:
     knob-gated file below it), since every real agent repo has had one
     since it was first composed (`kobo_api.composer.compose` always writes
     it). Defaults to `None`, in which case `clone` writes a card shaped
-    exactly like `kobo_api.composer._agent_card`'s own baked default (empty
-    skills, `metadata: {"team": None, "purpose_tags": [], "capability":
-    ""}`) — this is what `kobo_api.metadata.commit_card_metadata`'s tests
+    like the one `kobo_api.composer._agent_card` baked before issue #147
+    (placeholder description and version, `capabilities: []`, empty skills,
+    `metadata: {"team": None, "purpose_tags": [], "capability": ""}`), so
+    every write that refreshes the card is also exercised against an old
+    card. This is what `kobo_api.metadata.commit_card_metadata`'s tests
     (and every step/route test whose HelloStep tail or PATCH/Regenerate
     call reaches `update_agent_card_metadata`) clone and edit in place.
 
