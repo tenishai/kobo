@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-provisioning
-updated: 2026-10-12
+updated: 2026-10-14
 anchor: api/kobo_api/provisioner.py sha=193dbadafb88121f5a79ba12908f94079e954872
-anchor: api/kobo_api/steps.py sha=e7aac295744b034bbda3d0836f319ccfe8108f2f
+anchor: api/kobo_api/steps.py sha=ed0f8c7d7608ba3766f181c466a3279fa77429e8
 ---
 # provisioning — the Create → running-agent step engine
 
@@ -22,6 +22,7 @@ INVARIANTS:
 - repo/onboard steps re-check the outside world and refuse to adopt a same-named repo/app the row did not record (steps.py module docstring).
 - BuildStep polls `runs_for_commit(head)` re-resolved each poll (gojira's setup PR auto-merges mid-provision), with one auto-rerun per watched sha for any non-success conclusion.
 - AvatarStep never fails the pipeline (raises `StepSkipped`).
+- ConnectedWireStep tells "wiring to propose" from "already wired" by the *meaning* of its three files, not their bytes: `_register_resources` and `_update_connected_gojira_yaml` return without writing when the parsed document is unchanged, so a file formatted the generator's way (comments, two-space lists) is not a change. Re-dumping it was the wire loop with gojira's regeneration (#123 item 11, PR #151).
 - Engine-level failures (workdir, commit, missing row) mark the agent FAILED directly; they have no step boundary to resume from.
 CONSUMERS: api/kobo_api/main.py (`POST /api/agents`, `/api/agents/connect`, `/api/agents/{name}/retry` call `run_pipeline(..., steps=pipeline_for(agent))` in role `all`, and only set PENDING otherwise; `build_default_app` calls `sweep_interrupted`, `_room_lifespan` runs `interrupted_sweep_loop`); api/kobo_api/mcp/tools/write.py (`kobo_create_agent` calls the create route function directly); tests/test_engine.py (toy steps, two-real-process claim test), tests/test_steps.py, tests/test_api_agents.py (end-to-end with fakes), tests/test_connected_pipeline.py.
 API: `run_pipeline(session_factory, agent_id, *, config, clients, steps) -> Thread`; `reset_failed_steps(session, agent_id)`; `sweep_interrupted(session_factory, *, now=None, queue_mode=False) -> int`; `claim_queued(session_factory, *, limit, now) -> list[int]`; `queue_tick(...) -> int`; `drain_pipelines(app, *, timeout_s) -> int`; `pipeline_for(agent)`; `STEP_LABELS` (UI checklist vocabulary, union of both lists).
