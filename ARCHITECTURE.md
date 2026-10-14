@@ -30,7 +30,7 @@ SEAMS → card:
 - (uncarded) sero.py — secrets-platform machine lane (per-agent secrets; no fallback to direct Secret write by design)
 - (uncarded) agent_env.py — per-agent Secrets & env panel: `<agent>-env` Secret, gojira.yaml `secrets_from`/env edits
 - (uncarded) destroy.py — teardown stages (gojira delete, directory absorb, pass revoke, GSA, secrets)
-- (uncarded) knowledge.py / teach.py / intake.py / learnings.py — memory lanes: fast teach over the switchboard + background `[skip ci]` archive to bundle/intake; nightly learnings sweep (Postgres advisory lock)
+- (uncarded) knowledge.py / teach.py / intake.py / learnings.py — memory lanes: fast teach over the switchboard + background `[skip ci]` archive to bundle/intake; nightly learnings sweep (Postgres advisory lock); each run per agent recorded in `agent_system_tasks` (`record_system_task`, flagged after `system_task_flag_after` failures); candidates screened by `is_identity_only` and `learning_concerns` (unattributed, access_change), flagged rows need `confirm`
 - (uncarded) search.py / catalog.py / marketplace.py / skills.py / tooling.py / personas.py — catalogs (FTS over GCS indexes), skills/tooling marketplaces, persona store
 - (uncarded) models.py + migrations/: the tables; the alembic chain is the schema of record on Postgres
 - (uncarded) mcp/ — OAuth 2.1 AS (Google OIDC + PKCE), own JWTs, refresh-token families, audit log, per-replica rate limit, tools in mcp/tools/{read,write}.py

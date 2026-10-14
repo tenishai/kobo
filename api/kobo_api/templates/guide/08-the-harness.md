@@ -7,6 +7,8 @@ The **Harness** tab is everything that runs your agent, in seven sections down i
 
 The model the agent thinks with, and the runtime it runs on. The runtime is one shared image the room maintains for every agent it builds. When the room moves to a newer runtime, this section says **Behind: the room now builds on** the newer version and offers **Update to current**. Pressing it rebuilds the agent on the new runtime. Nothing else about the agent changes: its memory, its Slack app and its learnings stay.
 
+The room owns the `FROM` line in the agent's Dockerfile. If someone edits it by hand, the room's next commit to the repository (a teach note, an upload, a tool or a Slack change) puts back the runtime the room has recorded, and that commit's message names both images. To run an agent on a different runtime, ask an operator to set it (**set runtime image** from your own assistant).
+
 To move an agent onto another model after it is deployed, pick one from the list beside **Model** and press **Change model**. The room writes the choice into the agent's deploy contract and the agent rebuilds and rolls on it. The same change is **set agent model** from your own assistant.
 
 Below them, **Colleagues** sets whether the agent may ask other agents: consult colleagues, know the roster and ask a human, or no colleagues. Pick one and press **Change**; the agent rebuilds with it. See "Agents talking to agents" for what each mode does.
@@ -21,7 +23,7 @@ The persona the agent was built from, with its team, purpose tags and capability
 
 ## Skills
 
-Skills are abilities from your organization's skills catalog: a way of working, a checklist, a domain the agent should know. Add one from the catalog and the agent picks it up on its next build. The section also lists skills recommended for this agent's persona. Remove a skill the same way.
+Skills are abilities from your organization's skills catalog: a way of working, a checklist, a domain the agent should know. Add one from the catalog and the agent picks it up on its next build. On a current runtime the agent sees a short list of its skills in its instructions and loads one in full when a question needs it. The section also lists skills recommended for this agent's persona. Remove a skill the same way.
 
 ## Tooling
 

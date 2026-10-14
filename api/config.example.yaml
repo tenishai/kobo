@@ -114,6 +114,16 @@ skills_publish_external: false
 cabal_url: null
 agent_endpoint_template: null
 
+# Nightly learnings. learnings_require_attribution true drops a candidate
+# that names nobody instead of queueing it for a second confirmation. Leave
+# it false until every agent runs daedalus 0.5.1 or later, which marks turns
+# from the room's chat as "user"; on an older runtime everything taught
+# through the room's chat arrives unattributed and would be dropped too.
+# system_task_flag_after is how many failed nightly passes in a row mark an
+# agent "learnings failing" on its card.
+learnings_require_attribution: false
+system_task_flag_after: 3
+
 # Base URL this kobo API instance is reachable at (bootstrap CLI / org
 # status, Task 3+) — describes this machine, not anything org-supplied.
 api_base_url: http://127.0.0.1:8100
