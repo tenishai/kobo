@@ -6,6 +6,15 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The 0.2.1 note on the card's `version` was only true for a tag pin.** `version` is the
+  runtime image's tag when the reference has one, including `repo:tag@sha256:...`. A
+  digest-only reference names no version, and the runtime images carry no version label, so
+  its card shows the digest's first 12 hex (`sha256:a0b09334649d`). To keep an exact build
+  and a readable version, pin `tag@digest`, for the room's default and for **set runtime
+  image** alike. The full reference stays in `metadata.runtime_image` (issue #156).
+
 ## [0.2.1] - 2026-10-14
 
 ### Upgrading
