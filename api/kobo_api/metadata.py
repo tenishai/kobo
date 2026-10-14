@@ -14,8 +14,9 @@ together (HelloStep's tail, and the PATCH/regenerate routes in kobo_api.main):
   answered with the fallback tier instead; this function never raises.
 - `commit_card_metadata`: the delivery half — clone the agent's repo, edit
   its `agent-card.json`'s `metadata` block in place
-  (`kobo_api.composer.update_agent_card_metadata`, byte-faithful to every
-  other field), commit, and push. Unlike generation, a delivery failure here
+  (`kobo_api.composer.update_agent_card_metadata`, which also re-derives the
+  card's skills, description, version and runtime from the repo; every
+  other field survives byte-faithfully), commit, and push. Unlike generation, a delivery failure here
   IS the caller's to handle (HelloStep logs and leaves the card uncommitted;
   the PATCH/regenerate routes answer 502) — this raises `ClientError` same as
   every other GitHub-backed helper in this codebase, never swallowed here.

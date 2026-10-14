@@ -3,8 +3,8 @@ delists agents in the switchboard (cabal)'s directory.
 
 Two small functions, shared by every caller that needs to touch the
 directory (`kobo_api.steps.DirectoryStep`, `kobo_api.destroy`'s
-`_destroy_directory` stage, the metadata PATCH/regenerate tails, and the
-on-demand sync route in `kobo_api.main`) so none of them re-derives the same
+`_destroy_directory` stage, the metadata PATCH/regenerate tails, the skill
+and runtime-image routes, and the on-demand sync route in `kobo_api.main`) so none of them re-derives the same
 "how do I read a card" or "how do I delist an agent" logic independently and
 risks the copies drifting apart.
 
