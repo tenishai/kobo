@@ -19,6 +19,7 @@ green and undoes itself in production.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -100,7 +101,7 @@ def config(tmp_path):
     return Config(workdir=tmp_path / "work", personas_bucket=PERSONAS_BUCKET)
 
 
-def _make_client(session_factory, config, *, github=None):
+def _make_client(session_factory, config, *, github=None, cabal=None):
     storage = FakeStorage()
     seed_default_personas(storage, bucket=PERSONAS_BUCKET)
     return TestClient(
@@ -115,7 +116,7 @@ def _make_client(session_factory, config, *, github=None):
                 kubectl=FakeKubectl(),
                 storage=storage,
                 name=FakeName(),
-                cabal=FakeCabal(),
+                cabal=cabal if cabal is not None else FakeCabal(),
             ),
         )
     )
@@ -385,3 +386,37 @@ def test_the_agent_list_keeps_its_shape(session_factory, config):
 
     assert "runtime_image" not in row
     assert "room_runtime_image" not in row
+
+
+def test_patch_runtime_names_the_new_runtime_on_the_card_and_reregisters(
+    session_factory, config, monkeypatch
+):
+    """Issue #147: the card names the runtime, so the commit that moves FROM
+    moves the card with it, and the switchboard is sent the new card."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": "http://agent-{name}.default.svc.cluster.local",
+        }
+    )
+
+    class _CardGitHub(FakeGitHub):
+        def commit_push(self, workdir: Path, message: str) -> bool:
+            self.card = json.loads((workdir / "bundle" / "agent-card.json").read_text())
+            return super().commit_push(workdir, message)
+
+    github = _CardGitHub()
+    cabal = FakeCabal()
+    client = _make_client(session_factory, cfg, github=github, cabal=cabal)
+    _seed_agent(session_factory, cfg, runtime_image=cfg.runtime_image)
+
+    response = client.patch(
+        f"/api/agents/{AGENT_NAME}/runtime", json={"runtime_image": OTHER_RUNTIME}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["directory"] == "synced"
+    assert github.card["version"] == "v9"
+    assert github.card["metadata"]["runtime_image"] == OTHER_RUNTIME
+    assert [call["name"] for call in cabal.graduate_calls] == [AGENT_NAME]

@@ -21,6 +21,10 @@ Consent is enforced on the wire, not on the page. An agent cannot reach a collea
 
 In the default colleague mode, ask your agent something outside its own knowledge and it may consult a colleague and fold the answer into its reply, saying who it asked. Each agent carries a colleague pass the room issues at build time, so the switchboard always knows who is calling. The pass is replaced on every rebuild and withdrawn when the agent is destroyed.
 
+## What colleagues see
+
+Colleagues find an agent by its directory card: its capability sentence, its skills, its purpose tags and the runtime it runs. The card is rewritten whenever its skills or runtime change or you save **Edit details**, and the switchboard is sent the new copy. An older card is corrected by the next of those changes. A ready agent with no purpose tags shows **no purpose tags** on its dashboard card; add some with **Edit details** so colleagues can tell what it is for.
+
 ## Colleague mode
 
 Each built agent has a colleague mode. Its owner, or a room operator, sets it on the agent's **Harness** tab: pick one from the list beside **Colleagues** and press **Change**. From your own assistant it is **set colleague mode**. The agent rebuilds and rolls with the new mode, the same as a model change. A connected agent has no colleague mode, because it brings its own harness.

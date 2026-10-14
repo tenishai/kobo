@@ -350,6 +350,7 @@ def test_commit_card_metadata_writes_expected_metadata_block(tmp_path):
         "team": "acme-team",
         "purpose_tags": ["billing", "support"],
         "capability": "Helps customers.",
+        "runtime_image": "registry.example/agents/daedalus-runtime:old",
     }
     # Every other field survived — proof the whole card wasn't replaced.
     assert captured["name"] == "clio"
@@ -378,8 +379,11 @@ def test_commit_card_metadata_preserves_unknown_card_fields(tmp_path):
 
     commit_card_metadata(github, REPO, team="acme-team", purpose_tags=[], capability="Helps.")
 
-    assert captured["card"]["skills"] == [{"id": "echo"}]
     assert captured["card"]["a_future_field"] == {"nested": True}
+    # Skills are derived from bundle/skills/, not preserved (issue #147):
+    # this fake repo has no skill directories, so a card that claimed one
+    # is corrected.
+    assert captured["card"]["skills"] == []
 
 
 def test_commit_card_metadata_raises_client_error_on_clone_failure():

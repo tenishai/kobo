@@ -1651,7 +1651,7 @@ def _room_may_commit_to_repo(app: FastAPI, repo: str) -> bool:
     return True
 
 
-def _sync_directory_best_effort(clients: Clients, config: Config, agent: Agent) -> None:
+def _sync_directory_best_effort(clients: Clients, config: Config, agent: Agent) -> str:
     """Best-effort switchboard resync after a directory-metadata edit (the
     PATCH and Regenerate routes below, right after their own
     `commit_card_metadata` call succeeds) — colleagues switchboard plan,
@@ -1664,17 +1664,24 @@ def _sync_directory_best_effort(clients: Clients, config: Config, agent: Agent) 
     already committed by the time either caller reaches this call, and a
     directory hiccup must not turn an otherwise-successful PATCH/regenerate
     into an error response, nor roll back what was already saved.
+
+    Also runs after a skill or runtime-image change (issue #147), whose
+    commits rewrite the card. Returns `"off"`, `"synced"` or `"failed"`,
+    which those routes pass back as `directory` so a caller can see that the
+    switchboard still serves the old card.
     """
     if not cabal_enabled(config):
-        return
+        return "off"
     try:
         sync_directory(clients.github, clients.cabal, config, agent)
     except Exception:
         log.warning(
-            "directory sync failed for agent %s after a metadata update",
+            "directory sync failed for agent %s after a card update",
             agent.name,
             exc_info=True,
         )
+        return "failed"
+    return "synced"
 
 
 # The plain 409 detail every switchboard-gated route returns, including
@@ -6345,7 +6352,10 @@ def create_app(
         ]
         session.commit()
 
-        return JSONResponse({"sha": commit_sha})
+        # The push rewrote the card's skills (issue #147); the switchboard
+        # serves its own copy, so register the new one.
+        directory = _sync_directory_best_effort(app.state.clients, app.state.config, agent)
+        return JSONResponse({"sha": commit_sha, "directory": directory})
 
     @app.delete("/api/agents/{name}/skills/{skill_id}")
     def delete_skill(
@@ -6389,7 +6399,8 @@ def create_app(
         agent.skills = [entry for entry in agent.skills if entry["name"] != skill_id]
         session.commit()
 
-        return JSONResponse({"sha": sha})
+        directory = _sync_directory_best_effort(app.state.clients, app.state.config, agent)
+        return JSONResponse({"sha": sha, "directory": directory})
 
     @app.get("/api/agents/{name}/skills/local/{skill_id}")
     def get_local_skill(
@@ -6474,7 +6485,8 @@ def create_app(
         ]
         session.commit()
 
-        return JSONResponse({"sha": sha})
+        directory = _sync_directory_best_effort(app.state.clients, app.state.config, agent)
+        return JSONResponse({"sha": sha, "directory": directory})
 
     # --- Intake (Task 3): one-shot memory upload files + ingest status ----------
     #
@@ -8444,8 +8456,15 @@ def create_app(
             )
 
         session.commit()
+        # The card names the runtime (issue #147), and the commit moved it.
+        directory = _sync_directory_best_effort(app.state.clients, app.state.config, agent)
         return JSONResponse(
-            {"runtime_image": runtime_image, "previous_runtime_image": previous, "sha": sha}
+            {
+                "runtime_image": runtime_image,
+                "previous_runtime_image": previous,
+                "sha": sha,
+                "directory": directory,
+            }
         )
 
     # --- Colleague mode (issue #131): may this agent consult its colleagues --

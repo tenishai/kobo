@@ -658,7 +658,9 @@ def test_repo_step_threads_team_and_purpose_tags_into_baked_card(
         "team": "acme-team",
         "purpose_tags": ["billing", "support"],
         "capability": "",
+        "runtime_image": card["metadata"]["runtime_image"],
     }
+    assert card["metadata"]["runtime_image"]
 
 
 def test_repo_step_defaults_team_to_shared_when_row_team_is_none(

@@ -1,7 +1,7 @@
 ---
 card: arch-card:kobo-bundle
 updated: 2026-10-13
-anchor: api/kobo_api/composer.py sha=80a0fc791945a04a65003c6056d7f9b53f8f644d
+anchor: api/kobo_api/composer.py sha=29423e157ecd2c8e1b2e5dd984b57e970a79ca2f
 anchor: api/kobo_api/vendor/bundle.schema.json sha=51b6e2ef218fb98df539b39783b3628ecc0ce0db
 ---
 # bundle — the daedalus agent bundle kobo writes into each agent repo
@@ -22,6 +22,7 @@ INVARIANTS:
 - Exactly one `FROM` line in the Dockerfile, even with litestream. WHY: `update_dockerfile_runtime_image` (runtime re-pin, used by runtime.py, tooling.py, intake.py, slack_setup.py) rewrites only the first `FROM` match, so with a second `FROM` the re-pin could hit the wrong stage. It returns the image it replaced (`None` when already current), and the incidental callers (tooling, intake, Slack) name such a re-pin in their commit message and the log via `repin_commit_note` (issue #140): the agents row is the authority, so a hand-edited `FROM` is put back, but never silently.
 - `team` ≠ `group`: `team` is the skills-catalog axis (card `metadata.team`), `group` the ACL namespace (self.md only). Never conflate.
 - agent-card.json `metadata.capability` starts `""`; HelloStep earns it and `commit_card_metadata` (metadata.py) writes it. The switchboard directory reads the card from the repo, so the repo is the source of truth for it.
+- The card's `skills`, `description`, `version` and `metadata.runtime_image` are derived, never edited by hand (issue #147): `refresh_agent_card` reads them from `bundle/skills/`, `metadata.capability` (else persona.md's first sentence) and the Dockerfile `FROM` (`runtime_version` = the image tag). Every write that moves an input runs it in the same clone: skills.py's three mutations, `update_agent_card_metadata`, and `update_dockerfile_runtime_image` when it changes `FROM`. The skill and runtime routes then re-register the card with the switchboard (`_sync_directory_best_effort`, best effort, reported as `directory`). An old card is corrected by the next such write, not at boot.
 - Skill materialization rejects symlinks and paths escaping `dest` (`_materialize_skill` raises `ComposeError`).
 - The approvals `ceiling.write: false` is never loosened by the cabal gate change; a write-capable tool must add its own gate.
 CONSUMERS: api/kobo_api/steps.py (RepoStep `compose`/`validate_agent_yaml`, `_self_md`/`_colleagues_md` for roster refresh), api/kobo_api/colleague_mode.py (`update_agent_yaml_colleague_mode`), api/kobo_api/runtime.py + tooling.py + intake.py + slack_setup.py (`update_dockerfile_runtime_image`), api/kobo_api/colleagues.py (`CABAL_COLLEAGUE_TOKEN_ENV`), api/tests/test_composer.py (incl. optional real-daedalus load via `pytest.importorskip("daedalus")`). Cross-repo: daedalus runtime loads this bundle at /bundle; gojira builds and deploys the repo.
