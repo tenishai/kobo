@@ -759,3 +759,20 @@ def test_render_manifest_thread_and_channel_modes_subscribe_channel_messages():
         render_manifest("echo", "x", wake="channel")["oauth_config"]
         == render_manifest("echo", "x")["oauth_config"]
     )
+
+
+# --- on_repin (issue #147) -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("clone_image", "expected_calls"), [(FAKE_DOCKERFILE_OLD_IMAGE, 1), (RUNTIME_IMAGE, 0)]
+)
+def test_wire_slack_calls_on_repin_only_when_from_moved(clone_image, expected_calls):
+    calls = []
+
+    _wire(
+        github=_CapturingGitHub(dockerfile_image=clone_image),
+        on_repin=lambda: calls.append(1),
+    )
+
+    assert len(calls) == expected_calls

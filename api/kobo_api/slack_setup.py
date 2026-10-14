@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import yaml
@@ -315,6 +316,7 @@ def wire_slack(
     runtime_image: str,
     sero: SeroClient | None = None,
     acting_email: str | None = None,
+    on_repin: Callable[[], None] | None = None,
 ) -> str:
     """Deliver `bot_token`/`app_token` to the agent's namespace and wire its
     repo's Slack transports, mirroring `kobo_api.steps.WireStep` end to end:
@@ -397,7 +399,11 @@ def wire_slack(
         # why this can't be skipped just because nothing was pushed.
         wait_active(gojira, gojira_app_id)
 
-        return github.local_head(workdir)
+        head = github.local_head(workdir)
+    # The card now names a new runtime (issue #147); the caller re-registers it.
+    if previous is not None and on_repin is not None:
+        on_repin()
+    return head
 
 
 def rewire_slack_channels(github: GitHubClient, *, repo: str, channels: list[str]) -> str:

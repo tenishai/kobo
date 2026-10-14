@@ -13,6 +13,7 @@ all) and whatever `skills` JSON the test wants on the row.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,7 @@ from kobo_api.models import Agent, AgentStatus, Base
 from tests.fakes import (
     FAKE_LOCAL_HEAD_DEFAULT,
     FakeAgent,
+    FakeCabal,
     FakeCloud,
     FakeGitHub,
     FakeGojira,
@@ -145,7 +147,7 @@ def config(tmp_path):
     return Config(workdir=tmp_path / "work", skills_bucket=SKILLS_BUCKET)
 
 
-def _make_client(session_factory, config, *, github=None, storage=None):
+def _make_client(session_factory, config, *, github=None, storage=None, cabal=None):
     return TestClient(
         create_app(
             session_factory,
@@ -157,6 +159,7 @@ def _make_client(session_factory, config, *, github=None, storage=None):
                 agent=FakeAgent(),
                 kubectl=FakeKubectl(),
                 storage=storage if storage is not None else FakeStorage(),
+                cabal=cabal,
             ),
         )
     )
@@ -464,7 +467,7 @@ def test_add_catalog_skill_pins_the_sha_served_now(session_factory, config):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"sha": SHA}
+    assert response.json() == {"sha": SHA, "directory": "off"}
     assert SHA != "livesha001"
     assert f"{SAMPLE_SKILL_ID}/SKILL.md" in github.captured_skills
     assert github.pushes[-1][1] == f"kobo: add skill {SAMPLE_SKILL_ID}"
@@ -589,7 +592,7 @@ def test_delete_skill_removes_catalog_entry_and_updates_json(session_factory, co
     response = client.delete(f"/api/agents/{AGENT_NAME}/skills/{SAMPLE_SKILL_ID}")
 
     assert response.status_code == 200
-    assert response.json() == {"sha": SHA}
+    assert response.json() == {"sha": SHA, "directory": "off"}
     assert github.captured_skills == {}
     assert github.pushes[-1][1] == f"kobo: remove skill {SAMPLE_SKILL_ID}"
     assert _load_agent_skills(session_factory) == [{"name": "keep", "source": "local"}]
@@ -603,7 +606,7 @@ def test_delete_skill_removes_local_entry_and_updates_json(session_factory, conf
     response = client.delete(f"/api/agents/{AGENT_NAME}/skills/notes")
 
     assert response.status_code == 200
-    assert response.json() == {"sha": SHA}
+    assert response.json() == {"sha": SHA, "directory": "off"}
     assert github.captured_skills == {}
     assert _load_agent_skills(session_factory) == []
 
@@ -712,7 +715,7 @@ def test_put_local_skill_creates_commits_and_updates_json(session_factory, confi
     )
 
     assert response.status_code == 200
-    assert response.json() == {"sha": SHA}
+    assert response.json() == {"sha": SHA, "directory": "off"}
     assert github.captured_skills == {"notes/SKILL.md": SAMPLE_CONTENT}
     assert github.pushes[-1][1] == "kobo: update skill notes"
     assert _load_agent_skills(session_factory) == [{"name": "notes", "source": "local"}]
@@ -830,3 +833,102 @@ def test_put_local_skill_client_error_returns_502(session_factory, config):
 
     assert response.status_code == 502
     assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
+
+
+# --- the agent card follows the skills (issue #147) -------------------------
+
+
+class _CardCapturingGitHub(_SkillSeedingGitHub):
+    """Captures the pushed `bundle/agent-card.json` as well as the skills."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.pushed_card: dict | None = None
+
+    def commit_push(self, workdir: Path, message: str) -> bool:
+        self.pushed_card = json.loads((workdir / "bundle" / "agent-card.json").read_text())
+        return super().commit_push(workdir, message)
+
+
+def _enabled(config, monkeypatch):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    return config.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": "http://agent-{name}.default.svc.cluster.local",
+        }
+    )
+
+
+def test_add_catalog_skill_lists_it_on_the_pushed_card_and_reregisters(
+    session_factory, config, monkeypatch
+):
+    cfg = _enabled(config, monkeypatch)
+    storage = FakeStorage()
+    _seed_catalog_skill(storage, SAMPLE_TEAM, SAMPLE_SKILL_ID)
+    github = _CardCapturingGitHub(local_skills={"keep/SKILL.md": SAMPLE_CONTENT})
+    cabal = FakeCabal()
+    client = _make_client(session_factory, cfg, github=github, storage=storage, cabal=cabal)
+    _seed_agent(session_factory, cfg, skills=[{"name": "keep", "source": "local"}])
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/skills/catalog",
+        json={"name": SAMPLE_SKILL_ID, "team": SAMPLE_TEAM},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["directory"] == "synced"
+    assert github.pushed_card["skills"] == [{"id": "keep"}, {"id": SAMPLE_SKILL_ID}]
+    assert [call["name"] for call in cabal.graduate_calls] == [AGENT_NAME]
+
+
+def test_delete_skill_drops_it_from_the_pushed_card_and_reregisters(
+    session_factory, config, monkeypatch
+):
+    cfg = _enabled(config, monkeypatch)
+    github = _CardCapturingGitHub(
+        local_skills={"notes/SKILL.md": SAMPLE_CONTENT, "keep/SKILL.md": SAMPLE_CONTENT}
+    )
+    cabal = FakeCabal()
+    client = _make_client(session_factory, cfg, github=github, cabal=cabal)
+    _seed_agent(
+        session_factory,
+        cfg,
+        skills=[{"name": "notes", "source": "local"}, {"name": "keep", "source": "local"}],
+    )
+
+    response = client.delete(f"/api/agents/{AGENT_NAME}/skills/notes")
+
+    assert response.status_code == 200
+    assert response.json()["directory"] == "synced"
+    assert github.pushed_card["skills"] == [{"id": "keep"}]
+    assert len(cabal.graduate_calls) == 1
+
+
+def test_put_local_skill_lists_it_on_the_pushed_card(session_factory, config):
+    github = _CardCapturingGitHub()
+    client = _make_client(session_factory, config, github=github)
+    _seed_agent(session_factory, config)
+
+    response = client.put(
+        f"/api/agents/{AGENT_NAME}/skills/local/notes", json={"content": SAMPLE_CONTENT}
+    )
+
+    assert response.status_code == 200
+    assert github.pushed_card["skills"] == [{"id": "notes"}]
+
+
+def test_skill_change_directory_failure_is_reported_not_raised(
+    session_factory, config, monkeypatch
+):
+    cfg = _enabled(config, monkeypatch)
+    github = _CardCapturingGitHub(local_skills={"notes/SKILL.md": SAMPLE_CONTENT})
+    cabal = FakeCabal(graduate_error="switchboard down")
+    client = _make_client(session_factory, cfg, github=github, cabal=cabal)
+    _seed_agent(session_factory, cfg, skills=[{"name": "notes", "source": "local"}])
+
+    response = client.delete(f"/api/agents/{AGENT_NAME}/skills/notes")
+
+    assert response.status_code == 200
+    assert response.json() == {"sha": SHA, "directory": "failed"}
+    assert _load_agent_skills(session_factory) == []

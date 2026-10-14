@@ -19,6 +19,10 @@ includes the marketplace dialect (persona-metadata plan Task 1b):
 same as `_stage_skills` does, and passes it through, rather than defaulting
 `_materialize_catalog_skill`'s `marketplace_catalog` argument to `None` and
 always falling through to the legacy team-prefixed path.
+
+Every mutation re-derives the agent card (`kobo_api.composer.
+refresh_agent_card`) in the same commit as the skill change, so the card's
+`skills` list is always the bundle's (issue #147).
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ import time
 from pathlib import Path
 
 from kobo_api.clients import ClientError, GitHubClient, StorageClient
-from kobo_api.composer import update_agent_yaml_skills_load
+from kobo_api.composer import refresh_agent_card, update_agent_yaml_skills_load
 from kobo_api.config import Config
 from kobo_api.search import read_marketplace_catalog
 from kobo_api.steps import _materialize_catalog_skill
@@ -143,6 +147,7 @@ def add_catalog_skill(
         except RuntimeError as exc:
             raise SkillsError(str(exc)) from exc
         _admit_skills_load(workdir, repo)
+        refresh_agent_card(workdir / "bundle")
         github.commit_push(workdir, f"kobo: add skill {skill_id}")
         return github.local_head(workdir), source_sha
 
@@ -163,6 +168,7 @@ def remove_skill(github: GitHubClient, repo: str, skill_id: str) -> str:
         if not skill_dir.is_dir():
             raise SkillsError(f"skill not found: {skill_id}")
         shutil.rmtree(skill_dir)
+        refresh_agent_card(workdir / "bundle")
         github.commit_push(workdir, f"kobo: remove skill {skill_id}")
         return github.local_head(workdir)
 
@@ -271,5 +277,6 @@ def save_local_skill(github: GitHubClient, repo: str, skill_id: str, content: st
         skill_dir.mkdir(parents=True, exist_ok=True)
         (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
         _admit_skills_load(workdir, repo)
+        refresh_agent_card(workdir / "bundle")
         github.commit_push(workdir, f"kobo: update skill {skill_id}")
         return github.local_head(workdir)

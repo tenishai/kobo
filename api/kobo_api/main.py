@@ -1651,7 +1651,7 @@ def _room_may_commit_to_repo(app: FastAPI, repo: str) -> bool:
     return True
 
 
-def _sync_directory_best_effort(clients: Clients, config: Config, agent: Agent) -> None:
+def _sync_directory_best_effort(clients: Clients, config: Config, agent: Agent) -> str:
     """Best-effort switchboard resync after a directory-metadata edit (the
     PATCH and Regenerate routes below, right after their own
     `commit_card_metadata` call succeeds) — colleagues switchboard plan,
@@ -1664,17 +1664,24 @@ def _sync_directory_best_effort(clients: Clients, config: Config, agent: Agent) 
     already committed by the time either caller reaches this call, and a
     directory hiccup must not turn an otherwise-successful PATCH/regenerate
     into an error response, nor roll back what was already saved.
+
+    Also runs after a skill or runtime-image change (issue #147), whose
+    commits rewrite the card. Returns `"off"`, `"synced"` or `"failed"`,
+    which those routes pass back as `directory` so a caller can see that the
+    switchboard still serves the old card.
     """
     if not cabal_enabled(config):
-        return
+        return "off"
     try:
         sync_directory(clients.github, clients.cabal, config, agent)
     except Exception:
         log.warning(
-            "directory sync failed for agent %s after a metadata update",
+            "directory sync failed for agent %s after a card update",
             agent.name,
             exc_info=True,
         )
+        return "failed"
+    return "synced"
 
 
 # The plain 409 detail every switchboard-gated route returns, including
@@ -2717,6 +2724,26 @@ def _runtime_image_for_repo(app, repo: str) -> str:
 
 
 
+def _directory_resync(app, repo: str) -> Callable[[], None]:
+    """The `on_repin` hook every fast-lane commit passes (issue #147): when
+    the commit moved `FROM`, the repo card now names the new runtime, so
+    send it to the switchboard. Nearly every agent follows the org default
+    (`_runtime_image_for_repo`), so after a room runtime upgrade this is the
+    path that carries most agents' cards. Never raises: the commit already
+    landed."""
+
+    def resync() -> None:
+        try:
+            with app.state.session_factory() as session:
+                agent = session.query(Agent).filter_by(repo_full_name=repo).first()
+                if agent is not None:
+                    _sync_directory_best_effort(app.state.clients, app.state.config, agent)
+        except Exception:
+            log.warning("directory resync after re-pin failed for %s", repo, exc_info=True)
+
+    return resync
+
+
 def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> None:
     """The background archive lane. Failure is logged, never surfaced: the
     memory is already stored in the agent; only the repo copy is missing,
@@ -2751,6 +2778,7 @@ def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> No
             note,
             runtime_image=_runtime_image_for_repo(app, repo),
             archive_only=True,
+            on_repin=_directory_resync(app, repo),
         )
     except Exception as exc:
         log.warning(
@@ -2886,6 +2914,7 @@ def _decide_learning(
                 filename,
                 note,
                 runtime_image=agent.runtime_image or cfg.runtime_image,
+                on_repin=_directory_resync(request.app, agent.repo_full_name),
             )
         except (IntakeError, ClientError) as exc:
             log.warning("learning approve archive failed for %s: %s", name, exc)
@@ -6345,7 +6374,10 @@ def create_app(
         ]
         session.commit()
 
-        return JSONResponse({"sha": commit_sha})
+        # The push rewrote the card's skills (issue #147); the switchboard
+        # serves its own copy, so register the new one.
+        directory = _sync_directory_best_effort(app.state.clients, app.state.config, agent)
+        return JSONResponse({"sha": commit_sha, "directory": directory})
 
     @app.delete("/api/agents/{name}/skills/{skill_id}")
     def delete_skill(
@@ -6389,7 +6421,8 @@ def create_app(
         agent.skills = [entry for entry in agent.skills if entry["name"] != skill_id]
         session.commit()
 
-        return JSONResponse({"sha": sha})
+        directory = _sync_directory_best_effort(app.state.clients, app.state.config, agent)
+        return JSONResponse({"sha": sha, "directory": directory})
 
     @app.get("/api/agents/{name}/skills/local/{skill_id}")
     def get_local_skill(
@@ -6474,7 +6507,8 @@ def create_app(
         ]
         session.commit()
 
-        return JSONResponse({"sha": sha})
+        directory = _sync_directory_best_effort(app.state.clients, app.state.config, agent)
+        return JSONResponse({"sha": sha, "directory": directory})
 
     # --- Intake (Task 3): one-shot memory upload files + ingest status ----------
     #
@@ -6598,6 +6632,7 @@ def create_app(
                 payload.filename,
                 payload.content,
                 runtime_image=agent.runtime_image or cfg.runtime_image,
+                on_repin=_directory_resync(app, agent.repo_full_name),
             )
         except IntakeError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
@@ -6758,6 +6793,7 @@ def create_app(
                 filename,
                 note,
                 runtime_image=agent.runtime_image or cfg.runtime_image,
+                on_repin=_directory_resync(app, agent.repo_full_name),
             )
         except IntakeError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
@@ -6947,6 +6983,7 @@ def create_app(
                 filename,
                 content,
                 runtime_image=_runtime_image_for_repo(app, repo),
+                on_repin=_directory_resync(app, repo),
             )
         except Exception as exc:
             log.warning(
@@ -7120,6 +7157,7 @@ def create_app(
                 payload.filename,
                 payload.content,
                 runtime_image=agent.runtime_image or cfg.runtime_image,
+                on_repin=_directory_resync(app, agent.repo_full_name),
             )
         except ToolingError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
@@ -7156,6 +7194,7 @@ def create_app(
                 source_repo=payload.repo,
                 source_path=payload.path,
                 runtime_image=agent.runtime_image or cfg.runtime_image,
+                on_repin=_directory_resync(app, agent.repo_full_name),
             )
         except ToolingError as exc:
             # Request-shape failures (a malformed owner/repo, a traversal
@@ -7338,6 +7377,7 @@ def create_app(
                 bot_token=payload.bot_token,
                 app_token=payload.app_token,
                 runtime_image=agent.runtime_image or cfg.runtime_image,
+                on_repin=_directory_resync(app, agent.repo_full_name),
                 # None unless the secrets platform's machine lane is
                 # configured, in which case the token delivery rides it
                 # instead of a direct Secret write (kobo_api.sero).
@@ -8444,8 +8484,15 @@ def create_app(
             )
 
         session.commit()
+        # The card names the runtime (issue #147), and the commit moved it.
+        directory = _sync_directory_best_effort(app.state.clients, app.state.config, agent)
         return JSONResponse(
-            {"runtime_image": runtime_image, "previous_runtime_image": previous, "sha": sha}
+            {
+                "runtime_image": runtime_image,
+                "previous_runtime_image": previous,
+                "sha": sha,
+                "directory": directory,
+            }
         )
 
     # --- Colleague mode (issue #131): may this agent consult its colleagues --

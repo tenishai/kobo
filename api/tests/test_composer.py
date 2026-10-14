@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import shutil
 from dataclasses import fields
 from pathlib import Path
 
@@ -12,12 +13,15 @@ from kobo_api.composer import (
     BundleSpec,
     ComposeError,
     compose,
+    refresh_agent_card,
+    runtime_version,
     update_agent_card_metadata,
     update_agent_yaml_approvals_gates,
     update_agent_yaml_auth,
     update_agent_yaml_max_tokens,
     update_agent_yaml_memory_revision,
     update_agent_yaml_tools,
+    update_dockerfile_runtime_image,
     validate_agent_yaml,
 )
 from kobo_api.steps import StagedSkill
@@ -688,11 +692,16 @@ def test_compose_agent_card_lists_picked_skills(tmp_path):
     card = json.loads((dest / "bundle" / "agent-card.json").read_text())
     assert card == {
         "name": "sam",
-        "description": "Assembled by kobo.",
-        "version": "0.1.0",
-        "capabilities": [],
+        "description": "You are sam, a helpful assistant",
+        "version": "latest",
+        "capabilities": {},
         "skills": [{"id": "echo"}],
-        "metadata": {"team": "shared", "purpose_tags": [], "capability": ""},
+        "metadata": {
+            "team": "shared",
+            "purpose_tags": [],
+            "capability": "",
+            "runtime_image": "registry.example/agents/daedalus-runtime:latest",
+        },
     }
 
 
@@ -722,6 +731,7 @@ def test_compose_agent_card_metadata_block_present_capability_empty(tmp_path):
         "team": "acme-team",
         "purpose_tags": ["billing", "support"],
         "capability": "",
+        "runtime_image": "registry.example/agents/daedalus-runtime:latest",
     }
 
 
@@ -731,7 +741,12 @@ def test_compose_agent_card_metadata_defaults_to_shared_no_tags(tmp_path):
     compose(_make_spec(), dest)
 
     card = json.loads((dest / "bundle" / "agent-card.json").read_text())
-    assert card["metadata"] == {"team": "shared", "purpose_tags": [], "capability": ""}
+    assert card["metadata"] == {
+        "team": "shared",
+        "purpose_tags": [],
+        "capability": "",
+        "runtime_image": "registry.example/agents/daedalus-runtime:latest",
+    }
 
 
 # --- persona + knowledge --------------------------------------------------------
@@ -1258,6 +1273,7 @@ def test_update_agent_card_metadata_writes_all_three_fields(tmp_path):
         "team": "acme-team",
         "purpose_tags": ["billing", "support"],
         "capability": "Helps customers resolve billing issues quickly.",
+        "runtime_image": "registry.example/agents/daedalus-runtime:latest",
     }
 
 
@@ -1277,7 +1293,9 @@ def test_update_agent_card_metadata_preserves_every_other_top_level_field(tmp_pa
 
     card = json.loads(card_path.read_text())
     assert card["name"] == original["name"]
-    assert card["description"] == original["description"]
+    # Derived from the repo by refresh_agent_card (issue #147): the
+    # description follows the capability just written.
+    assert card["description"] == "Does a thing."
     assert card["version"] == original["version"]
     assert card["capabilities"] == original["capabilities"]
     assert card["skills"] == original["skills"]
@@ -1286,6 +1304,7 @@ def test_update_agent_card_metadata_preserves_every_other_top_level_field(tmp_pa
         "team": "acme-team",
         "purpose_tags": ["x"],
         "capability": "Does a thing.",
+        "runtime_image": "registry.example/agents/daedalus-runtime:latest",
     }
 
 
@@ -1328,6 +1347,7 @@ def test_update_agent_card_metadata_overwrites_prior_metadata_values(tmp_path):
         "team": "new-team",
         "purpose_tags": ["new-tag"],
         "capability": "A fresh sentence.",
+        "runtime_image": "registry.example/agents/daedalus-runtime:latest",
     }
 
 
@@ -1932,3 +1952,134 @@ def test_self_md_names_skills_load_only_when_agent_has_skills(tmp_path):
     text = (dest / "bundle" / "knowledge" / "self.md").read_text()
     assert "`skills.load(name)` reads one in full" in text
     assert "Your skills are PROCEDURES seeded into your memory, never tools" in text
+
+
+# --- the card follows the repo (issue #147) ------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("image", "version"),
+    [
+        ("registry.example/agents/daedalus-runtime:0.5.1", "0.5.1"),
+        ("registry.example:5000/agents/daedalus-runtime:0b2b44c-t0140", "0b2b44c-t0140"),
+        ("registry.example:5000/agents/daedalus-runtime", "latest"),
+        ("localhost:5000/rt", "latest"),
+        ("registry.example/agents/daedalus-runtime@sha256:" + "ab" * 32, "sha256:abababababab"),
+        ("registry.example/agents/daedalus-runtime:0.5.1@sha256:" + "ab" * 32, "0.5.1"),
+    ],
+)
+def test_runtime_version_reads_the_image_tag(image, version):
+    assert runtime_version(image) == version
+
+
+def test_compose_card_never_carries_the_placeholder_description(tmp_path):
+    dest = tmp_path / "out"
+    compose(_make_spec(capability="Answers billing questions."), dest)
+
+    card = json.loads((dest / "bundle" / "agent-card.json").read_text())
+
+    assert card["description"] == "Answers billing questions."
+    assert card["version"] == "latest"
+    assert card["metadata"]["runtime_image"] == _RUNTIME_IMAGE
+
+
+def _add_skill_dir(bundle: Path, skill_id: str) -> None:
+    (bundle / "skills" / skill_id).mkdir(parents=True)
+    (bundle / "skills" / skill_id / "SKILL.md").write_text("---\nname: x\n---\n")
+
+
+def test_refresh_agent_card_lists_exactly_the_bundles_skills(tmp_path):
+    dest = tmp_path / "out"
+    compose(_make_spec(skills=[_make_skill(tmp_path)]), dest)
+    bundle = dest / "bundle"
+
+    _add_skill_dir(bundle, "added")
+    (bundle / "skills" / "no-skill-md").mkdir()
+    assert refresh_agent_card(bundle) is True
+    card = json.loads((bundle / "agent-card.json").read_text())
+    assert card["skills"] == [{"id": "added"}, {"id": "echo"}]
+
+    shutil.rmtree(bundle / "skills" / "echo")
+    refresh_agent_card(bundle)
+    card = json.loads((bundle / "agent-card.json").read_text())
+    assert card["skills"] == [{"id": "added"}]
+
+
+def test_refresh_agent_card_is_a_no_op_on_a_current_card(tmp_path):
+    dest = tmp_path / "out"
+    compose(_make_spec(skills=[_make_skill(tmp_path)]), dest)
+    before = (dest / "bundle" / "agent-card.json").read_text()
+
+    assert refresh_agent_card(dest / "bundle") is False
+    assert (dest / "bundle" / "agent-card.json").read_text() == before
+
+
+def test_refresh_agent_card_repairs_an_old_placeholder_card(tmp_path):
+    """A card composed before issue #147: placeholder description and
+    version, no runtime, stale skills. One refresh corrects all of it from
+    the repo and keeps a field kobo doesn't know."""
+    dest = tmp_path / "out"
+    compose(_make_spec(), dest)
+    bundle = dest / "bundle"
+    (bundle / "agent-card.json").write_text(
+        json.dumps(
+            {
+                "name": "sam",
+                "description": "Assembled by kobo.",
+                "version": "0.1.0",
+                "capabilities": [],
+                "skills": [{"id": "gone"}],
+                "metadata": {"team": "shared", "purpose_tags": [], "capability": ""},
+                "extra": 1,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+    refresh_agent_card(bundle)
+
+    card = json.loads((bundle / "agent-card.json").read_text())
+    assert card["description"] == "You are sam, a helpful assistant"
+    assert card["version"] == "latest"
+    assert card["skills"] == []
+    assert card["capabilities"] == {}
+    assert card["metadata"]["runtime_image"] == _RUNTIME_IMAGE
+    assert card["extra"] == 1
+
+
+def test_refresh_agent_card_prefers_the_capability_for_the_description(tmp_path):
+    dest = tmp_path / "out"
+    compose(_make_spec(), dest)
+
+    update_agent_card_metadata(
+        dest / "bundle", team="shared", purpose_tags=[], capability="Reads invoices."
+    )
+
+    card = json.loads((dest / "bundle" / "agent-card.json").read_text())
+    assert card["description"] == "Reads invoices."
+
+
+def test_refresh_agent_card_keeps_runtime_fields_without_a_dockerfile(tmp_path):
+    dest = tmp_path / "out"
+    compose(_make_spec(), dest)
+    (dest / "Dockerfile").unlink()
+
+    refresh_agent_card(dest / "bundle")
+
+    card = json.loads((dest / "bundle" / "agent-card.json").read_text())
+    assert card["version"] == "latest"
+    assert card["metadata"]["runtime_image"] == _RUNTIME_IMAGE
+
+
+def test_dockerfile_repin_moves_the_cards_runtime_in_the_same_tree(tmp_path):
+    dest = tmp_path / "out"
+    compose(_make_spec(), dest)
+    new_image = "registry.example/agents/daedalus-runtime:0.5.1"
+
+    previous = update_dockerfile_runtime_image(dest / "Dockerfile", new_image)
+
+    assert previous == _RUNTIME_IMAGE
+    card = json.loads((dest / "bundle" / "agent-card.json").read_text())
+    assert card["version"] == "0.5.1"
+    assert card["metadata"]["runtime_image"] == new_image

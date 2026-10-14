@@ -472,3 +472,24 @@ def test_list_intake_clones_only_once():
     kubectl = FakeKubectl()
     list_intake(github, kubectl, repo=REPO, namespace=NAMESPACE, deploy=DEPLOY)
     assert len(github.cloned) == 1
+
+
+# --- on_repin (issue #147) -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("clone_image", "expected_calls"), [(FAKE_DOCKERFILE_OLD_IMAGE, 1), (RUNTIME_IMAGE, 0)]
+)
+def test_upload_intake_file_calls_on_repin_only_when_from_moved(clone_image, expected_calls):
+    calls = []
+
+    upload_intake_file(
+        FakeGitHub(dockerfile_image=clone_image),
+        REPO,
+        "notes.md",
+        "x",
+        runtime_image=RUNTIME_IMAGE,
+        on_repin=lambda: calls.append(1),
+    )
+
+    assert len(calls) == expected_calls

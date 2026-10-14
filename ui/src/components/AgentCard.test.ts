@@ -93,6 +93,18 @@ describe("AgentCard — a failed agent (card wave 2026-09-23)", () => {
     expect(container.querySelector(".agent-card__meta")).toBeNull();
   });
 
+  it("flags a ready agent with no purpose tags (issue #147)", () => {
+    render(AgentCard, { agent: { ...BASE_AGENT, purpose_tags: [] } });
+    expect(screen.getByText("no purpose tags")).toBeTruthy();
+  });
+
+  it("does not flag a tagged, a provisioning or a connected agent", () => {
+    render(AgentCard, { agent: { ...BASE_AGENT, purpose_tags: ["billing"] } });
+    render(AgentCard, { agent: { ...BASE_AGENT, name: "p", status: "provisioning" } });
+    render(AgentCard, { agent: { ...BASE_AGENT, name: "c", kind: "connected" } });
+    expect(screen.queryByText("no purpose tags")).toBeNull();
+  });
+
   it("tags an agent whose nightly learnings pass keeps failing", () => {
     render(AgentCard, { agent: { ...BASE_AGENT, system_tasks_failing: ["learnings"] } });
     expect(screen.getByText("learnings failing")).not.toBeNull();

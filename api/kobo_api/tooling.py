@@ -65,6 +65,7 @@ import ast
 import re
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from kobo_api.clients import (
@@ -276,6 +277,7 @@ def upload_tooling_file(
     content: str,
     *,
     runtime_image: str | None = None,
+    on_repin: Callable[[], None] | None = None,
 ) -> str:
     """Write (or overwrite) `bundle/tools/<filename>` and push it.
 
@@ -302,11 +304,16 @@ def upload_tooling_file(
         tools_dir.mkdir(parents=True, exist_ok=True)
         (tools_dir / filename).write_text(content, encoding="utf-8")
         note = ""
+        previous = None
         if runtime_image is not None:
             previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
             note = repin_commit_note(repo, previous, runtime_image)
         github.commit_push(workdir, f"kobo: add tools/{filename}{note}")
-        return github.local_head(workdir)
+        head = github.local_head(workdir)
+    # The card now names a new runtime (issue #147); the caller re-registers it.
+    if previous is not None and on_repin is not None:
+        on_repin()
+    return head
 
 
 def delete_tooling_file(github: GitHubClient, repo: str, filename: str) -> str:
@@ -338,6 +345,7 @@ def import_tooling(
     source_repo: str,
     source_path: str,
     runtime_image: str | None = None,
+    on_repin: Callable[[], None] | None = None,
 ) -> dict:
     """Clone `source_repo` (via the SAME `github` client the agent's own
     repo uses — its GitHub App identity already covers any org repo, so no
@@ -415,6 +423,7 @@ def import_tooling(
         for name, raw in passed:
             (tools_dir / name).write_bytes(raw)
         note = ""
+        previous = None
         if runtime_image is not None:
             previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
             note = repin_commit_note(repo, previous, runtime_image)
@@ -422,6 +431,9 @@ def import_tooling(
             workdir, f"kobo: import tools from {source_repo}/{source_path}{note}"
         )
         sha = github.local_head(workdir)
+    # The card now names a new runtime (issue #147); the caller re-registers it.
+    if previous is not None and on_repin is not None:
+        on_repin()
 
     return {
         "sha": sha,

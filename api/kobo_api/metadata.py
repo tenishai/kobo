@@ -14,8 +14,9 @@ together (HelloStep's tail, and the PATCH/regenerate routes in kobo_api.main):
   answered with the fallback tier instead; this function never raises.
 - `commit_card_metadata`: the delivery half — clone the agent's repo, edit
   its `agent-card.json`'s `metadata` block in place
-  (`kobo_api.composer.update_agent_card_metadata`, byte-faithful to every
-  other field), commit, and push. Unlike generation, a delivery failure here
+  (`kobo_api.composer.update_agent_card_metadata`, which also re-derives the
+  card's skills, description, version and runtime from the repo; every
+  other field survives byte-faithfully), commit, and push. Unlike generation, a delivery failure here
   IS the caller's to handle (HelloStep logs and leaves the card uncommitted;
   the PATCH/regenerate routes answer 502) — this raises `ClientError` same as
   every other GitHub-backed helper in this codebase, never swallowed here.
@@ -30,70 +31,26 @@ gathering logic.
 from __future__ import annotations
 
 import logging
-import re
 import tempfile
 from pathlib import Path
 
 from kobo_api.clients import AgentClient, ClientError, GitHubClient, KubectlClient
-from kobo_api.composer import update_agent_card_metadata
+from kobo_api.composer import (
+    CAPABILITY_MAX_LEN,
+    _plain_copy,
+    fallback_capability,
+    update_agent_card_metadata,
+)
 from kobo_api.purpose_tags import MAX_CREATE_TAGS, normalize_tags
 from kobo_api.search import get_entry
 from kobo_api.tooling import list_tooling
 
 log = logging.getLogger(__name__)
 
-# Global Constraints: a capability string is one plain sentence, this long or
-# shorter, wherever it's generated or caller-submitted (PATCH).
-CAPABILITY_MAX_LEN = 160
-
-# Strip defensively wherever a capability string is produced or stored
-# (Global Constraints: no em dashes in generated/stored capability strings) —
-# both the en dash and em dash unicode characters, replaced with a plain
-# hyphen rather than dropped outright (dropping would jam adjacent words
-# together, e.g. "quick—reliable" -> "quickreliable").
-_DASH_RE = re.compile("[–—]")
-
-# The first sentence-ish break in a body of text — mirrors
-# kobo_api.persona_draft._CLAUSE_END_RE in spirit (same "clause boundary"
-# idea), kept as its own small copy here since the fallback tier below isn't
-# drafting a who_they_are line and has no reason to import drafting
-# vocabulary for it.
-_SENTENCE_END_RE = re.compile(r"[.!?\n]")
-
-
-def _plain_copy(text: str) -> str:
-    """Collapse whitespace to single spaces and strip em/en dashes — the
-    shared cleanup every tier (model, fallback) and the PATCH route's own
-    caller-submitted text all run through before their own length clamp, so
-    none of the three can leak either violation independently.
-    """
-    return " ".join(_DASH_RE.sub("-", text).split())
-
-
-def _first_sentence(text: str) -> str:
-    """The first sentence of `text` (up to the first ./!/?/newline, or the
-    whole text if none), whitespace-collapsed. A leading boundary character
-    (e.g. `text` starting with punctuation) falls back to the whole
-    (collapsed, boundary-stripped) text rather than handing back an empty
-    string — mirrors `kobo_api.persona_draft._first_clause`'s same fallback
-    for the same reason.
-    """
-    match = _SENTENCE_END_RE.search(text)
-    raw = text[: match.start()] if match else text
-    sentence = " ".join(raw.split())
-    if not sentence:
-        sentence = " ".join(text.split()).lstrip(".!?").strip()
-    return sentence
-
-
-def _fallback_capability(persona_body: str) -> str:
-    """Deterministic fallback tier: the persona body's own first sentence,
-    cleaned and clamped. `persona_body` is never empty by the time either
-    caller (HelloStep's tail, the regenerate route) reaches this — a
-    persona's body is required content — so this tier can't itself produce
-    an empty capability the way a model's reply sometimes can.
-    """
-    return _plain_copy(_first_sentence(persona_body))[:CAPABILITY_MAX_LEN]
+# Global Constraints: a capability string is one plain sentence, at most
+# `CAPABILITY_MAX_LEN` chars, with no em/en dashes. `CAPABILITY_MAX_LEN` and
+# the cleanup helpers live in `kobo_api.composer`, because the agent card's
+# description uses the same fallback tier (issue #147).
 
 
 def generate_capability(
@@ -105,7 +62,7 @@ def generate_capability(
     """One plain sentence describing what an agent can do, clamped to
     `CAPABILITY_MAX_LEN` chars and stripped of em/en dashes — model-drafted
     via `model_client.capability(...)` when `model_client` is given and
-    well-behaved, the deterministic fallback tier (`_fallback_capability`)
+    well-behaved, the deterministic fallback tier (`fallback_capability`)
     otherwise.
 
     NEVER raises: `model_client` being `None` (unconfigured), its `.capability`
@@ -122,7 +79,7 @@ def generate_capability(
             cleaned = _plain_copy(raw)[:CAPABILITY_MAX_LEN] if isinstance(raw, str) else ""
             if cleaned:
                 return cleaned
-    return _fallback_capability(persona_body)
+    return fallback_capability(persona_body)
 
 
 def generate_tags(

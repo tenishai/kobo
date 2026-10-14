@@ -55,6 +55,11 @@
   let waiting = $derived(agent.status === "waiting");
   // Issue #142: the nightly learnings pass failing night after night.
   let nightlyFailing = $derived((agent.system_tasks_failing ?? []).includes("learnings"));
+  // Issue #147: a ready agent with no purpose tags publishes a directory
+  // card that says nothing about what it is for. Say so here instead.
+  let untagged = $derived(
+    agent.status === "ready" && !connected && (agent.purpose_tags ?? []).length === 0,
+  );
 </script>
 
 <div class="agent-card">
@@ -90,7 +95,7 @@
     {description}
   </p>
 
-  {#if agent.group_name || connected || nightlyFailing}
+  {#if agent.group_name || connected || nightlyFailing || untagged}
     <div class="agent-card__tags">
       {#if agent.group_name}
         <span class="agent-card__tag">{agent.group_name}</span>
@@ -104,6 +109,9 @@
       {/if}
       {#if nightlyFailing}
         <span class="agent-card__tag agent-card__warn" title="The nightly learnings pass keeps failing. Open the Learnings tab for the error.">learnings failing</span>
+      {/if}
+      {#if untagged}
+        <span class="agent-card__tag agent-card__warn" title="Colleagues and the directory see no purpose for this agent. Add purpose tags with Edit details, in the menu beside its name.">no purpose tags</span>
       {/if}
     </div>
   {/if}

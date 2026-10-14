@@ -697,23 +697,83 @@ def _colleagues_md_roster_only(spec: BundleSpec) -> str:
     return "\n".join(lines) + "\n"
 
 
+# The card's description is the agent's capability sentence once it has
+# one, and until then the persona's own first sentence: the same fallback
+# tier `kobo_api.metadata.generate_capability` uses, so the card and the
+# capability never disagree about what the agent is (issue #147). The text
+# helpers live here, not in `kobo_api.metadata`, because that module imports
+# this one; metadata re-exports them.
+CAPABILITY_MAX_LEN = 160
+_DASH_RE = re.compile("[–—]")
+_SENTENCE_END_RE = re.compile(r"[.!?\n]")
+
+
+def _plain_copy(text: str) -> str:
+    """Collapse whitespace to single spaces and strip em/en dashes (replaced
+    with a hyphen, so adjacent words stay apart)."""
+    return " ".join(_DASH_RE.sub("-", text).split())
+
+
+def _first_sentence(text: str) -> str:
+    """The first sentence of `text` (up to the first ./!/?/newline, or the
+    whole text if none), whitespace-collapsed. A leading boundary character
+    falls back to the whole (collapsed, boundary-stripped) text rather than
+    an empty string."""
+    match = _SENTENCE_END_RE.search(text)
+    raw = text[: match.start()] if match else text
+    sentence = " ".join(raw.split())
+    if not sentence:
+        sentence = " ".join(text.split()).lstrip(".!?").strip()
+    return sentence
+
+
+def fallback_capability(persona_body: str) -> str:
+    """The persona body's first sentence, cleaned and clamped."""
+    return _plain_copy(_first_sentence(persona_body))[:CAPABILITY_MAX_LEN]
+
+
+def runtime_version(runtime_image: str) -> str:
+    """The card's `version`: the runtime image's tag (`...:0.5.1` -> `0.5.1`),
+    or `sha256:<12 hex>` for a digest-only ref, or `latest` for a bare
+    repository (what a registry resolves it to). The agent's repository has
+    no version of its own, and the runtime build is what changes what an
+    agent can do, so the card names that (issue #147)."""
+    name, _, digest = runtime_image.partition("@")
+    last = name.rsplit("/", 1)[-1]
+    if ":" in last:
+        return last.split(":", 1)[1]
+    if digest:
+        algo, _, hexpart = digest.partition(":")
+        return f"{algo}:{hexpart[:12]}"
+    return "latest"
+
+
+def _card_skills(skill_ids: list[str]) -> list[dict]:
+    return [{"id": skill_id} for skill_id in sorted(skill_ids)]
+
+
 def _agent_card(spec: BundleSpec) -> dict:
     return {
         "name": spec.name,
-        "description": "Assembled by kobo.",
-        "version": "0.1.0",
-        "capabilities": [],
-        "skills": [{"id": skill.id} for skill in spec.skills],
+        "description": spec.capability or fallback_capability(spec.persona_body),
+        "version": runtime_version(spec.runtime_image),
+        # A2A's AgentCapabilities is an object of protocol feature flags
+        # (streaming, push_notifications, state_transition_history); these
+        # agents declare none, so it is empty, never a list (issue #147).
+        "capabilities": {},
+        "skills": _card_skills([skill.id for skill in spec.skills]),
         # Persona metadata (Task 3): baked in at compose time so every agent
         # card carries this block from birth — `capability` starts empty
         # (never earned yet; HelloStep's tail is what first fills it in),
         # `team`/`purpose_tags` come straight from the spec (Task 2's own
         # values, threaded here by whoever builds the spec —
-        # `kobo_api.steps.RepoStep`).
+        # `kobo_api.steps.RepoStep`). `runtime_image` is the full ref the
+        # Dockerfile's FROM names (issue #147).
         "metadata": {
             "team": spec.team,
             "purpose_tags": list(spec.purpose_tags),
             "capability": "",
+            "runtime_image": spec.runtime_image,
         },
     }
 
@@ -898,7 +958,13 @@ def update_dockerfile_runtime_image(dockerfile_path: Path, runtime_image: str) -
     previous = match.group(0)[len(match.group(1)) :]
     updated = text[: match.start()] + match.group(1) + runtime_image + text[match.end() :]
     dockerfile_path.write_text(updated)
-    return None if previous == runtime_image else previous
+    if previous == runtime_image:
+        return None
+    # The card names the runtime (issue #147), so it follows the FROM line
+    # in the same commit.
+    if (dockerfile_path.parent / "bundle" / "agent-card.json").is_file():
+        refresh_agent_card(dockerfile_path.parent / "bundle")
+    return previous
 
 
 def repin_commit_note(repo: str, previous: str | None, runtime_image: str) -> str:
@@ -936,15 +1002,11 @@ def update_agent_card_metadata(
     compose time (`_agent_card` above, `capability` starting `""`), then
     update after every earn/PATCH/Regenerate — this function is that update.
 
-    Reads the whole card as a dict, replaces exactly `metadata.team`/
-    `metadata.purpose_tags`/`metadata.capability`, and re-dumps with the
-    exact same `json.dumps(..., indent=2) + "\\n"` style `compose()` itself
-    writes the file with — every OTHER top-level field (`name`,
-    `description`, `version`, `capabilities`, `skills`, or any field a future
-    caller adds that this module doesn't know about yet) survives
-    byte-faithfully, and any OTHER key already inside `metadata` itself
-    (there are none today, but a hand-edited or future-versioned card might
-    carry one) survives too — only the three known keys are ever replaced.
+    Replaces exactly `metadata.team`/`metadata.purpose_tags`/
+    `metadata.capability`, then runs `refresh_agent_card`, so the fields it
+    derives from the repo (skills, description, version, runtime image) are
+    current too. Every other field, top-level or inside `metadata`, survives
+    byte-faithfully.
     """
     card_path = bundle_dir / "agent-card.json"
     card = json.loads(card_path.read_text())
@@ -954,6 +1016,81 @@ def update_agent_card_metadata(
     metadata["capability"] = capability
     card["metadata"] = metadata
     card_path.write_text(json.dumps(card, indent=2) + "\n")
+    refresh_agent_card(bundle_dir)
+
+
+def _bundle_skill_ids(bundle_dir: Path) -> list[str]:
+    """Every skill the bundle loader will register: a directory under
+    `bundle/skills/` holding a SKILL.md (same rule as `kobo_api.skills.
+    list_repo_skills`)."""
+    skills_dir = bundle_dir / "skills"
+    if not skills_dir.is_dir():
+        return []
+    return [
+        entry.name
+        for entry in skills_dir.iterdir()
+        if entry.is_dir() and (entry / "SKILL.md").is_file()
+    ]
+
+
+def _dockerfile_image(dockerfile_path: Path) -> str | None:
+    try:
+        match = _DOCKERFILE_FROM_RE.search(dockerfile_path.read_text())
+    except OSError:
+        return None
+    return match.group(0)[len(match.group(1)) :] if match else None
+
+
+def refresh_agent_card(bundle_dir: Path) -> bool:
+    """Re-derive the card fields that describe the agent from the repo the
+    card sits in (issue #147), so the card cannot drift from what the agent
+    has:
+
+    - `skills`: the skill directories under `bundle/skills/`.
+    - `description`: `metadata.capability` when set, else the first sentence
+      of `bundle/persona.md`. A card with neither keeps its description.
+    - `version` and `metadata.runtime_image`: from the Dockerfile's FROM line
+      (`runtime_version`). A repo without a readable FROM keeps both.
+    - `capabilities`: an empty list (the pre-#147 bake) becomes `{}`, the
+      object shape A2A defines.
+
+    Every other field survives byte-faithfully. Returns whether the card
+    changed. Callers run it in the same clone as the change that moves one
+    of these inputs, so the card lands in the same commit.
+    """
+    card_path = bundle_dir / "agent-card.json"
+    try:
+        before = card_path.read_text()
+    except OSError:
+        log.warning("agent card missing, not refreshed: %s", card_path)
+        return False
+    card = json.loads(before)
+    card["skills"] = _card_skills(_bundle_skill_ids(bundle_dir))
+    if card.get("capabilities") == []:
+        card["capabilities"] = {}
+    metadata = dict(card.get("metadata") or {})
+    capability = metadata.get("capability") or ""
+    if capability:
+        card["description"] = capability
+    else:
+        try:
+            persona = (bundle_dir / "persona.md").read_text()
+        except OSError:
+            persona = ""
+        if persona.strip():
+            card["description"] = fallback_capability(persona)
+    image = _dockerfile_image(bundle_dir.parent / "Dockerfile")
+    if image:
+        card["version"] = runtime_version(image)
+        metadata["runtime_image"] = image
+    if metadata:
+        card["metadata"] = metadata
+    after = json.dumps(card, indent=2) + "\n"
+    if after == before:
+        return False
+    card_path.write_text(after)
+    log.debug("agent card refreshed: %s", card_path)
+    return True
 
 
 # Matches the a2a transport's flow-mapping entry anywhere in an already-
