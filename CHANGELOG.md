@@ -127,7 +127,7 @@ The first tagged release, `0.1.0`, is the room as the README describes it: creat
 chat and teach, memory, colleagues and threads, access, Slack, the agent page, personas and the
 MCP surface. Everything before the tag is in the git history and in the design record under
 [docs/superpowers/](docs/superpowers/). The entries below cover the changes after this
-changelog started (PR #103, 2026-10-05).
+changelog started (PR #103).
 
 ### Added
 
