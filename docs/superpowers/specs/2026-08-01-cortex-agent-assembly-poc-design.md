@@ -128,7 +128,7 @@ Failure model: on any step exception, remaining steps flip to FAILED, the error 
   2. An onboarding option to auto-merge the setup PR (or commit scaffolding directly to main) for caller-created repos.
   3. Give the `agent` workload class an HTTP readiness probe against the a2a `/healthz` so the generator emits a Service (today the class has only a TCP liveness probe, and no Service is generated without an HTTP readiness probe — the Service is required for first contact and the chat pane).
 - **skills**: no changes; cortex only reads it.
-- **techne**: no changes for the POC (patterns are copied, not imported).
+- **techne**: no changes for the POC.
 - **daedalus (Slack)**: no additional changes — the slack transport already exists; cortex only writes the `transports` stanza and the token env wiring.
 
 All sibling work stays on feature branches until the E2E loop works; generated scaffolding pins branch refs/images via cortex config so cutting over to main after the PRs merge is a config change.
