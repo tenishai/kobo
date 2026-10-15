@@ -16,7 +16,7 @@ Cortex composes the existing tenishai platform pieces; it invents as little as p
 | Deploy to GKE | gojira | Drive gojira's repo-onboarding flow programmatically |
 | Memory | techne | Seed `knowledge/*.md` into the agent's techne DB at boot |
 | Skills | skills repo (SKILL.md standard) | Enumerate for the palette; materialize picks into bundles |
-| Bundle editing UX | kaminos (patterns) | Reuse editor/diff/node-taxonomy/chat patterns |
+| Bundle editing UX | an earlier bundle editor (patterns) | Reuse editor/diff/node-taxonomy/chat patterns |
 | Orchestration / tool gateway / secrets vault | cabal / limenal / ladon | **Deferred** — not in the POC |
 
 ## 2. Locked decisions
@@ -47,7 +47,7 @@ The UI must be simple enough that a user who has never touched Kubernetes can de
 - **Progress is a checklist, not a spinner.** The backend persists an ordered step array; the UI renders the same steps with plain-English labels and DONE / RUNNING / PENDING / FAILED states. Pending steps are styled identically to running (single pulse treatment) so the unstarted queue reads as "working", not "stalled".
 - **Zero infrastructure vocabulary** at create time. Terms like WIF, kustomize, Artifact Registry never appear except as plain-English step names in the status checklist ("Access setup", "Image build") and in an advanced panel for power users.
 - **Adaptive polling, no push infra.** TanStack Query with dynamic `refetchInterval`: 3–4s while any step is non-terminal, off once terminal. No SSE/websockets in the POC.
-- **Agent detail page** panels mirror the composition model: **Persona · Config · Tools · Skills · Mutation gates · Memory** — plus a **Status/Deploys** panel. Edits produce a diff preview before commit (kaminos's diff-before-write pattern) and roll into a new deploy.
+- **Agent detail page** panels mirror the composition model: **Persona · Config · Tools · Skills · Mutation gates · Memory** — plus a **Status/Deploys** panel. Edits produce a diff preview before commit (diff-before-write) and roll into a new deploy.
 - Shared EmptyState / ErrorState-with-Retry / skeleton-loader components everywhere a query can fail; prefetch catalog data on hover of the Create button.
 
 ## 4. Architecture
@@ -56,7 +56,7 @@ The UI must be simple enough that a user who has never touched Kubernetes can de
 
 - **cortex-ui** (Svelte 5 + Vite + Tailwind + TanStack Query): dashboard (agent cards), create modal, agent detail page. Plain SPA, hand-rolled router; no SSR.
 - **cortex-api** (FastAPI + SQLite via SQLAlchemy):
-  - *Composer*: builds bundle directories; validates `agent.yaml` against daedalus's published `bundle.schema.json`; materializes skills (copy at pinned SHA); renders persona/knowledge files; diff preview for edits (ruamel round-trip, write-only-changed-files — lifted from kaminos `editor.py`).
+  - *Composer*: builds bundle directories; validates `agent.yaml` against daedalus's published `bundle.schema.json`; materializes skills (copy at pinned SHA); renders persona/knowledge files; diff preview for edits (ruamel round-trip, write-only-changed-files).
   - *Provisioner*: the ordered step pipeline (§5), run as a background task, each step persisted before/after, idempotent, resumable via a retry endpoint.
   - *Integrations*: GitHub App (create repo, commit, merge PR), gojira HTTP client (connect, status), agent a2a client (first contact, later chat).
 - **daedalus-runtime image** (new; lives on a branch/PR in the daedalus repo as `docker/`): python + daedalus (`[a2a]` extra) + techne + a small seeder. Entrypoint: `seed /bundle/knowledge → $TECHNE_HOME` (convergent, per-file content hash) then `daedalus run /bundle`. Published to Artifact Registry as the base for all agent images.
@@ -128,7 +128,7 @@ Failure model: on any step exception, remaining steps flip to FAILED, the error 
   2. An onboarding option to auto-merge the setup PR (or commit scaffolding directly to main) for caller-created repos.
   3. Give the `agent` workload class an HTTP readiness probe against the a2a `/healthz` so the generator emits a Service (today the class has only a TCP liveness probe, and no Service is generated without an HTTP readiness probe — the Service is required for first contact and the chat pane).
 - **skills**: no changes; cortex only reads it.
-- **techne / kaminos**: no changes for the POC (patterns are copied, not imported).
+- **techne**: no changes for the POC (patterns are copied, not imported).
 - **daedalus (Slack)**: no additional changes — the slack transport already exists; cortex only writes the `transports` stanza and the token env wiring.
 
 All sibling work stays on feature branches until the E2E loop works; generated scaffolding pins branch refs/images via cortex config so cutting over to main after the PRs merge is a config change.
@@ -153,7 +153,7 @@ The target GCP project/cluster, the shared model-access project and Google Group
 
 - **P0 — foundations**: daedalus-runtime image + seeder; gojira branch (API connect, auto-merge, agent-class Service). Exit: a hand-written bundle repo deploys to the dev cluster through the full chain with no manual steps after repo creation.
 - **P1 — cortex**: cortex-api (composer + provisioner incl. the `access` step + integrations) and cortex-ui (dashboard, create modal with model picker, status checklist, detail page with diff-preview edits). Exit: create → working agent on the chosen model, entirely from the UI; the diagram's per-agent techne DBs exist on PVCs.
-- **P2 — talk, learn & connect**: chat/training pane against the in-cluster a2a endpoint (kaminos TestPane pattern: message/send + SSE trace); knowledge-file editing that reseeds convergently on redeploy; Slack integration (manifest-API app creation + "Finish Slack setup" card); avatar generation in the Persona panel; Archive/Library extraction (team-memory export) from per-agent techne DBs.
+- **P2 — talk, learn & connect**: chat/training pane against the in-cluster a2a endpoint (message/send + SSE trace); knowledge-file editing that reseeds convergently on redeploy; Slack integration (manifest-API app creation + "Finish Slack setup" card); avatar generation in the Persona panel; Archive/Library extraction (team-memory export) from per-agent techne DBs.
 - **Later**: cabal graduation (multi-agent links), limenal tool gateway, vault-backed secrets, reaction-based mutation approvals over Slack, observability wiring, UI auth (POC is dev-only behind whatever ingress protection the cluster provides).
 
 ## 10. Testing

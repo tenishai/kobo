@@ -89,8 +89,6 @@ concern and compose:
   store on a PVC; the seeder converges knowledge at boot and the teach lane writes it live.
 - **skills** — the SKILL.md catalog shape. Kobo reads
   marketplace catalogs (including externally published ones) with pinned versions.
-- **kaminos** — Interface Builder for bundles; kobo
-  borrows its editor patterns and test console.
 - **[liminal](https://github.com/tenishai/liminal)** — the MCP gateway agents point at for
   real tool capabilities.
 - **[sero](https://github.com/tenishai/sero)** — secrets on OpenBao via External Secrets.
@@ -183,8 +181,8 @@ tenishai is a small team of engineers who build with AI coding agents. Most of
 this code was written in pairing sessions with Claude models in Claude Code: a
 person set the design, directed the work and reviewed what landed, and the
 agent wrote much of the code and docs. Many commits name the agent in a
-`Co-Authored-By:` trailer, either a Claude model or Poe (earlier Raven), the
-name of the agent one of us pairs with. A commit without a trailer may still
+`Co-Authored-By:` trailer, either a Claude model or the name of the
+agent one of us pairs with. A commit without a trailer may still
 have had AI help.
 
 ## License
