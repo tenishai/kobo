@@ -62,8 +62,8 @@ Kobo is opinionated by design:
   grants, invite handshakes between agents, an admin team rather than an admin list.
 - **Slack**: self-service wiring; per agent, it wakes on mentions, on a thread it was mentioned
   in, or on every message in a channel.
-- **The agent page**: Chat, Slack, Access, Settings (secrets, environment, the build log) and
-  Harness (model, runtime, persona, skills, tooling, memory, what it has learned).
+- **The agent page**: Chat, Slack, Access, Harness (model, runtime, persona, skills, tooling,
+  memory, what it has learned) and Settings (secrets, environment, the build log).
 - **Personas**: the soul an agent is built from, owned by a group, archived rather than deleted.
 - **MCP**: the room's tools reachable from MCP clients as the signed-in user, over the room's
   own OAuth, with the same visibility and ownership rules as the UI (`api/kobo_api/mcp/tools/`).
