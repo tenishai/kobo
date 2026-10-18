@@ -68,6 +68,8 @@ ORG_KEYS = frozenset(
         "slack_operators",
         "operators",
         "admin_groups",
+        "admin_panel",
+        "logout_url",
         "cabal_url",
         "agent_endpoint_template",
         "groups",

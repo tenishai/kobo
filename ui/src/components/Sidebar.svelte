@@ -10,10 +10,11 @@
   // once, inside the chooser it opens.
   import { createQuery } from "@tanstack/svelte-query";
   import { formatHash } from "../lib/router.svelte";
+  import AccountMenu from "./AccountMenu.svelte";
   import { agentsQuery, whoamiQuery } from "../lib/queries";
 
   let { active, onnewagent, onprefetch }: {
-    active: "dashboard" | "agent" | "getting-started";
+    active: "dashboard" | "agent" | "getting-started" | "admin";
     onnewagent: () => void;
     onprefetch: () => void;
   } = $props();
@@ -100,7 +101,7 @@
   </button>
 
   {#if whoami.data?.email}
-    <p class="sidebar__whoami" title={whoami.data.email}>{whoami.data.email}</p>
+    <AccountMenu whoami={whoami.data} {active} />
   {/if}
 </nav>
 
@@ -234,16 +235,6 @@
     display: none;
   }
 
-  .sidebar__whoami {
-    margin: auto 0 0 0;
-    padding-top: var(--space-sm);
-    border-top: 1px solid var(--border);
-    color: var(--muted);
-    font-size: 0.75rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 
   @media (max-width: 48rem) {
     .sidebar {
@@ -263,8 +254,5 @@
       display: inline;
     }
 
-    .sidebar__whoami {
-      display: none;
-    }
   }
 </style>

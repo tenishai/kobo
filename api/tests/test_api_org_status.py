@@ -524,6 +524,8 @@ def test_whoami_without_iap_is_null_email_and_not_operator(client):
         "operator": False,
         "groups": [],
         "groups_unavailable": False,
+        "admin_panel": False,
+        "logout_url": None,
     }
 
 
@@ -545,6 +547,8 @@ def test_whoami_with_iap_operator_email_reports_email_and_operator_true(tmp_path
         "operator": True,
         "groups": [],
         "groups_unavailable": False,
+        "admin_panel": False,
+        "logout_url": None,
         # shared-group + group-requests wave: an admin's whoami also carries
         # the pending-queue badge count (kobo_api.main.whoami) -- zero here
         # since this test seeds no GroupRequest rows.
@@ -570,6 +574,8 @@ def test_whoami_with_iap_non_operator_email_reports_email_and_operator_false(tmp
         "operator": False,
         "groups": [],
         "groups_unavailable": False,
+        "admin_panel": False,
+        "logout_url": None,
     }
 
 

@@ -3113,6 +3113,11 @@ def create_app(
             "operator": is_admin,
             "groups": groups,
             "groups_unavailable": groups_unavailable,
+            # The account menu's two switches: the Admin entry shows when the
+            # panel is on and the caller is an admin; Log out shows when the
+            # deployment names a sign-out path.
+            "admin_panel": bool(app.state.config.admin_panel),
+            "logout_url": app.state.config.logout_url,
         }
         if is_admin:
             result["pending_group_requests"] = (

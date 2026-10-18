@@ -11,7 +11,8 @@
 export type Route =
   | { page: "dashboard" }
   | { page: "agent"; name: string; tab?: string; section?: string }
-  | { page: "getting-started"; section?: string };
+  | { page: "getting-started"; section?: string }
+  | { page: "admin"; pane?: string; item?: string };
 
 const DASHBOARD: Route = { page: "dashboard" };
 
@@ -43,6 +44,18 @@ export function parseHash(hash: string): Route {
   // `#/getting-started/<section>` opens the guide at one section (guide
   // wave, 2026-09-24); the section id is handed back verbatim, and the page
   // falls back to the first section for an id the guide does not have.
+  // `#/admin/<pane>/<item>` is the admin panel: the pane and the thing open
+  // inside it, both verbatim, so a pane and a row are a link someone can send.
+  if (segments[0] === "admin" && segments.length <= 3) {
+    const route: Route = { page: "admin" };
+    if (segments[1]) {
+      route.pane = segments[1];
+      if (segments[2]) {
+        route.item = segments[2];
+      }
+    }
+    return route;
+  }
   if (segments[0] === "getting-started" && segments.length <= 2) {
     const route: Route = { page: "getting-started" };
     if (segments[1]) {
@@ -88,6 +101,13 @@ export function formatHash(route: Route): string {
   if (route.page === "getting-started") {
     return route.section ? `#/getting-started/${route.section}` : "#/getting-started";
   }
+  if (route.page === "admin") {
+    if (!route.pane) {
+      return "#/admin";
+    }
+    const tail = route.item ? `/${encodeURIComponent(route.item)}` : "";
+    return `#/admin/${route.pane}${tail}`;
+  }
   return "#/";
 }
 
@@ -97,7 +117,7 @@ function currentHash(): string {
 
 /** Flat, mutable shape of the live route state (see `route` below). */
 type RouteState = {
-  page: "dashboard" | "agent" | "getting-started";
+  page: "dashboard" | "agent" | "getting-started" | "admin";
   name: string | null;
   /** The agent page's tab, and the Harness tab's section (or the guide's
    * section on the getting-started page), as written in the hash -- `null`
@@ -108,6 +128,11 @@ type RouteState = {
 };
 
 function toState(parsed: Route): RouteState {
+  // The admin page reuses the two slots: `tab` is the pane, `section` the
+  // item inside it, so nothing downstream grows a third shape.
+  if (parsed.page === "admin") {
+    return { page: "admin", name: null, tab: parsed.pane ?? null, section: parsed.item ?? null };
+  }
   return {
     page: parsed.page,
     name: parsed.page === "agent" ? parsed.name : null,

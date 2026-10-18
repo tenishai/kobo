@@ -26,3 +26,7 @@ Only an operator can move an agent to a different group. Ask one if an agent was
 ## Readers
 
 Some groups are configured as readers. Members see every agent in the room and can change none of them. This is for people whose job is to know what exists.
+
+## Your account menu
+
+The bottom of the left rail is your account menu: press your email to open it. It shows who you are signed in as, a link to this guide, and **Log out** when the room's sign-in has a sign-out path. Room admins also see **Admin** there once the room's admin panel is turned on; nobody else sees the entry, and the page itself refuses anyone who is not an admin.

@@ -389,6 +389,15 @@ class Config(BaseModel):
     # takes group-based admin status down with it, and an email operator is
     # the only way in that survives that outage.
     admin_groups: list[str] = []
+    # The admin panel (`#/admin`: add-ons, integrations, connections, roles,
+    # people, audit). Off by default while it is built; `whoami` reports it
+    # so the account menu shows the Admin entry only when it is on and the
+    # caller is an admin. The server gates the panel's routes on its own.
+    admin_panel: bool = False
+    # Where the account menu's "Log out" goes: the identity proxy's sign-out
+    # path (for Google's proxy, `/_gcp_iap/clear_login_cookie`). None hides
+    # the item, since the room itself holds no session to end.
+    logout_url: str | None = None
     # Path to a built UI `dist/` directory (e.g. `ui/dist` from `npm run
     # build`) to serve alongside the API, same origin, no CORS (Task 1).
     # None (the default) means dev: no UI is mounted, matching today's setup
