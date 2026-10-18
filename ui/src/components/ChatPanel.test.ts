@@ -84,8 +84,9 @@ describe("ChatPanel — Teach this gesture (Task 2)", () => {
     const [userTeach] = screen.getAllByRole("button", { name: "Teach this" });
     await fireEvent.click(userTeach);
 
+    // The bubble's own words only: the reply is not folded into the note.
     const textarea = (await screen.findByLabelText("Teach ward")) as HTMLTextAreaElement;
-    expect(textarea.value).toBe("You said: hello there\n\nward replied: Sure thing.");
+    expect(textarea.value).toBe("hello there");
   });
 
   it("lone message: Teach on a message with no adjacent counterpart yet prefills just itself", async () => {
@@ -173,6 +174,7 @@ describe("ChatPanel — Teach this gesture (Task 2)", () => {
 
     await waitFor(() => {
       expect(screen.getByText(SAVED_COPY)).not.toBeNull();
+      expect(screen.getByText("Saved as intake/chat-x.md")).not.toBeNull();
     });
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
 
@@ -201,7 +203,7 @@ describe("ChatPanel — Teach this gesture (Task 2)", () => {
 
     await fireEvent.click(agentTeach);
     textarea = (await screen.findByLabelText("Teach ward")) as HTMLTextAreaElement;
-    expect(textarea.value).toBe("You said: hello there\n\nward replied: Sure thing.");
+    expect(textarea.value).toBe("Sure thing.");
   });
 
 });
