@@ -8,6 +8,10 @@ All notable changes to kobo are documented here. The format follows
 
 ### Added
 
+- **Admin panel, People and Audit read real data** (issue #173): `GET /api/admin/people` returns the
+  room's admin groups, operators, reader groups and Slack operators from the org keys; `GET
+  /api/admin/audit` returns the store's audit events newest first with their `landed` state.
+  The People pane decides the real group-request queue; both panes say where a list is edited.
 - **Admin panel store** (issue #173, data model): two additive tables, `admin_audit_events` and
   `admin_settings`, JSONB bodies with a `spec_version`; `kobo_api.admin_store` is the one way to
   write and records an audit event in the same transaction. Migration `a1b2c3d4e5f6`.

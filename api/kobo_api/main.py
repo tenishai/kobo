@@ -25,6 +25,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from kobo_api import admin_store
 from kobo_api.admin_addons import addon_cards
 from kobo_api.agent_env import (
     MANAGED_PURPOSES,
@@ -3395,18 +3396,66 @@ def create_app(
 
     # --- Org status (Task 8): read-only wiring visibility for the room ------
 
-    @app.get("/api/admin/addons")
-    def admin_addons(request: Request) -> JSONResponse:
-        """The admin panel's Add-ons pane: what this room runs on, one card
-        each, derived from the org keys that turn each one on (design
-        2026-10-18, Arc 2 step 2). 404 while the panel is off for the room,
-        403 for anyone who is not a room admin; the pane shows the same two
-        answers in words."""
+    def _admin_panel_gate(request: Request) -> JSONResponse | None:
+        """Every admin-panel route answers the same two ways before its own:
+        404 while the panel is off for the room, 403 for anyone who is not a
+        room admin. The panes show the same two answers in words."""
         if not app.state.config.admin_panel:
             return JSONResponse({"error": "the admin panel is off for this room"}, status_code=404)
         if not _is_admin(request):
             return JSONResponse({"error": "the admin panel is for the room's admins"}, status_code=403)
+        return None
+
+    @app.get("/api/admin/addons")
+    def admin_addons(request: Request) -> JSONResponse:
+        """The admin panel's Add-ons pane: what this room runs on, one card
+        each, derived from the org keys that turn each one on (design
+        2026-10-18, Arc 2 step 2)."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
         return JSONResponse({"addons": addon_cards(app.state.config, app.state.clients)})
+
+    @app.get("/api/admin/people")
+    def admin_people(request: Request) -> JSONResponse:
+        """The People pane: who runs the room and who may see it, read from
+        the org keys that say so. Read-only here; the keys are edited in the
+        org config (the pane says so), and the group-request queue has its
+        own routes below."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        cfg = app.state.config
+        return JSONResponse(
+            {
+                "admin_groups": list(cfg.admin_groups),
+                "operators": list(cfg.operators),
+                "reader_groups": list(cfg.reader_groups),
+                "slack_operators": list(cfg.slack_operators),
+            }
+        )
+
+    @app.get("/api/admin/audit")
+    def admin_audit(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        """The Audit pane: the admin store's audit events, newest first, with
+        whether each one has landed where it was meant to."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        events = [
+            {
+                "id": e.id,
+                "at": e.at.isoformat(),
+                "actor": e.actor,
+                "action": e.action,
+                "object_type": e.object_type,
+                "object_id": e.object_id,
+                "landed": e.landed,
+                "landed_detail": e.landed_detail,
+            }
+            for e in admin_store.audit_events(session)
+        ]
+        return JSONResponse({"events": events})
 
     @app.get("/api/org/status")
     def org_status() -> dict:

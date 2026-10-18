@@ -1,34 +1,39 @@
 <script lang="ts">
-  // Who runs the room and who can see it, plus the group-request queue.
+  // Who runs the room and who can see it, read from the org keys that say
+  // so, plus the real group-request queue. The three lists are edited in the
+  // org config (one line says so); the queue is decided here, as it already
+  // is from the dashboard.
+  import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { toast } from "../../lib/toast.svelte";
-  import { admin, decideGroupRequest, setPeople } from "../../lib/admin/store.svelte";
+  import { adminPeopleQuery, decideGroupRequestMutation, groupRequestsQuery } from "../../lib/queries";
 
-  type Kind = "adminGroups" | "operators" | "readerGroups";
-  let editing = $state<Kind | null>(null);
-  let text = $state("");
+  const queryClient = useQueryClient();
+  const people = createQuery(() => (adminPeopleQuery()));
+  const requests = createQuery(() => (groupRequestsQuery(true)));
+  const decide = createMutation(() => (decideGroupRequestMutation(queryClient)));
 
-  const ROWS: { kind: Kind; label: string; desc: string }[] = [
-    { kind: "adminGroups", label: "Admins", desc: "Groups whose members run the room. Every admin permission." },
-    { kind: "operators", label: "Operators", desc: "Named people with operator standing, with or without a group." },
-    { kind: "readerGroups", label: "Readers", desc: "Groups that see every agent and change none." },
+  const ROWS: { key: "admin_groups" | "operators" | "reader_groups" | "slack_operators"; label: string; desc: string }[] = [
+    { key: "admin_groups", label: "Admins", desc: "Groups whose members run the room: every agent, every setting, this panel." },
+    { key: "operators", label: "Operators", desc: "Named people with the same standing, with or without a group. Keep one as break-glass." },
+    { key: "reader_groups", label: "Readers", desc: "Groups that see every agent and change none." },
+    { key: "slack_operators", label: "Slack operators", desc: "People who may finish an agent's Slack setup." },
   ];
 
-  function startEdit(kind: Kind): void {
-    editing = kind;
-    text = admin.people[kind].join(", ");
+  const pending = $derived((requests.data ?? []).filter((r) => r.status === "pending"));
+
+  function when(iso: string): string {
+    return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   }
 
-  function saveEdit(): void {
-    if (!editing) return;
-    const values = text.split(",").map((s) => s.trim()).filter(Boolean);
-    setPeople(editing, values);
-    toast.success("People updated", "Pull request opened against the org config.");
-    editing = null;
-  }
-
-  function decide(id: number, action: "add" | "decline"): void {
-    decideGroupRequest(id, action);
-    toast.success(action === "add" ? "Group added" : "Request declined", action === "add" ? "Pull request opened; the requester is told when it merges." : undefined);
+  function onDecide(id: number, action: "done" | "declined"): void {
+    decide.mutate(
+      { id, action },
+      {
+        onSuccess: () =>
+          toast.success(action === "done" ? "Group added" : "Request declined", action === "done" ? "The requester can file their agent there now." : undefined),
+        onError: () => toast.error("Could not decide that request", "Try again in a moment."),
+      },
+    );
   }
 </script>
 
@@ -38,49 +43,49 @@
     <p class="panel__lead">Who runs the room and who can see it.</p>
   </div>
 
-  <div class="rows">
-    {#each ROWS as r (r.kind)}
-      <div class="row">
-        <div class="row__text">
-          <span class="row__label">{r.label}</span>
-          <p class="row__desc">{r.desc}</p>
+  {#if people.isPending}
+    <p class="panel__note">Reading who is who…</p>
+  {:else if people.isError}
+    <p class="panel__note">Could not read the room's people just now.</p>
+  {:else}
+    <div class="rows">
+      {#each ROWS as r (r.key)}
+        <div class="row">
+          <div class="row__text">
+            <span class="row__label">{r.label}</span>
+            <p class="row__desc">{r.desc}</p>
+          </div>
+          <div class="row__value">{(people.data?.[r.key] ?? []).join(", ") || "none"}</div>
         </div>
-        <div class="row__value">
-          {#if editing === r.kind}
-            <input id="people-{r.kind}" type="text" bind:value={text} aria-label={r.label} />
-            <button type="button" class="btn btn--primary" onclick={saveEdit}>Save</button>
-            <button type="button" class="btn btn--quiet" onclick={() => (editing = null)}>Cancel</button>
-          {:else}
-            <span>{admin.people[r.kind].join(", ") || "none"}</span>
-            <button type="button" class="btn btn--quiet" onclick={() => startEdit(r.kind)}>Edit</button>
-          {/if}
-        </div>
-      </div>
-    {/each}
-  </div>
+      {/each}
+    </div>
+    <p class="panel__note">These lists are set in the org config (<code>admin_groups</code>, <code>operators</code>, <code>reader_groups</code>, <code>slack_operators</code>); the room reads them at boot.</p>
+  {/if}
 
   <h3 class="panel__subheading">Group requests</h3>
-  {#if admin.people.groupRequests.length === 0}
+  {#if requests.isPending}
+    <p class="panel__note">Reading the queue…</p>
+  {:else if pending.length === 0}
     <p class="panel__empty">No requests waiting.</p>
   {:else}
     <table class="panel__table">
       <thead><tr><th>Group</th><th>Requested by</th><th>When</th><th class="panel__cell--right"></th></tr></thead>
       <tbody>
-        {#each admin.people.groupRequests as g (g.id)}
+        {#each pending as g (g.id)}
           <tr>
-            <td><span class="panel__name">{g.group}</span></td>
-            <td>{g.requester}</td>
-            <td>{g.when}</td>
+            <td><span class="panel__name">{g.group_name}</span>{#if g.note} <span class="row__desc">{g.note}</span>{/if}</td>
+            <td>{g.requested_by ?? "unknown"}</td>
+            <td>{when(g.created_at)}</td>
             <td class="panel__cell--right">
-              <button type="button" class="btn btn--quiet" onclick={() => decide(g.id, "add")}>Add</button>
-              <button type="button" class="btn btn--quiet" onclick={() => decide(g.id, "decline")}>Decline</button>
+              <button type="button" class="btn btn--quiet" disabled={decide.isPending} onclick={() => onDecide(g.id, "done")}>Added</button>
+              <button type="button" class="btn btn--quiet" disabled={decide.isPending} onclick={() => onDecide(g.id, "declined")}>Decline</button>
             </td>
           </tr>
         {/each}
       </tbody>
     </table>
+    <p class="panel__note">Press Added once the group exists in the org config; the requester is told.</p>
   {/if}
-  <p class="panel__note">Add writes the group to the org config as a pull request; the requester is told when it merges.</p>
 </section>
 
 <style>
@@ -109,23 +114,9 @@
   }
 
   .row__value {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-xs);
     min-width: 0;
     font-size: 0.9rem;
-  }
-
-  .row__value input {
-    flex: 1;
-    min-width: 12rem;
-    padding: var(--space-2xs) var(--space-xs);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg);
-    color: var(--ink);
-    font: inherit;
+    overflow-wrap: anywhere;
   }
 
   @media (max-width: 40rem) {

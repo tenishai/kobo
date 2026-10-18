@@ -2,7 +2,7 @@
 import { fireEvent, screen } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AdminPanel from "../../pages/AdminPanel.svelte";
-import { admin, blankRole, grantLane, saveRole } from "../../lib/admin/store.svelte";
+import { admin, blankRole, saveRole } from "../../lib/admin/store.svelte";
 import { navigate } from "../../lib/router.svelte";
 import { renderWithClient, stubFetch } from "../../test-utils/render";
 
@@ -23,6 +23,38 @@ describe("AdminPanel", () => {
       },
     ],
   };
+  const PEOPLE = {
+    admin_groups: ["platform-admins"],
+    operators: ["kyle@example.com"],
+    reader_groups: ["sre-leads"],
+    slack_operators: [],
+  };
+  const AUDIT = {
+    events: [
+      {
+        id: 1,
+        at: "2026-10-18T20:00:00",
+        actor: "kyle@example.com",
+        action: "setting.put",
+        object_type: "setting",
+        object_id: "panel.preferences",
+        landed: "applied",
+        landed_detail: "stored",
+      },
+    ],
+  };
+  const REQUESTS = [
+    {
+      id: 7,
+      group_name: "growth-eng",
+      requested_by: "sam@example.com",
+      note: null,
+      status: "pending",
+      decided_by: null,
+      created_at: "2026-10-18T19:00:00",
+      decided_at: null,
+    },
+  ];
   const ADMIN_WHOAMI = {
     email: "kyle@example.com",
     operator: true,
@@ -33,7 +65,13 @@ describe("AdminPanel", () => {
 
   beforeEach(() => {
     vi.unstubAllGlobals();
-    stubFetch({ "/api/whoami": ADMIN_WHOAMI, "/api/admin/addons": ADDONS });
+    stubFetch({
+      "/api/whoami": ADMIN_WHOAMI,
+      "/api/admin/addons": ADDONS,
+      "/api/admin/people": PEOPLE,
+      "/api/admin/audit": AUDIT,
+      "/api/group-requests": { requests: REQUESTS },
+    });
   });
 
   it("is admins only, and only while the room has the panel on", async () => {
@@ -63,6 +101,21 @@ describe("AdminPanel", () => {
     expect(screen.getByText("janus")).toBeTruthy();
   });
 
+  it("People reads the real lists and the real queue", async () => {
+    navigate({ page: "admin", pane: "people" });
+    renderWithClient(AdminPanel);
+    expect(await screen.findByText("platform-admins")).toBeTruthy();
+    expect(await screen.findByText("growth-eng")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Added" })).toBeTruthy();
+  });
+
+  it("Audit reads the store's events with their landed state", async () => {
+    navigate({ page: "admin", pane: "audit" });
+    renderWithClient(AdminPanel);
+    expect(await screen.findByText("panel.preferences")).toBeTruthy();
+    expect(screen.getByText("Applied")).toBeTruthy();
+  });
+
   it("opens the role editor from the Create link", async () => {
     navigate({ page: "admin", pane: "roles" });
     renderWithClient(AdminPanel);
@@ -74,15 +127,6 @@ describe("AdminPanel", () => {
 });
 
 describe("admin store", () => {
-  it("a grant by pull request waits on the PR and writes an audit row", () => {
-    const before = admin.audit.length;
-    grantLane("wren", "github", "read", "pr");
-    const lane = admin.connections.find((c) => c.agent === "wren")?.lanes.find((l) => l.plugin === "github");
-    expect(lane?.state).toBe("pr_open");
-    expect(lane?.pr).toMatch(/^PR #\d+ open$/);
-    expect(admin.audit.length).toBe(before + 1);
-    expect(admin.audit[0].change).toContain("wren");
-  });
 
   it("a custom role gets an id from its name and is not built in", () => {
     const draft = blankRole();
