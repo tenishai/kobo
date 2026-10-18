@@ -103,6 +103,12 @@ def run_migrations_online() -> None:
         # (local, tests) has one writer by construction and no such lock.
         if connection.dialect.name == "postgresql":
             connection.exec_driver_sql(f"SELECT pg_advisory_lock({MIGRATION_LOCK_KEY})")
+            # The SELECT autobegan a transaction. Close it: alembic must open
+            # its own below, or it treats ours as already in progress and
+            # never commits what it ran. A session-level advisory lock
+            # survives the commit; it is held by the connection, not the
+            # transaction.
+            connection.commit()
         try:
             context.configure(
                 connection=connection,
@@ -115,6 +121,7 @@ def run_migrations_online() -> None:
         finally:
             if connection.dialect.name == "postgresql":
                 connection.exec_driver_sql(f"SELECT pg_advisory_unlock({MIGRATION_LOCK_KEY})")
+                connection.commit()
 
 
 if context.is_offline_mode():
