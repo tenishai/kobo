@@ -63,8 +63,10 @@ def _sha(path: Path) -> str:
 def test_default_mode_composes_the_same_bytes_as_before_the_setting(tmp_path):
     """Acceptance for issue #131: `default` is today's output byte for byte.
     The digests were taken from origin/main 753a46f's composer for these
-    exact specs. A deliberate change to the default bundle updates them;
-    nothing in the colleague-mode work may."""
+    exact specs, and retaken on 2026-10-18 when the composer stopped emitting
+    `approvals.ceiling.write: false` (a deliberate change to the default
+    bundle, agora discussion #55 item 7). Nothing in the colleague-mode work
+    may change them."""
     on = _compose(tmp_path / "on", _spec(colleague_mode="default"))
     off = _compose(tmp_path / "off", _spec(switchboard=False, colleague_mode="default"))
 
@@ -74,9 +76,9 @@ def test_default_mode_composes_the_same_bytes_as_before_the_setting(tmp_path):
         "off/agent.yaml": _sha(off / "agent.yaml"),
         "off/colleagues.md": _sha(off / "knowledge" / "colleagues.md"),
     } == {
-        "on/agent.yaml": "2a46115a54bac2daafeaf1b326f83e73bbff66da2c67ffb160f08bb687c65b6e",
+        "on/agent.yaml": "1c04bd2c2a0164a145707c665b82ca445ed0ac11f47bf35cf32f971088ec07b5",
         "on/colleagues.md": "0fdc38a8b14e4a82014bb47681183c38f5012a5387dbe78b72a1e4eb69fb2438",
-        "off/agent.yaml": "5f9e77b49c959a5233f2d619ab3899b4b2d36c6c1ef2879bf2df05394c152311",
+        "off/agent.yaml": "aef18cec1a2ce13072097b7c108ed8abb91114087ecd50d26f8b46e4476be5e6",
         "off/colleagues.md": "4d177ec18d1c269e6b42aa1ba092c4cc083c1dc12720c1e1601cd64ba0cd26c5",
     }
 
