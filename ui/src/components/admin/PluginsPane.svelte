@@ -6,7 +6,9 @@
   // with agents scoped below it through Connections and Roles. Connect saves
   // as a pull request to the org config, so a card says "next boot" until
   // the room restarts.
+  import { createQuery } from "@tanstack/svelte-query";
   import Modal from "../Modal.svelte";
+  import { adminAddonsQuery } from "../../lib/queries";
   import { toast } from "../../lib/toast.svelte";
   import {
     CATALOG,
@@ -33,7 +35,11 @@
     },
   } as const;
   const copy = $derived(COPY[kind]);
-  const shown = $derived(admin.plugins.filter((p) => p.kind === kind));
+  // Add-ons are read from the server (one card per org-key group, state
+  // derived there); integrations still come from the in-memory store until
+  // their data lane lands (#173 step 3).
+  const addons = createQuery(() => ({ ...adminAddonsQuery(), enabled: kind === "platform" }));
+  const shown = $derived(kind === "vendor" ? admin.plugins.filter((p) => p.kind === "vendor") : []);
   const addable = $derived(CATALOG.filter((c) => c.kind === kind && !plugin(c.id)));
 
   let editing = $state<Plugin | null>(null);
@@ -93,6 +99,31 @@
     {/if}
   </div>
 
+  {#if kind === "platform"}
+    {#if addons.isPending}
+      <p class="panel__note">Reading what the room runs on…</p>
+    {:else if addons.isError}
+      <p class="panel__note">Could not read the add-ons just now.</p>
+    {:else}
+      <div class="cards">
+        {#each addons.data ?? [] as a (a.id)}
+          <article class="card" aria-labelledby="addon-{a.id}">
+            <div class="card__head">
+              <h4 id="addon-{a.id}" class="card__name">{a.name}</h4>
+              <span class="dot dot--{a.state}" title={a.state} aria-label={a.state}></span>
+            </div>
+            <p class="card__summary">{a.summary}</p>
+            <p class="card__detail" class:card__detail--fail={a.state === "error"}>{a.detail}</p>
+            <p class="card__fields">Set by {a.keys.join(", ")} · from the {a.owner}</p>
+          </article>
+        {/each}
+      </div>
+      <p class="panel__note">
+        An add-on is turned on in the org config; this pane shows the result. Editing from here
+        comes with Integrations.
+      </p>
+    {/if}
+  {:else}
   <div class="cards">
     {#each shown as p (p.id)}
       <article class="card" aria-labelledby="plugin-{p.id}">
@@ -127,6 +158,7 @@
       </article>
     {/each}
   </div>
+  {/if}
 </section>
 
 <Modal open={editing !== null} title={editing ? `Connect ${editing.name}` : ""} onclose={closeConnect}>
@@ -209,11 +241,13 @@
     flex-shrink: 0;
   }
 
-  .dot--connected {
+  .dot--connected,
+  .dot--on {
     border-color: var(--ok);
     background: var(--ok);
   }
 
+  .dot--error,
   .dot--error {
     border-color: var(--fail);
     background: var(--fail);

@@ -1120,6 +1120,24 @@ export async function fetchOrgStatus(): Promise<OrgStatus> {
 
 /** `GET /api/whoami` — the signed-in identity this room's server has
  * already verified (or `{email: null, ...}` when IAP isn't configured). */
+/** One Add-ons card (admin panel): what the room runs on and whether it is
+ * on, derived server-side from the org keys that turn it on. */
+export type AdminAddon = {
+  id: string;
+  name: string;
+  summary: string;
+  state: "on" | "off" | "error";
+  detail: string;
+  keys: string[];
+  owner: string;
+};
+
+export async function fetchAdminAddons(): Promise<AdminAddon[]> {
+  const res = await fetch("/api/admin/addons");
+  const body = await parse<{ addons: AdminAddon[] }>(res);
+  return body.addons;
+}
+
 export async function fetchWhoami(): Promise<Whoami> {
   const res = await fetch("/api/whoami");
   return parse<Whoami>(res);

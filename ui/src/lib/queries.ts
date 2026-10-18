@@ -189,6 +189,7 @@ import {
   fetchSlackManifest,
   fetchTeamOptions,
   fetchTeams,
+  fetchAdminAddons,
   fetchWhoami,
   generateAvatar,
   getAgent,
@@ -508,6 +509,14 @@ export function orgStatusQuery() {
  * anyway), unlike `orgStatusQuery`'s wiring state which a human can change
  * out from under a long-lived tab.
  */
+export function adminAddonsQuery() {
+  return queryOptions({
+    queryKey: ["admin", "addons"] as const,
+    queryFn: fetchAdminAddons,
+    staleTime: 60_000,
+  });
+}
+
 export function whoamiQuery() {
   return queryOptions({
     queryKey: ["whoami"] as const,

@@ -8,6 +8,10 @@ All notable changes to kobo are documented here. The format follows
 
 ### Added
 
+- **Admin panel, Add-ons pane reads the room** (issue #173 step 2): `GET /api/admin/addons` returns one
+  card per add-on (deploy platform, secrets, observability, switchboard, tool gateway, memory,
+  model gateway) with its state derived from the org keys that turn it on; the pane shows the
+  cards, the keys, and whose add-on it is. Admins only, and only while `admin_panel` is on.
 - **Bundle publisher** (`kobo_api.bundle_publish`, issue #172 step 1): pushes an agent's `bundle/`
   as a registry artifact tagged by commit sha and moves the per-agent `:current` pointer, only
   when the bundle's git tree id changed. Not wired into any lane yet; the one-runtime design

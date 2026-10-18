@@ -25,6 +25,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from kobo_api.admin_addons import addon_cards
 from kobo_api.agent_env import (
     MANAGED_PURPOSES,
     MAX_ENV_VALUE_LENGTH,
@@ -3393,6 +3394,19 @@ def create_app(
         return JSONResponse({"people": result})
 
     # --- Org status (Task 8): read-only wiring visibility for the room ------
+
+    @app.get("/api/admin/addons")
+    def admin_addons(request: Request) -> JSONResponse:
+        """The admin panel's Add-ons pane: what this room runs on, one card
+        each, derived from the org keys that turn each one on (design
+        2026-10-18, Arc 2 step 2). 404 while the panel is off for the room,
+        403 for anyone who is not a room admin; the pane shows the same two
+        answers in words."""
+        if not app.state.config.admin_panel:
+            return JSONResponse({"error": "the admin panel is off for this room"}, status_code=404)
+        if not _is_admin(request):
+            return JSONResponse({"error": "the admin panel is for the room's admins"}, status_code=403)
+        return JSONResponse({"addons": addon_cards(app.state.config, app.state.clients)})
 
     @app.get("/api/org/status")
     def org_status() -> dict:

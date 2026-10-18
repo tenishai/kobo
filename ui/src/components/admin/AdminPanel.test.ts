@@ -10,6 +10,19 @@ import { renderWithClient, stubFetch } from "../../test-utils/render";
 // link, and the store's mutations leave an audit row behind.
 
 describe("AdminPanel", () => {
+  const ADDONS = {
+    addons: [
+      {
+        id: "secrets",
+        name: "Secrets",
+        summary: "Holds each agent's secrets in the vault.",
+        state: "on",
+        detail: "Vault lane at http://sero.internal.",
+        keys: ["sero_url"],
+        owner: "this team",
+      },
+    ],
+  };
   const ADMIN_WHOAMI = {
     email: "kyle@example.com",
     operator: true,
@@ -20,7 +33,7 @@ describe("AdminPanel", () => {
 
   beforeEach(() => {
     vi.unstubAllGlobals();
-    stubFetch({ "/api/whoami": ADMIN_WHOAMI });
+    stubFetch({ "/api/whoami": ADMIN_WHOAMI, "/api/admin/addons": ADDONS });
   });
 
   it("is admins only, and only while the room has the panel on", async () => {
@@ -36,7 +49,8 @@ describe("AdminPanel", () => {
     navigate({ page: "admin", pane: "addons" });
     renderWithClient(AdminPanel);
     expect(await screen.findByRole("heading", { name: "Add-ons" })).toBeTruthy();
-    expect(screen.getByText("Secrets (sero)")).toBeTruthy();
+    // Cards come from the server, not the store.
+    expect(await screen.findByText("Vault lane at http://sero.internal.")).toBeTruthy();
     // A vendor is an integration, not an add-on.
     expect(screen.queryByText("Datadog")).toBeNull();
   });
