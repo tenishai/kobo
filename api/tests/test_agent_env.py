@@ -981,3 +981,20 @@ def test_the_rooms_own_two_secrets_are_named_the_way_the_agents_own_is():
     assert managed_secret_path("clio", "cabal") == "apps/clio/cabal"
     assert managed_secret_name("clio", "slack") == "clio-slack"
     assert MANAGED_PURPOSES == ("cabal", "slack")
+
+
+def test_contract_only_commit_is_marked_skip_ci():
+    """A gojira.yaml-only commit fails the generated contract check and the
+    reprovision's setup pull request is the deploy, so the push skips CI."""
+    github = FakeGitHub(existing_repos={REPO})
+    gojira = _gojira()
+    edit_gojira_yaml(
+        github,
+        gojira,
+        repo=REPO,
+        connected=False,
+        gojira_app_id=APP_ID,
+        edit=_edit_env({"API_BASE": "https://example.test"}),
+        message="kobo: environment variables",
+    )
+    assert github.pushes[-1][1] == "kobo: environment variables [skip ci]"

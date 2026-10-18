@@ -152,12 +152,21 @@
    * only in the Behind line, where the full ref is already on the row above
    * and repeating it would bury the one word that matters. */
   function versionOf(ref: string): string {
+    // The card's rule (composer.runtime_version): the tag when the ref has
+    // one, also for `repo:tag@sha256:...`; the digest's first 12 hex for a
+    // digest-only ref; `latest` for a bare repository.
     const at = ref.lastIndexOf("@");
-    if (at !== -1) {
-      return ref.slice(at + 1);
+    const name = at === -1 ? ref : ref.slice(0, at);
+    const colon = name.lastIndexOf(":");
+    if (colon > name.lastIndexOf("/")) {
+      return name.slice(colon + 1);
     }
-    const colon = ref.lastIndexOf(":");
-    return colon > ref.lastIndexOf("/") ? ref.slice(colon + 1) : ref;
+    if (at !== -1) {
+      const digest = ref.slice(at + 1);
+      const sep = digest.indexOf(":");
+      return sep === -1 ? digest.slice(0, 12) : digest.slice(0, sep + 13);
+    }
+    return "latest";
   }
 
   // Three states, and the middle one is the only one with a control:
@@ -209,8 +218,11 @@
     default: "Asks the colleague whose field a question is in before answering from general knowledge.",
     "roster-only":
       "Knows who is in the room but can't ask them. Answers only from its own tools and memory, not general knowledge; otherwise says it doesn't know and asks you.",
-    none: "No colleague tools and no roster. Other agents can still ask it.",
+    none: "No colleague tools and no roster.",
   };
+  // True in every mode: the mode is about what this agent may ask, not what
+  // it may be asked.
+  const COLLEAGUE_MODE_ALWAYS = "Other agents can still ask it.";
   let pickedColleagueMode = $state<ColleagueMode | null>(null);
   const colleagueModeChoice = $derived(pickedColleagueMode ?? colleagueMode);
   // svelte-ignore state_referenced_locally
@@ -339,7 +351,7 @@
                     {COLLEAGUE_MODE_LABELS[colleagueMode]}
                   {/if}
                   {#if colleagueModeChoice}
-                    <p class="panel__note">{COLLEAGUE_MODE_NOTES[colleagueModeChoice]}</p>
+                    <p class="panel__note">{COLLEAGUE_MODE_NOTES[colleagueModeChoice]} {COLLEAGUE_MODE_ALWAYS}</p>
                   {/if}
                 </dd>
               {/if}

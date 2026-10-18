@@ -6,6 +6,18 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **A commit that changes only the deploy contract skips CI.** The environment and model
+  changes commit `gojira.yaml` alone; that commit failed the generated contract check and
+  the setup pull request Gojira opens on reprovision was the deploy anyway. The push now
+  carries `[skip ci]`, the same as the archive commits (agora discussion #55, item 2).
+- **Composed agents no longer declare `approvals.ceiling.write: false`.** The runtime
+  enforces only `ceiling.exec`, so the line promised a limit nothing applied (agora
+  discussion #55, item 7). Existing agents keep theirs until they are recomposed.
+- **The Harness tab's Behind line shows the tag of a `tag@digest` pin**, the same rule as
+  the agent card's `version`, instead of the digest (issue #158).
+
 ## [0.2.2] - 2026-10-14
 
 ### Upgrading
@@ -13,6 +25,14 @@ All notable changes to kobo are documented here. The format follows
 - No database migration. The alembic head is still `a8e2c4f6d913` from 0.2.0.
 - Nothing to change. To give a digest-pinned agent's card a readable `version`, re-pin its
   runtime as `repo:tag@sha256:...` (see Fixed).
+
+### Changed
+
+- **The in-app guide and the operating doc follow the release** (PR #153): guide 11 says an
+  owner or an operator can **set runtime image** (it said operators only), guides 03 and 08
+  follow the code, and `docs/operating.md` gains an Upgrading section (migrations run at
+  boot, so back up first).
+- **CONTRIBUTING: on macOS, put the GNU tools first on PATH** (PR #155).
 
 ### Fixed
 
@@ -154,6 +174,9 @@ changelog started (PR #103).
 
 ### Added
 
+- **The deploy workflow reads its registry, deploy identity and cluster from repository
+  variables** (`GOJIRA_DEV_*`, PR #115) and fails fast when any is unset, so a fork runs it
+  without editing the file.
 - **Colleague mode, set per agent by its owner** (PR #132). `default` is unchanged: the agent
   has the colleague tools and is told to consult colleagues first. `roster-only` keeps the
   roster as knowledge but drops `ask_colleague`, and the agent answers from its own tools and
