@@ -8,6 +8,12 @@ All notable changes to kobo are documented here. The format follows
 
 ### Added
 
+- **Admin panel store** (issue #173, data model): two additive tables, `admin_audit_events` and
+  `admin_settings`, JSONB bodies with a `spec_version`; `kobo_api.admin_store` is the one way to
+  write and records an audit event in the same transaction. Migration `a1b2c3d4e5f6`.
+- **The boot-time migration takes a Postgres advisory lock**, so two replicas on a rolling
+  update never run `alembic upgrade head` at once (`migrations/env.py`). `docs/operating.md`
+  records the two rules: migrations are additive, one pod migrates at a time.
 - **Admin panel, Add-ons pane reads the room** (issue #173 step 2): `GET /api/admin/addons` returns one
   card per add-on (deploy platform, secrets, observability, switchboard, tool gateway, memory,
   model gateway) with its state derived from the org keys that turn it on; the pane shows the

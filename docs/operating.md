@@ -112,6 +112,15 @@ migration (0.2.0 was the first to add one after the 0.1.0 tag). A version from b
 migration won't start on the migrated
 database; restore the backup, or run the `alembic downgrade` the Upgrading section names.
 
+Two rules keep that boot-time upgrade safe with more than one replica (decided 2026-10-18):
+
+- **Migrations are additive.** A release adds a column or a table; a later release removes
+  what nothing reads any more. Nothing is renamed in place, so the old image and the new one
+  both run against the database during a rolling update.
+- **One pod migrates at a time.** On Postgres the upgrade takes a session-level advisory lock
+  (`migrations/env.py`), so the second pod waits for the first and then finds the database
+  already at head. SQLite has one writer by construction.
+
 **Switchboard**: the room relays chat, teach, threads and the learnings sweep through the
 switchboard (cabal) when three things are set: `cabal_url` and `agent_endpoint_template` in
 `org.yaml`, and `CABAL_OPERATOR_TOKEN` in the room's environment. Mint the token with
