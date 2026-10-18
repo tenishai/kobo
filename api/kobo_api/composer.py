@@ -2,7 +2,12 @@
 `agent.yaml` against a vendored copy of daedalus's `docs/bundle.schema.json`.
 
 The schema lives at `kobo_api/vendor/bundle.schema.json`, copied verbatim
-from the daedalus repo — never hand-edited.
+from the daedalus repo and never hand-edited. The current copy is daedalus
+v0.5.5's `docs/bundle.schema.json` (copied 2026-10-18; the copy before it
+was 0.4.0.dev0's, issue #152). When daedalus releases a schema change,
+re-copy the file and re-run the composer tests: `compose()` validates every
+shape kobo writes against it, and `test_vendored_schema_is_the_current_copy`
+pins which copy this is.
 """
 
 from __future__ import annotations

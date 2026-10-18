@@ -30,6 +30,10 @@
             },
             {
               "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\\}$"
             }
           ],
           "default": null,
@@ -49,6 +53,10 @@
             },
             {
               "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\\}$"
             }
           ],
           "default": null,
@@ -68,9 +76,154 @@
           ],
           "default": null,
           "title": "Hosts"
+        },
+        "exec": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\\}$"
+            }
+          ],
+          "default": null,
+          "title": "Exec"
         }
       },
       "title": "CeilingSpec",
+      "type": "object"
+    },
+    "ClaudeCodeSpec": {
+      "additionalProperties": true,
+      "description": "Settings for the Claude Code engine (tenishai/agents#51). Used only when the\noperator runs the bundle with that engine; the LiteLLM engine ignores them.",
+      "properties": {
+        "binary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Binary"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "builtin_tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Builtin Tools",
+          "type": "array"
+        },
+        "permission_mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "default",
+                "dontAsk",
+                "acceptEdits",
+                "plan"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\\}$"
+            }
+          ],
+          "title": "Permission Mode",
+          "default": "default"
+        },
+        "on_denied": {
+          "anyOf": [
+            {
+              "enum": [
+                "continue",
+                "stop"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\\}$"
+            }
+          ],
+          "title": "On Denied",
+          "default": "continue"
+        },
+        "config_dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Config Dir"
+        }
+      },
+      "title": "ClaudeCodeSpec",
+      "type": "object"
+    },
+    "CloudTrailSpec": {
+      "additionalProperties": true,
+      "description": "A cloud-lane SIDECAR block (2026-09-03 cloud-access ruling): the\npod's own workload identity federates into an AWS role scoped to one\nCloudTrail Lake event data store -- no stored credential anywhere, and\nthe scoping lives in AWS IAM, not here. Stacks alongside the primary\nprovider exactly like `github`. Absent role_arn = the block is off.",
+      "properties": {
+        "role_arn": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Role Arn"
+        },
+        "event_data_store": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Event Data Store"
+        },
+        "region": {
+          "default": "us-east-2",
+          "title": "Region",
+          "type": "string"
+        },
+        "group_prefix": {
+          "default": "engineering_",
+          "title": "Group Prefix",
+          "type": "string"
+        }
+      },
+      "title": "CloudTrailSpec",
       "type": "object"
     },
     "ColleaguesSpec": {
@@ -116,6 +269,16 @@
       "title": "ColleaguesSpec",
       "type": "object"
     },
+    "EngineSpec": {
+      "additionalProperties": true,
+      "properties": {
+        "claude_code": {
+          "$ref": "#/$defs/ClaudeCodeSpec"
+        }
+      },
+      "title": "EngineSpec",
+      "type": "object"
+    },
     "EscalationSpec": {
       "additionalProperties": true,
       "properties": {
@@ -147,6 +310,99 @@
       "title": "GateSpec",
       "type": "object"
     },
+    "GitHubSpec": {
+      "additionalProperties": true,
+      "description": "The room PR broker's client half (2026-08-27 spec). A SIDECAR block,\nnot a `provider` value: an agent keeps its one primary provider (almost\nalways colleagues) and gains github.* alongside it, the same composition\n`builtin` already rides. Absent broker_url = the block is off.",
+      "properties": {
+        "broker_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Broker Url"
+        },
+        "token_env": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token Env"
+        },
+        "self": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Self"
+        },
+        "branch_prefix": {
+          "default": "daedalus",
+          "title": "Branch Prefix",
+          "type": "string"
+        }
+      },
+      "title": "GitHubSpec",
+      "type": "object"
+    },
+    "JiraSpec": {
+      "additionalProperties": true,
+      "description": "The room broker's issue-tracker read lane (2026-09-04). Same custody\nshape as `github`: the room holds the tracker credential, this block\nonly names where the broker lives and how the agent proves itself.\nAbsent broker_url = the block is off.",
+      "properties": {
+        "broker_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Broker Url"
+        },
+        "token_env": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token Env"
+        },
+        "self": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Self"
+        }
+      },
+      "title": "JiraSpec",
+      "type": "object"
+    },
     "LiminalSpec": {
       "additionalProperties": true,
       "properties": {
@@ -173,6 +429,18 @@
           ],
           "default": null,
           "title": "Token Env"
+        },
+        "exchange_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exchange Url"
         }
       },
       "title": "LiminalSpec",
@@ -182,13 +450,21 @@
       "additionalProperties": true,
       "properties": {
         "personal": {
-          "default": "none",
-          "enum": [
-            "none",
-            "techne"
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "techne"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\\}$"
+            }
           ],
           "title": "Personal",
-          "type": "string"
+          "default": "none"
         },
         "home": {
           "anyOf": [
@@ -203,11 +479,8 @@
           "title": "Home"
         },
         "team": {
+          "const": "none",
           "default": "none",
-          "enum": [
-            "none",
-            "outbox"
-          ],
           "title": "Team",
           "type": "string"
         },
@@ -231,13 +504,29 @@
       "additionalProperties": true,
       "properties": {
         "id": {
-          "title": "Id",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
         },
         "max_tokens": {
-          "default": 8192,
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\\}$"
+            }
+          ],
           "title": "Max Tokens",
-          "type": "integer"
+          "default": 8192
         },
         "api_base": {
           "anyOf": [
@@ -267,25 +556,85 @@
           "$ref": "#/$defs/BudgetSpec"
         }
       },
-      "required": [
-        "id"
-      ],
       "title": "ModelSpec",
+      "type": "object",
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "tier"
+            ]
+          },
+          {
+            "required": [
+              "min_tier"
+            ]
+          }
+        ]
+      }
+    },
+    "SlackReadSpec": {
+      "additionalProperties": true,
+      "description": "A read-only SIDECAR block (2026-09-04): the agent may read\nconversation threads from the channels listed here, using the pod's own\nSlack bot token (the transport's env). Slack's channel membership is the\nsecond wall -- history reads fail until a human invites the bot.\n\nThree states, and the difference between the last two is deliberate\n(2026-09-23 operator ruling):\n  - `channels` absent      -> the block is OFF\n  - `channels: []`         -> ON with no allowlist: every channel the app\n                              has been invited to. Inviting the app is\n                              already the human grant; re-typing the IDs\n                              is the same permission asked for twice.\n  - `channels: [C012ABC]`  -> ON, and exactly those channels",
+      "properties": {
+        "channels": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Channels"
+        },
+        "token_env": {
+          "default": "SLACK_BOT_TOKEN",
+          "title": "Token Env",
+          "type": "string"
+        },
+        "scan_limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\\}$"
+            }
+          ],
+          "title": "Scan Limit",
+          "default": 2000
+        }
+      },
+      "title": "SlackReadSpec",
       "type": "object"
     },
     "ToolsSpec": {
       "additionalProperties": true,
       "properties": {
         "provider": {
-          "default": "none",
-          "enum": [
-            "none",
-            "mcp",
-            "liminal",
-            "colleagues"
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "mcp",
+                "liminal",
+                "colleagues"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\\}$"
+            }
           ],
           "title": "Provider",
-          "type": "string"
+          "default": "none"
         },
         "servers": {
           "items": {
@@ -300,6 +649,18 @@
         },
         "colleagues": {
           "$ref": "#/$defs/ColleaguesSpec"
+        },
+        "github": {
+          "$ref": "#/$defs/GitHubSpec"
+        },
+        "cloudtrail": {
+          "$ref": "#/$defs/CloudTrailSpec"
+        },
+        "slack_read": {
+          "$ref": "#/$defs/SlackReadSpec"
+        },
+        "jira": {
+          "$ref": "#/$defs/JiraSpec"
         },
         "builtin": {
           "additionalProperties": {
@@ -317,9 +678,68 @@
           "type": "array"
         },
         "max_steps": {
-          "default": 10,
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\\}$"
+            }
+          ],
           "title": "Max Steps",
-          "type": "integer"
+          "default": 10
+        },
+        "on_exhausted": {
+          "anyOf": [
+            {
+              "enum": [
+                "stop",
+                "wrap_up"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\\}$"
+            }
+          ],
+          "title": "On Exhausted",
+          "default": "stop"
+        },
+        "context_tokens": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\\}$"
+            }
+          ],
+          "default": null,
+          "title": "Context Tokens"
+        },
+        "max_repeats": {
+          "anyOf": [
+            {
+              "minimum": 2,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\\}$"
+            }
+          ],
+          "default": null,
+          "title": "Max Repeats"
         }
       },
       "title": "ToolsSpec",
@@ -327,7 +747,7 @@
     },
     "TransportSpec": {
       "additionalProperties": true,
-      "description": "kind plus transport-specific fields (channel, port, ...) kept as extras.",
+      "description": "kind plus transport-specific fields (channel, port, approvers, ...) kept as extras.",
       "properties": {
         "kind": {
           "title": "Kind",
@@ -342,7 +762,7 @@
     }
   },
   "additionalProperties": true,
-  "description": "Wiring for a daedalus agent bundle \u2014 a directory that IS an agent (agent.yaml + persona.md + agent-card.json). Unknown fields load with a warning, never silently.",
+  "description": "Wiring for a daedalus agent bundle \u2014 a directory that IS an agent (agent.yaml + persona.md + agent-card.json). Unknown fields load with a warning, never silently. A non-string field may also be written as a ${VAR} / ${VAR:-default} placeholder, expanded from the environment before this shape applies.",
   "properties": {
     "name": {
       "title": "Name",
@@ -375,16 +795,27 @@
       "$ref": "#/$defs/MemorySpec"
     },
     "checkpoints": {
-      "default": "none",
-      "enum": [
-        "none",
-        "sqlite"
+      "anyOf": [
+        {
+          "enum": [
+            "none",
+            "sqlite"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\\}$"
+        }
       ],
       "title": "Checkpoints",
-      "type": "string"
+      "default": "none"
     },
     "approvals": {
       "$ref": "#/$defs/ApprovalsSpec"
+    },
+    "engine": {
+      "$ref": "#/$defs/EngineSpec"
     }
   },
   "required": [
@@ -395,5 +826,5 @@
   "type": "object",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/tenishai/daedalus/blob/main/docs/bundle.schema.json",
-  "version": "0.4.0.dev0"
+  "version": "0.5.5"
 }
