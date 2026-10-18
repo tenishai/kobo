@@ -51,6 +51,10 @@ config = context.config
 # already has, which is exactly the right default for an embedded caller.
 target_metadata = Base.metadata
 
+# One 64-bit key for the whole room's schema: the lock is per database, so
+# any value both pods agree on works. Chosen once, never changed.
+MIGRATION_LOCK_KEY = 7_204_621_337_001
+
 
 def _db_url() -> str:
     # Whatever the source, the Postgres driver is named before SQLAlchemy sees
@@ -91,14 +95,26 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            render_as_batch=True,
-        )
+        # Every pod runs `alembic upgrade head` at boot (docker/entrypoint.sh)
+        # and the API has two replicas on a rolling update, so two upgrades
+        # can start within a second of each other. On Postgres the second
+        # waits here on a session-level advisory lock until the first has
+        # committed, then finds the database at head and does nothing. SQLite
+        # (local, tests) has one writer by construction and no such lock.
+        if connection.dialect.name == "postgresql":
+            connection.exec_driver_sql(f"SELECT pg_advisory_lock({MIGRATION_LOCK_KEY})")
+        try:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                render_as_batch=True,
+            )
 
-        with context.begin_transaction():
-            context.run_migrations()
+            with context.begin_transaction():
+                context.run_migrations()
+        finally:
+            if connection.dialect.name == "postgresql":
+                connection.exec_driver_sql(f"SELECT pg_advisory_unlock({MIGRATION_LOCK_KEY})")
 
 
 if context.is_offline_mode():

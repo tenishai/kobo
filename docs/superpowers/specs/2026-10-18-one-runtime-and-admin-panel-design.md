@@ -150,6 +150,73 @@ to `none`. Disconnect reverses the four. An agent's lane is then a grant
    admin plane.
 4. Phase 2 bab, after bab's team confirms the catalogue and tuple shapes.
 
+## Arc 2: the data model and the database
+
+Decided 2026-10-18 with Kyle. The panel's state needs a store that stays
+additive as bab, liminal, add-ons and integrations grow, and the database
+under it needs to be the production-grade one, not the local lane.
+
+### One server, one database per product, one prefix per concern
+
+- The room already runs on managed Postgres (Cloud SQL, Postgres 16, one
+  database `kobo`). SQLite is the local and test lane and stays there.
+- One instance per environment. One **database per product** on it: `kobo`
+  as today; bab's OpenFGA store gets its own database in phase 2; sero gets
+  its own when it leaves SQLite (a secrets control plane on a single replica
+  with a local file is the estate's weakest point). Products never share
+  tables; they talk through their APIs.
+- Inside `kobo`, the panel's tables carry the `admin_` prefix. A Postgres
+  schema would draw the same line but SQLite has no schemas, and the lane
+  that runs the tests must run the same models.
+
+### Additive comes from the table shape
+
+A new vendor, a new bab capability or a new add-on setting must not need a
+migration. Typed columns hold what the panes query on; one JSON body holds
+what varies by kind, JSONB on Postgres, JSON text on SQLite, with a
+`spec_version` so code upgrades old rows on read. A JSON Schema per kind in
+code validates on write, the pattern the composer already uses for bundles.
+
+| Table | Typed columns | JSON body |
+|---|---|---|
+| `admin_audit_events` | at, actor, action, object_type, object_id, landed, landed_detail | before, after |
+| `admin_settings` | key (from a registry in code), spec_version, version, updated_at, updated_by | value |
+| `admin_integrations` (step 3) | id, vendor, kind, base_access, state, credential_ref, created_by, timestamps | vendor fields, the gateway target spec |
+| `admin_roles` + `admin_role_groups` (step 3) | id, name, builtin, timestamps; role_id, group | capabilities, admin permissions, ceilings, models |
+| `admin_grants` (step 3) | agent, integration, access, state, requested_by, decided_by, timestamps | pull request link, applied digest |
+
+`admin_settings` is the escape hatch for what no table names yet; its keys
+come from `kobo_api.admin_store.SETTING_KEYS`, never free text. No table per
+vendor or per plugin, and no event sourcing: the audit table with before and
+after is the history.
+
+### The database is the source of truth; outside systems are projections
+
+This narrows the earlier "every write is a pull request". A pane writes its
+row **and an audit event in one transaction** (`kobo_api.admin_store` is the
+one way to write), then a sync step pushes the result where it must live: a
+liminal grant, a sero secret, a bab tuple, a pull request adding a gateway
+target. Every event carries `landed` (`pending`, `applied`, `failed`) and the
+pane shows it: desired versus observed, the shape the provisioner already
+uses. Pull requests stay for the two things that live in git, the gateway's
+target file and org-level keys. Add-ons stay read-only and derived.
+
+### Running Postgres for the long term (the deployment's side)
+
+1. Regional availability (standby in a second zone, automatic failover),
+   point-in-time recovery kept 14 days, backups copied to a second region.
+2. Migrations are additive only, and the boot-time `alembic upgrade head`
+   takes a Postgres advisory lock so two replicas never race (`migrations/
+   env.py`).
+3. Cloud SQL's managed connection pooling when the panel adds traffic, not
+   our own PgBouncer; the API and worker split keeps the pool honest.
+4. IAM database authentication for the room's service account, private IP
+   only.
+5. Noto watches the instance: connections, lag, storage, slow queries.
+6. None of this becomes a code requirement: kobo works against any Postgres
+   through one URL, so a self-hoster runs an in-cluster operator with
+   replicas and the stack installer can offer it.
+
 ## Not in scope
 
 Cabal as the workplace, the minder, personal agents as members (agora #57,

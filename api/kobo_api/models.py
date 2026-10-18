@@ -15,6 +15,7 @@ from sqlalchemy import (
     UniqueConstraint,
     false,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
@@ -686,3 +687,52 @@ LEARNING_STATUSES = (
     LEARNING_DENIED,
     LEARNING_EXPIRED,
 )
+
+
+# --- The admin panel's store (design 2026-10-18, Arc 2 data model) ---------
+#
+# Prefixed `admin_` rather than a Postgres schema: SQLite, the local and test
+# lane, has no schemas, and a prefix draws the same line. Typed columns are
+# what the panes query on; a JSON body holds what varies by kind, with a
+# `spec_version` so code can upgrade old rows on read and no change to a
+# body's shape needs a migration. Bodies on Postgres are JSONB (indexable);
+# on SQLite plain JSON text.
+
+_JSON_BODY = JSON().with_variant(JSONB(), "postgresql")
+
+
+class AdminAuditEvent(Base):
+    """Who changed what from the admin panel, and whether it landed. Every
+    panel write inserts one of these in the same transaction as the row it
+    changed; the Audit pane is this table read back. `landed` moves from
+    `pending` to `applied` or `failed` as the projection to the outside
+    system (a grant, a secret, a pull request, a bab tuple) reports back."""
+
+    __tablename__ = "admin_audit_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    actor: Mapped[str] = mapped_column(String(320), nullable=False)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    object_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    object_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    landed: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    landed_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    before: Mapped[dict | None] = mapped_column(_JSON_BODY, nullable=True)
+    after: Mapped[dict | None] = mapped_column(_JSON_BODY, nullable=True)
+
+
+class AdminSetting(Base):
+    """One named value the panel owns and no table names yet: the additive
+    escape hatch. `key` is from a registry in code (kobo_api.admin_store),
+    never free text, so this stays a settings table and not a junk drawer.
+    `version` increments on every write for optimistic concurrency."""
+
+    __tablename__ = "admin_settings"
+
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value: Mapped[dict] = mapped_column(_JSON_BODY, nullable=False)
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(320), nullable=False)
