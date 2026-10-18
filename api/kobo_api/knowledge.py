@@ -253,7 +253,7 @@ def rollout_in_progress(kubectl: KubectlClient, *, namespace: str, deploy: str) 
     message."""
     try:
         dep = kubectl.deployment_status_json(namespace, deploy)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
     status = dep.get("status") or {}
     spec = dep.get("spec") or {}

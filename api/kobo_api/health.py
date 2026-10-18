@@ -89,7 +89,7 @@ def probe_health(kubectl: KubectlClient, name: str, *, now: datetime | None = No
     checked_at = (now or datetime.now(UTC)).isoformat()
     try:
         dep = kubectl.deployment_status_json(name, name)
-    except Exception:
+    except Exception:  # noqa: BLE001
         log.info("health probe could not read deployment for %s", name)
         return AgentHealth(UP, None, checked_at)
     spec = dep.get("spec") or {}
@@ -102,7 +102,7 @@ def probe_health(kubectl: KubectlClient, name: str, *, now: datetime | None = No
     reason = f"{available} of {wanted} running"
     try:
         trouble = _pod_trouble(kubectl.pods_json(name))
-    except Exception:
+    except Exception:  # noqa: BLE001
         trouble = None
     if trouble:
         reason = f"{reason}; {trouble}"

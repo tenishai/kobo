@@ -18,7 +18,12 @@ from sqlalchemy.orm import sessionmaker
 from kobo_api.avatars import avatar_prompt
 from kobo_api.clients import ClientError, Clients
 from kobo_api.config import Config
-from kobo_api.main import AVATAR_MAX_BYTES, AVATAR_UPLOAD_MAX_BYTES, PNG_SIGNATURE, create_app
+from kobo_api.main import (
+    AVATAR_MAX_BYTES,
+    AVATAR_UPLOAD_MAX_BYTES,
+    PNG_SIGNATURE,
+    create_app,
+)
 from kobo_api.models import Agent, AgentStatus, Base
 from kobo_api.personas import seed_default_personas
 from kobo_api.purpose_tags import encode_tags

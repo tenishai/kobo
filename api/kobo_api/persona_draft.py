@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 
-from kobo_api.personas import PersonaError, PersonaFields, persona_id
+from kobo_api.personas import PersonaError, persona_id
 from kobo_api.purpose_tags import normalize_tags
 
 # _NAME_MAX/_WHO_MAX mirror PersonaFields' real Field bounds (kobo_api.

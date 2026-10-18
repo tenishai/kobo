@@ -35,8 +35,8 @@ def avatar_prompt(agent_name: str, persona_description: str, purpose_tags: list[
     When purpose_tags is empty or None, the themes clause is omitted entirely.
     """
     parts = [
-        f"friendly square avatar portrait of a character named {agent_name}; "
-        f"persona: {persona_description};"
+        (f"friendly square avatar portrait of a character named {agent_name}; "
+        f"persona: {persona_description};")
     ]
 
     if purpose_tags:

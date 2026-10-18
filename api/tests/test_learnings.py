@@ -26,15 +26,15 @@ def session():
 
 
 def _learning(**overrides):
-    defaults = dict(
-        agent_name="wren",
-        day="2026-09-01",
-        content="the canary gate is manual",
-        kind="fact",
-        source="Slack thread, Sep 1",
-        evidence="gate is manual now",
-        content_hash="a" * 64,
-    )
+    defaults = {
+        "agent_name": "wren",
+        "day": "2026-09-01",
+        "content": "the canary gate is manual",
+        "kind": "fact",
+        "source": "Slack thread, Sep 1",
+        "evidence": "gate is manual now",
+        "content_hash": "a" * 64,
+    }
     defaults.update(overrides)
     return AgentLearning(**defaults)
 
@@ -90,7 +90,7 @@ NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 
 
 def _candidate(content="the canary gate is manual", **overrides):
-    base = dict(content=content, kind="fact", source="Slack, Sep 1", evidence="quote")
+    base = {"content": content, "kind": "fact", "source": "Slack, Sep 1", "evidence": "quote"}
     base.update(overrides)
     return base
 

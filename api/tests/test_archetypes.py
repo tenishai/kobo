@@ -1,8 +1,6 @@
 """The team-guide archetype: template rendering and the voice overlay's bounds."""
 
 from kobo_api.archetypes import (
-    ARCHETYPE_TEAM_GUIDE,
-    TEAM_GUIDE_TAG,
     render_team_guide,
     team_guide_persona_id,
 )
