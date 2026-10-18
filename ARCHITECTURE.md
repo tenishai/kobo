@@ -27,6 +27,7 @@ SEAMS → card:
 - switchboard     api/kobo_api/pairs.py + clients.py:CabalClient (cabal directory, relay, colleague passes, dispatch allow-pairs) → docs/arch/switchboard.md
 - bundle          api/kobo_api/composer.py + vendor/bundle.schema.json (the daedalus agent bundle kobo writes)  → docs/arch/bundle.md
 - access-control  api/kobo_api/iap.py + main.py gates + mcp/authz.py (who sees/mutates what; UI, MCP, broker)  → docs/arch/access-control.md
+- (uncarded) api/kobo_api/bundle_publish.py — one runtime, bundles as artifacts (#172, step 1): push `bundle/` as an OCI artifact tagged by commit sha, move the per-agent `:current` pointer, publish only when the tree id of `bundle/` changed, hand back the changed paths so the caller decides restart. Not yet wired into any lane.
 - (uncarded) sero.py — secrets-platform machine lane (per-agent secrets; no fallback to direct Secret write by design)
 - (uncarded) agent_env.py — per-agent Secrets & env panel: `<agent>-env` Secret, gojira.yaml `secrets_from`/env edits
 - (uncarded) destroy.py — teardown stages (gojira delete, directory absorb, pass revoke, GSA, secrets)
