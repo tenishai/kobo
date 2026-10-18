@@ -19,13 +19,14 @@ from pydantic import ValidationError
 import kobo_api.personas as personas_module
 from kobo_api.clients import StorageNotFound
 from kobo_api.personas import (
-    TEAM_TEMPLATES, BUILTIN_ORDER,
-    in_reading_order,
+    BUILTIN_ORDER,
+    TEAM_TEMPLATES,
     PersonaError,
     PersonaExists,
     PersonaFields,
     check_name_length,
     create_persona,
+    in_reading_order,
     parse_persona_body,
     persona_id,
     render_persona,

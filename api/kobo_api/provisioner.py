@@ -51,7 +51,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
-from sqlalchemy import select, and_, or_, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from kobo_api.clients import Clients
@@ -923,7 +923,7 @@ def sweep_waiting(
                 )
             try:
                 status_payload = clients.gojira.app_status(agent.gojira_app_id)
-            except Exception:  # noqa: BLE001 - one unreachable platform read must not stop the sweep
+            except Exception:
                 log.warning(
                     "sweep_waiting: could not read platform status for agent %s",
                     agent.name, exc_info=True,

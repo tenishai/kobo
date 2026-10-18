@@ -86,9 +86,7 @@ _ACCESS_CHANGE_RE = re.compile(
 CONCERN_UNATTRIBUTED = "unattributed"
 CONCERN_ACCESS_CHANGE = "access_change"
 _STOPWORDS = frozenset(
-    "a an and are as at be but by for from has have if in into is it its not of on "
-    "only or so that the their them then there these they this to was when which "
-    "will with".split()
+    ["a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "has", "have", "if", "in", "into", "is", "it", "its", "not", "of", "on", "only", "or", "so", "that", "the", "their", "them", "then", "there", "these", "they", "this", "to", "was", "when", "which", "will", "with"]
 )
 
 

@@ -22,7 +22,6 @@ import pytest
 import yaml
 
 from kobo_api.clients import CabalError, ClientError, Clients
-from kobo_api.composer import BundleSpec, _colleagues_md, _self_md, compose
 from kobo_api.config import Config, ModelChoice
 from kobo_api.kinds import KIND_CONNECTED
 from kobo_api.marketplace import marketplace_repo

@@ -21,7 +21,12 @@ from pathlib import Path
 import pytest
 
 from kobo_api.catalog import _parse_persona_file
-from kobo_api.personas import BUILTIN_ORDER, RETIRED_TEMPLATES, TEAM_TEMPLATES, parse_persona_body
+from kobo_api.personas import (
+    BUILTIN_ORDER,
+    RETIRED_TEMPLATES,
+    TEAM_TEMPLATES,
+    parse_persona_body,
+)
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "kobo_api" / "templates" / "personas"
 

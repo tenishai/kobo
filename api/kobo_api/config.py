@@ -5,13 +5,12 @@ Loads settings from a YAML file (or pure defaults) into a pydantic model.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from urllib.parse import urlparse
 
 import yaml
-import logging
-
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 

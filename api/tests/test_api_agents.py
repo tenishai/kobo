@@ -32,8 +32,8 @@ from sqlalchemy.orm import sessionmaker
 from kobo_api.clients import Clients, StorageNotFound
 from kobo_api.config import Config
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
-from kobo_api.main import create_app, get_session
 from kobo_api.kinds import KIND_CONNECTED
+from kobo_api.main import create_app, get_session
 from kobo_api.models import Agent, AgentStatus, Base
 from kobo_api.provisioner import sweep_interrupted
 from tests.fakes import (

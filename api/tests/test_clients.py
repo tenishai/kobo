@@ -23,36 +23,25 @@ import httpx
 import pytest
 
 from kobo_api.clients import (
-    AgentClient,
+    SLACK_STORE_WRITE_ATTEMPTS,
     CabalClient,
     CabalError,
     CachedGcloudToken,
-    _google_access_token,
-    _metadata_access_token,
     ChatMessage,
     ClientError,
     Clients,
-    CloudClient,
     CommandRunner,
+    FileSlackTokenStore,
     GcloudClient,
     GhCLI,
-    GitHubClient,
-    GojiraClient,
     GojiraConflict,
     HttpxGojiraClient,
-    FileSlackTokenStore,
     HttpxSlackClient,
     HttpxStorageClient,
-    ImageClient,
-    KubeSlackTokenStore,
     KubectlAgentClient,
     KubectlCLI,
-    KubectlClient,
-    NameClient,
-    SLACK_STORE_WRITE_ATTEMPTS,
+    KubeSlackTokenStore,
     SlackApiError,
-    SlackClient,
-    StorageClient,
     StorageNotFound,
     VertexImageClient,
     VertexNameClient,
@@ -61,14 +50,13 @@ from kobo_api.clients import (
     _build_teach_envelope,
     _extract_json_array,
     _extract_json_object,
-    _gcloud_print_access_token,
     _get_card,
+    _metadata_access_token,
     _post_task,
     _universe_from_groups,
     _wait_for_forwarded_port,
     _write_slack_tokens,
     cabal_enabled,
-    cabal_operator_token,
     filter_cabal_event_stream,
     image_tag,
     installation_token_provider,
@@ -82,11 +70,7 @@ from tests.fakes import (
     FakeCloud,
     FakeGitHub,
     FakeGojira,
-    FakeImage,
     FakeKubectl,
-    FakeName,
-    FakeSlack,
-    FakeStorage,
 )
 
 
@@ -1087,9 +1071,9 @@ def test_grant_bucket_prefix_write_issues_conditioned_object_admin_binding():
         "--member", "serviceAccount:agent-clio@example-project.iam.gserviceaccount.com",
         "--role", "roles/storage.objectAdmin",
         "--condition",
-        "expression="
+        ("expression="
         'resource.name.startsWith("projects/_/buckets/kobo-memory-replicas/objects/clio/")'
-        ",title=agent-memory-replica-clio",
+        ",title=agent-memory-replica-clio"),
     ]
 
 

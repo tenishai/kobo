@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from kobo_api.clients import Clients, ClientError
+from kobo_api.clients import ClientError, Clients
 from kobo_api.config import Config
 from kobo_api.main import _maybe_refresh_catalogs, configured_catalogs, create_app
 from kobo_api.models import Base

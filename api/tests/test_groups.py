@@ -19,7 +19,7 @@ import logging
 import httpx
 import pytest
 
-from kobo_api.groups import GroupResolver, OktaGroupResolver, OktaPeopleSearch
+from kobo_api.groups import OktaGroupResolver, OktaPeopleSearch
 
 DOMAIN = "acme.okta.com"
 TOKEN = "SUPER_SECRET_OKTA_TOKEN_9f3a"

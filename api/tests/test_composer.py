@@ -9,7 +9,6 @@ import yaml
 
 from kobo_api.clients import ClientError
 from kobo_api.composer import (
-    CABAL_COLLEAGUE_TOKEN_ENV,
     BundleSpec,
     ComposeError,
     compose,

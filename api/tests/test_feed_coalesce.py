@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from kobo_api.main import _InFlight, _coalesced
+from kobo_api.main import _coalesced, _InFlight
 
 
 def test_concurrent_callers_share_one_run_and_sequential_callers_run_again():

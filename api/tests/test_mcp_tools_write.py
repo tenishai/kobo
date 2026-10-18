@@ -63,7 +63,6 @@ from tests.fakes import (
     FakeGojira,
     FakeKubectl,
     FakeSero,
-    FakeName,
     FakeSlack,
     FakeStorage,
 )
