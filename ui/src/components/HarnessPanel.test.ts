@@ -101,6 +101,19 @@ describe("HarnessPanel model and runtime", () => {
     stubFetch(BASE_ROUTES);
   });
 
+  it("names the tag, not the digest, for a tag@digest room pin", async () => {
+    const digest = "sha256:" + "a".repeat(64);
+    renderWithClient(HarnessPanel, {
+      ...BASE_PROPS,
+      runtimeImage: OLD_RUNTIME,
+      roomRuntimeImage: `${ROOM_RUNTIME}@${digest}`,
+    });
+
+    const behind = within(body("runtime")).getByText(/Behind/);
+    expect(behind.textContent).toContain("v10");
+    expect(behind.textContent).not.toContain("sha256");
+  });
+
   it("offers the update only to an operator", async () => {
     renderWithClient(HarnessPanel, {
       ...BASE_PROPS,

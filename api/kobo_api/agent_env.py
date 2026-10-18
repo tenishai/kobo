@@ -666,6 +666,11 @@ def read_repo_env(github: GitHubClient, repo: str) -> dict[str, str]:
     return read_env(read_default_gojira(github, repo))
 
 
+def _skip_ci(message: str) -> str:
+    """The commit message with a trailing `[skip ci]`, added once."""
+    return message if "[skip ci]" in message else f"{message} [skip ci]"
+
+
 def edit_gojira_yaml(
     github: GitHubClient,
     gojira: GojiraClient,
@@ -746,7 +751,12 @@ def edit_gojira_yaml(
         pushed = False
         if changed_here:
             gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
-            pushed = github.commit_push(workdir, message)
+            # Marked [skip ci]: a commit that changes only gojira.yaml fails the
+            # generated workflow's contract check (the manifests no longer match
+            # the contract), and the deploy that matters is the setup pull
+            # request the reprovision below makes Gojira open. One push, no
+            # failed run (agora discussion #55, item 2).
+            pushed = github.commit_push(workdir, _skip_ci(message))
 
     if reprovision and gojira_app_id is not None:
         # Outside the clone, and fired whether or not anything was pushed.

@@ -103,7 +103,7 @@ def test_set_model_writes_the_two_env_keys_reprovisions_and_records_it(session_f
     env = (github.captured_gojira or {}).get("env") or {}
     assert env["AGENT_MODEL"] == NEW_MODEL
     assert env["VERTEXAI_LOCATION"] == "global"
-    assert github.pushes[-1][1] == "kobo: model is now Gemini Affordable (Flash)"
+    assert github.pushes[-1][1] == "kobo: model is now Gemini Affordable (Flash) [skip ci]"
     assert f"reprovision:{app_id}" in gojira.calls
     assert _model_on_row(session_factory) == NEW_MODEL
 

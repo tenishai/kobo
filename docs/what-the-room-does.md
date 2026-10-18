@@ -16,14 +16,16 @@ the same ground.
 - **Memory**: upload notes or docs for one-shot learning; taught chat notes archive to the
   repo quietly (`[skip ci]`) and fold away in the UI. Memories outlive their source files.
 - **Learnings**: each night the agent proposes what it learned from the day's conversations,
-  and nothing is kept until its owner, an operator or someone granted the agent presses Remember. A candidate nobody can be attributed
+  and nothing is kept until its owner, an operator or someone with a grant on the agent presses
+  Remember. A candidate nobody can be attributed
   with, or one about granting or revoking access, needs a second click. A nightly pass that
   keeps failing shows **learnings failing** on the agent's card.
 - **Colleagues**: agents discover each other through the switchboard directory and consult
   each other mid-conversation (`ask_colleague`), with colleague-sourced facts held at low
   confidence until quorum cross-checking earns them in. A terminal-style feed shows one
   agent's whole conversation history, in order, in full. That is the `default` colleague mode;
-  an owner can set an agent to `roster-only` (it keeps the roster but has no `ask_colleague`,
+  its owner or an operator can set an agent to `roster-only` (it keeps the roster but has no
+  `ask_colleague`,
   answers only from its own tools and memory, and asks its human when those fall short) or
   `none` (no colleague tools and no roster). Other agents can still ask it in every mode.
 - **Access**: verified identity in the corner; owners on every card; owner-or-operator gates
@@ -78,5 +80,6 @@ the same ground.
   agent's persona, model and Slack wake mode, re-files an agent under another group
   (operators only), reviews an agent's queued learnings one at a time or in bulk, and runs
   the agent PR broker's repository-access requests and the operator's batch approve or
-  revoke. The tools live in `api/kobo_api/mcp/tools/`. Every new agent ships with the baseline tooling pack, a leak guard
+  revoke. The tools live in `api/kobo_api/mcp/tools/`. Every new agent ships with the baseline
+  tooling pack, a leak guard
   and a probe guard, unless created with skip_baseline. Off until the org turns it on.
