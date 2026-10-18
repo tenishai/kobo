@@ -4,7 +4,7 @@
 
 **Goal:** The assembly room's face: a Svelte 5 SPA where Create is a single modal (name · persona · skills · model), progress is a plain-English checklist that polls adaptively, and a finished agent shows its first words — entirely against the live, tested cortex-api.
 
-**Architecture:** `ui/` beside `api/` (the family's kaminos layout). Plain SPA — Vite + Svelte 5 runes + TanStack Query v5 (`@tanstack/svelte-query`), a hand-rolled two-route router (dashboard / agent detail), no SSR, no Tailwind (plain CSS with a token sheet). All server state flows through one typed `api.ts` (fetch wrapper with a non-JSON parse guard) and one `queries.ts` (adaptive `refetchInterval`: 3.5s while any agent/step is non-terminal, off when terminal). The UX contract comes from the spec §3 verbatim: fire-and-return create with toast, pending styled like running (single pulse treatment), zero infra vocabulary anywhere, shared EmptyState/ErrorState-with-Retry/skeleton components. **Scope note:** P1b consumes only endpoints that exist (create/list/detail/retry/catalogs/availability). Composition *editing* panels need API endpoints that don't exist yet and belong to P2 alongside knowledge editing — the spec's P1 exit criterion ("create → working agent entirely from the UI") does not require them.
+**Architecture:** `ui/` beside `api/` (the family's layout). Plain SPA — Vite + Svelte 5 runes + TanStack Query v5 (`@tanstack/svelte-query`), a hand-rolled two-route router (dashboard / agent detail), no SSR, no Tailwind (plain CSS with a token sheet). All server state flows through one typed `api.ts` (fetch wrapper with a non-JSON parse guard) and one `queries.ts` (adaptive `refetchInterval`: 3.5s while any agent/step is non-terminal, off when terminal). The UX contract comes from the spec §3 verbatim: fire-and-return create with toast, pending styled like running (single pulse treatment), zero infra vocabulary anywhere, shared EmptyState/ErrorState-with-Retry/skeleton components. **Scope note:** P1b consumes only endpoints that exist (create/list/detail/retry/catalogs/availability). Composition *editing* panels need API endpoints that don't exist yet and belong to P2 alongside knowledge editing — the spec's P1 exit criterion ("create → working agent entirely from the UI") does not require them.
 
 **Tech Stack:** Svelte 5 (runes), Vite 6, TypeScript, @tanstack/svelte-query v5, vitest (pure-logic tests), svelte-check.
 
@@ -26,7 +26,7 @@
 - Modify: `.gitignore` (append `ui/node_modules/` — `node_modules/`/`dist/` already covered; verify, add only if missing)
 
 **Interfaces (every later task consumes these):**
-- `api.ts` exports typed functions over `fetch`, all going through one `parse()` guard that turns non-JSON bodies (proxy errors, plain-text 500s) into a readable `Error` with the status code (the kaminos pattern):
+- `api.ts` exports typed functions over `fetch`, all going through one `parse()` guard that turns non-JSON bodies (proxy errors, plain-text 500s) into a readable `Error` with the status code:
   ```ts
   export type AgentSummary = { name: string; status: string; model: string; created_at: string }
   export type StepView = { name: string; label: string; status: string; error: string | null }

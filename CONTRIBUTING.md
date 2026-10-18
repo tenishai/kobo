@@ -5,7 +5,9 @@ Issues and pull requests are welcome.
 ## Set up
 
 - API (Python 3.12): `make -C api install`, then copy `api/config.example.yaml` to
-  `api/config.local.yaml` and fill it in. Run it with `make -C api run` (serves on `:8100`).
+  `api/config.local.yaml` and fill it in. Run it with `make -C api run` (serves on `:8100`). The Makefile builds a plain venv with pip;
+  the README Quickstart and CI install with `uv sync --locked --extra dev --python 3.12`
+  instead. Both work; `make -C api check` runs ruff and pytest.
 - UI (Node): `make -C ui install`, then `make -C ui dev` (serves on `:5173`, proxying to the API).
 
 ## Run the tests

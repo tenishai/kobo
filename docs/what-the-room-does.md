@@ -46,12 +46,12 @@ the same ground.
   colleague whose answer informed its own. A thread belongs to the person
   who started it.
 - **The agent page**: five tabs in one row. Chat is where you meet it, Slack is its wiring,
-  Access is who may use it, and Settings is the back office: secrets and environment, the
-  build log, and the two changes there is no way back from. Harness is what runs the agent:
+  and Access is who may use it. Harness is what runs the agent:
   the model and the runtime it builds on (with one line saying whether that is still the
   room's current one, and an operator's button to move it), its persona, its skills, its
-  tooling, its memory, and what it has learned. A connected agent's Harness shows what it runs
-  on and nothing else: the room composed none of the rest.
+  tooling, its memory, and what it has learned. Settings is the back office: secrets and
+  environment, the build log, and the two changes there is no way back from. A connected
+  agent's Harness shows what it runs on and nothing else: the room composed none of the rest.
 - **Personas**: the soul an agent is built from. Archive one from the Personas page when it
   has outlived its use, and restore it later; nothing is destroyed. Good persona names pass
   the glance test: a stranger reading the card knows what picking it gets them. The
@@ -74,5 +74,9 @@ the same ground.
   skills and tooling marketplaces, stage either onto an agent you own, and
   publish new entries under your own team (publishing is instant and org-wide;
   tool publishing runs the same mechanical law the room enforces, and baseline tool ids are
-  reserved for operators). Every new agent ships with the baseline tooling pack, a leak guard
+  reserved for operators). The same surface moves and archives personas, sets an
+  agent's persona, model and Slack wake mode, re-files an agent under another group
+  (operators only), reviews an agent's queued learnings one at a time or in bulk, and runs
+  the agent PR broker's repository-access requests and the operator's batch approve or
+  revoke. The tools live in `api/kobo_api/mcp/tools/`. Every new agent ships with the baseline tooling pack, a leak guard
   and a probe guard, unless created with skip_baseline. Off until the org turns it on.
