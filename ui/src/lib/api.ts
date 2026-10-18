@@ -271,6 +271,10 @@ export type Whoami = {
   groups: string[];
   groups_unavailable: boolean;
   pending_group_requests?: number;
+  /** The account menu's two switches, both the server's call: the admin
+   * panel is on for this room, and where Log out goes (null hides it). */
+  admin_panel?: boolean;
+  logout_url?: string | null;
 };
 
 /** A leak-safe reference to one side of an invite (access-control Task C1's

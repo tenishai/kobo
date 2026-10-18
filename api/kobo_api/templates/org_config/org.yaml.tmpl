@@ -70,6 +70,12 @@ operators: __KOBO_OPERATORS__
 # here. Keep at least one operators email set as break-glass, since a
 # directory outage takes group-based admin status down with it.
 admin_groups: __KOBO_ADMIN_GROUPS__
+# The admin panel (#/admin: add-ons, integrations, connections, roles, people,
+# audit). Off until a room turns it on; its entry shows only to admins.
+admin_panel: __KOBO_ADMIN_PANEL__
+# Where the account menu's "Log out" goes: the identity proxy's sign-out path
+# (Google's proxy: /_gcp_iap/clear_login_cookie). Unset hides the item.
+logout_url: __KOBO_LOGOUT_URL__
 
 # Base URL of the switchboard (cabal) service this room registers agents
 # with and (once wired) relays chat through, and the template for an

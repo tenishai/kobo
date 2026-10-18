@@ -107,6 +107,8 @@ def test_render_org_yaml_golden_with_computed_defaults():
         "slack_operators": [],
         "operators": [],
         "admin_groups": [],
+        "admin_panel": False,
+        "logout_url": None,
         "cabal_url": None,
         "agent_endpoint_template": None,
         "groups": [],

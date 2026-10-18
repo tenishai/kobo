@@ -247,6 +247,8 @@ def test_org_keys_is_exactly_the_brief_set():
             "slack_operators",
             "operators",
             "admin_groups",
+            "admin_panel",
+            "logout_url",
             "cabal_url",
             "agent_endpoint_template",
             "groups",
