@@ -86,19 +86,12 @@
    * counterpart of the opposite role, e.g. a just-sent message still
    * awaiting its reply) just itself, unlabeled. */
   function pairText(index: number): string {
-    const message = transcript[index];
-    if (message.role === "user") {
-      const next = transcript[index + 1];
-      if (next && next.role === "agent") {
-        return `You said: ${message.text}\n\n${agentName} replied: ${next.text}`;
-      }
-      return message.text;
-    }
-    const prev = transcript[index - 1];
-    if (prev && prev.role === "user") {
-      return `You said: ${prev.text}\n\n${agentName} replied: ${message.text}`;
-    }
-    return message.text;
+    // The bubble's own words, not the exchange. A note that carried both
+    // sides ("You said: ... / <agent> replied: I can't remember that") came
+    // back at recall time with the agent's refusal sitting next to the fact
+    // (kobo#123 item 13). The reply is in the chat archive already; the
+    // person edits the prefill before saving if the fact needs more.
+    return transcript[index].text;
   }
 
   function openTeach(index: number): void {

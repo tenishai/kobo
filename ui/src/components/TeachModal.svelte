@@ -47,6 +47,9 @@
   let error = $state<string | null>(null);
   let saved = $state(false);
   let mode = $state<"instant" | "archive">("archive");
+  // The note's filename from the response, shown with the success copy so
+  // "did anything happen?" has an answer (kobo#123 item 12).
+  let savedAs = $state("");
 
   let wasOpen = false;
 
@@ -56,6 +59,7 @@
       error = null;
       saved = false;
       mode = "archive";
+      savedAs = "";
     }
     wasOpen = open;
   });
@@ -70,6 +74,7 @@
     mutation.mutate(text, {
       onSuccess: (data) => {
         mode = data?.mode === "instant" ? "instant" : "archive";
+        savedAs = typeof data?.filename === "string" ? data.filename : "";
         saved = true;
       },
       onError: (err: unknown) => {
@@ -91,6 +96,9 @@
           ? "Learned. Filed to the repo in the background."
           : "Saved to memory. It arrives with the next delivery."}
       </p>
+      {#if savedAs}
+        <p class="teach-modal__success-file">Saved as intake/{savedAs}</p>
+      {/if}
       <button type="button" class="teach-modal__done" onclick={handleClose}>
         Done
       </button>
@@ -208,6 +216,12 @@
   .teach-modal__success-text {
     margin: 0;
     color: var(--ink);
+  }
+
+  .teach-modal__success-file {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.85rem;
   }
 
   .teach-modal__done {
