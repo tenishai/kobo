@@ -190,6 +190,8 @@ import {
   fetchTeamOptions,
   fetchTeams,
   fetchAdminAddons,
+  fetchAdminAudit,
+  fetchAdminPeople,
   fetchWhoami,
   generateAvatar,
   getAgent,
@@ -509,6 +511,22 @@ export function orgStatusQuery() {
  * anyway), unlike `orgStatusQuery`'s wiring state which a human can change
  * out from under a long-lived tab.
  */
+export function adminPeopleQuery() {
+  return queryOptions({
+    queryKey: ["admin", "people"] as const,
+    queryFn: fetchAdminPeople,
+    staleTime: 60_000,
+  });
+}
+
+export function adminAuditQuery() {
+  return queryOptions({
+    queryKey: ["admin", "audit"] as const,
+    queryFn: fetchAdminAudit,
+    staleTime: 15_000,
+  });
+}
+
 export function adminAddonsQuery() {
   return queryOptions({
     queryKey: ["admin", "addons"] as const,

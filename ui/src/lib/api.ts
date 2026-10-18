@@ -1132,6 +1132,37 @@ export type AdminAddon = {
   owner: string;
 };
 
+export type AdminPeople = {
+  admin_groups: string[];
+  operators: string[];
+  reader_groups: string[];
+  slack_operators: string[];
+};
+
+export async function fetchAdminPeople(): Promise<AdminPeople> {
+  const res = await fetch("/api/admin/people");
+  return parse<AdminPeople>(res);
+}
+
+/** One audit event from the admin store: who did what to which object, and
+ * whether the change has landed where it was meant to. */
+export type AdminAuditEvent = {
+  id: number;
+  at: string;
+  actor: string;
+  action: string;
+  object_type: string;
+  object_id: string;
+  landed: "pending" | "applied" | "failed";
+  landed_detail: string | null;
+};
+
+export async function fetchAdminAudit(): Promise<AdminAuditEvent[]> {
+  const res = await fetch("/api/admin/audit");
+  const body = await parse<{ events: AdminAuditEvent[] }>(res);
+  return body.events;
+}
+
 export async function fetchAdminAddons(): Promise<AdminAddon[]> {
   const res = await fetch("/api/admin/addons");
   const body = await parse<{ addons: AdminAddon[] }>(res);
