@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-provisioning
-updated: 2026-10-14
-anchor: api/kobo_api/provisioner.py sha=193dbadafb88121f5a79ba12908f94079e954872
-anchor: api/kobo_api/steps.py sha=ed0f8c7d7608ba3766f181c466a3279fa77429e8
+updated: 2026-10-18
+anchor: api/kobo_api/provisioner.py sha=8ee1d1c48b3581cbce3ee12236ba7e91c5534450
+anchor: api/kobo_api/steps.py sha=68b01b1d3463e1143bda56288c05c058e213ff02
 ---
 # provisioning — the Create → running-agent step engine
 
