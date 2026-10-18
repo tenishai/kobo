@@ -442,7 +442,9 @@ def _agent_yaml_data(spec: BundleSpec) -> dict:
         "memory": {"personal": "techne", "home": "/techne", "revision": _ROOM_MEMORY_REVISION},
         "checkpoints": "sqlite",
         "approvals": {
-            "ceiling": {"write": False},
+            # No `ceiling`: the runtime reads only `ceiling.exec`, and a
+            # documented ceiling nobody enforces is worse than none (agora
+            # discussion #55, item 7; daedalus will warn, then fail, on it).
             "gates": _approvals_gates(spec),
             "escalation": {"route": "cli"},
         },

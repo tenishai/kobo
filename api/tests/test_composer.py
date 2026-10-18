@@ -219,7 +219,6 @@ def test_compose_agent_yaml_byte_identical_when_cabal_url_none_both_ways(tmp_pat
         "memory: {personal: techne, home: /techne, revision: operator}\n"
         "checkpoints: sqlite\n"
         "approvals:\n"
-        "  ceiling: {write: false}\n"
         '  gates: [{match: "*", require: plan_approval}]\n'
         "  escalation: {route: cli}\n"
     )
@@ -253,7 +252,6 @@ def test_compose_agent_yaml_carries_auth_block_when_cabal_url_configured(tmp_pat
         "memory: {personal: techne, home: /techne, revision: operator}\n"
         "checkpoints: sqlite\n"
         "approvals:\n"
-        "  ceiling: {write: false}\n"
         "  gates: []\n"
         "  escalation: {route: cli}\n"
     )
@@ -385,7 +383,6 @@ def test_compose_agent_yaml_approvals_gates_empty_when_cabal_url_configured(tmp_
 
     data = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())
     assert data["approvals"] == {
-        "ceiling": {"write": False},
         "gates": [],
         "escalation": {"route": "cli"},
     }

@@ -87,7 +87,8 @@ action, only the wait. A step reporting success means the value is stored, not t
 has caught up.
 
 With the platform on, every agent page also carries a **Secrets and environment** section, at
-the top of its Settings tab, for anyone who may edit that agent, composed and connected alike. Secrets are held on the platform
+the top of its Settings tab, for anyone who may edit that agent, composed and connected alike.
+Secrets are held on the platform
 at `apps/<agent>/env` and delivered into the agent's namespace as the Kubernetes Secret
 `<agent>-env`; environment variables live in the agent's own `gojira.yaml`, for values that are
 not sensitive. A secret's value is sent once and is never readable again from the room: the list
@@ -107,7 +108,8 @@ this section used to name.
 
 **Upgrading**: the room runs `alembic upgrade head` at boot. Read the release's Upgrading
 section in `CHANGELOG.md` first, and back up the database before any release that adds a
-migration (0.2.0 was the first to add one after the 0.1.0 tag). A version from before a migration won't start on the migrated
+migration (0.2.0 was the first to add one after the 0.1.0 tag). A version from before a
+migration won't start on the migrated
 database; restore the backup, or run the `alembic downgrade` the Upgrading section names.
 
 **Switchboard**: the room relays chat, teach, threads and the learnings sweep through the
@@ -115,7 +117,8 @@ switchboard (cabal) when three things are set: `cabal_url` and `agent_endpoint_t
 `org.yaml`, and `CABAL_OPERATOR_TOKEN` in the room's environment. Mint the token with
 `cbl token mint-service --sub service:kobo --scope operator --aud cabal-core` and put it in a
 Secret the room's deployment reads with `envFrom` (the deploy contract names it `kobo-cabal`).
-With any of the three missing, the colleagues feed and directory sync routes, and the `kobo_feed` MCP tool, refuse with a message that names all three.
+With any of the three missing, the colleagues feed and directory sync routes, and the
+`kobo_feed` MCP tool, refuse with a message that names all three.
 
 **Learnings**: the nightly learnings pass (one replica per round, under its advisory lock)
 records each run in `agent_system_tasks`. `system_task_flag_after` (default 3) failures in a row

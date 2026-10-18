@@ -29,16 +29,23 @@ the create modal, inline persona builder, creating team recorded, read-only org
 status with honest unwired states. Externally-managed publish pipelines are adopted,
 never overwritten.
 
+## Tools, hosting & identity, colleagues *(shipped)*
+
+Team-authored tools loaded through one validator; the room behind the deployment's
+identity proxy with group-scoped access; agents talking to agents over the switchboard
+with allow lists and colleague modes. See the CHANGELOG from 0.1.0.
+
 ## Next
 
-- **Tools** — team-authored enforcement code the runtime always executes around the
-  reply; team-scoped loading, UI upload or repo-folder import through one validator
-  (own spec; trust model locked).
-- **Phase B — Client hosting & identity** — the room under a client's domain behind
-  IAP; verified-identity header contract; client-onboarding mechanics (GitHub App,
-  keyless DNS delegation).
-- **P3 — Colleagues** — a2a links between agents (cabal/liminal), allow-list
-  checkboxes with agent-card badges, dual enforcement.
+- **One published runtime, bundles as artifacts** — a composed agent stops being its own
+  image: the runtime is one published image named in the deploy contract and the agent's
+  files are published next to it and fetched at boot, so a data change is a restart, never
+  a build (agora discussion #55).
+- **Admin panel** — plugins (one base credential per vendor), connections (each agent's
+  gateway lanes), roles and people, with every change a reviewed pull request (demo on
+  PR #129, design in `docs/superpowers/specs/2026-10-12-admin-panel-design.md`).
+- **Readiness that reflects access** — the card says when an agent is missing a gateway
+  grant, a repository or a dispatch pair, and who can approve it (issues #10, #130).
 
 ## Later
 
