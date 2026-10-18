@@ -1,10 +1,12 @@
 ---
 card: arch-card:kobo-bundle
 updated: 2026-10-18
-anchor: api/kobo_api/composer.py sha=d60ad96d1878e4f0796321f62ff4313154f59fe0
-anchor: api/kobo_api/vendor/bundle.schema.json sha=51b6e2ef218fb98df539b39783b3628ecc0ce0db
+anchor: api/kobo_api/composer.py sha=d1dadd31ac3832b95f5ff4d2eb27526cf71b4359
+anchor: api/kobo_api/vendor/bundle.schema.json sha=257c9575d4674177daf32d7bc0ad2b1145709552
 ---
 # bundle — the daedalus agent bundle kobo writes into each agent repo
+
+The vendored schema is daedalus v0.5.5's `docs/bundle.schema.json` (copied 2026-10-18, issue #152); `tests/test_composer.py::test_vendored_schema_is_the_current_copy` pins which copy it is.
 
 WHAT / SEAM: api/kobo_api/composer.py. `BundleSpec` (dataclass) → `compose(spec, dest)` writes the tree; `validate_agent_yaml(bundle_dir)` checks it against api/kobo_api/vendor/bundle.schema.json, a verbatim copy of daedalus `docs/bundle.schema.json` (never hand-edit; re-copy from daedalus). Called by RepoStep (steps.py) for composed agents only; connected agents bring their own repo.
 OPS / FLOW: `compose` writes `Dockerfile` (single `FROM {runtime_image}` + `COPY bundle/ /bundle`), `bundle/agent.yaml`, `bundle/agent-card.json`, `bundle/persona.md`, `bundle/knowledge/self.md`, `bundle/knowledge/colleagues.md` (not when `colleague_mode` is `none`), `bundle/skills/<id>/**`, and `litestream.yml` + `entrypoint.sh` only when `memory_replica_bucket` is set. WireStep then adds `k8s/base/*` and edits `gojira.yaml` (steps.py); later lanes append `bundle/intake/*` (teach archive), tooling, and Slack transports.

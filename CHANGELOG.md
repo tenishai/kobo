@@ -8,6 +8,11 @@ All notable changes to kobo are documented here. The format follows
 
 ### Changed
 
+- **The vendored daedalus bundle schema is the v0.5.5 copy** (issue #152). It was 0.4.0.dev0's;
+  the newer schema adds the `engine` block and the GitHub, CloudTrail, Jira and Slack-read tool
+  specs, allows `${VAR}` placeholders and no longer requires a skill `id`. Every shape kobo
+  composes still validates, and a test pins which copy is vendored.
+
 - **A commit that changes only the deploy contract skips CI.** The environment and model
   changes commit `gojira.yaml` alone; that commit failed the generated contract check and
   the setup pull request Gojira opens on reprovision was the deploy anyway. The push now

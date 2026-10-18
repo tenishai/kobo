@@ -9,6 +9,7 @@ import yaml
 
 from kobo_api.clients import ClientError
 from kobo_api.composer import (
+    _VENDOR_SCHEMA_PATH,
     BundleSpec,
     ComposeError,
     compose,
@@ -2108,3 +2109,15 @@ def test_repinned_card_version_for_each_pin_shape(tmp_path, new_image, version):
     assert card["version"] == version
     assert card["metadata"]["runtime_image"] == new_image
     assert f"FROM {new_image}" in (dest / "Dockerfile").read_text()
+
+
+def test_vendored_schema_is_the_current_copy():
+    """The vendored daedalus schema is the v0.5.x copy, not the 0.4.0.dev0 one
+    kobo carried until 2026-10-18 (issue #152). The newer schema adds the
+    `engine` block and the GitHub, CloudTrail, Jira and Slack-read tool specs,
+    allows `${VAR}` placeholders, and no longer requires a skill `id`; a stale
+    copy would make kobo reject bundles daedalus accepts."""
+    schema = json.loads(_VENDOR_SCHEMA_PATH.read_text())
+    assert "engine" in schema["properties"]
+    for spec in ("EngineSpec", "GitHubSpec", "CloudTrailSpec", "JiraSpec", "SlackReadSpec"):
+        assert spec in schema["$defs"], spec
