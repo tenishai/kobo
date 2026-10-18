@@ -6,6 +6,13 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Bundle publisher** (`kobo_api.bundle_publish`, issue #172 step 1): pushes an agent's `bundle/`
+  as a registry artifact tagged by commit sha and moves the per-agent `:current` pointer, only
+  when the bundle's git tree id changed. Not wired into any lane yet; the one-runtime design
+  (`docs/superpowers/specs/2026-10-18-one-runtime-and-admin-panel-design.md`) says where it goes.
+
 ### Changed
 
 - **The vendored daedalus bundle schema is the v0.5.5 copy** (issue #152). It was 0.4.0.dev0's;
