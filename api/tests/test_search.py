@@ -31,7 +31,6 @@ from kobo_api.db import make_engine
 from kobo_api.learnings import LEARNINGS_SWEEP_LOCK_ID
 from kobo_api.search import (
     CATALOG_INGEST_LOCK_ID,
-    CATALOG_TTL_S,
     CatalogEntry,
     catalog_is_empty,
     distinct_skill_teams,

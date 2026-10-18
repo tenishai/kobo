@@ -1104,7 +1104,7 @@ class AvatarStep:
                         agent.persona,
                     )
             tags = decode_tags(agent.purpose_tags)
-        except Exception as exc:  # degrade to the generic fallback, never fail the agent
+        except Exception as exc:  # noqa: BLE001 -- degrade to the generic fallback, never fail the agent
             log.warning(
                 "avatar step %s for %s: %s", "persona/tags lookup", agent.name, exc
             )

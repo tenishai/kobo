@@ -27,7 +27,12 @@ from kobo_api.intake import (
     list_intake,
     upload_intake_file,
 )
-from tests.fakes import FAKE_DOCKERFILE_OLD_IMAGE, FAKE_LOCAL_HEAD_DEFAULT, FakeGitHub, FakeKubectl
+from tests.fakes import (
+    FAKE_DOCKERFILE_OLD_IMAGE,
+    FAKE_LOCAL_HEAD_DEFAULT,
+    FakeGitHub,
+    FakeKubectl,
+)
 
 REPO = "acme/agent-clio"
 NAMESPACE = "clio"

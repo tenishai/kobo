@@ -11,7 +11,6 @@ from kobo_api.config import (
     GroupChoice,
     MCPConfig,
     ModelChoice,
-    SkillsFrontmatterConfig,
     vertex_location_for,
 )
 

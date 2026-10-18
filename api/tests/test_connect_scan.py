@@ -16,8 +16,6 @@ import pytest
 
 from kobo_api.config import Config
 from kobo_api.connect_scan import (
-    REPO_NAME_MISMATCH,
-    SERVICE_ACCOUNT_CHANGES,
     ADDS,
     ADDS_PREAMBLE,
     ALREADY_DEPLOYED,
@@ -30,9 +28,11 @@ from kobo_api.connect_scan import (
     NAME_TAKEN,
     NO_DOCKERFILE,
     NO_PORT_EXPOSED,
+    REPO_NAME_MISMATCH,
     REPO_NOT_IN_ORG,
     REPO_NOT_VISIBLE,
     REPO_NOT_WRITABLE,
+    SERVICE_ACCOUNT_CHANGES,
     scan_repo,
 )
 from kobo_api.kinds import RUN_MODE_HEADLESS, RUN_MODE_HTTP

@@ -21,7 +21,6 @@ from kobo_api.persona_draft import (
     finalize_draft,
 )
 from kobo_api.personas import PersonaFields, persona_id
-from kobo_api.purpose_tags import normalize_tags
 
 JOB = "Help customers troubleshoot billing issues quickly and politely."
 

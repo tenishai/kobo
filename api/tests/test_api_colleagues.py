@@ -23,17 +23,15 @@ fixtures, a `TestClient` built from `create_app`.
 from __future__ import annotations
 
 import json
+import time
 
 import httpx
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-
-import time
-
-import jwt
-from cryptography.hazmat.primitives.asymmetric import ec
 
 from kobo_api.clients import CabalClient, Clients
 from kobo_api.config import Config, GroupChoice

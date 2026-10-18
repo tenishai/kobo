@@ -67,7 +67,6 @@ from kobo_api.archetypes import (
 from kobo_api.avatars import avatar_prompt, set_avatar
 from kobo_api.catalog import RESERVED_NAMES, validate_name
 from kobo_api.clients import (
-    gsa_email,
     CabalError,
     ClientError,
     StorageNotFound,
@@ -78,13 +77,22 @@ from kobo_api.clients import (
     _join_text_parts,
     cabal_enabled,
     filter_cabal_event_stream,
+    gsa_email,
     probe_slack_token_store,
+)
+from kobo_api.colleague_mode import commit_colleague_mode
+from kobo_api.composer import (
+    COLLEAGUE_MODE_NONE,
+    COLLEAGUE_MODES,
+    effective_colleague_mode,
 )
 from kobo_api.config import SHARED_GROUP, Config, vertex_location_for
 from kobo_api.connect_scan import NAME_TAKEN, Finding, ScanReport, scan_repo
 from kobo_api.db import init_db, make_engine, make_session_factory
 from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
 from kobo_api.directory import retire_directory, sync_directory
+from kobo_api.guide import find_section, load_guide
+from kobo_api.health import AgentHealth, health_sweep_loop
 from kobo_api.iap import HttpsOnlyMiddleware, IapMiddleware, IapVerifier
 from kobo_api.intake import (
     INTAKE_MAX_BYTES,
@@ -109,8 +117,11 @@ from kobo_api.knowledge import (
     rollout_in_progress,
     save_knowledge_file,
 )
-from kobo_api.sero import acting_email_refusal
-from kobo_api.learnings import clean_edited_statement, learning_concerns, system_task_status
+from kobo_api.learnings import (
+    clean_edited_statement,
+    learning_concerns,
+    system_task_status,
+)
 from kobo_api.learnings import nightly_loop as learnings_nightly_loop
 from kobo_api.marketplace import BASELINE_TOOL_PREFIX
 from kobo_api.mcp import rate_limit
@@ -142,8 +153,8 @@ from kobo_api.models import (
     A2AInvite,
     Agent,
     AgentLearning,
-    AgentSystemTask,
     AgentStatus,
+    AgentSystemTask,
     AgentUserGrant,
     GroupRequest,
     RepoAccess,
@@ -158,7 +169,6 @@ from kobo_api.pairs import (
     sync_dispatch_pairs_best_effort,
 )
 from kobo_api.persona_draft import finalize_distill, finalize_draft
-from kobo_api.guide import find_section, load_guide
 from kobo_api.personas import (
     PERSONA_ID_RE,
     PersonaError,
@@ -177,17 +187,15 @@ from kobo_api.personas import (
     read_index as personas_read_index,
 )
 from kobo_api.pr_broker import BrokerAuthError, mint_scoped_token, verify_agent_token
-from kobo_api.health import AgentHealth, health_sweep_loop
-from kobo_api.roles import ROLE_ALL, launches_inline, role_from_env, runs_pipelines, serves_requests
 from kobo_api.provisioner import (
     STEP_LABELS,
+    drain_pipelines,
     interrupted_sweep_loop,
     naive_utc,
     pipeline_for,
+    queue_loop,
     reset_failed_steps,
     run_pipeline,
-    drain_pipelines,
-    queue_loop,
     sweep_interrupted,
     waiting_sweep_loop,
 )
@@ -199,11 +207,12 @@ from kobo_api.purpose_tags import (
     normalize_tags,
 )
 from kobo_api.repo_search import MAX_QUERY_CHARS, RepoIndex, RepoWarmer
-from kobo_api.colleague_mode import commit_colleague_mode
-from kobo_api.composer import (
-    COLLEAGUE_MODE_NONE,
-    COLLEAGUE_MODES,
-    effective_colleague_mode,
+from kobo_api.roles import (
+    ROLE_ALL,
+    launches_inline,
+    role_from_env,
+    runs_pipelines,
+    serves_requests,
 )
 from kobo_api.runtime import commit_runtime_image, validate_runtime_image
 from kobo_api.search import (
@@ -216,6 +225,7 @@ from kobo_api.search import (
 )
 from kobo_api.search import search as catalog_search
 from kobo_api.search import teams as catalog_teams_query
+from kobo_api.sero import acting_email_refusal
 from kobo_api.skills import (
     SkillsError,
     add_catalog_skill,
@@ -2718,7 +2728,7 @@ def _runtime_image_for_repo(app, repo: str) -> str:
             row = session.query(Agent).filter_by(repo_full_name=repo).first()
             if row is not None and row.runtime_image:
                 return row.runtime_image
-    except Exception:
+    except Exception:  # noqa: BLE001
         log.debug("runtime lookup failed for %s; using the org default", repo)
     return app.state.config.runtime_image
 
@@ -2780,7 +2790,7 @@ def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> No
             archive_only=True,
             on_repin=_directory_resync(app, repo),
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.warning(
             "teach archive commit failed for %s (%s): %s", repo, filename, exc
         )
@@ -3456,16 +3466,7 @@ def create_app(
     # tiny stopword list, deduped in order, capped. The FTS does the real
     # ranking; this just picks what to ask it about.
     _RECOMMEND_STOPWORDS = frozenset(
-        "this that with from your yours their they them have has been will "
-        "would should could about into over under never always exactly "
-        "before after every each when what where which whose ranks against "
-        "judging the and for who are you all can use "
-        # Persona-generic words: they describe every persona and select for
-        # nothing -- live case: "A GCP expert" reduced to the single token
-        # "expert", which literally matched the skill NAMED expert while
-        # every gcp-* skill went unmatched.
-        "expert experts specialist specialists helper helpers assistant "
-        "assistants agent agents persona team work works working helps".split()
+        ["this", "that", "with", "from", "your", "yours", "their", "they", "them", "have", "has", "been", "will", "would", "should", "could", "about", "into", "over", "under", "never", "always", "exactly", "before", "after", "every", "each", "when", "what", "where", "which", "whose", "ranks", "against", "judging", "the", "and", "for", "who", "are", "you", "all", "can", "use", "expert", "experts", "specialist", "specialists", "helper", "helpers", "assistant", "assistants", "agent", "agents", "persona", "team", "work", "works", "working", "helps"]
     )
     _RECOMMEND_TERM_CAP = 12
     _RECOMMEND_RESULTS = 5
@@ -3474,7 +3475,7 @@ def create_app(
     def recommend_skills(
         who: str = "",
         what: str = "",
-        session: Session = Depends(get_session),
+        session: Session = Depends(get_session),  # noqa: B008
     ) -> dict:
         """Top skills for a persona (create-flow polish, 2026-08-28): the
         persona's own text, keyword-extracted and OR-matched against the
@@ -5451,7 +5452,7 @@ def create_app(
     def agent_build_log(
         name: str,
         request: Request,
-        session: Session = Depends(get_session),
+        session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         """The tail of the agent repo's most recent workflow-run log --
         failed steps only when the run failed, so the reason is on top.
@@ -5490,7 +5491,7 @@ def create_app(
             )
         lines = log_text.splitlines()
         if len(lines) > _BUILD_LOG_TAIL_LINES:
-            lines = ["... (%d earlier lines trimmed)" % (len(lines) - _BUILD_LOG_TAIL_LINES)] + lines[-_BUILD_LOG_TAIL_LINES:]
+            lines = [f"... ({len(lines) - _BUILD_LOG_TAIL_LINES} earlier lines trimmed)"] + lines[-_BUILD_LOG_TAIL_LINES:]
         return JSONResponse({"run": run, "log": "\n".join(lines)})
 
     # --- Agent PR broker (2026-08-27 spec): repo access + scoped tokens ---------
@@ -5511,7 +5512,7 @@ def create_app(
         name: str,
         payload: RepoAccessRequest,
         request: Request,
-        session: Session = Depends(get_session),
+        session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         off = _pr_broker_off(app.state.config)
         if off is not None:
@@ -5568,7 +5569,7 @@ def create_app(
     def list_repo_access(
         request: Request,
         status: str | None = None,
-        session: Session = Depends(get_session),
+        session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         off = _pr_broker_off(app.state.config)
         if off is not None:
@@ -5606,7 +5607,7 @@ def create_app(
     def decide_repo_access(
         payload: RepoAccessDecision,
         request: Request,
-        session: Session = Depends(get_session),
+        session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         """The BATCH gate (2026-08-27 ruling 1): the operator set decides
         many rows in one call -- approve and revoke both land here."""
@@ -5646,7 +5647,7 @@ def create_app(
     def mint_agent_github_token(
         name: str,
         request: Request,
-        session: Session = Depends(get_session),
+        session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         """THE BROKER (2026-08-27 spec): the caller is the AGENT itself,
         authenticated by its cabal-issued colleague JWT -- never a human
@@ -5967,7 +5968,7 @@ def create_app(
             save_knowledge_file(
                 app.state.clients.github, repo, filename, content, archive_only=True
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(
                 "knowledge archive commit failed for %s (%s): %s", repo, filename, exc
             )
@@ -5989,7 +5990,7 @@ def create_app(
             delete_knowledge_file(
                 app.state.clients.github, repo, filename, archive_only=True
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(
                 "knowledge archive delete failed for %s (%s): %s", repo, filename, exc
             )
@@ -6985,7 +6986,7 @@ def create_app(
                 runtime_image=_runtime_image_for_repo(app, repo),
                 on_repin=_directory_resync(app, repo),
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(
                 "tooling archive commit failed for %s (%s): %s", repo, filename, exc
             )

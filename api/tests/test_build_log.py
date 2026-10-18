@@ -2,7 +2,6 @@
 the same create_app client as every route test; the GitHub side is the
 suite's own FakeGitHub grown two members."""
 
-import pytest
 from fastapi.testclient import TestClient
 
 from kobo_api.clients import Clients

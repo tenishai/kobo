@@ -4,7 +4,7 @@ through FakeGitHub.clone into an actual merged Config — never mocks
 asserting mocks.
 """
 
-from kobo_api.config import Config, GroupChoice, ModelChoice
+from kobo_api.config import Config, ModelChoice
 from kobo_api.main import create_app
 from kobo_api.org import ORG_KEYS, RETIRED_ORG_KEYS, OrgState, load_org_config
 from tests.fakes import FakeGitHub
@@ -356,7 +356,7 @@ def test_composite_override_is_disclosed_without_dumping_the_value(caplog):
     github = FakeGitHub(org_yaml="operators: [a@acme.test, b@acme.test]\n")
 
     with caplog.at_level(logging.WARNING, logger="kobo_api.org"):
-        merged, org = load_org_config(local, github)
+        _merged, org = load_org_config(local, github)
 
     assert org.wired is True
     disclosures = [
