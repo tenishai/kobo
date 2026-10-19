@@ -109,6 +109,8 @@ def test_render_org_yaml_golden_with_computed_defaults():
         "admin_groups": [],
         "admin_panel": False,
         "logout_url": None,
+        "gateway_config_repo": "",
+        "gateway_namespace": "",
         "cabal_url": None,
         "agent_endpoint_template": None,
         "groups": [],

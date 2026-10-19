@@ -1,0 +1,131 @@
+"""Connecting an integration from the admin panel (#173 step 3): the row,
+the credential to the secrets add-on, the pull request on the gateway repo,
+and the sentences the card shows when a piece is missing."""
+
+from __future__ import annotations
+
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from kobo_api.clients import Clients
+from kobo_api.config import Config
+from kobo_api.main import create_app
+from kobo_api.models import Base
+from tests.fakes import (
+    FakeAgent,
+    FakeCloud,
+    FakeGitHub,
+    FakeGojira,
+    FakeKubectl,
+    FakeSero,
+)
+from tests.test_api_org_status import (
+    ASSERTION_HEADER,
+    WHOAMI_AUDIENCE,
+    _fetcher,
+    _generate_jwk,
+    _sign_whoami,
+)
+
+GATEWAY_REPO = "example-org/gateway-config"
+TARGETS = '[[target]]\nname = "existing"\ntransport = "http"\naddress = "https://old.example"\n'
+
+
+def _client(tmp_path, fake_storage, config: Config, *, github: FakeGitHub, sero: FakeSero | None):
+    engine = create_engine(f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    private_key, jwk = _generate_jwk()
+    client = TestClient(
+        create_app(
+            session_factory,
+            config=config,
+            clients=Clients(
+                github=github, gojira=FakeGojira(), cloud=FakeCloud(), agent=FakeAgent(),
+                kubectl=FakeKubectl(), storage=fake_storage, sero=sero,
+            ),
+            iap_jwks_fetcher=_fetcher(jwk),
+        )
+    )
+    return client, {ASSERTION_HEADER: _sign_whoami(private_key, email="ops@example.com")}
+
+
+def _config(tmp_path, **overrides) -> Config:
+    values = {
+        "workdir": tmp_path / "work", "iap_audience": WHOAMI_AUDIENCE, "operators": ["ops@example.com"],
+        "admin_panel": True, "sero_url": "http://sero.internal", "gateway_config_repo": GATEWAY_REPO,
+        "gateway_namespace": "liminal",
+    }
+    values.update(overrides)
+    return Config(**values)
+
+
+BODY = {"vendor": "datadog", "name": "Datadog", "base_access": "read", "credential": "dd-secret-token",
+        "address": "https://mcp.datadoghq.com", "trust": "untrusted"}
+
+
+def test_connect_stores_the_credential_opens_the_gateway_pr_and_records_the_row(tmp_path, fake_storage):
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"targets.toml": TARGETS}, track_pushed_content=True)
+    sero = FakeSero()
+    client, headers = _client(tmp_path, fake_storage, _config(tmp_path), github=github, sero=sero)
+
+    response = client.post("/api/admin/integrations", json=BODY, headers=headers)
+
+    assert response.status_code == 201, response.text
+    row = response.json()
+    assert row["id"] == "datadog" and row["state"] == "pending"
+    assert row["credential_ref"] == "apps/kobo/integrations/datadog"
+    assert "pull request open on the gateway" in row["state_detail"]
+    # The credential went to the vault under the room's path and was synced into the gateway's namespace.
+    assert sero.puts == [("ops@example.com", "apps/kobo/integrations/datadog", {"TOKEN": "dd-secret-token"})]
+    assert sero.syncs[0][1:] == ("kobo", "apps/kobo/integrations/datadog", "liminal", "integration-datadog")
+    # The pull request adds the target without touching the one already there.
+    targets = github.pushed_file("targets.toml")
+    assert 'name = "existing"' in targets and 'name = "datadog"' in targets
+    assert 'bearer_token_env = "INTEGRATION_DATADOG_TOKEN"' in targets
+    assert row["spec"]["pull_request"].startswith("https://")
+    # And nothing secret is in the row or the audit log.
+    listing = client.get("/api/admin/integrations", headers=headers).json()["integrations"]
+    assert "dd-secret-token" not in str(listing)
+    audit = client.get("/api/admin/audit", headers=headers).json()["events"]
+    assert audit[0]["action"] == "integration.connect" and "dd-secret-token" not in str(audit)
+
+
+def test_connect_without_the_secrets_addon_is_refused_in_one_sentence(tmp_path, fake_storage):
+    github = FakeGitHub(existing_repos={GATEWAY_REPO})
+    client, headers = _client(tmp_path, fake_storage, _config(tmp_path, sero_url=""), github=github, sero=None)
+
+    response = client.post("/api/admin/integrations", json=BODY, headers=headers)
+
+    assert response.status_code == 409
+    assert response.json() == {"error": "the Secrets add-on is off, so the room has nowhere to hold the credential; turn it on first"}
+    assert client.get("/api/admin/integrations", headers=headers).json() == {"integrations": []}
+
+
+def test_connect_with_no_gateway_repo_records_the_row_and_says_what_is_left(tmp_path, fake_storage):
+    github = FakeGitHub()
+    client, headers = _client(tmp_path, fake_storage, _config(tmp_path, gateway_config_repo="", gateway_namespace=""), github=github, sero=FakeSero())
+
+    response = client.post("/api/admin/integrations", json=BODY, headers=headers)
+
+    assert response.status_code == 201
+    detail = response.json()["state_detail"]
+    assert "not synced to the gateway yet" in detail and "add the target by hand" in detail
+    assert github.pushes == []
+
+
+def test_disconnect_reverses_the_three_steps(tmp_path, fake_storage):
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"targets.toml": TARGETS}, track_pushed_content=True)
+    sero = FakeSero()
+    client, headers = _client(tmp_path, fake_storage, _config(tmp_path), github=github, sero=sero)
+    client.post("/api/admin/integrations", json=BODY, headers=headers)
+
+    response = client.delete("/api/admin/integrations/datadog", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["secret"] == "removed"
+    assert sero.deletes == [("ops@example.com", "apps/kobo/integrations/datadog")]
+    assert sero.unsyncs[0][1:] == ("kobo", "liminal", "integration-datadog")
+    assert client.get("/api/admin/integrations", headers=headers).json() == {"integrations": []}
+    assert client.delete("/api/admin/integrations/datadog", headers=headers).status_code == 404

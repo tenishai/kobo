@@ -76,6 +76,11 @@ admin_panel: __KOBO_ADMIN_PANEL__
 # Where the account menu's "Log out" goes: the identity proxy's sign-out path
 # (Google's proxy: /_gcp_iap/clear_login_cookie). Unset hides the item.
 logout_url: __KOBO_LOGOUT_URL__
+# Where an integration connected from the admin panel lands: the tool
+# gateway's config repository (a pull request adds the vendor's target) and
+# the namespace the gateway runs in (its credential is synced there).
+gateway_config_repo: __KOBO_GATEWAY_CONFIG_REPO__
+gateway_namespace: __KOBO_GATEWAY_NAMESPACE__
 
 # Base URL of the switchboard (cabal) service this room registers agents
 # with and (once wired) relays chat through, and the template for an
