@@ -1,29 +1,20 @@
 <script lang="ts">
   // Roles: a named set of permissions a group holds. Four built-ins and any
-  // number of custom roles built from the same permission lists. The editor
-  // has the five tabs an org-settings screen has: details, capabilities,
-  // admin permissions, connectors (which vendors the role's agents may be
-  // granted, and the ceiling), models.
+  // number of custom roles from the same lists, all from the server; the
+  // editor has the five tabs an org-settings screen has. Saving writes the
+  // row and its audit event (#173 step 3).
+  import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { toast } from "../../lib/toast.svelte";
+  import { errorMessage, type AdminRole } from "../../lib/api";
   import { formatHash, navigate } from "../../lib/router.svelte";
-  import {
-    ADMIN_PERMISSIONS,
-    CAPABILITIES,
-    MODELS,
-    admin,
-    blankRole,
-    deleteRole,
-    pluginName,
-    role as findRole,
-    saveRole,
-    type Ceiling,
-    type Role,
-  } from "../../lib/admin/store.svelte";
+  import { adminRolesQuery, deleteAdminRoleMutation, putAdminRoleMutation } from "../../lib/queries";
 
   let { item = null }: { item?: string | null } = $props();
 
   const TABS = ["Details", "Capabilities", "Admin permissions", "Connectors", "Models"] as const;
   type Tab = (typeof TABS)[number];
+  type Ceiling = "none" | "read" | "write" | "approve";
+  type Role = AdminRole;
   const CEILINGS: { id: Ceiling; label: string; desc: string }[] = [
     { id: "none", label: "None", desc: "Agents in this role cannot be granted this vendor." },
     { id: "read", label: "Read", desc: "Read lanes only." },
@@ -31,7 +22,37 @@
     { id: "approve", label: "Approve", desc: "Write lanes, and this role approves requests for it." },
   ];
 
-  const GROUPS = ["platform-admins", "sre", "platform", "finance", "growth", "sre-leads", "growth-eng", "data"];
+  const queryClient = useQueryClient();
+  const rolesQuery = createQuery(() => (adminRolesQuery()));
+  const save = createMutation(() => (putAdminRoleMutation(queryClient)));
+  const remove = createMutation(() => (deleteAdminRoleMutation(queryClient)));
+
+  const roles = $derived(rolesQuery.data?.roles ?? []);
+  const CAPABILITIES = $derived(rolesQuery.data?.catalogue.capabilities ?? []);
+  const ADMIN_PERMISSIONS = $derived(rolesQuery.data?.catalogue.admin ?? []);
+  const MODELS = $derived(rolesQuery.data?.catalogue.models ?? []);
+  const GROUPS = $derived(rolesQuery.data?.catalogue.groups ?? []);
+  const vendorIds = $derived((rolesQuery.data?.catalogue.connectors ?? []).map((c) => c.id));
+  function pluginName(id: string): string {
+    return rolesQuery.data?.catalogue.connectors.find((c) => c.id === id)?.name ?? id;
+  }
+  function findRole(id: string): Role | undefined {
+    return roles.find((r) => r.id === id);
+  }
+  function blankRole(): Role {
+    return {
+      id: "",
+      name: "",
+      description: "",
+      builtin: false,
+      groups: [],
+      capabilities: ["chat_teach"],
+      admin: [],
+      connectors: vendorIds.map((plugin) => ({ plugin, ceiling: "none" as Ceiling })),
+      models: MODELS.map((m) => m.id),
+      updated_at: "",
+    };
+  }
 
   let draft = $state<Role | null>(null);
   let tab = $state<Tab>("Details");
@@ -39,6 +60,7 @@
 
   // `#/admin/roles/new` opens a blank editor; `#/admin/roles/<id>` edits one.
   $effect(() => {
+    if (rolesQuery.isPending) return;
     if (item === "new") {
       if (!draft || draft.id !== "") {
         draft = blankRole();
@@ -66,16 +88,34 @@
     groupPick = "";
   }
 
-  function save(): void {
-    if (!draft || draft.name.trim() === "") return;
-    const saved = saveRole(draft);
-    toast.success(`Role ${saved.name} saved`, "Pull request opened against the org config.");
-    navigate({ page: "admin", pane: "roles" });
+  function slug(text: string): string {
+    return text.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
   }
 
-  function remove(r: Role): void {
-    deleteRole(r.id);
-    toast.success(`Role ${r.name} deleted`, "Pull request opened.");
+  function handleSave(): void {
+    if (!draft || draft.name.trim() === "") return;
+    const id = draft.id || slug(draft.name);
+    const { name, description, groups, capabilities, admin, connectors, models } = $state.snapshot(draft);
+    save.mutate(
+      { id, body: { name, description, groups, capabilities, admin, connectors, models } },
+      {
+        onSuccess: (saved) => {
+          toast.success(`Role ${saved.name} saved`);
+          navigate({ page: "admin", pane: "roles" });
+        },
+        onError: (err: unknown) => toast.error("Could not save the role", errorMessage(err, "Try again.")),
+      },
+    );
+  }
+
+  function handleDelete(r: Role): void {
+    remove.mutate(r.id, {
+      onSuccess: () => {
+        toast.success(`Role ${r.name} deleted`);
+        navigate({ page: "admin", pane: "roles" });
+      },
+      onError: (err: unknown) => toast.error("Could not delete the role", errorMessage(err, "Try again.")),
+    });
   }
 
   function ceilingOf(r: Role, pluginId: string): Ceiling {
@@ -87,8 +127,6 @@
     if (c) c.ceiling = ceiling;
     else r.connectors.push({ plugin: pluginId, ceiling });
   }
-
-  const vendorIds = $derived(admin.plugins.filter((p) => p.kind === "vendor").map((p) => p.id));
 </script>
 
 {#if draft}
@@ -199,13 +237,13 @@
     {/if}
 
     <div class="panel__footer">
-      <p class="panel__status">Saved as a pull request to the org config.</p>
+      <p class="panel__status">Saved to the room; the audit log records it.</p>
       <div class="panel__actions">
         {#if draft.id && !draft.builtin}
-          <button type="button" class="btn btn--danger" onclick={() => { remove(draft!); navigate({ page: "admin", pane: "roles" }); }}>Delete</button>
+          <button type="button" class="btn btn--danger" disabled={remove.isPending} onclick={() => handleDelete(draft!)}>Delete</button>
         {/if}
         <a class="btn" href={formatHash({ page: "admin", pane: "roles" })}>Cancel</a>
-        <button type="button" class="btn btn--primary" onclick={save} disabled={draft.name.trim() === ""}>Save</button>
+        <button type="button" class="btn btn--primary" onclick={handleSave} disabled={draft.name.trim() === "" || save.isPending}>Save</button>
       </div>
     </div>
   </section>
@@ -218,12 +256,17 @@
       </div>
       <a class="btn btn--primary" href={formatHash({ page: "admin", pane: "roles", item: "new" })}>Create a role</a>
     </div>
+    {#if rolesQuery.isPending}
+      <p class="panel__note">Reading the roles…</p>
+    {:else if rolesQuery.isError}
+      <p class="panel__note">Could not read the roles just now.</p>
+    {:else}
     <table class="panel__table">
       <thead>
         <tr><th>Role</th><th>Groups</th><th>Capabilities</th><th>Admin</th><th>Connectors</th><th></th></tr>
       </thead>
       <tbody>
-        {#each admin.roles as r (r.id)}
+        {#each roles as r (r.id)}
           <tr>
             <td>
               <span class="panel__name">{r.name}</span>
@@ -240,6 +283,7 @@
         {/each}
       </tbody>
     </table>
+    {/if}
   </section>
 {/if}
 

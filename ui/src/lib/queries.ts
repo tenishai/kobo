@@ -190,6 +190,10 @@ import {
   fetchTeamOptions,
   fetchTeams,
   type AdminConnectIntegration,
+  type AdminRoleBody,
+  deleteAdminRole,
+  fetchAdminRoles,
+  putAdminRole,
   connectAdminIntegration,
   disconnectAdminIntegration,
   fetchAdminAddons,
@@ -538,6 +542,34 @@ export function disconnectAdminIntegrationMutation(queryClient: QueryClient) {
     mutationFn: (id: string) => disconnectAdminIntegration(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin", "integrations"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
+    },
+  };
+}
+
+export function adminRolesQuery() {
+  return queryOptions({
+    queryKey: ["admin", "roles"] as const,
+    queryFn: fetchAdminRoles,
+    staleTime: 15_000,
+  });
+}
+
+export function putAdminRoleMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: ({ id, body }: { id: string; body: AdminRoleBody }) => putAdminRole(id, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "roles"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
+    },
+  };
+}
+
+export function deleteAdminRoleMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: (id: string) => deleteAdminRole(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "roles"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
     },
   };

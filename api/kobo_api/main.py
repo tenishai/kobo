@@ -26,6 +26,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from kobo_api import admin_integrations as admin_integrations_flow
+from kobo_api import admin_roles as admin_roles_catalogue
 from kobo_api import admin_store
 from kobo_api.admin_addons import addon_cards
 from kobo_api.agent_env import (
@@ -657,6 +658,24 @@ def _set_env_key(data: dict, key: str, value: str) -> bool:
     env[key] = value
     return True
 
+
+
+class AdminRoleConnector(BaseModel):
+    plugin: str = Field(min_length=1, max_length=64)
+    ceiling: str = Field(pattern="^(none|read|write|approve)$")
+
+
+class AdminRoleBody(BaseModel):
+    """A role as the editor saves it: the lists are open strings the
+    catalogue offers; the store refuses unknown ceilings."""
+
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2000)
+    groups: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+    admin: list[str] = Field(default_factory=list)
+    connectors: list[AdminRoleConnector] = Field(default_factory=list)
+    models: list[str] = Field(default_factory=list)
 
 
 class AdminConnectIntegration(BaseModel):
@@ -3498,6 +3517,59 @@ def create_app(
             return JSONResponse({"error": str(exc)}, status_code=404)
         session.commit()
         return JSONResponse(outcome)
+
+    @app.get("/api/admin/roles")
+    def admin_roles(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        """The Roles pane: every role with its groups, plus the catalogue the
+        editor offers. The four built-ins are seeded the first time."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        if admin_roles_catalogue.seed_builtin_roles(session, app.state.config):
+            session.commit()
+        integrations = admin_store.list_integrations(session)
+        return JSONResponse(
+            {
+                "roles": [admin_store.role_dict(r) for r in admin_store.list_roles(session)],
+                "catalogue": admin_roles_catalogue.catalogue(app.state.config, integrations),
+            }
+        )
+
+    @app.put("/api/admin/roles/{role_id}")
+    def admin_put_role(
+        role_id: str, payload: AdminRoleBody, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        actor = getattr(request.state, "iap_email", None) or "operator"
+        existing = {r.id for r in admin_store.list_roles(session)}
+        try:
+            row = admin_store.put_role(
+                session, name=payload.name, description=payload.description, groups=payload.groups,
+                spec={"capabilities": payload.capabilities, "admin": payload.admin,
+                      "connectors": [c.model_dump() for c in payload.connectors], "models": payload.models},
+                actor=actor, role_id=role_id,
+            )
+        except admin_store.AdminStoreError as exc:
+            session.rollback()
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        session.commit()
+        return JSONResponse(admin_store.role_dict(row), status_code=200 if role_id in existing else 201)
+
+    @app.delete("/api/admin/roles/{role_id}")
+    def admin_delete_role(role_id: str, request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        actor = getattr(request.state, "iap_email", None) or "operator"
+        try:
+            admin_store.delete_role(session, role_id, actor=actor)
+        except admin_store.AdminStoreError as exc:
+            session.rollback()
+            return JSONResponse({"error": str(exc)}, status_code=409 if "built-in" in str(exc) else 404)
+        session.commit()
+        return JSONResponse({"deleted": role_id})
 
     @app.get("/api/admin/audit")
     def admin_audit(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
