@@ -8,6 +8,11 @@ All notable changes to kobo are documented here. The format follows
 
 ### Added
 
+- **Admin panel, Integrations connect for real** (issue #173 step 3): `GET/POST /api/admin/integrations`
+  and `DELETE /api/admin/integrations/{id}`. A connect records the row, stores the credential in the
+  secrets add-on under `apps/kobo/integrations/<id>` synced into the gateway's namespace, and opens a
+  pull request on the gateway's config repository adding the vendor's `[[target]]`; the card says how
+  far that has gone. Two org keys: `gateway_config_repo`, `gateway_namespace`. Disconnect reverses it.
 - **Admin panel tables for integrations, roles and grants** (issue #173 step 3): `admin_integrations`,
   `admin_roles`, `admin_role_groups`, `admin_grants` (migration `b7c8d9e0f1a2`), with store functions
   that write the row and its audit event together and refuse a lane wider than the integration's

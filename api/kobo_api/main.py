@@ -25,6 +25,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from kobo_api import admin_integrations as admin_integrations_flow
 from kobo_api import admin_store
 from kobo_api.admin_addons import addon_cards
 from kobo_api.agent_env import (
@@ -656,6 +657,19 @@ def _set_env_key(data: dict, key: str, value: str) -> bool:
     env[key] = value
     return True
 
+
+
+class AdminConnectIntegration(BaseModel):
+    """Connect one vendor from the admin panel: a name, how wide the room
+    holds it, the credential (stored in the secrets add-on, never here), the
+    vendor's MCP address for the gateway, and the trust tier."""
+
+    vendor: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=120)
+    base_access: str = Field(pattern="^(read|write)$")
+    credential: str = Field(min_length=1, max_length=20000)
+    address: str = Field(default="", max_length=500)
+    trust: str = Field(default="untrusted", pattern="^(trusted|untrusted)$")
 
 class SlackWakeRequest(BaseModel):
     """PUT .../slack/wake body: one of `mention`, `thread`, `channel`."""
@@ -3434,6 +3448,56 @@ def create_app(
                 "slack_operators": list(cfg.slack_operators),
             }
         )
+
+    @app.get("/api/admin/integrations")
+    def admin_integrations(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        """The Integrations pane: one row per vendor the room holds a
+        credential for, with how far its projections have caught up."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        rows = [admin_store.integration_dict(r) for r in admin_store.list_integrations(session)]
+        return JSONResponse({"integrations": rows})
+
+    @app.post("/api/admin/integrations", status_code=201)
+    def admin_connect_integration(
+        payload: AdminConnectIntegration, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Connect: the row, the credential to the secrets add-on, the pull
+        request on the gateway repo (kobo_api.admin_integrations)."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        actor = getattr(request.state, "iap_email", None) or "operator"
+        try:
+            row = admin_integrations_flow.connect(
+                session, app.state.clients, app.state.config,
+                vendor=payload.vendor, name=payload.name, base_access=payload.base_access,
+                credential=payload.credential, address=payload.address, trust=payload.trust, actor=actor,
+            )
+        except (admin_integrations_flow.ConnectRefused, admin_store.AdminStoreError) as exc:
+            session.rollback()
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        session.commit()
+        return JSONResponse(admin_store.integration_dict(row), status_code=201)
+
+    @app.delete("/api/admin/integrations/{integration_id}")
+    def admin_disconnect_integration(
+        integration_id: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        actor = getattr(request.state, "iap_email", None) or "operator"
+        try:
+            outcome = admin_integrations_flow.disconnect(
+                session, app.state.clients, app.state.config, integration_id=integration_id, actor=actor
+            )
+        except admin_integrations_flow.ConnectRefused as exc:
+            session.rollback()
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        session.commit()
+        return JSONResponse(outcome)
 
     @app.get("/api/admin/audit")
     def admin_audit(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008

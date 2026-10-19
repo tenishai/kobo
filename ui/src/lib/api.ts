@@ -1132,6 +1132,51 @@ export type AdminAddon = {
   owner: string;
 };
 
+/** One integration: a vendor the room holds a base credential for, with how
+ * far its projections (the vault, the gateway) have caught up. */
+export type AdminIntegration = {
+  id: string;
+  vendor: string;
+  name: string;
+  base_access: "read" | "write";
+  state: "pending" | "applied" | "failed";
+  state_detail: string | null;
+  credential_ref: string | null;
+  spec: { address?: string; trust?: string; pull_request?: string };
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AdminConnectIntegration = {
+  vendor: string;
+  name: string;
+  base_access: "read" | "write";
+  credential: string;
+  address: string;
+  trust: "trusted" | "untrusted";
+};
+
+export async function fetchAdminIntegrations(): Promise<AdminIntegration[]> {
+  const res = await fetch("/api/admin/integrations");
+  const body = await parse<{ integrations: AdminIntegration[] }>(res);
+  return body.integrations;
+}
+
+export async function connectAdminIntegration(input: AdminConnectIntegration): Promise<AdminIntegration> {
+  const res = await fetch("/api/admin/integrations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return parse<AdminIntegration>(res);
+}
+
+export async function disconnectAdminIntegration(id: string): Promise<{ id: string; secret: string; gateway: string }> {
+  const res = await fetch(`/api/admin/integrations/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return parse<{ id: string; secret: string; gateway: string }>(res);
+}
+
 export type AdminPeople = {
   admin_groups: string[];
   operators: string[];

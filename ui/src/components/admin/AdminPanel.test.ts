@@ -68,6 +68,7 @@ describe("AdminPanel", () => {
     stubFetch({
       "/api/whoami": ADMIN_WHOAMI,
       "/api/admin/addons": ADDONS,
+      "/api/admin/integrations": { integrations: [] },
       "/api/admin/people": PEOPLE,
       "/api/admin/audit": AUDIT,
       "/api/group-requests": { requests: REQUESTS },
@@ -99,6 +100,15 @@ describe("AdminPanel", () => {
     expect(await screen.findByRole("heading", { name: "Connections" })).toBeTruthy();
     expect(screen.getAllByText("no lane").length).toBeGreaterThan(0);
     expect(screen.getByText("janus")).toBeTruthy();
+  });
+
+  it("Integrations starts empty and offers the catalog", async () => {
+    navigate({ page: "admin", pane: "integrations" });
+    renderWithClient(AdminPanel);
+    expect(await screen.findByRole("heading", { name: "Integrations" })).toBeTruthy();
+    expect(await screen.findByText(/Nothing connected yet/)).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: "Add integration" }));
+    expect(await screen.findByRole("heading", { name: "Add an integration" })).toBeTruthy();
   });
 
   it("People reads the real lists and the real queue", async () => {

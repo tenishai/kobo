@@ -249,6 +249,8 @@ def test_org_keys_is_exactly_the_brief_set():
             "admin_groups",
             "admin_panel",
             "logout_url",
+            "gateway_config_repo",
+            "gateway_namespace",
             "cabal_url",
             "agent_endpoint_template",
             "groups",

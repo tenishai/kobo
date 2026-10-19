@@ -189,8 +189,12 @@ import {
   fetchSlackManifest,
   fetchTeamOptions,
   fetchTeams,
+  type AdminConnectIntegration,
+  connectAdminIntegration,
+  disconnectAdminIntegration,
   fetchAdminAddons,
   fetchAdminAudit,
+  fetchAdminIntegrations,
   fetchAdminPeople,
   fetchWhoami,
   generateAvatar,
@@ -511,6 +515,34 @@ export function orgStatusQuery() {
  * anyway), unlike `orgStatusQuery`'s wiring state which a human can change
  * out from under a long-lived tab.
  */
+export function adminIntegrationsQuery() {
+  return queryOptions({
+    queryKey: ["admin", "integrations"] as const,
+    queryFn: fetchAdminIntegrations,
+    staleTime: 15_000,
+  });
+}
+
+export function connectAdminIntegrationMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: (input: AdminConnectIntegration) => connectAdminIntegration(input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "integrations"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
+    },
+  };
+}
+
+export function disconnectAdminIntegrationMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: (id: string) => disconnectAdminIntegration(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "integrations"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
+    },
+  };
+}
+
 export function adminPeopleQuery() {
   return queryOptions({
     queryKey: ["admin", "people"] as const,

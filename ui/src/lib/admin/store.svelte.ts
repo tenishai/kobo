@@ -46,6 +46,8 @@ export type Plugin = {
 
 export type CatalogEntry = {
   kind: PluginKind;
+  /** The vendor's MCP address the gateway targets, when it has one. */
+  address?: string;
   id: string;
   name: string;
   summary: string;

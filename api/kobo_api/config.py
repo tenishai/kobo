@@ -398,6 +398,14 @@ class Config(BaseModel):
     # path (for Google's proxy, `/_gcp_iap/clear_login_cookie`). None hides
     # the item, since the room itself holds no session to end.
     logout_url: str | None = None
+    # Where an integration lands when connected from the admin panel: the
+    # tool gateway's config repository (its `targets.toml` gets the vendor's
+    # `[[target]]` as a pull request) and the Kubernetes namespace the
+    # gateway runs in (the credential is synced there as a Secret through the
+    # secrets add-on). Both empty means a connect records the row and says
+    # what is left to do by hand.
+    gateway_config_repo: str = ""
+    gateway_namespace: str = ""
     # Path to a built UI `dist/` directory (e.g. `ui/dist` from `npm run
     # build`) to serve alongside the API, same origin, no CORS (Task 1).
     # None (the default) means dev: no UI is mounted, matching today's setup
