@@ -736,3 +736,79 @@ class AdminSetting(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_by: Mapped[str] = mapped_column(String(320), nullable=False)
+
+
+class AdminIntegration(Base):
+    """One vendor the room holds a base credential for (an integration: what
+    an agent reaches out to). The credential itself lives in the vault at
+    `credential_ref`; this row says it exists, how wide it is, and whether
+    the gateway serves it yet. `spec` holds what varies by vendor (the
+    gateway target's address, trust tier, scopes) under `spec_version`."""
+
+    __tablename__ = "admin_integrations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    vendor: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    base_access: Mapped[str] = mapped_column(String(16), nullable=False, default="read")
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    state_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    credential_ref: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    spec: Mapped[dict] = mapped_column(_JSON_BODY, nullable=False, default=dict)
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[str] = mapped_column(String(320), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class AdminRole(Base):
+    """A named set of permissions a group holds. `spec` carries the lists
+    (capabilities, admin permissions, per-integration ceilings, models) so a
+    new capability or vendor is a body change, never a migration."""
+
+    __tablename__ = "admin_roles"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    builtin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    spec: Mapped[dict] = mapped_column(_JSON_BODY, nullable=False, default=dict)
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    groups: Mapped[list[AdminRoleGroup]] = relationship(
+        back_populates="role", cascade="all, delete-orphan"
+    )
+
+
+class AdminRoleGroup(Base):
+    """Which groups hold a role: one row per (role, group)."""
+
+    __tablename__ = "admin_role_groups"
+
+    role_id: Mapped[str] = mapped_column(ForeignKey("admin_roles.id"), primary_key=True)
+    group_name: Mapped[str] = mapped_column(String(120), primary_key=True)
+    role: Mapped[AdminRole] = relationship(back_populates="groups")
+
+
+class AdminGrant(Base):
+    """An agent's lane to one integration: read or write, never wider than
+    the integration's base access. `state` follows the projection to the
+    gateway (pending, applied, failed, revoked); `spec` holds the pull
+    request link and the applied digest."""
+
+    __tablename__ = "admin_grants"
+    __table_args__ = (UniqueConstraint("agent_name", "integration_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    agent_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    integration_id: Mapped[str] = mapped_column(ForeignKey("admin_integrations.id"), nullable=False)
+    access: Mapped[str] = mapped_column(String(16), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    state_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    spec: Mapped[dict] = mapped_column(_JSON_BODY, nullable=False, default=dict)
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    requested_by: Mapped[str] = mapped_column(String(320), nullable=False)
+    decided_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
