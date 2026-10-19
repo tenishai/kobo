@@ -8,6 +8,10 @@ All notable changes to kobo are documented here. The format follows
 
 ### Added
 
+- **Admin panel tables for integrations, roles and grants** (issue #173 step 3): `admin_integrations`,
+  `admin_roles`, `admin_role_groups`, `admin_grants` (migration `b7c8d9e0f1a2`), with store functions
+  that write the row and its audit event together and refuse a lane wider than the integration's
+  base access, an unknown role body key, or deleting a built-in role. No routes yet.
 - **Admin panel, People and Audit read real data** (issue #173): `GET /api/admin/people` returns the
   room's admin groups, operators, reader groups and Slack operators from the org keys; `GET
   /api/admin/audit` returns the store's audit events newest first with their `landed` state.

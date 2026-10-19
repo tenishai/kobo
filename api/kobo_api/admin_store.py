@@ -18,7 +18,14 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from .models import AdminAuditEvent, AdminSetting
+from .models import (
+    AdminAuditEvent,
+    AdminGrant,
+    AdminIntegration,
+    AdminRole,
+    AdminRoleGroup,
+    AdminSetting,
+)
 
 LANDED_PENDING = "pending"
 LANDED_APPLIED = "applied"
@@ -117,3 +124,230 @@ def audit_events(session: Session, *, limit: int = 200) -> list[AdminAuditEvent]
         .limit(limit)
         .all()
     )
+
+
+# --- integrations, roles, grants (step 3) -----------------------------------
+
+ACCESS_LEVELS = ("read", "write")
+CEILINGS = ("none", "read", "write", "approve")
+STATE_PENDING = "pending"
+STATE_APPLIED = "applied"
+STATE_FAILED = "failed"
+STATE_REVOKED = "revoked"
+
+# What a role's body may hold, and the version it is at. The lists are open
+# (a new capability or vendor is a new string), the keys are not.
+ROLE_SPEC_KEYS = ("capabilities", "admin", "connectors", "models")
+ROLE_SPEC_VERSION = 1
+INTEGRATION_SPEC_VERSION = 1
+GRANT_SPEC_VERSION = 1
+
+
+class AdminStoreError(ValueError):
+    """A write the store refuses, with a sentence a person can act on."""
+
+
+def _now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _slug(text: str) -> str:
+    out = "".join(ch if ch.isalnum() else "-" for ch in text.strip().lower())
+    while "--" in out:
+        out = out.replace("--", "-")
+    return out.strip("-")[:64]
+
+
+def integration_dict(row: AdminIntegration) -> dict[str, Any]:
+    return {
+        "id": row.id, "vendor": row.vendor, "name": row.name, "base_access": row.base_access,
+        "state": row.state, "state_detail": row.state_detail, "credential_ref": row.credential_ref,
+        "spec": dict(row.spec or {}), "created_by": row.created_by,
+        "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat(),
+    }
+
+
+def list_integrations(session: Session) -> list[AdminIntegration]:
+    return session.query(AdminIntegration).order_by(AdminIntegration.name).all()
+
+
+def put_integration(
+    session: Session, *, vendor: str, name: str, base_access: str, spec: dict[str, Any],
+    credential_ref: str | None, actor: str, integration_id: str | None = None,
+) -> AdminIntegration:
+    """Create or update one integration row and its audit event. The
+    credential is never in the body: `credential_ref` names where the vault
+    holds it. State starts `pending` until the projections report back."""
+    if base_access not in ACCESS_LEVELS:
+        raise AdminStoreError(f"base access must be one of {', '.join(ACCESS_LEVELS)}, not {base_access!r}")
+    if not vendor.strip() or not name.strip():
+        raise AdminStoreError("an integration needs a vendor and a name")
+    now = _now()
+    row_id = integration_id or _slug(vendor)
+    row = session.get(AdminIntegration, row_id)
+    before = None if row is None else integration_dict(row)
+    if row is None:
+        row = AdminIntegration(
+            id=row_id, vendor=vendor, name=name, base_access=base_access, state=STATE_PENDING,
+            credential_ref=credential_ref, spec=dict(spec), spec_version=INTEGRATION_SPEC_VERSION,
+            created_by=actor, created_at=now, updated_at=now,
+        )
+        session.add(row)
+        action = "integration.connect"
+    else:
+        row.vendor, row.name, row.base_access = vendor, name, base_access
+        row.spec, row.spec_version = dict(spec), INTEGRATION_SPEC_VERSION
+        if credential_ref is not None:
+            row.credential_ref = credential_ref
+        row.state, row.state_detail, row.updated_at = STATE_PENDING, None, now
+        action = "integration.update"
+    session.flush()
+    record(session, actor=actor, action=action, object_type="integration", object_id=row.id,
+           before=before, after=integration_dict(row))
+    return row
+
+
+def set_integration_state(session: Session, integration_id: str, *, state: str, detail: str | None) -> None:
+    row = session.get(AdminIntegration, integration_id)
+    if row is None:
+        return
+    row.state, row.state_detail, row.updated_at = state, detail, _now()
+
+
+def remove_integration(session: Session, integration_id: str, *, actor: str) -> None:
+    """Disconnect: the row goes, its grants go with it, and the audit event
+    says so. Reversing the projections is the caller's job."""
+    row = session.get(AdminIntegration, integration_id)
+    if row is None:
+        raise AdminStoreError(f"no integration {integration_id!r}")
+    before = integration_dict(row)
+    for grant in session.query(AdminGrant).filter_by(integration_id=integration_id).all():
+        session.delete(grant)
+    session.delete(row)
+    record(session, actor=actor, action="integration.disconnect", object_type="integration",
+           object_id=integration_id, before=before, after=None)
+
+
+def role_dict(row: AdminRole) -> dict[str, Any]:
+    spec = dict(row.spec or {})
+    return {
+        "id": row.id, "name": row.name, "description": row.description or "", "builtin": row.builtin,
+        "groups": sorted(g.group_name for g in row.groups),
+        "capabilities": list(spec.get("capabilities", [])), "admin": list(spec.get("admin", [])),
+        "connectors": list(spec.get("connectors", [])), "models": list(spec.get("models", [])),
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+def list_roles(session: Session) -> list[AdminRole]:
+    return session.query(AdminRole).order_by(AdminRole.builtin.desc(), AdminRole.name).all()
+
+
+def put_role(
+    session: Session, *, name: str, description: str, groups: list[str], spec: dict[str, Any],
+    actor: str, role_id: str | None = None, builtin: bool = False,
+) -> AdminRole:
+    """Create or update a role, its group rows and its audit event. Every
+    connector ceiling is checked against the ceilings the panel knows."""
+    if not name.strip():
+        raise AdminStoreError("a role needs a name")
+    unknown = sorted(set(spec) - set(ROLE_SPEC_KEYS))
+    if unknown:
+        raise AdminStoreError(f"a role body holds only {', '.join(ROLE_SPEC_KEYS)}; not {', '.join(unknown)}")
+    for connector in spec.get("connectors", []):
+        if connector.get("ceiling") not in CEILINGS:
+            raise AdminStoreError(f"a ceiling must be one of {', '.join(CEILINGS)}")
+    now = _now()
+    row_id = role_id or _slug(name)
+    row = session.get(AdminRole, row_id)
+    before = None if row is None else role_dict(row)
+    body = {key: list(spec.get(key, [])) for key in ROLE_SPEC_KEYS}
+    if row is None:
+        row = AdminRole(id=row_id, name=name, description=description, builtin=builtin, spec=body,
+                        spec_version=ROLE_SPEC_VERSION, created_at=now, updated_at=now)
+        session.add(row)
+        action = "role.create"
+    else:
+        row.name, row.description, row.spec, row.spec_version, row.updated_at = name, description, body, ROLE_SPEC_VERSION, now
+        action = "role.update"
+    row.groups = [AdminRoleGroup(group_name=g) for g in sorted({g.strip() for g in groups if g.strip()})]
+    session.flush()
+    record(session, actor=actor, action=action, object_type="role", object_id=row.id,
+           before=before, after=role_dict(row), landed=LANDED_APPLIED, landed_detail="stored")
+    return row
+
+
+def delete_role(session: Session, role_id: str, *, actor: str) -> None:
+    row = session.get(AdminRole, role_id)
+    if row is None:
+        raise AdminStoreError(f"no role {role_id!r}")
+    if row.builtin:
+        raise AdminStoreError("a built-in role cannot be deleted; take its groups away instead")
+    before = role_dict(row)
+    session.delete(row)
+    record(session, actor=actor, action="role.delete", object_type="role", object_id=role_id,
+           before=before, after=None, landed=LANDED_APPLIED, landed_detail="stored")
+
+
+def grant_dict(row: AdminGrant) -> dict[str, Any]:
+    return {
+        "id": row.id, "agent": row.agent_name, "integration": row.integration_id, "access": row.access,
+        "state": row.state, "state_detail": row.state_detail, "spec": dict(row.spec or {}),
+        "requested_by": row.requested_by, "decided_by": row.decided_by,
+        "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat(),
+    }
+
+
+def list_grants(session: Session, *, agent_name: str | None = None) -> list[AdminGrant]:
+    q = session.query(AdminGrant)
+    if agent_name is not None:
+        q = q.filter_by(agent_name=agent_name)
+    return q.order_by(AdminGrant.agent_name, AdminGrant.integration_id).all()
+
+
+def put_grant(session: Session, *, agent_name: str, integration_id: str, access: str, actor: str) -> AdminGrant:
+    """Give an agent a lane, never wider than the integration's base access.
+    One row per (agent, integration); a second write changes the access."""
+    integration = session.get(AdminIntegration, integration_id)
+    if integration is None:
+        raise AdminStoreError(f"no integration {integration_id!r}")
+    if access not in ACCESS_LEVELS:
+        raise AdminStoreError(f"access must be one of {', '.join(ACCESS_LEVELS)}")
+    if access == "write" and integration.base_access != "write":
+        raise AdminStoreError(f"{integration.name} is held read-only by the room; a write lane cannot be wider than that")
+    now = _now()
+    row = session.query(AdminGrant).filter_by(agent_name=agent_name, integration_id=integration_id).first()
+    before = None if row is None else grant_dict(row)
+    if row is None:
+        row = AdminGrant(agent_name=agent_name, integration_id=integration_id, access=access, state=STATE_PENDING,
+                         spec={}, spec_version=GRANT_SPEC_VERSION, requested_by=actor, decided_by=actor,
+                         created_at=now, updated_at=now)
+        session.add(row)
+        action = "grant.create"
+    else:
+        row.access, row.state, row.state_detail, row.decided_by, row.updated_at = access, STATE_PENDING, None, actor, now
+        action = "grant.update"
+    session.flush()
+    record(session, actor=actor, action=action, object_type="grant", object_id=f"{agent_name}/{integration_id}",
+           before=before, after=grant_dict(row))
+    return row
+
+
+def set_grant_state(session: Session, grant_id: int, *, state: str, detail: str | None, spec: dict[str, Any] | None = None) -> None:
+    row = session.get(AdminGrant, grant_id)
+    if row is None:
+        return
+    row.state, row.state_detail, row.updated_at = state, detail, _now()
+    if spec is not None:
+        row.spec = {**dict(row.spec or {}), **spec}
+
+
+def revoke_grant(session: Session, *, agent_name: str, integration_id: str, actor: str) -> AdminGrant:
+    row = session.query(AdminGrant).filter_by(agent_name=agent_name, integration_id=integration_id).first()
+    if row is None:
+        raise AdminStoreError(f"{agent_name} has no lane to {integration_id}")
+    before = grant_dict(row)
+    row.state, row.state_detail, row.decided_by, row.updated_at = STATE_REVOKED, None, actor, _now()
+    record(session, actor=actor, action="grant.revoke", object_type="grant", object_id=f"{agent_name}/{integration_id}",
+           before=before, after=grant_dict(row))
+    return row
