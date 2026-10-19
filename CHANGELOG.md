@@ -8,6 +8,11 @@ All notable changes to kobo are documented here. The format follows
 
 ### Added
 
+- **Admin panel, Roles for real** (issue #173 step 3): `GET /api/admin/roles` seeds the four built-ins
+  (Admin, Operator, Member, Reader) from the org keys on first read and returns every role with the
+  catalogue the editor offers (capabilities, admin permissions, the room's models and groups, the
+  connected integrations); `PUT`/`DELETE /api/admin/roles/{id}` save and delete custom roles, every
+  change in the audit log. A built-in cannot be deleted.
 - **Admin panel, Integrations connect for real** (issue #173 step 3): `GET/POST /api/admin/integrations`
   and `DELETE /api/admin/integrations/{id}`. A connect records the row, stores the credential in the
   secrets add-on under `apps/kobo/integrations/<id>` synced into the gateway's namespace, and opens a

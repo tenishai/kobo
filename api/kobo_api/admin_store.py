@@ -239,8 +239,14 @@ def role_dict(row: AdminRole) -> dict[str, Any]:
     }
 
 
+BUILTIN_ORDER = ("admin", "operator", "member", "reader")
+
+
 def list_roles(session: Session) -> list[AdminRole]:
-    return session.query(AdminRole).order_by(AdminRole.builtin.desc(), AdminRole.name).all()
+    """Built-ins first in their natural order, then custom roles by name."""
+    rows = session.query(AdminRole).all()
+    rank = {rid: i for i, rid in enumerate(BUILTIN_ORDER)}
+    return sorted(rows, key=lambda r: (0, rank.get(r.id, 99), "") if r.builtin else (1, 0, r.name.lower()))
 
 
 def put_role(

@@ -2,7 +2,6 @@
 import { fireEvent, screen } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AdminPanel from "../../pages/AdminPanel.svelte";
-import { admin, blankRole, saveRole } from "../../lib/admin/store.svelte";
 import { navigate } from "../../lib/router.svelte";
 import { renderWithClient, stubFetch } from "../../test-utils/render";
 
@@ -22,6 +21,21 @@ describe("AdminPanel", () => {
         owner: "this team",
       },
     ],
+  };
+  const ROLES = {
+    roles: [
+      {
+        id: "admin", name: "Admin", description: "Runs the room.", builtin: true, groups: ["platform-admins"],
+        capabilities: ["create_agents"], admin: ["view_audit"], connectors: [], models: ["sonnet"], updated_at: "2026-10-18T20:00:00",
+      },
+    ],
+    catalogue: {
+      capabilities: [{ id: "create_agents", label: "Create agents", desc: "Build an agent." }],
+      admin: [{ id: "view_audit", label: "View audit", desc: "Read who changed what." }],
+      models: [{ id: "sonnet", label: "Sonnet" }],
+      groups: ["platform-admins", "data"],
+      connectors: [{ id: "datadog", name: "Datadog", base_access: "read" }],
+    },
   };
   const PEOPLE = {
     admin_groups: ["platform-admins"],
@@ -69,6 +83,7 @@ describe("AdminPanel", () => {
       "/api/whoami": ADMIN_WHOAMI,
       "/api/admin/addons": ADDONS,
       "/api/admin/integrations": { integrations: [] },
+      "/api/admin/roles": ROLES,
       "/api/admin/people": PEOPLE,
       "/api/admin/audit": AUDIT,
       "/api/group-requests": { requests: REQUESTS },
@@ -136,15 +151,3 @@ describe("AdminPanel", () => {
   });
 });
 
-describe("admin store", () => {
-
-  it("a custom role gets an id from its name and is not built in", () => {
-    const draft = blankRole();
-    draft.name = "Data engineering";
-    draft.groups.push("data");
-    const saved = saveRole(draft);
-    expect(saved.id).toBe("data-engineering");
-    expect(saved.builtin).toBe(false);
-    expect(admin.roles.some((r) => r.id === "data-engineering")).toBe(true);
-  });
-});

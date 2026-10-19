@@ -1177,6 +1177,49 @@ export async function disconnectAdminIntegration(id: string): Promise<{ id: stri
   return parse<{ id: string; secret: string; gateway: string }>(res);
 }
 
+/** A role as the server stores it, plus the catalogue the editor offers. */
+export type AdminRole = {
+  id: string;
+  name: string;
+  description: string;
+  builtin: boolean;
+  groups: string[];
+  capabilities: string[];
+  admin: string[];
+  connectors: { plugin: string; ceiling: "none" | "read" | "write" | "approve" }[];
+  models: string[];
+  updated_at: string;
+};
+
+export type AdminRoleCatalogue = {
+  capabilities: { id: string; label: string; desc: string }[];
+  admin: { id: string; label: string; desc: string }[];
+  models: { id: string; label: string }[];
+  groups: string[];
+  connectors: { id: string; name: string; base_access: "read" | "write" }[];
+};
+
+export type AdminRoleBody = Omit<AdminRole, "id" | "builtin" | "updated_at">;
+
+export async function fetchAdminRoles(): Promise<{ roles: AdminRole[]; catalogue: AdminRoleCatalogue }> {
+  const res = await fetch("/api/admin/roles");
+  return parse<{ roles: AdminRole[]; catalogue: AdminRoleCatalogue }>(res);
+}
+
+export async function putAdminRole(id: string, body: AdminRoleBody): Promise<AdminRole> {
+  const res = await fetch(`/api/admin/roles/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parse<AdminRole>(res);
+}
+
+export async function deleteAdminRole(id: string): Promise<{ deleted: string }> {
+  const res = await fetch(`/api/admin/roles/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return parse<{ deleted: string }>(res);
+}
+
 export type AdminPeople = {
   admin_groups: string[];
   operators: string[];
