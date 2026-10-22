@@ -14,6 +14,7 @@
     adminIntegrationsQuery,
     connectAdminIntegrationMutation,
     disconnectAdminIntegrationMutation,
+    reloadAdminOrgMutation,
   } from "../../lib/queries";
   import type { AdminIntegration } from "../../lib/api";
   import { CATALOG, type CatalogEntry } from "../../lib/admin/store.svelte";
@@ -38,6 +39,14 @@
   const addons = createQuery(() => ({ ...adminAddonsQuery(), enabled: kind === "platform" }));
   const integrations = createQuery(() => ({ ...adminIntegrationsQuery(), enabled: kind === "vendor" }));
   const connect = createMutation(() => (connectAdminIntegrationMutation(queryClient)));
+  const reload = createMutation(() => (reloadAdminOrgMutation(queryClient)));
+
+  function handleReload(): void {
+    reload.mutate(undefined, {
+      onSuccess: (r) => toast.success(r.wired ? "Org config reloaded" : "Org config not wired", r.wired ? r.note : r.detail),
+      onError: (err: unknown) => toast.error("Could not reload", errorMessage(err, "Try again.")),
+    });
+  }
   const disconnect = createMutation(() => (disconnectAdminIntegrationMutation(queryClient)));
 
   const connected = $derived(new Set((integrations.data ?? []).map((i) => i.id)));
@@ -107,6 +116,10 @@
     {#if kind === "vendor"}
       <button type="button" class="btn" onclick={() => (catalogOpen = true)} disabled={addable.length === 0}>
         Add integration
+      </button>
+    {:else}
+      <button type="button" class="btn" onclick={handleReload} disabled={reload.isPending} title="Re-read org.yaml now: models, groups and people lists update without a restart.">
+        Reload org config
       </button>
     {/if}
   </div>

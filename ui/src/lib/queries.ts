@@ -194,6 +194,7 @@ import {
   deleteAdminRole,
   fetchAdminRoles,
   putAdminRole,
+  reloadAdminOrg,
   connectAdminIntegration,
   disconnectAdminIntegration,
   fetchAdminAddons,
@@ -571,6 +572,17 @@ export function deleteAdminRoleMutation(queryClient: QueryClient) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin", "roles"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
+    },
+  };
+}
+
+export function reloadAdminOrgMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: () => reloadAdminOrg(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin"] });
+      queryClient.invalidateQueries({ queryKey: ["catalog", "models"] });
+      queryClient.invalidateQueries({ queryKey: ["whoami"] });
     },
   };
 }
