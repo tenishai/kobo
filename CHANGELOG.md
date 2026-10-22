@@ -8,6 +8,10 @@ All notable changes to kobo are documented here. The format follows
 
 ### Added
 
+- **Refresh an attached skill in one commit** (issue #182): `POST .../skills/catalog` with
+  `refresh: true`, and `kobo_set_agent_skills(refresh=[...])`, move an attached catalog skill to the
+  version the catalog serves now in one commit and one roll, instead of a remove and an add. A
+  skill the agent does not carry, or a local skill, is refused.
 - **Admin panel, Roles for real** (issue #173 step 3): `GET /api/admin/roles` seeds the four built-ins
   (Admin, Operator, Member, Reader) from the org keys on first read and returns every role with the
   catalogue the editor offers (capabilities, admin permissions, the room's models and groups, the

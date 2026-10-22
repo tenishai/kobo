@@ -560,6 +560,9 @@ class CatalogSkillPayload(BaseModel):
 
     name: str
     team: str
+    # Refresh an attached catalog skill to the version the catalog serves
+    # now, in one commit (issue #182). Off, an attached name is a 409.
+    refresh: bool = False
 
 
 class IntakeUploadPayload(BaseModel):
@@ -6529,9 +6532,24 @@ def create_app(
         # Collision check BEFORE any repo work, either-class: re-picking a
         # name this agent already carries — whether that existing entry is
         # itself a catalog pick or a local guardrail file — is a 409, not a
-        # silent overwrite.
-        if any(entry["name"] == payload.name for entry in agent.skills):
+        # silent overwrite. `refresh` is the one exception (issue #182): an
+        # attached CATALOG pick moves to the version served now, in one
+        # commit; a local skill is still refused, and so is refreshing a
+        # skill the agent does not carry.
+        carried = next((entry for entry in agent.skills if entry["name"] == payload.name), None)
+        if carried is not None and not payload.refresh:
             return _skill_conflict(payload.name)
+        if payload.refresh:
+            if carried is None:
+                return JSONResponse(
+                    {"error": f"the agent does not carry a skill named {payload.name!r}; add it instead"},
+                    status_code=409,
+                )
+            if carried.get("source") != "catalog":
+                return JSONResponse(
+                    {"error": f"{payload.name!r} is a local skill, not a catalog pick; save it instead"},
+                    status_code=409,
+                )
 
         try:
             commit_sha, source_sha = add_catalog_skill(
@@ -6541,6 +6559,7 @@ def create_app(
                 agent.repo_full_name,
                 payload.name,
                 payload.team,
+                replace=payload.refresh,
             )
         except SkillsError as exc:
             # kobo_api.skills carries no structured discriminator between

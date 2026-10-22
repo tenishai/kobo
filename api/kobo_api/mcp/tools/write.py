@@ -1107,6 +1107,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         agent: str,
         add: list[str] | None = None,
         remove: list[str] | None = None,
+        refresh: list[str] | None = None,
     ) -> dict:
         """Pull skills from the org marketplace catalog onto `agent`,
         remove skills it already carries, or both in one call -- the same
@@ -1121,6 +1122,10 @@ def register(mcp: FastMCP, app: Any) -> None:
         then removals, each in the order given. If one entry fails partway
         through, every entry already applied stays applied and the error
         names the id that failed.
+
+        `refresh` names attached catalog skills to move to the version the
+        catalog serves now, one commit and one roll each (not a remove and an
+        add); a name not attached, or a local skill, is refused.
         """
         from kobo_api.main import CatalogSkillPayload
 
@@ -1157,6 +1162,31 @@ def register(mcp: FastMCP, app: Any) -> None:
                     body = _skill_route_result(response)
                     added.append({"id": skill_id, "sha": body.get("sha")})
 
+            # Refresh: an attached catalog skill moves to the version served
+            # now, one commit each (issue #182); after adds, before removes.
+            refresh_ids = list(refresh or [])
+            if refresh_ids:
+                cfg = app.state.config
+                if not cfg.skills_bucket:
+                    raise ToolError(_SKILLS_BUCKET_NOT_CONFIGURED)
+                try:
+                    catalog = read_marketplace_catalog(app.state.clients.storage, cfg.skills_bucket)
+                except ClientError as exc:
+                    raise ToolError(_MARKETPLACE_DID_NOT_ANSWER) from exc
+                if catalog is None:
+                    raise ToolError(_CATALOG_UNAVAILABLE)
+                for skill_id in refresh_ids:
+                    entry = catalog.get(skill_id)
+                    if entry is None:
+                        raise ToolError(f"no such skill: {skill_id!r}")
+                    response = await _off_loop(add_skill_endpoint,
+                        name=agent,
+                        payload=CatalogSkillPayload(name=skill_id, team=_skill_team(entry), refresh=True),
+                        request=req,
+                        session=session,
+                    )
+                    body = _skill_route_result(response)
+                    added.append({"id": skill_id, "sha": body.get("sha"), "refreshed": True})
             for skill_id in remove or []:
                 response = await _off_loop(remove_skill_endpoint,
                     name=agent, skill_id=skill_id, request=req, session=session
