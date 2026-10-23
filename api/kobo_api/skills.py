@@ -106,9 +106,14 @@ def add_catalog_skill(
     repo: str,
     skill_id: str,
     team: str,
+    *,
+    replace: bool = False,
 ) -> tuple[str, str]:
     """Materialize the catalog skill `<team>/<skill_id>/` into `repo`'s
-    `bundle/skills/<skill_id>/` and push it.
+    `bundle/skills/<skill_id>/` and push it. With `replace`, the directory
+    is emptied first so the push is the catalog's current version exactly,
+    in one commit (issue #182: a refresh used to be a remove and an add,
+    two commits and two rolls).
 
     Reuses `kobo_api.steps._materialize_catalog_skill` — the exact same
     containment-checked bucket download a fresh provision runs
@@ -138,6 +143,8 @@ def add_catalog_skill(
         workdir = Path(tmp)
         github.clone(repo, workdir)
         skill_dir = workdir / "bundle" / "skills" / skill_id
+        if replace and skill_dir.exists():
+            shutil.rmtree(skill_dir)
         skill_dir.mkdir(parents=True, exist_ok=True)
         marketplace_catalog = read_marketplace_catalog(storage, config.skills_bucket)
         try:
@@ -148,7 +155,8 @@ def add_catalog_skill(
             raise SkillsError(str(exc)) from exc
         _admit_skills_load(workdir, repo)
         refresh_agent_card(workdir / "bundle")
-        github.commit_push(workdir, f"kobo: add skill {skill_id}")
+        verb = "refresh" if replace else "add"
+        github.commit_push(workdir, f"kobo: {verb} skill {skill_id}")
         return github.local_head(workdir), source_sha
 
 

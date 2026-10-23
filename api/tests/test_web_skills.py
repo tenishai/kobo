@@ -932,3 +932,67 @@ def test_skill_change_directory_failure_is_reported_not_raised(
     assert response.status_code == 200
     assert response.json() == {"sha": SHA, "directory": "failed"}
     assert _load_agent_skills(session_factory) == []
+
+
+# --- refresh: an attached catalog skill moves to the version served now, in one commit (#182)
+
+
+def test_refresh_moves_an_attached_catalog_skill_in_one_commit(session_factory, config):
+    storage = FakeStorage()
+    _seed_catalog_skill(storage, SAMPLE_TEAM, SAMPLE_SKILL_ID, source_sha="newsha002")
+    github = FakeGitHub()
+    client = _make_client(session_factory, config, github=github, storage=storage)
+    _seed_agent(
+        session_factory,
+        config,
+        skills=[{"name": SAMPLE_SKILL_ID, "team": SAMPLE_TEAM, "sha": "old", "source": "catalog"}],
+    )
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/skills/catalog",
+        json={"name": SAMPLE_SKILL_ID, "team": SAMPLE_TEAM, "refresh": True},
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(github.pushes) == 1
+    assert github.pushes[0][1] == f"kobo: refresh skill {SAMPLE_SKILL_ID}"
+    [row] = _load_agent_skills(session_factory)
+    assert row["sha"] == "newsha002" and row["source"] == "catalog"
+
+
+def test_refresh_of_a_skill_the_agent_does_not_carry_is_refused(session_factory, config):
+    storage = FakeStorage()
+    _seed_catalog_skill(storage, SAMPLE_TEAM, SAMPLE_SKILL_ID)
+    github = FakeGitHub()
+    client = _make_client(session_factory, config, github=github, storage=storage)
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/skills/catalog",
+        json={"name": SAMPLE_SKILL_ID, "team": SAMPLE_TEAM, "refresh": True},
+    )
+
+    assert response.status_code == 409
+    assert "does not carry" in response.json()["error"]
+    assert github.pushes == []
+
+
+def test_refresh_never_overwrites_a_local_skill(session_factory, config):
+    storage = FakeStorage()
+    _seed_catalog_skill(storage, SAMPLE_TEAM, SAMPLE_SKILL_ID)
+    github = FakeGitHub()
+    client = _make_client(session_factory, config, github=github, storage=storage)
+    _seed_agent(
+        session_factory,
+        config,
+        skills=[{"name": SAMPLE_SKILL_ID, "team": SAMPLE_TEAM, "sha": "", "source": "local"}],
+    )
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/skills/catalog",
+        json={"name": SAMPLE_SKILL_ID, "team": SAMPLE_TEAM, "refresh": True},
+    )
+
+    assert response.status_code == 409
+    assert "local skill" in response.json()["error"]
+    assert github.pushes == []
