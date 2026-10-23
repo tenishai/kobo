@@ -2995,6 +2995,7 @@ def create_app(
     install_metrics(app)
     install_tracing(app)
     app.state.config = config
+    app.state.local_config = None
     app.state.clients = clients
     app.state.session_factory = session_factory
     # Live health per ready agent (kobo_api.health): filled by the sweep,
@@ -3520,6 +3521,35 @@ def create_app(
             return JSONResponse({"error": str(exc)}, status_code=404)
         session.commit()
         return JSONResponse(outcome)
+
+    @app.post("/api/admin/org/reload")
+    def admin_reload_org(request: Request) -> JSONResponse:
+        """Re-read the org config now (issue #185): models, groups and the
+        people lists land without a restart. The org values are merged over
+        the local config the room booted from, the same way boot does it.
+        Add-on URLs and anything a client was built with still need a
+        restart, and the response says so."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        local = getattr(app.state, "local_config", None)
+        clients: Clients | None = app.state.clients
+        if local is None or clients is None:
+            return JSONResponse(
+                {"error": "this room was not booted from an org config, so there is nothing to reload"},
+                status_code=409,
+            )
+        merged, org = load_org_config(local, clients.github)
+        app.state.config = merged
+        app.state.org = org
+        return JSONResponse(
+            {
+                "wired": org.wired,
+                "detail": org.error or "reloaded",
+                "models": [m.id for m in merged.models],
+                "note": "models, groups and people lists are live now; add-on URLs still need a restart",
+            }
+        )
 
     @app.get("/api/admin/roles")
     def admin_roles(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
@@ -10623,4 +10653,8 @@ def build_default_app() -> FastAPI:
     # here, right beside the org-config clone above, rather than waiting
     # for an organic consent-change trigger that might never come.
     _boot_sync_dispatch_pairs(clients, config, session_factory)
-    return create_app(session_factory, config=config, clients=clients, org=org, role=role)
+    app = create_app(session_factory, config=config, clients=clients, org=org, role=role)
+    # Kept for the admin panel's reload: the org config is merged over this
+    # again on demand, so a new model or group lands without a restart.
+    app.state.local_config = local_config
+    return app

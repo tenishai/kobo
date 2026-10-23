@@ -1220,6 +1220,11 @@ export async function deleteAdminRole(id: string): Promise<{ deleted: string }> 
   return parse<{ deleted: string }>(res);
 }
 
+export async function reloadAdminOrg(): Promise<{ wired: boolean; detail: string; models: string[]; note: string }> {
+  const res = await fetch("/api/admin/org/reload", { method: "POST" });
+  return parse<{ wired: boolean; detail: string; models: string[]; note: string }>(res);
+}
+
 export type AdminPeople = {
   admin_groups: string[];
   operators: string[];
