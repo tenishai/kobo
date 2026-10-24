@@ -4212,6 +4212,16 @@ def cabal_enabled(config: Config) -> bool:
     )
 
 
+# The one pair kobo sends when no pair is allowed (issue #194). Cabal reads an
+# empty dispatch_pairs table as "every dispatch allowed" (cabal
+# src/cabal/core/dispatch_pairs.py, decision D-018) and checks nothing about a
+# pair beyond "two strings" (routes/admin.py DispatchPairsRequest), so the
+# guarantee is kobo's: it mints colleague subjects only as `agent:<name>` and
+# names agents only by catalog.NAME_RE, which has no ':'. No token kobo mints
+# carries this sub and no agent kobo makes has this name.
+DENY_ALL_PAIR = ("kobo:deny-all", "kobo:deny-all")
+
+
 class CabalClient:
     """Talks to the switchboard (cabal)'s admin API: registers/delists an
     agent in its directory (`graduate`/`absorb`), relays a room chat's
@@ -4261,25 +4271,13 @@ class CabalClient:
         self._async_client = async_client or httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, connect=10.0)
         )
-        # `put_dispatch_pairs`'s own shrink-to-empty guard (below) needs to
-        # remember what the LAST push from this very instance looked like --
-        # there is nowhere else to keep that memory (no row in kobo's own
-        # DB, nothing cabal's response echoes back), and "in-process memory
-        # is fine" (Task C4 design) since every caller shares one `Clients.
-        # cabal` instance per process. Starts `False`: a fresh client's
-        # first-ever push, even an empty one, is "nothing to allow yet," not
-        # a shrink from anything.
-        self._last_dispatch_pairs_nonempty = False
         # The lost-sync reconciliation flag (final-review fix round,
         # HIGH-2b): True whenever this instance's LAST attempted push
         # failed (either a non-2xx `CabalError` below or a raw transport
         # `httpx.HTTPError` propagating straight out of the request call),
-        # False once a push has actually succeeded. Lives right beside
-        # `_last_dispatch_pairs_nonempty` above for the same reason -- both
-        # are in-process-only memory of this client's own push history,
-        # shared by every caller through the one `Clients.cabal` instance
-        # per process, "in-process memory is fine" per the same Task C4
-        # design this mirrors.
+        # False once a push has actually succeeded. In-process memory of
+        # this client's own push history, shared by every caller through the
+        # one `Clients.cabal` instance per process (Task C4 design).
         #
         # Nothing in this class READS the flag to decide whether to push --
         # `put_dispatch_pairs` always pushes whatever it's handed, same as
@@ -4466,19 +4464,13 @@ class CabalClient:
         requests, e.g. a test or a proxy log), same rationale as every other
         JSON-body method on this client that accepts an unordered input.
 
-        EMPTY is a legitimate policy shape to cabal -- an empty set means
-        "wide open" there, by its own design (colleagues switchboard plan,
-        D-017) -- so this method always pushes exactly what it's given,
-        never treating `not pairs` as "nothing to do" and skipping the
-        call. But because an accidental empty push would silently OPEN the
-        switchboard rather than closing it, a push that computes to empty
-        right after THIS SAME CLIENT last pushed something non-empty is
-        logged loudly (`log.warning`, naming the shrink) before the request
-        even goes out -- still pushed regardless (policy is policy, and a
-        real revoke-everything moment must not get silently swallowed
-        here) -- while every push, empty or not, logs its resulting count
-        at `log.info` so a room's ordinary logs show the switchboard policy
-        actually moving.
+        Never sends an empty list (issue #194). Cabal reads an empty table
+        as OPEN (cabal `src/cabal/core/dispatch_pairs.py`, decision D-018),
+        so when nothing is allowed this sends `DENY_ALL_PAIR` instead, which
+        keeps the table non-empty and matches no real caller or target.
+        That case logs a warning on every push, from the set alone, not from
+        anything this client remembers. The returned count leaves the
+        sentinel out, so an empty policy reports 0.
 
         Raises `CabalError` on non-2xx, same logging convention as every
         other method here: the response body is logged server-side
@@ -4490,17 +4482,17 @@ class CabalClient:
         failures, always clears it back to False.
         """
         sorted_pairs = sorted(pairs)
-        if not sorted_pairs and self._last_dispatch_pairs_nonempty:
+        body = sorted_pairs or [DENY_ALL_PAIR]
+        if not sorted_pairs:
             log.warning(
-                "cabal put_dispatch_pairs: pushing an EMPTY pair set right "
-                "after this client's last push was non-empty -- cabal "
-                "treats an empty set as WIDE OPEN by design, so this is a "
-                "real access-control shrink, not a skipped no-op"
+                "cabal put_dispatch_pairs: no pair is allowed; sending the "
+                "deny-all sentinel %s, because cabal reads an empty set as open",
+                DENY_ALL_PAIR,
             )
         try:
             resp = self._client.put(
                 f"{self._base_url}/admin/dispatch-pairs",
-                json={"pairs": [list(pair) for pair in sorted_pairs]},
+                json={"pairs": [list(pair) for pair in body]},
                 headers=self._headers(),
             )
         except httpx.HTTPError:
@@ -4514,8 +4506,9 @@ class CabalClient:
             self._dispatch_pairs_dirty = True
             raise CabalError(f"put_dispatch_pairs failed ({resp.status_code})")
         count = resp.json()["count"]
+        if not sorted_pairs:
+            count = max(count - 1, 0)
         log.info("cabal put_dispatch_pairs: pushed %d pair(s)", count)
-        self._last_dispatch_pairs_nonempty = bool(sorted_pairs)
         self._dispatch_pairs_dirty = False
         return count
 

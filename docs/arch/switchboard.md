@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-switchboard
 updated: 2026-10-24
-anchor: api/kobo_api/pairs.py sha=499b05c5b7bece563072ca45b4905e10c0b13133
-anchor: api/kobo_api/clients.py sha=f93f2f52d60b562ea8eaea9d1b4bd84d1437ed04
+anchor: api/kobo_api/pairs.py sha=eab0c0f7b4d610444294e5e2859bca19c7c4aec3
+anchor: api/kobo_api/clients.py sha=de1543b931c3f2fa7904c86f6b4ee7813ec197a3
 ---
 # switchboard — kobo ↔ cabal: directory, relay, colleague passes, dispatch policy
 
@@ -16,7 +16,8 @@ OPS / FLOW (cabal endpoints):
 INVARIANTS:
 - Pair shape is `("agent:<caller>", "<target>")`: caller prefixed, target bare. Directional; an accepted `A2AInvite` adds exactly one direction.
 - Implicit pairs: same non-null `group_name` on both sides AND not `SHARED_GROUP`. WHY: the commons is visible to everyone but its wiring stays consent-based. Group-less agents never pair. Only READY, non-connected agents appear, as caller or target.
-- EMPTY pair set = WIDE OPEN in cabal (by cabal's design). `put_dispatch_pairs` still pushes it (a real revoke-all must not be swallowed) but logs a WARNING when shrinking from non-empty. Never add "skip if empty".
+- EMPTY pair set = WIDE OPEN in cabal (D-018). kobo never sends one: when nothing is allowed, `put_dispatch_pairs` sends `DENY_ALL_PAIR` (`("kobo:deny-all", "kobo:deny-all")`) and logs a WARNING every time, reporting count 0 (issue #194). WHY the sentinel is safe: cabal checks nothing but "two strings", so the guarantee is kobo's: colleague subs are only `agent:<name>` and agent names follow NAME_RE, which has no ':'. Never send `[]` and never add "skip if empty" (a skipped revoke-all leaves old pairs live).
+- `sync_dispatch_pairs` holds `_SYNC_LOCK` (pairs.py) across compute and PUT, so in one process the last push carries the newest set. It does not order pushes from different processes (`api` + `worker` roles, replicas); there the next trigger heals a stale set.
 - Every push sends the FULL current set, recomputed from DB rows. WHY: that is the reconciliation story; a lost push heals on the next trigger. Triggers: READY flip (provisioner.py), invite accept/revoke, convert-to-connected and a group move (main.py; the metadata route pushes when `group_name` changed), destroy forget step (destroy.py), process boot (`_boot_sync_dispatch_pairs`), operator `POST /api/admin/sync-pairs` (raising core, so the operator sees failure). All others use `_best_effort` (swallows `CabalError`/`httpx.HTTPError`; state already committed).
 - Revoke BEFORE mint on every re-wire (2026-09-24). WHY: cabal refuses tokens issued before the cutoff; minting first would let the new pass fall to its own revocation. A revoke failure stops the step before minting.
 - Minted `scope` is always `["colleague"]`, never `operator`. Tokens and response bodies never appear in raised messages.

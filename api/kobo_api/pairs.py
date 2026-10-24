@@ -20,6 +20,7 @@ dispatch routes key on.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING
 
 import httpx
@@ -38,6 +39,14 @@ if TYPE_CHECKING:
     from kobo_api.clients import Clients
 
 log = logging.getLogger(__name__)
+
+# Serialises compute and PUT inside one process (issue #194). Every trigger
+# commits its change before it syncs, so whichever sync takes the lock last
+# reads every change committed before it and its PUT lands last: an older set
+# can no longer overwrite a newer one from the same process. It does not
+# order pushes from different processes (an `api` and a `worker` role, or two
+# replicas); there the next trigger heals a stale set, as before.
+_SYNC_LOCK = threading.Lock()
 
 
 def implicitly_paired(a_group: str | None, b_group: str | None) -> bool:
@@ -173,8 +182,12 @@ def sync_dispatch_pairs(cabal: CabalClient, session: Session, config: Config) ->
     independently testable function rather than folding the fail-soft
     wrapping into it, the same split `sync_directory`/`_sync_directory_
     best_effort` already established.
+
+    Compute and PUT run under `_SYNC_LOCK`, so two syncs in one process
+    cannot interleave their reads and pushes.
     """
-    return cabal.put_dispatch_pairs(allowed_pairs(session, config))
+    with _SYNC_LOCK:
+        return cabal.put_dispatch_pairs(allowed_pairs(session, config))
 
 
 def sync_dispatch_pairs_best_effort(
