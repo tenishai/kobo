@@ -62,6 +62,17 @@ All notable changes to kobo are documented here. The format follows
 - **The Harness tab's Behind line shows the tag of a `tag@digest` pin**, the same rule as
   the agent card's `version`, instead of the digest (issue #158).
 
+### Fixed
+
+- **The room-wide colleagues routes follow agent visibility** (issue #192). `GET
+  /api/colleagues/conversations`, `GET /api/colleagues/conversations/{task_id}` and `GET
+  /api/colleagues/stream` were gated only on the switchboard being wired, so any signed-in user could
+  list every switchboard conversation and read the full transcript of another person's chat with an
+  agent they could not see. Now the list keeps only rows with a participant the caller can see, the
+  detail answers 404 otherwise, and the stream needs an `?agent=` the caller can see (400 without one,
+  404 for one they can't). Operators, readers, and rooms without IAP or groups see everything as
+  before. The UI already passes `?agent=` everywhere, so it is unchanged.
+
 ## [0.2.2] - 2026-10-14
 
 ### Upgrading

@@ -2302,6 +2302,21 @@ def _decider_or_403(
     return gate
 
 
+def _sees_every_agent(request: Request) -> bool:
+    """The full-visibility branches of `_visible_agents`, on their own so the
+    colleague scope (`_colleague_scope`) answers from the same rule: IAP
+    disabled, an operator (`_is_admin`), a global reader (`_is_reader`), or no
+    `GroupResolver` wired. The reader branch grants visibility only; every
+    mutation gate still answers by owner/operator."""
+    cfg: Config = request.app.state.config
+    clients: Clients | None = request.app.state.clients
+    if not cfg.iap_audience:
+        return True
+    if _is_admin(request) or _is_reader(request):
+        return True
+    return (clients.groups if clients is not None else None) is None
+
+
 def _visible_agents(session: Session, request: Request) -> tuple[list[Agent], bool]:
     """Which agents `request`'s caller may SEE (access-control Task B2:
     "each person sees their own aisle"), and whether group-derived
@@ -2350,27 +2365,14 @@ def _visible_agents(session: Session, request: Request) -> tuple[list[Agent], bo
     "everyone sees agents they created" holds throughout, not just once
     groups are wired.
     """
-    cfg: Config = request.app.state.config
     clients: Clients | None = request.app.state.clients
     all_agents = session.query(Agent).order_by(Agent.id).all()
 
-    if not cfg.iap_audience:
+    if _sees_every_agent(request):
         return all_agents, False
 
     email = (getattr(request.state, "iap_email", None) or "").lower()
-
-    if _is_admin(request):
-        return all_agents, False
-
-    # Global READER (reader-role wave, 2026-08-28): full visibility, and
-    # ONLY visibility -- every mutation gate below and elsewhere still
-    # answers by owner/operator, never by this.
-    if _is_reader(request):
-        return all_agents, False
-
     resolver = clients.groups if clients is not None else None
-    if resolver is None:
-        return all_agents, False
 
     def is_owned(agent: Agent) -> bool:
         return bool(agent.created_by) and agent.created_by.lower() == email
@@ -2453,6 +2455,33 @@ def _visible_agent_or_404(session: Session, request: Request, name: str) -> Agen
     if agent not in visible:
         return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
     return agent
+
+
+def _colleague_scope(session: Session, request: Request) -> set[str] | None:
+    """The agent names whose switchboard conversations the caller may read,
+    or None when they see every agent and so every row (issue #192).
+
+    The room-wide colleagues routes read cabal's conversation log, which
+    holds every agent's traffic and every person's chat with an agent. A
+    row is the caller's to see when either participant is an agent they can
+    see: `target_agent` by bare name, or `caller_agent` as `agent:<name>`.
+    A person's chat (`caller_agent: operator:<email>`) therefore follows the
+    agent it was with."""
+    if _sees_every_agent(request):
+        return None
+    visible, _ = _visible_agents(session, request)
+    return {agent.name for agent in visible}
+
+
+def _in_colleague_scope(row: dict, scope: set[str] | None) -> bool:
+    """Whether conversation `row` (either shape `_conversation_has_participant`
+    takes) has a participant in `scope`. None means every row."""
+    if scope is None:
+        return True
+    caller = str(row.get("caller_agent") or "")
+    return row.get("target_agent") in scope or (
+        caller.startswith("agent:") and caller[len("agent:"):] in scope
+    )
 
 
 # --- Org status (Task 8): the room's read-only wiring visibility ------------
@@ -9171,25 +9200,36 @@ def create_app(
     # --- Colleagues: the watching window (Task 4/B4) ---------------------------
     #
     # Three read-only proxy routes over the switchboard's own admin
-    # conversation surface, room-wide (not per-agent) -- any signed-in user
-    # may read them (there's no single agent here to own), gated only by
-    # `_colleagues_gate` (the switchboard being wired at all). Unlike
-    # directory-sync above, these were never in scope for the owner-or-
-    # operator gate: read surfaces never call it (see its own docstring),
-    # and there's no per-agent argument here to check ownership against.
+    # conversation surface, room-wide (not per-agent). Any signed-in user
+    # may call them once `_colleagues_gate` passes (the switchboard is
+    # wired), but each answers only with conversations that have a
+    # participant the caller can see (`_colleague_scope`, issue #192): the
+    # list drops other rows, the detail 404s, and the stream requires an
+    # `?agent=` the caller can see. Unlike directory-sync above, these are
+    # not owner-or-operator gated: read surfaces never call that gate (see
+    # its own docstring).
     # A 409 here is treated by the UI as "this room has no switchboard" and
     # renders nothing (silent absence), never a scary error banner — see
     # ColleagueConversations.svelte.
 
     @app.get("/api/colleagues/conversations")
     def list_colleague_conversations(
-        all: bool = False, limit: int | None = None, agent: str | None = None
+        request: Request,
+        all: bool = False,
+        limit: int | None = None,
+        agent: str | None = None,
+        session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
         cfg: Config = app.state.config
         clients = app.state.clients
         gate = _colleagues_gate(cfg, clients)
         if gate is not None:
             return gate
+        # Visibility (issue #192): only rows with a participant the caller
+        # can see. Computed before the switchboard calls, and the connection
+        # handed back, for the reason colleague_feed gives.
+        scope = _colleague_scope(session, request)
+        session.close()
 
         try:
             conversations = clients.cabal.list_conversations(limit=limit)
@@ -9210,6 +9250,7 @@ def create_app(
                 c for c in conversations
                 if str(c.get("caller_agent", "")).startswith("agent:")
             ]
+        conversations = [c for c in conversations if _in_colleague_scope(c, scope)]
         if agent is not None:
             # Conversation scoping (access-tab refinement wave): layered ON
             # TOP of the all/agent-only filtering above, never a substitute
@@ -9254,12 +9295,19 @@ def create_app(
         return JSONResponse({"conversations": visible})
 
     @app.get("/api/colleagues/conversations/{task_id}")
-    def get_colleague_conversation(task_id: str, agent: str | None = None) -> JSONResponse:
+    def get_colleague_conversation(
+        task_id: str,
+        request: Request,
+        agent: str | None = None,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
         cfg: Config = app.state.config
         clients = app.state.clients
         gate = _colleagues_gate(cfg, clients)
         if gate is not None:
             return gate
+        scope = _colleague_scope(session, request)
+        session.close()
 
         try:
             detail = clients.cabal.get_conversation(task_id)
@@ -9278,6 +9326,11 @@ def create_app(
             # for any caller, regardless of ?agent=.
             return JSONResponse({"error": f"no such conversation: {task_id!r}"}, status_code=404)
 
+        if not _in_colleague_scope(detail.get("conversation") or {}, scope):
+            # Visibility (issue #192): a conversation with no participant the
+            # caller can see reads as not found, like a bogus task_id.
+            return JSONResponse({"error": f"no such conversation: {task_id!r}"}, status_code=404)
+
         if agent is not None and not _conversation_has_participant(
             detail.get("conversation") or {}, agent
         ):
@@ -9293,7 +9346,9 @@ def create_app(
         return JSONResponse(detail)
 
     @app.get("/api/colleagues/stream", response_model=None)
-    async def stream_colleague_events(agent: str | None = None) -> StreamingResponse | JSONResponse:
+    async def stream_colleague_events(
+        request: Request, agent: str | None = None
+    ) -> StreamingResponse | JSONResponse:
         """SSE passthrough of the switchboard's live event feed.
 
         The 409 gate below (`_colleagues_gate`) covers a room with no
@@ -9342,6 +9397,25 @@ def create_app(
         if gate is not None:
             return gate
 
+        # Visibility (issue #192): a caller who can't see every agent must
+        # name one they can see, so the stream is scoped to its
+        # conversations. A short-lived session, not Depends(get_session):
+        # the response is a long-lived stream and must not hold a
+        # connection for its lifetime.
+        session = app.state.session_factory()
+        try:
+            if not _sees_every_agent(request):
+                if agent is None:
+                    return JSONResponse(
+                        {"error": "Pick an agent: this view needs ?agent=."},
+                        status_code=400,
+                    )
+                visible = _visible_agent_or_404(session, request, agent)
+                if isinstance(visible, JSONResponse):
+                    return visible
+        finally:
+            session.close()
+
         chunks = clients.cabal.stream_events()
         chunks = filter_cabal_event_stream(chunks, agent)
         return StreamingResponse(chunks, media_type="text/event-stream")
@@ -9388,18 +9462,12 @@ def create_app(
         `agent` is REQUIRED (a plain, non-Optional `str` -- FastAPI 422s a
         request that omits it, before this body ever runs) and is resolved
         through `_visible_agent_or_404`, the room's one visibility choke
-        point -- UNLIKE the three room-wide proxy routes right above
-        (`list_colleague_conversations`/`get_colleague_conversation`/
-        `stream_colleague_events`), which read only snippets, or full text
-        gated solely on the switchboard being wired at all, regardless of
-        which agents the caller can otherwise see. This route hands back
-        FULL, untruncated conversation text -- a strictly bigger exposure
-        than a 120-char snippet -- so it additionally follows the same
-        per-agent visibility every other agent-scoped route in this file
-        already enforces: a caller who cannot see `agent` gets the same 404
-        as if it didn't exist, never a peek at its colleague talk by name
-        alone. This is a deliberate widening of what's gated, not a
-        loosening of anything the older routes already allowed.
+        point, the same per-agent visibility every other agent-scoped route
+        in this file enforces: a caller who cannot see `agent` gets the same
+        404 as if it didn't exist, never a peek at its colleague talk by
+        name alone. The three room-wide proxy routes above apply the same
+        rule through `_colleague_scope` (issue #192); before that fix they
+        were gated only on the switchboard being wired.
 
         Fail-soft on any cabal trouble, the house 502 copy convention: a
         failed `list_conversations` or a failed `get_conversation` partway

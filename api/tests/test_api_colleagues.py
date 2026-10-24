@@ -4,9 +4,10 @@ plan, Task 4/B4 "the watching window"): `GET /api/colleagues/conversations`,
 and `GET /api/colleagues/feed` (terminal redesign, the flattened chronological
 feed that replaced the card grid's per-conversation queries).
 
-Any signed-in user (no operator gate, same reach as the directory-sync route
-in test_api_directory.py), 409 plain detail when the switchboard isn't
-configured, 502 plain detail on an upstream failure, the agent-only/
+Any signed-in user may call them (no operator gate), but each answers only
+with conversations that have a participant the caller can see (issue #192;
+the "Room-wide routes follow visibility" section at the end), 409 plain
+detail when the switchboard isn't configured, 502 plain detail on an upstream failure, the agent-only/
 everything filter on the list route, full passthrough on the detail route,
 and SSE content-type + byte-for-byte frame passthrough on the stream route —
 against `tests/fakes.FakeCabal` for the first two, and a real `CabalClient`
@@ -1555,3 +1556,98 @@ def test_feed_200s_for_the_agents_own_owner(session_factory, tmp_path, monkeypat
 
     assert response.status_code == 200
     assert response.json() == {"entries": [], "truncated": False}
+
+
+# --- Room-wide routes follow visibility (issue #192) -----------------------
+#
+# Guards an authorization gate: the three room-wide colleagues routes used to
+# hand any signed-in user every conversation in the switchboard, a person's
+# chat with an agent included, whatever agents they could see.
+
+
+def _visibility_room(session_factory, tmp_path, monkeypatch, cabal):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    private_key, jwk = _generate_jwk()
+    cfg = Config(
+        workdir=tmp_path / "work",
+        cabal_url="http://cabal.internal",
+        agent_endpoint_template=ENDPOINT_TEMPLATE,
+        iap_audience=_VISIBILITY_AUDIENCE,
+        groups=[GroupChoice(name="payments-eng", okta_group="okta-payments")],
+    )
+    _seed_agent(
+        session_factory, cfg, name="ward", group_name="payments-eng",
+        created_by="owner@example.com",
+    )
+    client = TestClient(
+        create_app(
+            session_factory,
+            config=cfg,
+            clients=Clients(
+                github=FakeGitHub(), gojira=FakeGojira(), cloud=FakeCloud(),
+                agent=FakeAgent(), kubectl=FakeKubectl(), cabal=cabal,
+                groups=_StrangerGroupResolver(),
+            ),
+            iap_jwks_fetcher=lambda: {"keys": [jwk]},
+        )
+    )
+    return client, private_key
+
+
+_HUMAN_ROW = {
+    "task_id": "t-human",
+    "target_agent": "ward",
+    "target_generation": 1,
+    "caller_agent": "operator:owner@example.com",
+    "state": "completed",
+    "cabal_escalated_from": None,
+    "created_at": "2026-08-19T11:00:00Z",
+    "updated_at": "2026-08-19T11:00:02Z",
+    "result_snippet": "the hint is",
+}
+
+
+def _human_detail():
+    return {
+        "conversation": {
+            **_HUMAN_ROW,
+            "result": _task_result(ask_text="the rota hint?", reply_text="the hint is x"),
+        },
+        "events": [],
+    }
+
+
+def test_room_wide_routes_hide_conversations_of_agents_the_caller_cannot_see(
+    session_factory, tmp_path, monkeypatch
+):
+    cabal = FakeCabal(
+        conversations_result=[_HUMAN_ROW], conversation_results={"t-human": _human_detail()}
+    )
+    client, key = _visibility_room(session_factory, tmp_path, monkeypatch, cabal)
+    stranger = _iap_headers(key, email="stranger@example.com")
+
+    listed = client.get("/api/colleagues/conversations", params={"all": "true"}, headers=stranger)
+    detail = client.get("/api/colleagues/conversations/t-human", headers=stranger)
+    unscoped = client.get("/api/colleagues/stream", headers=stranger)
+    scoped = client.get("/api/colleagues/stream", params={"agent": "ward"}, headers=stranger)
+
+    assert (listed.status_code, listed.json()) == (200, {"conversations": []})
+    assert detail.status_code == 404
+    assert unscoped.status_code == 400
+    assert scoped.status_code == 404
+
+
+def test_room_wide_routes_show_the_owner_their_agents_conversations(
+    session_factory, tmp_path, monkeypatch
+):
+    cabal = FakeCabal(
+        conversations_result=[_HUMAN_ROW], conversation_results={"t-human": _human_detail()}
+    )
+    client, key = _visibility_room(session_factory, tmp_path, monkeypatch, cabal)
+    owner = _iap_headers(key, email="owner@example.com")
+
+    listed = client.get("/api/colleagues/conversations", params={"all": "true"}, headers=owner)
+    detail = client.get("/api/colleagues/conversations/t-human", headers=owner)
+
+    assert [c["task_id"] for c in listed.json()["conversations"]] == ["t-human"]
+    assert detail.status_code == 200
