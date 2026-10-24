@@ -406,6 +406,13 @@ class Config(BaseModel):
     # what is left to do by hand.
     gateway_config_repo: str = ""
     gateway_namespace: str = ""
+    # The tool gateway's admin plane (its own in-cluster Service, never the
+    # data port). With it set, a lane granted from the admin panel applies
+    # at once through `POST /admin/policy/grant`, with the room's own token:
+    # the switchboard mints it for persona `kobo-room`, which the gateway's
+    # trust registry lists as an admin persona. Empty means grants land only
+    # as the pull request on the grants file.
+    liminal_admin_url: str = ""
     # Path to a built UI `dist/` directory (e.g. `ui/dist` from `npm run
     # build`) to serve alongside the API, same origin, no CORS (Task 1).
     # None (the default) means dev: no UI is mounted, matching today's setup

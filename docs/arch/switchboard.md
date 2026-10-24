@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-switchboard
-updated: 2026-10-12
+updated: 2026-10-24
 anchor: api/kobo_api/pairs.py sha=499b05c5b7bece563072ca45b4905e10c0b13133
-anchor: api/kobo_api/clients.py sha=9f7bc03ef3c6b9ea0df11ca42012f134ca4c898c
+anchor: api/kobo_api/clients.py sha=f93f2f52d60b562ea8eaea9d1b4bd84d1437ed04
 ---
 # switchboard — kobo ↔ cabal: directory, relay, colleague passes, dispatch policy
 
@@ -27,3 +27,4 @@ CONSUMERS: api/kobo_api/steps.py (WireStep, DirectoryStep, HelloStep, `_deliver_
 API: see endpoints above; kobo-side `allowed_pairs(session, config) -> set[tuple[str,str]]`, `sync_dispatch_pairs_best_effort(clients, config, session) -> int | None`, `CabalClient.dispatch_pairs_dirty`.
 
 2026-10-12: `GhCLI.repo_exists` now compares the `full_name` GitHub answers with, so a rename redirect does not read as an existing repository (see platform-clients).
+- `CabalClient.mint_service` (2026-10-24): the generic switchboard mint behind the room's own gateway admin token (`kobo_api.liminal_admin.RoomAdminToken`: sub and persona `kobo-room`, aud `liminal`, `admin:*`). `Clients.liminal_admin` is that admin-plane client, typed loosely to keep `liminal_admin` importing this module and not the reverse.

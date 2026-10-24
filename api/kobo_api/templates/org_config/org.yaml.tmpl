@@ -81,6 +81,9 @@ logout_url: __KOBO_LOGOUT_URL__
 # the namespace the gateway runs in (its credential is synced there).
 gateway_config_repo: __KOBO_GATEWAY_CONFIG_REPO__
 gateway_namespace: __KOBO_GATEWAY_NAMESPACE__
+# The tool gateway's admin plane, so a lane granted from the panel applies
+# at once (the room's own token, persona kobo-room). Empty: pull request only.
+liminal_admin_url: __KOBO_LIMINAL_ADMIN_URL__
 
 # Base URL of the switchboard (cabal) service this room registers agents
 # with and (once wired) relays chat through, and the template for an

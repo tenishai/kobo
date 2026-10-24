@@ -25,6 +25,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from kobo_api import admin_connections as admin_connections_flow
 from kobo_api import admin_integrations as admin_integrations_flow
 from kobo_api import admin_roles as admin_roles_catalogue
 from kobo_api import admin_store
@@ -127,6 +128,7 @@ from kobo_api.learnings import (
     system_task_status,
 )
 from kobo_api.learnings import nightly_loop as learnings_nightly_loop
+from kobo_api.liminal_admin import build_liminal_admin
 from kobo_api.marketplace import BASELINE_TOOL_PREFIX
 from kobo_api.mcp import rate_limit
 from kobo_api.mcp.mount import mcp_lifespan, mount_mcp
@@ -661,6 +663,10 @@ def _set_env_key(data: dict, key: str, value: str) -> bool:
     env[key] = value
     return True
 
+
+
+class AdminLaneBody(BaseModel):
+    access: str = Field(pattern="^(read|write)$")
 
 
 class AdminRoleConnector(BaseModel):
@@ -3550,6 +3556,65 @@ def create_app(
                 "note": "models, groups and people lists are live now; add-on URLs still need a restart",
             }
         )
+
+    @app.get("/api/admin/connections")
+    def admin_connections(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        """The Connections pane: every agent and its lanes, plus the
+        integrations a lane can name and whether the admin plane is wired."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        agents = session.query(Agent).order_by(Agent.name).all()
+        clients: Clients | None = app.state.clients
+        return JSONResponse(
+            {
+                "agents": admin_connections_flow.connections_view(session, agents),
+                "integrations": [admin_store.integration_dict(i) for i in admin_store.list_integrations(session)],
+                "live": bool(clients is not None and getattr(clients, "liminal_admin", None) is not None),
+                "gateway_repo": bool(app.state.config.gateway_config_repo),
+            }
+        )
+
+    @app.put("/api/admin/connections/{agent_name}/{integration_id}")
+    def admin_put_lane(
+        agent_name: str, integration_id: str, payload: AdminLaneBody, request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        if session.query(Agent).filter_by(name=agent_name).first() is None:
+            return JSONResponse({"error": f"no agent named {agent_name!r}"}, status_code=404)
+        actor = getattr(request.state, "iap_email", None) or "operator"
+        try:
+            row = admin_store.put_grant(session, agent_name=agent_name, integration_id=integration_id, access=payload.access, actor=actor)
+        except admin_store.AdminStoreError as exc:
+            session.rollback()
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        session.flush()
+        outcome = admin_connections_flow.apply_agent_lanes(session, app.state.clients, app.state.config, agent_name=agent_name, actor=actor)
+        session.commit()
+        session.refresh(row)
+        return JSONResponse({**admin_store.grant_dict(row), "outcome": outcome})
+
+    @app.delete("/api/admin/connections/{agent_name}/{integration_id}")
+    def admin_revoke_lane(
+        agent_name: str, integration_id: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        actor = getattr(request.state, "iap_email", None) or "operator"
+        try:
+            row = admin_store.revoke_grant(session, agent_name=agent_name, integration_id=integration_id, actor=actor)
+        except admin_store.AdminStoreError as exc:
+            session.rollback()
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        session.flush()
+        outcome = admin_connections_flow.apply_agent_lanes(session, app.state.clients, app.state.config, agent_name=agent_name, actor=actor)
+        session.commit()
+        session.refresh(row)
+        return JSONResponse({**admin_store.grant_dict(row), "outcome": outcome})
 
     @app.get("/api/admin/roles")
     def admin_roles(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
@@ -10641,6 +10706,10 @@ def build_default_app() -> FastAPI:
     # Built from the MERGED config, same as the engine above — everything
     # downstream of boot sees org values as if they'd always been local.
     clients = Clients.real(config)
+    # The gateway's admin plane, with the room's own token minted through
+    # the switchboard (kobo_api.liminal_admin); None keeps grants as pull
+    # requests only, and the Connections pane says so.
+    clients.liminal_admin = build_liminal_admin(config, clients.cabal)
     # Boot-time write probe for the Slack token Secret: rotation is the one
     # write whose failure is unrecoverable, and it happens ~12h after boot
     # with nobody watching. One idempotent apply here says now, in the

@@ -1,223 +1,192 @@
 <script lang="ts">
-  // Each agent's lanes through the gateway to the vendors the room holds a
-  // credential for. Every agent is a row, so "no lane" is visible before it
-  // fails a reply. A grant travels as a pull request against the gateway's
-  // grants file by default; an admin may apply it now through the gateway's
-  // admin plane instead.
+  // Every agent is a row, every lane a chip, so "no lane" is visible before
+  // it fails a reply. A lane is a grant on the tool gateway: applied at once
+  // through the gateway's admin plane when the room holds its token, and
+  // always written to the gateway's grants file as a pull request.
+  import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import Modal from "../Modal.svelte";
+  import { errorMessage, type AdminLane } from "../../lib/api";
   import { toast } from "../../lib/toast.svelte";
-  import {
-    admin,
-    approveLane,
-    connection,
-    grantLane,
-    markLanded,
-    pluginName,
-    revokeLane,
-    vendorsWithLanes,
-    type Access,
-    type Connection,
-    type Lane,
-  } from "../../lib/admin/store.svelte";
+  import { adminConnectionsQuery, putAdminLaneMutation, revokeAdminLaneMutation } from "../../lib/queries";
 
   let { item = null }: { item?: string | null } = $props();
 
-  const vendors = $derived(vendorsWithLanes());
-  const gateway = $derived(admin.plugins.find((p) => p.id === "gateway"));
+  const queryClient = useQueryClient();
+  const conns = createQuery(() => (adminConnectionsQuery()));
+  const grant = createMutation(() => (putAdminLaneMutation(queryClient)));
+  const revoke = createMutation(() => (revokeAdminLaneMutation(queryClient)));
 
-  let granting = $state<Connection | null>(null);
+  const integrations = $derived(conns.data?.integrations ?? []);
+  let granting = $state<string | null>(null);
   let pick = $state("");
-  let access = $state<Access>("read");
-  let mode = $state<"pr" | "now">("pr");
+  let access = $state<"read" | "write">("read");
 
+  // A deep link `#/admin/connections/<agent>` opens that agent's grant form.
   $effect(() => {
-    if (item && connection(item) && granting?.agent !== item) {
-      openGrant(connection(item)!);
+    if (item && !granting && conns.data?.agents.some((a) => a.agent === item)) {
+      openGrant(item);
     }
   });
 
-  function openGrant(c: Connection): void {
-    granting = c;
-    pick = vendors.find((v) => !c.lanes.some((l) => l.plugin === v.id))?.id ?? vendors[0]?.id ?? "";
+  function openGrant(agent: string): void {
+    granting = agent;
+    pick = integrations[0]?.id ?? "";
     access = "read";
-    mode = "pr";
   }
+
+  const pickedBase = $derived(integrations.find((i) => i.id === pick)?.base_access ?? "read");
 
   function submitGrant(event: SubmitEvent): void {
     event.preventDefault();
     if (!granting || !pick) return;
-    grantLane(granting.agent, pick, access, mode);
-    toast.success(
-      `${granting.agent} granted ${pluginName(pick)} (${access})`,
-      mode === "pr" ? "Pull request opened against the grants file." : "Applied through the gateway now.",
+    const agent = granting;
+    grant.mutate(
+      { agent, integration: pick, access },
+      {
+        onSuccess: (r) => {
+          toast.success(`${agent} may ${access} ${pick}`, `${r.outcome.live}; ${r.outcome.file}.`);
+          granting = null;
+        },
+        onError: (err: unknown) => toast.error("Could not grant the lane", errorMessage(err, "Try again.")),
+      },
     );
-    granting = null;
   }
 
-  function approve(c: Connection, l: Lane, how: "pr" | "now"): void {
-    approveLane(c.agent, l.plugin, how);
-    toast.success(`${c.agent}: ${pluginName(l.plugin)} approved`, how === "pr" ? "Pull request opened." : "Applied now.");
+  function handleRevoke(l: AdminLane): void {
+    revoke.mutate(
+      { agent: l.agent, integration: l.integration },
+      {
+        onSuccess: (r) => toast.success(`${l.agent} no longer reaches ${l.integration}`, `${r.outcome.live}.`),
+        onError: (err: unknown) => toast.error("Could not revoke the lane", errorMessage(err, "Try again.")),
+      },
+    );
   }
 
-  function revoke(c: Connection, l: Lane): void {
-    revokeLane(c.agent, l.plugin);
-    toast.success(`${c.agent}: ${pluginName(l.plugin)} revoked`, "Pull request opened.");
-  }
-
-  function stateLabel(l: Lane): string {
-    return l.state === "granted" ? "granted" : l.state === "pr_open" ? `waiting on ${l.pr}` : l.state === "requested" ? "requested" : "none";
-  }
+  const STATE: Record<string, string> = { pending: "Pending", applied: "Live", failed: "Failed", revoked: "Revoked" };
 </script>
 
 <section class="panel" aria-labelledby="connections-heading">
   <div class="panel__header">
     <h2 id="connections-heading" class="panel__heading">Connections</h2>
     <p class="panel__lead">
-      Each agent's lanes to the vendors this room holds a credential for, through the gateway.
-      {#if gateway}
-        Grants file <code>{gateway.fields.find((f) => f.key === "grants_repo")?.value}</code>.
+      Each agent's lanes to the room's integrations, never wider than the integration itself.
+      {#if conns.data}
+        {conns.data.live ? "A lane applies at the gateway at once" : "The gateway's admin plane is not wired, so a lane lands with its pull request"}{conns.data.gateway_repo ? ", and the grants file follows as a pull request." : "; no gateway config repository is set."}
       {/if}
     </p>
   </div>
 
-  <table class="panel__table">
-    <thead>
-      <tr>
-        <th>Agent</th>
-        <th>Group</th>
-        <th>Lanes</th>
-        <th class="panel__cell--right">Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {#each admin.connections as c (c.agent)}
-        <tr class:row--open={item === c.agent}>
-          <td>
-            <span class="panel__name">{c.agent}</span>
-            <span class="panel__meta">{c.owner}</span>
-          </td>
-          <td>{c.group}</td>
-          <td>
-            {#if c.lanes.length === 0}
-              <span class="lane lane--none">no lane</span>
-            {:else}
-              <div class="lanes">
-                {#each c.lanes as l (l.plugin)}
-                  <span class="lane lane--{l.state}">
-                    <span class="lane__dot" aria-hidden="true"></span>
-                    {pluginName(l.plugin)} · {l.access} · {stateLabel(l)}
-                    {#if l.state === "requested"}
-                      <button type="button" class="lane__act" onclick={() => approve(c, l, "pr")}>Approve</button>
-                      <button type="button" class="lane__act" onclick={() => approve(c, l, "now")}>Apply now</button>
-                    {:else if l.state === "pr_open"}
-                      <button type="button" class="lane__act" onclick={() => markLanded(c.agent, l.plugin)}>Mark merged</button>
-                    {:else if l.state === "granted"}
-                      <button type="button" class="lane__act lane__act--danger" onclick={() => revoke(c, l)}>Revoke</button>
-                    {/if}
-                  </span>
-                {/each}
-              </div>
-            {/if}
-          </td>
-          <td class="panel__cell--right">
-            <button type="button" class="btn btn--quiet" onclick={() => openGrant(c)}>Grant a lane</button>
-          </td>
-        </tr>
-      {/each}
-    </tbody>
-  </table>
-  <p class="panel__note">
-    A pull request is the durable lane: reviewed, and seeded by the gateway at its next restart.
-    Apply now writes the grant through the gateway's admin plane and is lost if its policy volume is.
-  </p>
+  {#if conns.isPending}
+    <p class="panel__note">Reading the lanes…</p>
+  {:else if conns.isError}
+    <p class="panel__note">Could not read the lanes just now.</p>
+  {:else if (conns.data?.agents ?? []).length === 0}
+    <p class="panel__empty">No agents yet.</p>
+  {:else}
+    <table class="panel__table">
+      <thead><tr><th>Agent</th><th>Group</th><th>Lanes</th><th class="panel__cell--right"></th></tr></thead>
+      <tbody>
+        {#each conns.data?.agents ?? [] as a (a.agent)}
+          <tr>
+            <td><span class="panel__name">{a.agent}</span></td>
+            <td>{a.group ?? "—"}</td>
+            <td>
+              {#if a.lanes.filter((l) => l.state !== "revoked").length === 0}
+                <span class="lane lane--none">no lane</span>
+              {:else}
+                <div class="lanes">
+                  {#each a.lanes.filter((l) => l.state !== "revoked") as l (l.id)}
+                    <span class="lane lane--{l.state}" title={l.state_detail ?? ""}>
+                      {l.integration} · {l.access} · {STATE[l.state] ?? l.state}
+                      {#if l.spec.pull_request}<a class="lane__act" href={l.spec.pull_request} target="_blank" rel="noreferrer">PR</a>{/if}
+                      <button type="button" class="lane__act lane__act--danger" disabled={revoke.isPending} onclick={() => handleRevoke(l)}>Revoke</button>
+                    </span>
+                  {/each}
+                </div>
+              {/if}
+            </td>
+            <td class="panel__cell--right">
+              <button type="button" class="btn btn--quiet" disabled={integrations.length === 0} onclick={() => openGrant(a.agent)}>Grant a lane</button>
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+    {#if integrations.length === 0}
+      <p class="panel__note">Connect an integration first; a lane needs something to reach.</p>
+    {/if}
+  {/if}
 </section>
 
-<Modal open={granting !== null} title={granting ? `Grant ${granting.agent} a lane` : ""} onclose={() => (granting = null)}>
+<Modal open={granting !== null} title={granting ? `Grant ${granting} a lane` : ""} onclose={() => (granting = null)}>
   {#if granting}
     <form id="grant-form" class="form" onsubmit={submitGrant}>
       <label class="field">
-        <span>Vendor</span>
-        <select id="grant-vendor" bind:value={pick}>
-          {#each vendors as v (v.id)}
-            <option value={v.id}>{v.name} (credential: {v.credential})</option>
+        <span>Integration</span>
+        <select id="grant-integration" bind:value={pick}>
+          {#each integrations as i (i.id)}
+            <option value={i.id}>{i.name} ({i.base_access === "write" ? "read and write" : "read-only"})</option>
           {/each}
         </select>
       </label>
-      <fieldset class="field field--group">
+      <fieldset class="field">
         <legend>Access</legend>
-        <label><input id="grant-read" type="radio" name="access" value="read" bind:group={access} /> read</label>
-        <label>
-          <input id="grant-write" type="radio" name="access" value="write" bind:group={access}
-            disabled={vendors.find((v) => v.id === pick)?.credential === "read"} />
-          write
-          {#if vendors.find((v) => v.id === pick)?.credential === "read"}
-            <span class="panel__note">(the base credential is read only)</span>
-          {/if}
-        </label>
+        <label><input type="radio" name="access" value="read" bind:group={access} /> read</label>
+        <label><input type="radio" name="access" value="write" bind:group={access} disabled={pickedBase !== "write"} /> write{pickedBase !== "write" ? " (the room holds this one read-only)" : ""}</label>
       </fieldset>
-      <fieldset class="field field--group">
-        <legend>How</legend>
-        <label><input id="grant-pr" type="radio" name="mode" value="pr" bind:group={mode} /> Open a pull request against the grants file</label>
-        <label><input id="grant-now" type="radio" name="mode" value="now" bind:group={mode} /> Apply now through the gateway</label>
-      </fieldset>
+      <p class="panel__note">The lane is written to the gateway now when its admin plane is wired, and to its grants file as a pull request either way.</p>
     </form>
   {/if}
   {#snippet footer()}
     <button type="button" class="btn" onclick={() => (granting = null)}>Cancel</button>
-    <button type="submit" form="grant-form" class="btn btn--primary">Grant</button>
+    <button type="submit" form="grant-form" class="btn btn--primary" disabled={grant.isPending || !pick}>Grant</button>
   {/snippet}
 </Modal>
 
 <style>
-  .row--open td {
-    background: var(--accent-soft);
-  }
-
   .lanes {
     display: flex;
-    flex-direction: column;
+    flex-wrap: wrap;
     gap: var(--space-2xs);
   }
 
   .lane {
     display: inline-flex;
-    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2xs);
-    font-size: 0.85rem;
+    padding: 0.1rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 0.8rem;
   }
 
   .lane--none {
     color: var(--muted);
+    border-style: dashed;
   }
 
-  .lane__dot {
-    width: 8px;
-    height: 8px;
-    border: 1px solid var(--muted);
-    border-radius: 50%;
-  }
-
-  .lane--granted .lane__dot {
+  .lane--applied {
     border-color: var(--ok);
-    background: var(--ok);
   }
 
-  .lane--requested .lane__dot,
-  .lane--pr_open .lane__dot {
+  .lane--pending {
     border-color: var(--warn);
-    background: var(--warn);
+  }
+
+  .lane--failed {
+    border-color: var(--fail);
+    color: var(--fail);
   }
 
   .lane__act {
-    margin-left: var(--space-2xs);
     padding: 0;
     border: none;
     background: none;
-    color: var(--link);
+    color: var(--accent);
     font: inherit;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     cursor: pointer;
+    text-decoration: none;
   }
 
   .lane__act--danger {
@@ -239,20 +208,10 @@
     font: inherit;
   }
 
-  fieldset {
-    margin: 0;
+  fieldset.field {
+    display: flex;
+    gap: var(--space-sm);
     padding: 0;
     border: none;
-  }
-
-  legend {
-    padding: 0;
-    margin-bottom: var(--space-2xs);
-  }
-
-  .field--group label {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
   }
 </style>

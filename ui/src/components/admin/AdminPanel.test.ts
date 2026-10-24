@@ -37,6 +37,15 @@ describe("AdminPanel", () => {
       connectors: [{ id: "datadog", name: "Datadog", base_access: "read" }],
     },
   };
+  const CONNECTIONS = {
+    agents: [
+      { agent: "janus", group: "platform", lanes: [] },
+      { agent: "sage", group: "data", lanes: [{ id: 1, agent: "sage", integration: "datadog", access: "read", state: "applied", state_detail: "live at the gateway", spec: {}, requested_by: "k", decided_by: "k", created_at: "2026-10-24T10:00:00", updated_at: "2026-10-24T10:00:00" }] },
+    ],
+    integrations: [{ id: "datadog", vendor: "datadog", name: "Datadog", base_access: "read", state: "applied", state_detail: null, credential_ref: null, spec: {}, created_by: "k", created_at: "", updated_at: "" }],
+    live: true,
+    gateway_repo: true,
+  };
   const PEOPLE = {
     admin_groups: ["platform-admins"],
     operators: ["kyle@example.com"],
@@ -84,6 +93,7 @@ describe("AdminPanel", () => {
       "/api/admin/addons": ADDONS,
       "/api/admin/integrations": { integrations: [] },
       "/api/admin/roles": ROLES,
+      "/api/admin/connections": CONNECTIONS,
       "/api/admin/people": PEOPLE,
       "/api/admin/audit": AUDIT,
       "/api/group-requests": { requests: REQUESTS },
@@ -113,8 +123,10 @@ describe("AdminPanel", () => {
     navigate({ page: "admin", pane: "connections" });
     renderWithClient(AdminPanel);
     expect(await screen.findByRole("heading", { name: "Connections" })).toBeTruthy();
-    expect(screen.getAllByText("no lane").length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("no lane")).length).toBe(1);
     expect(screen.getByText("janus")).toBeTruthy();
+    // sage's one lane, live at the gateway (the chip carries the state detail as its title).
+    expect(screen.getByTitle("live at the gateway").textContent).toMatch(/datadog/);
   });
 
   it("Integrations starts empty and offers the catalog", async () => {

@@ -4384,6 +4384,28 @@ class CabalClient:
             raise CabalError(f"relay({name!r}) failed ({resp.status_code})")
         return resp.json()
 
+    def mint_service(
+        self, *, sub: str, scope: list[str], aud: str, ttl_days: int, persona: str | None = None
+    ) -> str:
+        """Mint a service token through the switchboard's operator-only
+        `POST /admin/token/mint-service`: the room's own gateway admin token
+        (`sub` and `persona` both `kobo-room`, `aud` the gateway, scope
+        `admin:*`) is minted here. Returns the signed token; never logs it."""
+        resp = self._client.post(
+            f"{self._base_url}/admin/token/mint-service",
+            json={"sub": sub, "scope": list(scope), "aud": aud, "ttl_days": int(ttl_days), "persona": persona},
+            headers=self._headers(),
+        )
+        if resp.status_code != 200:
+            raise CabalError(f"mint-service for {sub!r} refused: HTTP {resp.status_code}")
+        try:
+            token = resp.json().get("token") or resp.json().get("access_token")
+        except ValueError as exc:
+            raise CabalError("mint-service returned no JSON") from exc
+        if not token:
+            raise CabalError("mint-service returned no token")
+        return str(token)
+
     def mint_colleague(self, name: str) -> str:
         """Mint a colleague-scoped switchboard token for agent `name` (Task
         3/B3: every agent is born with a colleague pass) — the operator-
@@ -4982,6 +5004,9 @@ class Clients:
     # checks `cabal_enabled` itself before ever touching this field, so a
     # None here is never dereferenced on an unwired room.
     cabal: CabalClient | None = None
+    # The tool gateway's admin plane (kobo_api.liminal_admin), typed loosely
+    # here to keep that module importing this one and not the reverse.
+    liminal_admin: object | None = None
     # None whenever the directory integration isn't wired (no OKTA_API_TOKEN
     # env var, or config.groups/config.okta_domain left unset) — same
     # "absent = feature off" convention as cabal above. Every group-aware
