@@ -78,6 +78,14 @@ All notable changes to kobo are documented here. The format follows
   the sweep later failed it as "interrupted by an API restart". The row is now born without a
   heartbeat when the route leaves it for a worker, as `docs/arch/provisioning.md` already said. Role
   `all`, the shipped default, is unchanged.
+- **An empty dispatch-pair set no longer opens the switchboard** (issue #194). Cabal reads an
+  empty pair table as "every agent may call every agent", and the room pushed an empty set
+  whenever nothing was allowed: a room of commons agents, one agent per group with no invites,
+  the last invite revoked, or one of two paired agents destroyed. The room now sends one
+  sentinel pair, `kobo:deny-all` to `kobo:deny-all`, which no real agent can match, and logs a
+  warning on every such push instead of only after a non-empty one in the same process. Syncs
+  in one process now compute and push one at a time, so an older set cannot overwrite a newer
+  one; pushes from separate processes or replicas are still unordered.
 
 ## [0.2.2] - 2026-10-14
 

@@ -620,3 +620,48 @@ def test_boot_sync_never_raises_when_the_push_fails(session_factory, config, mon
         _boot_sync_dispatch_pairs(clients, cfg, session_factory)  # must not raise
 
     assert any(rec.levelname == "WARNING" for rec in caplog.records)
+
+
+def test_concurrent_syncs_in_one_process_never_interleave(session_factory, config, monkeypatch):
+    """Guards concurrency of the consent push (issue #194): a second sync must
+    not compute while the first is still pushing, or an older set can land
+    after a newer one."""
+    import threading
+    import time
+
+    import kobo_api.pairs as pairs_mod
+
+    events: list[str] = []
+    release = threading.Event()
+    monkeypatch.setattr(
+        pairs_mod, "allowed_pairs", lambda s, c: events.append("compute") or set()
+    )
+
+    class SlowCabal(FakeCabal):
+        def put_dispatch_pairs(self, pairs):
+            events.append("put")
+            release.wait(5)
+            events.append("done")
+            return 0
+
+    cabal = SlowCabal()
+
+    def run():
+        s = session_factory()
+        try:
+            sync_dispatch_pairs(cabal, s, config)
+        finally:
+            s.close()
+
+    first = threading.Thread(target=run)
+    first.start()
+    while "put" not in events:
+        time.sleep(0.01)
+    second = threading.Thread(target=run)
+    second.start()
+    time.sleep(0.2)
+    release.set()
+    first.join(5)
+    second.join(5)
+
+    assert events == ["compute", "put", "done", "compute", "put", "done"]

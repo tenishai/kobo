@@ -1,7 +1,7 @@
 ---
 card: arch-card:kobo-platform-clients
 updated: 2026-10-24
-anchor: api/kobo_api/clients.py sha=f93f2f52d60b562ea8eaea9d1b4bd84d1437ed04
+anchor: api/kobo_api/clients.py sha=de1543b931c3f2fa7904c86f6b4ee7813ec197a3
 anchor: api/tests/fakes.py sha=9a947ab55762405b69a216d089a9ab9468918937
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
@@ -31,3 +31,4 @@ API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provid
 
 2026-10-12: `GhCLI.repo_exists` reads `gh api repos/{repo}` and compares the `full_name` GitHub answers with; a name GitHub only redirects (a destroyed agent's repo, renamed to `archived-agent-<name>-<id>`) counts as free.
 - `CabalClient.mint_service` (2026-10-24): the generic switchboard mint behind the room's own gateway admin token (`kobo_api.liminal_admin.RoomAdminToken`: sub and persona `kobo-room`, aud `liminal`, `admin:*`). `Clients.liminal_admin` is that admin-plane client, typed loosely to keep `liminal_admin` importing this module and not the reverse.
+- `CabalClient.put_dispatch_pairs` (2026-10-24, issue #194): never sends an empty set; an empty policy goes out as `DENY_ALL_PAIR` (see switchboard).

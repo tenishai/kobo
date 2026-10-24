@@ -24,6 +24,7 @@ import pytest
 
 from kobo_api.clients import (
     SLACK_STORE_WRITE_ATTEMPTS,
+    DENY_ALL_PAIR,
     CabalClient,
     CabalError,
     CachedGcloudToken,
@@ -63,6 +64,7 @@ from kobo_api.clients import (
     probe_slack_token_store,
     slack_token_store,
 )
+from kobo_api.catalog import validate_name
 from kobo_api.config import Config, GroupChoice
 from kobo_api.groups import OktaGroupResolver, OktaPeopleSearch
 from tests.fakes import (
@@ -4045,21 +4047,34 @@ def test_cabal_put_dispatch_pairs_request_shape_body_and_auth_header():
     assert count == 2
 
 
-def test_cabal_put_dispatch_pairs_empty_set_still_pushes():
+def test_cabal_put_dispatch_pairs_never_sends_an_empty_set(caplog):
+    """Guards the switchboard's consent gate (issue #194): cabal reads an empty
+    table as open, so an empty policy goes out as the deny-all sentinel, warns
+    even on a fresh client, and reports 0."""
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["json"] = json.loads(request.content)
-        return httpx.Response(200, json={"count": 0})
+        return httpx.Response(200, json={"count": 1})
 
     client = CabalClient(
         "http://cabal.local", "op-token",
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
-    count = client.put_dispatch_pairs(set())
+    with caplog.at_level(logging.WARNING, logger="kobo_api.clients"):
+        count = client.put_dispatch_pairs(set())
 
-    assert captured["json"] == {"pairs": []}
+    assert captured["json"] == {"pairs": [list(DENY_ALL_PAIR)]}
     assert count == 0
+    assert any(rec.levelname == "WARNING" for rec in caplog.records)
+
+
+def test_deny_all_pair_can_never_name_a_real_agent():
+    """Guards the switchboard's consent gate (issue #194): the sentinel must
+    match no caller kobo mints (`agent:<name>`) and no name an agent can take."""
+    caller, target = DENY_ALL_PAIR
+    assert not caller.startswith("agent:")
+    assert validate_name(target) is not None
 
 
 def test_cabal_put_dispatch_pairs_does_not_parse_pairs_back_from_the_response():
@@ -4087,47 +4102,6 @@ def test_cabal_put_dispatch_pairs_raises_typed_cabal_error_on_non_2xx():
     )
     with pytest.raises(CabalError):
         client.put_dispatch_pairs([("agent:a", "b")])
-
-
-def test_cabal_put_dispatch_pairs_shrink_to_empty_after_nonempty_logs_a_warning(caplog):
-    # cabal treats an EMPTY pair set as WIDE OPEN by design -- so a computed
-    # set that shrinks to empty right after this same client pushed a
-    # non-empty one is exactly the accidental-open-the-gate shape worth a
-    # loud warning, even though the push itself still goes through
-    # ("policy is policy").
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"count": 0})
-
-    client = CabalClient(
-        "http://cabal.local", "op-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-    client.put_dispatch_pairs([("agent:a", "b")])  # non-empty first
-
-    with caplog.at_level(logging.WARNING, logger="kobo_api.clients"):
-        client.put_dispatch_pairs([])
-
-    assert any(
-        rec.levelname == "WARNING" and "empty" in rec.message.lower()
-        for rec in caplog.records
-    )
-
-
-def test_cabal_put_dispatch_pairs_first_ever_push_being_empty_does_not_warn(caplog):
-    # No prior push from this client at all -- an empty set here is just
-    # "nothing to allow yet" (a fresh room, or one with no groups/invites),
-    # not a shrink from anything.
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"count": 0})
-
-    client = CabalClient(
-        "http://cabal.local", "op-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-    with caplog.at_level(logging.WARNING, logger="kobo_api.clients"):
-        client.put_dispatch_pairs([])
-
-    assert not any(rec.levelname == "WARNING" for rec in caplog.records)
 
 
 # --- dispatch_pairs_dirty (final-review fix round, HIGH-2b: the lost-sync
