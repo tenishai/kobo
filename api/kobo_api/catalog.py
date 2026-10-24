@@ -26,10 +26,20 @@ MAX_NAME_LENGTH = 24
 # NAME_RE. `gojira`/`kobo`/`pnyx`/`cortex` guard against an agent shadowing
 # the platform services themselves (`pnyx` and `cortex` are this project's
 # former names, kept reserved so an old link or habit can't collide with a
-# live agent); the `kube-*` pair guards against colliding with reserved
-# Kubernetes namespaces (each agent's namespace is its own name).
+# live agent); the rest are namespaces the cluster runs or names the suite's own
+# services may run under (each agent's namespace is its own name, issue
+# #193). This list is a cheap first layer: create and connect also refuse any
+# name whose namespace already exists (`kobo_api.main._namespace_taken_block`).
 RESERVED_NAMES = frozenset(
-    {"default", "kube-system", "kube-public", "gojira", "kobo", "pnyx", "cortex"}
+    {
+        "default", "kube-system", "kube-public", "kube-node-lease",
+        "gojira", "kobo", "pnyx", "cortex",
+        # The suite's own products, by name.
+        "cabal", "sero", "liminal", "noto", "techne", "daedalus", "agora",
+        "kaminos", "agents",
+        # Cluster add-ons the suite runs on.
+        "cert-manager", "external-secrets", "ingress-nginx",
+    }
 )
 
 

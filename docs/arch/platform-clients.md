@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-platform-clients
 updated: 2026-10-24
-anchor: api/kobo_api/clients.py sha=de1543b931c3f2fa7904c86f6b4ee7813ec197a3
-anchor: api/tests/fakes.py sha=9a947ab55762405b69a216d089a9ab9468918937
+anchor: api/kobo_api/clients.py sha=2905cda14565a73870e110c1fd566f2d0b017d59
+anchor: api/tests/fakes.py sha=a72a7685832e2367ae97faad1fcf46112e16e1ef
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
 
@@ -32,3 +32,4 @@ API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provid
 2026-10-12: `GhCLI.repo_exists` reads `gh api repos/{repo}` and compares the `full_name` GitHub answers with; a name GitHub only redirects (a destroyed agent's repo, renamed to `archived-agent-<name>-<id>`) counts as free.
 - `CabalClient.mint_service` (2026-10-24): the generic switchboard mint behind the room's own gateway admin token (`kobo_api.liminal_admin.RoomAdminToken`: sub and persona `kobo-room`, aud `liminal`, `admin:*`). `Clients.liminal_admin` is that admin-plane client, typed loosely to keep `liminal_admin` importing this module and not the reverse.
 - `CabalClient.put_dispatch_pairs` (2026-10-24, issue #194): never sends an empty set; an empty policy goes out as `DENY_ALL_PAIR` (see switchboard).
+- `KubectlClient.namespace_created_at` (2026-10-24, issue #193): a namespace's creation time as naive UTC, None when absent, `ClientError` when the cluster cannot be asked. Create and connect refuse a name whose namespace exists; destroy refuses to delete anything for an agent whose namespace is older than its row. `FakeKubectl(namespaces={name: created_at})` seeds it.

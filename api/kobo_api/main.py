@@ -1583,6 +1583,35 @@ def _scan_report_body(report: ScanReport) -> dict:
     }
 
 
+def _namespace_taken_block(app: FastAPI, name: str) -> JSONResponse | None:
+    """None when no Kubernetes namespace named `name` exists; a 409 when one
+    does, and a 503 when the cluster cannot be asked (issue #193).
+
+    An agent's name is its namespace, and the deploy platform adopts a
+    namespace that is already there. Called after the name-taken check, so
+    a namespace found here is recorded on no row in this room: a platform
+    service's, another team's, or a destroyed agent's still terminating.
+    """
+    clients: Clients | None = app.state.clients
+    # `Clients.real` always wires kubectl; only a test's wiring leaves it out.
+    if clients is None or clients.kubectl is None:
+        return None
+    try:
+        exists = clients.kubectl.namespace_created_at(name) is not None
+    except ClientError:
+        log.warning("could not check the cluster for namespace %s", name, exc_info=True)
+        return JSONResponse(
+            {"error": f"couldn't check the cluster for a namespace named {name!r}. Try again."},
+            status_code=503,
+        )
+    if exists:
+        return JSONResponse(
+            {"error": f"name taken: a Kubernetes namespace named {name!r} already exists"},
+            status_code=409,
+        )
+    return None
+
+
 def _group_choice_block(
     app: FastAPI, request: Request, cfg: Config, group_name: str | None
 ) -> JSONResponse | None:
@@ -4840,6 +4869,9 @@ def create_app(
         existing = session.query(Agent).filter_by(name=payload.name).first()
         if existing is not None:
             return JSONResponse({"error": f"name taken: {payload.name!r}"}, status_code=409)
+        blocked = _namespace_taken_block(app, payload.name)
+        if blocked is not None:
+            return blocked
 
         # Access control (Task A2): the verified IAP email at create time is
         # this agent's owner. `getattr` with a `None` default covers both
@@ -5167,6 +5199,9 @@ def create_app(
         existing = session.query(Agent).filter_by(name=payload.name).first()
         if existing is not None:
             return JSONResponse({"error": f"name taken: {payload.name!r}"}, status_code=409)
+        blocked = _namespace_taken_block(app, payload.name)
+        if blocked is not None:
+            return blocked
 
         created_by = getattr(request.state, "iap_email", None)
 

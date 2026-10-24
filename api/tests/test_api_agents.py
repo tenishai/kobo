@@ -205,6 +205,24 @@ def test_create_agent_duplicate_name_returns_409(client):
     assert "error" in second.json()
 
 
+def test_create_refuses_a_name_whose_namespace_already_exists(
+    session_factory, config, clients
+):
+    """Guards ownership of the agent's namespace (issue #193): a namespace no
+    row records belongs to something else, and the platform would adopt it."""
+    clients.kubectl.namespaces[AGENT_NAME] = datetime(2026, 1, 1)
+    client = TestClient(create_app(session_factory, config=config, clients=clients))
+
+    response = client.post(
+        "/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM}
+    )
+
+    assert response.status_code == 409
+    session = session_factory()
+    assert session.query(Agent).filter_by(name=AGENT_NAME).first() is None
+    session.close()
+
+
 def test_create_agent_name_toctou_maps_integrity_error_to_409(
     session_factory, config, clients
 ):
