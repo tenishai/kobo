@@ -72,6 +72,7 @@ ORG_KEYS = frozenset(
         "logout_url",
         "gateway_config_repo",
         "gateway_namespace",
+        "liminal_admin_url",
         "cabal_url",
         "agent_endpoint_template",
         "groups",

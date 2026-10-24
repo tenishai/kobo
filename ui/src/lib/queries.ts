@@ -198,6 +198,9 @@ import {
   connectAdminIntegration,
   disconnectAdminIntegration,
   fetchAdminAddons,
+  fetchAdminConnections,
+  putAdminLane,
+  revokeAdminLane,
   fetchAdminAudit,
   fetchAdminIntegrations,
   fetchAdminPeople,
@@ -583,6 +586,35 @@ export function reloadAdminOrgMutation(queryClient: QueryClient) {
       queryClient.invalidateQueries({ queryKey: ["admin"] });
       queryClient.invalidateQueries({ queryKey: ["catalog", "models"] });
       queryClient.invalidateQueries({ queryKey: ["whoami"] });
+    },
+  };
+}
+
+export function adminConnectionsQuery() {
+  return queryOptions({
+    queryKey: ["admin", "connections"] as const,
+    queryFn: fetchAdminConnections,
+    staleTime: 15_000,
+  });
+}
+
+export function putAdminLaneMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: ({ agent, integration, access }: { agent: string; integration: string; access: "read" | "write" }) =>
+      putAdminLane(agent, integration, access),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "connections"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
+    },
+  };
+}
+
+export function revokeAdminLaneMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: ({ agent, integration }: { agent: string; integration: string }) => revokeAdminLane(agent, integration),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "connections"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
     },
   };
 }

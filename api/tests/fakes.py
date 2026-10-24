@@ -1778,6 +1778,7 @@ class FakeCabal:
         self.absorb_calls: list[str] = []
         self.relay_calls: list[dict] = []
         self.mint_colleague_calls: list[str] = []
+        self.mint_service_calls: list[dict] = []
         # Each entry is the exact sorted list of pairs that call received --
         # mirrors `CabalClient.put_dispatch_pairs`'s own determinism
         # (sorted, not raw set-iteration order), so a test asserting call
@@ -1810,6 +1811,13 @@ class FakeCabal:
         if self._revoke_colleague_error is not None:
             raise CabalError(f"revoke_colleague failed: {self._revoke_colleague_error}")
         self.revoke_colleague_calls.append(name)
+
+    def mint_service(self, *, sub, scope, aud, ttl_days, persona=None) -> str:
+        self.calls.append(f"mint_service:{sub}")
+        self.mint_service_calls.append({"sub": sub, "scope": list(scope), "aud": aud, "ttl_days": ttl_days, "persona": persona})
+        if self._mint_colleague_error is not None:
+            raise CabalError(f"mint_service failed: {self._mint_colleague_error}")
+        return "fake-room-admin-token"
 
     def mint_colleague(self, name: str) -> str:
         self.calls.append(f"mint:{name}")

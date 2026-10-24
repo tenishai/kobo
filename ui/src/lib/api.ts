@@ -1225,6 +1225,48 @@ export async function reloadAdminOrg(): Promise<{ wired: boolean; detail: string
   return parse<{ wired: boolean; detail: string; models: string[]; note: string }>(res);
 }
 
+/** One agent's row on the Connections pane: its lanes to integrations. */
+export type AdminLane = {
+  id: number;
+  agent: string;
+  integration: string;
+  access: "read" | "write";
+  state: "pending" | "applied" | "failed" | "revoked";
+  state_detail: string | null;
+  spec: { pull_request?: string };
+  requested_by: string;
+  decided_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AdminConnections = {
+  agents: { agent: string; group: string | null; lanes: AdminLane[] }[];
+  integrations: AdminIntegration[];
+  /** The gateway's admin plane is wired: a lane applies at once. */
+  live: boolean;
+  gateway_repo: boolean;
+};
+
+export async function fetchAdminConnections(): Promise<AdminConnections> {
+  const res = await fetch("/api/admin/connections");
+  return parse<AdminConnections>(res);
+}
+
+export async function putAdminLane(agent: string, integration: string, access: "read" | "write"): Promise<AdminLane & { outcome: Record<string, string> }> {
+  const res = await fetch(`/api/admin/connections/${encodeURIComponent(agent)}/${encodeURIComponent(integration)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ access }),
+  });
+  return parse<AdminLane & { outcome: Record<string, string> }>(res);
+}
+
+export async function revokeAdminLane(agent: string, integration: string): Promise<AdminLane & { outcome: Record<string, string> }> {
+  const res = await fetch(`/api/admin/connections/${encodeURIComponent(agent)}/${encodeURIComponent(integration)}`, { method: "DELETE" });
+  return parse<AdminLane & { outcome: Record<string, string> }>(res);
+}
+
 export type AdminPeople = {
   admin_groups: string[];
   operators: string[];

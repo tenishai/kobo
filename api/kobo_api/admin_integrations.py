@@ -87,49 +87,62 @@ def _without_stanza(text: str, integration_id: str) -> str:
     return pattern.sub("", text)
 
 
-def _gateway_pr(
-    github: GitHubClient, config: Config, row: AdminIntegration, *, remove: bool, actor: str
-) -> str | None:
-    """Open (or find) the pull request on the gateway repo. None when no
-    repository is configured; the caller says so on the row."""
+def _gateway_branch_pr(github: GitHubClient, config: Config, *, branch: str, title: str, body: str, edit) -> str | None:
+    """Clone the gateway repo, let `edit(workdir) -> bool` change it, and
+    open (or find) the pull request on `branch`. None when no repository is
+    configured or the edit changed nothing."""
     repo = config.gateway_config_repo
     if not repo:
         return None
-    branch = f"{BRANCH_PREFIX}{row.id}"
     existing = github.find_pr(repo, branch=branch)
     if existing is not None:
         return existing
     with tempfile.TemporaryDirectory(prefix="kobo-gateway-") as tmp:
         workdir = Path(tmp) / "gateway"
         github.clone(repo, workdir)
+        if not edit(workdir):
+            return None
+        if github.branch_exists(repo, branch):
+            require_our_branch(github, repo, branch)
+            github.delete_branch(repo, branch)
+        github.commit_push(workdir, title)
+        return github.open_pr(workdir, repo=repo, branch=branch, title=title, body=body)
+
+
+def _gateway_pr(
+    github: GitHubClient, config: Config, row: AdminIntegration, *, remove: bool, actor: str
+) -> str | None:
+    """Open (or find) the pull request that adds or removes this vendor's
+    target. None when no repository is configured or nothing changed."""
+    verb = "remove" if remove else "add"
+
+    def edit(workdir: Path) -> bool:
         targets = workdir / TARGETS_FILE
         current = targets.read_text() if targets.exists() else ""
         stripped = _without_stanza(current, row.id)
         updated = stripped if remove else stripped.rstrip("\n") + "\n" + target_stanza(row)
         if updated == current:
-            return None
+            return False
         targets.write_text(updated)
-        verb = "remove" if remove else "add"
-        if github.branch_exists(repo, branch):
-            require_our_branch(github, repo, branch)
-            github.delete_branch(repo, branch)
-        github.commit_push(workdir, f"kobo: {verb} the {row.name} target")
-        body = (
-            f"Opened by the room\'s admin panel for {actor}.\n\n"
-            + (
-                f"Removes the `{row.id}` target."
-                if remove
-                else (
-                    f"Adds the `{row.id}` target. Its credential is the Secret `{secret_name(row.id)}` "
-                    f"in the `{config.gateway_namespace or '<gateway namespace>'}` namespace, synced by the "
-                    f"secrets add-on; the gateway\'s deployment must carry it as the env variable "
-                    f"`{token_env(row.id)}` (key `{SECRET_KEY}`). The target serves after this merges and "
-                    f"the gateway rolls."
-                )
+        return True
+
+    body = (
+        f"Opened by the room\'s admin panel for {actor}.\n\n"
+        + (
+            f"Removes the `{row.id}` target."
+            if remove
+            else (
+                f"Adds the `{row.id}` target. Its credential is the Secret `{secret_name(row.id)}` "
+                f"in the `{config.gateway_namespace or '<gateway namespace>'}` namespace, synced by the "
+                f"secrets add-on; the gateway\'s deployment must carry it as the env variable "
+                f"`{token_env(row.id)}` (key `{SECRET_KEY}`). The target serves after this merges and "
+                f"the gateway rolls."
             )
         )
-        return github.open_pr(workdir, repo=repo, branch=branch, title=f"kobo: {verb} the {row.name} target", body=body)
-
+    )
+    return _gateway_branch_pr(
+        github, config, branch=f"{BRANCH_PREFIX}{row.id}", title=f"kobo: {verb} the {row.name} target", body=body, edit=edit
+    )
 
 def connect(
     session: Session,
