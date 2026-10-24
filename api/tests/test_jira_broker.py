@@ -504,3 +504,27 @@ def test_search_refuses_a_date_that_could_carry_jql(tmp_path):
             created_after='2026-07-03" OR project = "SECRET',
             http_client=FakeTracker([]),
         )
+
+
+def test_jira_gate_hands_the_agents_mint_instant_to_the_verifier(jira_client, session_factory, monkeypatch):
+    """Issue #199: the jira lane applies the same not-before cut as the GitHub one."""
+    from datetime import UTC, datetime
+
+    import kobo_api.main as main_mod
+    from kobo_api.models import Agent, AgentStatus
+
+    minted = datetime(2026, 10, 24, 12, 0, tzinfo=UTC).replace(tzinfo=None)
+    session = session_factory()
+    session.add(Agent(name="ledger", persona="p", model_id="m", status=AgentStatus.READY, pass_minted_at=minted))
+    session.commit()
+    session.close()
+    seen = {}
+
+    def record(cabal_url, bearer, agent_name, *, not_before=None):
+        seen["not_before"] = not_before
+        return {}
+
+    monkeypatch.setattr(main_mod, "verify_agent_token", record)
+    monkeypatch.setattr(main_mod, "jira_fetch_issue", lambda *a, **k: {"key": "OPS-1"})
+    jira_client.get("/broker/agents/ledger/jira/issues/OPS-1", headers={"Authorization": "Bearer x"})
+    assert seen["not_before"] == minted

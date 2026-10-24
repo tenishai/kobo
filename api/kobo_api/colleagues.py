@@ -15,6 +15,7 @@ agent in the directory or running a provisioning step.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from kobo_api.clients import CabalClient, KubectlClient
@@ -88,6 +89,10 @@ def deliver_pass(
     # stops the step here, before a pass is minted over it.
     cabal.revoke_colleague(agent.name)
     token = cabal.mint_colleague(agent.name)
+    # The brokers refuse a pass issued before this instant (issue #199). Set
+    # after the mint, never before: a mint that fails must not leave a cut
+    # that refuses the pass the agent still holds. Committed with the step.
+    agent.pass_minted_at = datetime.now(UTC)
     if sero is not None:
         deliver_secret(
             sero,
