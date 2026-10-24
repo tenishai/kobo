@@ -16,16 +16,17 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import parse_qs
 
 import httpx
 import pytest
 
+from kobo_api.catalog import validate_name
 from kobo_api.clients import (
-    SLACK_STORE_WRITE_ATTEMPTS,
     DENY_ALL_PAIR,
+    SLACK_STORE_WRITE_ATTEMPTS,
     CabalClient,
     CabalError,
     CachedGcloudToken,
@@ -65,7 +66,6 @@ from kobo_api.clients import (
     probe_slack_token_store,
     slack_token_store,
 )
-from kobo_api.catalog import validate_name
 from kobo_api.config import Config, GroupChoice
 from kobo_api.groups import OktaGroupResolver, OktaPeopleSearch
 from tests.fakes import (
@@ -1175,7 +1175,7 @@ def test_namespace_created_at_reads_absent_as_none_and_a_time_as_naive_utc():
     client = KubectlCLI(runner=runner)
 
     assert client.namespace_created_at("clio") is None
-    assert client.namespace_created_at("cabal") == datetime(2026, 10, 24, 12, 0, 0)
+    assert client.namespace_created_at("cabal") == datetime(2026, 10, 24, 12, tzinfo=UTC).replace(tzinfo=None)
 
 
 # --- KubectlCLI.secret_literals (two-replica safety: the Slack token store) ----

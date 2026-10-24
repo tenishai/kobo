@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import jwt
@@ -714,12 +714,26 @@ def test_connect_records_the_row_a_connected_agent_needs(client, session_factory
     assert agent.status in {AgentStatus.PENDING, AgentStatus.PROVISIONING, AgentStatus.READY}
 
 
+def test_connect_refuses_when_the_cluster_cannot_be_asked(session_factory, config, clients):
+    """Guards ownership of the agent's namespace (issue #193): when the room
+    cannot tell whether the namespace exists, it does not make the agent."""
+    clients.kubectl.namespace_error = "Unable to connect to the server"
+    client = TestClient(create_app(session_factory, config=config, clients=clients))
+
+    response = client.post("/api/agents/connect", json=_payload())
+
+    assert response.status_code == 503
+    session = session_factory()
+    assert session.query(Agent).filter_by(name=AGENT_NAME).first() is None
+    session.close()
+
+
 def test_connect_refuses_a_name_whose_namespace_already_exists(
     session_factory, config, clients
 ):
     """Guards ownership of the agent's namespace (issue #193): a connected
     agent's name is its namespace too, and its secret_names mount from it."""
-    clients.kubectl.namespaces[AGENT_NAME] = datetime(2026, 1, 1)
+    clients.kubectl.namespaces[AGENT_NAME] = datetime(2026, 1, 1, tzinfo=UTC).replace(tzinfo=None)
     client = TestClient(create_app(session_factory, config=config, clients=clients))
 
     response = client.post("/api/agents/connect", json=_payload())

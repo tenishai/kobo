@@ -165,10 +165,16 @@ def _require_own_namespace(ctx: DestroyCtx) -> None:
     team), and deleting it, or the secrets and identity stored under the
     same name, would destroy what the room never owned. Create and connect
     now refuse a name whose namespace exists; this guards agents made
-    before that, and a namespace made in between.
+    before that. It does not catch a namespace someone made in the minutes
+    between the create check and the row (`NAMESPACE_CLOCK_SKEW`).
 
-    Runs before each step that deletes something keyed by the agent's name.
-    A cluster the room cannot ask raises too: unknown is not safe.
+    Runs at the start of destroy-secrets (whatever the secrets platform's
+    state), before the platform teardown, and before destroy-access. The GSA
+    `agent-<name>` is the room's naming, but an agent whose onboard failed
+    never had one made for it, and the same id can belong to an earlier
+    install of the room in that project or to a connected repository that
+    already deploys as `agent-<name>`. A refusal raises `RuntimeError`; a
+    cluster the room cannot ask raises `ClientError`: unknown is not safe.
     """
     agent = ctx.agent
     # `Clients.real` always wires kubectl; only a test's wiring leaves it out.
@@ -186,6 +192,27 @@ def _require_own_namespace(ctx: DestroyCtx) -> None:
             "did not make it. Nothing was deleted; an operator needs to check "
             "whose it is"
         )
+
+
+def _namespace_refusal(ctx: DestroyCtx) -> str | None:
+    """destroy-secrets' reading of `_require_own_namespace`: None when the
+    namespace is the agent's (or absent), else the failure to record. The
+    reason is logged; the failure label is what lands on the step."""
+    try:
+        _require_own_namespace(ctx)
+    except ClientError as exc:
+        # Before RuntimeError: ClientError is one, and an unreachable cluster
+        # is not a namespace that belongs to someone else.
+        log.warning(
+            "destroy-secrets: could not check the namespace of agent %s (%s)",
+            ctx.agent.name,
+            type(exc).__name__,
+        )
+        return "stored secrets (could not check the namespace)"
+    except RuntimeError as exc:
+        log.warning("destroy-secrets: agent %s: %s", ctx.agent.name, exc)
+        return "stored secrets (namespace not ours)"
+    return None
 
 
 def _destroy_platform(ctx: DestroyCtx) -> str:
@@ -274,13 +301,24 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
     `destroy-directory` gives: holding an otherwise-clean destroy hostage
     to something an operator cannot fix mid-run leaves a fully
     teardown-able agent stuck.
+
+    Before any of that, the namespace check (issue #193, `_namespace_refusal`)
+    runs in every case. A namespace older than the agent, or a cluster the
+    room cannot ask, keeps the stored secrets, still revokes the pass, and
+    fails the step, so the ledger stops here for an operator to look.
     """
-    _require_own_namespace(ctx)
     agent = ctx.agent
     sero = ctx.clients.sero
     removed: list[str] = []
     failures: list[str] = []
     note: str | None = None
+
+    # Checked first, whatever the branches below find (issue #193): a refusal
+    # keeps the stored secrets, still revokes the room's own pass, and fails
+    # the step, so no later stage deletes anything under this name.
+    refusal = _namespace_refusal(ctx)
+    if refusal is not None:
+        failures.append(refusal)
 
     # The operator who pressed destroy, and only then the agent's creator.
     # The platform records this name against the removal, so the person who
@@ -295,7 +333,7 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
             "no person on record to remove these on behalf of; the stored "
             "secrets stay until an operator removes them"
         )
-    else:
+    elif refusal is None:
         removed, failures = _remove_stored_secrets(ctx, sero, acting_email)
 
     # The colleague pass, whatever the secrets platform's state: it is the
