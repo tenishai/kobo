@@ -199,6 +199,10 @@ ui_dist: null
 # 401 before the request reaches any route. Empty (the default) disables
 # verification entirely — the unauthenticated local dev setup.
 iap_audience: ""
+# An empty iap_audience is the unauthenticated dev shape. Say so on purpose,
+# or the room logs an ERROR at every boot (a typo in iap_audience used to
+# turn authentication off silently; unknown keys are now refused as well).
+allow_unauthenticated: false
 
 # GitHub App identity kobo authenticates as when deployed, instead of
 # borrowing the operator's ambient `gh auth` session (dev's only mode
@@ -222,6 +226,13 @@ github_app_private_key_path: null
 # real secret in this or any tracked file.
 mcp:
   oauth_client_id: ""
+  # Required with oauth_client_id: the https base URL this room is reached at,
+  # echoed as the OAuth issuer and used to build Google's callback URL.
+  issuer_base_url: ""
+  # An MCP server on a room with no IAP in front of it would make every
+  # Workspace member an owner of every agent; the room refuses that pair
+  # unless this is true (a local dev room).
+  allow_without_iap: false
   oauth_client_secret_env: KOBO_MCP_GOOGLE_CLIENT_SECRET
   workspace_domain: ""
   jwt_key_env: KOBO_MCP_JWT_KEY

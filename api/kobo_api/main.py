@@ -10870,6 +10870,13 @@ def build_default_app() -> FastAPI:
     # Built from the MERGED config, same as the engine above — everything
     # downstream of boot sees org values as if they'd always been local.
     clients = Clients.real(config)
+    # Who this room lets in, said once at boot (issue #198): the line always,
+    # and an ERROR for each way the configuration leaves the room open by
+    # accident rather than by choice.
+    regime, problems = config.auth_regime(resolver_configured=clients.groups is not None)
+    log.info(regime)
+    for problem in problems:
+        log.error("auth: %s", problem)
     # The gateway's admin plane, with the room's own token minted through
     # the switchboard (kobo_api.liminal_admin); None keeps grants as pull
     # requests only, and the Connections pane says so.

@@ -997,7 +997,7 @@ def test_discovery_document_urls_are_https_independent_of_the_request_scheme():
     app.include_router(oauth_as.router)
     app.state.config = Config(
         mcp=MCPConfig(
-            oauth_client_id="mcp-test-client",
+            allow_without_iap=True, oauth_client_id="mcp-test-client",
             workspace_domain="example.com",
             issuer_base_url="https://kobo.example.org",
         )
