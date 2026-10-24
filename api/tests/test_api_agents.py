@@ -2549,3 +2549,19 @@ def test_archetype_forces_baseline_and_default_model(client, session_factory):
     assert row is not None
     assert row.skip_baseline is False
     session.close()
+
+
+def test_an_agent_created_under_role_api_is_claimable_by_a_worker(session_factory, config, clients):
+    """Guards a contract the worker depends on: under KOBO_ROLE=api the create
+    and connect routes used to stamp a heartbeat, and `claim_queued` takes only
+    rows without one, so no worker ever provisioned the agent (issue #195)."""
+    from kobo_api.provisioner import claim_queued
+    from kobo_api.roles import ROLE_API
+
+    api_client = TestClient(create_app(session_factory, config=config, clients=clients, role=ROLE_API))
+    response = api_client.post("/api/agents", json={"name": "clio", "persona": PERSONA, "team": TEAM})
+
+    assert response.status_code == 201
+    with session_factory() as session:
+        clio = session.query(Agent).filter_by(name="clio").one().id
+    assert claim_queued(session_factory, limit=5) == [clio]
