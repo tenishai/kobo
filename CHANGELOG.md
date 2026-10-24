@@ -86,6 +86,15 @@ All notable changes to kobo are documented here. The format follows
   warning on every such push instead of only after a non-empty one in the same process. Syncs
   in one process now compute and push one at a time, so an older set cannot overwrite a newer
   one; pushes from separate processes or replicas are still unordered.
+- **An agent can no longer take over, or on destroy delete, a namespace the room does not own**
+  (issue #193). An agent's name is its Kubernetes namespace, and the deploy platform adopts a
+  namespace that already exists. Create and connect now refuse a name whose namespace already
+  exists (409), and answer 503 when the cluster cannot be asked. Destroy's secrets, platform and
+  access stages first check the agent's namespace: one older than the agent's row (beyond two
+  minutes of clock skew) was there before the agent, so the stage fails with nothing deleted and
+  an operator has to look. The reserved names now also cover kube-node-lease, the suite's
+  products (cabal, sero, liminal, noto, techne, daedalus, agora, kaminos, agents) and
+  cert-manager, external-secrets and ingress-nginx.
 
 ## [0.2.2] - 2026-10-14
 

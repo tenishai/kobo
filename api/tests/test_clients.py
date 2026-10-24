@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs
 
@@ -1165,6 +1166,16 @@ def test_external_secret_status_says_what_it_could_not_read_and_not_what_was_in_
 
     assert "clio/clio-env" in str(exc_info.value)
     assert "not-a-real-key-value" not in str(exc_info.value)
+
+
+def test_namespace_created_at_reads_absent_as_none_and_a_time_as_naive_utc():
+    """Guards destruction safety (issue #193): destroy compares this with the
+    agent row's naive-UTC created_at, so "absent" and the timezone matter."""
+    runner = RecordingRunner(results=[(0, "", ""), (0, "2026-10-24T12:00:00Z", "")])
+    client = KubectlCLI(runner=runner)
+
+    assert client.namespace_created_at("clio") is None
+    assert client.namespace_created_at("cabal") == datetime(2026, 10, 24, 12, 0, 0)
 
 
 # --- KubectlCLI.secret_literals (two-replica safety: the Slack token store) ----

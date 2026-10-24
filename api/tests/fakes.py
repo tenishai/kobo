@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -1534,7 +1535,12 @@ class FakeKubectl:
         restart_error: str | None = None,
         external_secrets: dict[tuple[str, str], dict] | None = None,
         external_secret_error: str | None = None,
+        namespaces: dict[str, datetime] | None = None,
     ):
+        # `{namespace: created_at}` for `namespace_created_at`; a namespace
+        # with no entry does not exist, which is the cluster a new agent's
+        # name usually meets.
+        self.namespaces = dict(namespaces or {})
         self._rollout_result = rollout_result
         self._env_names = dict(env_names) if env_names else {}
         self._service_accounts = dict(service_accounts) if service_accounts else {}
@@ -1632,6 +1638,9 @@ class FakeKubectl:
             raise ClientError(self._external_secret_error)
         self.external_secret_reads.append((namespace, name))
         return self.external_secrets.get((namespace, name))
+
+    def namespace_created_at(self, namespace: str) -> datetime | None:
+        return self.namespaces.get(namespace)
 
 
 class FakeSlack:

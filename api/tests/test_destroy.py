@@ -17,6 +17,7 @@ Two layers, same split as test_steps.py/test_engine.py:
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -43,6 +44,7 @@ from tests.fakes import (
     FakeCloud,
     FakeGitHub,
     FakeGojira,
+    FakeKubectl,
     FakeSero,
     FakeSlack,
 )
@@ -2134,3 +2136,42 @@ def test_destroy_access_without_a_model_group_revokes_the_vertex_role_then_gsa(
     assert _destroy_access(_ctx(session, agent, config, cloud=cloud2)) == (
         "model access removed: False, gsa deleted: True"
     )
+
+
+# --- namespace ownership (issue #193) -------------------------------------------
+
+
+def test_destroy_deletes_nothing_in_a_namespace_older_than_the_agent(session_factory, config):
+    """Guards destruction safety (issue #193): an agent named after a namespace
+    that was there first must not delete it, or the secrets and identity under
+    the same name."""
+    agent_id = _seed_agent(
+        session_factory, status=AgentStatus.READY, gojira_app_id=7, created_by=OWNER_EMAIL
+    )
+    fake_gojira = FakeGojira()
+    fake_sero = FakeSero()
+    clients = _clients(gojira=fake_gojira, sero=fake_sero)
+    clients.kubectl = FakeKubectl(namespaces={AGENT_NAME: datetime(2020, 1, 1)})
+
+    thread = run_destroy(session_factory, agent_id, clients, config)
+    thread.join(timeout=JOIN_TIMEOUT)
+
+    assert fake_gojira.delete_calls == []
+    assert (fake_sero.unsyncs, fake_sero.deletes, fake_sero.offboards) == ([], [], [])
+    session = session_factory()
+    assert session.get(Agent, agent_id).status == AgentStatus.DESTROY_FAILED
+    session.close()
+
+
+def test_destroy_proceeds_in_a_namespace_made_after_the_agent(session_factory, config):
+    """Guards destruction safety (issue #193): the agent's own namespace, made
+    by the pipeline after its row, is still torn down."""
+    session, agent = _make_ctx_agent(session_factory, gojira_app_id=7)
+    fake_gojira = FakeGojira()
+    ctx = _ctx(session, agent, config, gojira=fake_gojira)
+    made = agent.created_at.replace(tzinfo=None) + timedelta(minutes=5)
+    ctx.clients.kubectl = FakeKubectl(namespaces={AGENT_NAME: made})
+
+    _destroy_platform(ctx)
+
+    assert fake_gojira.delete_calls == [(7, True)]

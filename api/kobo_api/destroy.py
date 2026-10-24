@@ -39,7 +39,7 @@ import json
 import logging
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import or_
@@ -130,6 +130,12 @@ DESTROY_STEP_LABELS: dict[str, str] = {
 SECRET_PURPOSES = ("cabal", "slack", "env")
 
 
+# How much older than the agent's row its namespace may be and still count as
+# the one the deploy platform made for it. The row's clock (the room's pod)
+# and the namespace's (the cluster's API server) are different clocks.
+NAMESPACE_CLOCK_SKEW = timedelta(minutes=2)
+
+
 @dataclass
 class DestroyCtx:
     agent: Agent
@@ -144,6 +150,42 @@ class DestroyCtx:
     # None for a resume with no request behind it, or a room with no
     # identity perimeter, where the agent's own creator stands in.
     acting_email: str | None = None
+
+
+def _require_own_namespace(ctx: DestroyCtx) -> None:
+    """Raise unless the namespace named after this agent is absent or no
+    older than the agent itself (issue #193).
+
+    An agent's name is its namespace, and the deploy platform adopts a
+    namespace that is already there, labelling it as its own. So neither
+    gojira's labels nor anything kobo records can say whose a namespace is;
+    its creation time can. The pipeline runs after the row is written, so a
+    namespace made for this agent is younger than the row. One that is
+    older belonged to something else first (a platform service, another
+    team), and deleting it, or the secrets and identity stored under the
+    same name, would destroy what the room never owned. Create and connect
+    now refuse a name whose namespace exists; this guards agents made
+    before that, and a namespace made in between.
+
+    Runs before each step that deletes something keyed by the agent's name.
+    A cluster the room cannot ask raises too: unknown is not safe.
+    """
+    agent = ctx.agent
+    # `Clients.real` always wires kubectl; only a test's wiring leaves it out.
+    if ctx.clients.kubectl is None:
+        return
+    created = ctx.clients.kubectl.namespace_created_at(agent.name)
+    if created is None:
+        return
+    born = agent.created_at
+    if born.tzinfo is not None:
+        born = born.astimezone(UTC).replace(tzinfo=None)
+    if created < born - NAMESPACE_CLOCK_SKEW:
+        raise RuntimeError(
+            f"the namespace {agent.name} is older than this agent, so the room "
+            "did not make it. Nothing was deleted; an operator needs to check "
+            "whose it is"
+        )
 
 
 def _destroy_platform(ctx: DestroyCtx) -> str:
@@ -166,6 +208,7 @@ def _destroy_platform(ctx: DestroyCtx) -> str:
     if agent.gojira_app_id is None:
         return "no platform app to tear down"
 
+    _require_own_namespace(ctx)
     result = ctx.clients.gojira.delete_app(agent.gojira_app_id)
     if result.get("already_gone"):
         return "already gone"
@@ -232,6 +275,7 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
     to something an operator cannot fix mid-run leaves a fully
     teardown-able agent stuck.
     """
+    _require_own_namespace(ctx)
     agent = ctx.agent
     sero = ctx.clients.sero
     removed: list[str] = []
@@ -364,6 +408,7 @@ def _destroy_access(ctx: DestroyCtx) -> str:
     gone, its membership becomes a ghost entry no longer reachable by email,
     unremovable by this step (or anything else) afterward.
     """
+    _require_own_namespace(ctx)
     agent = ctx.agent
     config = ctx.config
     cloud = ctx.clients.cloud

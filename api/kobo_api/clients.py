@@ -32,6 +32,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypedDict, runtime_checkable
 from urllib.parse import quote
@@ -2210,6 +2211,14 @@ class KubectlClient(Protocol):
         """
         ...
 
+    def namespace_created_at(self, namespace: str) -> datetime | None:
+        """When `namespace` was created, as naive UTC, or None when there is
+        no such namespace (issue #193). An agent's namespace is its name, so
+        this is how the room tells a namespace it caused from one that was
+        there before the agent. Raises `ClientError` when the cluster cannot
+        be asked, which callers treat as "not known to be safe"."""
+        ...
+
     def external_secret_status(self, namespace: str, name: str) -> dict | None:
         """The ExternalSecret `name`'s own `.status` as a decoded dict, or
         None when there is no such object in `namespace`.
@@ -2312,6 +2321,29 @@ class KubectlCLI:
         self._runner.run(
             [self._kubectl, "-n", namespace, "rollout", "restart", f"deploy/{deploy}"]
         )
+
+    def namespace_created_at(self, namespace: str) -> datetime | None:
+        # `--ignore-not-found` makes "no such namespace" an empty success,
+        # so a cluster the room cannot reach still raises instead of reading
+        # as absent.
+        out = self._runner.run(
+            [
+                self._kubectl, "get", "namespace", namespace, "--ignore-not-found",
+                "-o", "jsonpath={.metadata.creationTimestamp}",
+            ]
+        ).strip()
+        if not out:
+            return None
+        try:
+            moment = datetime.fromisoformat(out)
+        except ValueError:
+            raise ClientError(
+                f"kubectl get namespace {namespace} answered a creation time "
+                "this room could not read"
+            ) from None
+        if moment.tzinfo is not None:
+            moment = moment.astimezone(UTC).replace(tzinfo=None)
+        return moment
 
     def external_secret_status(self, namespace: str, name: str) -> dict | None:
         # `--ignore-not-found` is what makes "there is no such object" an
