@@ -75,6 +75,13 @@ All notable changes to kobo are documented here. The format follows
 
 ### Fixed
 
+- **A destroy that refuses a namespace still revokes the agent's colleague pass** (issue #193,
+  follow-up to PR #213). The namespace check ran before everything in the secrets stage, so a
+  refusal also skipped the pass revocation. The check now runs first in that stage whatever the
+  secrets platform's state; a namespace older than the agent, or a cluster the room cannot ask,
+  keeps the stored secrets, still revokes the pass, and fails the stage, so the rest of the
+  destroy waits for an operator. An unreachable cluster is now reported as "could not check the
+  namespace" rather than as someone else's namespace.
 - **The room-wide colleagues routes follow agent visibility** (issue #192). `GET
   /api/colleagues/conversations`, `GET /api/colleagues/conversations/{task_id}` and `GET
   /api/colleagues/stream` were gated only on the switchboard being wired, so any signed-in user could

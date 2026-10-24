@@ -1536,11 +1536,15 @@ class FakeKubectl:
         external_secrets: dict[tuple[str, str], dict] | None = None,
         external_secret_error: str | None = None,
         namespaces: dict[str, datetime] | None = None,
+        namespace_error: str | None = None,
     ):
         # `{namespace: created_at}` for `namespace_created_at`; a namespace
         # with no entry does not exist, which is the cluster a new agent's
         # name usually meets.
         self.namespaces = dict(namespaces or {})
+        # When set, `namespace_created_at` raises: the cluster the room
+        # could not ask.
+        self.namespace_error = namespace_error
         self._rollout_result = rollout_result
         self._env_names = dict(env_names) if env_names else {}
         self._service_accounts = dict(service_accounts) if service_accounts else {}
@@ -1640,6 +1644,8 @@ class FakeKubectl:
         return self.external_secrets.get((namespace, name))
 
     def namespace_created_at(self, namespace: str) -> datetime | None:
+        if self.namespace_error is not None:
+            raise ClientError(self.namespace_error)
         return self.namespaces.get(namespace)
 
 

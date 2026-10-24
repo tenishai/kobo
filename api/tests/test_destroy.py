@@ -17,7 +17,7 @@ Two layers, same split as test_steps.py/test_engine.py:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -2140,6 +2140,10 @@ def test_destroy_access_without_a_model_group_revokes_the_vertex_role_then_gsa(
 
 # --- namespace ownership (issue #193) -------------------------------------------
 
+# A namespace made long before any agent row in these tests: naive UTC, as
+# `KubectlClient.namespace_created_at` answers.
+OLD_NAMESPACE = datetime(2020, 1, 1, tzinfo=UTC).replace(tzinfo=None)
+
 
 def test_destroy_deletes_nothing_in_a_namespace_older_than_the_agent(session_factory, config):
     """Guards destruction safety (issue #193): an agent named after a namespace
@@ -2151,7 +2155,7 @@ def test_destroy_deletes_nothing_in_a_namespace_older_than_the_agent(session_fac
     fake_gojira = FakeGojira()
     fake_sero = FakeSero()
     clients = _clients(gojira=fake_gojira, sero=fake_sero)
-    clients.kubectl = FakeKubectl(namespaces={AGENT_NAME: datetime(2020, 1, 1)})
+    clients.kubectl = FakeKubectl(namespaces={AGENT_NAME: OLD_NAMESPACE})
 
     thread = run_destroy(session_factory, agent_id, clients, config)
     thread.join(timeout=JOIN_TIMEOUT)
@@ -2175,3 +2179,117 @@ def test_destroy_proceeds_in_a_namespace_made_after_the_agent(session_factory, c
     _destroy_platform(ctx)
 
     assert fake_gojira.delete_calls == [(7, True)]
+
+
+def test_destroy_secrets_still_revokes_the_pass_when_the_namespace_is_not_ours(
+    session_factory, config, monkeypatch
+):
+    """Guards destruction safety (issue #193): a refused namespace keeps the
+    stored secrets, but the room's own colleague pass is still revoked and the
+    step still fails."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    session, agent = _make_ctx_agent(session_factory)
+    fake_sero = FakeSero()
+    fake_cabal = FakeCabal()
+    ctx = _ctx(
+        session, agent, _cabal_enabled_config(config),
+        sero=fake_sero, cabal=fake_cabal, acting_email=OWNER_EMAIL,
+    )
+    ctx.clients.kubectl = FakeKubectl(namespaces={AGENT_NAME: OLD_NAMESPACE})
+
+    with pytest.raises(RuntimeError, match="namespace not ours"):
+        _destroy_secrets(ctx)
+
+    assert fake_cabal.revoke_colleague_calls == [AGENT_NAME]
+    assert (fake_sero.unsyncs, fake_sero.deletes, fake_sero.offboards) == ([], [], [])
+
+
+def test_destroy_platform_refuses_an_old_namespace_on_resume(session_factory, config):
+    """Guards destruction safety (issue #193): a resume whose destroy-secrets
+    is already DONE still must not have gojira delete a namespace that was
+    there before the agent."""
+    agent_id = _seed_agent(session_factory, status=AgentStatus.DESTROY_FAILED, gojira_app_id=7)
+    session = session_factory()
+    session.add(AgentStep(agent_id=agent_id, name="destroy-secrets", status=StepStatus.DONE))
+    session.commit()
+    session.close()
+    fake_gojira = FakeGojira()
+    clients = _clients(gojira=fake_gojira)
+    clients.kubectl = FakeKubectl(namespaces={AGENT_NAME: OLD_NAMESPACE})
+
+    thread = run_destroy(session_factory, agent_id, clients, config)
+    thread.join(timeout=JOIN_TIMEOUT)
+
+    assert fake_gojira.delete_calls == []
+    session = session_factory()
+    step = session.query(AgentStep).filter_by(agent_id=agent_id, name="destroy-platform").one()
+    assert step.status == StepStatus.FAILED
+    session.close()
+
+
+def test_destroy_secrets_fails_on_an_old_namespace_with_no_secrets_platform(
+    session_factory, config
+):
+    """Guards destruction safety (issue #193): the check runs whatever the
+    secrets platform's state, so the ledger still stops at this step."""
+    session, agent = _make_ctx_agent(session_factory)
+    ctx = _ctx(session, agent, config, sero=None)
+    ctx.clients.kubectl = FakeKubectl(namespaces={AGENT_NAME: OLD_NAMESPACE})
+
+    with pytest.raises(RuntimeError, match="namespace not ours"):
+        _destroy_secrets(ctx)
+
+
+def test_destroy_secrets_says_it_could_not_check_an_unreachable_cluster(
+    session_factory, config
+):
+    """Guards destruction safety (issue #193): an unreachable cluster is not
+    reported as someone else's namespace, and nothing stored is removed."""
+    session, agent = _make_ctx_agent(session_factory)
+    fake_sero = FakeSero()
+    ctx = _ctx(session, agent, config, sero=fake_sero, acting_email=OWNER_EMAIL)
+    ctx.clients.kubectl = FakeKubectl(namespace_error="Unable to connect to the server")
+
+    with pytest.raises(RuntimeError, match="could not check the namespace"):
+        _destroy_secrets(ctx)
+
+    assert (fake_sero.unsyncs, fake_sero.deletes, fake_sero.offboards) == ([], [], [])
+
+
+def test_destroy_of_an_agent_that_never_onboarded_deletes_nothing_in_an_old_namespace(
+    session_factory, config
+):
+    """Guards destruction safety (issue #193): with no gojira app recorded the
+    platform stage has nothing to refuse, so the secrets stage must stop the
+    ledger before destroy-access deletes an `agent-<name>` GSA the room never
+    made for this agent, and before the row is forgotten."""
+    agent_id = _seed_agent(session_factory, status=AgentStatus.FAILED, gojira_app_id=None)
+    fake_cloud = FakeCloud(project=config.gcp_project)
+    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    fake_cloud.gsas.add(email)
+    clients = _clients(cloud=fake_cloud)
+    clients.kubectl = FakeKubectl(namespaces={AGENT_NAME: OLD_NAMESPACE})
+
+    thread = run_destroy(session_factory, agent_id, clients, config)
+    thread.join(timeout=JOIN_TIMEOUT)
+
+    assert email in fake_cloud.gsas
+    session = session_factory()
+    assert session.get(Agent, agent_id).status == AgentStatus.DESTROY_FAILED
+    session.close()
+
+
+def test_destroy_access_refuses_an_old_namespace(session_factory, config):
+    """Guards destruction safety (issue #193): on a resume past destroy-secrets,
+    an `agent-<name>` GSA is not proof the room made it for this agent."""
+    session, agent = _make_ctx_agent(session_factory)
+    fake_cloud = FakeCloud(project=config.gcp_project)
+    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    fake_cloud.gsas.add(email)
+    ctx = _ctx(session, agent, config, cloud=fake_cloud)
+    ctx.clients.kubectl = FakeKubectl(namespaces={AGENT_NAME: OLD_NAMESPACE})
+
+    with pytest.raises(RuntimeError):
+        _destroy_access(ctx)
+
+    assert email in fake_cloud.gsas
