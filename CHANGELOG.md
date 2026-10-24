@@ -14,6 +14,12 @@ All notable changes to kobo are documented here. The format follows
   rest of its year. The room now records when it minted each agent's pass (`agents.pass_minted_at`,
   migration d7e8f9a0b1c2) and both brokers refuse a pass issued before that instant. The JWKS
   client is built once per switchboard instead of once per call.
+- **A connected repository's CI log and environment are operator-only, and build logs are
+  scrubbed** (issue #200). The room cannot check who owns a repository on GitHub, so whoever
+  connected it became its owner in kobo and could read its CI output and `gojira.yaml` env.
+  For connected agents those two reads now follow the operator gate (with its dev-parity arm);
+  composed agents are unchanged. Every build log is run through `kobo_api.redact` first, which
+  masks well-known token shapes, private-key blocks, bearers and values after secret-ish keys.
 - **MCP authorization codes are spent once, and a person's MCP access can be cut off**
   (issues #196, #197). A code exchanged a second time within its minute of life now fails and
   revokes the tokens the first exchange produced; before, each exchange minted an independent

@@ -1861,3 +1861,26 @@ def test_a_caller_cannot_hold_the_restart_button_down(
     assert refused.status_code == 429
     assert refused.json()["error"] == TOO_MANY_RESTARTS
     assert len(kubectl.restarts) == RESTART_LIMIT
+
+
+def test_a_connected_repositorys_env_is_operator_only(session_factory, config, fake_storage, _key):
+    """Issue #200: whoever connects a repo becomes its owner in kobo, and the room
+    cannot check who owns it on GitHub, so its env and CI log are operator-only."""
+    operator = "ops@example.com"
+    operator_config = config.model_copy(update={"operators": [operator]})
+    github = _github(repo_files={"gojira.yaml": "name: clio\nenv:\n  API_BASE: https://example.test\n"})
+    client, _ = _client(session_factory, operator_config, fake_storage, _key, kind=KIND_CONNECTED, github=github)
+
+    as_owner = client.get(f"/api/agents/{AGENT}/env", headers=_as(_key))
+    assert as_owner.status_code == 403
+    assert "operator-only" in as_owner.json()["error"]
+    as_operator = client.get(f"/api/agents/{AGENT}/env", headers=_as(_key, email=operator))
+    assert as_operator.status_code == 200
+    assert as_operator.json()["env"] == {"API_BASE": "https://example.test"}
+
+
+def test_a_composed_agents_env_stays_readable_by_its_owner(session_factory, config, fake_storage, _key):
+    operator_config = config.model_copy(update={"operators": ["ops@example.com"]})
+    github = _github(repo_files={"gojira.yaml": "name: clio\nenv:\n  API_BASE: https://example.test\n"})
+    client, _ = _client(session_factory, operator_config, fake_storage, _key, github=github)
+    assert client.get(f"/api/agents/{AGENT}/env", headers=_as(_key)).status_code == 200
