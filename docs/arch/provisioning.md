@@ -2,7 +2,7 @@
 card: arch-card:kobo-provisioning
 updated: 2026-10-18
 anchor: api/kobo_api/provisioner.py sha=d643960befd890183a99c7b5a3ba823515c2a733
-anchor: api/kobo_api/steps.py sha=68b01b1d3463e1143bda56288c05c058e213ff02
+anchor: api/kobo_api/steps.py sha=46a45f0302da50a7b5cf6ecc0747998ba588237c
 anchor: api/kobo_api/provisioner.py sha=8ee1d1c48b3581cbce3ee12236ba7e91c5534450
 anchor: api/kobo_api/steps.py sha=46a45f0302da50a7b5cf6ecc0747998ba588237c
 ---
