@@ -21,7 +21,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
-from sqlalchemy import func
+from sqlalchemy import func, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -6341,15 +6341,37 @@ def create_app(
             )
 
         # Status-before-thread discipline, same as create_agent/retry_agent:
-        # commit DESTROYING before launching the thread. This also makes a
-        # re-DELETE while already destroying (or destroy_failed) idempotent
-        # from the caller's view — it reads a status outside
-        # _PROVISIONING_IN_FLIGHT, so it falls through here and simply
-        # re-launches run_destroy, which resumes from the first incomplete
-        # step rather than redoing finished work.
-        agent.status = AgentStatus.DESTROYING
-        agent.error = None
+        # commit DESTROYING before launching the thread. One conditional
+        # claim (issue #203), not a read followed by a write: two DELETEs
+        # racing, or a DELETE racing a sweep, resolve to one winner here. A
+        # row already DESTROYING belongs to a run in flight; if that run
+        # died, `sweep_interrupted` flips it to DESTROY_FAILED within a
+        # minute and the next DELETE resumes from the first incomplete step.
+        # The heartbeat is stamped with the claim so the sweep never reads a
+        # fresh claim as a wedged one.
+        claimed = session.execute(
+            update(Agent)
+            .where(Agent.id == agent.id)
+            .where(Agent.status.not_in([*_PROVISIONING_IN_FLIGHT, AgentStatus.DESTROYING]))
+            .values(
+                status=AgentStatus.DESTROYING,
+                error=None,
+                run_heartbeat_at=naive_utc(datetime.now(UTC)),
+            )
+        ).rowcount
         session.commit()
+        session.refresh(agent)
+        if claimed != 1:
+            # Lost the claim. A destroy already in flight answers like the
+            # first DELETE did (idempotent from the caller's view) and
+            # launches nothing; anything else is a status that moved under
+            # us, and the caller should look again.
+            if agent.status == AgentStatus.DESTROYING:
+                return JSONResponse({"status": AgentStatus.DESTROYING}, status_code=202)
+            return JSONResponse(
+                {"error": "the agent changed state just now; look again before destroying"},
+                status_code=409,
+            )
 
         agent_id = agent.id
 

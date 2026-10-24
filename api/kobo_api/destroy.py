@@ -58,7 +58,7 @@ from kobo_api.models import (
     StepStatus,
 )
 from kobo_api.pairs import sync_dispatch_pairs_best_effort
-from kobo_api.provisioner import _get_or_create_step
+from kobo_api.provisioner import _get_or_create_step, _Heartbeat
 from kobo_api.steps import refresh_colleague_rosters
 
 if TYPE_CHECKING:
@@ -726,9 +726,24 @@ def _run_destroy_body_and_release(
     cleanly, failed a step, or hit `_run_destroy_body`'s own engine-level
     recovery path.
     """
+    # The same heartbeat a provision has (issue #203): a destroy that dies
+    # mid-way stops beating, and `sweep_interrupted` flips the row to
+    # DESTROY_FAILED so the next DELETE can resume it, instead of leaving it
+    # DESTROYING forever with nothing to notice.
+    beat = _Heartbeat(session_factory, agent_id)
     try:
+        try:
+            beat.start()
+        except Exception:
+            log.warning(
+                "could not start the heartbeat for destroying agent %s; the run "
+                "continues but may be swept as interrupted",
+                agent_id,
+                exc_info=True,
+            )
         _run_destroy_body(session_factory, agent_id, clients, config, acting_email)
     finally:
+        beat.stop()
         with _destroying_lock:
             _destroying_agent_ids.discard(agent_id)
 
