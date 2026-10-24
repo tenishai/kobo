@@ -812,3 +812,39 @@ class AdminGrant(Base):
     decided_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class MCPRedeemedCode(Base):
+    """One row per MCP authorization code the room has already exchanged
+    (issue #196). The code itself is a stateless JWT, so without this table
+    nothing remembers that it was spent, and two `/token` calls within its
+    60 s life both succeed. The code's own `jti` is the primary key: the
+    second redemption fails the insert, and `kobo_api.mcp.refresh_tokens.
+    redeem_code` turns that into "replay", which revokes the family the first
+    redemption produced. Rows are small and short-lived in meaning (a code
+    lives 60 s), kept for the audit trail rather than pruned."""
+
+    __tablename__ = "mcp_redeemed_codes"
+
+    jti: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    family_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    redeemed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
+class MCPRevocation(Base):
+    """A person whose MCP access the room has cut off (issue #197): every
+    refresh family they held is revoked at the same moment, and an access
+    token issued before `revoked_at` is refused by `kobo_api.mcp.server`
+    even though it is otherwise valid. Keyed by email, so revoking twice
+    moves the instant forward rather than adding a row. Sign-in again after
+    this (a fresh OAuth grant) is allowed: the row is a cut, not a ban."""
+
+    __tablename__ = "mcp_revocations"
+
+    email: Mapped[str] = mapped_column(String(255), primary_key=True)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    revoked_by: Mapped[str] = mapped_column(String(320), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)

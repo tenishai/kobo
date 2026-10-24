@@ -59,6 +59,8 @@ under it -- is load-bearing, not stylistic.
 
 from __future__ import annotations
 
+import time
+from datetime import UTC
 from typing import Any
 from urllib.parse import urlparse
 
@@ -71,6 +73,7 @@ from pydantic import AnyHttpUrl
 from kobo_api.config import Config
 from kobo_api.mcp import audit
 from kobo_api.mcp.jwt import TokenError, verify
+from kobo_api.mcp.refresh_tokens import email_revoked_at
 
 
 class _KoboAccessToken(AccessToken):
@@ -119,6 +122,8 @@ class _KoboTokenVerifier(TokenVerifier):
         email = claims.get("sub")
         if not email:
             return None
+        if self._revoked_since(email, claims.get("iat")):
+            return None
 
         return _KoboAccessToken(
             token=token,
@@ -128,6 +133,42 @@ class _KoboTokenVerifier(TokenVerifier):
             subject=email,
             user_email=email,
         )
+
+    def _revoked_since(self, email: str, issued_at: Any) -> bool:
+        """True when `email` was cut off (issue #197) after this token was
+        issued. Access tokens are stateless, so this is the one read that
+        lets a revocation land before the token's own expiry. Behind a short
+        per-process cache: one row read per email per `_REVOCATION_CACHE_S`,
+        not per tool call. A room without a session factory (a test mount)
+        has nothing to read and refuses nothing."""
+        factory = getattr(self._app.state, "session_factory", None)
+        if factory is None:
+            return False
+        now = time.monotonic()
+        cached = _revocation_cache.get(email)
+        if cached is None or now - cached[0] > _REVOCATION_CACHE_S:
+            with factory() as session:
+                revoked_at = email_revoked_at(session, email=email)
+            _revocation_cache[email] = (now, revoked_at)
+        else:
+            revoked_at = cached[1]
+        if revoked_at is None:
+            return False
+        issued = float(issued_at or 0)
+        return issued <= revoked_at.replace(tzinfo=UTC).timestamp()
+
+
+# email -> (checked at, revoked_at or None). Per process, like every other
+# in-memory cache in the room; the bound is `_REVOCATION_CACHE_S`.
+_revocation_cache: dict[str, tuple[float, Any]] = {}
+_REVOCATION_CACHE_S = 30.0
+
+
+def forget_revocation_cache() -> None:
+    """Drop the cache so the next verification reads the table. The revoke
+    route calls this in its own process; other replicas catch up within
+    `_REVOCATION_CACHE_S`."""
+    _revocation_cache.clear()
 
 
 def get_user_email(ctx: Any) -> str:
@@ -250,7 +291,9 @@ def build_mcp_server(app: Any) -> FastMCP:
         token_verifier=_KoboTokenVerifier(app),
         auth=AuthSettings(
             issuer_url=AnyHttpUrl(cfg.mcp.issuer_base_url),
-            resource_server_url=AnyHttpUrl(f"{cfg.mcp.issuer_base_url.rstrip('/')}/mcp"),
+            resource_server_url=AnyHttpUrl(
+                f"{cfg.mcp.issuer_base_url.rstrip('/')}/mcp"
+            ),
         ),
         transport_security=_transport_security_for(cfg.mcp.issuer_base_url),
     )

@@ -732,3 +732,49 @@ def test_lazy_google_identity_is_constructed_when_app_state_has_none(session_fac
     state_jwt = query["state"][0]
     claims = verify(state_jwt, "state", CLIENT_ID)
     assert claims["redirect_uri"] == CLAUDE_REDIRECT_URI
+
+
+# --- /oauth/token: a code is spent once (issue #196) --------------------------
+
+
+def _code_grant(client, fake_google, *, code: str = "google-code"):
+    """authorize -> callback, returning (code_jwt, verifier) without exchanging."""
+    verifier, challenge = _pkce_pair()
+    assert _authorize(client, challenge=challenge).status_code == 302
+    state_jwt = fake_google.auth_url_calls[-1]["state_jwt"]
+    fake_google.set_claims(code, {"email": EMAIL, "hd": WORKSPACE_DOMAIN})
+    callback = client.get("/oauth/google/callback", params={"code": code, "state": state_jwt})
+    assert callback.status_code == 302
+    return _code_from_redirect(callback.headers["location"]), verifier
+
+
+def _exchange(client, code_jwt, verifier):
+    return client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code_jwt,
+            "code_verifier": verifier,
+            "redirect_uri": CLAUDE_REDIRECT_URI,
+            "client_id": CLIENT_ID,
+        },
+    )
+
+
+def test_a_code_exchanged_twice_fails_and_kills_the_first_grants_family(client, fake_google):
+    code_jwt, verifier = _code_grant(client, fake_google)
+    first = _exchange(client, code_jwt, verifier)
+    assert first.status_code == 200
+    refresh_token = first.json()["refresh_token"]
+
+    second = _exchange(client, code_jwt, verifier)
+    assert second.status_code == 400
+    assert second.json()["error"] == "invalid_grant"
+
+    # The first exchange's tokens are gone too: a refresh on them fails.
+    refreshed = client.post(
+        "/oauth/token",
+        data={"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": CLIENT_ID},
+    )
+    assert refreshed.status_code == 400
+    assert refreshed.json()["error"] == "invalid_grant"
