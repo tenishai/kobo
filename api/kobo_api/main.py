@@ -215,6 +215,7 @@ from kobo_api.purpose_tags import (
     encode_tags,
     normalize_tags,
 )
+from kobo_api.redact import redact_secrets
 from kobo_api.repo_search import MAX_QUERY_CHARS, RepoIndex, RepoWarmer
 from kobo_api.roles import (
     ROLE_ALL,
@@ -2157,6 +2158,30 @@ def _persona_visible_teams(request: Request) -> list[str] | None:
     email = (getattr(request.state, "iap_email", None) or "").lower()
     groups = (resolver.groups_for(email) if email else None) or []
     return [SHARED_GROUP, *[g for g in groups if g != SHARED_GROUP]]
+
+
+def _connected_read_block(agent: Agent, request: Request) -> JSONResponse | None:
+    """None when the caller may read a connected repository's CI log and
+    `gojira.yaml` env; a 403 body otherwise (issue #200). A composed agent is
+    never blocked here: the room wrote its repository and its owner may read
+    it. A connected repository is a team's own, and the room cannot check who
+    owns it on GitHub, so whoever connected it became its owner in kobo and
+    could read its CI output and env. For connected agents these two reads
+    are operator-only, with `_operator_block`'s own dev-parity and no-IAP
+    arms, so a room with no operators configured behaves as before."""
+    if not is_connected(agent):
+        return None
+    cfg: Config = request.app.state.config
+    if not cfg.operators and not cfg.admin_groups:
+        return None
+    if not cfg.iap_audience:
+        return None
+    if _is_admin(request):
+        return None
+    return JSONResponse(
+        {"error": "the build log and environment of a connected repository are operator-only on this room"},
+        status_code=403,
+    )
 
 
 def _operator_block(request: Request, config: Config) -> JSONResponse | None:
@@ -5889,7 +5914,7 @@ def create_app(
         agent = _visible_agent_or_404(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
-        gate = _owner_or_operator_or_403(agent, request)
+        gate = _owner_or_operator_or_403(agent, request) or _connected_read_block(agent, request)
         if gate is not None:
             return gate
         if not agent.repo_full_name:
@@ -5916,7 +5941,9 @@ def create_app(
                 {"error": "the build system did not answer. Try again shortly."},
                 status_code=502,
             )
-        lines = log_text.splitlines()
+        # Actions masks only registered secrets; a token a step echoed is in
+        # the raw log (issue #200). Scrub before anyone reads it.
+        lines = redact_secrets(log_text).splitlines()
         if len(lines) > _BUILD_LOG_TAIL_LINES:
             lines = [f"... ({len(lines) - _BUILD_LOG_TAIL_LINES} earlier lines trimmed)"] + lines[-_BUILD_LOG_TAIL_LINES:]
         return JSONResponse({"run": run, "log": "\n".join(lines)})
@@ -8580,6 +8607,9 @@ def create_app(
         agent = _secrets_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _connected_read_block(agent, request)
+        if blocked is not None:
+            return blocked
 
         try:
             env = read_repo_env(app.state.clients.github, agent.repo_full_name)

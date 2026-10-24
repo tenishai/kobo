@@ -116,3 +116,14 @@ def test_github_failure_reads_as_502(session_factory, config):
     _seed(session_factory)
     r = _client(session_factory, config, github).get("/api/agents/ward/build-log")
     assert r.status_code == 502
+
+
+def test_secret_shaped_strings_are_scrubbed_from_the_log(session_factory, config):
+    """Issue #200: Actions masks only registered secrets; the room masks the rest."""
+    github = LogGitHub(
+        run={"id": 7, "status": "completed", "conclusion": "failure", "head_sha": "abc"},
+        log="auth ghp_AbCdEfGhIjKlMnOpQrStUvWxYz012345 ok\nGITHUB_TOKEN=abcdefgh12345678\nplain line",
+    )
+    _seed(session_factory)
+    body = _client(session_factory, config, github).get("/api/agents/ward/build-log").json()
+    assert body["log"] == "auth [redacted] ok\nGITHUB_TOKEN=[redacted]\nplain line"
