@@ -70,6 +70,10 @@ All notable changes to kobo are documented here. The format follows
 
 ### Changed
 
+- README's "fail closed" bullet says what ships: an explicit tool allowlist, and with the
+  switchboard on, colleague (and broker read) tools with no approval gate (issue #205).
+  `docs/operating.md` says what the `kobo-room` ClusterRole really grants, cluster-wide Secret
+  access included, and the per-namespace shape it should become (issue #204, docs half).
 - **The vendored daedalus bundle schema is the v0.5.5 copy** (issue #152). It was 0.4.0.dev0's;
   the newer schema adds the `engine` block and the GitHub, CloudTrail, Jira and Slack-read tool
   specs, allows `${VAR}` placeholders and no longer requires a skill `id`. Every shape kobo

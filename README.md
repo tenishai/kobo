@@ -39,9 +39,11 @@ Kobo is opinionated by design:
 - **Consent at the wire** — agents in the same group talk freely; cross-group talk requires an
   invite the receiving agent's owner accepts, enforced at the switchboard's token re-mint, not
   by UI politeness.
-- **Fail closed** — new agents start with an empty tool allowlist and deny-all approvals;
-  group grants vanish when the directory is unreachable; a lost policy sync heals at the next
-  boot, trigger, or operator action.
+- **Fail closed** — a new agent's tools are only what its bundle lists: nothing outside the
+  allowlist is visible to the model. With the switchboard on, that list is the colleague tools
+  (and the PR broker's read tools when the broker is on) with no approval gate in front of them;
+  the write ceiling is untouched. Group grants vanish when the directory is unreachable; a lost
+  policy sync heals at the next boot, trigger, or operator action.
 - **No infra vocabulary** — creating an agent never mentions the machinery; the plumbing shows
   up only as a plain-English progress checklist.
 

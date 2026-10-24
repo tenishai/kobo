@@ -34,6 +34,18 @@ proves it can write it once at startup (an idempotent re-apply of the pair alrea
 logs an ERROR naming the Secret if it cannot, rather than discovering it half a day later when
 the token expires.
 
+**What the shipped ClusterRole really grants.** `k8s/cluster/rbac.yaml` binds the room to a
+ClusterRole (`kobo-room`) with `get, list, create, patch, update, delete` on Secrets in **every
+namespace**, plus read on pods, pod logs, namespaces, services and ExternalSecrets, `patch` on
+Deployments and `create` on `pods/portforward`. That is wider than the Slack Secret above: the
+room also writes each agent's colleague pass and Slack tokens into the agent's own namespace
+(`<agent>-cabal`, `<agent>-slack`), and that is why the grant is cluster-wide today. The cost is
+that a bug or compromise in the room can read any Secret on the cluster. The intended shape is a
+Role per agent namespace granted at onboard plus one Role on the Slack Secret, with the
+cluster-wide Secret rule dropped (tenishai/kobo issue #204); until that lands, run the room on a
+cluster where that blast radius is acceptable, or narrow the ClusterRole by hand to the
+namespaces your agents use.
+
 Slack's refresh token is single-use, so both replicas rotate against that one object: each
 re-reads it before spending a refresh token and again after a failed rotation, and takes the
 other's pair when it finds one. The nightly learnings sweep is claimed by a Postgres advisory
