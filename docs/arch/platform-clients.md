@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-platform-clients
-updated: 2026-10-12
-anchor: api/kobo_api/clients.py sha=9f7bc03ef3c6b9ea0df11ca42012f134ca4c898c
-anchor: api/tests/fakes.py sha=f1093135796daca4ee230269c8682a0665ae9dba
+updated: 2026-10-24
+anchor: api/kobo_api/clients.py sha=f93f2f52d60b562ea8eaea9d1b4bd84d1437ed04
+anchor: api/tests/fakes.py sha=9a947ab55762405b69a216d089a9ab9468918937
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
 
@@ -30,3 +30,4 @@ CONSUMERS: api/kobo_api/steps.py, provisioner.py, health.py (ready agents probed
 API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provider(config)`; `probe_slack_token_store(clients)` (boot write-probe of the Slack token Secret); `gsa_email(name, project)`; errors `ClientError`, `GojiraConflict`, `SlackApiError`, `StorageNotFound`, `CabalError`.
 
 2026-10-12: `GhCLI.repo_exists` reads `gh api repos/{repo}` and compares the `full_name` GitHub answers with; a name GitHub only redirects (a destroyed agent's repo, renamed to `archived-agent-<name>-<id>`) counts as free.
+- `CabalClient.mint_service` (2026-10-24): the generic switchboard mint behind the room's own gateway admin token (`kobo_api.liminal_admin.RoomAdminToken`: sub and persona `kobo-room`, aud `liminal`, `admin:*`). `Clients.liminal_admin` is that admin-plane client, typed loosely to keep `liminal_admin` importing this module and not the reverse.
