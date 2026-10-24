@@ -1315,3 +1315,48 @@ def test_sweep_waiting_is_a_noop_without_a_platform_client(session_factory, conf
     _park(session_factory, "agent-no-platform", 7)
     assert sweep_waiting(session_factory, config=config, clients=None) == 0
     assert sweep_waiting(session_factory, config=config, clients=NO_CLIENTS) == 0
+
+
+# --- issue #203: destroys beat too, and the waiting sweep claims --------------
+
+
+def test_sweep_interrupted_flips_a_dead_destroy_to_destroy_failed(session_factory, config):
+    """A destroy that stopped beating is dead; DESTROY_FAILED is resumable by
+    the next DELETE, where DESTROYING was a dead end nobody noticed."""
+    dead_id = _seed_agent(
+        session_factory, "agent-dead-destroy", AgentStatus.DESTROYING,
+        heartbeat_age_s=RUN_STALE_AFTER_S * 2,
+    )
+    _seed_step(session_factory, dead_id, "destroy-platform", StepStatus.RUNNING)
+    live_id = _seed_agent(
+        session_factory, "agent-live-destroy", AgentStatus.DESTROYING, heartbeat_age_s=1
+    )
+
+    assert sweep_interrupted(session_factory) == 1
+
+    session = session_factory()
+    dead = session.get(Agent, dead_id)
+    assert dead.status == AgentStatus.DESTROY_FAILED
+    assert "destroy again" in dead.error
+    assert {s.name: s.status for s in dead.steps} == {"destroy-platform": StepStatus.FAILED}
+    assert session.get(Agent, live_id).status == AgentStatus.DESTROYING
+    session.close()
+
+
+def test_claim_waiting_moves_a_waiting_row_once_and_leaves_other_statuses_alone(session_factory):
+    from kobo_api.provisioner import _claim_waiting
+
+    waiting_id = _seed_agent(session_factory, "agent-waiting", AgentStatus.WAITING)
+    destroying_id = _seed_agent(session_factory, "agent-going", AgentStatus.DESTROYING)
+
+    session = session_factory()
+    assert _claim_waiting(session, waiting_id) is True
+    session.commit()
+    assert session.get(Agent, waiting_id).status == AgentStatus.PROVISIONING
+    assert session.get(Agent, waiting_id).run_heartbeat_at is not None
+    # Claimed once: a second sweep (or replica) finds nothing to take.
+    assert _claim_waiting(session, waiting_id) is False
+    # A row a DELETE moved first is never flipped back.
+    assert _claim_waiting(session, destroying_id) is False
+    assert session.get(Agent, destroying_id).status == AgentStatus.DESTROYING
+    session.close()

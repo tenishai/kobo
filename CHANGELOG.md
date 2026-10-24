@@ -8,6 +8,12 @@ All notable changes to kobo are documented here. The format follows
 
 ### Fixed
 
+- **A destroy is claimed, beats, and is swept when its pod dies** (issue #203). The DELETE route
+  now takes the row with one conditional update (a second DELETE while a destroy is in flight
+  answers 202 and launches nothing; a sweep racing it loses the claim), the destroy thread writes the same heartbeat a provision does, and
+  the interrupted sweep flips a dead destroy to DESTROY_FAILED, which the next DELETE resumes. The
+  waiting sweep claims a row with `UPDATE ... WHERE status = 'waiting'`, so it can no longer flip
+  a row a DELETE just took back to provisioning and run the pipeline over the teardown.
 - **The PR and Jira brokers refuse a colleague pass the room has since replaced** (issue #199).
   A re-wire revokes the earlier passes at the switchboard, but the brokers verified a pass by
   signature and claims alone, so a pass that leaked from a pod kept minting GitHub tokens for the

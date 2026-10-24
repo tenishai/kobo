@@ -797,14 +797,23 @@ def sweep_interrupted(
         wedged = (
             session.query(Agent)
             .filter(
-                Agent.status.in_([AgentStatus.PENDING, AgentStatus.PROVISIONING]),
+                Agent.status.in_(
+                    [AgentStatus.PENDING, AgentStatus.PROVISIONING, AgentStatus.DESTROYING]
+                ),
                 or_(*_stale_conditions(cutoff, queue_mode=queue_mode)),
             )
             .all()
         )
         for agent in wedged:
-            agent.status = AgentStatus.FAILED
-            agent.error = "interrupted by an API restart — retry when ready"
+            if agent.status == AgentStatus.DESTROYING:
+                # A destroy beats too (issue #203); one that stopped is dead.
+                # DESTROY_FAILED is resumable: the next DELETE picks up at
+                # the first incomplete step.
+                agent.status = AgentStatus.DESTROY_FAILED
+                agent.error = "interrupted by an API restart — destroy again when ready"
+            else:
+                agent.status = AgentStatus.FAILED
+                agent.error = "interrupted by an API restart — retry when ready"
             running_steps = (
                 session.query(AgentStep)
                 .filter_by(agent_id=agent.id, status=StepStatus.RUNNING)
@@ -877,6 +886,24 @@ async def waiting_sweep_loop(app, *, interval_s: float = WAITING_SWEEP_INTERVAL_
             log.exception("waiting sweep failed")
 
 
+def _claim_waiting(session: Session, agent_id: int) -> bool:
+    """Move one WAITING row to PROVISIONING, conditionally (issue #203):
+    `UPDATE ... WHERE status = 'waiting'`, so a row a DELETE or another
+    replica already moved is left alone. The heartbeat is stamped with the
+    claim so the interrupted sweep does not read the fresh run as wedged."""
+    result = session.execute(
+        update(Agent)
+        .where(Agent.id == agent_id)
+        .where(Agent.status == AgentStatus.WAITING)
+        .values(
+            status=AgentStatus.PROVISIONING,
+            error=None,
+            run_heartbeat_at=naive_utc(datetime.now(UTC)),
+        )
+    )
+    return result.rowcount == 1
+
+
 def sweep_waiting(
     session_factory: sessionmaker[Session],
     *,
@@ -931,10 +958,13 @@ def sweep_waiting(
                 continue
             status = status_payload.get("status")
             if status == "active":
+                if not _claim_waiting(session, agent.id):
+                    # Someone else moved the row since this sweep read it: a
+                    # DELETE made it DESTROYING, or another replica resumed it
+                    # (issue #203). Never run the pipeline over that.
+                    session.rollback()
+                    continue
                 reset_failed_steps(session, agent.id)
-                agent.status = AgentStatus.PROVISIONING
-                agent.error = None
-                agent.run_heartbeat_at = naive_utc(datetime.now(UTC))
                 session.commit()
                 log.info("sweep_waiting: setup PR merged, resuming agent %s", agent.name)
                 run(

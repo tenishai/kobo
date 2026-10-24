@@ -2293,3 +2293,29 @@ def test_destroy_access_refuses_an_old_namespace(session_factory, config):
         _destroy_access(ctx)
 
     assert email in fake_cloud.gsas
+
+
+def test_run_destroy_beats_for_the_whole_run(session_factory, config, monkeypatch):
+    """Issue #203: a destroy has a heartbeat like a provision, started before
+    the first step and stopped after the last, so a pod that dies mid-destroy
+    is swept to DESTROY_FAILED instead of staying DESTROYING forever."""
+    import kobo_api.destroy as destroy_mod
+
+    events: list[str] = []
+
+    class RecordingBeat:
+        def __init__(self, session_factory, agent_id, **kwargs):
+            events.append(f"init:{agent_id}")
+
+        def start(self):
+            events.append("start")
+
+        def stop(self):
+            events.append("stop")
+
+    monkeypatch.setattr(destroy_mod, "_Heartbeat", RecordingBeat)
+    agent_id = _seed_agent(session_factory, status=AgentStatus.READY)
+    thread = run_destroy(session_factory, agent_id, _clients(cabal=FakeCabal()), config)
+    thread.join(timeout=JOIN_TIMEOUT)
+    assert thread.is_alive() is False
+    assert events == [f"init:{agent_id}", "start", "stop"]
