@@ -1192,6 +1192,13 @@ class FakeGojira:
         }
         return app_id
 
+    def find_app(self, *, name: str, repo_full_name: str) -> int | None:
+        self.calls.append(f"find_app:{name}:{repo_full_name}")
+        for app_id, app in self._apps.items():
+            if app["name"] == name and app["repo_full_name"] == repo_full_name:
+                return app_id
+        return None
+
     def app_status(self, app_id: int) -> dict:
         self.calls.append(f"app_status:{app_id}")
         app = self._apps[app_id]

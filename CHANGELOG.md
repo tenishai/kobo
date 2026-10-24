@@ -14,6 +14,12 @@ All notable changes to kobo are documented here. The format follows
   the interrupted sweep flips a dead destroy to DESTROY_FAILED, which the next DELETE resumes. The
   waiting sweep claims a row with `UPDATE ... WHERE status = 'waiting'`, so it can no longer flip
   a row a DELETE just took back to provisioning and run the pipeline over the teardown.
+- **A crash between an external create and its commit no longer strands the agent** (issue #201).
+  `RepoStep` records the repository name and commits before asking GitHub to create it, so a retry
+  finds the row naming the repo instead of refusing to adopt it. `OnboardStep` commits the platform
+  app id the moment it exists, before the long wait for `active`, and when the platform reports a
+  conflict for an agent with no recorded id it adopts the app the platform holds under the agent's
+  own name and repository (the room's own), raising as before when there is none.
 - **The PR and Jira brokers refuse a colleague pass the room has since replaced** (issue #199).
   A re-wire revokes the earlier passes at the switchboard, but the brokers verified a pass by
   signature and claims alone, so a pass that leaked from a pod kept minting GitHub tokens for the

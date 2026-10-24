@@ -2781,3 +2781,63 @@ def test_refresh_colleague_rosters_skips_an_agent_with_no_colleague_document(
     assert [call["name"] for call in fake_cabal.relay_calls] == ["narrow"]
     text = fake_cabal.relay_calls[0]["task_envelope"]["status"]["message"]["parts"][0]["text"]
     assert "ask_colleague FIRST" not in text
+
+
+# --- issue #201: external ids are recorded before the next external call -----
+
+
+def test_repo_step_records_the_name_before_github_creates_it(session_factory, config, fake_storage):
+    """A crash right after GitHub creates the repository must not strand the
+    agent: the row already names the repo, so a retry resumes instead of
+    refusing to adopt."""
+    session, agent = _make_agent(session_factory)
+    github = FakeGitHub()
+
+    def explode(repo, src):
+        raise RuntimeError("process died mid-create")
+
+    github.create_repo_from_dir = explode
+    ctx = _make_ctx(session, agent, config, _clients(github=github, storage=fake_storage))
+
+    with pytest.raises(RuntimeError, match="mid-create"):
+        RepoStep().run(ctx)
+
+    expected_repo = f"{config.github_org}/agent-{AGENT_NAME}"
+    fresh = session_factory()
+    assert fresh.get(Agent, agent.id).repo_full_name == expected_repo
+    fresh.close()
+
+
+def test_onboard_step_conflict_without_recorded_id_adopts_the_rooms_own_app(session_factory, config):
+    """The platform holds an app under this agent's own name and repository
+    (a prior run's create_app returned and the process died before the
+    commit): that app is ours, and the step resumes on it."""
+    repo = _repo_full_name(config)
+    gojira = FakeGojira(activate_after=1)
+    prior_app_id = gojira.create_app(
+        name=AGENT_NAME, repo_full_name=repo, cluster=config.gojira_cluster, namespace=AGENT_NAME
+    )
+    gojira._conflict_repos.add(repo)
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=None)
+    ctx = _make_ctx(session, agent, config, _clients(gojira=gojira))
+
+    OnboardStep().run(ctx)
+
+    assert agent.gojira_app_id == prior_app_id
+    assert f"find_app:{AGENT_NAME}:{repo}" in gojira.calls
+    fresh = session_factory()
+    assert fresh.get(Agent, agent.id).gojira_app_id == prior_app_id
+    fresh.close()
+
+
+def test_onboard_step_conflict_for_someone_elses_app_is_still_refused(session_factory, config):
+    repo = _repo_full_name(config)
+    gojira = FakeGojira()
+    gojira.create_app(name="other", repo_full_name=repo, cluster=config.gojira_cluster, namespace="other")
+    gojira._conflict_repos.add(repo)
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=None)
+    ctx = _make_ctx(session, agent, config, _clients(gojira=gojira))
+
+    with pytest.raises(RuntimeError, match="no app id is recorded"):
+        OnboardStep().run(ctx)
+    assert agent.gojira_app_id is None
