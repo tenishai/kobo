@@ -2597,3 +2597,15 @@ def test_an_agent_created_under_role_api_is_claimable_by_a_worker(session_factor
     with session_factory() as session:
         clio = session.query(Agent).filter_by(name="clio").one().id
     assert claim_queued(session_factory, limit=5) == [clio]
+
+
+def test_create_registers_its_pipeline_thread_for_the_drain(client):
+    """Issue #202: an inline launch is registered like a queue launch, so
+    `drain_pipelines` waits for it at shutdown instead of killing the build."""
+    before = len(client.app.state.pipeline_threads)
+    client.post("/api/agents", json={"name": AGENT_NAME, "persona": PERSONA, "team": TEAM})
+    threads = client.app.state.pipeline_threads
+    assert len(threads) == before + 1
+    _poll_until(client, AGENT_NAME, {"ready", "failed"})
+    threads[-1].join(timeout=5)
+    assert not threads[-1].is_alive()

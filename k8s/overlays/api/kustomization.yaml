@@ -1,0 +1,9 @@
+# The api half of a split room (docs/operating.md, "What the manifests
+# deploy"): answers requests, runs no pipelines. Point db_url at Postgres in
+# the mounted config first; two pods on one SQLite file is not a shape.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - path: patches/api.yaml

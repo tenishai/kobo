@@ -3105,6 +3105,9 @@ def create_app(
     app.state.local_config = None
     app.state.clients = clients
     app.state.session_factory = session_factory
+    # Every pipeline thread this process started, inline or from the queue,
+    # so `drain_pipelines` waits for all of them at shutdown (issue #202).
+    app.state.pipeline_threads = []
     # Live health per ready agent (kobo_api.health): filled by the sweep,
     # read by the list and detail routes, never persisted.
     app.state.health = {}
@@ -5027,7 +5030,7 @@ def create_app(
             return JSONResponse({"name": payload.name, "status": status}, status_code=201)
 
         try:
-            run_pipeline(
+            _launch_pipeline(
                 request.app.state.session_factory,
                 agent_id,
                 config=cfg,
@@ -5331,7 +5334,7 @@ def create_app(
             return JSONResponse({"name": payload.name, "status": status}, status_code=201)
 
         try:
-            run_pipeline(
+            _launch_pipeline(
                 request.app.state.session_factory,
                 agent_id,
                 config=cfg,
@@ -5868,7 +5871,7 @@ def create_app(
         cfg: Config = app.state.config
 
         try:
-            run_pipeline(
+            _launch_pipeline(
                 request.app.state.session_factory,
                 agent_id,
                 config=cfg,
@@ -6309,6 +6312,15 @@ def create_app(
     # be recorded); the operator is told to retry once creation lands
     # somewhere destroy CAN act on (READY or FAILED), rather than the room
     # trying to race its own provisioning thread.
+    def _launch_pipeline(session_factory, agent_id, *, config, clients, steps) -> None:
+        """`run_pipeline`, with the thread registered on the app (issue #202).
+        The worker's queue loop registers the threads it starts; the inline
+        launches from create, connect and retry did not, so a roll in role
+        `all` drained nothing and killed a running build at the grace
+        period. Every launch goes through here now."""
+        thread = run_pipeline(session_factory, agent_id, config=config, clients=clients, steps=steps)
+        app.state.pipeline_threads.append(thread)
+
     _PROVISIONING_IN_FLIGHT = (AgentStatus.PENDING, AgentStatus.PROVISIONING)
 
     @app.delete("/api/agents/{name}", status_code=202)
