@@ -2608,6 +2608,14 @@ def _deploy_platform_check(clients: Clients | None, cluster: str) -> dict:
     return {"id": check_id, "label": label, "ok": True, "detail": f"connected to {cluster}"}
 
 
+def _birth_heartbeat(role: str) -> datetime | None:
+    """A new agent row's `run_heartbeat_at`: now when this process launches
+    the pipeline itself (role `all`), None when it leaves the row for a
+    worker's `claim_queued`, which claims only rows with no heartbeat
+    (issue #195)."""
+    return naive_utc(datetime.now(UTC)) if launches_inline(role) else None
+
+
 def get_session(request: Request) -> Iterator[Session]:
     """Dependency yielding a SQLAlchemy session bound to the app's session factory."""
     session_factory: sessionmaker[Session] = request.app.state.session_factory
@@ -4872,12 +4880,15 @@ def create_app(
             skip_baseline=payload.skip_baseline,
             # Born following its threads (2026-10-06); the Slack tab moves it.
             slack_wake=WAKE_DEFAULT_NEW,
-            # Born in flight, so born with a heartbeat: PENDING is a swept
-            # status (kobo_api.provisioner.sweep_interrupted), and leaning
-            # on the NULL-heartbeat branch's created_at grace would make a
-            # new agent's safety depend on a rule written for rows that
-            # predate the column.
-            run_heartbeat_at=naive_utc(datetime.now(UTC)),
+            # Born in flight under role `all`, so born with a heartbeat:
+            # PENDING is a swept status (kobo_api.provisioner.sweep_
+            # interrupted), and leaning on the NULL-heartbeat branch's
+            # created_at grace would make a new agent's safety depend on a
+            # rule written for rows that predate the column. Under any other
+            # role the row is QUEUED for a worker, and `claim_queued` takes
+            # only rows with no heartbeat, so it must be born without one
+            # (issue #195).
+            run_heartbeat_at=_birth_heartbeat(app.state.role),
         )
         session.add(agent)
         try:
@@ -5181,7 +5192,8 @@ def create_app(
             status=AgentStatus.PENDING,
             created_by=created_by,
             group_name=payload.group_name,
-            run_heartbeat_at=naive_utc(datetime.now(UTC)),
+            # Same rule as create (issue #195).
+            run_heartbeat_at=_birth_heartbeat(app.state.role),
         )
         session.add(agent)
         try:

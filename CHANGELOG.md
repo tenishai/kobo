@@ -72,6 +72,12 @@ All notable changes to kobo are documented here. The format follows
   detail answers 404 otherwise, and the stream needs an `?agent=` the caller can see (400 without one,
   404 for one they can't). Operators, readers, and rooms without IAP or groups see everything as
   before. The UI already passes `?agent=` everywhere, so it is unchanged.
+- **An agent created or connected under `KOBO_ROLE=api` is provisioned** (issue #195). The create
+  and connect routes stamped a heartbeat on the new row in every role, and a worker's `claim_queued`
+  takes only rows with no heartbeat, so under the api/worker split no worker ever claimed the agent and
+  the sweep later failed it as "interrupted by an API restart". The row is now born without a
+  heartbeat when the route leaves it for a worker, as `docs/arch/provisioning.md` already said. Role
+  `all`, the shipped default, is unchanged.
 
 ## [0.2.2] - 2026-10-14
 
