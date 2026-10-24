@@ -97,7 +97,7 @@ def session_factory(tmp_path):
 def config():
     return Config(
         mcp=MCPConfig(
-            oauth_client_id=CLIENT_ID,
+            allow_without_iap=True, oauth_client_id=CLIENT_ID,
             workspace_domain=WORKSPACE_DOMAIN,
             issuer_base_url=ISSUER_BASE_URL,
         )
@@ -679,7 +679,7 @@ def test_protected_resource_metadata_points_at_mcp_and_issuer(client, config):
 def test_well_known_uses_configured_issuer_base_url_when_set(session_factory, fake_google):
     issuer_config = Config(
         mcp=MCPConfig(
-            oauth_client_id=CLIENT_ID,
+            allow_without_iap=True, oauth_client_id=CLIENT_ID,
             workspace_domain=WORKSPACE_DOMAIN,
             issuer_base_url="https://kobo.example.org",
         )

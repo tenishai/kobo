@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ModelChoice(BaseModel):
@@ -111,6 +111,8 @@ class GroupChoice(BaseModel):
 
 
 class MCPConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     """Google OAuth + JWT signing coordinates for kobo's MCP server (MCP
     server arc, Task 1) -- this block is the config surface later tasks'
     OAuth authorization server and tool set build on. All plain strings, no
@@ -161,6 +163,12 @@ class MCPConfig(BaseModel):
     # empty on an enabled server fails loudly at construction instead of
     # booting half-configured).
     issuer_base_url: str = ""
+    # An MCP server on a room with no IAP in front of it hands every Workspace
+    # member who completes OAuth the rights of an owner over every agent,
+    # because the room's gates treat "no perimeter" as "trusted" (issue
+    # #198). Construction refuses that pair unless this is set on purpose
+    # (a local dev room, say); see `_mcp_requires_iap_unless_allowed`.
+    allow_without_iap: bool = False
 
 
 class SkillsFrontmatterConfig(BaseModel):
@@ -202,14 +210,28 @@ RENAMED_CONFIG_KEYS = {
 
 _log = logging.getLogger(__name__)
 
+# Keys a config file may still carry from an earlier release that no longer
+# mean anything. Dropped with a warning rather than refused, so a room is not
+# locked out of booting by a line it was told to leave alone at the time. The
+# org-config side keeps its own list (`kobo_api.org.RETIRED_ORG_KEYS`).
+RETIRED_CONFIG_KEYS = frozenset({"runtimes"})
+
 
 class Config(BaseModel):
+    # Unknown keys are refused (issue #198). A typo used to be dropped on the
+    # floor, and several security switches are off when their key is absent:
+    # `iap_audiance: x` ran the room with no authentication and nothing said so.
+    model_config = ConfigDict(extra="forbid")
+
     @model_validator(mode="before")
     @classmethod
     def _accept_old_key_names(cls, data):
         if not isinstance(data, dict):
             return data
         out = dict(data)
+        for retired in sorted(RETIRED_CONFIG_KEYS & set(out)):
+            out.pop(retired)
+            _log.warning("config key %r is retired and ignored; remove it from the file", retired)
         for old, new in sorted(RENAMED_CONFIG_KEYS.items()):
             if old not in out:
                 continue
@@ -425,6 +447,13 @@ class Config(BaseModel):
     # default) disables verification entirely, matching today's unauthenticated
     # local dev setup.
     iap_audience: str = ""
+    # Empty `iap_audience` runs the room with no authentication at all: every
+    # gate's "trusts its perimeter only when it has one" arm allows, and
+    # `created_by` is never recorded. That is the local dev shape and most of
+    # the test suite, so it stays possible; this switch says it is on purpose.
+    # A room that boots open WITHOUT it logs an ERROR at startup (issue #198,
+    # `auth_regime` below), so the unauthenticated state is never silent.
+    allow_unauthenticated: bool = False
     # GitHub App identity kobo authenticates as when deployed (Task 3),
     # instead of borrowing the operator's ambient `gh auth` session
     # (dev's only mode today) — Clients.real() (kobo_api.clients) wires an
@@ -671,6 +700,62 @@ class Config(BaseModel):
                 "empty; the domain check is the org gate on the MCP path"
             )
         return self
+
+    @model_validator(mode="after")
+    def _mcp_requires_iap_unless_allowed(self) -> Config:
+        """An enabled MCP server on a room with no IAP in front of it (issue
+        #198): the MCP lane verifies a Workspace sign-in, but every gate the
+        tools then call treats "no perimeter" as trusted, so each Workspace
+        member becomes an owner of every agent. Refused at construction
+        unless `mcp.allow_without_iap` says a person chose it (local dev)."""
+        # Only once the MCP block is otherwise complete, so a missing domain or
+        # issuer is reported by its own validator first.
+        complete = self.mcp.oauth_client_id and self.mcp.workspace_domain and self.mcp.issuer_base_url
+        if complete and not self.iap_audience and not self.mcp.allow_without_iap:
+            raise ValueError(
+                "mcp.oauth_client_id is set but iap_audience is empty: every Workspace "
+                "member who signs in would own every agent. Put the room behind IAP, or "
+                "set mcp.allow_without_iap: true to run it open on purpose"
+            )
+        return self
+
+    def auth_regime(self, *, resolver_configured: bool) -> tuple[str, list[str]]:
+        """One line saying who this room lets in, and the list of ERRORs a
+        boot should log about it (issue #198). The line is for every boot;
+        the list is empty for a room configured on purpose.
+
+        `resolver_configured` is whether a directory group resolver was
+        built (`Clients.groups is not None`): it needs `okta_domain` and the
+        `OKTA_API_TOKEN` env var, neither of which this object can see alone.
+        """
+        problems: list[str] = []
+        if not self.iap_audience:
+            line = "auth: NO perimeter (iap_audience empty): every caller is trusted"
+            if not self.allow_unauthenticated:
+                problems.append(
+                    "the room runs with no authentication (iap_audience is empty) and "
+                    "allow_unauthenticated is not set; if this is a dev room say so with "
+                    "allow_unauthenticated: true, otherwise set iap_audience"
+                )
+        else:
+            admins = len(self.operators) + len(self.admin_groups)
+            line = (
+                f"auth: IAP audience set; {len(self.operators)} operator email(s), "
+                f"{len(self.admin_groups)} admin group(s), {len(self.groups)} group(s), "
+                f"group resolver {'on' if resolver_configured else 'OFF'}"
+            )
+            if admins == 0:
+                problems.append(
+                    "iap_audience is set but operators and admin_groups are both empty: "
+                    "every signed-in user may destroy any agent"
+                )
+        if self.groups and not resolver_configured:
+            problems.append(
+                f"{len(self.groups)} group(s) are configured but no directory resolver is "
+                "(okta_domain and the OKTA_API_TOKEN env var are both needed): every "
+                "signed-in user sees every agent"
+            )
+        return line, problems
 
     @model_validator(mode="after")
     def _mcp_requires_an_issuer_base_url_when_enabled(self) -> Config:

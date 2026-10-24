@@ -69,7 +69,7 @@ def _enabled_config(tmp_path):
     return Config(
         workdir=tmp_path / "work",
         mcp=MCPConfig(
-            oauth_client_id=CLIENT_ID,
+            allow_without_iap=True, oauth_client_id=CLIENT_ID,
             workspace_domain=WORKSPACE_DOMAIN,
             issuer_base_url=ISSUER_BASE_URL,
         ),

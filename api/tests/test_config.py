@@ -437,6 +437,7 @@ def test_mcp_config_overridable_via_yaml(tmp_path):
         "  oauth_client_id: some-client-id.apps.example.com\n"
         "  workspace_domain: example.com\n"
         "  issuer_base_url: https://kobo.example.org\n"
+        "  allow_without_iap: true\n"
     )
 
     config = Config.load(yaml_path)
@@ -453,7 +454,7 @@ def test_mcp_config_overridable_via_yaml(tmp_path):
 def test_mcp_enabled_true_when_oauth_client_id_set():
     config = Config(
         mcp=MCPConfig(
-            oauth_client_id="some-client-id",
+            allow_without_iap=True, oauth_client_id="some-client-id",
             workspace_domain="example.com",
             issuer_base_url="https://kobo.example.org",
         )
@@ -466,7 +467,7 @@ def test_mcp_enabled_requires_workspace_domain():
     "fail loudly at construction" posture as `_admin_groups_must_be_
     configured_groups` above."""
     with pytest.raises(ValidationError) as exc_info:
-        Config(mcp=MCPConfig(oauth_client_id="some-client-id"))
+        Config(mcp=MCPConfig(allow_without_iap=True, oauth_client_id="some-client-id"))
 
     message = str(exc_info.value)
     assert (
@@ -488,7 +489,7 @@ def test_mcp_enabled_requires_issuer_base_url():
     dev/tests, not for a real deployment."""
     with pytest.raises(ValidationError) as exc_info:
         Config(
-            mcp=MCPConfig(oauth_client_id="some-client-id", workspace_domain="example.com")
+            mcp=MCPConfig(allow_without_iap=True, oauth_client_id="some-client-id", workspace_domain="example.com")
         )
 
     message = str(exc_info.value)
@@ -560,3 +561,50 @@ def test_old_key_names_still_configure_the_renamed_lanes():
     assert cfg.noto_url == "https://obs.example"
     assert cfg.noto_project == "newer"
     assert not hasattr(cfg, "ladon_url")
+
+
+# --- issue #198: a typo cannot turn authentication off ------------------------
+
+
+def test_an_unknown_key_is_refused_instead_of_dropped():
+    with pytest.raises(ValidationError, match="iap_audiance"):
+        Config(iap_audiance="x")
+    with pytest.raises(ValidationError, match="issuer_base_ur"):
+        Config(mcp={"issuer_base_ur": "https://x"})
+
+
+def test_a_retired_key_is_dropped_with_a_warning_not_refused(caplog):
+    cfg = Config(runtimes={"old": "thing"})
+    assert cfg.iap_audience == ""
+    assert "retired" in caplog.text
+
+
+def test_mcp_on_an_open_room_is_refused_unless_chosen():
+    mcp = {"oauth_client_id": "cid", "workspace_domain": "example.com", "issuer_base_url": "https://r.example.com"}
+    with pytest.raises(ValidationError, match="allow_without_iap"):
+        Config(mcp=mcp)
+    Config(mcp={**mcp, "allow_without_iap": True})
+    Config(mcp=mcp, iap_audience="/projects/1/global/backendServices/2")
+
+
+def test_auth_regime_names_each_accidental_opening():
+    line, problems = Config().auth_regime(resolver_configured=False)
+    assert "NO perimeter" in line
+    assert any("allow_unauthenticated" in p for p in problems)
+
+    _, none = Config(allow_unauthenticated=True).auth_regime(resolver_configured=False)
+    assert none == []
+
+    aud = "/projects/1/global/backendServices/2"
+    _, open_admins = Config(iap_audience=aud).auth_regime(resolver_configured=False)
+    assert any("destroy any agent" in p for p in open_admins)
+
+    groups = [{"name": "SRE", "kind": "engineering", "okta_group": "sre"}]
+    _, no_resolver = Config(iap_audience=aud, operators=["o@example.com"], groups=groups).auth_regime(
+        resolver_configured=False
+    )
+    assert any("no directory resolver" in p for p in no_resolver)
+    line, clean = Config(iap_audience=aud, operators=["o@example.com"], groups=groups).auth_regime(
+        resolver_configured=True
+    )
+    assert clean == [] and "resolver on" in line

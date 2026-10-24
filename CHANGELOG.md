@@ -82,6 +82,13 @@ All notable changes to kobo are documented here. The format follows
   keeps the stored secrets, still revokes the pass, and fails the stage, so the rest of the
   destroy waits for an operator. An unreachable cluster is now reported as "could not check the
   namespace" rather than as someone else's namespace.
+- **A typo in the config can no longer turn authentication off** (issue #198). `Config` and its
+  `mcp:` block refuse unknown keys instead of dropping them (`iap_audiance: x` used to run the
+  room open and say nothing); the retired `runtimes` key is dropped with a warning so old files
+  still boot. An MCP server on a room with no IAP is refused at construction unless
+  `mcp.allow_without_iap: true` says so. Every boot logs one line naming the auth regime, and an
+  ERROR for each accidental opening: no IAP without `allow_unauthenticated: true`, IAP with no
+  operators and no admin groups, or groups configured with no directory resolver.
 - **The room-wide colleagues routes follow agent visibility** (issue #192). `GET
   /api/colleagues/conversations`, `GET /api/colleagues/conversations/{task_id}` and `GET
   /api/colleagues/stream` were gated only on the switchboard being wired, so any signed-in user could

@@ -156,7 +156,7 @@ def config(tmp_path):
         skills_bucket=SKILLS_BUCKET,
         personas_bucket=PERSONAS_BUCKET,
         mcp=MCPConfig(
-            oauth_client_id=CLIENT_ID,
+            allow_without_iap=True, oauth_client_id=CLIENT_ID,
             workspace_domain=WORKSPACE_DOMAIN,
             issuer_base_url=ISSUER_BASE_URL,
         ),

@@ -391,6 +391,7 @@ def test_mcp_keys_round_trip():
             "  oauth_client_id: some-client-id.apps.example.com\n"
             "  workspace_domain: example.com\n"
             "  issuer_base_url: https://kobo.example.org\n"
+            "  allow_without_iap: true\n"
         )
     )
 
