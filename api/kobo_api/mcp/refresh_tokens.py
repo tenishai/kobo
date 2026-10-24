@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import update
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from kobo_api.models import MCPRefreshToken
+from kobo_api.models import MCPRedeemedCode, MCPRefreshToken, MCPRevocation
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +38,17 @@ log = logging.getLogger(__name__)
 # reason) -- named here so consume()'s replay branch and any test asserting
 # on it share the exact same spelling.
 REPLAY_REASON = "replay_detected"
+CODE_REPLAY_REASON = "authorization_code_replayed"
+EXPIRED_REASON = "family_expired"
+REVOKED_PERSON_REASON = "person_revoked"
+
+# How long one OAuth grant may keep refreshing (issue #197). Each refresh
+# rotates the token, but without this bound a family never ends while the
+# client keeps coming back; a person removed from the Workspace, or a stolen
+# laptop, kept MCP access indefinitely. After this long the next refresh
+# fails and the person signs in again, which re-runs the Google and domain
+# checks that only the first grant performs.
+FAMILY_MAX_AGE = timedelta(days=30)
 
 
 def create_family(session: Session, *, jti: str, email: str) -> str:
@@ -124,6 +136,10 @@ def consume(session: Session, *, jti: str, email: str) -> str | None:
         return None
 
     now = datetime.now(UTC)
+    started = family_started_at(session, family_id=row.family_id)
+    if started is not None and now.replace(tzinfo=None) - started > FAMILY_MAX_AGE:
+        revoke_family(session, family_id=row.family_id, reason=EXPIRED_REASON)
+        return None
     result = session.execute(
         update(MCPRefreshToken)
         .where(MCPRefreshToken.jti == jti)
@@ -165,3 +181,91 @@ def revoke_family(session: Session, *, family_id: str, reason: str) -> int:
         .values(revoked_at=datetime.now(UTC), revoked_reason=reason)
     )
     return result.rowcount
+
+
+def family_started_at(session: Session, *, family_id: str) -> datetime | None:
+    """When the family's first token was issued: the grant's own instant, the
+    one `FAMILY_MAX_AGE` counts from. Naive UTC, like every DateTime here."""
+    started = session.execute(
+        select(func.min(MCPRefreshToken.issued_at)).where(
+            MCPRefreshToken.family_id == family_id
+        )
+    ).scalar_one_or_none()
+    if started is not None and started.tzinfo is not None:
+        started = started.astimezone(UTC).replace(tzinfo=None)
+    return started
+
+
+def redeem_code(
+    session: Session, *, jti: str, email: str, family_id: str
+) -> str | None:
+    """Spend authorization code `jti` once (issue #196). Returns None when
+    this call is the first redemption. Returns the family the FIRST
+    redemption produced when the code was already spent, after revoking that
+    family: whoever presents a code twice is not two honest clients, and the
+    tokens the first exchange handed out can no longer be trusted. The
+    primary key does the deciding, so two concurrent redemptions resolve the
+    same way as two sequential ones: exactly one insert lands.
+
+    Unlike its siblings this function manages its own transaction boundary,
+    because the duplicate shows up as an IntegrityError at flush and the
+    session has to be rolled back before anything else can be written."""
+    session.add(
+        MCPRedeemedCode(
+            jti=jti, email=email, family_id=family_id, redeemed_at=datetime.now(UTC)
+        )
+    )
+    try:
+        session.flush()
+    except IntegrityError:
+        session.rollback()
+        first = session.get(MCPRedeemedCode, jti)
+        first_family = first.family_id if first is not None else family_id
+        log.warning(
+            "MCP authorization code jti=%s redeemed again for email=%s; revoking family %s",
+            jti[:8],
+            email,
+            first_family[:8],
+        )
+        revoke_family(session, family_id=first_family, reason=CODE_REPLAY_REASON)
+        session.commit()
+        return first_family
+    return None
+
+
+def revoke_email(
+    session: Session, *, email: str, actor: str, reason: str | None
+) -> int:
+    """Cut off `email`'s MCP access now (issue #197): every live family they
+    hold is revoked, and the revocation instant is recorded so access tokens
+    issued before it are refused by the verifier until they expire on their
+    own. Returns how many refresh-token rows were revoked. Idempotent: a
+    second call moves the instant forward and revokes nothing new."""
+    now = datetime.now(UTC)
+    row = session.get(MCPRevocation, email)
+    if row is None:
+        session.add(
+            MCPRevocation(email=email, revoked_at=now, revoked_by=actor, reason=reason)
+        )
+    else:
+        row.revoked_at = now
+        row.revoked_by = actor
+        row.reason = reason
+    result = session.execute(
+        update(MCPRefreshToken)
+        .where(MCPRefreshToken.email == email)
+        .where(MCPRefreshToken.revoked_at.is_(None))
+        .values(revoked_at=now, revoked_reason=REVOKED_PERSON_REASON)
+    )
+    return int(result.rowcount or 0)
+
+
+def email_revoked_at(session: Session, *, email: str) -> datetime | None:
+    """The instant `email` was last cut off, or None. Naive UTC."""
+    row = session.get(MCPRevocation, email)
+    if row is None:
+        return None
+    moment = row.revoked_at
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(UTC).replace(tzinfo=None)
+    return moment

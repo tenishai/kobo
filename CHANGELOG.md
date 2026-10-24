@@ -6,6 +6,17 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **MCP authorization codes are spent once, and a person's MCP access can be cut off**
+  (issues #196, #197). A code exchanged a second time within its minute of life now fails and
+  revokes the tokens the first exchange produced; before, each exchange minted an independent
+  refresh family. A refresh family now ends after thirty days, so the next refresh sends the
+  person back through Google and the Workspace check. Admins can cut one person off from the
+  admin API (`POST /api/admin/mcp/revocations`): every family they hold is revoked at once and
+  access tokens issued before that instant are refused until they expire. Two additive tables
+  (`mcp_redeemed_codes`, `mcp_revocations`, migration c4d5e6f7a8b9).
+
 ### Added
 
 - **Refresh an attached skill in one commit** (issue #182): `POST .../skills/catalog` with

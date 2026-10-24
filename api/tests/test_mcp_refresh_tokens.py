@@ -333,3 +333,68 @@ def test_revoke_family_does_not_touch_a_different_family(session):
 
     untouched_row = _row(session, "jti-0")
     assert untouched_row.revoked_at is None
+
+
+# --- issue #197: a family ends, and a person can be cut off -------------------
+
+
+def test_a_family_older_than_the_bound_is_revoked_on_its_next_refresh(session_factory):
+    from datetime import timedelta
+
+    from kobo_api.mcp import refresh_tokens as rt
+    from kobo_api.models import MCPRefreshToken
+
+    with session_factory() as session:
+        family_id = rt.create_family(session, jti="old-jti", email="p@example.com")
+        session.commit()
+        row = session.get(MCPRefreshToken, "old-jti")
+        row.issued_at = row.issued_at - rt.FAMILY_MAX_AGE - timedelta(days=1)
+        session.commit()
+
+    with session_factory() as session:
+        assert rt.consume(session, jti="old-jti", email="p@example.com") is None
+        session.commit()
+        row = session.get(MCPRefreshToken, "old-jti")
+        assert row.revoked_at is not None
+        assert row.revoked_reason == rt.EXPIRED_REASON
+        assert row.family_id == family_id
+
+
+def test_revoking_an_email_kills_every_live_family_and_records_the_instant(session_factory):
+    from kobo_api.mcp import refresh_tokens as rt
+    from kobo_api.models import MCPRefreshToken
+
+    with session_factory() as session:
+        rt.create_family(session, jti="a1", email="p@example.com")
+        rt.create_family(session, jti="b1", email="p@example.com")
+        rt.create_family(session, jti="c1", email="other@example.com")
+        session.commit()
+
+    with session_factory() as session:
+        assert rt.email_revoked_at(session, email="p@example.com") is None
+        assert rt.revoke_email(session, email="p@example.com", actor="ops@example.com", reason="left") == 2
+        session.commit()
+        assert rt.email_revoked_at(session, email="p@example.com") is not None
+        assert rt.consume(session, jti="a1", email="p@example.com") is None
+        assert rt.consume(session, jti="c1", email="other@example.com") is not None
+        assert session.get(MCPRefreshToken, "b1").revoked_reason == rt.REVOKED_PERSON_REASON
+        # A second revoke revokes nothing new but still moves the instant.
+        assert rt.revoke_email(session, email="p@example.com", actor="ops@example.com", reason=None) == 0
+
+
+def test_a_redeemed_code_is_remembered_and_its_replay_revokes_the_first_family(session_factory):
+    from kobo_api.mcp import refresh_tokens as rt
+    from kobo_api.models import MCPRefreshToken
+
+    with session_factory() as session:
+        first_family = rt.create_family(session, jti="r1", email="p@example.com")
+        assert rt.redeem_code(session, jti="code-1", email="p@example.com", family_id=first_family) is None
+        session.commit()
+
+    with session_factory() as session:
+        second_family = rt.create_family(session, jti="r2", email="p@example.com")
+        replayed = rt.redeem_code(session, jti="code-1", email="p@example.com", family_id=second_family)
+        assert replayed == first_family
+        assert session.get(MCPRefreshToken, "r1").revoked_reason == rt.CODE_REPLAY_REASON
+        # The loser's own family never landed: the rollback took it with it.
+        assert session.get(MCPRefreshToken, "r2") is None

@@ -131,7 +131,9 @@ from kobo_api.learnings import nightly_loop as learnings_nightly_loop
 from kobo_api.liminal_admin import build_liminal_admin
 from kobo_api.marketplace import BASELINE_TOOL_PREFIX
 from kobo_api.mcp import rate_limit
+from kobo_api.mcp import refresh_tokens as mcp_refresh_tokens
 from kobo_api.mcp.mount import mcp_lifespan, mount_mcp
+from kobo_api.mcp.server import forget_revocation_cache
 from kobo_api.metadata import (
     clean_capability_text,
     commit_card_metadata,
@@ -163,6 +165,7 @@ from kobo_api.models import (
     AgentSystemTask,
     AgentUserGrant,
     GroupRequest,
+    MCPRevocation,
     RepoAccess,
     Thread,
     ThreadParticipant,
@@ -672,6 +675,13 @@ class AdminLaneBody(BaseModel):
 class AdminRoleConnector(BaseModel):
     plugin: str = Field(min_length=1, max_length=64)
     ceiling: str = Field(pattern="^(none|read|write|approve)$")
+
+
+class AdminMCPRevocation(BaseModel):
+    """Body of `POST /api/admin/mcp/revocations` (issue #197)."""
+
+    email: str
+    reason: str | None = None
 
 
 class AdminRoleBody(BaseModel):
@@ -3593,6 +3603,45 @@ def create_app(
             return JSONResponse({"error": str(exc)}, status_code=404)
         session.commit()
         return JSONResponse(outcome)
+
+    @app.get("/api/admin/mcp/revocations")
+    def admin_mcp_revocations(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        """Who has been cut off from the room's MCP server (issue #197), newest first."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        rows = session.query(MCPRevocation).order_by(MCPRevocation.revoked_at.desc()).all()
+        return JSONResponse({"revocations": [
+            {"email": r.email, "revoked_at": r.revoked_at.isoformat(), "revoked_by": r.revoked_by, "reason": r.reason}
+            for r in rows
+        ]})
+
+    @app.post("/api/admin/mcp/revocations")
+    def admin_mcp_revoke(
+        payload: AdminMCPRevocation, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Cut one person off from the MCP server now (issue #197): every
+        refresh family they hold dies, and access tokens issued before this
+        instant are refused by the verifier until they expire on their own
+        (fifteen minutes at most). They may sign in again afterwards; the
+        grant then re-runs the Google and Workspace checks. Recorded in the
+        admin audit log like every other admin action."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        email = payload.email.strip().lower()
+        if not email or "@" not in email:
+            return JSONResponse({"error": "email must be an address"}, status_code=422)
+        actor = getattr(request.state, "iap_email", None) or "operator"
+        revoked = mcp_refresh_tokens.revoke_email(session, email=email, actor=actor, reason=payload.reason)
+        admin_store.record(
+            session, actor=actor, action="mcp.revoke", object_type="mcp_user", object_id=email,
+            before=None, after={"reason": payload.reason, "refresh_tokens_revoked": revoked},
+            landed=admin_store.LANDED_APPLIED,
+        )
+        session.commit()
+        forget_revocation_cache()
+        return JSONResponse({"email": email, "refresh_tokens_revoked": revoked})
 
     @app.post("/api/admin/org/reload")
     def admin_reload_org(request: Request) -> JSONResponse:

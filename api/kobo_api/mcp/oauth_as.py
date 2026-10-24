@@ -125,7 +125,7 @@ from kobo_api.mcp.jwt import (
     signing_key,
     verify,
 )
-from kobo_api.mcp.refresh_tokens import consume, create_family
+from kobo_api.mcp.refresh_tokens import consume, create_family, redeem_code
 
 log = logging.getLogger(__name__)
 
@@ -516,7 +516,9 @@ def _grant_authorization_code(
         return JSONResponse({"error": "invalid_client"}, status_code=400)
 
     try:
-        claims = verify(code, "authorization_code", cfg.mcp.oauth_client_id, key=_key(cfg))
+        claims = verify(
+            code, "authorization_code", cfg.mcp.oauth_client_id, key=_key(cfg)
+        )
     except TokenError:
         return JSONResponse({"error": "invalid_grant"}, status_code=400)
 
@@ -533,12 +535,22 @@ def _grant_authorization_code(
     own_jti = uuid.uuid4().hex
     try:
         family_id = create_family(session, jti=own_jti, email=email)
+        # Spend the code (issue #196). Its own jti is the key, so a second
+        # exchange of the same code, sequential or concurrent, fails here
+        # and takes the first exchange's family down with it.
+        replayed = redeem_code(
+            session, jti=claims["jti"], email=email, family_id=family_id
+        )
+        if replayed is not None:
+            return JSONResponse({"error": "invalid_grant"}, status_code=400)
         session.commit()
     except OperationalError:
         session.rollback()
         return JSONResponse({"error": "temporarily_unavailable"}, status_code=503)
 
-    return JSONResponse(_token_response(cfg, email=email, rtid=own_jti, family_id=family_id))
+    return JSONResponse(
+        _token_response(cfg, email=email, rtid=own_jti, family_id=family_id)
+    )
 
 
 def _grant_refresh_token(
@@ -548,7 +560,9 @@ def _grant_refresh_token(
         return JSONResponse({"error": "invalid_client"}, status_code=400)
 
     try:
-        claims = verify(refresh_token, "refresh_token", cfg.mcp.oauth_client_id, key=_key(cfg))
+        claims = verify(
+            refresh_token, "refresh_token", cfg.mcp.oauth_client_id, key=_key(cfg)
+        )
     except TokenError:
         return JSONResponse({"error": "invalid_grant"}, status_code=400)
 
