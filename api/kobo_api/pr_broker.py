@@ -35,7 +35,9 @@ JWT conventions for the App JWT itself (iat -60s, exp +9m) match
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -64,18 +66,41 @@ class BrokerAuthError(Exception):
     """The presented bearer is not the named agent's live colleague token."""
 
 
-def verify_agent_token(cabal_url: str, bearer: str, agent_name: str) -> None:
-    """Verify `bearer` is cabal's own signature over `agent:<agent_name>`.
+# One JWKS client per switchboard URL, for the life of the process (issue
+# #199). PyJWKClient caches the key set itself, so building a new one per call
+# meant one JWKS fetch per broker call and turned every cabal hiccup into a 401.
+_jwks_clients: dict[str, PyJWKClient] = {}
+_jwks_lock = threading.Lock()
+
+
+def _jwks_client(cabal_url: str) -> PyJWKClient:
+    url = f"{cabal_url.rstrip('/')}{_JWKS_PATH}"
+    with _jwks_lock:
+        client = _jwks_clients.get(url)
+        if client is None:
+            client = _jwks_clients[url] = PyJWKClient(url, cache_keys=True, lifespan=600)
+    return client
+
+
+def verify_agent_token(
+    cabal_url: str, bearer: str, agent_name: str, *, not_before: datetime | None = None
+) -> dict:
+    """Verify `bearer` is cabal's own signature over `agent:<agent_name>`,
+    issued no earlier than `not_before`, and return its claims.
+
+    `not_before` is the instant the room last minted this agent's pass
+    (`Agent.pass_minted_at`, issue #199). A re-wire revokes the earlier passes
+    at the switchboard, but this broker is not a switchboard site, so without
+    this cut a pass that leaked from a pod kept minting GitHub tokens for the
+    rest of its year. Naive or aware UTC; None means no cut.
 
     Raises BrokerAuthError on ANY failure -- expired, wrong issuer, wrong
-    audience, wrong sub, unreachable JWKS -- with a caller-safe message;
-    the specific cause is logged server-side only, matching the room's
-    generic-error discipline.
+    audience, wrong sub, older than the cut, unreachable JWKS -- with a
+    caller-safe message; the specific cause is logged server-side only,
+    matching the room's generic-error discipline.
     """
     try:
-        key = PyJWKClient(
-            f"{cabal_url.rstrip('/')}{_JWKS_PATH}"
-        ).get_signing_key_from_jwt(bearer)
+        key = _jwks_client(cabal_url).get_signing_key_from_jwt(bearer)
         claims = pyjwt.decode(
             bearer,
             key.key,
@@ -94,6 +119,16 @@ def verify_agent_token(cabal_url: str, bearer: str, agent_name: str) -> None:
             agent_name,
         )
         raise BrokerAuthError("agent token was not accepted")
+    if not_before is not None:
+        cut = not_before if not_before.tzinfo is not None else not_before.replace(tzinfo=UTC)
+        issued = float(claims.get("iat") or 0)
+        if issued < cut.timestamp():
+            log.info(
+                "broker token for %s was issued at %s, before the pass minted at %s; refusing",
+                agent_name, datetime.fromtimestamp(issued, UTC).isoformat(), cut.isoformat(),
+            )
+            raise BrokerAuthError("agent token was not accepted")
+    return claims
 
 
 def mint_scoped_token(

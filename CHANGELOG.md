@@ -8,6 +8,12 @@ All notable changes to kobo are documented here. The format follows
 
 ### Fixed
 
+- **The PR and Jira brokers refuse a colleague pass the room has since replaced** (issue #199).
+  A re-wire revokes the earlier passes at the switchboard, but the brokers verified a pass by
+  signature and claims alone, so a pass that leaked from a pod kept minting GitHub tokens for the
+  rest of its year. The room now records when it minted each agent's pass (`agents.pass_minted_at`,
+  migration d7e8f9a0b1c2) and both brokers refuse a pass issued before that instant. The JWKS
+  client is built once per switchboard instead of once per call.
 - **MCP authorization codes are spent once, and a person's MCP access can be cut off**
   (issues #196, #197). A code exchanged a second time within its minute of life now fails and
   revokes the tokens the first exchange produced; before, each exchange minted an independent

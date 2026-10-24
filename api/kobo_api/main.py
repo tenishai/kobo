@@ -5923,6 +5923,13 @@ def create_app(
 
     # --- Agent PR broker (2026-08-27 spec): repo access + scoped tokens ---------
 
+    def _pass_not_before(session: Session, name: str) -> datetime | None:
+        """The instant the room last minted `name`'s colleague pass, or None
+        for an agent wired before the room recorded it (issue #199). A pass
+        issued before this is one a re-wire has replaced."""
+        agent = session.query(Agent).filter(Agent.name == name).one_or_none()
+        return agent.pass_minted_at if agent is not None else None
+
     def _pr_broker_off(config: Config) -> JSONResponse | None:
         """None when all three pr_app_* config values are set; the 503 body
         otherwise -- the same absent-equals-off convention as cabal_url,
@@ -6099,7 +6106,7 @@ def create_app(
         if not bearer:
             return JSONResponse({"error": "agent token required"}, status_code=401)
         try:
-            verify_agent_token(config.cabal_url, bearer, name)
+            verify_agent_token(config.cabal_url, bearer, name, not_before=_pass_not_before(session, name))
         except BrokerAuthError:
             return JSONResponse({"error": "agent token was not accepted"}, status_code=401)
 
@@ -6173,7 +6180,9 @@ def create_app(
         if not bearer:
             return JSONResponse({"error": "agent token required"}, status_code=401)
         try:
-            verify_agent_token(config.cabal_url, bearer, name)
+            with app.state.session_factory() as session:
+                cut = _pass_not_before(session, name)
+            verify_agent_token(config.cabal_url, bearer, name, not_before=cut)
         except BrokerAuthError:
             return JSONResponse({"error": "agent token was not accepted"}, status_code=401)
         if name not in config.jira_read_agents:

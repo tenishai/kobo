@@ -351,3 +351,73 @@ def test_destroy_forget_deletes_repo_access_rows(broker_client, session_factory)
     _destroy_forget(ctx)
     assert session.query(RepoAccess).count() == 0
     session.close()
+
+
+# --- issue #199: a re-wired agent's older pass is refused -----------------------
+
+
+def test_verify_refuses_a_pass_issued_before_the_last_mint(monkeypatch):
+    from datetime import UTC, datetime
+
+    from kobo_api import pr_broker
+
+    class _Jwks:
+        def get_signing_key_from_jwt(self, bearer):
+            class _K:
+                key = "k"
+
+            return _K()
+
+    monkeypatch.setattr(pr_broker, "_jwks_client", lambda url: _Jwks())
+    monkeypatch.setattr(pr_broker.pyjwt, "decode", lambda *a, **k: {"sub": "agent:ward", "iat": 1_000})
+
+    assert pr_broker.verify_agent_token("http://cabal", "t", "ward")["iat"] == 1_000
+    assert pr_broker.verify_agent_token(
+        "http://cabal", "t", "ward", not_before=datetime.fromtimestamp(900, UTC)
+    )
+    with pytest.raises(pr_broker.BrokerAuthError):
+        pr_broker.verify_agent_token(
+            "http://cabal", "t", "ward", not_before=datetime.fromtimestamp(1_100, UTC)
+        )
+    # Naive timestamps (the DateTime column's shape) are read as UTC.
+    with pytest.raises(pr_broker.BrokerAuthError):
+        pr_broker.verify_agent_token(
+            "http://cabal", "t", "ward", not_before=datetime.fromtimestamp(1_100, UTC).replace(tzinfo=None)
+        )
+
+
+def test_jwks_client_is_built_once_per_switchboard(monkeypatch):
+    from kobo_api import pr_broker
+
+    built = []
+    monkeypatch.setattr(pr_broker, "PyJWKClient", lambda url, **kw: built.append(url) or object())
+    pr_broker._jwks_clients.clear()
+    a = pr_broker._jwks_client("http://cabal")
+    b = pr_broker._jwks_client("http://cabal/")
+    assert a is b and built == ["http://cabal/.well-known/jwks.json"]
+    pr_broker._jwks_clients.clear()
+
+
+def test_token_route_hands_the_agents_mint_instant_to_the_verifier(
+    broker_client, session_factory, monkeypatch
+):
+    from datetime import UTC, datetime
+
+    import kobo_api.main as main_mod
+
+    name = _agent(session_factory)
+    minted = datetime(2026, 10, 24, 12, 0, tzinfo=UTC).replace(tzinfo=None)
+    session = session_factory()
+    session.query(Agent).filter(Agent.name == name).one().pass_minted_at = minted
+    session.commit()
+    session.close()
+
+    seen = {}
+
+    def record(cabal_url, bearer, agent_name, *, not_before=None):
+        seen["not_before"] = not_before
+        return {}
+
+    monkeypatch.setattr(main_mod, "verify_agent_token", record)
+    broker_client.post(f"/broker/agents/{name}/github-token", headers={"Authorization": "Bearer x"})
+    assert seen["not_before"] == minted

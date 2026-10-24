@@ -241,3 +241,21 @@ def test_deliver_pass_stops_before_minting_when_the_revocation_is_refused():
         deliver_pass(kubectl, cabal, _agent())
     assert cabal.mint_colleague_calls == []
     assert kubectl.secrets_applied == []
+
+
+def test_deliver_pass_records_when_the_pass_was_minted_after_the_mint():
+    """Issue #199: the brokers refuse a pass issued before this instant, so it
+    is set right after the mint and never before it."""
+    from datetime import UTC, datetime
+
+    cabal = FakeCabal()
+    kubectl = FakeKubectl()
+    agent = _agent()
+    assert getattr(agent, "pass_minted_at", None) is None
+    before = datetime.now(UTC).replace(tzinfo=None)
+
+    deliver_pass(kubectl, cabal, agent)
+
+    minted = agent.pass_minted_at.replace(tzinfo=None)
+    assert minted >= before
+    assert cabal.mint_colleague_calls == [AGENT_NAME]

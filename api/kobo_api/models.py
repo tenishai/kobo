@@ -227,6 +227,12 @@ class Agent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
+    # When the room last minted this agent's colleague pass
+    # (`kobo_api.colleagues.deliver_pass`, issue #199). The PR and Jira brokers
+    # refuse a pass issued before this instant, so a re-wire ends an older
+    # pass's reach into GitHub and Jira as well as into the switchboard.
+    # NULL for agents wired before this column existed: no cut, as before.
+    pass_minted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Liveness of the process currently running this agent's pipeline
     # (`kobo_api.provisioner`): refreshed on a short interval for as long as
     # a run is in flight, and never touched otherwise. This is what lets
