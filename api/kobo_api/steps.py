@@ -951,8 +951,17 @@ class RepoStep:
 
         validate_agent_yaml(compose_dir / "bundle")
 
-        github.create_repo_from_dir(repo, compose_dir)
+        # Record the name BEFORE the external call (issue #201). A crash
+        # between `create_repo_from_dir` returning and the engine's commit
+        # used to leave a repository the room had made but did not remember,
+        # and the refuse-to-adopt rule above then failed every retry forever.
+        # With the intent committed first, a retry finds the row naming this
+        # repo: if GitHub has it, "already created"; if GitHub does not (the
+        # crash came before the create), the branch above falls through and
+        # the create runs now.
         agent.repo_full_name = repo
+        ctx.session.commit()
+        github.create_repo_from_dir(repo, compose_dir)
         return f"created {repo}"
 
 
@@ -1300,15 +1309,27 @@ class OnboardStep:
             )
         except GojiraConflict as exc:
             if agent.gojira_app_id is None:
-                # A conflict with nothing recorded means gojira already has
-                # an app connected for this repo that kobo never created
-                # (or never got far enough to record) — there's no id to
-                # resume polling on, so this can't self-heal.
-                raise RuntimeError(
-                    f"gojira already has an app connected for "
-                    f"{agent.repo_full_name!r}, but no app id is recorded for "
-                    f"agent {agent.name!r} to resume from: {exc}"
-                ) from exc
+                # A conflict with nothing recorded: either the platform holds
+                # an app for this repository that kobo never made, or a prior
+                # run's `create_app` returned and the process died before the
+                # commit (issue #201). The repository is the room's own
+                # (RepoStep made it, or connect recorded it), so an app the
+                # platform holds under this exact name AND repository is the
+                # room's, and adopting it is the resume. Anything else is
+                # still refused: there is no id to poll and no proof it is ours.
+                found = gojira.find_app(name=agent.name, repo_full_name=agent.repo_full_name)
+                if found is None:
+                    raise RuntimeError(
+                        f"gojira already has an app connected for "
+                        f"{agent.repo_full_name!r}, but no app id is recorded for "
+                        f"agent {agent.name!r} to resume from: {exc}"
+                    ) from exc
+                log.info(
+                    "onboard: adopting platform app %s for agent %s (a prior run "
+                    "created it and did not record it)", found, agent.name,
+                )
+                agent.gojira_app_id = found
+                ctx.session.commit()
             # Idempotent resume: a prior attempt's create_app already
             # succeeded and its id was recorded (persisted alongside that
             # attempt's FAILED step row, since the engine commits every
@@ -1370,6 +1391,9 @@ class OnboardStep:
                     )
         else:
             agent.gojira_app_id = app_id
+            # Committed now, not at the end of the step: `_wait_active` below
+            # runs for minutes, and a crash inside it must not forget the id.
+            ctx.session.commit()
 
         return _wait_active(ctx, app_id)
 

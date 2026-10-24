@@ -1295,6 +1295,13 @@ class GojiraClient(Protocol):
         """
         ...
 
+    def find_app(self, *, name: str, repo_full_name: str) -> int | None:
+        """The id of the platform app with exactly this `name` AND
+        `repo_full_name`, or None (issue #201). The one adoption the room
+        allows itself: an app under the room's own repository and the
+        agent's own name is the room's, however it got there."""
+        ...
+
     def app_status(self, app_id: int) -> dict:
         """GET /api/v1/apps/{id}."""
         ...
@@ -1382,6 +1389,15 @@ class HttpxGojiraClient:
         if resp.status_code != 201:
             raise ClientError(f"create_app failed ({resp.status_code}): {resp.text}")
         return resp.json()["id"]
+
+    def find_app(self, *, name: str, repo_full_name: str) -> int | None:
+        resp = self._client.get(f"{self._base_url}/api/v1/apps", headers=self._headers())
+        if resp.status_code != 200:
+            raise ClientError(f"find_app failed ({resp.status_code}): {resp.text}")
+        for app in resp.json().get("apps", []):
+            if app.get("name") == name and app.get("repo_full_name") == repo_full_name:
+                return int(app["id"])
+        return None
 
     def app_status(self, app_id: int) -> dict:
         resp = self._client.get(
