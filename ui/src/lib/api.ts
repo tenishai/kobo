@@ -1151,8 +1151,11 @@ export type AdminIntegration = {
 export type AdminConnectIntegration = {
   vendor: string;
   name: string;
+  auth?: "token" | "api_keys" | "aws_role" | "gcp_identity" | "azure_federated";
+  identity?: Record<string, string>;
+  secrets?: Record<string, string>;
   base_access: "read" | "write";
-  credential: string;
+  credential?: string;
   address: string;
   trust: "trusted" | "untrusted";
 };

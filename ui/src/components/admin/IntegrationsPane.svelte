@@ -11,7 +11,7 @@
     connectAdminIntegrationMutation,
     disconnectAdminIntegrationMutation,
   } from "../../lib/queries";
-  import { CATALOG, catalogEntry, type CatalogEntry } from "../../lib/admin/catalog";
+  import { CATALOG, OTHER, catalogEntry, type CatalogEntry } from "../../lib/admin/catalog";
 
   let { item = null }: { item?: string | null } = $props();
 
@@ -28,7 +28,15 @@
   const addable = $derived(CATALOG.filter((c) => !connected.has(c.id)));
 
   let catalogOpen = $state(false);
-  let form = $state<{ vendor: string; name: string; address: string; base_access: "read" | "write"; credential: string; trust: "trusted" | "untrusted"; credentialLabel: string } | null>(null);
+  let form = $state<{
+    entry: CatalogEntry;
+    vendor: string;
+    name: string;
+    address: string;
+    base_access: "read" | "write";
+    trust: "trusted" | "untrusted";
+    values: Record<string, string>;
+  } | null>(null);
   let formError = $state<string | null>(null);
   let removing = $state<AdminIntegration | null>(null);
 
@@ -43,14 +51,15 @@
   function openConnect(preset: CatalogEntry | null): void {
     catalogOpen = false;
     formError = null;
+    const entry = preset ?? OTHER;
     form = {
-      vendor: preset?.id ?? "",
-      name: preset?.name ?? "",
-      address: preset?.address ?? "",
+      entry,
+      vendor: entry.id,
+      name: entry.name,
+      address: entry.address ?? "",
       base_access: "read",
-      credential: "",
       trust: "untrusted",
-      credentialLabel: preset?.credential ?? "Token or key",
+      values: Object.fromEntries(entry.fields.map((f) => [f.key, ""])),
     };
   }
 
@@ -58,9 +67,24 @@
     event.preventDefault();
     if (!form) return;
     formError = null;
-    const { credentialLabel: _label, ...body } = form;
+    const identity: Record<string, string> = {};
+    const secrets: Record<string, string> = {};
+    for (const f of form.entry.fields) {
+      const v = (form.values[f.key] ?? "").trim();
+      if (!v) continue;
+      (f.secret ? secrets : identity)[f.key] = v;
+    }
     connect.mutate(
-      { ...body, vendor: body.vendor || body.name.toLowerCase().replace(/[^a-z0-9]+/g, "-") },
+      {
+        vendor: form.vendor || form.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+        name: form.name,
+        address: form.address,
+        base_access: form.base_access,
+        trust: form.trust,
+        auth: form.entry.auth,
+        identity,
+        secrets,
+      },
       {
         onSuccess: (row) => {
           toast.success(`${row.name} connected`, row.state_detail ?? undefined);
@@ -177,10 +201,20 @@
         <span>Name</span>
         <input id="integration-name" type="text" bind:value={form.name} required />
       </label>
-      <label class="field">
-        <span>{form.credentialLabel}</span>
-        <input id="integration-credential" type="password" bind:value={form.credential} autocomplete="off" required />
-      </label>
+      {#each form.entry.fields as f (f.key)}
+        <label class="field">
+          <span>{f.label}{#if f.optional} <span class="quiet">(optional)</span>{/if}</span>
+          <input
+            id="integration-{f.key}"
+            type={f.secret ? "password" : "text"}
+            bind:value={form.values[f.key]}
+            autocomplete="off"
+            placeholder={f.placeholder ?? ""}
+            required={!f.optional}
+          />
+        </label>
+      {/each}
+      {#if form.entry.note}<p class="page__foot">{form.entry.note}</p>{/if}
       <label class="field">
         <span>Vendor's MCP address <span class="quiet">(optional)</span></span>
         <input id="integration-address" type="url" bind:value={form.address} placeholder="https://" />
@@ -191,7 +225,9 @@
         <label><input type="radio" name="base_access" value="write" bind:group={form.base_access} /> read and write</label>
       </fieldset>
       {#if formError}<p class="page__foot fail">{formError}</p>{/if}
-      <p class="page__foot">The credential is stored in the room's secrets service and never shown again.</p>
+      {#if form.entry.fields.some((f) => f.secret)}
+        <p class="page__foot">Secret values are stored in the room's secrets service and never shown again.</p>
+      {/if}
     </form>
   {/if}
   {#snippet footer()}

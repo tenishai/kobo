@@ -106,6 +106,13 @@ All notable changes to kobo are documented here. The format follows
 
 ### Changed
 
+- **Integrations ask each vendor for the credential it really uses.** AWS is a role the gateway
+  assumes (ARN, optional external ID), Google Cloud is workload identity with an optional service
+  account to act as, Azure is a federated app registration (client and tenant IDs), Datadog and
+  Wiz are service-account key pairs, Atlassian, Fastly and Okta are API tokens. The connect body
+  carries `auth`, `identity` (plain fields) and `secrets` (named values stored in the secrets
+  service, one env each at the gateway); the gateway target gets `auth_method` and a
+  `[target.auth]` table. A kind with no secret stores nothing.
 - **The admin panel reads like a settings screen.** Every page is a title, one sentence, a toolbar
   and a table. Overview is one row per page, each a link with the number that matters, read from the
   room (the demo store is gone). Add-ons is now Services: a table of what the room runs on,

@@ -41,6 +41,43 @@ TARGETS_FILE = "targets.toml"
 BRANCH_PREFIX = "kobo/integration-"
 SECRET_KEY = "TOKEN"
 
+# How the gateway reaches a vendor (Kyle, 2026-10-25: AWS is a role, not a
+# key; GCP is workload identity or a scoped service account; the API-token
+# vendors are tokens). `identity` fields are plain values the gateway reads
+# from its config; `secrets` are stored in the secrets service and reach the
+# gateway as env vars named `secret_env(id, key)`. A kind with no secret
+# stores nothing: the gateway's own cloud identity does the work.
+AUTH_KINDS = {
+    "token": "one bearer token",
+    "api_keys": "one or more named keys",
+    "aws_role": "an IAM role the gateway assumes",
+    "gcp_identity": "workload identity, optionally impersonating a service account",
+    "azure_federated": "an app registration federated to the gateway's identity",
+}
+_AWS_ROLE_ARN = re.compile(r"^arn:aws:iam::\d{12}:role/[\w+=,.@/-]+$")
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_GUID = re.compile(r"^[0-9a-fA-F-]{32,36}$")
+
+
+def check_auth(auth: str, identity: dict[str, str], secrets: dict[str, str]) -> None:
+    """Refuse a connect whose fields do not fit its kind, in one sentence."""
+    if auth not in AUTH_KINDS:
+        raise ConnectRefused(f"unknown auth kind {auth!r}; one of {', '.join(AUTH_KINDS)}")
+    if auth == "token" and not secrets.get(SECRET_KEY, "").strip():
+        raise ConnectRefused("an integration needs the vendor's token or key")
+    if auth == "api_keys" and not any(v.strip() for v in secrets.values()):
+        raise ConnectRefused("this vendor needs at least one key")
+    if auth == "aws_role" and not _AWS_ROLE_ARN.match(identity.get("role_arn", "").strip()):
+        raise ConnectRefused("AWS needs the ARN of a role the gateway may assume (arn:aws:iam::<account>:role/<name>)")
+    if auth == "gcp_identity":
+        sa = identity.get("service_account", "").strip()
+        if sa and not _EMAIL.match(sa):
+            raise ConnectRefused("the service account to act as must be its email address")
+    if auth == "azure_federated" and not (
+        _GUID.match(identity.get("client_id", "").strip()) and _GUID.match(identity.get("tenant_id", "").strip())
+    ):
+        raise ConnectRefused("Azure needs the app registration's client ID and tenant ID")
+
 
 class ConnectRefused(ValueError):
     """A connect the room cannot do yet, with the sentence that says why."""
@@ -54,8 +91,13 @@ def secret_name(integration_id: str) -> str:
     return f"integration-{integration_id}"
 
 
+def secret_env(integration_id: str, key: str = SECRET_KEY) -> str:
+    """The env var one stored secret reaches the gateway as."""
+    return "INTEGRATION_" + re.sub(r"[^A-Za-z0-9]", "_", integration_id).upper() + "_" + re.sub(r"[^A-Za-z0-9]", "_", key).upper()
+
+
 def token_env(integration_id: str) -> str:
-    return "INTEGRATION_" + re.sub(r"[^A-Za-z0-9]", "_", integration_id).upper() + "_" + SECRET_KEY
+    return secret_env(integration_id, SECRET_KEY)
 
 
 def target_stanza(row: AdminIntegration) -> str:
@@ -65,16 +107,25 @@ def target_stanza(row: AdminIntegration) -> str:
     spec = row.spec or {}
     address = spec.get("address", "")
     trust = spec.get("trust", "untrusted")
-    return (
+    auth = spec.get("auth", "token")
+    head = (
         f"\n# {row.name}: connected from the room\'s admin panel by {row.created_by}.\n"
         f"[[target]]\n"
         f'name = "{row.id}"\n'
         f'transport = "http"\n'
         f'address = "{address}"\n'
         f'trust = "{trust}"\n'
-        f'auth_method = "bearer"\n'
-        f'bearer_token_env = "{token_env(row.id)}"\n'
     )
+    if auth == "token":
+        return head + f'auth_method = "bearer"\nbearer_token_env = "{token_env(row.id)}"\n'
+    # Every other kind: the method named, its plain fields, and an env name
+    # per stored secret, under the target's own auth table.
+    lines = [head + f'auth_method = "{auth}"\n', "[target.auth]\n"]
+    for key, value in sorted((spec.get("identity") or {}).items()):
+        lines.append(f'{key} = "{value}"\n')
+    for key in sorted(spec.get("secret_keys") or []):
+        lines.append(f'{key.lower()}_env = "{secret_env(row.id, key)}"\n')
+    return "".join(lines)
 
 
 def _without_stanza(text: str, integration_id: str) -> str:
@@ -156,31 +207,44 @@ def connect(
     address: str,
     trust: str,
     actor: str,
+    auth: str = "token",
+    identity: dict[str, str] | None = None,
+    secrets: dict[str, str] | None = None,
 ) -> AdminIntegration:
     """The three steps above. The row is committed by the caller; a
     projection that fails leaves the row `pending` with the failure in
     `state_detail`, never an exception past the audit event."""
     sero = clients.sero if clients is not None else None
-    if sero is None or not config.sero_url:
+    identity = {k: v.strip() for k, v in (identity or {}).items() if v and v.strip()}
+    secrets = {k.upper(): v for k, v in (secrets or {}).items() if v and v.strip()}
+    if credential.strip() and SECRET_KEY not in secrets:
+        secrets[SECRET_KEY] = credential.strip()
+    check_auth(auth, identity, secrets)
+    if secrets and (sero is None or not config.sero_url):
         raise ConnectRefused("the Secrets add-on is off, so the room has nowhere to hold the credential; turn it on first")
-    if not credential.strip():
-        raise ConnectRefused("an integration needs the vendor\'s token or key")
-    spec: dict[str, Any] = {"address": address.strip(), "trust": trust if trust in ("trusted", "untrusted") else "untrusted"}
+    spec: dict[str, Any] = {
+        "address": address.strip(),
+        "trust": trust if trust in ("trusted", "untrusted") else "untrusted",
+        "auth": auth,
+        "identity": identity,
+        "secret_keys": sorted(secrets),
+    }
     row = admin_store.put_integration(
         session, vendor=vendor, name=name, base_access=base_access, spec=spec,
         credential_ref=None, actor=actor,
     )
     path = credential_path(row.id)
     try:
-        sero.put_secret(actor, path, {SECRET_KEY: credential.strip()})
-        if config.gateway_namespace:
-            sero.ensure_synced(actor, ROOM_APP, path, config.gateway_namespace, secret_name(row.id))
-        row.credential_ref = path
+        if secrets:
+            sero.put_secret(actor, path, dict(secrets))
+            if config.gateway_namespace:
+                sero.ensure_synced(actor, ROOM_APP, path, config.gateway_namespace, secret_name(row.id))
+            row.credential_ref = path
     except ClientError as exc:
         admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED, detail=f"the secrets add-on refused: {exc}")
         return row
-    detail = "credential stored"
-    if not config.gateway_namespace:
+    detail = "credential stored" if secrets else "no secret to store; the gateway uses its own identity"
+    if secrets and not config.gateway_namespace:
         detail += "; no gateway namespace is set, so it is not synced to the gateway yet"
     try:
         pr = _gateway_pr(clients.github, config, row, remove=False, actor=actor)
