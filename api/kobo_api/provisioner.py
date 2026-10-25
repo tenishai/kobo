@@ -57,18 +57,20 @@ from sqlalchemy.orm import Session, sessionmaker
 from kobo_api.clients import Clients
 from kobo_api.config import Config
 from kobo_api.db import SQLITE_BUSY_TIMEOUT_S
-from kobo_api.kinds import is_connected
+from kobo_api.kinds import is_connected, is_directory
 from kobo_api.models import Agent, AgentStatus, AgentStep, StepStatus
 from kobo_api.pairs import sync_dispatch_pairs_best_effort
 from kobo_api.steps import (
     AccessStep,
     AvatarStep,
     BuildStep,
+    ComposeDirectoryStep,
     ConnectedWireStep,
     ConnectStep,
     DeployStep,
     DirectoryStep,
     HelloStep,
+    LoadStep,
     OnboardStep,
     RepoStep,
     StepSkipped,
@@ -1101,9 +1103,23 @@ CONNECTED_PIPELINE: list[Step] = [
 ]
 
 
+# The directory backend (issue #207): compose into a folder, picture, list
+# in the switchboard directory when one is wired, tell the running set. No
+# repository, platform, access grant, build or deploy, and no hello: the
+# room has no address for a local process to say it to.
+DIRECTORY_PIPELINE: list[Step] = [
+    ComposeDirectoryStep(),
+    AvatarStep(),
+    DirectoryStep(),
+    LoadStep(),
+]
+
+
 def pipeline_for(agent: Agent) -> list[Step]:
     """The step list this agent's kind runs. The single place the choice is
     made, so a caller never spells the comparison itself."""
+    if is_directory(agent):
+        return DIRECTORY_PIPELINE
     return CONNECTED_PIPELINE if is_connected(agent) else PIPELINE
 
 
@@ -1114,5 +1130,5 @@ def pipeline_for(agent: Agent) -> list[Step]:
 # here degrades to a raw slug on the detail route, and the checklist would
 # render it.
 STEP_LABELS: dict[str, str] = {
-    step.name: step.label for step in (*PIPELINE, *CONNECTED_PIPELINE)
+    step.name: step.label for step in (*PIPELINE, *CONNECTED_PIPELINE, *DIRECTORY_PIPELINE)
 }

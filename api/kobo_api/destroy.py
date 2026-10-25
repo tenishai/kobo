@@ -37,9 +37,11 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sqlalchemy import or_
@@ -48,7 +50,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from kobo_api.clients import ClientError, cabal_enabled
 from kobo_api.config import Config
 from kobo_api.directory import retire_directory
-from kobo_api.kinds import KIND_COMPOSED, is_connected
+from kobo_api.kinds import KIND_COMPOSED, is_connected, is_directory
 from kobo_api.models import (
     A2AInvite,
     Agent,
@@ -111,7 +113,24 @@ DESTROY_STEPS = (
 # The UI checklist vocabulary for destroy steps (mirrors provisioner.
 # STEP_LABELS) — kept here, next to DESTROY_STEPS, rather than in main.py,
 # so the two can never drift apart.
+# The directory backend's teardown (issue #207): the folder, the listing,
+# the row. Never a namespace, a repository or a cloud identity: this kind
+# has none, and a stage that asked anyway would be a stage that could
+# delete something that was never the room's.
+DIRECTORY_DESTROY_STEPS = (
+    "destroy-files",
+    "destroy-directory",
+    "destroy-forget",
+)
+
+
+def destroy_steps_for(agent: Agent) -> tuple[str, ...]:
+    """The stage list this agent's kind runs, chosen in one place."""
+    return DIRECTORY_DESTROY_STEPS if is_directory(agent) else DESTROY_STEPS
+
+
 DESTROY_STEP_LABELS: dict[str, str] = {
+    "destroy-files": "Agent folder",
     "destroy-platform": "Platform teardown",
     "destroy-secrets": "Stored secrets",
     "destroy-access": "Model access",
@@ -676,7 +695,26 @@ def _destroy_forget(ctx: DestroyCtx) -> str:
     return "forgotten"
 
 
+def _destroy_files(ctx: DestroyCtx) -> str:
+    """Remove `<directory_root>/<name>/` (issue #207). The folder is the
+    room's by construction: create refused a name whose folder already
+    existed, so one that exists now was composed by this room for this row.
+    Containment is still checked before the rmtree; a folder that is not
+    directly under the root is never touched."""
+    if not ctx.config.directory_root:
+        return "no directory root configured; nothing to remove"
+    root = Path(ctx.config.directory_root).resolve()
+    target = (root / ctx.agent.name).resolve()
+    if target.parent != root:
+        raise RuntimeError(f"agent folder {target} is not directly under {root}; refusing")
+    if not target.exists():
+        return "already gone"
+    shutil.rmtree(target)
+    return f"removed {target}"
+
+
 _DESTROY_FUNCS = {
+    "destroy-files": _destroy_files,
     "destroy-platform": _destroy_platform,
     "destroy-secrets": _destroy_secrets,
     "destroy-access": _destroy_access,
@@ -794,7 +832,7 @@ def _run_destroy_body(
             )
 
             failed_step_name: str | None = None
-            for name in DESTROY_STEPS:
+            for name in destroy_steps_for(agent):
                 step_row = _get_or_create_step(session, agent_id, name)
 
                 if step_row.status == StepStatus.DONE:

@@ -299,6 +299,18 @@ class Config(BaseModel):
     # change nothing.
     storage_backend: str = "gcs"
     storage_root: str = ""
+    # How a created agent is delivered (issue #207). `deployed` (the default)
+    # is the repository-and-cluster pipeline. `directory` composes the bundle
+    # into `<directory_root>/<agent>/` for a running set of local daedalus
+    # processes (ergon) to load, registers it with the switchboard when one
+    # is wired, and then tells the running set: a POST to
+    # `directory_reload_url` with `{"name", "path"}` when set, otherwise a
+    # `.ready` marker file in the agent's folder for a watcher. Destroy for
+    # that kind removes the folder and the directory listing, never a
+    # namespace or a repository.
+    delivery_backend: str = "deployed"
+    directory_root: str = ""
+    directory_reload_url: str = ""
     # Agent memory replication (resilience arc, Task 14): the object-storage
     # bucket every composed agent's techne database replicates to
     # continuously from birth, under a per-agent prefix (the agent's own
@@ -690,6 +702,16 @@ class Config(BaseModel):
                     f"groups entry {g.name!r} collides with the reserved "
                     "commons group name (SHARED_GROUP) -- rename it"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _delivery_backend_is_known_and_a_directory_has_a_root(self) -> Config:
+        if self.delivery_backend not in ("deployed", "directory"):
+            raise ValueError(
+                f"delivery_backend must be 'deployed' or 'directory', not {self.delivery_backend!r}"
+            )
+        if self.delivery_backend == "directory" and not self.directory_root:
+            raise ValueError("delivery_backend: directory needs directory_root (where agent folders go)")
         return self
 
     @model_validator(mode="after")

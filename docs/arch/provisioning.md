@@ -1,13 +1,13 @@
 ---
 card: arch-card:kobo-provisioning
 updated: 2026-10-18
-anchor: api/kobo_api/provisioner.py sha=d643960befd890183a99c7b5a3ba823515c2a733
-anchor: api/kobo_api/steps.py sha=46a45f0302da50a7b5cf6ecc0747998ba588237c
+anchor: api/kobo_api/provisioner.py sha=b0eb94bf46db454f965d2e9c1299da6008d323cb
+anchor: api/kobo_api/steps.py sha=8c790ae13d45ac11086e739b152e1ed53c7f00b9
 ---
 # provisioning — the Create → running-agent step engine
 
 WHAT / SEAM: `Step` Protocol (provisioner.py: `name`, `label`, `run(ctx: Ctx) -> str`); `Ctx(agent, session, config, clients, workdir)`. Engine: `run_pipeline` (daemon thread + `_Heartbeat` ticker), `_run_pipeline_body`, `_claim_step`, `reset_failed_steps`, `sweep_interrupted`, `pipeline_for(agent)`, `STEP_LABELS`. Steps live in steps.py; `StepSkipped` marks a best-effort step SKIPPED; `StepWaiting` parks a connected agent on its setup PR (status WAITING, resumed by `sweep_waiting`, which calls gojira's `sync_app` before `app_status` because without a GitHub webhook the platform's row never leaves `awaiting_pr`, issue #118). Since 2026-10-01 the process has a ROLE (roles.py, `KOBO_ROLE`): `all` (default, every test) launches pipelines inline from the routes; `api` only leaves the row PENDING with no heartbeat; `worker` runs `queue_loop` (`claim_queued`: one conditional UPDATE marks the first heartbeat, so two workers never run one agent; `queue_tick` launches up to 4), the sweeps and the nightly learnings pass, and `drain_pipelines` waits up to 25 minutes on shutdown so a roll never fails a build.
-OPS / FLOW:
+OPS / FLOW: `pipeline_for(agent)` picks by kind: composed `PIPELINE`, connected `CONNECTED_PIPELINE`, directory `DIRECTORY_PIPELINE` (#207: `ComposeDirectoryStep` writes `<directory_root>/<name>/` in one rename, `AvatarStep` keeps the picture in the room, `DirectoryStep` reads the card from the folder, `LoadStep` POSTs `directory_reload_url` or writes `.ready`). `destroy.destroy_steps_for(agent)` mirrors it: a directory agent's teardown is files, listing, record.
 - composed `PIPELINE`: repo → avatar → onboard → access → wire → build → deploy → directory → hello.
 - connected `CONNECTED_PIPELINE`: connect → avatar → onboard → access → wire(`ConnectedWireStep`, proposes a PR on branch `kobo/wire`) → build → deploy. No directory/hello: a connected agent has no switchboard identity.
 - repo: compose bundle (composer.py) + create repo. onboard: gojira `create_app`, wait active. access: GSA `agent-<name>`, workload identity, `config.model_group` membership. wire: KSA + techne PVC manifests, register in kustomization.yaml, edit gojira.yaml, deliver colleague pass BEFORE push, reprovision, wait active. build: watch GH Actions run for the CURRENT head sha. deploy: rollout. directory: cabal graduate (a no-op when the switchboard is off). hello: first contact via switchboard relay, or the direct path (`clients.agent.hello`) when the switchboard is off, then earns the capability line.

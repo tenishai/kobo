@@ -103,6 +103,14 @@ personas_bucket: ""
 # With `directory`, set skills_bucket/personas_bucket to plain folder names.
 storage_backend: gcs
 storage_root: ""
+# How a created agent is delivered: `deployed` (repository + cluster, the
+# default) or `directory`, which composes the bundle into
+# <directory_root>/<agent>/ for a running set of local agent processes to load
+# and then POSTs {"name","path"} to directory_reload_url (or, when that is
+# empty, writes a .ready marker in the folder for a watcher).
+delivery_backend: deployed
+directory_root: ""
+directory_reload_url: ""
 
 # Workload Identity Federation provider + service account the org's own
 # skills-publish pipeline (if any) runs as. skills_publish_external true

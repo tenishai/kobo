@@ -8,6 +8,13 @@ All notable changes to kobo are documented here. The format follows
 
 ### Added
 
+- **A directory delivery backend** (issue #207, for ergon). With `delivery_backend: directory`
+  and a `directory_root`, create composes the same bundle it would push to a repository into
+  `<root>/<agent>/` in one rename, keeps the picture in the room, lists the agent in the
+  switchboard directory when one is wired, and tells the running set: a POST to
+  `directory_reload_url` with the agent's name and folder, or a `.ready` marker in the folder for
+  a watcher. Destroy for that kind removes the folder and the listing and nothing else. A name
+  whose folder already exists is refused at create. `deployed` stays the default.
 - **A directory-backed catalog store** (issue #208, for ergon's laptop and team tiers). With
   `storage_backend: directory` and a `storage_root`, each "bucket" is a folder on disk and a key
   is a relative path under it; custom metadata rides in a `<key>.meta.json` sidecar. The persona
