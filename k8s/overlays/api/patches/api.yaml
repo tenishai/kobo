@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kobo
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    spec:
+      # Requests only: nothing long-running lives here, so the default is enough.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: app
+          env:
+            - name: KOBO_ROLE
+              value: api
+          lifecycle:
+            preStop:
+              # The load balancer needs a few seconds to stop sending this pod
+              # new requests; without the pause a roll drops connections in flight.
+              exec:
+                command: ["sleep", "5"]

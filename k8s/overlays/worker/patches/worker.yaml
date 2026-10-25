@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kobo
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  template:
+    spec:
+      # A build wait can run for most of an hour. `drain_pipelines` waits up
+      # to QUEUE_DRAIN_TIMEOUT_S (1500 s) for in-flight pipelines at shutdown,
+      # and the grace period has to cover that or the kubelet kills the run
+      # anyway and the sweep fails the agent a minute later.
+      terminationGracePeriodSeconds: 1500
+      containers:
+        - name: app
+          env:
+            - name: KOBO_ROLE
+              value: worker

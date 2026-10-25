@@ -14,6 +14,16 @@ No baked configuration or secrets — mount a config file and point `KOBO_CONFIG
 `ui_dist: /srv/ui` so the API serves the baked UI. Listens on `:8080`, runs non-root, with
 `git`, `gh`, `kubectl`, and `gcloud` on `PATH` for the operations the API shells out to.
 
+**What the manifests deploy.** The repository's own `k8s/base` is the shape gojira generates for a
+gateway-class app: one replica, `Recreate`, the default 30 s grace period, no `KOBO_ROLE`. That is
+the laptop and first-install shape, and it has one known cost: a roll during a build kills the
+build at 30 s, the sweep fails the agent a minute later, and the person retries. The shape the
+rest of this page describes (two api replicas rolling, one worker that owns the pipelines) is in
+`k8s/overlays/api` and `k8s/overlays/worker`: build each with kustomize and apply both, after
+pointing `db_url` at Postgres in the mounted config. The worker's grace period is 1500 s so a
+pipeline the room is draining can finish; the api's is the default. A room deployed from
+somewhere else (a config repo with its own manifests) should carry the same two settings.
+
 **Two replicas**: a room can run more than one pod once nothing it writes lives on a disk only
 one pod can mount. Point `db_url` at Postgres, drop `slack_tokens_path` and the `/data` volume
 with it, and set `slack_tokens_secret: <namespace>/<name>` instead. Create that Secret first,

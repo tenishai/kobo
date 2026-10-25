@@ -20,6 +20,12 @@ All notable changes to kobo are documented here. The format follows
   app id the moment it exists, before the long wait for `active`, and when the platform reports a
   conflict for an agent with no recorded id it adopts the app the platform holds under the agent's
   own name and repository (the room's own), raising as before when there is none.
+- **Shutdown drains inline pipelines too, and the split shape ships as overlays** (issue #202).
+  Create, connect and retry now register the pipeline thread they start, so `drain_pipelines`
+  waits for it like it waits for the worker's; before, only queue-started runs were drained and a
+  roll in role `all` killed a running build at the grace period. `k8s/overlays/api` and
+  `k8s/overlays/worker` carry the role, replica count, strategy and grace period the
+  documented api/worker split needs, and `docs/operating.md` says which shape `k8s/base` deploys.
 - **The PR and Jira brokers refuse a colleague pass the room has since replaced** (issue #199).
   A re-wire revokes the earlier passes at the switchboard, but the brokers verified a pass by
   signature and claims alone, so a pass that leaked from a pod kept minting GitHub tokens for the
