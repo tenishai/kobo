@@ -23,6 +23,9 @@ All notable changes to kobo are documented here. The format follows
 
 ### Fixed
 
+- The room's own INFO boot lines (the auth regime, the dispatch-pairs sync, the built-in persona
+  seed) now reach the pod log: the deployed entry configures a handler for the `kobo_api` loggers.
+  Library loggers are untouched.
 - **A destroy is claimed, beats, and is swept when its pod dies** (issue #203). The DELETE route
   now takes the row with one conditional update (a second DELETE while a destroy is in flight
   answers 202 and launches nothing; a sweep racing it loses the claim), the destroy thread writes the same heartbeat a provision does, and
