@@ -163,6 +163,12 @@ describe("AdminPanel", () => {
       expect(screen.getByText(vendor)).toBeTruthy();
     }
     expect(screen.queryByText("PagerDuty")).toBeNull();
+    // Each vendor asks for its own kind of credential: AWS wants a role, not a key.
+    await fireEvent.click(screen.getAllByRole("button", { name: "Add" })[3]);
+    expect(await screen.findByRole("heading", { name: "Add AWS" })).toBeTruthy();
+    expect(screen.getByLabelText(/Role ARN the gateway may assume/)).toBeTruthy();
+    expect(screen.queryByLabelText(/token/i)).toBeNull();
+    expect(document.querySelector("#integration-form input[type=password]")).toBeNull();
   });
 
   it("People reads the real lists and the real queue", async () => {

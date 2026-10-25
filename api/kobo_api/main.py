@@ -709,7 +709,14 @@ class AdminConnectIntegration(BaseModel):
     vendor: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=120)
     base_access: str = Field(pattern="^(read|write)$")
-    credential: str = Field(min_length=1, max_length=20000)
+    # `credential` is the one-token shorthand (`auth: token`). Other kinds
+    # send `identity` (plain fields the gateway reads from its config) and
+    # `secrets` (named values stored in the secrets service); see
+    # kobo_api.admin_integrations.AUTH_KINDS.
+    credential: str = Field(default="", max_length=20000)
+    auth: str = Field(default="token", pattern="^(token|api_keys|aws_role|gcp_identity|azure_federated)$")
+    identity: dict[str, str] = Field(default_factory=dict)
+    secrets: dict[str, str] = Field(default_factory=dict)
     address: str = Field(default="", max_length=500)
     trust: str = Field(default="untrusted", pattern="^(trusted|untrusted)$")
 
@@ -3627,6 +3634,7 @@ def create_app(
                 session, app.state.clients, app.state.config,
                 vendor=payload.vendor, name=payload.name, base_access=payload.base_access,
                 credential=payload.credential, address=payload.address, trust=payload.trust, actor=actor,
+                auth=payload.auth, identity=payload.identity, secrets=payload.secrets,
             )
         except (admin_integrations_flow.ConnectRefused, admin_store.AdminStoreError) as exc:
             session.rollback()

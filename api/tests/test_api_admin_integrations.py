@@ -129,3 +129,61 @@ def test_disconnect_reverses_the_three_steps(tmp_path, fake_storage):
     assert sero.unsyncs[0][1:] == ("kobo", "liminal", "integration-datadog")
     assert client.get("/api/admin/integrations", headers=headers).json() == {"integrations": []}
     assert client.delete("/api/admin/integrations/datadog", headers=headers).status_code == 404
+
+
+# --- per-vendor credential kinds (2026-10-25) ---------------------------------
+
+
+def test_an_aws_role_stores_no_secret_and_writes_the_role_into_the_gateway_target(tmp_path, fake_storage):
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"targets.toml": TARGETS}, track_pushed_content=True)
+    sero = FakeSero()
+    client, headers = _client(tmp_path, fake_storage, _config(tmp_path), github=github, sero=sero)
+    body = {
+        "vendor": "aws", "name": "AWS", "base_access": "read", "auth": "aws_role",
+        "identity": {"role_arn": "arn:aws:iam::123456789012:role/kobo-gateway", "external_id": "k0b0"},
+    }
+    response = client.post("/api/admin/integrations", json=body, headers=headers)
+    assert response.status_code == 201, response.text
+    row = response.json()
+    assert row["credential_ref"] is None and sero.puts == [] and sero.syncs == []
+    assert "no secret to store" in row["state_detail"]
+    assert row["spec"]["auth"] == "aws_role" and row["spec"]["identity"]["role_arn"].endswith("role/kobo-gateway")
+    targets = github.pushed_file("targets.toml")
+    assert 'auth_method = "aws_role"' in targets and "[target.auth]" in targets
+    assert 'role_arn = "arn:aws:iam::123456789012:role/kobo-gateway"' in targets and 'external_id = "k0b0"' in targets
+    assert "bearer_token_env" not in targets.split('name = "aws"')[1]
+
+
+def test_a_malformed_aws_role_is_refused_in_one_sentence(tmp_path, fake_storage):
+    client, headers = _client(tmp_path, fake_storage, _config(tmp_path), github=FakeGitHub(existing_repos={GATEWAY_REPO}), sero=FakeSero())
+    body = {"vendor": "aws", "name": "AWS", "base_access": "read", "auth": "aws_role", "identity": {"role_arn": "not-an-arn"}}
+    response = client.post("/api/admin/integrations", json=body, headers=headers)
+    assert response.status_code == 409
+    assert "arn:aws:iam" in response.json()["error"]
+
+
+def test_named_keys_are_stored_together_and_reach_the_gateway_as_one_env_each(tmp_path, fake_storage):
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"targets.toml": TARGETS}, track_pushed_content=True)
+    sero = FakeSero()
+    client, headers = _client(tmp_path, fake_storage, _config(tmp_path), github=github, sero=sero)
+    body = {
+        "vendor": "datadog", "name": "Datadog", "base_access": "read", "auth": "api_keys",
+        "secrets": {"API_KEY": "dd-api", "APP_KEY": "dd-app"},
+    }
+    response = client.post("/api/admin/integrations", json=body, headers=headers)
+    assert response.status_code == 201, response.text
+    assert sero.puts == [("ops@example.com", "apps/kobo/integrations/datadog", {"API_KEY": "dd-api", "APP_KEY": "dd-app"})]
+    targets = github.pushed_file("targets.toml")
+    assert 'auth_method = "api_keys"' in targets
+    assert 'api_key_env = "INTEGRATION_DATADOG_API_KEY"' in targets and 'app_key_env = "INTEGRATION_DATADOG_APP_KEY"' in targets
+    assert "dd-api" not in targets and "dd-app" not in targets
+
+
+def test_gcp_workload_identity_needs_nothing_and_a_service_account_must_be_an_email(tmp_path, fake_storage):
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"targets.toml": TARGETS}, track_pushed_content=True)
+    client, headers = _client(tmp_path, fake_storage, _config(tmp_path), github=github, sero=FakeSero())
+    ok = client.post("/api/admin/integrations", json={"vendor": "gcp", "name": "Google Cloud", "base_access": "read", "auth": "gcp_identity"}, headers=headers)
+    assert ok.status_code == 201, ok.text
+    assert 'auth_method = "gcp_identity"' in github.pushed_file("targets.toml")
+    bad = client.post("/api/admin/integrations", json={"vendor": "gcp2", "name": "GCP two", "base_access": "read", "auth": "gcp_identity", "identity": {"service_account": "nope"}}, headers=headers)
+    assert bad.status_code == 409 and "email" in bad.json()["error"]
