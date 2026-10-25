@@ -1,7 +1,7 @@
 ---
 card: arch-card:kobo-platform-clients
 updated: 2026-10-24
-anchor: api/kobo_api/clients.py sha=e73ce4f9e4c4a1e273175124e62085071b03190a
+anchor: api/kobo_api/clients.py sha=84f0d8eb45a5731f0974f335daf3bbcc121c328f
 anchor: api/tests/fakes.py sha=b1fdee326d9b480749bf1dbc02e1e88162f744bf
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
@@ -16,7 +16,7 @@ WHAT / SEAM: api/kobo_api/clients.py. The outside systems in the table below are
 | kubectl | `KubectlClient` | `KubectlCLI` (rollout, secrets, ExternalSecret status, `deployment_status_json`/`pods_json` for health.py) | `FakeKubectl` (set `.pods` for pod fixtures) |
 | slack | `SlackClient` + `SlackTokenStore` | `HttpxSlackClient`; `FileSlackTokenStore` / `KubeSlackTokenStore` | `FakeSlack` |
 | image / name | `ImageClient` / `NameClient` | `VertexImageClient` / `VertexNameClient` | `FakeImage` / `FakeName` |
-| storage | `StorageClient` | `HttpxStorageClient` (GCS JSON API) | `FakeStorage` |
+| storage | `StorageClient` | `HttpxStorageClient` (GCS JSON API), or `DirectoryStorageClient` (`<storage_root>/<bucket>/<key>`, sidecar `<key>.meta.json`, containment-checked; `storage_backend: directory`, #208) | `FakeStorage` |
 | cabal | (concrete) `CabalClient` | same | `FakeCabal` — see switchboard.md |
 | groups / people_search | `GroupResolver` / `OktaPeopleSearch` (groups.py) | `OktaGroupResolver` / `OktaPeopleSearch` | `FakePeopleSearch`; resolvers are ad hoc per test file |
 | sero | `SeroClient` (sero.py) | `HttpxSeroClient` | `FakeSero` |

@@ -291,6 +291,14 @@ class Config(BaseModel):
     skills_repo: str | None = None
     skills_bucket: str = ""
     personas_bucket: str = ""
+    # Where the catalogs live (issue #208). `gcs` (the default) reads the
+    # buckets above through the GCS JSON API with a gcloud token; `directory`
+    # maps each bucket name to `<storage_root>/<bucket>/` on local disk
+    # (`kobo_api.clients.DirectoryStorageClient`), for a room with no object
+    # store: ergon's laptop and team tiers, a dev box, a demo. Deployed rooms
+    # change nothing.
+    storage_backend: str = "gcs"
+    storage_root: str = ""
     # Agent memory replication (resilience arc, Task 14): the object-storage
     # bucket every composed agent's techne database replicates to
     # continuously from birth, under a per-agent prefix (the agent's own
@@ -682,6 +690,16 @@ class Config(BaseModel):
                     f"groups entry {g.name!r} collides with the reserved "
                     "commons group name (SHARED_GROUP) -- rename it"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _storage_backend_is_known_and_a_directory_has_a_root(self) -> Config:
+        if self.storage_backend not in ("gcs", "directory"):
+            raise ValueError(
+                f"storage_backend must be 'gcs' or 'directory', not {self.storage_backend!r}"
+            )
+        if self.storage_backend == "directory" and not self.storage_root:
+            raise ValueError("storage_backend: directory needs storage_root (the directory the catalogs live under)")
         return self
 
     @model_validator(mode="after")

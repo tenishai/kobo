@@ -6,6 +6,14 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A directory-backed catalog store** (issue #208, for ergon's laptop and team tiers). With
+  `storage_backend: directory` and a `storage_root`, each "bucket" is a folder on disk and a key
+  is a relative path under it; custom metadata rides in a `<key>.meta.json` sidecar. The persona
+  and skill catalogs, the built-in persona seed at boot and create all work with no GCP
+  credentials. `gcs` stays the default, so deployed rooms change nothing.
+
 ### Fixed
 
 - **A destroy is claimed, beats, and is swept when its pod dies** (issue #203). The DELETE route
