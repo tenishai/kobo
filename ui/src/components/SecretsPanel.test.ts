@@ -129,7 +129,7 @@ describe("SecretsPanel", () => {
     expect(screen.queryByLabelText("Value 1")).toBeNull();
   });
 
-  it("says so plainly when the room has no secrets platform, and keeps the variables", async () => {
+  it("says so plainly when the room has no secrets service, and keeps the variables", async () => {
     stubRoutes({
       secrets: { platform: false, secret_name: null },
       env: { env: { API_BASE: "https://example.test" } },
@@ -138,7 +138,7 @@ describe("SecretsPanel", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(/This room has no secrets platform configured/),
+        screen.getByText(/This room has no secrets service configured/),
       ).not.toBeNull();
     });
     // No way to add to a list that cannot be written.

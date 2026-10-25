@@ -721,7 +721,7 @@
     {:else if data.status === "waiting"}
       <!-- Parked on a person, not broken: a connected repository's setup
            pull request is open and its owner merges it. The room resumes on
-           its own once the platform reports the merge; Resume is for the
+           its own once the deploy service reports the merge; Resume is for the
            person who just merged it and does not want to wait a minute. -->
       <div class="waiting-banner" role="status">
         <p class="waiting-banner__message">

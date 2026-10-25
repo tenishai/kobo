@@ -7,7 +7,7 @@
   import IntegrationsPane from "../components/admin/IntegrationsPane.svelte";
   import OverviewPane from "../components/admin/OverviewPane.svelte";
   import PeoplePane from "../components/admin/PeoplePane.svelte";
-  import PlatformPane from "../components/admin/PlatformPane.svelte";
+  import ServicesPane from "../components/admin/ServicesPane.svelte";
   import RolesPane from "../components/admin/RolesPane.svelte";
   import { createQuery } from "@tanstack/svelte-query";
   import { formatHash, route } from "../lib/router.svelte";
@@ -21,7 +21,7 @@
 
   const PANES: { id: string; label: string }[] = [
     { id: "overview", label: "Overview" },
-    { id: "platform", label: "Platform" },
+    { id: "services", label: "Services" },
     { id: "integrations", label: "Integrations" },
     { id: "connections", label: "Connections" },
     { id: "roles", label: "Roles" },
@@ -29,9 +29,9 @@
     { id: "audit", label: "Audit" },
   ];
 
-  // "addons" was the first name of the Platform page; old links still open it.
+  // "addons" and "platform" were earlier names of the Services page; old links still open it.
   const pane = $derived(
-    route.tab === "addons" ? "platform" : PANES.some((p) => p.id === route.tab) ? (route.tab as string) : "overview",
+    route.tab === "addons" || route.tab === "platform" ? "services" : PANES.some((p) => p.id === route.tab) ? (route.tab as string) : "overview",
   );
   const item = $derived(route.section);
 
@@ -83,8 +83,8 @@
   <section class="admin__content" aria-live="polite">
     {#if pane === "overview"}
       <OverviewPane />
-    {:else if pane === "platform"}
-      <PlatformPane />
+    {:else if pane === "services"}
+      <ServicesPane />
     {:else if pane === "integrations"}
       <IntegrationsPane {item} />
     {:else if pane === "connections"}

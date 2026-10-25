@@ -28,11 +28,11 @@
   }
 </script>
 
-<section class="panel page" aria-labelledby="platform-heading">
+<section class="panel page" aria-labelledby="services-heading">
   <div class="page__toolbar">
     <div>
-      <h2 id="platform-heading" class="page__title">Platform</h2>
-      <p class="page__lead">The services this room runs on. Each is turned on in the org config.</p>
+      <h2 id="services-heading" class="page__title">Services</h2>
+      <p class="page__lead">What this room runs on. Each service is turned on in the org config.</p>
     </div>
     <button type="button" class="btn" onclick={() => (confirming = true)} disabled={reload.isPending}>
       Reload org config
@@ -42,7 +42,7 @@
   {#if addons.isPending}
     <p class="page__foot">Reading what the room runs on…</p>
   {:else if addons.isError}
-    <p class="page__foot">Could not read the platform just now.</p>
+    <p class="page__foot">Could not read the services just now.</p>
   {:else}
     <div class="table-card">
       <table class="panel__table">

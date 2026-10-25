@@ -129,7 +129,7 @@ def test_all_green_against_seeded_fakes(wired_config, fake_storage, tmp_path, wi
         },
         {
             "id": "deploy-platform",
-            "label": "Deploy platform",
+            "label": "Deployment",
             "ok": True,
             "detail": f"connected to {wired_config.gojira_cluster}",
         },
@@ -370,7 +370,7 @@ def test_ping_false_flips_only_deploy_platform_check(wired_config, fake_storage,
 
     assert _check(body, "deploy-platform") == {
         "id": "deploy-platform",
-        "label": "Deploy platform",
+        "label": "Deployment",
         "ok": False,
         "detail": "can't reach the deploy platform",
     }
@@ -390,7 +390,7 @@ def test_empty_cluster_flips_only_deploy_platform_check(fake_storage, tmp_path, 
 
     assert _check(body, "deploy-platform") == {
         "id": "deploy-platform",
-        "label": "Deploy platform",
+        "label": "Deployment",
         "ok": False,
         "detail": "no cluster configured",
     }

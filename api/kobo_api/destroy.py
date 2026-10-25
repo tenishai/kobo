@@ -131,7 +131,7 @@ def destroy_steps_for(agent: Agent) -> tuple[str, ...]:
 
 DESTROY_STEP_LABELS: dict[str, str] = {
     "destroy-files": "Agent folder",
-    "destroy-platform": "Platform teardown",
+    "destroy-platform": "Deployment teardown",
     "destroy-secrets": "Stored secrets",
     "destroy-access": "Model access",
     "destroy-slack": "Slack app",
@@ -252,7 +252,7 @@ def _destroy_platform(ctx: DestroyCtx) -> str:
     """
     agent = ctx.agent
     if agent.gojira_app_id is None:
-        return "no platform app to tear down"
+        return "no deployment to tear down"
 
     _require_own_namespace(ctx)
     result = ctx.clients.gojira.delete_app(agent.gojira_app_id)
@@ -346,7 +346,7 @@ def _destroy_secrets(ctx: DestroyCtx) -> str:
     # itself) and for a room with no identity perimeter.
     acting_email = (ctx.acting_email or agent.created_by or "").strip()
     if sero is None:
-        note = "no secrets platform configured; nothing was stored through one"
+        note = "no secrets service configured; nothing was stored through one"
     elif not acting_email:
         note = (
             "no person on record to remove these on behalf of; the stored "

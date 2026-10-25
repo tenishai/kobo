@@ -135,7 +135,7 @@
   const restart = createMutation(() => restartAgentMutation(queryClient, agentName));
 
   const LEAD =
-    "Secrets are stored in the secrets platform and reach the agent as " +
+    "Secrets are stored in the secrets service and reach the agent as " +
     "environment variables. Variables are for values that are not " +
     "sensitive. Restart the agent to pick up a change.";
 
@@ -684,13 +684,13 @@
       </p>
     {:else if !secrets.isPending && secrets.data?.platform !== true}
       <p class="secrets__note">
-        This room has no secrets platform configured, so it cannot keep secrets for an
+        This room has no secrets service configured, so it cannot keep secrets for an
         agent. Environment variables still work.
       </p>
     {:else if !secrets.isPending && secrets.data?.unreadable}
       <p class="secrets__note">
         The room has nobody to read this agent's secrets as, so it cannot show them. An
-        operator can open them in the secrets platform.
+        operator can open them in the secrets service.
       </p>
     {:else if secretsReadable && secrets.data?.secret_name}
       <p class="secrets__note">

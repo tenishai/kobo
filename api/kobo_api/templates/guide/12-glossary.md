@@ -17,7 +17,7 @@
 - **Memory.** Notes taught to an agent and files uploaded for it. Stays with the agent.
 - **Teach this.** The link on any chat message that files it into the agent's memory.
 - **Learnings.** One-line statements an agent proposes daily from its conversations, kept only when you press Remember.
-- **Secret.** A sensitive value stored in the secrets platform and delivered to the agent as an environment variable. Shown only as a lock.
+- **Secret.** A sensitive value stored in the secrets service and delivered to the agent as an environment variable. Shown only as a lock.
 - **Variable.** A plain setting written into the agent's files.
 - **Colleague.** Another agent this one may ask. Same group is automatic; across groups both owners agree.
 - **Colleague mode.** Whether an agent may ask its colleagues, set by its owner on the Harness tab: `default` asks them, `roster-only` knows who they are but asks a human instead, `none` has no colleagues.

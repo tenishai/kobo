@@ -11,7 +11,7 @@ While an agent builds, a checklist sits at the top of its page and clears on its
 
 1. **Repository.** The agent's files are written and pushed to a new repository.
 2. **Paint the portrait.** The agent gets a face. If this fails, the agent still builds.
-3. **Platform onboarding.** The repository is connected to the platform that runs it.
+3. **Deployment setup.** The repository is connected to the service that deploys it.
 4. **Model access.** The agent's identity is allowed to call the model you chose.
 5. **Deploy wiring.** The agent's identity, storage and colleague pass are put in place.
 6. **Image build.** The agent's image is built by its repository's own pipeline.
