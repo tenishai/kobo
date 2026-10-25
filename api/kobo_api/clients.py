@@ -4030,6 +4030,142 @@ class StorageClient(Protocol):
         ...
 
 
+class DirectoryStorageClient:
+    """`StorageClient` over a directory (issue #208, ergon's laptop and
+    team tiers): a bucket is `<root>/<bucket>/`, a key is a relative path
+    under it. The persona and skill catalogs read and write through the
+    protocol only, so a room with no object store at all lists personas,
+    seeds the built-ins, and accepts one on create.
+
+    Containment is the one rule: a key that is absolute, empty, or walks out
+    of the bucket (`..`) is refused before any filesystem call. Custom
+    metadata lives in a sidecar `<key>.meta.json` carrying the caller's
+    `metadata` dict plus `updated` (and `timeCreated` on first write), the
+    two server fields the catalog readers look at. Sidecars never appear in
+    `list_keys`. `ensure_versioning` is a no-op that returns False: a
+    directory keeps no object versions, and the callers that ask only
+    record the answer.
+    """
+
+    _SIDECAR = ".meta.json"
+
+    def __init__(self, root: Path | str):
+        self._root = Path(root).resolve()
+
+    def _bucket_dir(self, bucket: str) -> Path:
+        if not bucket or "/" in bucket or bucket in (".", "..") or bucket.startswith("."):
+            raise ClientError(f"bucket name {bucket!r} is not a directory name")
+        return self._root / bucket
+
+    def _path(self, bucket: str, key: str) -> Path:
+        base = self._bucket_dir(bucket)
+        if not key or key.startswith("/") or key.endswith("/") or "\\" in key:
+            raise ClientError(f"key {key!r} is not a relative path")
+        if any(part in ("", ".", "..") for part in key.split("/")):
+            raise ClientError(f"key {key!r} walks outside its bucket")
+        target = (base / key).resolve()
+        if base.resolve() not in target.parents:
+            raise ClientError(f"key {key!r} walks outside its bucket")
+        return target
+
+    def read_bytes(self, bucket: str, key: str) -> bytes:
+        path = self._path(bucket, key)
+        try:
+            return path.read_bytes()
+        except FileNotFoundError:
+            raise StorageNotFound(f"object not found: {bucket}/{key}") from None
+        except IsADirectoryError:
+            raise StorageNotFound(f"object not found: {bucket}/{key}") from None
+
+    def object_metadata(self, bucket: str, key: str) -> dict:
+        path = self._path(bucket, key)
+        if not path.is_file():
+            raise StorageNotFound(f"object not found: {bucket}/{key}")
+        sidecar = path.with_name(path.name + self._SIDECAR)
+        if sidecar.is_file():
+            try:
+                stored = json.loads(sidecar.read_text())
+            except (OSError, ValueError):
+                stored = {}
+        else:
+            stored = {}
+        updated = stored.get("updated") or _iso_utc(path.stat().st_mtime)
+        return {
+            "name": key,
+            "bucket": bucket,
+            "size": str(path.stat().st_size),
+            "updated": updated,
+            "timeCreated": stored.get("timeCreated") or updated,
+            "metadata": dict(stored.get("metadata") or {}),
+        }
+
+    def write_bytes(
+        self,
+        bucket: str,
+        key: str,
+        data: bytes,
+        *,
+        metadata: dict[str, str] | None = None,
+        content_type: str = "application/octet-stream",
+    ) -> None:
+        path = self._path(bucket, key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        sidecar = path.with_name(path.name + self._SIDECAR)
+        created = None
+        if sidecar.is_file():
+            try:
+                created = json.loads(sidecar.read_text()).get("timeCreated")
+            except (OSError, ValueError):
+                created = None
+        now = _iso_utc(datetime.now(UTC).timestamp())
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "metadata": dict(metadata or {}),
+                    "contentType": content_type,
+                    "updated": now,
+                    "timeCreated": created or now,
+                },
+                sort_keys=True,
+            )
+        )
+
+    def list_keys(self, bucket: str, prefix: str) -> list[str]:
+        base = self._bucket_dir(bucket)
+        if not base.is_dir():
+            raise StorageNotFound(f"bucket not found: {bucket}")
+        keys = []
+        for path in base.rglob("*"):
+            if not path.is_file() or path.name.endswith(self._SIDECAR) or path.name.endswith(".tmp"):
+                continue
+            key = path.relative_to(base).as_posix()
+            if key.startswith(prefix):
+                keys.append(key)
+        return sorted(keys)
+
+    def ensure_bucket(self, bucket: str) -> str:
+        base = self._bucket_dir(bucket)
+        if base.is_dir():
+            return "exists"
+        base.mkdir(parents=True, exist_ok=True)
+        return "created"
+
+    def ensure_versioning(self, bucket: str) -> bool:
+        """Always False: a directory keeps no object versions, so there is
+        nothing to turn on. Said here so a caller reading "False" knows it
+        means "already as versioned as it gets", not "nothing changed"."""
+        if not self._bucket_dir(bucket).is_dir():
+            raise StorageNotFound(f"bucket not found: {bucket}")
+        return False
+
+
+def _iso_utc(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, UTC).strftime("%Y-%m-%dT%H:%M:%S.") + f"{int(timestamp * 1000) % 1000:03d}Z"
+
+
 _STORAGE_API_BASE = "https://storage.googleapis.com/storage/v1"
 _STORAGE_UPLOAD_BASE = "https://storage.googleapis.com/upload/storage/v1"
 
@@ -5116,7 +5252,11 @@ class Clients:
                 config.vertex_project, config.name_location, config.name_model,
                 token_provider=gcloud_token,
             ),
-            storage=HttpxStorageClient(config.gcp_project, token_provider=gcloud_token),
+            storage=(
+                DirectoryStorageClient(config.storage_root)
+                if config.storage_backend == "directory"
+                else HttpxStorageClient(config.gcp_project, token_provider=gcloud_token)
+            ),
             slack=HttpxSlackClient(slack_store) if slack_store is not None else None,
             # Same "is this configured" gate as slack above, but via the
             # shared `cabal_enabled` truthiness check (kobo_api.clients)

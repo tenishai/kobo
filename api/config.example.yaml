@@ -97,6 +97,12 @@ models:
 skills_repo: null
 skills_bucket: ""
 personas_bucket: ""
+# Where those catalogs live: `gcs` (the default; the buckets above, read with
+# a gcloud token) or `directory`, which keeps each "bucket" as a folder under
+# storage_root on local disk — a room with no object store (a laptop, a demo).
+# With `directory`, set skills_bucket/personas_bucket to plain folder names.
+storage_backend: gcs
+storage_root: ""
 
 # Workload Identity Federation provider + service account the org's own
 # skills-publish pipeline (if any) runs as. skills_publish_external true
