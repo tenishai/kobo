@@ -78,6 +78,36 @@ about infrastructure, they do not read S3 objects).
   was told), `module_version` (what was deployed), and `verified_at` (the
   last successful test assume).
 
+### GCP, the way Wiz does it
+
+Wiz's own GCP set-up at the org (seen 2026-10-25) is the pattern to copy, with
+narrower contents. Its service account lives in Wiz's project and is granted
+directly on the customer's org: predefined roles (Browser, Cloud Asset Viewer,
+Security Reviewer, Service Usage Viewer, Viewer, KMS CryptoKey
+Encrypter/Decrypter) plus custom roles, one base (`wiz_security_role`) and one
+`_ext` per optional capability (data scanning, disk analysis, forensic,
+registry scanning, serverless scanning), the forensic one under an IAM
+condition. Three things carry over:
+
+- **The gateway's service account is granted directly.** It already lives in
+  a Google project of ours, so on GCP there is no federation step at all: the
+  module grants our SA on the folder or org the owner names, and
+  `gcp_identity` with no service account means exactly that. Impersonating a
+  narrower SA stays the optional second shape.
+- **Packs are custom roles.** The module creates `kobo_inventory`,
+  `kobo_logs`, `kobo_security_audit`, `kobo_cost` as org- or folder-level
+  custom roles built from the permission lists in `packs/gcp.json`, so a cloud
+  owner reviews four named roles, not twenty predefined ones, and an upgrade
+  is a role edit. Where a predefined role is exactly a pack (`roles/viewer` is
+  not; `roles/logging.viewer` is close) the module may bind it instead.
+- **Conditions for the narrow cases.** A pack that must be limited to a
+  resource prefix or a folder gets an IAM condition, the way Wiz limits the
+  forensic role; kobo shows the condition on the integration page.
+
+What does not carry over: `roles/viewer`, `roles/browser` across the org and
+KMS decrypt. Those are a security scanner's needs, not an agent's, and they
+are what makes an owner refuse.
+
 ### Set-up, the way Wiz does it
 
 A "Connect AWS" (GCP, Azure) page, not a form:
