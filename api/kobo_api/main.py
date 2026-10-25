@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Annotated, Literal
 
@@ -109,7 +110,9 @@ from kobo_api.intake import (
 from kobo_api.jira_broker import fetch_issue as jira_fetch_issue
 from kobo_api.jira_broker import search_issues as jira_search_issues
 from kobo_api.kinds import (
+    KIND_COMPOSED,
     KIND_CONNECTED,
+    KIND_DIRECTORY,
     RUN_MODE_HEADLESS,
     RUN_MODE_HTTP,
     is_connected,
@@ -4946,9 +4949,19 @@ def create_app(
         existing = session.query(Agent).filter_by(name=payload.name).first()
         if existing is not None:
             return JSONResponse({"error": f"name taken: {payload.name!r}"}, status_code=409)
-        blocked = _namespace_taken_block(app, payload.name)
-        if blocked is not None:
-            return blocked
+        if cfg.delivery_backend == "directory":
+            # The folder is the artifact (issue #207): a folder nobody
+            # recorded is someone else's, the #193 rule for folders. No
+            # cluster is asked about.
+            if (Path(cfg.directory_root) / payload.name).exists():
+                return JSONResponse(
+                    {"error": f"name taken: a folder named {payload.name!r} already exists under the agent root"},
+                    status_code=409,
+                )
+        else:
+            blocked = _namespace_taken_block(app, payload.name)
+            if blocked is not None:
+                return blocked
 
         # Access control (Task A2): the verified IAP email at create time is
         # this agent's owner. `getattr` with a `None` default covers both
@@ -4985,6 +4998,7 @@ def create_app(
             ],
             status=AgentStatus.PENDING,
             created_by=created_by,
+            kind=KIND_DIRECTORY if cfg.delivery_backend == "directory" else KIND_COMPOSED,
             group_name=payload.group_name,
             skip_baseline=payload.skip_baseline,
             # Born following its threads (2026-10-06); the Slack tab moves it.

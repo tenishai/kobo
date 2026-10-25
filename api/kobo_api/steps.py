@@ -32,11 +32,13 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 import shutil
 import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -68,8 +70,14 @@ from kobo_api.composer import (
     validate_agent_yaml,
 )
 from kobo_api.config import Config, vertex_location_for
-from kobo_api.directory import sync_directory
-from kobo_api.kinds import KIND_CONNECTED, RUN_MODE_HEADLESS, is_connected
+from kobo_api.directory import sync_directory, sync_directory_from_path
+from kobo_api.kinds import (
+    KIND_CONNECTED,
+    RUN_MODE_HEADLESS,
+    is_connected,
+    is_directory,
+    owns_repo,
+)
 from kobo_api.metadata import (
     commit_card_metadata,
     generate_capability,
@@ -965,6 +973,120 @@ class RepoStep:
         return f"created {repo}"
 
 
+def agent_directory(config: Config, name: str) -> Path:
+    """`<directory_root>/<name>`, the folder a directory-delivered agent lives
+    in (issue #207). Resolved and containment-checked: a name is already a
+    DNS label (`kobo_api.catalog.NAME_RE`), so this cannot escape the root,
+    but the check costs nothing and the rule is worth stating once."""
+    root = Path(config.directory_root).resolve()
+    target = (root / name).resolve()
+    if target.parent != root:
+        raise RuntimeError(f"agent folder {target} is not directly under {root}")
+    return target
+
+
+READY_MARKER = ".ready"
+
+
+class ComposeDirectoryStep:
+    """RepoStep's counterpart for the directory backend (issue #207): compose
+    the same bundle RepoStep would push, validate it, and place it at
+    `<directory_root>/<name>/` in one rename, so a watcher never sees a
+    half-written folder. A retry replaces the folder: the row names this
+    agent, so the folder is the room's. A folder nobody recorded is refused
+    at create (`main.create_agent`), the #193 rule for folders."""
+
+    name = "compose"
+    label = "Compose the agent"
+
+    def run(self, ctx: Ctx) -> str:
+        agent = ctx.agent
+        config = ctx.config
+        storage = ctx.clients.storage
+        engine = ctx.session.get_bind()
+        target = agent_directory(config, agent.name)
+
+        persona_body = _resolve_persona_body(config, storage, engine, agent)
+        staging_dir = ctx.workdir / "staging"
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        staged_skills = _stage_skills(storage, config, agent, staging_dir)
+        spec = BundleSpec(
+            name=agent.name,
+            persona_body=persona_body,
+            model_id=agent.model_id,
+            skills=staged_skills,
+            runtime_image=agent.runtime_image or config.runtime_image,
+            vertex_project=config.vertex_project,
+            vertex_location=vertex_location_for(config, agent.model_id),
+            team=agent.team or "shared",
+            group=agent.group_name,
+            purpose_tags=decode_tags(agent.purpose_tags),
+            cabal_url=config.cabal_url,
+            capability=agent.capability,
+            colleagues=_colleague_roster(ctx.session, agent),
+            memory_replica_bucket=config.memory_replica_bucket,
+            broker_url=config.broker_url,
+            liminal_url=config.liminal_url,
+            archetype=agent.archetype,
+            colleague_mode=effective_colleague_mode(agent.colleague_mode),
+        )
+        compose_dir = ctx.workdir / "compose"
+        shutil.rmtree(compose_dir, ignore_errors=True)
+        compose(spec, compose_dir)
+        if not agent.skip_baseline and config.skills_repo:
+            _stage_baseline_tools(ctx.clients.github, config, compose_dir / "bundle")
+        validate_agent_yaml(compose_dir / "bundle")
+
+        # Into place in one rename: copy beside the target, swap, drop the old
+        # folder. A watcher sees either the previous complete folder or the
+        # new complete one, never a partial write.
+        target.parent.mkdir(parents=True, exist_ok=True)
+        incoming = target.parent / f".{agent.name}.incoming"
+        shutil.rmtree(incoming, ignore_errors=True)
+        shutil.copytree(compose_dir, incoming)
+        previous = target.parent / f".{agent.name}.previous"
+        shutil.rmtree(previous, ignore_errors=True)
+        if target.exists():
+            os.replace(target, previous)
+        os.replace(incoming, target)
+        shutil.rmtree(previous, ignore_errors=True)
+        return f"composed into {target}"
+
+
+class LoadStep:
+    """Tell the running set there is a new or changed agent folder (issue
+    #207). With `directory_reload_url` set, one POST carrying the agent's
+    name and folder; a non-2xx answer fails the step and the retry asks
+    again. Without it, a `.ready` marker is written last in the folder, so a
+    watcher that keys on the marker never loads a half-written bundle. The
+    seam is deliberately this small; ergon decides which side of it to use."""
+
+    name = "load"
+    label = "Load into the running set"
+
+    def run(self, ctx: Ctx) -> str:
+        config = ctx.config
+        target = agent_directory(config, ctx.agent.name)
+        if not target.is_dir():
+            raise RuntimeError(f"nothing to load: {target} is not a folder")
+        if config.directory_reload_url:
+            try:
+                resp = httpx.post(
+                    config.directory_reload_url,
+                    json={"name": ctx.agent.name, "path": str(target)},
+                    timeout=httpx.Timeout(30.0, connect=5.0),
+                )
+            except httpx.HTTPError as exc:
+                raise RuntimeError(f"the running set did not answer the reload: {exc}") from exc
+            if resp.status_code >= 300:
+                raise RuntimeError(
+                    f"the running set refused the reload ({resp.status_code}): {resp.text[:200]}"
+                )
+            return f"running set told to load {ctx.agent.name}"
+        (target / READY_MARKER).write_text(datetime.now(UTC).isoformat())
+        return f"no reload URL configured; wrote {READY_MARKER} in {target} for a watcher"
+
+
 class ConnectStep:
     """RepoStep's counterpart for an agent the room did not build: checks
     that the repository the route recorded is one this room may work with,
@@ -1168,7 +1290,7 @@ class AvatarStep:
             )
 
         sha: str | None = None
-        if not is_connected(agent):
+        if owns_repo(agent):
             try:
                 sha = set_avatar(clients.github, repo=agent.repo_full_name, png=png)
             except Exception as exc:  # push-side failure, same skip treatment
@@ -2593,6 +2715,11 @@ class DirectoryStep:
     def run(self, ctx: Ctx) -> str:
         if not cabal_enabled(ctx.config):
             return "switchboard not configured; nothing to register"
-
-        sync_directory(ctx.clients.github, ctx.clients.cabal, ctx.config, ctx.agent)
+        if is_directory(ctx.agent):
+            # The card is in the composed folder, not in a repository (#207).
+            sync_directory_from_path(
+                ctx.clients.cabal, ctx.config, ctx.agent, agent_directory(ctx.config, ctx.agent.name) / "bundle"
+            )
+        else:
+            sync_directory(ctx.clients.github, ctx.clients.cabal, ctx.config, ctx.agent)
         return f"registered {ctx.agent.name} in the directory"

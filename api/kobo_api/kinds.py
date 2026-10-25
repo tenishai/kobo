@@ -30,9 +30,28 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle guard, typing only
 
 KIND_COMPOSED = "composed"
 KIND_CONNECTED = "connected"
+# A `directory` agent (issue #207, ergon's laptop and team tiers) is one the
+# room composed into a folder under `Config.directory_root` for a running set
+# of local daedalus processes to load. No repository, no cluster, no image:
+# the folder is the artifact, and destroy removes the folder.
+KIND_DIRECTORY = "directory"
 
 RUN_MODE_HTTP = "http"
 RUN_MODE_HEADLESS = "headless"
+
+
+def is_directory(agent: Agent) -> bool:
+    """A directory-delivered agent (issue #207): composed into a folder, never
+    deployed. Compared, never truth-tested, like `is_connected`."""
+    return agent.kind == KIND_DIRECTORY
+
+
+def owns_repo(agent: Agent) -> bool:
+    """Whether the room wrote and keeps a repository for this agent: true only
+    for a composed agent. A connected agent's repository is the team's, and a
+    directory agent has none, so writes that assume a room-owned repo (the
+    avatar commit, knowledge saves) ask this, not `is_connected`."""
+    return agent.kind == KIND_COMPOSED
 
 
 def is_connected(agent: Agent) -> bool:

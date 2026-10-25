@@ -62,7 +62,22 @@ def sync_directory(github: GitHubClient, cabal: CabalClient, cfg: Config, agent:
         workdir = Path(tmp)
         github.clone(agent.repo_full_name, workdir)
         card = json.loads((workdir / "bundle" / "agent-card.json").read_text())
+    register_card(cabal, cfg, agent, card)
 
+
+def sync_directory_from_path(cabal: CabalClient, cfg: Config, agent: Agent, bundle_dir: Path) -> None:
+    """`sync_directory` for a directory-delivered agent (issue #207): the card
+    is read from the composed folder on disk, not from a repository."""
+    try:
+        card = json.loads((bundle_dir / "agent-card.json").read_text())
+    except (OSError, ValueError) as exc:
+        raise ClientError(f"no readable agent card at {bundle_dir}: {exc}") from exc
+    register_card(cabal, cfg, agent, card)
+
+
+def register_card(cabal: CabalClient, cfg: Config, agent: Agent, card: dict) -> None:
+    """The registration itself: the endpoint from `agent_endpoint_template`,
+    the agent's name as its a2a audience, the card verbatim."""
     try:
         endpoint = cfg.agent_endpoint_template.format(name=agent.name)
     except (KeyError, IndexError) as exc:
