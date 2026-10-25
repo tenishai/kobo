@@ -34,6 +34,20 @@ room's agents actually do today:
 | `cost` | `ce:Get*`, `compute-optimizer:Get*`, `trustedadvisor:List*` | `roles/billing.viewer` | `Cost Management Reader` | keystone |
 | `logs` | CloudWatch Logs `FilterLogEvents`, `GetLogEvents` on named groups | `roles/logging.viewer` | `Log Analytics Reader` | sherlock |
 
+**A real grant to calibrate against.** sherlock's service account today holds twenty
+roles on the org's "Shared Infrastructure" folder (the GCP analogue of an OU scope):
+`compute.viewer`, `container.viewer`, `container.clusterViewer`, `gkehub.gatewayReader`,
+`run.viewer`, `cloudfunctions.viewer`, `cloudsql.viewer`, `alloydb.viewer`, `redis.viewer`,
+`pubsub.viewer`, `dns.reader`, `artifactregistry.reader`, `bigquery.metadataViewer`,
+`servicehealth.viewer`, `logging.viewer`, `monitoring.viewer`, `errorreporting.viewer`,
+`cloudtrace.user`, `secretmanager.viewer` (metadata only, never `secretAccessor`), and the
+blanket `roles/viewer`, which the IAM recommender scores at 6199 of 6220 permissions excess.
+That list is the GCP `inventory` pack (the first fourteen) and `logs` pack (the next four),
+with `secretmanager.viewer` moving to `security-audit`, and `roles/viewer` dropped: the
+specific viewers already cover what the agent uses, and the blanket role is what makes a
+cloud owner say no. The bucket grant on `fubo-agent-memory-replicas` is kobo's own memory
+replica, not a pack.
+
 Write packs come later and separately (`act:ecs-restart`, `act:tag`), each
 its own pack with its own review, never folded into a read pack. No pack ever
 carries `iam:*` write, `kms:Decrypt` on everything, or data-plane reads of
