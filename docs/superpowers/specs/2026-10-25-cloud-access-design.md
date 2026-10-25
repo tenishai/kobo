@@ -168,13 +168,14 @@ role across every integration they grant to kobo.
 
 ## What I need from Kyle before building
 
-1. **The first packs.** Is the table above right for what the agents do
+All three ruled 2026-10-25 ("yeah, lets do it" on the recommendations).
+
+1. ~~**The first packs.**~~ Ruled: `inventory` + `logs` first, `security-audit` next; the sheet offers all four. Is the table above right for what the agents do
    today? Anything to add for sherlock, ledger, keystone, clio before the
    first module ships?
-2. **The trusted principal.** The gateway's own service account through
-   OIDC (my recommendation: no shared secret, per-agent audit), or a fubo
-   AWS hub role with an external ID (what Wiz does, fits an org that already
-   has a hub)?
+2. ~~**The trusted principal.**~~ Ruled: the gateway's own service account
+   through OIDC. The module keeps a hub-role arm for organisations that need
+   it; the gateway handler speaks only web identity.
 3. ~~**The repo.**~~ Ruled: `tenishai/cloud-access`, private until the
    suite goes public; kobo vendors a pinned release.
 
@@ -184,7 +185,18 @@ role across every integration they grant to kobo.
    three clouds, AWS Terraform module + CloudFormation template, GCP grant
    module, Azure shape, validate CI. First release tag once liminal can
    assume the role.
-2. liminal: `aws_role` via web identity with `SourceIdentity` + session
-   policy; the probe.
-3. kobo: the Connect AWS page over the record fields above; GCP and Azure
-   follow the same page with their own module.
+2. ~~liminal~~ tenishai/liminal#209: an `aws` handler (not a `[[target]]`:
+   AWS is an API the gateway calls itself), web identity sessions tagged
+   with the agent as `SourceIdentity`, read verbs only, data-plane reads
+   refused by name, accounts from `[tool_extras."aws.roles"]`, and the
+   admin routes `/admin/aws/identity` + `/admin/aws/probe`. Session policy
+   deferred: the role is already read-only.
+3. ~~kobo~~ tenishai/kobo#231: the Connect AWS sheet (packs, three ways,
+   paste, probe before save), the registry.toml projection, cloud-access
+   v0.1.0 vendored. GCP and Azure follow the same sheet with their own
+   module.
+4. Deployment: the gateway needs a Google service account linked to its
+   Kubernetes service account before it has an identity to trust
+   (deployment repo PR drafted with the three commands), and its image needs
+   liminal with the `[aws]` extra once #209 is released. Then the first live
+   connect against a real account.
