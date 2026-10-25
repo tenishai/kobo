@@ -12,7 +12,7 @@ OPS / FLOW (cabal endpoints):
 - `POST /admin/token/revoke` {sub: agent:<name>} THEN `POST /admin/token/mint-service` {sub: agent:<name>, scope:["colleague"], aud:"cabal-core", ttl_days:365} — `deliver_pass` in WireStep; token lands as Secret `<name>-cabal`, key `CABAL_COLLEAGUE_TOKEN` (via sero when configured, else `kubectl.apply_secret`).
 - `POST /a2a/tasks` {target, task} (180s timeout): every room chat, teach (`_build_teach_envelope`), learnings sweep, hello, roster refresh, threads. When the switchboard is off, hello and chat fall back to the direct path (`clients.agent`) and DirectoryStep is a no-op.
 - `PUT /admin/dispatch-pairs` {pairs:[[caller,target],...]} → {count}.
-- `GET /admin/conversations[?limit,target,caller]`, `GET /admin/conversations/{task_id}`, `GET /admin/events/stream` (SSE, async client) — the colleagues feed.
+- `GET /admin/conversations[?limit,target,caller]`, `GET /admin/conversations/{task_id}`, `GET /admin/events/stream` (SSE, async client) — the colleagues feed. kobo filters what it relays per caller with `main._colleague_scope`/`_in_colleague_scope` (see the access-control card); cabal's log is room-wide and never consulted for who may read it.
 INVARIANTS:
 - Pair shape is `("agent:<caller>", "<target>")`: caller prefixed, target bare. Directional; an accepted `A2AInvite` adds exactly one direction.
 - Implicit pairs: same non-null `group_name` on both sides AND not `SHARED_GROUP`. WHY: the commons is visible to everyone but its wiring stays consent-based. Group-less agents never pair. Only READY, non-connected agents appear, as caller or target.

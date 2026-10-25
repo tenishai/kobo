@@ -1651,3 +1651,24 @@ def test_room_wide_routes_show_the_owner_their_agents_conversations(
 
     assert [c["task_id"] for c in listed.json()["conversations"]] == ["t-human"]
     assert detail.status_code == 200
+
+
+# --- issue #211: the per-row filter, pinned for a caller with a non-empty scope
+
+
+def test_in_colleague_scope_keeps_only_rows_with_a_visible_participant():
+    """A caller who sees exactly `ward` sees rows where ward is the target or
+    the calling agent, and no others. An operator's chat follows the agent it
+    was with. `bool(scope)` would pass the stranger and owner tests above and
+    fail this one."""
+    from kobo_api.main import _in_colleague_scope
+
+    scope = {"ward"}
+    assert _in_colleague_scope({"target_agent": "ward", "caller_agent": "agent:other"}, scope)
+    assert _in_colleague_scope({"target_agent": "other", "caller_agent": "agent:ward"}, scope)
+    assert _in_colleague_scope({"target_agent": "ward", "caller_agent": "operator:p@example.com"}, scope)
+    assert not _in_colleague_scope({"target_agent": "other", "caller_agent": "agent:third"}, scope)
+    assert not _in_colleague_scope({"target_agent": "other", "caller_agent": "operator:p@example.com"}, scope)
+    # The bare name never matches the prefixed form by accident.
+    assert not _in_colleague_scope({"target_agent": "agent:ward", "caller_agent": "ward"}, scope)
+    assert _in_colleague_scope({"target_agent": "anything", "caller_agent": ""}, None)
