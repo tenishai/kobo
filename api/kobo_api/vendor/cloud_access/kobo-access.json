@@ -1,0 +1,388 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "kobo gateway access role: packs chosen per integration, one trusted principal, no long-lived key.",
+  "Metadata": {
+    "AWS::CloudFormation::Interface": {
+      "ParameterGroups": [
+        {
+          "Label": {
+            "default": "Integration"
+          },
+          "Parameters": [
+            "IntegrationId",
+            "RoleName",
+            "RolePath",
+            "PermissionsBoundaryPolicyName"
+          ]
+        },
+        {
+          "Label": {
+            "default": "Trust (set one)"
+          },
+          "Parameters": [
+            "GatewayServiceAccountUniqueId",
+            "Audience",
+            "HubRoleArn",
+            "ExternalId"
+          ]
+        },
+        {
+          "Label": {
+            "default": "Packs (inventory is always on)"
+          },
+          "Parameters": [
+            "SecurityAudit",
+            "Cost",
+            "Logs"
+          ]
+        }
+      ]
+    }
+  },
+  "Parameters": {
+    "IntegrationId": {
+      "Type": "String",
+      "Description": "kobo's id for this integration."
+    },
+    "RoleName": {
+      "Type": "String",
+      "Default": "KoboAccess-Role"
+    },
+    "RolePath": {
+      "Type": "String",
+      "Default": "/",
+      "AllowedPattern": "(\\/)|(\\/[!-~]+\\/)"
+    },
+    "PermissionsBoundaryPolicyName": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Optional permissions boundary policy name, must exist in this account."
+    },
+    "GatewayServiceAccountUniqueId": {
+      "Type": "String",
+      "Default": "",
+      "Description": "The gateway's Google service account numeric id. Leave empty to trust HubRoleArn instead."
+    },
+    "Audience": {
+      "Type": "String",
+      "Default": "sts.amazonaws.com",
+      "Description": "The aud claim the gateway's ID token carries; leave as is unless the gateway was told otherwise."
+    },
+    "HubRoleArn": {
+      "Type": "String",
+      "Default": "",
+      "Description": "An AWS principal that assumes this role with ExternalId instead of OIDC."
+    },
+    "ExternalId": {
+      "Type": "String",
+      "Default": "",
+      "NoEcho": true,
+      "Description": "Required with HubRoleArn."
+    },
+    "SecurityAudit": {
+      "Type": "String",
+      "Default": "Disabled",
+      "AllowedValues": [
+        "Enabled",
+        "Disabled"
+      ],
+      "Description": "Audit configuration and read CloudTrail history."
+    },
+    "Cost": {
+      "Type": "String",
+      "Default": "Disabled",
+      "AllowedValues": [
+        "Enabled",
+        "Disabled"
+      ],
+      "Description": "Read spend, budgets and rightsizing recommendations."
+    },
+    "Logs": {
+      "Type": "String",
+      "Default": "Disabled",
+      "AllowedValues": [
+        "Enabled",
+        "Disabled"
+      ],
+      "Description": "Read CloudWatch metrics and query log groups."
+    }
+  },
+  "Conditions": {
+    "UseOIDC": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "GatewayServiceAccountUniqueId"
+            },
+            ""
+          ]
+        }
+      ]
+    },
+    "UseBoundary": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "PermissionsBoundaryPolicyName"
+            },
+            ""
+          ]
+        }
+      ]
+    },
+    "SecurityAuditOn": {
+      "Fn::Equals": [
+        {
+          "Ref": "SecurityAudit"
+        },
+        "Enabled"
+      ]
+    },
+    "CostOn": {
+      "Fn::Equals": [
+        {
+          "Ref": "Cost"
+        },
+        "Enabled"
+      ]
+    },
+    "LogsOn": {
+      "Fn::Equals": [
+        {
+          "Ref": "Logs"
+        },
+        "Enabled"
+      ]
+    }
+  },
+  "Resources": {
+    "Role": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Ref": "RoleName"
+        },
+        "Path": {
+          "Ref": "RolePath"
+        },
+        "Description": {
+          "Fn::Sub": "kobo gateway access for integration ${IntegrationId}"
+        },
+        "MaxSessionDuration": 3600,
+        "PermissionsBoundary": {
+          "Fn::If": [
+            "UseBoundary",
+            {
+              "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${PermissionsBoundaryPolicyName}"
+            },
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Fn::If": [
+                "UseOIDC",
+                {
+                  "Sid": "GatewayOIDC",
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Federated": "accounts.google.com"
+                  },
+                  "Action": [
+                    "sts:AssumeRoleWithWebIdentity",
+                    "sts:TagSession",
+                    "sts:SetSourceIdentity"
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "accounts.google.com:sub": {
+                        "Ref": "GatewayServiceAccountUniqueId"
+                      },
+                      "accounts.google.com:aud": {
+                        "Ref": "Audience"
+                      }
+                    }
+                  }
+                },
+                {
+                  "Sid": "HubRole",
+                  "Effect": "Allow",
+                  "Principal": {
+                    "AWS": {
+                      "Ref": "HubRoleArn"
+                    }
+                  },
+                  "Action": [
+                    "sts:AssumeRole",
+                    "sts:TagSession",
+                    "sts:SetSourceIdentity"
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "sts:ExternalId": {
+                        "Ref": "ExternalId"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/job-function/ViewOnlyAccess"
+          },
+          {
+            "Fn::If": [
+              "SecurityAuditOn",
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/SecurityAudit"
+              },
+              {
+                "Ref": "AWS::NoValue"
+              }
+            ]
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "kobo:integration",
+            "Value": {
+              "Ref": "IntegrationId"
+            }
+          },
+          {
+            "Key": "kobo:module",
+            "Value": "cloud-access/aws/cloudformation"
+          }
+        ]
+      }
+    },
+    "SecurityAuditPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Condition": "SecurityAuditOn",
+      "Properties": {
+        "PolicyName": "KoboSecurityAudit",
+        "Roles": [
+          {
+            "Ref": "Role"
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "CloudTrailHistory",
+              "Effect": "Allow",
+              "Action": [
+                "cloudtrail:LookupEvents",
+                "cloudtrail:GetTrail",
+                "cloudtrail:GetTrailStatus",
+                "cloudtrail:ListTrails"
+              ],
+              "Resource": "*"
+            }
+          ]
+        }
+      }
+    },
+    "CostPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Condition": "CostOn",
+      "Properties": {
+        "PolicyName": "KoboCost",
+        "Roles": [
+          {
+            "Ref": "Role"
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "CostAndUsage",
+              "Effect": "Allow",
+              "Action": [
+                "ce:Get*",
+                "ce:Describe*",
+                "ce:List*",
+                "budgets:ViewBudget",
+                "budgets:Describe*",
+                "cur:Describe*"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "Recommendations",
+              "Effect": "Allow",
+              "Action": [
+                "compute-optimizer:Get*",
+                "trustedadvisor:List*",
+                "trustedadvisor:Describe*"
+              ],
+              "Resource": "*"
+            }
+          ]
+        }
+      }
+    },
+    "LogsPolicy": {
+      "Type": "AWS::IAM::Policy",
+      "Condition": "LogsOn",
+      "Properties": {
+        "PolicyName": "KoboLogs",
+        "Roles": [
+          {
+            "Ref": "Role"
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "Metrics",
+              "Effect": "Allow",
+              "Action": [
+                "cloudwatch:Get*",
+                "cloudwatch:List*",
+                "cloudwatch:Describe*"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "Logs",
+              "Effect": "Allow",
+              "Action": [
+                "logs:Describe*",
+                "logs:Get*",
+                "logs:List*",
+                "logs:FilterLogEvents",
+                "logs:StartQuery",
+                "logs:StopQuery"
+              ],
+              "Resource": "*"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "RoleArn": {
+      "Description": "Paste this into kobo's Integrations page.",
+      "Value": {
+        "Fn::GetAtt": [
+          "Role",
+          "Arn"
+        ]
+      }
+    }
+  }
+}

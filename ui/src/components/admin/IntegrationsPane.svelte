@@ -4,6 +4,7 @@
   // says how far the credential and the gateway change have gone.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import Modal from "../Modal.svelte";
+  import AwsConnect from "./AwsConnect.svelte";
   import { errorMessage, type AdminIntegration } from "../../lib/api";
   import { toast } from "../../lib/toast.svelte";
   import {
@@ -194,8 +195,13 @@
   </div>
 </Modal>
 
-<Modal open={form !== null} title={form ? `Add ${form.name || "an integration"}` : ""} onclose={() => (form = null)}>
-  {#if form}
+<Modal open={form !== null} title={form ? (form.entry.id === "aws" ? "Connect AWS" : `Add ${form.name || "an integration"}`) : ""} size={form?.entry.id === "aws" ? "wide" : "default"} onclose={() => (form = null)}>
+  {#if form && form.entry.id === "aws"}
+    <form id="integration-form" class="form" onsubmit={submitConnect}>
+      <AwsConnect bind:roleArn={form.values.role_arn} />
+      {#if formError}<p class="page__foot fail">{formError}</p>{/if}
+    </form>
+  {:else if form}
     <form id="integration-form" class="form" onsubmit={submitConnect}>
       <label class="field">
         <span>Name</span>
@@ -232,7 +238,7 @@
   {/if}
   {#snippet footer()}
     <button type="button" class="btn" onclick={() => (form = null)}>Cancel</button>
-    <button type="submit" form="integration-form" class="btn btn--primary" disabled={connect.isPending}>Add</button>
+    <button type="submit" form="integration-form" class="btn btn--primary" disabled={connect.isPending}>{form?.entry.id === "aws" ? (connect.isPending ? "Checking with AWS…" : "Connect") : "Add"}</button>
   {/snippet}
 </Modal>
 

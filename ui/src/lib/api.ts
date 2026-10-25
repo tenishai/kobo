@@ -1175,6 +1175,28 @@ export async function connectAdminIntegration(input: AdminConnectIntegration): P
   return parse<AdminIntegration>(res);
 }
 
+/** The Connect AWS page: who the gateway is, which packs exist, and the role
+ * rendered three ways from the cloud-access release the room ships. */
+export type AdminAwsSetup = {
+  version: string;
+  role_name: string;
+  audience: string;
+  identity: { issuer: string; subject: string; email: string; audience: string } | null;
+  identity_note: string | null;
+  packs: { id: string; purpose: string; required: boolean; grants: string[] }[];
+  chosen: string[];
+  terraform: string;
+  cloudformation: { template: string; parameters: Record<string, string> };
+  trust_policy: string;
+  /** The room can ask the gateway to try the role before saving it. */
+  checked: boolean;
+};
+
+export async function fetchAdminAwsSetup(packs: string[]): Promise<AdminAwsSetup> {
+  const res = await fetch(`/api/admin/integrations/aws/setup?packs=${encodeURIComponent(packs.join(","))}`);
+  return parse<AdminAwsSetup>(res);
+}
+
 export async function disconnectAdminIntegration(id: string): Promise<{ id: string; secret: string; gateway: string }> {
   const res = await fetch(`/api/admin/integrations/${encodeURIComponent(id)}`, { method: "DELETE" });
   return parse<{ id: string; secret: string; gateway: string }>(res);

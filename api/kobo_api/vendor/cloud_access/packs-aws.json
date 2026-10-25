@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "packs": [
+    {
+      "id": "inventory",
+      "purpose": "See what exists: resources, configuration and tags across services.",
+      "required": true,
+      "managed_policies": ["arn:aws:iam::aws:policy/job-function/ViewOnlyAccess"],
+      "statements": []
+    },
+    {
+      "id": "security-audit",
+      "purpose": "Audit configuration and read CloudTrail history.",
+      "managed_policies": ["arn:aws:iam::aws:policy/SecurityAudit"],
+      "statements": [
+        {"Sid": "CloudTrailHistory", "Effect": "Allow", "Action": ["cloudtrail:LookupEvents", "cloudtrail:GetTrail", "cloudtrail:GetTrailStatus", "cloudtrail:ListTrails"], "Resource": "*"}
+      ]
+    },
+    {
+      "id": "cost",
+      "purpose": "Read spend, budgets and rightsizing recommendations.",
+      "managed_policies": [],
+      "statements": [
+        {"Sid": "CostAndUsage", "Effect": "Allow", "Action": ["ce:Get*", "ce:Describe*", "ce:List*", "budgets:ViewBudget", "budgets:Describe*", "cur:Describe*"], "Resource": "*"},
+        {"Sid": "Recommendations", "Effect": "Allow", "Action": ["compute-optimizer:Get*", "trustedadvisor:List*", "trustedadvisor:Describe*"], "Resource": "*"}
+      ]
+    },
+    {
+      "id": "logs",
+      "purpose": "Read CloudWatch metrics and query log groups.",
+      "managed_policies": [],
+      "statements": [
+        {"Sid": "Metrics", "Effect": "Allow", "Action": ["cloudwatch:Get*", "cloudwatch:List*", "cloudwatch:Describe*"], "Resource": "*"},
+        {"Sid": "Logs", "Effect": "Allow", "Action": ["logs:Describe*", "logs:Get*", "logs:List*", "logs:FilterLogEvents", "logs:StartQuery", "logs:StopQuery"], "Resource": "*"}
+      ]
+    }
+  ]
+}
