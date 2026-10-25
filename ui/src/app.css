@@ -1017,3 +1017,135 @@ textarea.field__input {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* --- Admin pages: one title, one sentence, a toolbar, a table. The shape of
+   an org-settings screen, so an admin reads what is there at a glance. */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.page__title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.page__lead {
+  margin: 0;
+  max-width: 60rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.page__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.page__search {
+  flex: 0 1 20rem;
+  min-width: 12rem;
+}
+
+.page__foot {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+/* The bordered table card. Rows are a little taller than a panel table and
+   the last border is dropped, so the card itself is the frame. */
+.table-card {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.table-card .panel__table th {
+  padding: 10px var(--space-md);
+  background: var(--bg);
+}
+
+.table-card .panel__table td {
+  padding: 10px var(--space-md);
+}
+
+.table-card .panel__table tbody tr {
+  height: 48px;
+}
+
+.table-card .panel__table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.table-card .panel__table tbody tr:hover td {
+  background: var(--accent-soft);
+}
+
+.table-card .panel__empty {
+  padding: var(--space-lg);
+}
+
+.chip {
+  display: inline-block;
+  margin: 1px 4px 1px 0;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.chip--muted {
+  color: var(--muted);
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.status__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border);
+}
+
+.status--on .status__dot { background: var(--ok); }
+.status--warn .status__dot { background: var(--warn); }
+.status--fail .status__dot { background: var(--fail); }
+.status--off { color: var(--muted); }
+
+/* A row that is a link: the whole row opens, the chevron says so. */
+.row-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: 14px var(--space-md);
+  border-bottom: 1px solid var(--border);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.row-link:last-child { border-bottom: none; }
+.row-link:hover { background: var(--accent-soft); }
+.row-link__name { font-weight: 600; }
+.row-link__note { color: var(--muted); font-size: 0.85rem; }
+.row-link__note--warn { color: var(--warn); }
+.row-link__chevron { color: var(--muted); }

@@ -1,143 +1,78 @@
 <script lang="ts">
-  // What needs a person today, then the room's numbers.
+  // One row per page of the panel, each a link, each with the one number or
+  // sentence an admin wants before opening it. Everything here is read from
+  // the room; nothing is a tile that leads nowhere.
+  import { createQuery } from "@tanstack/svelte-query";
   import { formatHash } from "../../lib/router.svelte";
-  import { admin, attention } from "../../lib/admin/store.svelte";
+  import {
+    adminAddonsQuery,
+    adminConnectionsQuery,
+    adminIntegrationsQuery,
+    adminRolesQuery,
+    groupRequestsQuery,
+  } from "../../lib/queries";
 
-  const items = $derived(attention());
-  const connected = $derived(admin.plugins.filter((p) => p.state === "connected").length);
-  const granted = $derived(
-    admin.connections.filter((c) => c.lanes.some((l) => l.state === "granted")).length,
-  );
-  const noLane = $derived(admin.connections.filter((c) => c.lanes.length === 0).length);
+  const addons = createQuery(() => (adminAddonsQuery()));
+  const integrations = createQuery(() => (adminIntegrationsQuery()));
+  const connections = createQuery(() => (adminConnectionsQuery()));
+  const roles = createQuery(() => (adminRolesQuery()));
+  const requests = createQuery(() => (groupRequestsQuery(true)));
+
+  function plural(n: number, one: string, many: string = one + "s"): string {
+    return `${n} ${n === 1 ? one : many}`;
+  }
+
+  type Row = { pane: string; name: string; note: string; warn?: boolean };
+  const rows = $derived.by((): Row[] => {
+    const a = addons.data ?? [];
+    const on = a.filter((x) => x.state === "on").length;
+    const broken = a.filter((x) => x.state === "error").length;
+    const i = integrations.data ?? [];
+    const failed = i.filter((x) => x.state === "failed").length;
+    const agents = connections.data?.agents ?? [];
+    const noLane = agents.filter((x) => x.lanes.length === 0).length;
+    const r = roles.data?.roles ?? [];
+    const pending = (requests.data ?? []).filter((x) => x.status === "pending").length;
+    return [
+      {
+        pane: "platform",
+        name: "Platform",
+        note: addons.isPending ? "…" : broken ? `${broken} not answering` : `${on} of ${a.length} on`,
+        warn: broken > 0,
+      },
+      {
+        pane: "integrations",
+        name: "Integrations",
+        note: integrations.isPending ? "…" : failed ? `${plural(failed, "connection")} failed` : i.length ? `${plural(i.length, "vendor")} connected` : "none yet",
+        warn: failed > 0,
+      },
+      {
+        pane: "connections",
+        name: "Connections",
+        note: connections.isPending ? "…" : noLane ? `${plural(agents.length, "agent")}, ${noLane} without a lane` : `${plural(agents.length, "agent")}, all with a lane`,
+      },
+      { pane: "roles", name: "Roles", note: roles.isPending ? "…" : plural(r.length, "role") },
+      {
+        pane: "people",
+        name: "People",
+        note: requests.isPending ? "…" : pending ? `${plural(pending, "group request")} waiting` : "nothing waiting",
+        warn: pending > 0,
+      },
+      { pane: "audit", name: "Audit", note: "who changed what, and whether it landed" },
+    ];
+  });
 </script>
 
-<section class="panel" aria-labelledby="overview-heading">
-  <div class="panel__header">
-    <h2 id="overview-heading" class="panel__heading">Overview</h2>
-    <p class="panel__lead">What needs a person today, then the room's numbers.</p>
+<section class="panel page" aria-labelledby="overview-heading">
+  <h2 id="overview-heading" class="page__title">Overview</h2>
+  <p class="page__lead">Where things stand. Open a page for the details.</p>
+  <div class="table-card">
+    {#each rows as r (r.pane)}
+      <a class="row-link" href={formatHash({ page: "admin", pane: r.pane })}>
+        <span class="row-link__name">{r.name}</span>
+        <span class="row-link__note" class:row-link__note--warn={r.warn}>{r.note}</span>
+        <span class="row-link__chevron" aria-hidden="true">›</span>
+      </a>
+    {/each}
   </div>
-
-  <div class="tiles">
-    <a class="tile" href={formatHash({ page: "admin", pane: "integrations" })}>
-      <span class="tile__label">Plugins</span>
-      <span class="tile__value">{connected}<span class="tile__of">/{admin.plugins.length}</span></span>
-      <span class="tile__note">connected</span>
-    </a>
-    <a class="tile" href={formatHash({ page: "admin", pane: "connections" })}>
-      <span class="tile__label">Agents with a lane</span>
-      <span class="tile__value">{granted}<span class="tile__of">/{admin.connections.length}</span></span>
-      <span class="tile__note">{noLane} with none</span>
-    </a>
-    <a class="tile" href={formatHash({ page: "admin", pane: "roles" })}>
-      <span class="tile__label">Roles</span>
-      <span class="tile__value">{admin.roles.length}</span>
-      <span class="tile__note">{admin.roles.filter((r) => !r.builtin).length} custom</span>
-    </a>
-    <a class="tile" href={formatHash({ page: "admin", pane: "people" })}>
-      <span class="tile__label">Pending</span>
-      <span class="tile__value">{items.length}</span>
-      <span class="tile__note">requests and open grants</span>
-    </a>
-  </div>
-
-  <h3 class="panel__subheading">Needs attention</h3>
-  {#if items.length === 0}
-    <p class="panel__empty">Nothing waits on you.</p>
-  {:else}
-    <ul class="attention">
-      {#each items as it (it.text)}
-        <li class="attention__row">
-          <span class="attention__dot attention__dot--{it.tone}" aria-hidden="true"></span>
-          <span class="attention__text">{it.text}</span>
-          <a class="btn btn--quiet" href={formatHash({ page: "admin", pane: it.pane, item: it.item })}>Open</a>
-        </li>
-      {/each}
-    </ul>
-  {/if}
 </section>
-
-<style>
-  .tiles {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
-    gap: var(--space-sm);
-  }
-
-  .tile {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-    padding: var(--space-sm) var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--ink);
-    text-decoration: none;
-  }
-
-  .tile:hover {
-    border-color: var(--accent);
-  }
-
-  .tile__label {
-    color: var(--muted);
-    font-size: 0.75rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-
-  .tile__value {
-    font-size: 1.5rem;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .tile__of {
-    color: var(--muted);
-    font-size: 0.9rem;
-    font-weight: 400;
-  }
-
-  .tile__note {
-    color: var(--muted);
-    font-size: 0.8rem;
-  }
-
-  .attention {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .attention__row {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    padding: var(--space-2xs) var(--space-xs);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-  }
-
-  .attention__dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  .attention__dot--warn {
-    background: var(--warn);
-  }
-
-  .attention__dot--fail {
-    background: var(--fail);
-  }
-
-  .attention__text {
-    flex: 1;
-    min-width: 0;
-    font-size: 0.9rem;
-  }
-</style>

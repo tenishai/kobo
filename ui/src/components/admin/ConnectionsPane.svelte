@@ -65,15 +65,10 @@
   const STATE: Record<string, string> = { pending: "Pending", applied: "Live", failed: "Failed", revoked: "Revoked" };
 </script>
 
-<section class="panel" aria-labelledby="connections-heading">
-  <div class="panel__header">
-    <h2 id="connections-heading" class="panel__heading">Connections</h2>
-    <p class="panel__lead">
-      Each agent's lanes to the room's integrations, never wider than the integration itself.
-      {#if conns.data}
-        {conns.data.live ? "A lane applies at the gateway at once" : "The gateway's admin plane is not wired, so a lane lands with its pull request"}{conns.data.gateway_repo ? ", and the grants file follows as a pull request." : "; no gateway config repository is set."}
-      {/if}
-    </p>
+<section class="panel page" aria-labelledby="connections-heading">
+  <div class="page__header">
+    <h2 id="connections-heading" class="page__title">Connections</h2>
+    <p class="page__lead">Which vendors each agent may reach. A lane is one agent's access to one integration.</p>
   </div>
 
   {#if conns.isPending}
@@ -83,7 +78,7 @@
   {:else if (conns.data?.agents ?? []).length === 0}
     <p class="panel__empty">No agents yet.</p>
   {:else}
-    <table class="panel__table">
+    <div class="table-card"><table class="panel__table">
       <thead><tr><th>Agent</th><th>Group</th><th>Lanes</th><th class="panel__cell--right"></th></tr></thead>
       <tbody>
         {#each conns.data?.agents ?? [] as a (a.agent)}
@@ -111,7 +106,7 @@
           </tr>
         {/each}
       </tbody>
-    </table>
+    </table></div>
     {#if integrations.length === 0}
       <p class="panel__note">Connect an integration first; a lane needs something to reach.</p>
     {/if}

@@ -106,6 +106,13 @@ All notable changes to kobo are documented here. The format follows
 
 ### Changed
 
+- **The admin panel reads like a settings screen.** Every page is a title, one sentence, a toolbar
+  and a table. Overview is one row per page, each a link with the number that matters, read from the
+  room (the demo store is gone). Add-ons is now Platform: a table of the services the room runs on,
+  with the secrets service named as OpenBao through sero, and Reload org config asks before it acts.
+  The integration catalogue is this room's vendors (Atlassian, Datadog, Google Cloud, AWS, Azure,
+  Wiz, Fastly, Okta, Other). Roles, People and Audit use the same table. The rail's "This room"
+  facts come from a new `GET /api/admin/room` instead of placeholder text.
 - README's "fail closed" bullet says what ships: an explicit tool allowlist, and with the
   switchboard on, colleague (and broker read) tools with no approval gate (issue #205).
   `docs/operating.md` says what the `kobo-room` ClusterRole really grants, cluster-wide Secret

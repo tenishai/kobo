@@ -73,12 +73,12 @@ def _secrets(config: Config) -> AddonCard:
     base = {
         "id": "secrets",
         "name": "Secrets",
-        "summary": "Holds each agent's secrets in the vault and syncs them into its namespace.",
+        "summary": "Holds each agent's secrets in OpenBao through sero and delivers them to its namespace.",
         "keys": ["sero_url", "sero_audience", "sero_namespace"],
     }
     if not config.sero_url:
         return AddonCard(state="off", detail="Not configured; agents keep secrets as plain Kubernetes Secrets.", **base)
-    return AddonCard(state="on", detail=f"Vault lane at {config.sero_url}.", **base)
+    return AddonCard(state="on", detail=f"sero at {config.sero_url}.", **base)
 
 
 def _observability(config: Config) -> AddonCard:

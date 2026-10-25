@@ -1298,6 +1298,19 @@ export async function fetchAdminAudit(): Promise<AdminAuditEvent[]> {
   return body.events;
 }
 
+/** The facts the panel's rail shows about this room. */
+export type AdminRoom = {
+  org_repo: string | null;
+  runtime_image: string;
+  cluster: string;
+  delivery_backend: string;
+};
+
+export async function fetchAdminRoom(): Promise<AdminRoom> {
+  const res = await fetch("/api/admin/room");
+  return parse<AdminRoom>(res);
+}
+
 export async function fetchAdminAddons(): Promise<AdminAddon[]> {
   const res = await fetch("/api/admin/addons");
   const body = await parse<{ addons: AdminAddon[] }>(res);

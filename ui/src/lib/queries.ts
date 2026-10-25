@@ -198,6 +198,7 @@ import {
   connectAdminIntegration,
   disconnectAdminIntegration,
   fetchAdminAddons,
+  fetchAdminRoom,
   fetchAdminConnections,
   putAdminLane,
   revokeAdminLane,
@@ -633,6 +634,14 @@ export function adminAuditQuery() {
     queryFn: fetchAdminAudit,
     staleTime: 15_000,
   });
+}
+
+export function adminRoomQuery() {
+  return {
+    queryKey: ["admin", "room"],
+    queryFn: fetchAdminRoom,
+    staleTime: 60_000,
+  };
 }
 
 export function adminAddonsQuery() {

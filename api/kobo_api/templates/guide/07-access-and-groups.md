@@ -30,3 +30,5 @@ Some groups are configured as readers. Members see every agent in the room and c
 ## Your account menu
 
 The bottom of the left rail is your account menu: press your email to open it. It shows who you are signed in as, a link to this guide, and **Log out** when the room's sign-in has a sign-out path. Room admins also see **Admin** there once the room's admin panel is turned on; nobody else sees the entry, and the page itself refuses anyone who is not an admin.
+
+The admin panel has seven pages. **Overview** is one row per page with the number that matters. **Platform** lists the services the room runs on and whether each answers; its one button re-reads the org config and asks before it does. **Integrations** is the vendors agents can reach, one credential each, with **Add integration** for the usual ones. **Connections** gives an agent a lane to a vendor. **Roles** says what a group may do. **People** shows who runs the room and who is asking for a group. **Audit** is who changed what from the panel.

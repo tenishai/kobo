@@ -91,6 +91,7 @@ describe("AdminPanel", () => {
     stubFetch({
       "/api/whoami": ADMIN_WHOAMI,
       "/api/admin/addons": ADDONS,
+      "/api/admin/room": { org_repo: "example/kobo-config", runtime_image: "registry/daedalus-runtime@sha256:789b43aa", cluster: "agents-dev", delivery_backend: "deployed" },
       "/api/admin/integrations": { integrations: [] },
       "/api/admin/roles": ROLES,
       "/api/admin/connections": CONNECTIONS,
@@ -103,20 +104,41 @@ describe("AdminPanel", () => {
   it("is admins only, and only while the room has the panel on", async () => {
     vi.unstubAllGlobals();
     stubFetch({ "/api/whoami": { ...ADMIN_WHOAMI, admin_panel: false } });
-    navigate({ page: "admin", pane: "addons" });
+    navigate({ page: "admin", pane: "platform" });
     renderWithClient(AdminPanel);
     expect(await screen.findByRole("heading", { name: "Admins only" })).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Add-ons" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Platform" })).toBeNull();
   });
 
-  it("opens the pane the hash names", async () => {
+  it("opens the page the hash names, and the old add-ons name still opens Platform", async () => {
     navigate({ page: "admin", pane: "addons" });
     renderWithClient(AdminPanel);
-    expect(await screen.findByRole("heading", { name: "Add-ons" })).toBeTruthy();
-    // Cards come from the server, not the store.
+    expect(await screen.findByRole("heading", { name: "Platform" })).toBeTruthy();
+    // Rows come from the server, as a status word plus the detail.
     expect(await screen.findByText("Vault lane at http://sero.internal.")).toBeTruthy();
-    // A vendor is an integration, not an add-on.
+    expect(screen.getByText("On")).toBeTruthy();
+    // A vendor is an integration, not a platform service.
     expect(screen.queryByText("Datadog")).toBeNull();
+    // The rail shows the room's own facts, read from the server.
+    expect(await screen.findByText("example/kobo-config")).toBeTruthy();
+  });
+
+  it("Overview is one row per page, each a link with a number", async () => {
+    navigate({ page: "admin", pane: "overview" });
+    renderWithClient(AdminPanel);
+    expect(await screen.findByRole("heading", { name: "Overview" })).toBeTruthy();
+    expect(await screen.findByText("1 of 1 on")).toBeTruthy();
+    expect(await screen.findByText("2 agents, 1 without a lane")).toBeTruthy();
+    expect(await screen.findByText("1 group request waiting")).toBeTruthy();
+    const rows = screen.getAllByRole("link").filter((a) => a.getAttribute("href")?.includes("admin/"));
+    expect(rows.length).toBeGreaterThanOrEqual(6);
+  });
+
+  it("Reload org config asks first", async () => {
+    navigate({ page: "admin", pane: "platform" });
+    renderWithClient(AdminPanel);
+    await fireEvent.click(await screen.findByRole("button", { name: "Reload org config" }));
+    expect(await screen.findByRole("heading", { name: "Reload the org config?" })).toBeTruthy();
   });
 
   it("lists every agent under Connections, including those with no lane", async () => {
@@ -136,6 +158,11 @@ describe("AdminPanel", () => {
     expect(await screen.findByText(/Nothing connected yet/)).toBeTruthy();
     await fireEvent.click(screen.getByRole("button", { name: "Add integration" }));
     expect(await screen.findByRole("heading", { name: "Add an integration" })).toBeTruthy();
+    // The catalog is this room's vendors, one line each.
+    for (const vendor of ["Atlassian", "Datadog", "Google Cloud", "AWS", "Azure", "Wiz", "Fastly", "Okta"]) {
+      expect(screen.getByText(vendor)).toBeTruthy();
+    }
+    expect(screen.queryByText("PagerDuty")).toBeNull();
   });
 
   it("People reads the real lists and the real queue", async () => {
@@ -156,7 +183,7 @@ describe("AdminPanel", () => {
   it("opens the role editor from the Create link", async () => {
     navigate({ page: "admin", pane: "roles" });
     renderWithClient(AdminPanel);
-    const create = await screen.findByRole("link", { name: "Create a role" });
+    const create = await screen.findByRole("link", { name: "Add role" });
     await fireEvent.click(create);
     expect(await screen.findByRole("heading", { name: "Create a role" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Connectors" })).toBeTruthy();

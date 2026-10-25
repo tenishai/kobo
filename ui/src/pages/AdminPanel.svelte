@@ -1,35 +1,46 @@
 <script lang="ts">
-  // The admin panel (admin-panel demo, 2026-10-12): a settings window
-  // inside the room. A list of panes on the left, one pane on the right,
-  // both driven by the hash (`#/admin/<pane>/<item>`), so a pane and the
+  // The admin panel: a list of pages on the left, one page on the right,
+  // both driven by the hash (`#/admin/<pane>/<item>`), so a page and the
   // thing open inside it are a link someone can send.
   import AuditPane from "../components/admin/AuditPane.svelte";
   import ConnectionsPane from "../components/admin/ConnectionsPane.svelte";
+  import IntegrationsPane from "../components/admin/IntegrationsPane.svelte";
   import OverviewPane from "../components/admin/OverviewPane.svelte";
   import PeoplePane from "../components/admin/PeoplePane.svelte";
-  import PluginsPane from "../components/admin/PluginsPane.svelte";
+  import PlatformPane from "../components/admin/PlatformPane.svelte";
   import RolesPane from "../components/admin/RolesPane.svelte";
   import { createQuery } from "@tanstack/svelte-query";
   import { formatHash, route } from "../lib/router.svelte";
-  import { whoamiQuery } from "../lib/queries";
+  import { adminRoomQuery, whoamiQuery } from "../lib/queries";
 
   // The panel is for kobo admins, and only while the room has it on. The
   // server decides both (`/api/whoami`); this is the same answer, shown.
   const whoami = createQuery(() => (whoamiQuery()));
   const allowed = $derived(Boolean(whoami.data?.operator && whoami.data?.admin_panel));
+  const room = createQuery(() => ({ ...adminRoomQuery(), enabled: allowed }));
 
-  const PANES: { id: string; label: string; group: "admin" | "room" }[] = [
-    { id: "overview", label: "Overview", group: "admin" },
-    { id: "addons", label: "Add-ons", group: "admin" },
-    { id: "integrations", label: "Integrations", group: "admin" },
-    { id: "connections", label: "Connections", group: "admin" },
-    { id: "roles", label: "Roles", group: "admin" },
-    { id: "people", label: "People", group: "admin" },
-    { id: "audit", label: "Audit", group: "admin" },
+  const PANES: { id: string; label: string }[] = [
+    { id: "overview", label: "Overview" },
+    { id: "platform", label: "Platform" },
+    { id: "integrations", label: "Integrations" },
+    { id: "connections", label: "Connections" },
+    { id: "roles", label: "Roles" },
+    { id: "people", label: "People" },
+    { id: "audit", label: "Audit" },
   ];
 
-  const pane = $derived(PANES.some((p) => p.id === route.tab) ? (route.tab as string) : "overview");
+  // "addons" was the first name of the Platform page; old links still open it.
+  const pane = $derived(
+    route.tab === "addons" ? "platform" : PANES.some((p) => p.id === route.tab) ? (route.tab as string) : "overview",
+  );
   const item = $derived(route.section);
+
+  function short(ref: string | null | undefined): string {
+    if (!ref) return "not set";
+    const at = ref.indexOf("@sha256:");
+    const tail = ref.replace(/^.*\//, "");
+    return at === -1 ? tail : `${tail.split("@")[0]}@${ref.slice(at + 8, at + 15)}`;
+  }
 </script>
 
 {#if whoami.isPending}
@@ -59,21 +70,23 @@
         </li>
       {/each}
     </ul>
-    <p class="admin__group">This room</p>
-    <ul class="admin__list admin__list--quiet">
-      <li><span class="admin__fact">Org config <code>example/kobo-config</code></span></li>
-      <li><span class="admin__fact">Runtime <code>daedalus-runtime@789b43…</code></span></li>
-      <li><span class="admin__fact">Deploys to <code>agents-dev</code></span></li>
-    </ul>
+    {#if room.data}
+      <p class="admin__group">This room</p>
+      <ul class="admin__list admin__list--quiet">
+        <li><span class="admin__fact">Org config <code title={room.data.org_repo ?? ""}>{room.data.org_repo ?? "not set"}</code></span></li>
+        <li><span class="admin__fact">Runtime <code title={room.data.runtime_image}>{short(room.data.runtime_image)}</code></span></li>
+        <li><span class="admin__fact">Deploys to <code title={room.data.cluster}>{room.data.cluster || "not set"}</code></span></li>
+      </ul>
+    {/if}
   </nav>
 
   <section class="admin__content" aria-live="polite">
     {#if pane === "overview"}
       <OverviewPane />
-    {:else if pane === "addons"}
-      <PluginsPane kind="platform" item={route.section} />
+    {:else if pane === "platform"}
+      <PlatformPane />
     {:else if pane === "integrations"}
-      <PluginsPane kind="vendor" {item} />
+      <IntegrationsPane {item} />
     {:else if pane === "connections"}
       <ConnectionsPane {item} />
     {:else if pane === "roles"}
