@@ -151,9 +151,9 @@ repo. When the repo goes public the same page can add "source on GitHub"
 links; nothing else changes. An upgrade is a kobo release note plus the
 owner re-applying.
 
-The role is `TenishAccess-Role` by default, suite-level naming the way Wiz
-names `WizAccess-Role`, so a cloud owner recognises one role across every
-integration they grant to the suite.
+The role is `KoboAccess-Role` by default (ruled 2026-10-25: the product
+name, the way Wiz names `WizAccess-Role`), so a cloud owner recognises one
+role across every integration they grant to kobo.
 
 ### What this needs from the rest of the suite
 
