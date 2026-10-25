@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from kobo_api.clients import Clients
+from kobo_api.clients import ClientError, Clients
 from kobo_api.config import Config
 from kobo_api.main import create_app
 from kobo_api.models import Base
@@ -134,24 +134,92 @@ def test_disconnect_reverses_the_three_steps(tmp_path, fake_storage):
 # --- per-vendor credential kinds (2026-10-25) ---------------------------------
 
 
-def test_an_aws_role_stores_no_secret_and_writes_the_role_into_the_gateway_target(tmp_path, fake_storage):
-    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"targets.toml": TARGETS}, track_pushed_content=True)
-    sero = FakeSero()
+class FakeAwsAdmin:
+    """The gateway's admin plane as the AWS flow sees it: who the gateway is,
+    and whether AWS lets it assume a role."""
+
+    def __init__(self, *, refuse: str | None = None, identity_error: str | None = None):
+        self.probes: list[tuple[str, str]] = []
+        self._refuse = refuse
+        self._identity_error = identity_error
+
+    def aws_identity(self, audience: str) -> dict[str, str]:
+        if self._identity_error:
+            raise ClientError(self._identity_error)
+        return {"issuer": "https://accounts.google.com", "subject": "1234567890", "email": "gw@p.iam.gserviceaccount.com", "audience": audience}
+
+    def aws_probe(self, role_arn: str, audience: str) -> dict[str, str]:
+        self.probes.append((role_arn, audience))
+        if self._refuse:
+            raise ClientError(self._refuse)
+        return {"account": role_arn.split(":")[4], "arn": f"arn:aws:sts::{role_arn.split(':')[4]}:assumed-role/KoboAccess-Role/probe", "role_arn": role_arn}
+
+    def list_grants(self):
+        return []
+
+
+REGISTRY = 'service_audience = "liminal"\n\n[tool_extras]\n\n[tool_extras."gateway.clusters"."dev/a"]\nproject_number = "1"\n'
+AWS_ROLE = "arn:aws:iam::123456789012:role/KoboAccess-Role"
+
+
+def test_an_aws_role_is_checked_with_aws_then_written_into_the_trust_registry(tmp_path, fake_storage):
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"registry.toml": REGISTRY, "targets.toml": TARGETS}, track_pushed_content=True)
+    sero, admin = FakeSero(), FakeAwsAdmin()
     client, headers = _client(tmp_path, fake_storage, _config(tmp_path), github=github, sero=sero)
-    body = {
-        "vendor": "aws", "name": "AWS", "base_access": "read", "auth": "aws_role",
-        "identity": {"role_arn": "arn:aws:iam::123456789012:role/kobo-gateway", "external_id": "k0b0"},
-    }
+    client.app.state.clients.liminal_admin = admin
+    body = {"vendor": "aws", "name": "AWS", "base_access": "read", "auth": "aws_role", "identity": {"role_arn": AWS_ROLE}}
     response = client.post("/api/admin/integrations", json=body, headers=headers)
     assert response.status_code == 201, response.text
     row = response.json()
     assert row["credential_ref"] is None and sero.puts == [] and sero.syncs == []
-    assert "no secret to store" in row["state_detail"]
-    assert row["spec"]["auth"] == "aws_role" and row["spec"]["identity"]["role_arn"].endswith("role/kobo-gateway")
-    targets = github.pushed_file("targets.toml")
-    assert 'auth_method = "aws_role"' in targets and "[target.auth]" in targets
-    assert 'role_arn = "arn:aws:iam::123456789012:role/kobo-gateway"' in targets and 'external_id = "k0b0"' in targets
-    assert "bearer_token_env" not in targets.split('name = "aws"')[1]
+    assert admin.probes == [(AWS_ROLE, "sts.amazonaws.com")]
+    assert "AWS agreed" in row["state_detail"] and "123456789012" in row["state_detail"]
+    assert row["spec"]["identity"] == {"role_arn": AWS_ROLE, "audience": "sts.amazonaws.com"}
+    registry = github.pushed_file("registry.toml")
+    assert '[tool_extras."aws.roles".aws]' in registry and f'role_arn = "{AWS_ROLE}"' in registry
+    assert registry.startswith('service_audience = "liminal"') and '"gateway.clusters"' in registry, "the rest of the registry is kept"
+    assert github.pushed_file("targets.toml") is None or 'name = "aws"' not in (github.pushed_file("targets.toml") or "")
+
+
+def test_a_role_aws_refuses_is_not_written_anywhere(tmp_path, fake_storage):
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"registry.toml": REGISTRY}, track_pushed_content=True)
+    client, headers = _client(tmp_path, fake_storage, _config(tmp_path), github=github, sero=FakeSero())
+    client.app.state.clients.liminal_admin = FakeAwsAdmin(refuse="AWS refused the role: AccessDenied Not authorized to perform sts:AssumeRoleWithWebIdentity")
+    body = {"vendor": "aws", "name": "AWS", "base_access": "read", "auth": "aws_role", "identity": {"role_arn": AWS_ROLE}}
+    response = client.post("/api/admin/integrations", json=body, headers=headers)
+    assert response.status_code == 409
+    assert "AccessDenied" in response.json()["error"] and "connect again" in response.json()["error"]
+    assert client.get("/api/admin/integrations", headers=headers).json()["integrations"] == []
+    assert not github._pushed_trees, "nothing was pushed to the gateway repo"
+
+
+def test_without_an_admin_plane_the_role_is_taken_at_its_word(tmp_path, fake_storage):
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"registry.toml": REGISTRY}, track_pushed_content=True)
+    client, headers = _client(tmp_path, fake_storage, _config(tmp_path), github=github, sero=FakeSero())
+    body = {"vendor": "aws", "name": "AWS", "base_access": "read", "auth": "aws_role", "identity": {"role_arn": AWS_ROLE}}
+    row = client.post("/api/admin/integrations", json=body, headers=headers).json()
+    assert "not checked with AWS" in row["state_detail"] and "pull request" in row["state_detail"]
+
+
+def test_the_setup_page_renders_the_role_three_ways_around_the_gateways_identity(tmp_path, fake_storage):
+    client, headers = _client(tmp_path, fake_storage, _config(tmp_path), github=FakeGitHub(existing_repos={GATEWAY_REPO}), sero=FakeSero())
+    client.app.state.clients.liminal_admin = FakeAwsAdmin()
+    body = client.get("/api/admin/integrations/aws/setup?packs=logs,bogus", headers=headers).json()
+    assert body["identity"]["subject"] == "1234567890" and body["checked"] is True
+    assert body["chosen"] == ["inventory", "logs"] and body["version"].startswith("v0.")
+    assert {p["id"] for p in body["packs"]} == {"inventory", "logs", "security-audit", "cost"}
+    assert 'gateway_service_account_unique_id = "1234567890"' in body["terraform"] and 'packs                             = ["inventory", "logs"]' in body["terraform"]
+    assert "cloud-access.git//aws/terraform?ref=v0." in body["terraform"]
+    assert body["cloudformation"]["parameters"] == {
+        "IntegrationId": "aws", "GatewayServiceAccountUniqueId": "1234567890", "Audience": "sts.amazonaws.com",
+        "RoleName": "KoboAccess-Role", "SecurityAudit": "Disabled", "Cost": "Disabled", "Logs": "Enabled",
+    }
+    assert '"RoleName"' in body["cloudformation"]["template"]
+    assert '"accounts.google.com:sub": "1234567890"' in body["trust_policy"]
+    # No admin plane: the page still renders, and says what to fill in.
+    client.app.state.clients.liminal_admin = None
+    body = client.get("/api/admin/integrations/aws/setup", headers=headers).json()
+    assert body["identity"] is None and "by hand" in body["identity_note"] and "<gateway subject>" in body["trust_policy"]
 
 
 def test_a_malformed_aws_role_is_refused_in_one_sentence(tmp_path, fake_storage):

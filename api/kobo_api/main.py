@@ -3609,6 +3609,17 @@ def create_app(
             }
         )
 
+    @app.get("/api/admin/integrations/aws/setup")
+    def admin_aws_setup(request: Request, packs: str = "", integration: str = "aws") -> JSONResponse:
+        """The Connect AWS page: the gateway\'s identity, the packs, and the
+        role rendered three ways from the vendored cloud-access release."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        wanted = [p.strip() for p in packs.split(",") if p.strip()]
+        safe_id = re.sub(r"[^a-z0-9-]", "", integration.lower())[:64] or "aws"
+        return JSONResponse(admin_integrations_flow.aws_setup(app.state.clients, integration_id=safe_id, packs=wanted))
+
     @app.get("/api/admin/integrations")
     def admin_integrations(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
         """The Integrations pane: one row per vendor the room holds a

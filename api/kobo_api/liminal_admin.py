@@ -47,6 +47,8 @@ class LiminalAdminClient(Protocol):
     def list_grants(self) -> list[GatewayGrant]: ...
     def grant(self, grant: GatewayGrant) -> None: ...
     def revoke(self, issuer: str, persona: str) -> None: ...
+    def aws_identity(self, audience: str) -> dict[str, str]: ...
+    def aws_probe(self, role_arn: str, audience: str) -> dict[str, str]: ...
 
 
 class RoomAdminToken:
@@ -119,6 +121,36 @@ class HttpxLiminalAdminClient:
             self._check(self._client.post(f"{self._base_url}/admin/policy/revoke", json={"issuer": issuer, "persona": persona}, headers=self._headers()), f"revoke for {persona}")
         except httpx.HTTPError as exc:
             raise ClientError(f"gateway admin plane unreachable: {exc.__class__.__name__}") from exc
+
+
+    def aws_identity(self, audience: str) -> dict[str, str]:
+        """The gateway's own Google identity (issuer, subject, email,
+        audience): what an AWS trust policy names."""
+        try:
+            resp = self._client.get(f"{self._base_url}/admin/aws/identity", params={"audience": audience}, headers=self._headers())
+        except httpx.HTTPError as exc:
+            raise ClientError(f"gateway admin plane unreachable: {exc.__class__.__name__}") from exc
+        if resp.status_code == 503:
+            raise ClientError(_detail(resp, "the gateway has no cloud identity yet"))
+        return {k: str(v) for k, v in self._check(resp, "aws identity").items()}
+
+    def aws_probe(self, role_arn: str, audience: str) -> dict[str, str]:
+        """Assume the role once as the room. AWS's refusal comes back as
+        the sentence to show; `account` and `arn` on success."""
+        try:
+            resp = self._client.post(f"{self._base_url}/admin/aws/probe", json={"role_arn": role_arn, "audience": audience}, headers=self._headers())
+        except httpx.HTTPError as exc:
+            raise ClientError(f"gateway admin plane unreachable: {exc.__class__.__name__}") from exc
+        if resp.status_code == 400:
+            raise ClientError(_detail(resp, "AWS refused the role"))
+        return {k: str(v) for k, v in self._check(resp, "aws probe").items()}
+
+
+def _detail(resp: httpx.Response, fallback: str) -> str:
+    try:
+        return str(resp.json().get("detail") or fallback)
+    except ValueError:
+        return fallback
 
 
 def build_liminal_admin(config, cabal: CabalClient | None) -> LiminalAdminClient | None:

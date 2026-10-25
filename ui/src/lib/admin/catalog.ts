@@ -47,10 +47,9 @@ export const CATALOG: CatalogEntry[] = [
   {
     id: "aws", name: "AWS", summary: "Accounts and resources.", auth: "aws_role",
     fields: [
-      { key: "role_arn", label: "Role ARN the gateway may assume", secret: false, placeholder: "arn:aws:iam::123456789012:role/kobo-gateway" },
-      { key: "external_id", label: "External ID", secret: false, optional: true },
+      { key: "role_arn", label: "Role ARN", secret: false, placeholder: "arn:aws:iam::123456789012:role/KoboAccess-Role" },
     ],
-    note: "No access key. The role's trust policy names the gateway's identity.",
+    note: "No access key. The page creates a read-only role that trusts the gateway's own identity; the room checks it with AWS before saving.",
   },
   {
     id: "azure", name: "Azure", summary: "Subscriptions and resources.", auth: "azure_federated",

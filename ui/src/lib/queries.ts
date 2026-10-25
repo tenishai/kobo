@@ -197,6 +197,7 @@ import {
   reloadAdminOrg,
   connectAdminIntegration,
   disconnectAdminIntegration,
+  fetchAdminAwsSetup,
   fetchAdminAddons,
   fetchAdminRoom,
   fetchAdminConnections,
@@ -529,6 +530,14 @@ export function adminIntegrationsQuery() {
     queryKey: ["admin", "integrations"] as const,
     queryFn: fetchAdminIntegrations,
     staleTime: 15_000,
+  });
+}
+
+export function adminAwsSetupQuery(packs: string[]) {
+  return queryOptions({
+    queryKey: ["admin", "integrations", "aws-setup", [...packs].sort().join(",")] as const,
+    queryFn: () => fetchAdminAwsSetup(packs),
+    staleTime: 60_000,
   });
 }
 

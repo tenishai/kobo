@@ -8,6 +8,20 @@ All notable changes to kobo are documented here. The format follows
 
 ### Added
 
+- **Connect AWS without a key** (design 2026-10-25, cloud access for integrations). The
+  Integrations page's AWS entry is now a sheet: pick what agents may read (packs:
+  `inventory` always, `logs`, `security-audit`, `cost`), create the role one of three ways
+  (a Terraform module snippet, the CloudFormation template with its parameters
+  pre-answered, or the trust policy alone), paste the role's ARN. The room asks the gateway
+  to assume the role once before saving it, so "connected" is said only after AWS agreed;
+  a refusal comes back as AWS's sentence and nothing is written. The account lands in the
+  gateway's trust registry as `[tool_extras."aws.roles".<id>]`, not as a target, and agents
+  reach it through the gateway's `aws` handler once a lane grants `<id>:read`. The page is
+  rendered from a pinned release of `tenishai/cloud-access` vendored under
+  `api/kobo_api/vendor/cloud_access/` (`VERSION` names it), so it works while that repo is
+  private. New route `GET /api/admin/integrations/aws/setup?packs=`; the gateway admin
+  client learns `aws_identity` and `aws_probe` (liminal #209).
+
 - **A directory delivery backend** (issue #207, for ergon). With `delivery_backend: directory`
   and a `directory_root`, create composes the same bundle it would push to a repository into
   `<root>/<agent>/` in one rename, keeps the picture in the room, lists the agent in the
