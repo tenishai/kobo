@@ -138,13 +138,22 @@ re-applies them).
 
 ### Where the modules live
 
-A new public repo, `tenishai/cloud-access`, holding `aws/terraform/`,
-`aws/cloudformation/`, `gcp/terraform/`, `azure/terraform/` (Bicep later),
-with the pack definitions as data files the modules and kobo both read
-(`packs/aws.json` ...), released as tagged versions and zips. kobo pins a
-version per vendor and renders snippets from it; an upgrade is a kobo
-release note plus the owner re-applying. One repo, because the packs are
-the contract and belong beside the code that deploys them.
+`tenishai/cloud-access` (ruled 2026-10-25: created, private for now, opened
+with the rest of the suite later). It holds `aws/terraform/`,
+`aws/cloudformation/`, `gcp/terraform/`, `azure/` (shape only, module later),
+with the pack definitions as data files the modules, the template and kobo
+all read (`packs/aws.json` ...), released as tagged versions. Because the
+repo is private, kobo does not link to it: kobo vendors a pinned release
+into its own tree (`api/kobo_api/cloud_access/<version>/`) and serves the
+module source, the CloudFormation template and the pack text from inside
+the room, so an owner on the Connect page never needs read access to the
+repo. When the repo goes public the same page can add "source on GitHub"
+links; nothing else changes. An upgrade is a kobo release note plus the
+owner re-applying.
+
+The role is `TenishAccess-Role` by default, suite-level naming the way Wiz
+names `WizAccess-Role`, so a cloud owner recognises one role across every
+integration they grant to the suite.
 
 ### What this needs from the rest of the suite
 
@@ -166,14 +175,15 @@ the contract and belong beside the code that deploys them.
    OIDC (my recommendation: no shared secret, per-agent audit), or a fubo
    AWS hub role with an external ID (what Wiz does, fits an org that already
    has a hub)?
-3. **The repo.** `tenishai/cloud-access` as a new public repo under the
-   go-public rules, or a folder in kobo? I recommend its own repo: cloud
-   owners will read it without reading kobo.
+3. ~~**The repo.**~~ Ruled: `tenishai/cloud-access`, private until the
+   suite goes public; kobo vendors a pinned release.
 
 ## Order of work, once ruled
 
-1. `tenishai/cloud-access`: AWS Terraform module + packs file + a README
-   that is the "About this integration" text; CloudFormation second.
+1. ~~`tenishai/cloud-access`~~ done 2026-10-25 (1b047f1): packs for the
+   three clouds, AWS Terraform module + CloudFormation template, GCP grant
+   module, Azure shape, validate CI. First release tag once liminal can
+   assume the role.
 2. liminal: `aws_role` via web identity with `SourceIdentity` + session
    policy; the probe.
 3. kobo: the Connect AWS page over the record fields above; GCP and Azure
