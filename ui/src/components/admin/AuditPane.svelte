@@ -19,10 +19,10 @@
   };
 </script>
 
-<section class="panel" aria-labelledby="audit-heading">
-  <div class="panel__header">
-    <h2 id="audit-heading" class="panel__heading">Audit</h2>
-    <p class="panel__lead">Who changed what from this panel, and whether it has landed yet.</p>
+<section class="panel page" aria-labelledby="audit-heading">
+  <div class="page__header">
+    <h2 id="audit-heading" class="page__title">Audit</h2>
+    <p class="page__lead">Who changed what from this panel, and whether it has landed.</p>
   </div>
   {#if audit.isPending}
     <p class="panel__note">Reading the log…</p>
@@ -31,7 +31,7 @@
   {:else if (audit.data ?? []).length === 0}
     <p class="panel__empty">Nothing has been changed from the panel yet.</p>
   {:else}
-    <table class="panel__table">
+    <div class="table-card"><table class="panel__table">
       <thead><tr><th>When</th><th>Who</th><th>Change</th><th>Landed</th></tr></thead>
       <tbody>
         {#each audit.data ?? [] as e (e.id)}
@@ -43,7 +43,7 @@
           </tr>
         {/each}
       </tbody>
-    </table>
+    </table></div>
   {/if}
 </section>
 

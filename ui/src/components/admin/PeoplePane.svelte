@@ -37,10 +37,10 @@
   }
 </script>
 
-<section class="panel" aria-labelledby="people-heading">
-  <div class="panel__header">
-    <h2 id="people-heading" class="panel__heading">People</h2>
-    <p class="panel__lead">Who runs the room and who can see it.</p>
+<section class="panel page" aria-labelledby="people-heading">
+  <div class="page__header">
+    <h2 id="people-heading" class="page__title">People</h2>
+    <p class="page__lead">Who runs the room, who can see it, and who is asking for a group.</p>
   </div>
 
   {#if people.isPending}
@@ -48,18 +48,21 @@
   {:else if people.isError}
     <p class="panel__note">Could not read the room's people just now.</p>
   {:else}
-    <div class="rows">
-      {#each ROWS as r (r.key)}
-        <div class="row">
-          <div class="row__text">
-            <span class="row__label">{r.label}</span>
-            <p class="row__desc">{r.desc}</p>
-          </div>
-          <div class="row__value">{(people.data?.[r.key] ?? []).join(", ") || "none"}</div>
-        </div>
-      {/each}
-    </div>
-    <p class="panel__note">These lists are set in the org config (<code>admin_groups</code>, <code>operators</code>, <code>reader_groups</code>, <code>slack_operators</code>); the room reads them at boot.</p>
+    <div class="table-card"><table class="panel__table">
+      <thead><tr><th>Who</th><th>Can</th><th>Set to</th></tr></thead>
+      <tbody>
+        {#each ROWS as r (r.key)}
+          <tr>
+            <td><span class="who">{r.label}</span></td>
+            <td class="quiet">{r.desc}</td>
+            <td>
+              {#each people.data?.[r.key] ?? [] as v (v)}<span class="chip">{v}</span>{:else}<span class="quiet">none</span>{/each}
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table></div>
+    <p class="page__foot">These lists are set in the org config.</p>
   {/if}
 
   <h3 class="panel__subheading">Group requests</h3>
@@ -68,7 +71,7 @@
   {:else if pending.length === 0}
     <p class="panel__empty">No requests waiting.</p>
   {:else}
-    <table class="panel__table">
+    <div class="table-card"><table class="panel__table">
       <thead><tr><th>Group</th><th>Requested by</th><th>When</th><th class="panel__cell--right"></th></tr></thead>
       <tbody>
         {#each pending as g (g.id)}
@@ -83,45 +86,12 @@
           </tr>
         {/each}
       </tbody>
-    </table>
+    </table></div>
     <p class="panel__note">Press Added once the group exists in the org config; the requester is told.</p>
   {/if}
 </section>
 
 <style>
-  .rows {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .row {
-    display: grid;
-    grid-template-columns: minmax(10rem, 14rem) 1fr;
-    gap: var(--space-md);
-    align-items: center;
-    padding: var(--space-sm) 0;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .row__label {
-    font-weight: 600;
-  }
-
-  .row__desc {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-  }
-
-  .row__value {
-    min-width: 0;
-    font-size: 0.9rem;
-    overflow-wrap: anywhere;
-  }
-
-  @media (max-width: 40rem) {
-    .row {
-      grid-template-columns: 1fr;
-    }
-  }
+  .who { font-weight: 600; }
+  .quiet { color: var(--muted); font-size: 0.85rem; }
 </style>

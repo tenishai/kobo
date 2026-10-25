@@ -130,11 +130,11 @@
 </script>
 
 {#if draft}
-  <section class="panel" aria-labelledby="role-heading">
-    <div class="panel__header">
+  <section class="panel page" aria-labelledby="role-heading">
+    <div class="page__header">
       <a class="btn btn--link-quiet back" href={formatHash({ page: "admin", pane: "roles" })}>← Roles</a>
       <h2 id="role-heading" class="title">{draft.id ? draft.name : "Create a role"}</h2>
-      <p class="panel__lead">Define what the groups in this role can and cannot do.</p>
+      <p class="page__lead">Define what the groups in this role can and cannot do.</p>
     </div>
 
     <div class="tabs" role="tablist" aria-label="Role sections">
@@ -203,8 +203,8 @@
         {/each}
       </ul>
     {:else if tab === "Connectors"}
-      <p class="panel__lead">The ceiling per vendor: the most an agent in this role may be granted under Connections.</p>
-      <table class="panel__table">
+      <p class="page__lead">The ceiling per vendor: the most an agent in this role may be granted under Connections.</p>
+      <div class="table-card"><table class="panel__table">
         <thead>
           <tr><th>Vendor</th>{#each CEILINGS as c (c.id)}<th>{c.label}</th>{/each}</tr>
         </thead>
@@ -221,9 +221,9 @@
             </tr>
           {/each}
         </tbody>
-      </table>
+      </table></div>
     {:else}
-      <p class="panel__lead">Models agents in this role may be built with or switched to.</p>
+      <p class="page__lead">Models agents in this role may be built with or switched to.</p>
       <ul class="perm">
         {#each MODELS as m (m.id)}
           <li class="perm__row">
@@ -248,46 +248,52 @@
     </div>
   </section>
 {:else}
-  <section class="panel" aria-labelledby="roles-heading">
+  <section class="panel page" aria-labelledby="roles-heading">
     <div class="panel__toolbar">
-      <div class="panel__header">
-        <h2 id="roles-heading" class="panel__heading">Roles</h2>
-        <p class="panel__lead">A role is what a group may do: capabilities, admin permissions, which vendors its agents may be granted, which models.</p>
+      <div class="page__header">
+        <h2 id="roles-heading" class="page__title">Roles</h2>
+        <p class="page__lead">What a group may do. Assign a role to groups; their members and agents get its permissions.</p>
       </div>
-      <a class="btn btn--primary" href={formatHash({ page: "admin", pane: "roles", item: "new" })}>Create a role</a>
+      <a class="btn btn--primary" href={formatHash({ page: "admin", pane: "roles", item: "new" })}>Add role</a>
     </div>
     {#if rolesQuery.isPending}
       <p class="panel__note">Reading the roles…</p>
     {:else if rolesQuery.isError}
       <p class="panel__note">Could not read the roles just now.</p>
     {:else}
-    <table class="panel__table">
+    <div class="table-card"><table class="panel__table">
       <thead>
-        <tr><th>Role</th><th>Groups</th><th>Capabilities</th><th>Admin</th><th>Connectors</th><th></th></tr>
+        <tr><th>Name</th><th>Groups</th><th>Admin access</th><th>Vendors</th><th class="panel__cell--right"></th></tr>
       </thead>
       <tbody>
         {#each roles as r (r.id)}
           <tr>
             <td>
-              <span class="panel__name">{r.name}</span>
-              <span class="panel__meta">{r.builtin ? "built in" : "custom"}</span>
+              <span class="role-name">{r.name}</span>
+              {#if r.builtin}<span class="chip chip--muted">built in</span>{/if}
             </td>
-            <td>{r.groups.join(", ") || "—"}</td>
-            <td>{r.capabilities.length}/{CAPABILITIES.length}</td>
-            <td>{r.admin.length}/{ADMIN_PERMISSIONS.length}</td>
-            <td>{r.connectors.filter((c) => c.ceiling !== "none").map((c) => `${pluginName(c.plugin)} ${c.ceiling}`).join(", ") || "none"}</td>
+            <td>
+              {#each r.groups.slice(0, 2) as g (g)}<span class="chip">{g}</span>{/each}
+              {#if r.groups.length > 2}<span class="chip chip--muted">+{r.groups.length - 2}</span>{/if}
+              {#if r.groups.length === 0}<span class="quiet">—</span>{/if}
+            </td>
+            <td class="quiet">{r.admin.length === 0 ? "—" : r.admin.length === ADMIN_PERMISSIONS.length ? "All" : `${r.admin.length} of ${ADMIN_PERMISSIONS.length}`}</td>
+            <td class="quiet">{r.connectors.filter((c) => c.ceiling !== "none").map((c) => `${pluginName(c.plugin)} · ${c.ceiling}`).join(", ") || "—"}</td>
             <td class="panel__cell--right">
-              <a class="btn btn--quiet" href={formatHash({ page: "admin", pane: "roles", item: r.id })}>Edit</a>
+              <a class="btn btn--quiet" href={formatHash({ page: "admin", pane: "roles", item: r.id })}>Edit ›</a>
             </td>
           </tr>
         {/each}
       </tbody>
-    </table>
+    </table></div>
     {/if}
   </section>
 {/if}
 
 <style>
+  .role-name { margin-right: var(--space-xs); font-weight: 600; }
+  .quiet { color: var(--muted); font-size: 0.85rem; }
+
   .back {
     align-self: flex-start;
     padding: 0;

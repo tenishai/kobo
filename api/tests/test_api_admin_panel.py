@@ -70,3 +70,30 @@ def test_audit_reads_the_store_newest_first(tmp_path):
     assert [e["action"] for e in events] == ["grant.create", "setting.put"]
     assert events[0]["landed"] == "pending" and events[1]["landed"] == "applied"
     assert set(events[0]) == {"id", "at", "actor", "action", "object_type", "object_id", "landed", "landed_detail"}
+
+
+def test_admin_room_names_the_org_repo_runtime_and_cluster(tmp_path):
+    """The panel's rail shows real facts about this room, not a demo's."""
+    from kobo_api.config import Config
+    from tests.test_api_org_status import (
+        ASSERTION_HEADER,
+        WHOAMI_AUDIENCE,
+        _generate_jwk,
+        _iap_client,
+        _sign_whoami,
+    )
+
+    private_key, jwk = _generate_jwk()
+    cfg = Config(
+        workdir=tmp_path / "work", iap_audience=WHOAMI_AUDIENCE, operators=["ops@example.com"], admin_panel=True,
+        org_repo="example/kobo-config", runtime_image="registry/daedalus-runtime@sha256:abc", gojira_cluster="agents-dev",
+    )
+    client = _iap_client(cfg, tmp_path, jwk=jwk)
+    headers = {ASSERTION_HEADER: _sign_whoami(private_key, email="ops@example.com")}
+    body = client.get("/api/admin/room", headers=headers).json()
+    assert body == {
+        "org_repo": "example/kobo-config",
+        "runtime_image": "registry/daedalus-runtime@sha256:abc",
+        "cluster": "agents-dev",
+        "delivery_backend": "deployed",
+    }

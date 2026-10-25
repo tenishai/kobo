@@ -3556,6 +3556,23 @@ def create_app(
             return JSONResponse({"error": "the admin panel is for the room's admins"}, status_code=403)
         return None
 
+    @app.get("/api/admin/room")
+    def admin_room(request: Request) -> JSONResponse:
+        """The facts the panel's rail shows about this room: where its org
+        config lives, which runtime its agents run, where they deploy."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        cfg: Config = app.state.config
+        return JSONResponse(
+            {
+                "org_repo": cfg.org_repo,
+                "runtime_image": cfg.runtime_image,
+                "cluster": cfg.gojira_cluster,
+                "delivery_backend": cfg.delivery_backend,
+            }
+        )
+
     @app.get("/api/admin/addons")
     def admin_addons(request: Request) -> JSONResponse:
         """The admin panel's Add-ons pane: what this room runs on, one card
