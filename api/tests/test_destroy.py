@@ -221,7 +221,7 @@ def test_destroy_platform_no_app_id_is_done_without_calling_gojira(session_facto
 
     detail = _destroy_platform(ctx)
 
-    assert detail == "no platform app to tear down"
+    assert detail == "no deployment to tear down"
     assert fake_gojira.delete_calls == []
     session.close()
 
@@ -1842,7 +1842,7 @@ def test_destroy_secrets_skips_a_room_with_no_secrets_platform(session_factory, 
 
     detail = _destroy_secrets(_ctx(session, agent, config, sero=None))
 
-    assert "no secrets platform" in detail
+    assert "no secrets service" in detail
     session.close()
 
 

@@ -500,7 +500,7 @@ def test_destroy_idempotent_redelete_while_destroy_failed_resumes_to_completion(
     names = [s["name"] for s in before.json()["steps"]]
     labels = {s["name"]: s["label"] for s in before.json()["steps"]}
     assert names == ["destroy-platform", "destroy-access", "destroy-slack"]
-    assert labels["destroy-platform"] == "Platform teardown"
+    assert labels["destroy-platform"] == "Deployment teardown"
     assert labels["destroy-access"] == "Model access"
     assert labels["destroy-slack"] == "Slack app"
 

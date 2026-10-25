@@ -714,7 +714,7 @@
           <p class="field__help">
             {report.run_mode === "headless"
               ? "It does not listen on a port, so the room runs it as a worker or a chat bot."
-              : "It listens on a port, so the platform checks its health there."}
+              : "It listens on a port, so the deployment checks its health there."}
             Either way it gets an address inside the cluster only.
           </p>
         {/if}

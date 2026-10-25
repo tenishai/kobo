@@ -1410,7 +1410,7 @@ class OnboardStep:
     """Connects the pushed repo to gojira and waits for it to reach `active`."""
 
     name = "onboard"
-    label = "Platform onboarding"
+    label = "Deployment setup"
 
     def run(self, ctx: Ctx) -> str:
         agent = ctx.agent
@@ -1911,7 +1911,7 @@ CONNECTED_WIRE_GITHUB_UNAVAILABLE = (
     "press Retry"
 )
 CONNECTED_WIRE_PLATFORM_UNAVAILABLE = (
-    "the deploy platform did not answer. Try again in a moment, then press Retry"
+    "the deploy service did not answer. Try again in a moment, then press Retry"
 )
 
 

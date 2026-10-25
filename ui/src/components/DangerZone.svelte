@@ -192,11 +192,11 @@
        one mistake here that cannot be taken back afterwards. -->
   {#if kind === KIND_CONNECTED}
     <p class="danger-zone__copy">
-      This destroys the running agent and its platform identity. The repository belongs to your team and is left as it is. Memories die with the namespace.
+      This destroys the running agent and its cloud identity. The repository belongs to your team and is left as it is. Memories die with the namespace.
     </p>
   {:else}
     <p class="danger-zone__copy">
-      This destroys the running agent, its platform identity, and its Slack presence. The repo is archived, not deleted. Memories die with the namespace.
+      This destroys the running agent, its cloud identity, and its Slack presence. The repo is archived, not deleted. Memories die with the namespace.
     </p>
   {/if}
   <div class="field">

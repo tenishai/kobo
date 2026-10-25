@@ -2653,7 +2653,7 @@ def _personas_seeded_check(clients: Clients | None, bucket: str) -> dict:
 
 
 def _deploy_platform_check(clients: Clients | None, cluster: str) -> dict:
-    check_id, label = "deploy-platform", "Deploy platform"
+    check_id, label = "deploy-platform", "Deployment"
     ping_ok = False
     if clients is not None:
         try:
@@ -3870,7 +3870,7 @@ def create_app(
             ("personas-bucket", "Personas storage", lambda: _bucket_check("personas-bucket", "Personas storage", clients, cfg.personas_bucket)),
             ("skills-index", "Skills index", lambda: _skills_index_check(clients, cfg.skills_bucket)),
             ("personas-seeded", "Personas", lambda: _personas_seeded_check(clients, cfg.personas_bucket)),
-            ("deploy-platform", "Deploy platform", lambda: _deploy_platform_check(clients, cfg.gojira_cluster)),
+            ("deploy-platform", "Deployment", lambda: _deploy_platform_check(clients, cfg.gojira_cluster)),
         ]
 
         checks = []

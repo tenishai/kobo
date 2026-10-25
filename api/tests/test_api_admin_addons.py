@@ -56,7 +56,7 @@ def test_admin_gets_one_card_per_addon_with_derived_state(tmp_path):
     assert response.status_code == 200
     cards = {c["id"]: c for c in response.json()["addons"]}
     assert list(cards) == [
-        "deploy-platform", "secrets", "observability", "switchboard",
+        "deployment", "secrets", "observability", "switchboard",
         "tool-gateway", "memory", "model-gateway",
     ]
     assert cards["secrets"]["state"] == "on"
@@ -66,17 +66,17 @@ def test_admin_gets_one_card_per_addon_with_derived_state(tmp_path):
     assert "noto_project" in cards["observability"]["detail"]
     assert cards["memory"]["state"] == "on"
     # No clients wired in this app: the platform card is honest about it.
-    assert cards["deploy-platform"]["state"] in {"error", "off"}
+    assert cards["deployment"]["state"] in {"error", "off"}
 
 
 def test_addon_cards_never_raise_without_clients(tmp_path):
     cards = addon_cards(_config(tmp_path, gojira_cluster=""), None)
     assert cards[0] == {
-        "id": "deploy-platform",
-        "name": "Deploy platform",
+        "id": "deployment",
+        "name": "Deployment",
         "summary": "Turns each agent's repository into a running deployment and keeps it there.",
         "state": "off",
         "detail": "No cluster configured; Create cannot run without it.",
         "keys": ["gojira_cluster", "gojira_url", "gojira_token"],
-        "owner": "platform team",
+        "owner": "deploy team",
     }

@@ -50,11 +50,11 @@ class AddonCard:
 
 def _deploy_platform(config: Config, clients: Clients | None) -> AddonCard:
     base = {
-        "id": "deploy-platform",
-        "name": "Deploy platform",
+        "id": "deployment",
+        "name": "Deployment",
         "summary": "Turns each agent's repository into a running deployment and keeps it there.",
         "keys": ["gojira_cluster", "gojira_url", "gojira_token"],
-        "owner": "platform team",
+        "owner": "deploy team",
     }
     if not config.gojira_cluster:
         return AddonCard(state="off", detail="No cluster configured; Create cannot run without it.", **base)
@@ -65,7 +65,7 @@ def _deploy_platform(config: Config, clients: Clients | None) -> AddonCard:
         except ClientError:
             ok = False
     if not ok:
-        return AddonCard(state="error", detail="Configured, but the platform did not answer just now.", **base)
+        return AddonCard(state="error", detail="Configured, but the deploy service did not answer just now.", **base)
     return AddonCard(state="on", detail=f"Connected to {config.gojira_cluster}.", **base)
 
 

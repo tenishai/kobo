@@ -108,7 +108,7 @@ All notable changes to kobo are documented here. The format follows
 
 - **The admin panel reads like a settings screen.** Every page is a title, one sentence, a toolbar
   and a table. Overview is one row per page, each a link with the number that matters, read from the
-  room (the demo store is gone). Add-ons is now Platform: a table of the services the room runs on,
+  room (the demo store is gone). Add-ons is now Services: a table of what the room runs on,
   with the secrets service named as OpenBao through sero, and Reload org config asks before it acts.
   The integration catalogue is this room's vendors (Atlassian, Datadog, Google Cloud, AWS, Azure,
   Wiz, Fastly, Okta, Other). Roles, People and Audit use the same table. The rail's "This room"

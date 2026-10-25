@@ -104,20 +104,20 @@ describe("AdminPanel", () => {
   it("is admins only, and only while the room has the panel on", async () => {
     vi.unstubAllGlobals();
     stubFetch({ "/api/whoami": { ...ADMIN_WHOAMI, admin_panel: false } });
-    navigate({ page: "admin", pane: "platform" });
+    navigate({ page: "admin", pane: "services" });
     renderWithClient(AdminPanel);
     expect(await screen.findByRole("heading", { name: "Admins only" })).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Platform" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Services" })).toBeNull();
   });
 
-  it("opens the page the hash names, and the old add-ons name still opens Platform", async () => {
+  it("opens the page the hash names, and the old add-ons name still opens Services", async () => {
     navigate({ page: "admin", pane: "addons" });
     renderWithClient(AdminPanel);
-    expect(await screen.findByRole("heading", { name: "Platform" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Services" })).toBeTruthy();
     // Rows come from the server, as a status word plus the detail.
     expect(await screen.findByText("Vault lane at http://sero.internal.")).toBeTruthy();
     expect(screen.getByText("On")).toBeTruthy();
-    // A vendor is an integration, not a platform service.
+    // A vendor is an integration, not a service the room runs on.
     expect(screen.queryByText("Datadog")).toBeNull();
     // The rail shows the room's own facts, read from the server.
     expect(await screen.findByText("example/kobo-config")).toBeTruthy();
@@ -135,7 +135,7 @@ describe("AdminPanel", () => {
   });
 
   it("Reload org config asks first", async () => {
-    navigate({ page: "admin", pane: "platform" });
+    navigate({ page: "admin", pane: "services" });
     renderWithClient(AdminPanel);
     await fireEvent.click(await screen.findByRole("button", { name: "Reload org config" }));
     expect(await screen.findByRole("heading", { name: "Reload the org config?" })).toBeTruthy();

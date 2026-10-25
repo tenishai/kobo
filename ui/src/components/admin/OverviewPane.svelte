@@ -35,8 +35,8 @@
     const pending = (requests.data ?? []).filter((x) => x.status === "pending").length;
     return [
       {
-        pane: "platform",
-        name: "Platform",
+        pane: "services",
+        name: "Services",
         note: addons.isPending ? "…" : broken ? `${broken} not answering` : `${on} of ${a.length} on`,
         warn: broken > 0,
       },
