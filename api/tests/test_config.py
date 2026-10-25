@@ -608,3 +608,28 @@ def test_auth_regime_names_each_accidental_opening():
         resolver_configured=True
     )
     assert clean == [] and "resolver on" in line
+
+
+def test_room_logging_lets_info_lines_through_without_touching_the_root(caplog):
+    """The deployed entry configures no logging, so the auth-regime line
+    (#198) and the other boot INFO lines were dropped by the root default."""
+    import logging
+
+    from kobo_api.main import configure_room_logging
+
+    root = logging.getLogger()
+    saved = list(root.handlers)
+    try:
+        root.handlers = []
+        room = logging.getLogger("kobo_api")
+        before = list(room.handlers)
+        configure_room_logging()
+        assert room.level == logging.INFO
+        assert len(room.handlers) == len(before) + 1
+        configure_room_logging()
+        assert len(room.handlers) == len(before) + 1  # idempotent
+        for h in room.handlers:
+            if h not in before:
+                room.removeHandler(h)
+    finally:
+        root.handlers = saved

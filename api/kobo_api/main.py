@@ -10908,8 +10908,27 @@ def _boot_sync_dispatch_pairs(
         log.info("boot-time dispatch-pairs sync pushed %d pair(s) to the switchboard", count)
 
 
+def configure_room_logging(level: int = logging.INFO) -> None:
+    """Let the room's own INFO lines reach the pod log. The deployed entry
+    configures no logging, so Python's root default (WARNING) dropped every
+    `log.info` the room writes at boot: the auth regime (#198), the
+    dispatch-pairs sync, the built-in persona seed. Scoped to the `kobo_api`
+    loggers with one stderr handler, so library chatter (httpx's per-request
+    INFO lines) stays where it was. Idempotent, and a no-op when the root
+    logger already has handlers (a host that configured logging itself)."""
+    if logging.getLogger().handlers:
+        return
+    room = logging.getLogger("kobo_api")
+    if not room.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s: %(message)s"))
+        room.addHandler(handler)
+    room.setLevel(level)
+
+
 def build_default_app() -> FastAPI:
     """Wire the real config, org config, database, and platform clients."""
+    configure_room_logging()
     # Local import: `kobo_api.clients` pulls in httpx/subprocess-backed
     # implementations that most tests (which only need `create_app` and a
     # fake/None clients object) never touch — keeping this import inside the
