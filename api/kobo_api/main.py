@@ -3096,6 +3096,17 @@ def _decide_learning(
     )
 
 
+
+def _deny_words(detail: dict) -> str:
+    """A refusal row's detail as one phrase: the scope it needed, or the
+    handler that was not allowed, in words rather than keys."""
+    if detail.get("required_scope"):
+        return f"needs {detail['required_scope']}"
+    if detail.get("reason"):
+        return str(detail["reason"])
+    return "refused"
+
+
 def create_app(
     session_factory: sessionmaker[Session],
     *,
@@ -7377,6 +7388,47 @@ def create_app(
     # `_build_teach_envelope`/`_archive_teach_note` plumbing -- with the
     # `prefix="learning"` note_filename gives it, so techne provenance
     # reads `intake:learning-<date>-<slug>` rather than `intake:chat-...`.
+
+    @app.get("/api/agents/{name}/activity")
+    def agent_activity(
+        name: str,
+        request: Request,
+        days: int = 7,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """What the agent did through the tool gateway: every admitted call
+        and every refusal the gateway recorded for its persona, newest first.
+        Read live from the gateway's admin plane; without one the panel says
+        so instead of showing an empty list as if nothing happened."""
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        admin = getattr(app.state.clients, "liminal_admin", None)
+        if admin is None:
+            return JSONResponse({"available": False, "note": "the tool gateway\'s admin plane is not wired, so the room cannot read what this agent did there", "rows": []})
+        since = time.time() - max(1, min(days, 90)) * 86400
+        try:
+            raw = admin.audit(persona=agent.name, since=since, limit=500)
+        except ClientError as exc:
+            return JSONResponse({"available": False, "note": str(exc), "rows": []})
+        rows = []
+        for r in raw:
+            action = r.get("action")
+            if action not in ("access_allow", "access_deny"):
+                continue
+            d = r.get("detail") or {}
+            tool = d.get("tool") or ""
+            handler = d.get("handler") or (tool.split(".", 1)[0] if tool else "")
+            if action == "access_deny":
+                outcome = "denied"
+            else:
+                outcome = d.get("outcome") or "ok"
+            rows.append({
+                "ts": r.get("ts"), "handler": handler, "tool": tool, "outcome": outcome,
+                "args": d.get("args") or "", "ms": d.get("ms"),
+                "detail": d.get("error") or d.get("reason") or ("" if d.get("kind") == "call" else _deny_words(d)),
+            })
+        return JSONResponse({"available": True, "note": None, "rows": rows})
 
     @app.get("/api/agents/{name}/learnings")
     def list_learnings(

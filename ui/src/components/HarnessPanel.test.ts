@@ -225,7 +225,7 @@ describe("HarnessPanel for a connected agent", () => {
     const labels = within(nav())
       .getAllByRole("button")
       .map((b) => b.textContent?.trim());
-    expect(labels).toEqual(["Model and runtime", "Identity and access"]);
+    expect(labels).toEqual(["Model and runtime", "Identity and access", "Activity"]);
     expect(
       screen.getByText(
         "This agent brings its own harness. The room shows what it runs on and nothing more.",

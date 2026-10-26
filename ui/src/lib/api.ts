@@ -1495,6 +1495,23 @@ export type SystemTaskStatus = {
 
 export type LearningsList = { learnings: Learning[]; system_tasks?: SystemTaskStatus[] };
 
+/** What the agent did through the tool gateway (admitted calls and refusals). */
+export type AgentActivityRow = {
+  ts: number | null;
+  handler: string;
+  tool: string;
+  outcome: "ok" | "error" | "denied" | string;
+  args: string;
+  ms: number | null;
+  detail: string;
+};
+export type AgentActivity = { available: boolean; note: string | null; rows: AgentActivityRow[] };
+
+export async function fetchActivity(name: string, days = 7): Promise<AgentActivity> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/activity?days=${days}`);
+  return parse<AgentActivity>(res);
+}
+
 export async function listLearnings(name: string): Promise<LearningsList> {
   const res = await fetch(
     `/api/agents/${encodeURIComponent(name)}/learnings?status=all`,

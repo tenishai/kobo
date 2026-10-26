@@ -63,7 +63,8 @@ export type HarnessSectionId =
   | "skills"
   | "tooling"
   | "memory"
-  | "learnings";
+  | "learnings"
+  | "activity";
 
 export const HARNESS_SECTION_LABELS: Record<HarnessSectionId, string> = {
   runtime: "Model and runtime",
@@ -73,6 +74,7 @@ export const HARNESS_SECTION_LABELS: Record<HarnessSectionId, string> = {
   tooling: "Tooling",
   memory: "Memory",
   learnings: "Learnings",
+  activity: "Activity",
 };
 
 const HARNESS_SECTION_IDS = Object.keys(HARNESS_SECTION_LABELS) as HarnessSectionId[];
@@ -91,7 +93,7 @@ export function harnessSections(kind: string = KIND_COMPOSED): HarnessSectionId[
   // Identity is true of any agent the room deploys, connected included:
   // both kinds run as the service account the room made for them.
   return kind === KIND_CONNECTED
-    ? [DEFAULT_HARNESS_SECTION, "identity"]
+    ? [DEFAULT_HARNESS_SECTION, "identity", "activity"]
     : [...HARNESS_SECTION_IDS];
 }
 

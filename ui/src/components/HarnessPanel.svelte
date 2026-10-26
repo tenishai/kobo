@@ -22,6 +22,7 @@
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import type { Snippet } from "svelte";
   import LearningsPanel from "./LearningsPanel.svelte";
+  import ActivityPanel from "./ActivityPanel.svelte";
   import MemoryPanel from "./MemoryPanel.svelte";
   import SkillsPanel from "./SkillsPanel.svelte";
   import ToolingPanel from "./ToolingPanel.svelte";
@@ -459,6 +460,8 @@
           <MemoryPanel {agentName} {frozen} />
         {:else if id === "learnings"}
           <LearningsPanel {agentName} canDecide={canDecideLearnings} {frozen} />
+        {:else if id === "activity"}
+          <ActivityPanel {agentName} />
         {/if}
       </div>
     {/each}
