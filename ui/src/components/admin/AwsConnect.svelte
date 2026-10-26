@@ -1,21 +1,19 @@
 <script lang="ts">
-  // Connect AWS: pick what the agents may read, create the role one of three
-  // ways, paste its ARN. The room checks the role with AWS before it is saved.
+  // Connect AWS: the account owner creates one read-only role that trusts
+  // the gateway, the admin pastes its ARN, the room checks it with AWS
+  // before saving. What each agent may do inside that role is set per lane
+  // under Connections, so the role itself is the full read-only ceiling.
   import { createQuery } from "@tanstack/svelte-query";
   import { adminAwsSetupQuery } from "../../lib/queries";
 
   let { roleArn = $bindable("") }: { roleArn?: string } = $props();
 
-  let packs = $state<string[]>(["logs"]);
-  const setup = createQuery(() => (adminAwsSetupQuery(packs)));
+  const ALL_PACKS = ["logs", "security-audit", "cost"];
+  const setup = createQuery(() => (adminAwsSetupQuery(ALL_PACKS)));
 
   const TABS = ["Terraform", "CloudFormation", "By hand"] as const;
   let tab = $state<(typeof TABS)[number]>("Terraform");
   let copied = $state<string | null>(null);
-
-  function togglePack(id: string, on: boolean): void {
-    packs = on ? [...packs, id] : packs.filter((p) => p !== id);
-  }
 
   async function copy(label: string, text: string): Promise<void> {
     try {
@@ -28,103 +26,179 @@
   }
 
   const params = $derived(
-    Object.entries(setup.data?.cloudformation.parameters ?? {}).map(([k, v]) => `${k}=${v}`).join("\n"),
+    Object.entries(setup.data?.cloudformation.parameters ?? {}).map(([k, v]) => `${k} = ${v}`).join("\n"),
   );
 </script>
 
 {#if setup.isPending}
-  <p class="page__foot">Reading what the gateway is…</p>
+  <p class="hint">Reading what the gateway is…</p>
 {:else if setup.isError || !setup.data}
-  <p class="page__foot fail">Could not read the set-up details just now.</p>
+  <p class="hint fail">Could not read the set-up details just now.</p>
 {:else}
   {@const s = setup.data}
-  <section class="step">
-    <h3 class="step__title">1. What agents may read</h3>
-    <div class="packs">
-      {#each s.packs as p (p.id)}
-        <label class="pack">
-          <input type="checkbox" checked={p.required || packs.includes(p.id)} disabled={p.required} onchange={(e) => togglePack(p.id, e.currentTarget.checked)} />
-          <span><span class="pack__name">{p.id}</span> <span class="quiet">{p.purpose}</span></span>
-        </label>
-      {/each}
-    </div>
-    <p class="page__foot">Read-only, configuration not data. The role is named {s.role_name}; the owner of the account can narrow it further.</p>
-  </section>
+  <ol class="steps">
+    <li class="step">
+      <h3 class="step__title">What the role allows</h3>
+      <p class="step__text">
+        Read-only across the account: configuration, never data. Each agent gets its own narrower
+        profile inside it under Connections.
+      </p>
+      <ul class="packs">
+        {#each s.packs as p (p.id)}
+          <li class="pack"><span class="pack__name">{p.id}</span><span class="pack__what">{p.purpose}</span></li>
+        {/each}
+      </ul>
+    </li>
 
-  <section class="step">
-    <h3 class="step__title">2. Create the role in the account</h3>
-    {#if s.identity}
-      <p class="page__foot">The role trusts the gateway's identity <code>{s.identity.subject}</code>{#if s.identity.email} ({s.identity.email}){/if}, nothing else. No key is created.</p>
-    {:else if s.identity_note}
-      <p class="page__foot fail">{s.identity_note}</p>
-    {/if}
-    <div class="tabs" role="tablist" aria-label="How to create the role">
-      {#each TABS as t (t)}
-        <button type="button" role="tab" class="tab" aria-selected={tab === t} onclick={() => (tab = t)}>{t}</button>
-      {/each}
-    </div>
-    {#if tab === "Terraform"}
-      <div class="code">
-        <pre>{s.terraform}</pre>
-        <button type="button" class="btn btn--quiet code__copy" onclick={() => copy("tf", s.terraform)}>{copied === "tf" ? "Copied" : "Copy"}</button>
+    <li class="step">
+      <h3 class="step__title">Create the role in the account</h3>
+      {#if s.identity}
+        <dl class="facts">
+          <div><dt>Trusts</dt><dd><code>{s.identity.subject}</code></dd></div>
+          {#if s.identity.email}<div><dt>Which is</dt><dd>{s.identity.email}</dd></div>{/if}
+          <div><dt>Named</dt><dd>{s.role_name}</dd></div>
+        </dl>
+      {:else if s.identity_note}
+        <p class="hint fail">{s.identity_note}</p>
+      {/if}
+      <div class="tabs" role="tablist" aria-label="How to create the role">
+        {#each TABS as t (t)}
+          <button type="button" role="tab" class="tab" aria-selected={tab === t} onclick={() => (tab = t)}>{t}</button>
+        {/each}
       </div>
-      <p class="page__foot">Apply it with the account's own pipeline, then paste the <code>kobo_role_arn</code> output below.</p>
-    {:else if tab === "CloudFormation"}
-      <div class="code">
-        <pre>{params}</pre>
-        <button type="button" class="btn btn--quiet code__copy" onclick={() => copy("cfn", s.cloudformation.template)}>{copied === "cfn" ? "Copied" : "Copy template"}</button>
-      </div>
-      <p class="page__foot">Create a stack from the copied template with these parameters, or a StackSet across the organisation, then paste the stack's <code>RoleArn</code> output below.</p>
-    {:else}
-      <div class="code">
-        <pre>{s.trust_policy}</pre>
-        <button type="button" class="btn btn--quiet code__copy" onclick={() => copy("trust", s.trust_policy)}>{copied === "trust" ? "Copied" : "Copy"}</button>
-      </div>
-      <p class="page__foot">Create a role with this trust policy and attach ViewOnlyAccess{#if packs.includes("security-audit")} and SecurityAudit{/if}; the other packs are inline statements in the template.</p>
-    {/if}
-  </section>
+      {#if tab === "Terraform"}
+        <div class="code">
+          <pre>{s.terraform}</pre>
+          <button type="button" class="code__copy" onclick={() => copy("tf", s.terraform)}>{copied === "tf" ? "Copied" : "Copy"}</button>
+        </div>
+        <p class="step__text">Apply it from the account's own pipeline, then paste the <code>kobo_role_arn</code> output below.</p>
+      {:else if tab === "CloudFormation"}
+        <div class="code">
+          <pre>{params}</pre>
+          <button type="button" class="code__copy" onclick={() => copy("cfn", s.cloudformation.template)}>{copied === "cfn" ? "Copied" : "Copy template"}</button>
+        </div>
+        <p class="step__text">Create a stack from the copied template with these parameters, or a StackSet across the organisation, then paste the stack's <code>RoleArn</code> output below.</p>
+      {:else}
+        <div class="code">
+          <pre>{s.trust_policy}</pre>
+          <button type="button" class="code__copy" onclick={() => copy("trust", s.trust_policy)}>{copied === "trust" ? "Copied" : "Copy"}</button>
+        </div>
+        <p class="step__text">Create a role with this trust policy and attach <code>ViewOnlyAccess</code> and <code>SecurityAudit</code>; the cost and logs reads are the inline statements in the template.</p>
+      {/if}
+    </li>
 
-  <section class="step">
-    <h3 class="step__title">3. Paste the role</h3>
-    <label class="field">
-      <span>Role ARN</span>
-      <input id="integration-role_arn" type="text" bind:value={roleArn} autocomplete="off" placeholder="arn:aws:iam::123456789012:role/{s.role_name}" required />
-    </label>
-    <p class="page__foot">{s.checked ? "The room asks the gateway to assume the role once before saving it." : "The room cannot check the role with AWS from here; it is saved as given."}</p>
-  </section>
+    <li class="step">
+      <h3 class="step__title">Paste the role</h3>
+      <label class="field">
+        <span>Role ARN</span>
+        <input id="integration-role_arn" type="text" bind:value={roleArn} autocomplete="off" spellcheck="false" placeholder="arn:aws:iam::123456789012:role/{s.role_name}" required />
+      </label>
+      <p class="hint">{s.checked ? "Connect asks the gateway to assume the role once; nothing is saved until AWS agrees." : "The room cannot check the role with AWS from here; it is saved as given."}</p>
+    </li>
+  </ol>
 {/if}
 
 <style>
-  .step { display: flex; flex-direction: column; gap: var(--space-xs); }
-  .step__title { margin: var(--space-sm) 0 0; font-size: 0.95rem; }
-  .packs { display: flex; flex-direction: column; gap: var(--space-2xs); }
-  .pack { display: flex; align-items: baseline; gap: var(--space-xs); }
-  .pack__name { font-weight: 600; }
-  .quiet { color: var(--muted); font-size: 0.85rem; }
+  .steps {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    counter-reset: step;
+  }
+  .step {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    padding-left: 2.25rem;
+    position: relative;
+    counter-increment: step;
+  }
+  .step::before {
+    content: counter(step);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-size: 0.8rem;
+    font-weight: 700;
+    line-height: 1.5rem;
+    text-align: center;
+  }
+  .step__title { margin: 0; font-size: 1rem; line-height: 1.5rem; color: var(--ink); }
+  .step__text { margin: 0; color: var(--ink); line-height: 1.5; }
+  .hint { margin: 0; color: var(--muted); font-size: 0.9rem; }
   .fail { color: var(--fail); }
-  .tabs { display: flex; gap: var(--space-xs); border-bottom: 1px solid var(--border); }
+
+  .packs {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: var(--space-2xs) var(--space-md);
+    margin: 0;
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    list-style: none;
+  }
+  .pack { display: contents; }
+  .pack__name { font-family: var(--font-mono); font-size: 0.85rem; font-weight: 600; color: var(--ink); }
+  .pack__what { color: var(--muted); font-size: 0.9rem; }
+
+  .facts { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-2xs) var(--space-md); margin: 0; }
+  .facts div { display: contents; }
+  .facts dt { color: var(--muted); font-size: 0.9rem; }
+  .facts dd { margin: 0; color: var(--ink); }
+  .facts code { font-size: 0.9rem; }
+
+  .tabs { display: flex; gap: var(--space-md); border-bottom: 1px solid var(--border); }
   .tab {
-    padding: var(--space-xs) var(--space-sm);
+    padding: var(--space-xs) 0;
     border: none;
     border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
     background: none;
     color: var(--muted);
     font: inherit;
     font-weight: 600;
     cursor: pointer;
   }
-  .tab[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--ink); }
+  .tab:hover { color: var(--ink); }
+  .tab[aria-selected="true"] { border-bottom-color: var(--ink); color: var(--ink); }
+
   .code { position: relative; }
   .code pre {
     margin: 0;
-    padding: var(--space-sm);
+    padding: var(--space-md);
+    padding-right: 5.5rem;
     overflow: auto;
-    max-height: 16rem;
-    border: 1px solid var(--border);
+    max-height: 18rem;
     border-radius: var(--radius-sm);
-    background: var(--panel);
-    font-size: 0.78rem;
-    user-select: all;
+    background: var(--ink);
+    color: var(--bg);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
   }
-  .code__copy { position: absolute; top: var(--space-2xs); right: var(--space-2xs); }
+  .code__copy {
+    position: absolute;
+    top: var(--space-xs);
+    right: var(--space-xs);
+    padding: 0.2rem var(--space-xs);
+    border: 1px solid color-mix(in srgb, var(--bg) 35%, transparent);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--bg) 12%, transparent);
+    color: var(--bg);
+    font: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  .code__copy:hover { background: color-mix(in srgb, var(--bg) 24%, transparent); }
 </style>
