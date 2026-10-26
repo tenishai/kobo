@@ -9,8 +9,9 @@ All notable changes to kobo are documented here. The format follows
 ### Added
 
 - **Connect AWS without a key** (design 2026-10-25, cloud access for integrations). The
-  Integrations page's AWS entry is now a sheet: pick what agents may read (packs:
-  `inventory` always, `logs`, `security-audit`, `cost`), create the role one of three ways
+  Integrations page's AWS entry is now a sheet: see what the role allows (every read-only
+  pack: `inventory`, `logs`, `security-audit`, `cost`; what each agent may do inside it is
+  set per lane), create the role one of three ways
   (a Terraform module snippet, the CloudFormation template with its parameters
   pre-answered, or the trust policy alone), paste the role's ARN. The room asks the gateway
   to assume the role once before saving it, so "connected" is said only after AWS agreed;
