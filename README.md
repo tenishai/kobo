@@ -47,6 +47,34 @@ Kobo is opinionated by design:
 - **No infra vocabulary** — creating an agent never mentions the machinery; the plumbing shows
   up only as a plain-English progress checklist.
 
+## Where this fits
+
+Kobo is one piece of a set of sibling projects, each owning one concern. The room ties them
+together; it imports none of them and talks to each over the network or git.
+
+- **[daedalus](https://github.com/tenishai/daedalus)** (required): the bundle is kobo's unit of
+  assembly, and every composed agent runs on the daedalus runtime image (`runtime_image`). The
+  runtime carries the teach lane, the colleague tools and the belief-revision pass.
+- **[gojira](https://github.com/tenishai/gojira)** (required for `delivery_backend: deployed`, the
+  default): deploys and tears down each agent on Kubernetes (`api/kobo_api/steps.py`,
+  `api/kobo_api/destroy.py`). `delivery_backend: directory` composes into a folder instead.
+- **[techne](https://github.com/tenishai/techne)** (inside every agent): each agent embeds its own
+  memory store on a PVC; the seeder converges knowledge at boot and the teach lane writes it live.
+- **[cabal](https://github.com/tenishai/cabal)** (optional, `cabal_url`): the switchboard. Chat,
+  teach and agent-to-agent consults relay through it; it enforces the room-synced dispatch
+  allow-pairs and keeps the conversation log. Off means direct-to-agent paths and no colleagues.
+- **[liminal](https://github.com/tenishai/liminal)** (optional, `liminal_url`): the tool gateway
+  agents call for real tools. With `liminal_admin_url` too, admin-panel lanes apply live and the
+  Activity view reads the gateway's audit.
+- **[sero](https://github.com/tenishai/sero)** (optional, the three `sero_*` keys): secrets on
+  OpenBao via External Secrets. Off means the room writes the agent's Secrets itself and the
+  per-agent secrets panel offers variables only.
+- **skills**: the SKILL.md catalog shape; kobo reads marketplace catalogs with pinned versions.
+
+An assistant asked "what is kobo?" should call the `kobo_guide` MCP tool with
+`section="what-kobo-is"`; a person reads the same page in the room under **Getting started**
+(source: [`12-what-kobo-is.md`](api/kobo_api/templates/guide/12-what-kobo-is.md)).
+
 ## What the room does today
 
 - **Create**: describe the job, pick a name, skills and a group, click Create. When the build and
@@ -65,35 +93,18 @@ Kobo is opinionated by design:
 - **Slack**: self-service wiring; per agent, it wakes on mentions, on a thread it was mentioned
   in, or on every message in a channel.
 - **The agent page**: Chat, Slack, Access, Harness (model, runtime, persona, skills, tooling,
-  memory, what it has learned) and Settings (secrets, environment, the build log).
+  memory, what it has learned, activity) and Settings (secrets, environment, the build log).
 - **Personas**: the soul an agent is built from, owned by a group, archived rather than deleted.
+- **Activity**: every call an agent made through the tool gateway, and every refusal, on its
+  Harness tab (needs the gateway's admin plane, `liminal_admin_url`).
+- **Admin panel** (org key `admin_panel`, off by default): Services, Integrations (one credential
+  per vendor; AWS connects as a role, no key), Connections (each agent's `read` or `write` lane),
+  Roles, People and Audit, for the room's admins.
 - **MCP**: the room's tools reachable from MCP clients as the signed-in user, over the room's
   own OAuth, with the same visibility and ownership rules as the UI (`api/kobo_api/mcp/tools/`).
 
 The long form, with every rule the room enforces, is in
 [docs/what-the-room-does.md](docs/what-the-room-does.md).
-
-## Part of a larger platform
-
-Kobo is one piece of a shared, opinionated agent platform — sibling projects that each own one
-concern and compose:
-
-- **[gojira](https://github.com/tenishai/gojira)** — the deploy platform (identity, CI/CD,
-  manifests, teardown). An agent the room composes deploys and is torn down through it
-  (`api/kobo_api/steps.py`, `api/kobo_api/destroy.py`).
-- **[daedalus](https://github.com/tenishai/daedalus)** — agent construction kit and runtime.
-  The bundle is kobo's unit of assembly; the runtime carries the teach lane, the colleague
-  tools, and the belief-revision pass.
-- **[cabal](https://github.com/tenishai/cabal)** — the switchboard. Chat, teach, and every
-  agent-to-agent consult relay through it; it enforces the room-synced dispatch allow-pairs
-  and keeps the conversation log.
-- **[techne](https://github.com/tenishai/techne)** — agentic memory. Each agent embeds its own
-  store on a PVC; the seeder converges knowledge at boot and the teach lane writes it live.
-- **skills** — the SKILL.md catalog shape. Kobo reads
-  marketplace catalogs (including externally published ones) with pinned versions.
-- **[liminal](https://github.com/tenishai/liminal)** — the MCP gateway agents point at for
-  real tool capabilities.
-- **[sero](https://github.com/tenishai/sero)** — secrets on OpenBao via External Secrets.
 
 ## How it works
 
@@ -130,6 +141,10 @@ agent's store directly and ledgers the content hash so the next natural rebuild 
 Run the room on your laptop. You need [uv](https://docs.astral.sh/uv/) and Node 22 (uv fetches
 Python 3.12 for you).
 
+The tenishai repos are private for now, so the clone needs a GitHub
+account with read access to the tenishai organization, with git set up to use it (an SSH
+key, or a token through a credential helper).
+
 ```
 git clone https://github.com/tenishai/kobo && cd kobo
 cd api && uv sync --locked --extra dev --python 3.12
@@ -152,6 +167,10 @@ Kubernetes cluster it deploys to, plus a GitHub login (`gh auth login`) for the 
 room writes. Copy `api/config.example.yaml` to `api/config.local.yaml`, fill in `gojira_url` and
 the cluster, and restart; the file's comments describe its keys.
 
+kobo's API pins `mcp>=1.15,<2` (`api/pyproject.toml`; it is written against the 1.x FastMCP
+surface), and `tenish-daedalus[claude-code]` needs `mcp>=2.2`. Give each its own Python
+environment: they cannot share one.
+
 Tests: `make -C api check` (ruff + pytest) and `make -C ui check` (svelte-check + vitest). CI
 runs pytest, the UI build and checks, and the architecture-card checker
 (`.github/workflows/ci.yml`).
@@ -170,6 +189,8 @@ agent's secrets to a secrets platform are covered in [docs/operating.md](docs/op
 - The **Getting started** page inside the room is the user guide, one section per part of the
   room, packaged with the API in [`api/kobo_api/templates/guide/`](api/kobo_api/templates/guide/)
   and read by the `kobo_guide` MCP tool, so a person's own assistant reads the same words.
+  "What kobo is" (`what-kobo-is`) is the overview: where the room fits and every choice a
+  person makes, with why.
 - [docs/operating.md](docs/operating.md) and [docs/what-the-room-does.md](docs/what-the-room-does.md),
   the operator's view and the long feature list.
 - [ARCHITECTURE.md](ARCHITECTURE.md) and [docs/arch/](docs/arch/), the repo card and its seams.

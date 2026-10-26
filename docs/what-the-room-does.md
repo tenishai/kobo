@@ -10,8 +10,8 @@ the same ground.
 - **Connect your own**: take on a repository your team already owns and let the room deploy
   it. The repository field searches the repositories the room's GitHub App can reach as you
   type, and the room proposes its setup by pull request.
-- **Chat & teach**: talk to any agent you can see. Press *Teach this* on any exchange and the
-  fact is in the agent's memory in seconds, provenance-stamped with your identity. Corrections
+- **Chat & teach**: talk to any agent you can see. Press *Teach this* on any message and that
+  message's own words are in the agent's memory in seconds (the modal names the file it saved), provenance-stamped with your identity. Corrections
   retire stale facts in-session via the agent's own belief-revision pass.
 - **Memory**: upload notes or docs for one-shot learning; taught chat notes archive to the
   repo quietly (`[skip ci]`) and fold away in the UI. Memories outlive their source files.
@@ -53,7 +53,19 @@ the same ground.
   room's current one, and an operator's button to move it), its persona, its skills, its
   tooling, its memory, and what it has learned. Settings is the back office: secrets and
   environment, the build log, and the two changes there is no way back from. A connected
-  agent's Harness shows what it runs on and nothing else: the room composed none of the rest.
+  agent's Harness shows what it runs on, its identity and its activity: the room composed none
+  of the rest.
+- **Activity**: a Harness section on every agent, connected ones included, listing each call the
+  tool gateway admitted and each it refused, newest first, with the arguments in brief and
+  secrets masked; filter by tool, over a day, 7 days or 30. Read live from the gateway's admin
+  plane; without one the section says so.
+- **Admin panel**: behind the `admin_panel` org key, for the room's admins only. Services (what
+  the room runs on, and Reload org config), Integrations (one credential per vendor in the form
+  that vendor uses; AWS is a read-only role the gateway assumes, set up from a Terraform module,
+  a CloudFormation template or a trust policy and checked with AWS before it is saved),
+  Connections (each agent's `read` or `write` lane to an integration, applied live through the
+  gateway's admin plane and proposed as a pull request on its grants file), Roles (four
+  built-ins and custom ones), People and Audit.
 - **Personas**: the soul an agent is built from. Archive one from the Personas page when it
   has outlived its use, and restore it later; nothing is destroyed. Good persona names pass
   the glance test: a stranger reading the card knows what picking it gets them. The
@@ -77,7 +89,8 @@ the same ground.
   publish new entries under your own team (publishing is instant and org-wide;
   tool publishing runs the same mechanical law the room enforces, and baseline tool ids are
   reserved for operators). The same surface moves and archives personas, sets an
-  agent's persona, model and Slack wake mode, re-files an agent under another group
+  agent's persona, model, colleague mode and Slack wake mode, refreshes an attached skill to
+  the catalog's current version, re-files an agent under another group
   (operators only), reviews an agent's queued learnings one at a time or in bulk, and runs
   the agent PR broker's repository-access requests and the operator's batch approve or
   revoke. The tools live in `api/kobo_api/mcp/tools/`. Every new agent ships with the baseline

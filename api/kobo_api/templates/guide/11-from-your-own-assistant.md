@@ -11,7 +11,7 @@ The first thing to try is the whoami tool. It tells you who the room thinks you 
 
 ## Read the guide first
 
-The guide tool returns this guide, section by section. Ask your assistant to read the relevant section before it acts, so it knows what a step does and what the room will ask for.
+The guide tool returns this guide, section by section. "What kobo is" is the overview to start from when someone asks what the room is or which options it has. Ask your assistant to read the relevant section before it acts, so it knows what a step does and what the room will ask for.
 
 ## The tools, by what they do
 
@@ -26,11 +26,14 @@ Create and shape an agent:
 - **set agent persona**, **set agent skills**, **add agent tool**: change what the agent is and does.
 - **create persona**, **move persona**, **archive persona**: the persona builder and the Manage row from chat.
 - **set agent model**: move a running agent onto another model from the room's list; it rebuilds and rolls.
+- **set colleague mode**: `default`, `roster-only` or `none`, the Harness tab's Colleagues choice.
+- **set agent skills** also refreshes an attached catalog skill to the version the catalog serves now, in one commit.
 - **create skill**, **create tool**: publish to your organization's catalogs.
 
 Run it:
 - **set agent secrets**, **set agent env**, **restart agent**: the Settings tab from chat. Changes reach the agent on restart.
 - **wire slack**: paste the tokens for a Slack app you already created from the manifest.
+- **set slack wake**: mentions only, mentions then the thread, or every message in the channel.
 - **chat**, **teach**: talk to the agent and file a note.
 - **list learnings**, **decide learning**, **decide learnings bulk**: the Learnings section from chat.
 - **request colleague**, **accept invite**: the cross-group handshake.

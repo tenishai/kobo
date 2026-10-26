@@ -10,7 +10,7 @@ Open the **Settings** tab. **Secrets and environment** is one table with two kin
 
 ## Where secrets live
 
-Secrets are stored in the room's secrets service, never in the agent's repository, and reach the agent as environment variables. Variables are written into the agent's own files. For a connected agent the room proposes that change as a pull request, because it never pushes to your branches.
+Secrets are stored in the room's secrets service, never in the agent's repository, and reach the agent as environment variables. A room with no secrets service keeps the table and the variables but cannot store a new secret, so the controls that add one are not there. Variables are written into the agent's own files. For a connected agent the room proposes that change as a pull request, because it never pushes to your branches.
 
 ## The lock
 

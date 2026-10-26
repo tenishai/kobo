@@ -162,3 +162,36 @@ through the room's chat is dropped too.
 **Org wiring**: a room serves one org. The org's config repo carries `org.yaml` — catalogs,
 models, groups, admin groups, the runtime pin — cloned at boot and merged over local defaults.
 The bootstrap CLI stands up a new org (config repo, buckets, seeded personas) idempotently.
+The admin panel's **Reload org config** (`POST /api/admin/org/reload`) merges `org.yaml` over
+the boot-time local config again without a restart; models, groups and the people lists land at
+once, add-on URLs still need a restart.
+
+**Config is strict**: `Config` and its `mcp:` block refuse unknown keys, so a typo stops the room
+at boot rather than turning a switch off quietly (`iap_audiance: x` used to run the room with no
+authentication). Every boot logs one line naming the auth regime and an ERROR for each accidental
+opening: no IAP without `allow_unauthenticated: true`, IAP with no operators and no admin groups,
+or groups with no directory resolver. An MCP server on a room with no IAP is refused unless
+`mcp.allow_without_iap: true`.
+
+**Admin panel and the tool gateway**: `admin_panel: true` in `org.yaml` turns on `#/admin` for
+the room's admins (404 while off, 403 for anyone else). Connecting an integration needs
+`gateway_config_repo` (the gateway's config repository, where the vendor's target lands as a pull
+request) and `gateway_namespace` (where the secrets service syncs the credential). Set
+`liminal_admin_url` to the gateway's admin-plane Service to apply lanes at once and to feed each
+agent's Activity view; the room authenticates there with a token the switchboard mints for
+persona `kobo-room`, so the switchboard must be wired and the gateway's trust registry must list
+`kobo-room` as an admin persona. Without it, lanes land only as the pull request on the grants
+file and Activity says the admin plane is not wired. `logout_url` gives the account menu a Log
+out item (for Google's proxy, `/_gcp_iap/clear_login_cookie`).
+
+**Cutting off one person's MCP access**: `POST /api/admin/mcp/revocations` (admin panel on, admins
+only) revokes every refresh family the person holds and refuses access tokens issued before that
+instant; their next sign-in goes back through Google and the Workspace check.
+`GET /api/admin/mcp/revocations` lists who has been cut off.
+
+**Rooms with no cluster or object store** (ergon's laptop and team tiers):
+`delivery_backend: directory` with `directory_root` composes each agent into
+`<directory_root>/<agent>/` and tells the running set by a POST to `directory_reload_url`, or a
+`.ready` marker when that is unset; `storage_backend: directory` with `storage_root` keeps the
+persona and skill catalogs in folders. The defaults, `deployed` and `gcs`, are what every other
+section of this page describes.

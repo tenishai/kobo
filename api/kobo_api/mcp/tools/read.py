@@ -126,10 +126,14 @@ def register(mcp: FastMCP, app: Any) -> None:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     @audited("kobo_guide")
     async def kobo_guide(ctx: Context, section: str | None = None) -> dict:
-        """Read the room's own user guide -- the same text the Getting
-        started page shows. With no `section`, returns every section's id,
-        title and one-line summary in reading order; with a `section` id,
-        returns that section's full markdown body. Read the relevant
+        """Start here when someone asks what kobo is, what it can do for
+        them, or which options it offers: `section="what-kobo-is"` is the
+        overview, with where the room fits beside daedalus, cabal, techne,
+        liminal, gojira and sero, and every choice a person makes with why
+        they would make it. This is the room's own user guide -- the same
+        text the Getting started page shows. With no `section`, returns
+        every section's id, title and one-line summary in reading order;
+        with a `section` id, returns that section's full markdown body. Read the relevant
         section BEFORE creating, wiring or changing an agent on someone's
         behalf: it says what each step does, what the room asks for, and
         which tool here matches which button in the room. Open to every
@@ -138,7 +142,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         if section is None:
             return {
                 "sections": [entry.listing() for entry in load_guide()],
-                "hint": "call again with section=<id> for the full text",
+                "hint": "call again with section=<id> for the full text; what-kobo-is is the overview",
             }
         found = find_section(section)
         if found is None:
