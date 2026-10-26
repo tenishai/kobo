@@ -80,7 +80,7 @@ Either reaches a running agent when you press **Restart agent**. See "Secrets an
 - **Request a repository** on the Access tab. Why: the agent should open pull requests there. An operator decides.
 - **Ask for access to another project** on the Harness tab. Why: the agent needs a cloud project it was not given. The room writes the request for your SRE team; ask for the narrowest role.
 
-People with a role: **operators** run the room, see everything, move agents between groups and destroy agents; **readers** see every agent and change none; **admins** see the admin panel. See "Access and groups".
+People with a role: **operators** run the room, see everything, move agents between groups and destroy agents; **readers** see every agent and change none. An operator for the whole room is also an admin, and sees the admin panel when the room has it turned on. See "Access and groups".
 
 ### Cloud and vendor access (admins)
 
@@ -88,7 +88,7 @@ The admin panel, when the room has it turned on, holds the choices an agent's ow
 
 - **Integrations.** One credential per vendor, in the form that vendor uses: AWS is a role the gateway assumes, so no key is stored; Google Cloud is workload identity; Azure is a federated app registration; Datadog and Wiz are key pairs; Atlassian, Fastly and Okta are API tokens. For AWS the page gives you the role three ways (a Terraform module, a CloudFormation template, or the trust policy alone), and the room checks the role with AWS before it saves.
 - **Connections.** Each agent's lane to an integration, `read` or `write`, never wider than the integration allows. Why: every agent gets only the access its job needs.
-- **Roles.** What a group may do. Four built-ins (Admin, Operator, Member, Reader) plus your own.
+- **Roles.** Four built-ins (Admin, Operator, Member, Reader) plus your own. The room records and shows them but does not enforce them yet, so giving a group a role changes nothing it can do today.
 
 ### The harness
 
