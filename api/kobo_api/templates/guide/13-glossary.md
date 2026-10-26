@@ -10,7 +10,7 @@
 - **Reader.** A member of a group configured to see every agent and change none.
 - **Persona.** Who an agent is: one line of identity, what it does, and its rules. An agent is built from one.
 - **Built-in persona.** A persona the room ships for a common kind of agent. Shared with everyone, never moved.
-- **Harness.** Everything that runs an agent: model and runtime, persona, skills, tooling, memory, learnings.
+- **Harness.** Everything that runs an agent: model and runtime, identity, persona, skills, tooling, memory, learnings, activity.
 - **Runtime.** The one shared image every room-built agent runs on. The room updates it; you press Update to current.
 - **Skill.** An ability from your organization's catalog that an agent picks up on its next build.
 - **Tooling.** Code that runs around every task. The baseline pack is a leak guard and a probe guard.
@@ -27,3 +27,8 @@
 - **Checklist.** The build steps at the top of a new agent's page, gone once every step is green.
 - **Manifest.** The Slack app definition the room writes for an agent, pasted into Slack once.
 - **MCP.** The protocol your own assistant uses to work in the room as you.
+- **Tool gateway.** The service an agent calls for real tools: cloud accounts, vendors, other MCP servers. An agent with no grant there sees no tools.
+- **Integration.** A vendor the room's admins connected once, with one credential, for agents to reach through the tool gateway.
+- **Lane.** One agent's access to one integration, `read` or `write`, set on the admin panel's Connections page.
+- **Activity.** The Harness section that lists every call an agent made through the tool gateway, and every refusal.
+- **Admin panel.** The room's settings pages for its admins, shown only when the room turns it on.

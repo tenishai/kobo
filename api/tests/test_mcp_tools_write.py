@@ -34,6 +34,7 @@ from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import Clients
 from kobo_api.config import Config, GroupChoice, MCPConfig
+from kobo_api.guide import find_section
 from kobo_api.kinds import KIND_COMPOSED, KIND_CONNECTED
 from kobo_api.main import create_app
 from kobo_api.marketplace import marketplace_repo
@@ -343,6 +344,20 @@ def test_guide_lists_sections_then_returns_one(session_factory, config, fake_sto
     section = _call_tool(mcp, "kobo_guide", _ctx_for(MEMBER_A_EMAIL), section="slack")
     assert section["title"] == "Slack"
     assert "manifest" in section["body"]
+
+
+def test_guide_lists_and_serves_the_what_is_kobo_overview(session_factory, config, fake_storage):
+    """An assistant asked "what is kobo" finds the overview by id and gets the
+    packaged text, the same bytes the room's own page shows."""
+    app = _app(session_factory, config, groups_resolver=_resolver(), storage=fake_storage)
+    mcp = build_mcp_server(app)
+
+    listing = _call_tool(mcp, "kobo_guide", _ctx_for(MEMBER_A_EMAIL))
+    assert "what-kobo-is" in [entry["id"] for entry in listing["sections"]]
+
+    section = _call_tool(mcp, "kobo_guide", _ctx_for(MEMBER_A_EMAIL), section="what-kobo-is")
+    assert section["title"] == "What kobo is"
+    assert section["body"] == find_section("what-kobo-is").body
 
 
 # --- kobo_create_agent --------------------------------------------------------

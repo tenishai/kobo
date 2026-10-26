@@ -24,6 +24,7 @@ EXPECTED_ORDER = [
     "agents-talking-to-agents",
     "personas",
     "from-your-own-assistant",
+    "what-kobo-is",
     "glossary",
 ]
 

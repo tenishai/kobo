@@ -6,7 +6,62 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Upgrading
+
+- **Four additive migrations**, run at boot: `a1b2c3d4e5f6` (admin store), `b7c8d9e0f1a2`
+  (integrations, roles, role groups, grants), `c4d5e6f7a8b9` (MCP redeemed codes and
+  revocations) and `d7e8f9a0b1c2` (`agents.pass_minted_at`). The alembic head moves from
+  `a8e2c4f6d913` to `d7e8f9a0b1c2`. Back up the database first; to go back, restore the backup
+  or run `alembic downgrade a8e2c4f6d913`.
+- **Check the config file before rolling.** `Config` and its `mcp:` block now refuse unknown
+  keys, so a typo or a key from another product stops the room at boot instead of being
+  dropped. `runtimes` is the one retired key still accepted, with a warning.
+- **An open room must say so.** A room with no `iap_audience` now logs an ERROR at every boot
+  unless `allow_unauthenticated: true` is set, and an MCP server on such a room (any
+  `mcp.oauth_client_id`) refuses to start unless `mcp.allow_without_iap: true` is set too.
+  Deployed rooms behind IAP change nothing.
+- **New optional org keys**, all off when absent: `admin_panel` (the admin panel and the
+  account menu's Admin entry), `logout_url` (the account menu's Log out, for Google's proxy
+  `/_gcp_iap/clear_login_cookie`), `gateway_config_repo` and `gateway_namespace` (where a
+  connected integration lands), and `liminal_admin_url` (the tool gateway's admin plane). The
+  admin plane is used only when the switchboard is wired too, because the room's own gateway
+  token (persona `kobo-room`, `admin:*`) is minted there: list `kobo-room` as an admin persona in
+  the gateway's trust registry. The Activity view needs a gateway that writes its audit rows
+  (tenishai/liminal#211); the AWS connect check needs `aws_identity` and `aws_probe` (liminal
+  #209).
+- **New deployment keys for ergon-style rooms**: `delivery_backend: directory` with
+  `directory_root` (and optionally `directory_reload_url`), and `storage_backend: directory`
+  with `storage_root`. The defaults (`deployed`, `gcs`) change nothing.
+- **Names whose namespace already exists are refused** at create and connect (409), and the
+  reserved names grow (see Fixed).
+- For the api/worker split, apply `k8s/overlays/api` and `k8s/overlays/worker` (see
+  `docs/operating.md`); `k8s/base` is still the one-replica shape.
+
 ### Added
+
+- **"What kobo is", a guide section for an assistant explaining the room to its person**
+  (`api/kobo_api/templates/guide/12-what-kobo-is.md`, id `what-kobo-is`): what the room is,
+  where it sits beside daedalus, gojira, techne, cabal, liminal and sero (required or optional),
+  what it can do, and every choice a person makes with why they would make it. The glossary
+  moves to `13-glossary.md` (its id is unchanged). The `kobo_guide` tool's description now says
+  to start there for "what is kobo", and its listing hint names it. README gains a "Where this
+  fits" section.
+- **Admin panel, Connections for real** (PR #191, issue #173 step 3). A lane is a grant row
+  (`read` or `write`): `GET /api/admin/connections`, `PUT` and `DELETE
+  /api/admin/connections/{agent}/{integration}`. Applying one recomputes the agent's whole
+  gateway grant from its rows, merges the handlers the gateway already holds for that persona,
+  writes it live through the gateway's admin plane with the room's own token, and rewrites the
+  persona's block in the gateway repository's grants file as a pull request. Every agent is a
+  row, so "no lane" is visible. New org key `liminal_admin_url`; empty means the pull request
+  only.
+- **Admin panel: reload the org config without a restart** (PR #187, issue #185). `POST
+  /api/admin/org/reload` merges the org config over the boot-time local config again and swaps
+  the live config, so a new model, group or people list lands at once; the response names what
+  still needs a restart (add-on URLs). The button is on the Services page.
+- **The admin panel behind a switch, and an account menu** (PR #174). Org key `admin_panel`
+  (default off) turns on `#/admin`; its routes answer 404 while it is off and 403 to anyone who
+  is not an admin. The sidebar's bare email becomes an account menu: the email, **Admin** (admins
+  only, while the panel is on), **Guide**, and **Log out** when `logout_url` is set.
 
 - **Activity: what an agent did through the tool gateway** (Kyle's ask 2026-10-25). A
   new Harness section on every agent, connected ones included, lists each call the gateway
@@ -130,6 +185,15 @@ All notable changes to kobo are documented here. The format follows
 
 ### Changed
 
+- **No "platform" anywhere a person reads it** (PR #228). The admin page is **Services** (old
+  `#/admin/addons` and `#/admin/platform` links still open it), the deploy add-on is
+  Deployment, the build step is **Deployment setup**, the destroy stage is **Deployment
+  teardown**, the secrets service is "the secrets service", and an agent's identity is its cloud
+  identity. The guide and glossary follow. Internal ids (`destroy-platform`, the
+  `deploy-platform` check id, the secrets panel's `platform` flag) are unchanged.
+- **Teach this on a chat turn saves that bubble's own words** (PR #168, issue #123 items 12 and
+  13). It used to prefill "You said: ... / agent replied: ..." from both sides. The saved
+  message now names the file it wrote (`Saved as intake/<file>`).
 - **Integrations ask each vendor for the credential it really uses.** AWS is a role the gateway
   assumes (ARN, optional external ID), Google Cloud is workload identity with an optional service
   account to act as, Azure is a federated app registration (client and tenant IDs), Datadog and

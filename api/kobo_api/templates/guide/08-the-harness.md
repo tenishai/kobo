@@ -1,7 +1,7 @@
 # The harness
-<!-- summary: What runs the agent: model and runtime, persona, skills, tooling, memory, learnings. -->
+<!-- summary: What runs the agent: model and runtime, identity, persona, skills, tooling, memory, learnings, activity. -->
 
-The **Harness** tab is everything that runs your agent, in seven sections down its left side. A connected agent shows only the first two, because it brings its own harness.
+The **Harness** tab is everything that runs your agent, in eight sections down its left side. A connected agent shows Model and runtime, Identity and access, and Activity, because it brings its own harness.
 
 ## Model and runtime
 
