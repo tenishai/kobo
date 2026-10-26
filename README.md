@@ -141,6 +141,10 @@ agent's store directly and ledgers the content hash so the next natural rebuild 
 Run the room on your laptop. You need [uv](https://docs.astral.sh/uv/) and Node 22 (uv fetches
 Python 3.12 for you).
 
+The tenishai repos are private for now, so the clone needs a GitHub
+account with read access to the tenishai organization, with git set up to use it (an SSH
+key, or a token through a credential helper).
+
 ```
 git clone https://github.com/tenishai/kobo && cd kobo
 cd api && uv sync --locked --extra dev --python 3.12
