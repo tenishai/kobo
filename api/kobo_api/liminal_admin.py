@@ -49,6 +49,7 @@ class LiminalAdminClient(Protocol):
     def revoke(self, issuer: str, persona: str) -> None: ...
     def aws_identity(self, audience: str) -> dict[str, str]: ...
     def aws_probe(self, role_arn: str, audience: str) -> dict[str, str]: ...
+    def audit(self, *, persona: str, since: float | None = None, limit: int = 200) -> list[dict]: ...
 
 
 class RoomAdminToken:
@@ -144,6 +145,19 @@ class HttpxLiminalAdminClient:
         if resp.status_code == 400:
             raise ClientError(_detail(resp, "AWS refused the role"))
         return {k: str(v) for k, v in self._check(resp, "aws probe").items()}
+
+    def audit(self, *, persona: str, since: float | None = None, limit: int = 200) -> list[dict]:
+        """The gateway's audit rows for one persona, newest first: every
+        admitted call (`kind: call`) and every refusal."""
+        params: dict[str, str | int | float] = {"persona": persona, "limit": limit}
+        if since is not None:
+            params["since"] = since
+        try:
+            body = self._check(self._client.get(f"{self._base_url}/admin/policy/audit", params=params, headers=self._headers()), f"audit for {persona}")
+        except httpx.HTTPError as exc:
+            raise ClientError(f"gateway admin plane unreachable: {exc.__class__.__name__}") from exc
+        rows = body.get("audit", [])
+        return [r for r in rows if isinstance(r, dict)]
 
 
 def _detail(resp: httpx.Response, fallback: str) -> str:

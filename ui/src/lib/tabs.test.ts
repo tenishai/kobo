@@ -70,11 +70,12 @@ describe("harnessSections", () => {
       "tooling",
       "memory",
       "learnings",
+      "activity",
     ]);
   });
 
   it("is model and runtime alone for a connected agent: there is no bundle behind the rest", () => {
-    expect(harnessSections("connected")).toEqual(["runtime", "identity"]);
+    expect(harnessSections("connected")).toEqual(["runtime", "identity", "activity"]);
   });
 
   it("treats an unknown kind as composed", () => {

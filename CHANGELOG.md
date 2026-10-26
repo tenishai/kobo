@@ -8,6 +8,15 @@ All notable changes to kobo are documented here. The format follows
 
 ### Added
 
+- **Activity: what an agent did through the tool gateway** (Kyle's ask 2026-10-25). A
+  new Harness section on every agent, connected ones included, lists each call the gateway
+  admitted and each one it refused, newest first: the tool, the outcome, the duration, the
+  arguments in brief with secrets masked, and for a refusal what was missing. Filter by
+  tool or widen the window to 30 days. Read live from the gateway's audit through its admin
+  plane (`GET /api/agents/{name}/activity?days=`); the gateway writes the rows since
+  tenishai/liminal#211, and without an admin plane the section says so instead of showing an
+  empty list. Guide section 08 describes it.
+
 - **Connect AWS without a key** (design 2026-10-25, cloud access for integrations). The
   Integrations page's AWS entry is now a sheet: see what the role allows (every read-only
   pack: `inventory`, `logs`, `security-audit`, `cost`; what each agent may do inside it is

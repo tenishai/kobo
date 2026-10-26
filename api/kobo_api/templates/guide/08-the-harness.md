@@ -36,3 +36,8 @@ The notes you have taught the agent and the files you have uploaded for it to le
 ## Learnings
 
 What the agent proposes from its own conversations each day, waiting for your decision. The badge on the Harness tab is the count. Nothing is kept until you press Remember.
+
+## Activity
+
+Every call the agent made through the tool gateway, and every one it was refused, newest first: the tool, how it went, how long it took, and the arguments in brief with anything secret masked. Filter by tool to see what it does with one vendor, or pick a longer window. A refusal names what was missing, which is the moment to widen the agent's lane under Connections. Calls into a cloud account also appear in that account's own audit trail under the agent's name.
+

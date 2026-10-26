@@ -217,6 +217,7 @@ import {
   listIntake,
   listInvites,
   listKnowledge,
+  fetchActivity,
   listLearnings,
   listSkills,
   listTooling,
@@ -1010,6 +1011,14 @@ export function deleteKnowledgeMutation(
 
 /** The agent's learnings queue, every status -- the panel splits pending
  * from history itself. No polling; verdicts invalidate. */
+export function activityQuery(name: string, days = 7) {
+  return queryOptions({
+    queryKey: ["agents", name, "activity", days] as const,
+    queryFn: () => fetchActivity(name, days),
+    staleTime: 30_000,
+  });
+}
+
 export function learningsQuery(name: string) {
   return queryOptions({
     queryKey: ["agents", name, "learnings"] as const,
