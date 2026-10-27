@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-27
+
 ### Upgrading
 
 - **Four additive migrations**, run at boot: `a1b2c3d4e5f6` (admin store), `b7c8d9e0f1a2`
