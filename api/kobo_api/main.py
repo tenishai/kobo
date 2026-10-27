@@ -10786,7 +10786,15 @@ def create_app(
                     {"error": "The switchboard did not answer. Try again shortly."},
                     status_code=502,
                 )
-            transcript.append({"role": "agent", "text": reply_text})
+            # An earlier reply reaches the next participant as something it
+            # HEARD, never as its own words: role "user", speaker named. As
+            # role "agent" the runtime renders it as the assistant's last turn,
+            # which Claude 4.6+ refuses outright (400: "does not support
+            # assistant message prefill") and older models silently take as
+            # the agent's own prior answer.
+            transcript.append(
+                {"role": "user", "text": f"{participant.agent_name}: {reply_text}"}
+            )
             replies.append({"agent": participant.agent_name, "text": reply_text})
 
         return JSONResponse({"replies": replies})
