@@ -538,11 +538,19 @@ def test_turn_relays_to_participants_in_sequence_each_seeing_prior_messages(
 
     # "b" sees the human's message in history, PLUS "a"'s reply as the
     # current turn -- proof that a later participant sees what came before.
+    # The reply arrives as something "b" HEARD (role "user", speaker named),
+    # never as "b"'s own last turn: a trailing agent-role message becomes an
+    # assistant prefill at the model, which Claude 4.6+ rejects with a 400
+    # and older models misread as the agent's own prior answer.
     assert [m["parts"][0]["text"] for m in second_envelope["history"]] == [
         "what do you both think?"
     ]
-    assert second_envelope["status"]["message"]["role"] == "agent"
-    assert second_envelope["status"]["message"]["parts"][0]["text"] == CANNED_REPLY_TEXT
+    assert second_envelope["status"]["message"]["role"] == "user"
+    assert second_envelope["status"]["message"]["parts"][0]["text"] == f"a: {CANNED_REPLY_TEXT}"
+    roles = [m["role"] for m in second_envelope["history"]] + [
+        second_envelope["status"]["message"]["role"]
+    ]
+    assert "agent" not in roles
 
 
 def test_turn_relay_envelope_context_id_equals_the_thread_id(session_factory, config, monkeypatch):
