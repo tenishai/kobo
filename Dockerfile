@@ -1,44 +1,33 @@
-# syntax=docker/dockerfile:1
+# kobo's image: the API from api/, the UI built into /srv/ui, and the tools the room's
+# work needs (git, gh, kubectl, gcloud). Every input is pinned: base images by digest,
+# Python packages by api/uv.lock (uv export --frozen writes requirements with hashes
+# that pip verifies), UI packages by package-lock.json, kubectl by version, gh and
+# gcloud by the versions their apt repos carry on the day the release is built (both
+# repos are per-arch, so arm64 and amd64 each get their own). A bump is a line in a
+# PR with the reason next to it (agora issue 58).
 #
-# Kobo — the agent assembly room, UI + API in one deployable.
-#
-# Two stages:
-#   1. ui-build  — build the Svelte UI's static assets.
-#   2. runtime   — install the API and the CLIs it shells out to
-#                  (git, gh, kubectl, gcloud), copy in the built UI, run
-#                  as a non-root user.
-#
-# The image bakes NO config and NO secrets. Configuration arrives at
-# container start via a mounted file referenced by the KOBO_CONFIG env
-# var; that file is expected to set ui_dist: /srv/ui to serve the UI
-# built here alongside the API.
+# Multi-arch: buildx sets TARGETARCH (a plain build uses the host's arch); the UI is built once on the build host
+# (BUILDPLATFORM) because its output is arch-independent and node under emulation is slow.
 
-# ---------------------------------------------------------------------------
-# Stage 1: build the UI
-# ---------------------------------------------------------------------------
-FROM node:22-slim AS ui-build
-
+FROM --platform=$BUILDPLATFORM node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS ui-build
 WORKDIR /ui
-
-# Install with the lockfile first so this layer only invalidates when
-# dependencies change, not on every source edit.
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci
-
 COPY ui/ ./
 RUN npm run build
 
-# ---------------------------------------------------------------------------
-# Stage 2: the API runtime, plus the CLIs it shells out to
-# ---------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159 AS deps
+ARG UV_VERSION=0.11.21
+WORKDIR /lock
+COPY api/pyproject.toml api/uv.lock ./
+RUN pip install --no-cache-dir "uv==${UV_VERSION}" \
+ && uv export --frozen --no-dev --no-emit-project -o requirements.txt
 
-# git      — the room clones/commits against agent and org-config repos.
-# curl     — fetches the kubectl binary and CLI signing keys below.
-# ca-certificates, gnupg — TLS + apt key verification for the gh/gcloud repos.
-# The upgrade pass pulls base-image packages (libc6, zlib1g, libpcre2, ...)
-# up to the current Debian security revisions even when the cached base
-# layer is stale; CI additionally builds with --pull.
+FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159 AS runtime
+# buildx sets TARGETARCH per platform; a plain docker build gets the host's arch.
+ARG TARGETARCH
+ARG KUBECTL_VERSION=v1.34.1
+
 RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
       git \
       curl \
@@ -46,61 +35,51 @@ RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-reco
       gnupg \
     && rm -rf /var/lib/apt/lists/*
 
-# gh (GitHub CLI) — official apt repo. kobo shells `gh`/`git` with GH_TOKEN
-# in the subprocess env when authenticated as a GitHub App (Task 3), or via
-# the operator's ambient `gh auth` session otherwise.
+# gh from GitHub's apt repo (per-arch packages).
 RUN install -d -m 0755 /etc/apt/keyrings \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
          -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    && echo "deb [arch=${TARGETARCH:-$(dpkg --print-architecture)} signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
          > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-# kubectl — stable channel binary, matched to this image's own arch.
-RUN curl -fsSL -o /usr/local/bin/kubectl \
-      "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/$(dpkg --print-architecture)/kubectl" \
-    && chmod +x /usr/local/bin/kubectl
+# kubectl by version, checksum verified.
+RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}" \
+    && curl -fsSL -o /usr/local/bin/kubectl \
+      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${arch}/kubectl" \
+    && curl -fsSL -o /tmp/kubectl.sha256 \
+      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${arch}/kubectl.sha256" \
+    && echo "$(cat /tmp/kubectl.sha256)  /usr/local/bin/kubectl" | sha256sum -c - \
+    && chmod +x /usr/local/bin/kubectl && rm /tmp/kubectl.sha256
 
-# Google Cloud SDK CLI (gcloud) — official apt repo. Used for the token
-# seam's CLI fallback and group-membership operations.
+# gcloud from Google's apt repo (per-arch packages).
 RUN curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
       | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg \
-    && echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
+    && echo "deb [arch=${TARGETARCH:-$(dpkg --print-architecture)} signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
          > /etc/apt/sources.list.d/google-cloud-sdk.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends google-cloud-cli \
     && rm -rf /var/lib/apt/lists/*
 
-# Bake the credential helper so a plain `git` invocation picks up GH_TOKEN
-# from `gh` — no per-call credential wiring needed by the app.
 RUN git config --system credential.helper '!gh auth git-credential'
 
 WORKDIR /app
-
-# Install the API. Copy only what the build needs (pyproject + package),
-# not tests/, the Makefile, or any config file — those never belong in
-# the image.
+COPY --from=deps /lock/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt && rm /tmp/requirements.txt
 COPY api/pyproject.toml ./api/pyproject.toml
 COPY api/kobo_api ./api/kobo_api
-RUN pip install --no-cache-dir ./api
-
-# Migrations ship with the image so boot can bring the schema to head —
-# the deploy path (`kubectl set image`) runs nothing else, so the pod
-# itself is the only place migrations can reliably happen.
+RUN pip install --no-cache-dir --no-deps ./api
 COPY api/alembic.ini ./api/alembic.ini
 COPY api/migrations ./api/migrations
+
 COPY docker/entrypoint.sh /usr/local/bin/kobo-entrypoint
 RUN chmod +x /usr/local/bin/kobo-entrypoint
 
-# The built UI. The mounted runtime config points ui_dist at this path.
 COPY --from=ui-build /ui/dist /srv/ui
 
-# Run as a non-root user with an explicit numeric UID so Kubernetes'
-# runAsNonRoot can verify it (a named USER is unverifiable without a mounted
-# /etc/passwd — the pod is rejected with CreateContainerConfigError).
 RUN groupadd --system --gid 1001 kobo \
     && useradd --system --uid 1001 --gid kobo --home-dir /app --shell /usr/sbin/nologin kobo \
     && chown -R 1001:1001 /app /srv/ui
@@ -108,5 +87,4 @@ USER 1001
 
 ENV PORT=8080
 EXPOSE 8080
-
 ENTRYPOINT ["/usr/local/bin/kobo-entrypoint"]
