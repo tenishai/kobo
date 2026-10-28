@@ -6,10 +6,12 @@
 # repos are per-arch, so arm64 and amd64 each get their own). A bump is a line in a
 # PR with the reason next to it (agora issue 58).
 #
-# Multi-arch: buildx sets TARGETARCH (a plain build uses the host's arch); the UI is built once on the build host
-# (BUILDPLATFORM) because its output is arch-independent and node under emulation is slow.
+# Multi-arch: buildx sets TARGETARCH; a plain build uses the host's arch. The UI stage
+# runs per target arch (its output is arch-independent, so pinning it to the build host
+# with --platform=$BUILDPLATFORM would be faster, but the legacy builder Cloud Build's
+# `--tag` path uses leaves BUILDPLATFORM empty and fails to parse it).
 
-FROM --platform=$BUILDPLATFORM node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS ui-build
+FROM node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS ui-build
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci

@@ -12,7 +12,7 @@ All notable changes to kobo are documented here. The format follows
 
 ### Changed
 
-- The image is pinned end to end: base images by digest, Python packages from `api/uv.lock` with hashes verified by pip, kubectl by version with its checksum, gh and gcloud from per-arch apt repos. The UI builds once on the build host.
+- The image is pinned end to end: base images by digest, Python packages from `api/uv.lock` with hashes verified by pip, kubectl by version with its checksum, gh and gcloud from per-arch apt repos.
 
 
 ## [0.3.0] - 2026-10-27
