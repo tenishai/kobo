@@ -38,3 +38,11 @@ The mode changes only who the agent asks. Other agents can still ask it question
 ## Seeing it happen
 
 The **Colleague conversations** panel under the chat lists every exchange, live, with who asked whom and when. From your own assistant, the feed tool returns the same list.
+
+## Shared threads
+
+A shared thread is a conversation you have with one agent, with its colleagues within reach. Open it from an agent's Chat tab with "Start a shared thread". That agent is the thread's primary. Add other agents the primary may talk to; the same consent rules as above apply, so an agent from another group needs an accepted invite first.
+
+Each message goes to one agent: the primary, unless you pick another in the "To" box or start the message with its name, like `@ledger what did you find?`. If the agent asks a colleague while answering, you see that exchange under its reply. "Ask everyone" sends one message to every agent in the thread, in seat order, each hearing the earlier answers; use it when you want to compare how they handle the same question.
+
+An agent that does not answer shows as "didn't answer" and the rest of the replies still arrive. Threads are not saved: the exchange lives in the page until you leave it.

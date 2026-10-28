@@ -524,12 +524,17 @@ class ThreadParticipantRequest(BaseModel):
 
 
 class ThreadTurnRequest(BaseModel):
-    """POST /api/threads/{id}/turns body (threads arc, Task 9): the same
-    `{"role", "text"}` message shape `ChatRequest` uses for a single-agent
-    chat, since a thread turn is that same mechanic run once per
-    participant in sequence rather than once against a single agent."""
+    """POST /api/threads/{id}/turns body: the same `{"role", "text"}`
+    message shape `ChatRequest` uses for a single-agent chat. A turn goes
+    to ONE seated agent, `to`, defaulting to the thread's primary (the agent
+    it was started with); `broadcast` sends it to every participant in
+    seat order instead, each later one hearing the earlier replies (kobo
+    issue #240: a thread is one agent you talk to, which may consult the
+    others, not a room where everyone answers everything)."""
 
     messages: list[ChatMessagePayload]
+    to: str | None = None
+    broadcast: bool = False
 
 
 class GroupRequestCreate(BaseModel):
@@ -2035,6 +2040,50 @@ class _InFlight:
 
 _INFLIGHT_LOCK = threading.Lock()
 _FEED_INFLIGHT: dict[str, _InFlight] = {}
+
+
+def _parse_cabal_ts(value: object) -> datetime | None:
+    """A conversation row's `created_at`/`updated_at` as an aware UTC datetime,
+    or None when it is missing or not ISO 8601 (cabal writes ISO 8601)."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _thread_consults(clients, agent: str, since: datetime) -> list[dict]:
+    """What `agent` asked its colleagues while answering a thread turn: the
+    conversations cabal lists with `agent` as caller that began after
+    `since`, each flattened to the same ask/reply entries the colleague
+    feed shows (kobo issue #240, "consults appear inline"). Thread relays
+    themselves carry `metadata.thread` and are excluded, so this is only
+    the agent's own asks. Fail-soft: a switchboard hiccup here is an empty
+    list, never a failed turn.
+    """
+    try:
+        rows = clients.cabal.list_conversations(limit=200, caller=f"agent:{agent}")
+    except (CabalError, httpx.HTTPError, ValueError) as exc:
+        log.warning("thread consults: list_conversations(%s) failed: %s", agent, exc)
+        return []
+    entries: list[dict] = []
+    for row in rows:
+        created = _parse_cabal_ts(row.get("created_at"))
+        if created is None or created < since:
+            continue
+        task_id = row.get("task_id")
+        if not task_id:
+            continue
+        try:
+            detail = clients.cabal.get_conversation(task_id)
+        except (CabalError, httpx.HTTPError, ValueError) as exc:
+            log.warning("thread consults: get_conversation(%s) failed: %s", task_id, exc)
+            continue
+        entries.extend(_flatten_conversation_entries(detail))
+    entries.sort(key=lambda e: str(e.get("ts") or ""))
+    return entries
 
 
 def _coalesced(table: dict[str, _InFlight], key: str, fn):
@@ -10767,25 +10816,45 @@ def create_app(
         if gate is not None:
             return gate
 
+        # Who answers this turn: the named addressee, else the primary (the
+        # first seat, the agent the thread was started with); or everyone,
+        # in seat order, when the caller asked for a broadcast.
+        seated = {p.agent_name: p for p in participants}
+        if payload.to is not None and payload.to not in seated:
+            return JSONResponse({"error": f"{payload.to} is not in this thread"}, status_code=422)
+        if payload.broadcast:
+            targets = list(participants)
+        else:
+            targets = [seated[payload.to] if payload.to else participants[0]]
+
+        turn_started = datetime.now(UTC)
         transcript = [{"role": m.role, "text": m.text} for m in messages]
         replies: list[dict] = []
-        for participant in participants:
+        for participant in targets:
             envelope = _build_task_envelope(transcript, context_id=str(thread.id))
             envelope["metadata"] = {"thread": thread.id}
             try:
                 raw = clients.cabal.relay(participant.agent_name, envelope)
                 reply_text = _extract_relay_reply(raw)
             except (CabalError, httpx.HTTPError, ValueError) as exc:
+                # One agent not answering is that agent's entry, not the
+                # turn's failure: the replies already gathered still land,
+                # and the panel says who stayed silent.
                 log.warning(
                     "thread turn relay failed for thread %s agent %s: %s",
                     thread.id,
                     participant.agent_name,
                     exc,
                 )
-                return JSONResponse(
-                    {"error": "The switchboard did not answer. Try again shortly."},
-                    status_code=502,
+                replies.append(
+                    {
+                        "agent": participant.agent_name,
+                        "text": None,
+                        "error": "didn't answer",
+                        "consults": [],
+                    }
                 )
+                continue
             # An earlier reply reaches the next participant as something it
             # HEARD, never as its own words: role "user", speaker named. As
             # role "agent" the runtime renders it as the assistant's last turn,
@@ -10795,9 +10864,16 @@ def create_app(
             transcript.append(
                 {"role": "user", "text": f"{participant.agent_name}: {reply_text}"}
             )
-            replies.append({"agent": participant.agent_name, "text": reply_text})
+            replies.append(
+                {
+                    "agent": participant.agent_name,
+                    "text": reply_text,
+                    "error": None,
+                    "consults": _thread_consults(clients, participant.agent_name, turn_started),
+                }
+            )
 
-        return JSONResponse({"replies": replies})
+        return JSONResponse({"replies": replies, "to": [p.agent_name for p in targets]})
 
     # --- Admin: on-demand dispatch-pairs resync (final-review fix round,
     # HIGH-2b) ---------------------------------------------------------------

@@ -486,24 +486,30 @@ def test_thread_read_for_an_unknown_id_is_404(session_factory, config):
 # --- Task 9: turn delivery ----------------------------------------------------
 
 
-def test_turn_relays_to_participants_in_sequence_each_seeing_prior_messages(
+def test_broadcast_turn_relays_to_participants_in_sequence_each_seeing_prior_messages(
     session_factory, config, monkeypatch
 ):
-    """Not a parallel fan-out: the first participant sees only the human's
-    own message; the second sees that message PLUS the first participant's
-    reply from earlier in this same turn, so a later answer can build on an
-    earlier one."""
+    """`broadcast: true` is the old fan-out, on request: not parallel, the
+    first participant sees only the human's own message; the second sees
+    that message PLUS the first participant's reply from earlier in this
+    same turn, so a later answer can build on an earlier one."""
     monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
     private_key, jwk = _generate_jwk()
     resolver = FakeGroupResolver({INITIATOR_EMAIL: ["growth"]})
     fake_cabal = FakeCabal(relay_result=_relay_result(CANNED_REPLY_TEXT))
     client = _make_client(
-        session_factory, config, groups_resolver=resolver, cabal=fake_cabal, iap_jwks_fetcher=_fetcher(jwk)
+        session_factory,
+        config,
+        groups_resolver=resolver,
+        cabal=fake_cabal,
+        iap_jwks_fetcher=_fetcher(jwk),
     )
     _seed_agent(session_factory, name="a", group_name="growth")
     _seed_agent(session_factory, name="b", group_name="growth")
     thread_id = client.post(
-        "/api/threads", json={"agent": "a"}, headers=_headers(private_key, email=INITIATOR_EMAIL)
+        "/api/threads",
+        json={"agent": "a"},
+        headers=_headers(private_key, email=INITIATOR_EMAIL),
     ).json()["id"]
     client.post(
         f"/api/threads/{thread_id}/participants",
@@ -513,16 +519,20 @@ def test_turn_relays_to_participants_in_sequence_each_seeing_prior_messages(
 
     response = client.post(
         f"/api/threads/{thread_id}/turns",
-        json={"messages": [{"role": "user", "text": "what do you both think?"}]},
+        json={
+            "messages": [{"role": "user", "text": "what do you both think?"}],
+            "broadcast": True,
+        },
         headers=_headers(private_key, email=INITIATOR_EMAIL),
     )
 
     assert response.status_code == 200, response.text
     assert response.json() == {
         "replies": [
-            {"agent": "a", "text": CANNED_REPLY_TEXT},
-            {"agent": "b", "text": CANNED_REPLY_TEXT},
-        ]
+            {"agent": "a", "text": CANNED_REPLY_TEXT, "error": None, "consults": []},
+            {"agent": "b", "text": CANNED_REPLY_TEXT, "error": None, "consults": []},
+        ],
+        "to": ["a", "b"],
     }
 
     # Sequential, not fan-out: exactly one relay call per participant, in
@@ -534,7 +544,10 @@ def test_turn_relays_to_participants_in_sequence_each_seeing_prior_messages(
 
     # "a" sees only the human's own message.
     assert first_envelope["history"] == []
-    assert first_envelope["status"]["message"]["parts"][0]["text"] == "what do you both think?"
+    assert (
+        first_envelope["status"]["message"]["parts"][0]["text"]
+        == "what do you both think?"
+    )
 
     # "b" sees the human's message in history, PLUS "a"'s reply as the
     # current turn -- proof that a later participant sees what came before.
@@ -546,14 +559,19 @@ def test_turn_relays_to_participants_in_sequence_each_seeing_prior_messages(
         "what do you both think?"
     ]
     assert second_envelope["status"]["message"]["role"] == "user"
-    assert second_envelope["status"]["message"]["parts"][0]["text"] == f"a: {CANNED_REPLY_TEXT}"
+    assert (
+        second_envelope["status"]["message"]["parts"][0]["text"]
+        == f"a: {CANNED_REPLY_TEXT}"
+    )
     roles = [m["role"] for m in second_envelope["history"]] + [
         second_envelope["status"]["message"]["role"]
     ]
     assert "agent" not in roles
 
 
-def test_turn_relay_envelope_context_id_equals_the_thread_id(session_factory, config, monkeypatch):
+def test_turn_relay_envelope_context_id_equals_the_thread_id(
+    session_factory, config, monkeypatch
+):
     """Every relay for a thread passes the thread's own id as `context_id`
     to `_build_task_envelope`, so the switchboard's loop guard groups a
     thread's hops under one real key."""
@@ -562,12 +580,18 @@ def test_turn_relay_envelope_context_id_equals_the_thread_id(session_factory, co
     resolver = FakeGroupResolver({INITIATOR_EMAIL: ["growth"]})
     fake_cabal = FakeCabal(relay_result=_relay_result(CANNED_REPLY_TEXT))
     client = _make_client(
-        session_factory, config, groups_resolver=resolver, cabal=fake_cabal, iap_jwks_fetcher=_fetcher(jwk)
+        session_factory,
+        config,
+        groups_resolver=resolver,
+        cabal=fake_cabal,
+        iap_jwks_fetcher=_fetcher(jwk),
     )
     _seed_agent(session_factory, name="a", group_name="growth")
     _seed_agent(session_factory, name="b", group_name="growth")
     thread_id = client.post(
-        "/api/threads", json={"agent": "a"}, headers=_headers(private_key, email=INITIATOR_EMAIL)
+        "/api/threads",
+        json={"agent": "a"},
+        headers=_headers(private_key, email=INITIATOR_EMAIL),
     ).json()["id"]
     client.post(
         f"/api/threads/{thread_id}/participants",
@@ -577,7 +601,7 @@ def test_turn_relay_envelope_context_id_equals_the_thread_id(session_factory, co
 
     client.post(
         f"/api/threads/{thread_id}/turns",
-        json={"messages": [{"role": "user", "text": "hello both"}]},
+        json={"messages": [{"role": "user", "text": "hello both"}], "broadcast": True},
         headers=_headers(private_key, email=INITIATOR_EMAIL),
     )
 
@@ -610,29 +634,182 @@ def test_turn_by_a_non_initiator_is_not_found_and_never_relayed(session_factory,
     assert fake_cabal.relay_calls == []
 
 
-def test_turn_relay_failure_is_a_plain_502(session_factory, config, monkeypatch):
-    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
-    private_key, jwk = _generate_jwk()
+def _two_agent_thread(session_factory, config, fake_cabal, private_key, jwk):
     resolver = FakeGroupResolver({INITIATOR_EMAIL: ["growth"]})
-    fake_cabal = FakeCabal(relay_error="switchboard unreachable")
     client = _make_client(
-        session_factory, config, groups_resolver=resolver, cabal=fake_cabal, iap_jwks_fetcher=_fetcher(jwk)
+        session_factory,
+        config,
+        groups_resolver=resolver,
+        cabal=fake_cabal,
+        iap_jwks_fetcher=_fetcher(jwk),
     )
     _seed_agent(session_factory, name="a", group_name="growth")
+    _seed_agent(session_factory, name="b", group_name="growth")
     thread_id = client.post(
-        "/api/threads", json={"agent": "a"}, headers=_headers(private_key, email=INITIATOR_EMAIL)
+        "/api/threads",
+        json={"agent": "a"},
+        headers=_headers(private_key, email=INITIATOR_EMAIL),
     ).json()["id"]
+    client.post(
+        f"/api/threads/{thread_id}/participants",
+        json={"agent": "b"},
+        headers=_headers(private_key, email=INITIATOR_EMAIL),
+    )
+    return client, thread_id
 
+
+def test_turn_goes_to_the_primary_only_by_default(session_factory, config, monkeypatch):
+    """A thread is one agent you talk to (kobo #240): with no `to` and no
+    `broadcast`, only the agent the thread was started with answers."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    private_key, jwk = _generate_jwk()
+    fake_cabal = FakeCabal(relay_result=_relay_result(CANNED_REPLY_TEXT))
+    client, thread_id = _two_agent_thread(
+        session_factory, config, fake_cabal, private_key, jwk
+    )
     response = client.post(
         f"/api/threads/{thread_id}/turns",
         json={"messages": [{"role": "user", "text": "hi"}]},
         headers=_headers(private_key, email=INITIATOR_EMAIL),
     )
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "replies": [
+            {"agent": "a", "text": CANNED_REPLY_TEXT, "error": None, "consults": []}
+        ],
+        "to": ["a"],
+    }
+    assert [call["name"] for call in fake_cabal.relay_calls] == ["a"]
 
-    assert response.status_code == 502
+
+def test_turn_addressed_to_another_seated_agent_goes_only_there(
+    session_factory, config, monkeypatch
+):
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    private_key, jwk = _generate_jwk()
+    fake_cabal = FakeCabal(relay_result=_relay_result(CANNED_REPLY_TEXT))
+    client, thread_id = _two_agent_thread(
+        session_factory, config, fake_cabal, private_key, jwk
+    )
+    response = client.post(
+        f"/api/threads/{thread_id}/turns",
+        json={
+            "messages": [{"role": "user", "text": "b, what do you think?"}],
+            "to": "b",
+        },
+        headers=_headers(private_key, email=INITIATOR_EMAIL),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["to"] == ["b"]
+    assert [call["name"] for call in fake_cabal.relay_calls] == ["b"]
+    refused = client.post(
+        f"/api/threads/{thread_id}/turns",
+        json={"messages": [{"role": "user", "text": "hi"}], "to": "nobody"},
+        headers=_headers(private_key, email=INITIATOR_EMAIL),
+    )
+    assert refused.status_code == 422
+    assert refused.json() == {"error": "nobody is not in this thread"}
+    assert len(fake_cabal.relay_calls) == 1
 
 
-# --- Task 9: feed exclusion ---------------------------------------------------
+def test_a_participant_that_does_not_answer_is_an_entry_not_a_failed_turn(
+    session_factory, config, monkeypatch
+):
+    """One down agent used to fail the whole turn with a bare 502 and throw
+    away the replies already gathered. Now it is that agent's own entry."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    private_key, jwk = _generate_jwk()
+    fake_cabal = FakeCabal(
+        relay_result=_relay_result(CANNED_REPLY_TEXT),
+        relay_errors={"b": "connection refused"},
+    )
+    client, thread_id = _two_agent_thread(
+        session_factory, config, fake_cabal, private_key, jwk
+    )
+    response = client.post(
+        f"/api/threads/{thread_id}/turns",
+        json={"messages": [{"role": "user", "text": "hi"}], "broadcast": True},
+        headers=_headers(private_key, email=INITIATOR_EMAIL),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["replies"] == [
+        {"agent": "a", "text": CANNED_REPLY_TEXT, "error": None, "consults": []},
+        {"agent": "b", "text": None, "error": "didn't answer", "consults": []},
+    ]
+
+
+def test_the_addressees_consults_during_the_turn_ride_along_with_its_reply(
+    session_factory, config, monkeypatch
+):
+    """What the addressee asked its colleagues while answering appears under
+    its reply: cabal's conversations with the addressee as caller that began
+    after the turn started, flattened like the colleague feed. Older
+    conversations and thread relays themselves do not."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    private_key, jwk = _generate_jwk()
+    fake_cabal = FakeCabal(relay_result=_relay_result(CANNED_REPLY_TEXT))
+    fresh = "2999-01-01T00:00:05+00:00"
+    stale = "2000-01-01T00:00:00+00:00"
+    fake_cabal._conversations_result = [
+        {
+            "task_id": "ask-new",
+            "target_agent": "b",
+            "caller_agent": "agent:a",
+            "created_at": fresh,
+            "updated_at": fresh,
+        },
+        {
+            "task_id": "ask-old",
+            "target_agent": "b",
+            "caller_agent": "agent:a",
+            "created_at": stale,
+            "updated_at": stale,
+        },
+    ]
+    fake_cabal._conversation_results = {
+        "ask-new": {
+            "conversation": {
+                "task_id": "ask-new",
+                "target_agent": "b",
+                "caller_agent": "agent:a",
+                "created_at": fresh,
+                "updated_at": fresh,
+                "result": {
+                    "history": [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {"kind": "text", "text": "b, is the cluster healthy?"}
+                            ],
+                        }
+                    ],
+                    "status": {
+                        "message": {
+                            "role": "agent",
+                            "parts": [{"kind": "text", "text": "yes, all green"}],
+                        }
+                    },
+                },
+            }
+        },
+    }
+    client, thread_id = _two_agent_thread(
+        session_factory, config, fake_cabal, private_key, jwk
+    )
+    response = client.post(
+        f"/api/threads/{thread_id}/turns",
+        json={"messages": [{"role": "user", "text": "how is the cluster?"}]},
+        headers=_headers(private_key, email=INITIATOR_EMAIL),
+    )
+    assert response.status_code == 200, response.text
+    (reply,) = response.json()["replies"]
+    assert reply["agent"] == "a" and reply["error"] is None
+    assert [(c["from"], c["to"], c["role"], c["text"]) for c in reply["consults"]] == [
+        ("a", "b", "ask", "b, is the cluster healthy?"),
+        ("b", "a", "reply", "yes, all green"),
+    ]
+    assert [c["caller"] for c in fake_cabal.list_conversations_calls] == ["agent:a"]
+    assert [c for c in fake_cabal.get_conversation_calls] == ["ask-new"]
 
 
 def test_flatten_conversation_entries_excludes_a_thread_tagged_conversation():

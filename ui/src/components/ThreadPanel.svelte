@@ -37,7 +37,13 @@
   // trying to do right now, so those stay inline (same posture ChatPanel's
   // own chat-panel__error already takes for a failed send).
   import { createMutation, createQuery } from "@tanstack/svelte-query";
-  import { ApiError, errorMessage, type ChatMessage, type Thread } from "../lib/api";
+  import {
+    ApiError,
+    errorMessage,
+    type ChatMessage,
+    type Thread,
+    type ThreadConsult,
+  } from "../lib/api";
   import {
     addThreadParticipantMutation,
     agentsQuery,
@@ -57,7 +63,15 @@
   const MAX_MESSAGES = 50;
   const MAX_MESSAGE_LEN = 4000;
 
-  type ThreadEntry = { role: "user" | "agent"; text: string; agent?: string };
+  // A turn's answer per agent; `silent` marks an agent that did not answer
+  // (the turn still completed), `consults` what it asked colleagues meanwhile.
+  type ThreadEntry = {
+    role: "user" | "agent";
+    text: string;
+    agent?: string;
+    silent?: boolean;
+    consults?: ThreadConsult[];
+  };
 
   let thread = $state<Thread | null>(null);
   let transcript = $state<ThreadEntry[]>([]);
@@ -70,6 +84,12 @@
   let retryable = $state(true);
   let trimmed = $state(false);
   let inputEl: HTMLTextAreaElement | undefined = $state();
+  // Who the next turn goes to (kobo #240): the primary, the agent this
+  // thread was started with, unless the picker (or an `@name` prefix on the
+  // message) says otherwise. `lastTurn` lets Try again replay the same
+  // addressing the failed send used.
+  let addressee = $state<string | null>(null);
+  let lastTurn = $state<{ to: string | null; broadcast: boolean }>({ to: null, broadcast: false });
 
   // svelte-ignore state_referenced_locally
   const startMutation = createMutation(() => (createThreadMutation()));
@@ -83,6 +103,18 @@
   const canSend = $derived(
     thread !== null && input.trim().length > 0 && !turnMutation.isPending,
   );
+  const primary = $derived(thread?.participants[0] ?? agentName);
+  const recipient = $derived(addressee ?? primary);
+  const participantCount = $derived(thread?.participants.length ?? 0);
+
+  // The picker always names a seated agent: a participant list change (or a
+  // never-set pick) lands it back on the primary.
+  $effect(() => {
+    const seated = thread?.participants ?? [];
+    if (addressee !== null && !seated.includes(addressee)) {
+      addressee = null;
+    }
+  });
 
   const eligibleAgents = $derived.by(() => {
     const seated = new Set(thread?.participants ?? []);
@@ -123,7 +155,21 @@
   }
 
   function toChatMessages(entries: ThreadEntry[]): ChatMessage[] {
-    return entries.map((entry) => ({ role: entry.role, text: entry.text }));
+    return entries
+      .filter((entry) => !entry.silent)
+      .map((entry) => ({ role: entry.role, text: entry.text }));
+  }
+
+  /** `@name ` at the start of a message addresses that seated agent for this
+   * one turn; returns the addressee (or null) and the message without the
+   * prefix. An unknown `@name` is left in the text and goes to the picker's
+   * choice, since silently dropping it would hide a typo. */
+  function splitAddress(text: string): { to: string | null; text: string } {
+    const match = /^@([\w.-]+)\s+([\s\S]+)$/.exec(text);
+    if (match && (thread?.participants ?? []).includes(match[1])) {
+      return { to: match[1], text: match[2].trim() };
+    }
+    return { to: null, text };
   }
 
   function handleStart(): void {
@@ -164,24 +210,29 @@
     );
   }
 
-  /** Sends `entries` (a full transcript snapshot) as one turn. Shared by the
-   * initial send and the retry affordance, same reasoning ChatPanel's own
-   * `sendTranscript` documents: a retry re-plays exactly what failed. */
-  function sendTranscript(entries: ThreadEntry[]): void {
+  /** Sends `entries` (a full transcript snapshot) as one turn to `to` (or to
+   * everyone when `broadcast`). Shared by the initial send and the retry
+   * affordance, same reasoning ChatPanel's own `sendTranscript` documents: a
+   * retry re-plays exactly what failed, addressed the same way. */
+  function sendTranscript(
+    entries: ThreadEntry[],
+    options: { to: string | null; broadcast: boolean },
+  ): void {
     if (thread === null) {
       return;
     }
     const threadId = thread.id;
     error = null;
+    lastTurn = options;
     turnMutation.mutate(
-      { threadId, messages: toChatMessages(entries) },
+      { threadId, messages: toChatMessages(entries), to: options.to, broadcast: options.broadcast },
       {
         onSuccess: (result) => {
-          const replies: ThreadEntry[] = result.replies.map((reply) => ({
-            role: "agent",
-            text: reply.text,
-            agent: reply.agent,
-          }));
+          const replies: ThreadEntry[] = result.replies.map((reply) =>
+            reply.error !== null || reply.text === null
+              ? { role: "agent", text: reply.error ?? "didn't answer", agent: reply.agent, silent: true }
+              : { role: "agent", text: reply.text, agent: reply.agent, consults: reply.consults },
+          );
           transcript = capTranscript([...transcript, ...replies]);
           focusInput();
         },
@@ -206,22 +257,23 @@
     );
   }
 
-  function handleSend(): void {
-    const text = input.trim();
-    if (text.length === 0 || turnMutation.isPending || thread === null) {
+  function handleSend(broadcast = false): void {
+    const raw = input.trim();
+    if (raw.length === 0 || turnMutation.isPending || thread === null) {
       return;
     }
+    const { to: mentioned, text } = splitAddress(raw);
     input = "";
     const next = capTranscript([...transcript, { role: "user", text }]);
     transcript = next;
-    sendTranscript(next);
+    sendTranscript(next, { to: broadcast ? null : (mentioned ?? recipient), broadcast });
   }
 
   function handleRetry(): void {
     if (turnMutation.isPending) {
       return;
     }
-    sendTranscript(transcript);
+    sendTranscript(transcript, lastTurn);
   }
 
   function handleKeydown(event: KeyboardEvent): void {
@@ -237,8 +289,9 @@
 
   {#if thread === null}
     <p class="thread-panel__explainer">
-      Loop other agents into this conversation. Everyone in the thread sees the same messages,
-      one turn at a time.
+      Talk to {agentName} here and bring other agents in. Each message goes to one agent; when
+      it asks a colleague, you see that exchange too. Ask everyone at once when you want to
+      compare answers.
     </p>
     {#if error}
       <p class="thread-panel__error" role="alert">{error}</p>
@@ -254,7 +307,9 @@
   {:else}
     <ul class="thread-panel__participants" aria-label="Thread participants">
       {#each thread.participants as name (name)}
-        <li class="thread-panel__chip">{name}</li>
+        <li class="thread-panel__chip" class:thread-panel__chip--primary={name === primary}>
+          {name}{#if name === primary}<span class="thread-panel__chip-tag">primary</span>{/if}
+        </li>
       {/each}
     </ul>
 
@@ -299,7 +354,21 @@
           {#if entry.role === "agent"}
             <p class="thread-bubble__attribution" aria-hidden="true">{entry.agent}</p>
           {/if}
-          <p class="thread-bubble__text">{entry.text}</p>
+          <p class="thread-bubble__text" class:thread-bubble__text--silent={entry.silent}>
+            {entry.text}
+          </p>
+          {#if entry.consults && entry.consults.length > 0}
+            <ul class="thread-bubble__consults" aria-label="What {entry.agent} asked colleagues">
+              {#each entry.consults as consult (consult.conversation_id + consult.role)}
+                <li class="thread-bubble__consult">
+                  <span class="thread-bubble__consult-who"
+                    >{consult.role === "ask" ? `asked ${consult.to}` : `${consult.from} replied`}</span
+                  >
+                  {consult.text}
+                </li>
+              {/each}
+            </ul>
+          {/if}
         </div>
       {/each}
       {#if turnMutation.isPending}
@@ -336,19 +405,46 @@
         bind:this={inputEl}
         bind:value={input}
         onkeydown={handleKeydown}
-        placeholder="Say something…"
+        placeholder={participantCount > 1
+          ? `Say something to ${recipient}… (or start with @name)`
+          : "Say something…"}
         rows="2"
         maxlength={MAX_MESSAGE_LEN}
         disabled={frozen}
       ></textarea>
-      <button
-        type="button"
-        class="thread-panel__send"
-        disabled={frozen || !canSend}
-        onclick={handleSend}
-      >
-        {turnMutation.isPending ? "Sending…" : "Send"}
-      </button>
+      <div class="thread-panel__send-row">
+        {#if participantCount > 1}
+          <label class="thread-panel__to">
+            <span class="thread-panel__to-label">To</span>
+            <select
+              class="thread-panel__to-select"
+              aria-label="Send to"
+              bind:value={addressee}
+              disabled={frozen}
+            >
+              {#each thread.participants as name (name)}
+                <option value={name === primary ? null : name}>{name}</option>
+              {/each}
+            </select>
+          </label>
+          <button
+            type="button"
+            class="thread-panel__broadcast"
+            disabled={frozen || !canSend}
+            onclick={() => handleSend(true)}
+          >
+            Ask everyone
+          </button>
+        {/if}
+        <button
+          type="button"
+          class="thread-panel__send"
+          disabled={frozen || !canSend}
+          onclick={() => handleSend(false)}
+        >
+          {turnMutation.isPending ? "Sending…" : `Send to ${recipient}`}
+        </button>
+      </div>
     </div>
   {/if}
 </section>
@@ -430,6 +526,99 @@
     color: var(--ink);
     font-size: 0.8rem;
     font-weight: 600;
+  }
+
+  .thread-panel__chip--primary {
+    border-color: var(--accent);
+  }
+
+  .thread-panel__chip-tag {
+    margin-left: var(--space-2xs);
+    color: var(--muted);
+    font-size: 0.7rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .thread-bubble__text--silent {
+    color: var(--muted);
+    font-style: italic;
+  }
+
+  .thread-bubble__consults {
+    margin: var(--space-xs) 0 0;
+    padding: 0 0 0 var(--space-sm);
+    border-left: 2px solid var(--border);
+    list-style: none;
+  }
+
+  .thread-bubble__consult {
+    margin: 0 0 var(--space-2xs);
+    color: var(--ink);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
+
+  .thread-bubble__consult-who {
+    margin-right: var(--space-2xs);
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .thread-panel__send-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-sm);
+  }
+
+  .thread-panel__to {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    margin-right: auto;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .thread-panel__to-label {
+    font-weight: 600;
+  }
+
+  .thread-panel__to-select {
+    padding: var(--space-2xs) var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    font: inherit;
+  }
+
+  .thread-panel__broadcast {
+    padding: var(--space-xs) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .thread-panel__broadcast:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .thread-panel__broadcast:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .thread-panel__add-form {
@@ -609,7 +798,6 @@
   }
 
   .thread-panel__send {
-    align-self: flex-end;
     padding: var(--space-xs) var(--space-md);
     border: none;
     border-radius: var(--radius-sm);

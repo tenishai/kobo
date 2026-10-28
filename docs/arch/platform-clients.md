@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-platform-clients
-updated: 2026-10-24
+updated: 2026-10-28
 anchor: api/kobo_api/clients.py sha=84f0d8eb45a5731f0974f335daf3bbcc121c328f
-anchor: api/tests/fakes.py sha=b1fdee326d9b480749bf1dbc02e1e88162f744bf
+anchor: api/tests/fakes.py sha=0ddafc40a5cabdf44babbf962ee84588e41be1e1
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
 
@@ -33,3 +33,5 @@ API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provid
 - `CabalClient.mint_service` (2026-10-24): the generic switchboard mint behind the room's own gateway admin token (`kobo_api.liminal_admin.RoomAdminToken`: sub and persona `kobo-room`, aud `liminal`, `admin:*`). `Clients.liminal_admin` is that admin-plane client, typed loosely to keep `liminal_admin` importing this module and not the reverse.
 - `CabalClient.put_dispatch_pairs` (2026-10-24, issue #194): never sends an empty set; an empty policy goes out as `DENY_ALL_PAIR` (see switchboard).
 - `KubectlClient.namespace_created_at` (2026-10-24, issue #193): a namespace's creation time as naive UTC, None when absent, `ClientError` when the cluster cannot be asked. Create and connect refuse a name whose namespace exists; destroy keeps the namespace, the stored secrets and the `agent-<name>` GSA of an agent whose namespace is older than its row. `FakeKubectl(namespaces={name: created_at}, namespace_error=...)` seeds it.
+
+`FakeCabal.relay` takes per-agent overrides (`relay_results`, `relay_errors`) since 2026-10-28, because a thread turn relays to several agents in one call and the tests need one to fail while another answers.
