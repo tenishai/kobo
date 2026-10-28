@@ -2233,7 +2233,25 @@ export async function addThreadParticipant(threadId: number, agent: string): Pro
 /** One participant's answer to a thread turn (`kobo_api.main.post_thread_
  * turn`'s own `replies` entries) -- `agent` is the bare name that answered,
  * always one of `Thread.participants`. */
-export type ThreadReply = { agent: string; text: string };
+/** One ask/reply line of a colleague conversation the addressee had while
+ * answering a thread turn, in the colleague feed's own entry shape. */
+export type ThreadConsult = {
+  ts: string;
+  conversation_id: string;
+  from: string;
+  to: string;
+  role: "ask" | "reply";
+  text: string;
+};
+/** One participant's answer to a turn. `error` set (and `text` null) means
+ * that agent did not answer; the turn itself still completed. */
+export type ThreadReply = {
+  agent: string;
+  text: string | null;
+  error: string | null;
+  consults: ThreadConsult[];
+};
+export type ThreadTurnOptions = { to?: string | null; broadcast?: boolean };
 
 /**
  * `POST /api/threads/{id}/turns`: delivers one turn to every participant IN
@@ -2254,13 +2272,18 @@ export type ThreadReply = { agent: string; text: string };
 export async function postThreadTurn(
   threadId: number,
   messages: ChatMessage[],
-): Promise<{ replies: ThreadReply[] }> {
+  options: ThreadTurnOptions = {},
+): Promise<{ replies: ThreadReply[]; to: string[] }> {
   const res = await fetch(`/api/threads/${encodeURIComponent(String(threadId))}/turns`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({
+      messages,
+      to: options.to ?? null,
+      broadcast: options.broadcast ?? false,
+    }),
   });
-  return parse<{ replies: ThreadReply[] }>(res);
+  return parse<{ replies: ThreadReply[]; to: string[] }>(res);
 }
 
 /** One workflow run's identity, as the build-log route reports it. */

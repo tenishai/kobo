@@ -144,6 +144,7 @@ import {
   type TeamOptions,
   type TeamPair,
   type Thread,
+  type ThreadConsult,
   type ThreadReply,
   type ToolingEnforcement,
   type ToolingFile,
@@ -1799,8 +1800,17 @@ export function addThreadParticipantMutation() {
  */
 export function postThreadTurnMutation() {
   return {
-    mutationFn: ({ threadId, messages }: { threadId: number; messages: ChatMessage[] }) =>
-      postThreadTurn(threadId, messages),
+    mutationFn: ({
+      threadId,
+      messages,
+      to,
+      broadcast,
+    }: {
+      threadId: number;
+      messages: ChatMessage[];
+      to?: string | null;
+      broadcast?: boolean;
+    }) => postThreadTurn(threadId, messages, { to, broadcast }),
   };
 }
 
@@ -1848,6 +1858,7 @@ export type {
   TeamOptions,
   TeamPair,
   Thread,
+  ThreadConsult,
   ThreadReply,
   ToolingEnforcement,
   ToolingFile,

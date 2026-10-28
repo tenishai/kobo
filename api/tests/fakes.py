@@ -1759,6 +1759,8 @@ class FakeCabal:
         absorb_error: str | None = None,
         relay_result: dict | None = None,
         relay_error: str | None = None,
+        relay_results: dict[str, dict] | None = None,
+        relay_errors: dict[str, str] | None = None,
         mint_colleague_result: str = "fake-colleague-token",
         mint_colleague_error: str | None = None,
         revoke_colleague_error: str | None = None,
@@ -1774,6 +1776,11 @@ class FakeCabal:
         self._absorb_error = absorb_error
         self._relay_result = relay_result if relay_result is not None else {}
         self._relay_error = relay_error
+        # Per-agent overrides (thread turns ask several agents in one call):
+        # an agent named here gets its own reply or its own failure; the
+        # others fall back to the canned result/error above.
+        self._relay_results = relay_results or {}
+        self._relay_errors = relay_errors or {}
         self._mint_colleague_result = mint_colleague_result
         self._mint_colleague_error = mint_colleague_error
         self._revoke_colleague_error = revoke_colleague_error
@@ -1824,9 +1831,11 @@ class FakeCabal:
 
     def relay(self, name: str, task_envelope: dict) -> dict:
         self.relay_calls.append({"name": name, "task_envelope": task_envelope})
+        if name in self._relay_errors:
+            raise CabalError(f"relay failed: {self._relay_errors[name]}")
         if self._relay_error is not None:
             raise CabalError(f"relay failed: {self._relay_error}")
-        return self._relay_result
+        return self._relay_results.get(name, self._relay_result)
 
     def revoke_colleague(self, name: str) -> None:
         self.calls.append(f"revoke:{name}")

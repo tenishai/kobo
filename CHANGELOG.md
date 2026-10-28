@@ -12,6 +12,8 @@ All notable changes to kobo are documented here. The format follows
 
 ### Changed
 
+- Shared threads talk to one agent at a time (kobo #240). A turn goes to the thread's primary, the agent it was started with, or to the agent you pick (a "To" box, or `@name` at the start of the message); what that agent asked its colleagues while answering shows under its reply. "Ask everyone" is the old everyone-answers behaviour, on request. An agent that does not answer is a "didn't answer" entry and the turn still completes, where one down agent used to fail the whole turn with a 502. API: `POST /api/threads/{id}/turns` takes `to` and `broadcast`; each reply carries `error` and `consults`, and the response names `to`.
+
 - The image is pinned end to end: base images by digest, Python packages from `api/uv.lock` with hashes verified by pip, kubectl by version with its checksum, gh and gcloud from per-arch apt repos.
 
 

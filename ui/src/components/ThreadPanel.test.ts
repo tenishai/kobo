@@ -195,7 +195,10 @@ describe("ThreadPanel", () => {
 
   it("sending a turn POSTs {messages} to /api/threads/{id}/turns and renders the reply attributed by agent name", async () => {
     stubFetch({
-      "/api/threads/7/turns": { replies: [{ agent: "ward", text: "Here's my take." }] },
+      "/api/threads/7/turns": {
+        replies: [{ agent: "ward", text: "Here's my take.", error: null, consults: [] }],
+        to: ["ward"],
+      },
       "/api/threads": FRESH_THREAD,
       "/api/agents": AGENTS_LIST,
       "/api/": {},
@@ -205,7 +208,7 @@ describe("ThreadPanel", () => {
 
     const textarea = screen.getByLabelText("Message the thread");
     await fireEvent.input(textarea, { target: { value: "What do you all think?" } });
-    await fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Send to ward" }));
 
     expect(await screen.findByText("Here's my take.")).not.toBeNull();
     expect(screen.getByText("ward", { selector: ".thread-bubble__attribution" })).not.toBeNull();
@@ -216,6 +219,8 @@ describe("ThreadPanel", () => {
     expect(call).toBeDefined();
     expect(JSON.parse((call as [RequestInfo | URL, RequestInit])[1].body as string)).toEqual({
       messages: [{ role: "user", text: "What do you all think?" }],
+      to: "ward",
+      broadcast: false,
     });
   });
 
@@ -235,7 +240,8 @@ describe("ThreadPanel", () => {
           turnCalls.push(init?.body ? JSON.parse(init.body as string) : null);
           const turnNumber = turnCalls.length;
           return jsonResponse({
-            replies: [{ agent: "ward", text: `reply ${turnNumber}` }],
+            replies: [{ agent: "ward", text: `reply ${turnNumber}`, error: null, consults: [] }],
+            to: ["ward"],
           });
         }
         return jsonResponse({});
@@ -247,11 +253,11 @@ describe("ThreadPanel", () => {
 
     const textarea = screen.getByLabelText("Message the thread");
     await fireEvent.input(textarea, { target: { value: "first ask" } });
-    await fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Send to ward" }));
     await screen.findByText("reply 1");
 
     await fireEvent.input(textarea, { target: { value: "second ask" } });
-    await fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Send to ward" }));
     await screen.findByText("reply 2");
 
     expect(turnCalls).toHaveLength(2);
@@ -261,7 +267,99 @@ describe("ThreadPanel", () => {
         { role: "agent", text: "reply 1" },
         { role: "user", text: "second ask" },
       ],
+      to: "ward",
+      broadcast: false,
     });
+  });
+
+  it("with two seated, Send goes to the primary, Ask everyone broadcasts, and @name addresses one turn", async () => {
+    const turnCalls: Array<{ to: string | null; broadcast: boolean }> = [];
+    const seated = { ...FRESH_THREAD, participants: ["ward", "clio"] };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/agents") {
+          return jsonResponse(AGENTS_LIST);
+        }
+        if (url === "/api/threads" && init?.method === "POST") {
+          return jsonResponse(seated);
+        }
+        if (url === "/api/threads/7/turns") {
+          const body = JSON.parse(init?.body as string);
+          turnCalls.push({ to: body.to, broadcast: body.broadcast });
+          return jsonResponse({
+            replies: [
+              { agent: body.to ?? "ward", text: `ok ${turnCalls.length}`, error: null, consults: [] },
+            ],
+            to: [body.to ?? "ward"],
+          });
+        }
+        return jsonResponse({});
+      }),
+    );
+    renderWithClient(ThreadPanel, { agentName: "ward" });
+    await startThread();
+    const textarea = screen.getByLabelText("Message the thread");
+
+    await fireEvent.input(textarea, { target: { value: "plain" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Send to ward" }));
+    await screen.findByText("ok 1");
+
+    await fireEvent.input(textarea, { target: { value: "everyone?" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Ask everyone" }));
+    await screen.findByText("ok 2");
+
+    await fireEvent.input(textarea, { target: { value: "@clio just you" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Send to ward" }));
+    await screen.findByText("ok 3");
+
+    expect(turnCalls).toEqual([
+      { to: "ward", broadcast: false },
+      { to: null, broadcast: true },
+      { to: "clio", broadcast: false },
+    ]);
+    expect(screen.getByText("just you")).not.toBeNull();
+  });
+
+  it("an agent that did not answer is a muted entry, and consults render under the reply", async () => {
+    stubFetch({
+      "/api/threads/7/turns": {
+        replies: [
+          {
+            agent: "ward",
+            text: "All green.",
+            error: null,
+            consults: [
+              {
+                ts: "1",
+                conversation_id: "c1",
+                from: "ward",
+                to: "clio",
+                role: "ask",
+                text: "clio, cluster ok?",
+              },
+              { ts: "2", conversation_id: "c1", from: "clio", to: "ward", role: "reply", text: "yes" },
+            ],
+          },
+          { agent: "clio", text: null, error: "didn't answer", consults: [] },
+        ],
+        to: ["ward", "clio"],
+      },
+      "/api/threads": FRESH_THREAD,
+      "/api/agents": AGENTS_LIST,
+      "/api/": {},
+    });
+    renderWithClient(ThreadPanel, { agentName: "ward" });
+    await startThread();
+    await fireEvent.input(screen.getByLabelText("Message the thread"), { target: { value: "hi" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Send to ward" }));
+
+    expect(await screen.findByText("All green.")).not.toBeNull();
+    expect(screen.getByText("didn't answer")).not.toBeNull();
+    expect(screen.getByText("clio, cluster ok?", { exact: false })).not.toBeNull();
+    expect(screen.getByText("asked clio")).not.toBeNull();
+    expect(screen.getByText("clio replied")).not.toBeNull();
   });
 
   it("a 422 turn failure pulls the poisoned message back into the input, same recovery as chat", async () => {
@@ -287,7 +385,7 @@ describe("ThreadPanel", () => {
 
     const textarea = screen.getByLabelText("Message the thread") as HTMLTextAreaElement;
     await fireEvent.input(textarea, { target: { value: "a poisoned ask" } });
-    await fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Send to ward" }));
 
     await waitFor(() => {
       expect(screen.getByText("message text must not be empty")).not.toBeNull();
@@ -308,7 +406,7 @@ describe("ThreadPanel", () => {
     await rerender({ componentProps: { agentName: "ward", frozen: true } });
 
     expect(
-      (screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled,
+      (screen.getByRole("button", { name: "Send to ward" }) as HTMLButtonElement).disabled,
     ).toBe(true);
     expect(
       (screen.getByLabelText("Message the thread") as HTMLTextAreaElement).disabled,
