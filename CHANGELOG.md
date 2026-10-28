@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-28
+
 ### Added
 
 - A release workflow: a `vX.Y.Z` tag builds the multi-arch image (linux/amd64, linux/arm64), publishes it to ghcr under the tag and the short sha, and records the digest on the GitHub release. No image is built on a push to main.
