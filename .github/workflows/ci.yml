@@ -138,6 +138,9 @@ jobs:
   # first FROM). BuildKit's --check lints both Dockerfiles without building anything.
   dockerfile:
     runs-on: ${{ fromJSON(vars.CI_BUILD_RUNS_ON || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    # The same fork guard every self-hosted job carries (tests/test_ci_fork_guards.py).
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: read  # the check resolves the private base image's metadata on ghcr
