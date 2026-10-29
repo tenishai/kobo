@@ -1544,11 +1544,18 @@ class FakeKubectl:
         external_secret_error: str | None = None,
         namespaces: dict[str, datetime] | None = None,
         namespace_error: str | None = None,
+        deployments: set[tuple[str, str]] | None = None,
+        deployment_exists_error: str | None = None,
     ):
         # `{namespace: created_at}` for `namespace_created_at`; a namespace
         # with no entry does not exist, which is the cluster a new agent's
         # name usually meets.
         self.namespaces = dict(namespaces or {})
+        # `deployment_exists`'s world: the `(namespace, deploy)` pairs that
+        # exist (default none), and the knob that makes the cluster
+        # unaskable (the directory sweep's "retire nothing" seam, #274).
+        self.deployments = set(deployments or set())
+        self.deployment_exists_error = deployment_exists_error
         # When set, `namespace_created_at` raises: the cluster the room
         # could not ask.
         self.namespace_error = namespace_error
@@ -1638,6 +1645,11 @@ class FakeKubectl:
         # Set `fake.pods = {namespace: [pod, ...]}` on the instance; the
         # health probe reads restart counts and wait reasons from them.
         return list(getattr(self, "pods", {}).get(namespace, []))
+
+    def deployment_exists(self, namespace: str, deploy: str) -> bool:
+        if self.deployment_exists_error is not None:
+            raise ClientError(self.deployment_exists_error)
+        return (namespace, deploy) in self.deployments
 
     def restart_deploy(self, namespace: str, deploy: str) -> None:
         if self._restart_error is not None:

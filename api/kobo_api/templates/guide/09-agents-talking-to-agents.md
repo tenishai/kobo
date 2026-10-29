@@ -29,7 +29,7 @@ Each agent also carries a roster of the colleagues it may talk to, written when 
 
 ## Keeping the directory honest
 
-When an agent is destroyed, the room asks the switchboard to drop its directory entry. If the switchboard did not answer, the destroy still finishes, and the step says so: **The switchboard still lists this agent; sweep the directory from Admin.** Each night the room compares the directory with its agents and writes any leftovers to its log. To clear them, a room admin opens **Admin, Services** and presses **Sweep directory**. The confirm lists exactly which entries will be retired before anything happens. Only entries the room itself registered are ever retired; an agent someone registered by hand is listed as not the room's and left alone.
+When an agent is destroyed, the room asks the switchboard to drop its directory entry. If the switchboard did not answer, the destroy still finishes, and the step says so: **The switchboard still lists this agent; sweep the directory from Admin.** Each night the room compares the directory with its agents and writes any leftovers to its log. To clear them, a room admin opens **Admin, Services** and presses **Sweep directory**. The confirm lists exactly which entries will be retired before anything happens. Only entries the room itself registered, for agents that no longer run, are ever retired. An agent that still runs in the cluster is listed as kept, and an agent someone registered by hand is listed as not the room's; both are left alone. When the room cannot ask the cluster what runs, nothing is retired and the confirm says so.
 
 ## Colleague mode
 

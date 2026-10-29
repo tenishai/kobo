@@ -119,7 +119,8 @@
 <Modal open={sweeping} title="Sweep the directory?" size="narrow" onclose={() => (sweeping = false)}>
   <p class="page__lead">
     The switchboard's directory is compared with this room's agents. Entries the room registered
-    for agents it no longer has are retired. Entries registered by hand are left alone.
+    for agents it no longer has are retired. Agents that run in the cluster and entries registered
+    by hand are left alone.
   </p>
   {#if preview.isPending}
     <p class="page__foot">Reading the directory…</p>
@@ -131,8 +132,16 @@
       <ul class="sweep__list">
         {#each preview.data.retired as name (name)}<li>{name}</li>{/each}
       </ul>
+    {:else if preview.data.note}
+      <p class="page__foot fail">{preview.data.note}</p>
     {:else}
       <p class="page__foot">Nothing to retire. Every entry the room registered has an agent behind it.</p>
+    {/if}
+    {#if preview.data.live.length}
+      <p class="sweep__heading">Kept, runs in the cluster</p>
+      <ul class="sweep__list">
+        {#each preview.data.live as name (name)}<li>{name}</li>{/each}
+      </ul>
     {/if}
     <p class="page__foot">
       {preview.data.kept.length} kept{preview.data.unknown.length

@@ -28,7 +28,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kobo_api.clients import CabalClient, ClientError, GitHubClient
+from kobo_api.clients import CabalClient, ClientError, GitHubClient, KubectlClient
 from kobo_api.config import Config
 
 if TYPE_CHECKING:
@@ -130,20 +130,42 @@ def room_registered(cfg: Config, entry: dict) -> bool:
     return bool(expected) and entry.get("endpoint") == expected
 
 
+CLUSTER_SILENT_NOTE = (
+    "The cluster could not be asked which agents run, so nothing was retired."
+)
+
+
 def sweep_directory(
-    cabal: CabalClient, cfg: Config, session: Session, *, dry_run: bool = True
+    cabal: CabalClient,
+    cfg: Config,
+    session: Session,
+    *,
+    kubectl: KubectlClient | None = None,
+    dry_run: bool = True,
 ) -> dict:
     """Reconcile the switchboard's directory with the room's agents (issue
-    #274): every active, non-session entry is `kept` when an agent row of
-    that name exists in any state (a row exists until the destroy ledger
-    forgets it, so destroying and failed agents count as existing, and so
-    do connected ones), `retired` when no row exists AND the entry carries
-    the room's own marker (`room_registered`), and `unknown` otherwise:
-    registered by hand or by another room, listed for the operator, never
-    touched. `dry_run` (the default, and what the nightly pass runs)
-    answers without calling `absorb`; a real run absorbs each entry it
-    would retire and reports the ones whose absorb failed under `failed`
-    rather than aborting the rest.
+    #274). Every active, non-session entry lands in one list:
+
+    - `kept`: an agent row of that name exists in any state (a row exists
+      until the destroy ledger forgets it, so destroying and failed agents
+      count as existing, and so do connected ones).
+    - `live`: no row, but a Deployment `<name>/<name>` runs in the cluster.
+      A hand-built agent deployed the way the room deploys its own, with
+      the same endpoint shape, is indistinguishable from a ghost by its
+      directory entry alone; the cluster is what tells them apart. Never
+      retired.
+    - `retired`: no row, no Deployment, AND the room's own registration
+      marker (`room_registered`). On a dry run (the default, and what the
+      nightly pass runs) nothing is called; a real run absorbs each one and
+      reports the ones the switchboard refused under `failed`.
+    - `unknown`: everything else without a row (registered by hand or by
+      another room). Listed, never touched.
+
+    `kubectl` None, or a cluster that cannot be asked (`ClientError` from
+    `deployment_exists`), retires nothing: every entry without a row goes to
+    `unknown` and `note` says why (`CLUSTER_SILENT_NOTE`). The probe runs
+    before any absorb, so a cluster that goes silent halfway cannot leave a
+    half-swept directory.
 
     Raises `CabalError` when the switchboard cannot be read at all; the
     caller decides what that means (the route answers 502, the nightly pass
@@ -155,10 +177,10 @@ def sweep_directory(
 
     entries = cabal.list_agents()
     existing = {name for (name,) in session.query(Agent.name).all()}
-    retired: list[str] = []
     kept: list[str] = []
+    live: list[str] = []
     unknown: list[str] = []
-    failed: list[str] = []
+    candidates: list[str] = []
     for entry in entries:
         if entry.get("kind") == "session" or entry.get("status") != "active":
             continue
@@ -167,9 +189,30 @@ def sweep_directory(
             continue
         if name in existing:
             kept.append(name)
-            continue
-        if not room_registered(cfg, entry):
+        elif room_registered(cfg, entry):
+            candidates.append(name)
+        else:
             unknown.append(name)
+
+    note: str | None = None
+    running: dict[str, bool] = {}
+    if kubectl is None:
+        note = CLUSTER_SILENT_NOTE
+    else:
+        try:
+            running = {name: kubectl.deployment_exists(name, name) for name in candidates}
+        except Exception:
+            log.warning("directory sweep: the cluster could not be asked", exc_info=True)
+            note = CLUSTER_SILENT_NOTE
+    if note is not None:
+        unknown.extend(candidates)
+        candidates = []
+
+    retired: list[str] = []
+    failed: list[str] = []
+    for name in candidates:
+        if running.get(name):
+            live.append(name)
             continue
         if not dry_run:
             try:
@@ -183,6 +226,8 @@ def sweep_directory(
         "dry_run": dry_run,
         "retired": retired,
         "kept": kept,
+        "live": live,
         "unknown": unknown,
         "failed": failed,
+        "note": note,
     }

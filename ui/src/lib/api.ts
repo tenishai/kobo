@@ -1385,15 +1385,19 @@ export async function fetchAdminAddons(): Promise<AdminAddon[]> {
 /** The directory sweep (issue #274): the switchboard's directory against the
  * room's agents. `retired` is what the room registered for agents it no
  * longer has (would retire on a dry run, did retire otherwise); `kept` is
- * every entry with an agent behind it; `unknown` was registered by hand or
- * by another room and is never touched; `failed` is what the switchboard
- * refused to retire. */
+ * every entry with an agent behind it; `live` has no agent row but runs in
+ * the cluster and is never touched; `unknown` was registered by hand or by
+ * another room and is never touched; `failed` is what the switchboard
+ * refused to retire. `note` says why nothing was retired when the cluster
+ * could not be asked. */
 export type DirectorySweep = {
   dry_run: boolean;
   retired: string[];
   kept: string[];
+  live: string[];
   unknown: string[];
   failed: string[];
+  note: string | null;
 };
 
 export async function previewDirectorySweep(): Promise<DirectorySweep> {

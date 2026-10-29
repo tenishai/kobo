@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from kobo_api.clients import Clients
 from kobo_api.config import Config
-from kobo_api.directory import sweep_directory
+from kobo_api.directory import CLUSTER_SILENT_NOTE, sweep_directory
 from kobo_api.main import create_app
 from kobo_api.models import Agent, AgentStatus, Base
 from tests.fakes import FakeAgent, FakeCabal, FakeCloud, FakeGitHub, FakeGojira, FakeKubectl
@@ -38,7 +38,9 @@ def test_sweep_retires_only_the_rooms_own_entries_for_agents_it_no_longer_has(tm
     """Destruction safety: an entry without the room's registration marker
     (another endpoint, or not a graduated row) is reported, never absorbed;
     an entry for any agent row the room still holds is kept, whatever its
-    state; the dry run absorbs nothing at all."""
+    state; a hand-built agent with no row but a Deployment `<name>/<name>`
+    in the cluster is live, never absorbed; the dry run absorbs nothing at
+    all; and a cluster that cannot be asked retires nothing."""
     factory = _session_factory(tmp_path)
     session = factory()
     session.add(Agent(name="kept", persona="p", model_id="m", status=AgentStatus.DESTROYING, repo_full_name="o/r"))
@@ -47,19 +49,30 @@ def test_sweep_retires_only_the_rooms_own_entries_for_agents_it_no_longer_has(tm
     cabal = FakeCabal(agents_result=[
         _room_entry("kept"),
         _room_entry("gone"),
+        _room_entry("handbuilt"),
         _room_entry("bespoke", endpoint="http://somewhere.else"),
         _room_entry("local", kind="member"),
         _room_entry("retired-already", status="retired"),
         {"name": "ops-session", "status": "active", "kind": "session", "endpoint": None},
     ])
+    kubectl = FakeKubectl(deployments={("handbuilt", "handbuilt")})
 
-    preview = sweep_directory(cabal, cfg, session, dry_run=True)
+    preview = sweep_directory(cabal, cfg, session, kubectl=kubectl, dry_run=True)
     assert cabal.absorb_calls == []
-    assert (preview["retired"], preview["kept"], preview["unknown"]) == (["gone"], ["kept"], ["bespoke", "local"])
+    assert (preview["retired"], preview["kept"], preview["live"], preview["unknown"]) == (
+        ["gone"], ["kept"], ["handbuilt"], ["bespoke", "local"],
+    )
 
-    result = sweep_directory(cabal, cfg, session, dry_run=False)
+    silent = sweep_directory(
+        cabal, cfg, session, kubectl=FakeKubectl(deployment_exists_error="no cluster"), dry_run=False
+    )
+    assert cabal.absorb_calls == [] and silent["retired"] == []
+    assert sorted(silent["unknown"]) == ["bespoke", "gone", "handbuilt", "local"]
+    assert silent["note"] == CLUSTER_SILENT_NOTE
+
+    result = sweep_directory(cabal, cfg, session, kubectl=kubectl, dry_run=False)
     assert cabal.absorb_calls == ["gone"]
-    assert result["retired"] == ["gone"] and result["failed"] == []
+    assert result["retired"] == ["gone"] and result["live"] == ["handbuilt"] and result["failed"] == []
     session.close()
 
 

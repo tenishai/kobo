@@ -3712,8 +3712,9 @@ def create_app(
     # the room's agents. GET is always a dry run (what WOULD be retired);
     # POST retires. Both answer through `kobo_api.directory.sweep_directory`,
     # which only ever retires an entry carrying the room's own registration
-    # marker, so an agent graduated by hand is listed under `unknown` and
-    # left alone. Same gate as every pane route: 404 while the panel is off,
+    # marker AND no Deployment of that name in the cluster, so an agent
+    # graduated by hand is listed under `unknown` or `live` and left alone.
+    # Same gate as every pane route: 404 while the panel is off,
     # 403 for a non-admin. 409 when the switchboard is not configured, the
     # same body the sync-pairs route gives.
 
@@ -3726,7 +3727,9 @@ def create_app(
         if not cabal_enabled(cfg) or clients is None or clients.cabal is None:
             return JSONResponse(_SWITCHBOARD_NOT_CONFIGURED, status_code=409)
         try:
-            result = sweep_directory(clients.cabal, cfg, session, dry_run=dry_run)
+            result = sweep_directory(
+                clients.cabal, cfg, session, kubectl=clients.kubectl, dry_run=dry_run
+            )
         except (CabalError, httpx.HTTPError):
             log.warning("directory sweep could not read the switchboard", exc_info=True)
             return JSONResponse(
@@ -3740,7 +3743,8 @@ def create_app(
                 object_id="switchboard", before=None,
                 after={
                     "retired": result["retired"], "failed": result["failed"],
-                    "kept": len(result["kept"]), "unknown": result["unknown"],
+                    "kept": len(result["kept"]), "live": result["live"],
+                    "unknown": result["unknown"], "note": result["note"],
                 },
                 landed=admin_store.LANDED_APPLIED if not result["failed"] else admin_store.LANDED_FAILED,
                 landed_detail=(

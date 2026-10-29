@@ -693,10 +693,14 @@ def _directory_dry_run(session, config, clients) -> None:
     if not (cabal_enabled(config) and clients.cabal is not None):
         return
     try:
-        result = sweep_directory(clients.cabal, config, session, dry_run=True)
+        result = sweep_directory(
+            clients.cabal, config, session, kubectl=clients.kubectl, dry_run=True
+        )
     except Exception as exc:  # noqa: BLE001
         log.warning("directory: nightly dry run could not read the switchboard: %s", exc)
         return
+    if result["note"]:
+        log.warning("directory: %s", result["note"])
     if result["retired"]:
         log.warning(
             "directory: the switchboard lists %d agent(s) this room no longer has: %s. "

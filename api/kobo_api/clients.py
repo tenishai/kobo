@@ -2214,6 +2214,17 @@ class KubectlClient(Protocol):
         (kobo_api.health)."""
         ...
 
+    def deployment_exists(self, namespace: str, deploy: str) -> bool:
+        """Whether a Deployment `deploy` exists in `namespace`: True, False,
+        or `ClientError` when the cluster cannot be asked (kubectl missing,
+        no credentials, unreachable). Three answers on purpose, unlike
+        `deployment_status_json`, whose failure folds "absent" and
+        "unreachable" together. The directory sweep (`kobo_api.directory.
+        sweep_directory`, issue #274) uses it to keep a hand-built agent
+        that runs as `<name>/<name>` without a room row out of the retire
+        list, and to retire nothing at all when the cluster is silent."""
+        ...
+
     def restart_deploy(self, namespace: str, deploy: str) -> None:
         """Ask kubectl to roll the Deployment's pods now (`kubectl rollout
         restart`).
@@ -2332,6 +2343,15 @@ class KubectlCLI:
     def pods_json(self, namespace: str) -> list[dict]:
         out = self._runner.run([self._kubectl, "-n", namespace, "get", "pods", "-o", "json"])
         return list((json.loads(out) or {}).get("items") or [])
+
+    def deployment_exists(self, namespace: str, deploy: str) -> bool:
+        # Same `--ignore-not-found` idiom as `namespace_created_at` below:
+        # absent is an empty success, and only a cluster the room cannot
+        # reach raises.
+        out = self._runner.run(
+            [self._kubectl, "-n", namespace, "get", "deploy", deploy, "--ignore-not-found", "-o", "name"]
+        )
+        return bool(out.strip())
 
     def restart_deploy(self, namespace: str, deploy: str) -> None:
         self._runner.run(
