@@ -91,12 +91,19 @@ export const DEFAULT_HARNESS_SECTION: HarnessSectionId = "runtime";
  * bundle the room composed, so a connected agent has none of them and its
  * Harness is a single section with one muted line explaining why.
  */
-export function harnessSections(kind: string = KIND_COMPOSED): HarnessSectionId[] {
+export function harnessSections(
+  kind: string = KIND_COMPOSED,
+  opts: { accessOn?: boolean } = {},
+): HarnessSectionId[] {
   // Identity is true of any agent the room deploys, connected included:
-  // both kinds run as the service account the room made for them.
-  return kind === KIND_CONNECTED
-    ? [DEFAULT_HARNESS_SECTION, "identity", "permissions", "activity"]
-    : [...HARNESS_SECTION_IDS];
+  // both kinds run as the service account the room made for them. With the
+  // permission service on, access is asked for under Permissions and the
+  // identity facts move to one line there, so the section goes (#292).
+  const all: HarnessSectionId[] =
+    kind === KIND_CONNECTED
+      ? [DEFAULT_HARNESS_SECTION, "identity", "permissions", "activity"]
+      : [...HARNESS_SECTION_IDS];
+  return opts.accessOn ? all.filter((id) => id !== "identity") : all;
 }
 
 /** Whether a hash segment names a tab. The hash is whatever somebody typed

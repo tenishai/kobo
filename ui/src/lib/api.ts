@@ -277,6 +277,9 @@ export type Whoami = {
   /** The account menu's two switches, both the server's call: the admin
    * panel is on for this room, and where Log out goes (null hides it). */
   admin_panel?: boolean;
+  /** True when the permission service is on; the Harness then has no
+   * Identity and access section (#292). */
+  access_on?: boolean;
   logout_url?: string | null;
 };
 

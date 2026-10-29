@@ -7,11 +7,11 @@
   // Approved permissions are grants the agent borrows an hour of access
   // against; the decisions are the reviewers', never this page's.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import { errorMessage, type AccessAccount, type AccessGrant, type AccessPermission, type AccessVendor } from "../lib/api";
+  import { errorMessage, type AccessAccount, type AccessGrant, type AccessPermission, type AccessVendor, type AgentIdentity } from "../lib/api";
   import { agentAccessQuery, requestAgentAccessMutation, revokeAgentAccessMutation } from "../lib/queries";
   import { toast } from "../lib/toast.svelte";
 
-  let { agentName }: { agentName: string } = $props();
+  let { agentName, identity = null }: { agentName: string; identity?: AgentIdentity | null } = $props();
 
   const queryClient = useQueryClient();
   const access = createQuery(() => (agentAccessQuery(agentName)));
@@ -139,6 +139,9 @@
     it borrows an hour of access scoped to exactly these permissions, and the vendor's audit trail
     names the agent.
   </p>
+  {#if identity}
+    <p class="panel__note">Runs as <code>{identity.gsa_email}</code>.</p>
+  {/if}
 
   {#if access.isPending}
     <p class="panel__note">Reading the permissions…</p>
